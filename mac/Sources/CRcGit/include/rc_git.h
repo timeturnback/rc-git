@@ -95,6 +95,8 @@ typedef enum RcGitWorktreeStatus {
   RcGitWorktreeStatus_Untracked = 2,
   // The path exists only on disk and matches an ignore rule.
   RcGitWorktreeStatus_Ignored = 3,
+  // The path exists only in the compared tree; the file was deleted from disk.
+  RcGitWorktreeStatus_Deleted = 4,
 } RcGitWorktreeStatus;
 
 // What a highlighted region means, for the view to color.

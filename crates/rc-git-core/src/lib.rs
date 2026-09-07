@@ -31,4 +31,4 @@ pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
 pub use repo::Repository;
 pub use tree::{EntryKind, TreeEntry, sort_for_display};
-pub use worktree::{WorktreeEntry, WorktreeListing, WorktreeStatus};
+pub use worktree::{StatusEntry, StatusReport, WorktreeEntry, WorktreeListing, WorktreeStatus};

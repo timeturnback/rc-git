@@ -81,6 +81,8 @@ fn every_operation_leaves_git_dir_untouched() {
     assert!(!listing.entries.is_empty());
     repo.worktree_entries(root, "src").unwrap();
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
+    let status = repo.worktree_status(root, 100_000).unwrap();
+    assert!(!status.truncated);
     drop(repo);
 
     assert_eq!(snapshot(&fx.git_dir()), before);

@@ -203,3 +203,169 @@ fn a_missing_directory_is_an_error_but_a_tree_only_directory_lists_as_missing() 
     let err = repo.worktree_entries(tree, "docs").unwrap_err();
     assert!(matches!(err, Error::Worktree { .. }), "{err}");
 }
+
+#[test]
+fn worktree_status_lists_every_change_flat_and_sorted() {
+    let fx = Fixture::standard();
+    // Same size, different content: only the hash can tell.
+    fx.write("alpha.txt", b"omega\n");
+    fx.write("untracked.txt", b"new\n");
+    fx.write("newdir/inner/file.txt", b"x\n");
+    std::fs::remove_file(fx.path().join("src/lib.rs")).unwrap();
+    std::fs::remove_dir_all(fx.path().join("docs")).unwrap();
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert!(!report.truncated);
+    assert!(report.scanned > 0);
+
+    let rows: Vec<(String, WorktreeStatus)> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("alpha.txt".to_owned(), WorktreeStatus::Modified),
+            ("docs/guide.md".to_owned(), WorktreeStatus::Deleted),
+            (
+                "newdir/inner/file.txt".to_owned(),
+                WorktreeStatus::Untracked
+            ),
+            ("src/lib.rs".to_owned(), WorktreeStatus::Deleted),
+            ("untracked.txt".to_owned(), WorktreeStatus::Untracked),
+        ]
+    );
+
+    let modified = &report.entries[0];
+    assert_eq!(
+        modified.oid.unwrap().to_hex(),
+        fx.rev_parse("HEAD:alpha.txt")
+    );
+    assert_eq!(modified.size, 6);
+    let deleted = &report.entries[1];
+    assert_eq!(
+        deleted.oid.unwrap().to_hex(),
+        fx.rev_parse("HEAD:docs/guide.md")
+    );
+    assert_eq!((deleted.kind, deleted.size), (EntryKind::Blob, 0));
+    let untracked = &report.entries[2];
+    assert!(untracked.oid.is_none());
+}
+
+#[test]
+fn worktree_status_flags_exec_bit_and_symlink_changes() {
+    let fx = Fixture::standard();
+    let alpha = fx.path().join("alpha.txt");
+    let mut perms = std::fs::metadata(&alpha).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&alpha, perms).unwrap();
+    std::fs::remove_file(fx.path().join("link")).unwrap();
+    fx.symlink("Zeta.txt", "link");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let rows: Vec<(String, EntryKind, WorktreeStatus)> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.kind, entry.status))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "alpha.txt".to_owned(),
+                EntryKind::ExecutableBlob,
+                WorktreeStatus::Modified
+            ),
+            (
+                "link".to_owned(),
+                EntryKind::Symlink,
+                WorktreeStatus::Modified
+            ),
+        ]
+    );
+}
+
+#[test]
+fn worktree_status_prunes_ignored_directories_unopened() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"junk/\n");
+    for i in 0..50 {
+        fx.write(&format!("junk/file{i}.tmp"), b"x\n");
+    }
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let rows: Vec<String> = report
+        .entries
+        .iter()
+        .map(|entry| entry.path.to_string())
+        .collect();
+    assert_eq!(rows, [".gitignore".to_owned()]);
+    // The pruned directory contributes one visited entry, never its 50 files.
+    assert!(report.scanned < 15, "scanned {}", report.scanned);
+}
+
+#[test]
+fn worktree_status_truncates_at_the_scan_cap() {
+    let fx = Fixture::standard();
+    for i in 0..20 {
+        fx.write(&format!("many/file{i}.txt"), b"x\n");
+    }
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 5).unwrap();
+    assert!(report.truncated);
+    assert_eq!(report.scanned, 6);
+
+    let full = repo.worktree_status(tree, 100_000).unwrap();
+    assert!(!full.truncated);
+    assert_eq!(full.entries.len(), 20);
+}
+
+#[test]
+fn worktree_status_reports_a_file_replacing_a_tracked_directory() {
+    let fx = Fixture::standard();
+    std::fs::remove_dir_all(fx.path().join("docs")).unwrap();
+    fx.write("docs", b"now a file\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let rows: Vec<(String, WorktreeStatus)> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("docs".to_owned(), WorktreeStatus::Modified),
+            ("docs/guide.md".to_owned(), WorktreeStatus::Deleted),
+        ]
+    );
+    assert!(report.entries[0].oid.is_none());
+}
+
+#[test]
+fn worktree_status_on_a_bare_repository_is_an_error() {
+    let fx = Fixture::standard();
+    let bare = Fixture::empty_dir();
+    fx.git(&[
+        "clone",
+        "--bare",
+        "-q",
+        fx.path().to_str().unwrap(),
+        bare.path().join("bare.git").to_str().unwrap(),
+    ]);
+    let repo = Repository::open(bare.path().join("bare.git")).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let err = repo.worktree_status(tree, 10_000).unwrap_err();
+    assert!(err.to_string().contains("bare"), "{err}");
+}

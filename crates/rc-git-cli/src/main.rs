@@ -520,6 +520,7 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
             WorktreeStatus::Modified => "M",
             WorktreeStatus::Untracked => "?",
             WorktreeStatus::Ignored => "!",
+            WorktreeStatus::Deleted => "D",
         };
         let kind = match entry.kind {
             EntryKind::Tree => "tree",

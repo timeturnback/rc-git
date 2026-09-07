@@ -65,18 +65,7 @@ impl Repository {
     /// [`Error::Object`](crate::Error::Object) when `tree` is missing, not a tree, or malformed.
     pub fn tree_entries(&self, tree: Oid) -> Result<Vec<TreeEntry>> {
         self.with(|repo| {
-            let tree_obj = repo
-                .find_tree(*tree.as_gix())
-                .map_err(object("read tree", tree))?;
-            let mut entries = Vec::new();
-            for entry in tree_obj.iter() {
-                let entry = entry.map_err(object("decode tree", tree))?;
-                entries.push(TreeEntry {
-                    name: entry.filename().to_owned(),
-                    oid: Oid::from_gix(entry.object_id()),
-                    kind: EntryKind::from_gix(entry.mode().kind()),
-                });
-            }
+            let mut entries = tree_children(repo, tree)?;
             sort_for_display(&mut entries);
             Ok(entries)
         })
@@ -106,6 +95,24 @@ impl Repository {
             }))
         })
     }
+}
+
+/// The direct children of `tree` in git's own order, read on an already-borrowed handle so
+/// callers holding one for a longer walk do not re-enter the pool.
+pub(crate) fn tree_children(repo: &gix::Repository, tree: Oid) -> Result<Vec<TreeEntry>> {
+    let tree_obj = repo
+        .find_tree(*tree.as_gix())
+        .map_err(object("read tree", tree))?;
+    let mut entries = Vec::new();
+    for entry in tree_obj.iter() {
+        let entry = entry.map_err(object("decode tree", tree))?;
+        entries.push(TreeEntry {
+            name: entry.filename().to_owned(),
+            oid: Oid::from_gix(entry.object_id()),
+            kind: EntryKind::from_gix(entry.mode().kind()),
+        });
+    }
+    Ok(entries)
 }
 
 /// Orders entries the way a file browser shows them: directories first, then names compared

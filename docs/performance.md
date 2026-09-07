@@ -18,6 +18,7 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | tree diff | scales with the difference | unchanged subtrees share an id and are skipped whole |
 | blob diff | two blob reads plus the diff | sizes checked against the limit before decoding |
 | working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match |
+| working-tree status | under 50 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, content hashed only when sizes match; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
 | blame | grows with commits touching the file | on demand for the open file, never in bulk |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits |
 

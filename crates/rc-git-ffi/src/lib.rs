@@ -692,6 +692,8 @@ pub enum RcGitWorktreeStatus {
     Untracked = 2,
     /// The path exists only on disk and matches an ignore rule.
     Ignored = 3,
+    /// The path exists only in the compared tree; the file was deleted from disk.
+    Deleted = 4,
 }
 
 impl From<WorktreeStatus> for RcGitWorktreeStatus {
@@ -701,6 +703,7 @@ impl From<WorktreeStatus> for RcGitWorktreeStatus {
             WorktreeStatus::Modified => Self::Modified,
             WorktreeStatus::Untracked => Self::Untracked,
             WorktreeStatus::Ignored => Self::Ignored,
+            WorktreeStatus::Deleted => Self::Deleted,
         }
     }
 }
