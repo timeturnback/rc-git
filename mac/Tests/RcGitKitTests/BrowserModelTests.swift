@@ -202,6 +202,7 @@ private final class FailingRepository: RepositoryReading, @unchecked Sendable {
         throw RepositoryError("no")
     }
     func commit(_ oid: Oid) throws -> CommitSummary { throw RepositoryError("no") }
+    func commitDetails(_ oid: Oid) throws -> CommitDetail { throw RepositoryError("no") }
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] { throw RepositoryError("no") }
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff {
         throw RepositoryError("no")

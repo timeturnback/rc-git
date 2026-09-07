@@ -52,6 +52,7 @@ fn every_operation_leaves_git_dir_untouched() {
     repo.entry_at_path(root, "src/main.rs").unwrap();
     for commit in repo.log(tip, 0, 100).unwrap() {
         repo.commit(commit.oid).unwrap();
+        repo.commit_details(commit.oid).unwrap();
     }
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {

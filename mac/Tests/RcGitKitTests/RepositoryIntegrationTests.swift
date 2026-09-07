@@ -83,6 +83,34 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs.oid) }
     }
 
+    @Test func readsCommitDetails() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.git(
+            [
+                "commit", "-q", "--allow-empty", "-m", "Detail commit", "-m", "The body.",
+                "--date", "2024-01-04T00:00:00+0000",
+            ],
+            extraEnvironment: ["GIT_COMMITTER_DATE": "2024-01-04T00:00:00+0000"])
+        let repo = try Repository(path: fixture.path)
+        let tip = try repo.resolve("main")
+
+        let detail = try repo.commitDetails(tip)
+        #expect(detail.summary == (try repo.commit(tip)))
+        #expect(detail.summary.title == "Detail commit")
+        #expect(detail.body == "The body.")
+        #expect(detail.committerName == "Test Committer")
+        #expect(detail.committerEmail == "committer@example.com")
+        #expect(detail.committerTime == 1_704_326_400)
+        #expect(detail.tree.hex == fixture.revParse("main^{tree}"))
+
+        let titledOnly = try repo.resolve("main~1")
+        #expect(try repo.commitDetails(titledOnly).body.isEmpty)
+
+        let tree = try repo.resolveTree("main")
+        #expect(throws: RepositoryError.self) { try repo.commitDetails(tree) }
+    }
+
     @Test func diffsTreesAndBlobsAndBlames() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

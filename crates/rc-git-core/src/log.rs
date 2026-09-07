@@ -27,6 +27,25 @@ pub struct CommitSummary {
     pub title: String,
 }
 
+/// Everything a commit detail view shows beyond the summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetail {
+    /// The list-view parts of the commit.
+    pub summary: CommitSummary,
+    /// Message body after the title, trimmed. Empty when the message is only a title.
+    pub body: String,
+    /// Committer name, trimmed.
+    pub committer_name: String,
+    /// Committer email, trimmed.
+    pub committer_email: String,
+    /// Committer time, seconds since the Unix epoch.
+    pub committer_time: i64,
+    /// Committer timezone, seconds east of UTC.
+    pub committer_offset: i32,
+    /// The root tree of the commit.
+    pub tree: Oid,
+}
+
 impl Repository {
     /// Commits reachable from `tip`, newest commit time first, skipping the first `skip` and
     /// returning at most `limit`. The walk restarts from `tip` on every call, so a page deep in
@@ -63,6 +82,40 @@ impl Repository {
                 .find_commit(*oid.as_gix())
                 .map_err(object("read commit", oid))?;
             summarize(&commit)
+        })
+    }
+
+    /// One commit by id with its full message, committer, and root tree.
+    ///
+    /// # Errors
+    /// [`Error::Object`](crate::Error::Object) when missing, not a commit, or undecodable.
+    pub fn commit_details(&self, oid: Oid) -> Result<CommitDetail> {
+        self.with(|repo| {
+            let commit = repo
+                .find_commit(*oid.as_gix())
+                .map_err(object("read commit", oid))?;
+            let summary = summarize(&commit)?;
+            let decoded = commit.decode().map_err(object("decode commit", oid))?;
+            let committer = decoded
+                .committer()
+                .map_err(object("decode committer", oid))?;
+            let (committer_time, committer_offset) = match committer.time() {
+                Ok(time) => (time.seconds, time.offset),
+                Err(_) => (committer.seconds(), 0),
+            };
+            let body = match decoded.message().body {
+                Some(body) => body.to_str_lossy().trim().to_owned(),
+                None => String::new(),
+            };
+            Ok(CommitDetail {
+                summary,
+                body,
+                committer_name: committer.name.to_str_lossy().into_owned(),
+                committer_email: committer.email.to_str_lossy().into_owned(),
+                committer_time,
+                committer_offset,
+                tree: Oid::from_gix(decoded.tree()),
+            })
         })
     }
 }

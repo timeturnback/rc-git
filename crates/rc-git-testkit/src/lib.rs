@@ -173,4 +173,24 @@ impl Fixture {
             &[("GIT_COMMITTER_DATE", date)],
         );
     }
+
+    /// Like [`commit`](Self::commit), with `body` as a paragraph after the title. Commits even
+    /// when nothing is staged.
+    pub fn commit_with_body(&self, title: &str, body: &str, date: &str) {
+        self.run(&["add", "-A"], &[]);
+        self.run(
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                title,
+                "-m",
+                body,
+                "--date",
+                date,
+            ],
+            &[("GIT_COMMITTER_DATE", date)],
+        );
+    }
 }

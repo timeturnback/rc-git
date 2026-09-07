@@ -9,6 +9,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blobs: [Oid: BlobContent] = [:]
     var commits: [Oid: [CommitSummary]] = [:]
     var summaries: [Oid: CommitSummary] = [:]
+    var details: [Oid: CommitDetail] = [:]
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
     var blames: [String: [BlameRange]] = [:]
@@ -89,6 +90,15 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             throw RepositoryError("read commit: object \(oid) is missing or unreadable")
         }
         return found
+    }
+
+    func commitDetails(_ oid: Oid) throws -> CommitDetail {
+        if let found = lock.withLock({ details[oid] }) { return found }
+        let summary = (try? commit(oid)) ?? commitSummary(oid)
+        return CommitDetail(
+            summary: summary, body: "", committerName: summary.authorName,
+            committerEmail: summary.authorEmail, committerTime: summary.authorTime,
+            committerOffset: summary.authorOffset, tree: oid)
     }
 
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] {

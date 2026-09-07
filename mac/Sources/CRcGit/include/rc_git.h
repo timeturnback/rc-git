@@ -262,6 +262,24 @@ typedef struct RcGitCommitList {
   size_t len;
 } RcGitCommitList;
 
+// Everything a commit detail view shows beyond the summary.
+typedef struct RcGitCommitDetail {
+  // The list-view parts of the commit. Owned by this struct; never freed separately.
+  struct RcGitCommit summary;
+  // Message body after the title. Empty when the message is only a title.
+  char *body;
+  // Committer name.
+  char *committer_name;
+  // Committer email.
+  char *committer_email;
+  // Committer time, seconds since the Unix epoch.
+  int64_t committer_time;
+  // Committer timezone, seconds east of UTC.
+  int32_t committer_offset;
+  // The root tree of the commit.
+  struct RcGitOid tree;
+} RcGitCommitDetail;
+
 // One changed file between two trees.
 typedef struct RcGitTreeChange {
   // What happened.
@@ -570,6 +588,22 @@ struct RcGitCommit *rcgit_commit(const struct RcGitRepo *repo,
 // # Safety
 // `commit` is NULL or came from `rcgit_commit` and is not freed twice.
 void rcgit_commit_free(struct RcGitCommit *commit);
+
+// One commit with its full message, committer, and root tree. Release with
+// `rcgit_commit_detail_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
+// or valid for writing a `char *`.
+struct RcGitCommitDetail *rcgit_commit_details(const struct RcGitRepo *repo,
+                                               const struct RcGitOid *oid,
+                                               char **error);
+
+// Releases a value from `rcgit_commit_details`.
+//
+// # Safety
+// `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
+void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
 
 // Lists every file that differs between two trees, renames detected, sorted by path. `from`
 // and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,

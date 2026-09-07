@@ -23,6 +23,7 @@ usage: rc-git [--time] <command> <repo> [args]
   ls      <repo> [rev] [path]             entries of a directory at a revision (default HEAD)
   cat     <repo> <rev> <path> [limit]     file contents; limit in bytes, default 8 MiB
   log     <repo> [rev] [-n N] [--skip N]  commits, newest first (default 20)
+  show    <repo> <rev>                    one commit: header lines, then the message
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   blame   <repo> <rev> <path>             which commit introduced each line
   status  <repo> [dir]                    one working-tree directory against HEAD
@@ -43,6 +44,7 @@ enum Verb {
     Ls,
     Cat,
     Log,
+    Show,
     Diff,
     Blame,
     Status,
@@ -57,6 +59,7 @@ impl Verb {
             "ls" => Some(Self::Ls),
             "cat" => Some(Self::Cat),
             "log" => Some(Self::Log),
+            "show" => Some(Self::Show),
             "diff" => Some(Self::Diff),
             "blame" => Some(Self::Blame),
             "status" => Some(Self::Status),
@@ -72,6 +75,7 @@ impl Verb {
             Self::Ls => "ls",
             Self::Cat => "cat",
             Self::Log => "log",
+            Self::Show => "show",
             Self::Diff => "diff",
             Self::Blame => "blame",
             Self::Status => "status",
@@ -140,6 +144,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Ls => ls(&repo, &invocation.args, &mut out)?,
         Verb::Cat => cat(&repo, &invocation.args, &mut out)?,
         Verb::Log => log(&repo, &invocation.args, &mut out)?,
+        Verb::Show => show(&repo, &invocation.args, &mut out)?,
         Verb::Diff => diff(&repo, &invocation.args, &mut out)?,
         Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
         Verb::Status => status(&repo, &invocation.args, &mut out)?,
@@ -283,6 +288,37 @@ fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
             "{}\t{}\t{}\t{}",
             commit.oid, commit.author_time, commit.author_name, commit.title
         )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let Some(rev) = args.first() else {
+        bail!("show needs <rev>\n\n{USAGE}");
+    };
+    let detail = repo.commit_details(repo.resolve(rev)?)?;
+    let summary = &detail.summary;
+    writeln!(out, "commit\t{}", summary.oid)?;
+    writeln!(out, "tree\t{}", detail.tree)?;
+    for parent in &summary.parents {
+        writeln!(out, "parent\t{parent}")?;
+    }
+    writeln!(
+        out,
+        "author\t{} <{}>\t{}\t{}",
+        summary.author_name, summary.author_email, summary.author_time, summary.author_offset
+    )?;
+    writeln!(
+        out,
+        "committer\t{} <{}>\t{}\t{}",
+        detail.committer_name,
+        detail.committer_email,
+        detail.committer_time,
+        detail.committer_offset
+    )?;
+    writeln!(out, "\n{}", summary.title)?;
+    if !detail.body.is_empty() {
+        writeln!(out, "\n{}", detail.body)?;
     }
     Ok(ExitCode::SUCCESS)
 }

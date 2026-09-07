@@ -147,3 +147,31 @@ public struct CommitSummary: Sendable, Hashable, Identifiable {
         self.title = title
     }
 }
+
+/// Everything a commit detail view shows beyond the summary.
+public struct CommitDetail: Sendable, Hashable {
+    public let summary: CommitSummary
+    /// Message body after the title. Empty when the message is only a title.
+    public let body: String
+    public let committerName: String
+    public let committerEmail: String
+    /// Seconds since the Unix epoch.
+    public let committerTime: Int64
+    /// Seconds east of UTC.
+    public let committerOffset: Int32
+    /// The root tree of the commit.
+    public let tree: Oid
+
+    public init(
+        summary: CommitSummary, body: String, committerName: String, committerEmail: String,
+        committerTime: Int64, committerOffset: Int32, tree: Oid
+    ) {
+        self.summary = summary
+        self.body = body
+        self.committerName = committerName
+        self.committerEmail = committerEmail
+        self.committerTime = committerTime
+        self.committerOffset = committerOffset
+        self.tree = tree
+    }
+}

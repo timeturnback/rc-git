@@ -316,6 +316,25 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return CommitSummary(c: commit.pointee)
     }
 
+    /// One commit with its full message, committer, and root tree.
+    public func commitDetails(_ oid: Oid) throws -> CommitDetail {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let detail = oid.withC({ rcgit_commit_details(handle, $0, &error) }) else {
+            throw Repository.take(error, fallback: "cannot read commit \(oid)")
+        }
+        defer { rcgit_commit_detail_free(detail) }
+        let c = detail.pointee
+        return CommitDetail(
+            summary: CommitSummary(c: c.summary),
+            body: String(cString: c.body),
+            committerName: String(cString: c.committer_name),
+            committerEmail: String(cString: c.committer_email),
+            committerTime: c.committer_time,
+            committerOffset: c.committer_offset,
+            tree: Oid(c: c.tree)
+        )
+    }
+
     private static func take(_ error: UnsafeMutablePointer<CChar>?, fallback: String)
         -> RepositoryError
     {

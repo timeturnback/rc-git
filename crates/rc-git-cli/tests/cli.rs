@@ -155,6 +155,28 @@ fn log_pages_newest_first() {
 }
 
 #[test]
+fn show_prints_header_and_message() {
+    let fx = Fixture::standard();
+    fx.commit_with_body("Detail commit", "The body.", "2024-01-04T00:00:00+0000");
+    let path = fx.path().to_str().unwrap();
+
+    let shown = stdout(&rc_git(&["show", path, "main"]));
+    assert!(shown.starts_with(&format!("commit\t{}\n", fx.rev_parse("main"))));
+    assert!(shown.contains(&format!("tree\t{}\n", fx.rev_parse("main^{tree}"))));
+    assert!(shown.contains(&format!("parent\t{}\n", fx.rev_parse("main~1"))));
+    assert!(shown.contains("author\tTest Author <author@example.com>\t"));
+    assert!(shown.contains("committer\tTest Committer <committer@example.com>\t1704326400\t0"));
+    assert!(shown.ends_with("Detail commit\n\nThe body.\n"));
+
+    let plain = stdout(&rc_git(&["show", path, "main~1"]));
+    assert!(plain.ends_with("Add docs and library\n"));
+
+    let missing = rc_git(&["show", path]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(stderr(&missing).contains("show needs <rev>"));
+}
+
+#[test]
 fn resolve_prints_the_oid() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

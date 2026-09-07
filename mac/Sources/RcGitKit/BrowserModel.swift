@@ -10,6 +10,14 @@ public enum FileState: Equatable, Sendable {
     case failed(TreeEntry, String)
 }
 
+/// What the commit detail header shows.
+public enum CommitDetailState: Equatable, Sendable {
+    case empty
+    case loading(CommitSummary)
+    case loaded(CommitDetail, refs: [RefEntry])
+    case failed(CommitSummary, String)
+}
+
 /// State for one browser window: the open repository, its refs, the selected ref's root tree,
 /// the commit history of that ref, and the file being viewed. All members are main-actor;
 /// work runs on background tasks and comes back through the callbacks, which fire on the
@@ -40,6 +48,10 @@ public final class BrowserModel {
     public private(set) var commitChanges: [TreeChange] = []
     /// The line diff for one entry of `commitChanges`.
     public private(set) var fileDiff: FileDiffState = .empty
+    /// Full message, committer, and refs of `diffCommit`.
+    public private(set) var commitDetail: CommitDetailState = .empty
+    /// Commits left behind by `jumpToCommit`, most recent last.
+    public private(set) var detailBackStack: [CommitSummary] = []
 
     /// Commits of the selected ref loaded so far, newest first.
     public private(set) var history: [CommitSummary] = []
@@ -382,10 +394,12 @@ public final class BrowserModel {
         isLoadingHistory = false
         historyAnchor = anchor
         diffGeneration += 1
+        detailBackStack = []
         if diffCommit != nil {
             diffCommit = nil
             commitChanges = []
             fileDiff = .empty
+            commitDetail = .empty
             onDiffChanged?()
         }
         if let anchor, let cached = historyCache[anchor] {
@@ -400,8 +414,8 @@ public final class BrowserModel {
 
     // MARK: Diff and blame
 
-    /// Loads the files changed by `commit` against its first parent, for the history detail.
-    /// A root commit diffs against the empty tree.
+    /// Loads the files changed by `commit` against its first parent, and the commit's full
+    /// detail, for the history detail. A root commit diffs against the empty tree.
     public func loadCommitChanges(_ commit: CommitSummary) async {
         guard let repository else { return }
         diffGeneration += 1
@@ -409,27 +423,66 @@ public final class BrowserModel {
         diffCommit = commit
         commitChanges = []
         fileDiff = .empty
+        commitDetail = .loading(commit)
         onDiffChanged?()
         let parent = commit.parents.first
         let target = commit.oid
         let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<[TreeChange], RepositoryError> in
-            do { return .success(try repository.diffTrees(from: parent, to: target)) } catch {
+            () -> Result<([TreeChange], CommitDetail), RepositoryError> in
+            do {
+                let changes = try repository.diffTrees(from: parent, to: target)
+                let detail = try repository.commitDetails(target)
+                return .success((changes, detail))
+            } catch {
                 return .failure(Self.wrap(error))
             }
         }.value
         guard generation == diffGeneration else { return }
         switch result {
-        case let .success(changes):
+        case let .success((changes, detail)):
             commitChanges = changes
+            commitDetail = .loaded(detail, refs: refsPointing(at: target))
             if let first = changes.first {
                 await loadFileDiff(first)
             } else {
                 onDiffChanged?()
             }
         case let .failure(error):
+            commitDetail = .failed(commit, error.message)
             fail(error.message)
         }
+    }
+
+    /// Every ref whose target is `oid`, for the detail header's badges.
+    public func refsPointing(at oid: Oid) -> [RefEntry] {
+        refs.refs.filter { $0.target == oid }
+    }
+
+    /// Shows the detail of a commit reached by id — a parent link or a revision jump. The
+    /// current detail commit is pushed for `goBackInDetail`.
+    public func jumpToCommit(_ oid: Oid) async {
+        guard let repository else { return }
+        let result = await Task.detached(priority: .userInitiated) {
+            () -> Result<CommitSummary, RepositoryError> in
+            do { return .success(try repository.commit(oid)) } catch {
+                return .failure(Self.wrap(error))
+            }
+        }.value
+        switch result {
+        case let .success(summary):
+            if let current = diffCommit, current.oid != oid {
+                detailBackStack.append(current)
+            }
+            await loadCommitChanges(summary)
+        case let .failure(error):
+            fail(error.message)
+        }
+    }
+
+    /// Returns to the commit left behind by the last `jumpToCommit`.
+    public func goBackInDetail() async {
+        guard let previous = detailBackStack.popLast() else { return }
+        await loadCommitChanges(previous)
     }
 
     /// Loads the line diff of one changed file from `commitChanges`.

@@ -252,6 +252,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         model.onDiffChanged = { [weak self] in
             guard let self else { return }
             historyController.renderDetail(changes: model.commitChanges, state: model.fileDiff)
+            historyController.renderCommitDetail(
+                model.commitDetail, canGoBack: !model.detailBackStack.isEmpty)
+            if let commit = model.diffCommit {
+                historyController.selectCommitRow(commit.oid)
+            }
+        }
+        historyController.onJumpToCommit = { [weak self] oid in
+            guard let self else { return }
+            Task { await self.model.jumpToCommit(oid) }
+        }
+        historyController.onDetailBack = { [weak self] in
+            guard let self else { return }
+            Task { await self.model.goBackInDetail() }
         }
         historyController.onSelectCommit = { [weak self] commit in
             guard let self else { return }

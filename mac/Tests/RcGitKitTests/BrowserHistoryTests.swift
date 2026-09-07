@@ -197,6 +197,51 @@ import Testing
         #expect(events >= 2, "cleared, then loaded")
     }
 
+    @Test func selectingACommitLoadsItsDetailAndRefBadges() async {
+        await model.attach(repo)
+        let commit = commitSummary(mainCommit, parents: [parentCommit])
+        let detail = CommitDetail(
+            summary: commit, body: "The body.", committerName: "Test Committer",
+            committerEmail: "committer@example.com", committerTime: 1_704_326_400,
+            committerOffset: 0, tree: mainTree)
+        repo.lock.withLock { repo.details[mainCommit] = detail }
+        await model.loadCommitChanges(commit)
+        guard case let .loaded(loaded, refs) = model.commitDetail else {
+            Issue.record("expected a loaded detail, got \(model.commitDetail)")
+            return
+        }
+        #expect(loaded == detail)
+        #expect(refs.map(\.shortName) == ["main"], "the main branch points at this commit")
+    }
+
+    @Test func jumpingToAParentPushesTheBackStack() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        await model.jumpToCommit(parentCommit)
+        #expect(model.diffCommit?.oid == parentCommit)
+        #expect(model.detailBackStack.map(\.oid) == [mainCommit])
+        await model.goBackInDetail()
+        #expect(model.diffCommit?.oid == mainCommit)
+        #expect(model.detailBackStack.isEmpty)
+        await model.goBackInDetail()
+        #expect(model.diffCommit?.oid == mainCommit, "an empty stack is a no-op")
+    }
+
+    @Test func switchingRefsClearsTheBackStack() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        await model.jumpToCommit(parentCommit)
+        #expect(!model.detailBackStack.isEmpty)
+        await model.select(model.refs.refs[0])
+        #expect(model.detailBackStack.isEmpty)
+        guard case .empty = model.commitDetail else {
+            Issue.record("expected an empty detail after a ref switch")
+            return
+        }
+    }
+
     @Test func commitWithNoChangesShowsEmptyDetail() async {
         await model.attach(repo)
         let empty = oid(0x77)

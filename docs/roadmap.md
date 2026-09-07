@@ -27,6 +27,10 @@ constraints are clear.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).
   The CLI gained `diff`, `blame`, and `status` verbs.
+- **Commit detail.** Selecting a commit loads `commit_details` alongside the tree diff: full
+  message body, committer when it differs from the author, refs pointing at the commit
+  (computed from the ref listing, no extra walk), and parent links. Parent links and revision
+  jumps go through `BrowserModel.jumpToCommit` with a back stack. The CLI gained `show`.
 - **Branch and tag management.** The first mutating actions. Create branch, create tag,
   delete branch, delete tag — each through `rc-git-guard`: the policy decides, destructive
   deletions demand the typed name, and a backup ref under `refs/rc-git/backup/` is written

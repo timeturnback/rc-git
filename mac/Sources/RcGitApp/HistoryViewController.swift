@@ -10,6 +10,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     var onBrowseCommit: ((CommitSummary) -> Void)?
     var onSelectCommit: ((CommitSummary) -> Void)?
     var onSelectChange: ((TreeChange) -> Void)?
+    var onJumpToCommit: ((Oid) -> Void)?
+    var onDetailBack: (() -> Void)?
 
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
@@ -24,6 +26,16 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var complete = false
     private var changes: [TreeChange] = []
     private var isReloading = false
+
+    private let detailHeader = NSStackView()
+    private let detailTitle = NSTextField(wrappingLabelWithString: "")
+    private let detailRefs = NSTextField(labelWithString: "")
+    private let detailAuthor = NSTextField(labelWithString: "")
+    private let detailCommitter = NSTextField(labelWithString: "")
+    private let detailBody = NSTextField(wrappingLabelWithString: "")
+    private let parentsRow = NSStackView()
+    private let backButton = NSButton()
+    private var parentOids: [Oid] = []
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -138,21 +150,167 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         detailSplit.addArrangedSubview(diffScroll)
         detailSplit.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
 
+        buildDetailHeader()
+
+        let stacked = NSStackView(views: [detailHeader, detailSplit])
+        stacked.orientation = .vertical
+        stacked.alignment = .leading
+        stacked.spacing = 0
+        stacked.detachesHiddenViews = true
+
         let container = NSView()
-        detailSplit.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(detailSplit)
+        stacked.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stacked)
         container.addSubview(diffPlaceholder)
         NSLayoutConstraint.activate([
-            detailSplit.topAnchor.constraint(equalTo: container.topAnchor),
-            detailSplit.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            detailSplit.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            detailSplit.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stacked.topAnchor.constraint(equalTo: container.topAnchor),
+            stacked.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stacked.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stacked.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailHeader.widthAnchor.constraint(equalTo: stacked.widthAnchor),
+            detailSplit.widthAnchor.constraint(equalTo: stacked.widthAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             changesScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
             container.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
         return container
+    }
+
+    private func buildDetailHeader() {
+        detailTitle.font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        detailTitle.maximumNumberOfLines = 3
+        detailRefs.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        detailRefs.textColor = .controlAccentColor
+        for label in [detailAuthor, detailCommitter] {
+            label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+        }
+        detailBody.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        detailBody.maximumNumberOfLines = 12
+        detailBody.isSelectable = true
+
+        backButton.title = "‹ Back"
+        backButton.bezelStyle = .accessoryBarAction
+        backButton.controlSize = .small
+        backButton.target = self
+        backButton.action = #selector(detailBackClicked(_:))
+
+        parentsRow.orientation = .horizontal
+        parentsRow.spacing = 6
+        parentsRow.alignment = .centerY
+
+        detailHeader.orientation = .vertical
+        detailHeader.alignment = .leading
+        detailHeader.spacing = 3
+        detailHeader.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        detailHeader.detachesHiddenViews = true
+        for view in [detailTitle, detailRefs, detailAuthor, detailCommitter, detailBody] {
+            detailHeader.addArrangedSubview(view)
+        }
+        detailHeader.addArrangedSubview(parentsRow)
+        detailHeader.isHidden = true
+    }
+
+    /// Renders the detail header: message, refs, identities, and parent navigation.
+    func renderCommitDetail(_ state: CommitDetailState, canGoBack: Bool) {
+        switch state {
+        case .empty:
+            detailHeader.isHidden = true
+        case let .loading(summary):
+            detailHeader.isHidden = false
+            fillHeader(summary: summary, detail: nil, refs: [], canGoBack: canGoBack)
+        case let .loaded(detail, refs):
+            detailHeader.isHidden = false
+            fillHeader(summary: detail.summary, detail: detail, refs: refs, canGoBack: canGoBack)
+        case let .failed(summary, message):
+            detailHeader.isHidden = false
+            fillHeader(summary: summary, detail: nil, refs: [], canGoBack: canGoBack)
+            detailAuthor.stringValue = message
+        }
+    }
+
+    private func fillHeader(
+        summary: CommitSummary, detail: CommitDetail?, refs: [RefEntry], canGoBack: Bool
+    ) {
+        detailTitle.stringValue = "\(summary.oid.short)  \(summary.title)"
+        detailRefs.stringValue = refs.map(\.shortName).joined(separator: " · ")
+        detailRefs.isHidden = refs.isEmpty
+        detailAuthor.stringValue = Self.identityLine(
+            role: "Author", name: summary.authorName, email: summary.authorEmail,
+            time: summary.authorTime)
+        if let detail, Self.committerDiffers(detail) {
+            detailCommitter.stringValue = Self.identityLine(
+                role: "Committer", name: detail.committerName, email: detail.committerEmail,
+                time: detail.committerTime)
+            detailCommitter.isHidden = false
+        } else {
+            detailCommitter.isHidden = true
+        }
+        detailBody.stringValue = detail?.body ?? ""
+        detailBody.isHidden = detail?.body.isEmpty ?? true
+        rebuildParentsRow(summary: summary, canGoBack: canGoBack)
+    }
+
+    private static func committerDiffers(_ detail: CommitDetail) -> Bool {
+        detail.committerName != detail.summary.authorName
+            || detail.committerEmail != detail.summary.authorEmail
+            || detail.committerTime != detail.summary.authorTime
+    }
+
+    private static func identityLine(role: String, name: String, email: String, time: Int64)
+        -> String
+    {
+        let date = dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(time)))
+        return "\(role): \(name) <\(email)> · \(date)"
+    }
+
+    private func rebuildParentsRow(summary: CommitSummary, canGoBack: Bool) {
+        for view in parentsRow.arrangedSubviews {
+            parentsRow.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        parentOids = summary.parents
+        if canGoBack {
+            parentsRow.addArrangedSubview(backButton)
+        }
+        if !summary.parents.isEmpty {
+            let label = NSTextField(
+                labelWithString: summary.parents.count == 1 ? "Parent:" : "Parents:")
+            label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            parentsRow.addArrangedSubview(label)
+            for (index, parent) in summary.parents.enumerated() {
+                let button = NSButton(
+                    title: parent.short, target: self, action: #selector(parentClicked(_:)))
+                button.bezelStyle = .accessoryBarAction
+                button.controlSize = .small
+                button.font = Self.monoFont
+                button.tag = index
+                parentsRow.addArrangedSubview(button)
+            }
+        }
+        parentsRow.isHidden = parentsRow.arrangedSubviews.isEmpty
+    }
+
+    @objc private func parentClicked(_ sender: NSButton) {
+        guard parentOids.indices.contains(sender.tag) else { return }
+        onJumpToCommit?(parentOids[sender.tag])
+    }
+
+    @objc private func detailBackClicked(_ sender: Any?) {
+        onDetailBack?()
+    }
+
+    /// Highlights the row of a commit reached by a parent link or back jump, when loaded.
+    func selectCommitRow(_ oid: Oid) {
+        guard let row = commits.firstIndex(where: { $0.oid == oid }), table.selectedRow != row
+        else { return }
+        isReloading = true
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+        isReloading = false
     }
 
     /// Replaces the rows. Called with the accumulated pages, so a reload keeps the scroll

@@ -17,8 +17,8 @@ use std::path::Path;
 use std::ptr;
 
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitSummary, DiffHunk, DiffLineKind, EntryKind, Oid,
-    RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
+    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitSummary, DiffHunk, DiffLineKind,
+    EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
@@ -337,6 +337,51 @@ impl Drop for RcGitCommit {
             release_string(self.author_name);
             release_string(self.author_email);
             release_string(self.title);
+        }
+    }
+}
+
+/// Everything a commit detail view shows beyond the summary.
+#[repr(C)]
+pub struct RcGitCommitDetail {
+    /// The list-view parts of the commit. Owned by this struct; never freed separately.
+    pub summary: RcGitCommit,
+    /// Message body after the title. Empty when the message is only a title.
+    pub body: *mut c_char,
+    /// Committer name.
+    pub committer_name: *mut c_char,
+    /// Committer email.
+    pub committer_email: *mut c_char,
+    /// Committer time, seconds since the Unix epoch.
+    pub committer_time: i64,
+    /// Committer timezone, seconds east of UTC.
+    pub committer_offset: i32,
+    /// The root tree of the commit.
+    pub tree: RcGitOid,
+}
+
+impl RcGitCommitDetail {
+    fn export(detail: CommitDetail) -> Self {
+        Self {
+            summary: RcGitCommit::export(detail.summary),
+            body: export_string(detail.body),
+            committer_name: export_string(detail.committer_name),
+            committer_email: export_string(detail.committer_email),
+            committer_time: detail.committer_time,
+            committer_offset: detail.committer_offset,
+            tree: detail.tree.into(),
+        }
+    }
+}
+
+impl Drop for RcGitCommitDetail {
+    fn drop(&mut self) {
+        // SAFETY: every pointer was produced by `export_string` and is released once; `summary`
+        // releases its own pointers through its `Drop`.
+        unsafe {
+            release_string(self.body);
+            release_string(self.committer_name);
+            release_string(self.committer_email);
         }
     }
 }
@@ -1454,6 +1499,43 @@ pub unsafe extern "C" fn rcgit_commit_free(commit: *mut RcGitCommit) {
     unsafe { release(commit) };
 }
 
+/// One commit with its full message, committer, and root tree. Release with
+/// `rcgit_commit_detail_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_commit_details(
+    repo: *const RcGitRepo,
+    oid: *const RcGitOid,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitDetail {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, oid, error) = unsafe { (repo_arg(repo), oid_arg(oid), Out::new(error)) };
+    let (Some(repo), Some(oid)) = (repo, oid) else {
+        error.report("repo or oid is NULL or malformed");
+        return ptr::null_mut();
+    };
+    match repo.commit_details(oid) {
+        Ok(detail) => export(RcGitCommitDetail::export(detail)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_commit_details`.
+///
+/// # Safety
+/// `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_commit_detail_free(detail: *mut RcGitCommitDetail) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(detail) };
+}
+
 /// Lists every file that differs between two trees, renames detected, sorted by path. `from`
 /// and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,
 /// which turns a root commit's diff into pure additions. Release with
@@ -2446,6 +2528,38 @@ mod tests {
         let page = unsafe { rcgit_log(repo, &raw const tip, 1, 10, &raw mut error) };
         assert_eq!(unsafe { &*page }.len, 1);
         unsafe { rcgit_commit_list_free(page) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn commit_details_round_trip() {
+        let fx = Fixture::standard();
+        fx.commit_with_body("Detail commit", "The body.", "2024-01-04T00:00:00+0000");
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tip = resolve(repo, "main");
+
+        let detail = unsafe { rcgit_commit_details(repo, &raw const tip, &raw mut error) };
+        assert!(!detail.is_null(), "{}", take_error(&mut error));
+        let detail_ref = unsafe { &*detail };
+        assert_eq!(text(detail_ref.summary.title), "Detail commit");
+        assert_eq!(text(detail_ref.body), "The body.");
+        assert_eq!(text(detail_ref.committer_name), "Test Committer");
+        assert_eq!(text(detail_ref.committer_email), "committer@example.com");
+        assert_eq!(detail_ref.committer_time, 1_704_326_400);
+        assert_eq!(detail_ref.committer_offset, 0);
+        let tree = resolve(repo, "main^{tree}");
+        assert_eq!(detail_ref.tree, tree);
+        unsafe { rcgit_commit_detail_free(detail) };
+
+        let missing = unsafe { rcgit_commit_details(repo, &raw const tree, &raw mut error) };
+        assert!(missing.is_null());
+        assert!(take_error(&mut error).contains("read commit"));
+
+        let null = unsafe { rcgit_commit_details(ptr::null(), &raw const tip, &raw mut error) };
+        assert!(null.is_null());
+        assert!(!take_error(&mut error).is_empty());
+        unsafe { rcgit_commit_detail_free(ptr::null_mut()) };
         unsafe { rcgit_repo_free(repo) };
     }
 

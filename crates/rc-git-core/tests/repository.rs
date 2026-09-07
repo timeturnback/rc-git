@@ -351,6 +351,37 @@ fn log_reads_through_a_commit_graph() {
 }
 
 #[test]
+fn commit_details_reports_body_committer_and_tree() {
+    let fx = Fixture::standard();
+    fx.commit_with_body(
+        "Detail commit",
+        "Body line one.\n\nBody line two.",
+        "2024-01-04T00:00:00+0000",
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let detail = repo.commit_details(tip).unwrap();
+    assert_eq!(detail.summary, repo.commit(tip).unwrap());
+    assert_eq!(detail.summary.title, "Detail commit");
+    assert_eq!(detail.body, "Body line one.\n\nBody line two.");
+    assert_eq!(detail.committer_name, "Test Committer");
+    assert_eq!(detail.committer_email, "committer@example.com");
+    assert_eq!(detail.committer_time, 1_704_326_400, "2024-01-04T00:00:00Z");
+    assert_eq!(detail.committer_offset, 0);
+    assert_eq!(detail.tree, repo.tree_of(tip).unwrap());
+
+    let titled_only = repo.resolve("main~1").unwrap();
+    assert!(repo.commit_details(titled_only).unwrap().body.is_empty());
+
+    let tree = repo.resolve_tree("main").unwrap();
+    assert!(matches!(
+        repo.commit_details(tree).unwrap_err(),
+        Error::Object { .. }
+    ));
+}
+
+#[test]
 fn concurrent_readers_share_one_repository() {
     let fx = Fixture::standard();
     let repo = Arc::new(Repository::open(fx.path()).unwrap());
