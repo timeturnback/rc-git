@@ -120,25 +120,29 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         buildScopeBar()
         buildSearchArea()
 
+        // A stack with detachesHiddenViews, so the hidden scope bar costs no height and
+        // never fights a collapse constraint. The list keeps a minimum height so the split
+        // can never crush it to nothing.
+        let commitsStack = NSStackView(views: [searchArea, scopeBar, scroll])
+        commitsStack.orientation = .vertical
+        commitsStack.alignment = .leading
+        commitsStack.spacing = 0
+        commitsStack.detachesHiddenViews = true
+        scroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
+
         let commitsPane = NSView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scopeBar.translatesAutoresizingMaskIntoConstraints = false
-        searchArea.translatesAutoresizingMaskIntoConstraints = false
-        commitsPane.addSubview(searchArea)
-        commitsPane.addSubview(scopeBar)
-        commitsPane.addSubview(scroll)
+        commitsStack.translatesAutoresizingMaskIntoConstraints = false
+        commitsPane.addSubview(commitsStack)
         commitsPane.addSubview(placeholder)
         NSLayoutConstraint.activate([
-            searchArea.topAnchor.constraint(equalTo: commitsPane.topAnchor),
-            searchArea.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
-            searchArea.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
-            scopeBar.topAnchor.constraint(equalTo: searchArea.bottomAnchor),
-            scopeBar.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
-            scopeBar.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: scopeBar.bottomAnchor),
-            scroll.bottomAnchor.constraint(equalTo: commitsPane.bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
+            commitsStack.topAnchor.constraint(equalTo: commitsPane.topAnchor),
+            commitsStack.bottomAnchor.constraint(equalTo: commitsPane.bottomAnchor),
+            commitsStack.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
+            commitsStack.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
+            searchArea.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
+            scopeBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
+            scroll.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
             placeholder.centerXAnchor.constraint(equalTo: commitsPane.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: commitsPane.centerYAnchor),
         ])
@@ -225,8 +229,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         return container
     }
 
-    private var scopeBarCollapsed: NSLayoutConstraint?
-
     private func buildScopeBar() {
         scopeLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
         scopeLabel.lineBreakMode = .byTruncatingMiddle
@@ -240,17 +242,14 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         scopeBar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
         scopeBar.addArrangedSubview(scopeLabel)
         scopeBar.addArrangedSubview(clear)
-        scopeBar.clipsToBounds = true
-        let collapsed = scopeBar.heightAnchor.constraint(equalToConstant: 0)
-        collapsed.isActive = true
-        scopeBarCollapsed = collapsed
+        scopeBar.isHidden = true
     }
 
     /// Shows or hides the path chip above the commit list.
     func setScope(path: String?) {
         scopedPath = path
         scopeLabel.stringValue = path.map { "History of \($0)" } ?? ""
-        scopeBarCollapsed?.isActive = path == nil
+        scopeBar.isHidden = path == nil
         placeholder.stringValue = path == nil ? "No commits" : "No commits touch this path"
     }
 
