@@ -57,6 +57,8 @@ header drifts.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.
 - `docs/` is the long-form reference: `architecture.md`, `performance.md`, `safety.md`,
   `ffi.md`, `testing.md`, `development.md`, `roadmap.md`.
+- `docs/solutions/` holds documented solutions to past problems (YAML frontmatter: `module`,
+  `tags`, `problem_type`), organized by category — relevant when debugging in a documented area.
 - Every public Rust fn documents `# Errors`; every error names the operation and the object.
 
 ## Invariants

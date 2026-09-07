@@ -18,6 +18,11 @@ paths: mac/**
 - The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
   line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
   `LineNumberRulerView`.
+- In `MainWindowController.init`, views are built before `setFrameAutosaveName`: the frame
+  restore resizes the window and fires `windowDidResize` -> `applyLayout()` synchronously, and an
+  exception there is swallowed by launch Apple Event handling, leaving the app windowless
+  (`docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md`). Keep
+  delegate callbacks safe during construction: `.first`, not `[0]`.
 - Icons come from `Icons` (cached per extension). Do not call `NSWorkspace` from cell code.
 - Tests use `FakeRepository` for behavior and `GitFixture` for the real bridge; both build the
   same standard repository as `rc-git-testkit`, keep them in step.
