@@ -126,9 +126,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let commitsStack = NSStackView(views: [searchArea, scopeBar, scroll])
         commitsStack.orientation = .vertical
         commitsStack.alignment = .leading
+        commitsStack.distribution = .fill
         commitsStack.spacing = 0
         commitsStack.detachesHiddenViews = true
         scroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
+        searchArea.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        scopeBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
 
         let commitsPane = NSView()
         commitsStack.translatesAutoresizingMaskIntoConstraints = false
@@ -150,7 +153,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let split = NSSplitView()
         split.isVertical = false
         split.dividerStyle = .thin
-        split.autosaveName = "rc-git.history"
+        // v2: the pre-fix build autosaved a crushed divider position under the old name.
+        split.autosaveName = "rc-git.history.v2"
         split.addArrangedSubview(commitsPane)
         split.addArrangedSubview(buildDetailPane())
         split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
@@ -196,7 +200,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let detailSplit = NSSplitView()
         detailSplit.isVertical = true
         detailSplit.dividerStyle = .thin
-        detailSplit.autosaveName = "rc-git.history-detail"
+        detailSplit.autosaveName = "rc-git.history-detail.v2"
         changesScroll.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         detailSplit.addArrangedSubview(changesScroll)
         detailSplit.addArrangedSubview(diffScroll)
@@ -207,8 +211,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let stacked = NSStackView(views: [detailHeader, detailSplit])
         stacked.orientation = .vertical
         stacked.alignment = .leading
+        stacked.distribution = .fill
         stacked.spacing = 0
         stacked.detachesHiddenViews = true
+        detailHeader.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        detailSplit.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
 
         let container = NSView()
         stacked.translatesAutoresizingMaskIntoConstraints = false
