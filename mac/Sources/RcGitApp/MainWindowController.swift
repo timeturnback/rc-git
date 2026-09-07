@@ -272,6 +272,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             } else {
                 historyController.setScope(path: nil)
             }
+            historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
             historyController.reload(model.history, complete: model.historyComplete)
         }
         model.onDiffChanged = { [weak self] in
@@ -301,6 +302,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onSearchChanged = { [weak self] in
             guard let self else { return }
+            historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
             historyController.renderSearch(
                 active: model.searchFilter != nil, results: model.searchResults,
                 scanned: model.searchScanned, complete: model.searchComplete,

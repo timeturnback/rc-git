@@ -31,6 +31,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var commits: [CommitSummary] = []
     private var complete = false
     private var changes: [TreeChange] = []
+    private var graphRows: [GraphRow] = []
     private var isReloading = false
 
     private let scopeBar = NSStackView()
@@ -76,6 +77,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         ofSize: NSFont.smallSystemFontSize, weight: .regular)
 
     override func loadView() {
+        let graphColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("graph"))
+        graphColumn.title = ""
+        graphColumn.width = GraphCellView.width(lanes: 1)
+        graphColumn.resizingMask = []
+        graphColumn.isHidden = true
+        table.addTableColumn(graphColumn)
         for (identifier, title, width) in [
             ("hash", "Commit", CGFloat(72)), ("title", "Title", 380), ("author", "Author", 140),
             ("date", "Date", 150),
@@ -529,6 +536,18 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         isReloading = false
     }
 
+    /// Updates the graph column alongside `reload`. Empty rows hide the column: a filtered
+    /// list has no meaningful topology.
+    func renderGraph(_ rows: [GraphRow], maxLanes: Int) {
+        graphRows = rows
+        guard let column = table.tableColumns.first(where: { $0.identifier.rawValue == "graph" })
+        else { return }
+        column.isHidden = rows.isEmpty
+        if !rows.isEmpty {
+            column.width = GraphCellView.width(lanes: maxLanes)
+        }
+    }
+
     /// Replaces the rows. Called with the accumulated pages, so a reload keeps the scroll
     /// position: only rows below the previous end are new.
     func reload(_ commits: [CommitSummary], complete: Bool) {
@@ -706,6 +725,19 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.textField?.stringValue = label
             cell.textField?.font = Self.monoFont
             cell.toolTip = change.sourcePath.map { "\(change.path) ← \($0)" } ?? change.path
+            return cell
+        }
+        if tableColumn.identifier.rawValue == "graph" {
+            guard !searchActive, graphRows.indices.contains(row) else { return nil }
+            let id = NSUserInterfaceItemIdentifier("graphCell")
+            let cell: GraphCellView
+            if let reused = table.makeView(withIdentifier: id, owner: self) as? GraphCellView {
+                cell = reused
+            } else {
+                cell = GraphCellView()
+                cell.identifier = id
+            }
+            cell.row = graphRows[row]
             return cell
         }
         guard displayed.indices.contains(row) else { return nil }

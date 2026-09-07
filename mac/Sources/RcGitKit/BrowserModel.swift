@@ -107,8 +107,16 @@ public final class BrowserModel {
     private var searchGeneration = 0
     /// The tip whose history the history pane shows. Kept while browsing one of its commits.
     private var historyAnchor: Oid?
+    /// The unfiltered pages of one tip plus the lane graph built alongside them.
+    private struct HistoryPages {
+        var commits: [CommitSummary]
+        var complete: Bool
+        var graph: GraphBuilder
+    }
     /// Pages already walked, per tip. A tip is immutable, so entries never go stale.
-    private var historyCache: [Oid: (commits: [CommitSummary], complete: Bool)] = [:]
+    private var historyCache: [Oid: HistoryPages] = [:]
+    /// The lane graph of the unfiltered history, extended as pages arrive.
+    private var graph = GraphBuilder()
     /// Filtered pages already walked, per tip and path. Immutable keys, so never stale.
     private struct PathHistoryKey: Hashable {
         let tip: Oid
@@ -426,12 +434,24 @@ public final class BrowserModel {
         case let .success(page):
             history += page
             historyComplete = page.count < pageSize
-            historyCache[tip] = (history, historyComplete)
+            graph.append(page[...])
+            historyCache[tip] = HistoryPages(
+                commits: history, complete: historyComplete, graph: graph)
             onHistoryChanged?()
         case let .failure(error):
             fail(error.message)
         }
     }
+
+    /// The lane graph rows aligned with `history`. Empty while a path scope or search shows
+    /// a filtered list, whose rows have no meaningful topology.
+    public var graphRows: [GraphRow] {
+        guard historyScope == .all, searchFilter == nil else { return [] }
+        return graph.rows
+    }
+
+    /// The widest the current graph has been, for sizing the graph column.
+    public var graphMaxLaneCount: Int { graph.maxLaneCount }
 
     /// One page of path-scoped history, walked in scan chunks so a long stretch without a
     /// match never blocks a repository handle and a scope change between chunks drops the
@@ -610,9 +630,11 @@ public final class BrowserModel {
         if let anchor, let cached = historyCache[anchor] {
             history = cached.commits
             historyComplete = cached.complete
+            graph = cached.graph
         } else {
             history = []
             historyComplete = false
+            graph = GraphBuilder()
         }
         onHistoryChanged?()
     }

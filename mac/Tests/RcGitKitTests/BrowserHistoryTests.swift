@@ -105,6 +105,24 @@ import Testing
         #expect(model.historyComplete)
     }
 
+    @Test func graphRowsFollowThePagedHistoryAndItsCache() async {
+        await model.attach(repo)
+        await model.loadMoreHistory()
+        #expect(model.graphRows.count == 100, "one graph row per paged commit")
+        await model.loadMoreHistory()
+        #expect(model.graphRows.count == 150)
+
+        await model.select(model.refs.refs[0])
+        #expect(model.graphRows.count <= 1, "another tip starts its own graph")
+        await model.select(model.refs.refs[1])
+        #expect(model.graphRows.count == 150, "the cached graph returns with the pages")
+
+        await model.search(CommitFilter(message: "main"))
+        #expect(model.graphRows.isEmpty, "a filtered list has no topology")
+        model.clearSearch()
+        #expect(model.graphRows.count == 150)
+    }
+
     @Test func searchStreamsMatchesAndClearRestoresInstantly() async {
         await model.attach(repo)
         await model.loadMoreHistory()

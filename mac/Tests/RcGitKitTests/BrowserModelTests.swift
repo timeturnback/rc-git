@@ -134,7 +134,8 @@ import Testing
         await model.attach(repo)
         let slow = oid(0x50)
         repo.blobs[slow] = textBlob("slow")
-        repo.delays[slow] = 0.2
+        // Wide margin: parallel suites can stall the 20 ms hop below well past a short delay.
+        repo.delays[slow] = 1.0
         let slowEntry = TreeEntry(name: "slow.txt", oid: slow, kind: .blob)
         let fastEntry = TreeEntry(name: "README.md", oid: readme, kind: .blob)
 

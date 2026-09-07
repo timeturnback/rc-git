@@ -27,6 +27,11 @@ constraints are clear.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).
   The CLI gained `diff`, `blame`, and `status` verbs.
+- **Commit graph.** A lane column in the History pane draws the topology of the paged
+  commits: `GraphBuilder` (RcGitKit, pure, tested) assigns lanes strictly sequentially from
+  `CommitSummary.parents`, so appending a page never reshuffles drawn rows, and the builder
+  is cached per tip alongside the pages. Rendering clamps at 12 drawn lanes; the column
+  hides while a path scope or search shows a filtered list. No core or FFI change.
 - **Commit search.** A filter bar over the History pane (⇧⌘F) matches message or author as
   the user types, with optional date bounds; matches stream in scan chunks with a progress
   count, and a hex query jumps straight to that revision. `search_commits` shares
