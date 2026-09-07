@@ -106,6 +106,33 @@ import Testing
         #expect(missing.complete)
     }
 
+    @Test func searchesCommitsByMessageAuthorAndTime() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let repo = try Repository(path: fixture.path)
+        let tip = try repo.resolve("main")
+
+        let byMessage = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(message: "DOCS"), scanSkip: 0, limit: 10, maxScan: 100)
+        #expect(byMessage.commits.map(\.title) == ["Add docs and library"])
+        #expect(byMessage.complete)
+
+        let byAuthor = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(author: "example.com"), scanSkip: 0, limit: 10,
+            maxScan: 100)
+        #expect(byAuthor.commits.count == 2)
+
+        let until = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(before: 1_704_067_200), scanSkip: 0, limit: 10,
+            maxScan: 100)
+        #expect(until.commits.map(\.title) == ["Initial import"])
+
+        let nothing = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(message: "zzz"), scanSkip: 0, limit: 10, maxScan: 100)
+        #expect(nothing.commits.isEmpty)
+        #expect(nothing.complete)
+    }
+
     @Test func readsCommitDetails() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

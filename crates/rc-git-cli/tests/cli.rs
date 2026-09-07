@@ -179,6 +179,41 @@ fn filelog_lists_commits_that_changed_a_path() {
 }
 
 #[test]
+fn search_filters_by_message_author_and_dates() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let docs = stdout(&rc_git(&["search", path, "--message", "DOCS"]));
+    assert_eq!(docs.lines().count(), 1);
+    assert!(docs.ends_with(&format!("{COMMIT_2_TITLE}\n")));
+
+    let author = stdout(&rc_git(&["search", path, "--author", "test author"]));
+    assert_eq!(author.lines().count(), 2, "both commits share the author");
+
+    let until = stdout(&rc_git(&["search", path, "--until", "1704067200"]));
+    assert_eq!(until.lines().count(), 1);
+    assert!(until.ends_with(&format!("{COMMIT_1_TITLE}\n")));
+
+    let since = stdout(&rc_git(&["search", path, "--since", "1704153600"]));
+    assert_eq!(since.lines().count(), 1);
+    assert!(since.ends_with(&format!("{COMMIT_2_TITLE}\n")));
+
+    let chunked = stdout(&rc_git(&[
+        "search",
+        path,
+        "--message",
+        "docs",
+        "--max-scan",
+        "1",
+    ]));
+    assert_eq!(chunked, docs, "chunked scanning changes nothing");
+
+    let bad = rc_git(&["search", path, "--since", "yesterday"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(stderr(&bad).contains("not a number"));
+}
+
+#[test]
 fn show_prints_header_and_message() {
     let fx = Fixture::standard();
     fx.commit_with_body("Detail commit", "The body.", "2024-01-04T00:00:00+0000");

@@ -105,6 +105,51 @@ import Testing
         #expect(model.historyComplete)
     }
 
+    @Test func searchStreamsMatchesAndClearRestoresInstantly() async {
+        await model.attach(repo)
+        await model.loadMoreHistory()
+        var events = 0
+        model.onSearchChanged = { events += 1 }
+        await model.search(CommitFilter(message: "main 1"))
+        #expect(model.searchResults.count == 61, "main 1, main 10-19, main 100-149")
+        #expect(model.searchComplete)
+        #expect(!model.isSearching)
+        #expect(events >= 2, "started, then streamed")
+
+        let calls = repo.lock.withLock { repo.searchCalls }
+        model.clearSearch()
+        #expect(model.searchFilter == nil)
+        #expect(model.searchResults.isEmpty)
+        #expect(
+            repo.lock.withLock { repo.searchCalls } == calls,
+            "clearing needs no repository call")
+        #expect(model.history.count == 100, "the paged history is untouched")
+    }
+
+    @Test func searchPagesOnDemand() async {
+        await model.attach(repo)
+        await model.search(CommitFilter(message: "main"))
+        #expect(model.searchResults.count == 100, "one page of matches")
+        #expect(!model.searchComplete)
+        await model.loadMoreSearchResults()
+        #expect(model.searchResults.count == 150)
+        #expect(model.searchComplete)
+    }
+
+    @Test func refSwitchAndEmptyFilterClearTheSearch() async {
+        await model.attach(repo)
+        await model.search(CommitFilter(message: "main"))
+        #expect(model.searchFilter != nil)
+        await model.select(model.refs.refs[0])
+        #expect(model.searchFilter == nil)
+        #expect(model.searchResults.isEmpty)
+
+        await model.search(CommitFilter(message: "feature"))
+        #expect(model.searchFilter != nil)
+        await model.search(CommitFilter())
+        #expect(model.searchFilter == nil, "an empty filter clears instead of matching all")
+    }
+
     @Test func pathScopeErrorSurfaces() async {
         await model.attach(repo)
         var reported: String?
@@ -293,6 +338,21 @@ import Testing
         #expect(model.detailBackStack.isEmpty)
         await model.goBackInDetail()
         #expect(model.diffCommit?.oid == mainCommit, "an empty stack is a no-op")
+    }
+
+    @Test func jumpToRevisionResolvesAndShowsDetail() async {
+        await model.attach(repo)
+        repo.lock.withLock {
+            repo.resolves["abc1"] = parentCommit
+            repo.treeDiffs[parentCommit] = []
+        }
+        await model.jumpToRevision("abc1")
+        #expect(model.diffCommit?.oid == parentCommit)
+
+        var reported: String?
+        model.onError = { reported = $0 }
+        await model.jumpToRevision("nope")
+        #expect(reported?.contains("not a revision") == true)
     }
 
     @Test func switchingRefsClearsTheBackStack() async {

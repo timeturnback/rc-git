@@ -95,6 +95,10 @@ enum MainMenu {
             item(
                 "History of This File", #selector(MainWindowController.showFileHistory(_:)), "h",
                 [.command, .option]))
+        menu.addItem(
+            item(
+                "Search Commits", #selector(MainWindowController.searchCommits(_:)), "F",
+                [.command, .shift]))
         menu.addItem(.separator())
         menu.addItem(
             item(

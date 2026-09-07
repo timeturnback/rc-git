@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind,
-    EntryKind, RefKind, Repository, WorktreeStatus,
+    BlobContent, BlobDiff, ChangeKind, CommitFilter, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT,
+    DiffLineKind, EntryKind, RefKind, Repository, WorktreeStatus,
 };
 
 const USAGE: &str = "\
@@ -24,6 +24,8 @@ usage: rc-git [--time] <command> <repo> [args]
   cat     <repo> <rev> <path> [limit]     file contents; limit in bytes, default 8 MiB
   log     <repo> [rev] [-n N] [--skip N]  commits, newest first (default 20)
   filelog <repo> <path> [rev] [-n N] [--max-scan N]  commits that changed a path
+  search  <repo> [rev] [--message S] [--author S] [--since EPOCH] [--until EPOCH] [-n N]
+          [--max-scan N]                  commits matching every given filter
   show    <repo> <rev>                    one commit: header lines, then the message
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   blame   <repo> <rev> <path>             which commit introduced each line
@@ -46,6 +48,7 @@ enum Verb {
     Cat,
     Log,
     Filelog,
+    Search,
     Show,
     Diff,
     Blame,
@@ -62,6 +65,7 @@ impl Verb {
             "cat" => Some(Self::Cat),
             "log" => Some(Self::Log),
             "filelog" => Some(Self::Filelog),
+            "search" => Some(Self::Search),
             "show" => Some(Self::Show),
             "diff" => Some(Self::Diff),
             "blame" => Some(Self::Blame),
@@ -79,6 +83,7 @@ impl Verb {
             Self::Cat => "cat",
             Self::Log => "log",
             Self::Filelog => "filelog",
+            Self::Search => "search",
             Self::Show => "show",
             Self::Diff => "diff",
             Self::Blame => "blame",
@@ -149,6 +154,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Cat => cat(&repo, &invocation.args, &mut out)?,
         Verb::Log => log(&repo, &invocation.args, &mut out)?,
         Verb::Filelog => filelog(&repo, &invocation.args, &mut out)?,
+        Verb::Search => search(&repo, &invocation.args, &mut out)?,
         Verb::Show => show(&repo, &invocation.args, &mut out)?,
         Verb::Diff => diff(&repo, &invocation.args, &mut out)?,
         Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
@@ -331,6 +337,56 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let mut rev = "HEAD";
+    let mut limit = 20;
+    let mut max_scan = 10_000;
+    let mut filter = CommitFilter::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-n" => limit = number(iter.next(), "-n")?,
+            "--max-scan" => max_scan = number(iter.next(), "--max-scan")?,
+            "--message" => filter.message = Some(text_value(iter.next(), "--message")?),
+            "--author" => filter.author = Some(text_value(iter.next(), "--author")?),
+            "--since" => filter.after = Some(epoch(iter.next(), "--since")?),
+            "--until" => filter.before = Some(epoch(iter.next(), "--until")?),
+            other => rev = other,
+        }
+    }
+    let tip = repo.resolve(rev)?;
+    let mut printed = 0;
+    let mut scan_skip = 0;
+    loop {
+        let page = repo.search_commits(tip, &filter, scan_skip, limit - printed, max_scan)?;
+        for commit in &page.commits {
+            writeln!(
+                out,
+                "{}\t{}\t{}\t{}",
+                commit.oid, commit.author_time, commit.author_name, commit.title
+            )?;
+        }
+        printed += page.commits.len();
+        scan_skip += page.scanned;
+        if page.complete || printed >= limit {
+            break;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn text_value(value: Option<&String>, flag: &str) -> Result<String> {
+    value
+        .cloned()
+        .with_context(|| format!("{flag} needs a value"))
+}
+
+fn epoch(value: Option<&String>, flag: &str) -> Result<i64> {
+    let raw = value.with_context(|| format!("{flag} needs seconds since the Unix epoch"))?;
+    raw.parse()
+        .with_context(|| format!("{flag} value '{raw}' is not a number"))
 }
 
 fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {

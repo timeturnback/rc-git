@@ -25,7 +25,7 @@ pub use diff::{
 };
 pub use error::{BoxError, Error, ObjectKind, Result};
 pub use gix::bstr;
-pub use history::CommitPage;
+pub use history::{CommitFilter, CommitPage};
 pub use log::{CommitDetail, CommitSummary};
 pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};

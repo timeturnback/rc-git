@@ -27,6 +27,12 @@ constraints are clear.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).
   The CLI gained `diff`, `blame`, and `status` verbs.
+- **Commit search.** A filter bar over the History pane (⇧⌘F) matches message or author as
+  the user types, with optional date bounds; matches stream in scan chunks with a progress
+  count, and a hex query jumps straight to that revision. `search_commits` shares
+  `path_history`'s scan-cursor paging; a since-bound uses gix's commit-time cutoff so the
+  walk terminates at the window instead of scanning to the root. No index is ever built.
+  The CLI gained `search`.
 - **Per-file history.** "Show File History" on tree rows and ⌥⌘H for the open file scope the
   History pane to the commits that changed one path, with a chip to clear. `path_history`
   walks like `log` and compares the entry at the path against every parent (clean merges hide,

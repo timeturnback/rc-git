@@ -148,6 +148,32 @@ public struct CommitSummary: Sendable, Hashable, Identifiable {
     }
 }
 
+/// What a commit search matches. Every set field must match.
+public struct CommitFilter: Sendable, Hashable {
+    /// Case-insensitive (ASCII) substring of the full message.
+    public var message: String?
+    /// Case-insensitive (ASCII) substring of the author name or email.
+    public var author: String?
+    /// Only commits at or after this time, seconds since the Unix epoch. Also stops the walk.
+    public var after: Int64?
+    /// Only commits at or before this time, seconds since the Unix epoch.
+    public var before: Int64?
+
+    public init(
+        message: String? = nil, author: String? = nil, after: Int64? = nil, before: Int64? = nil
+    ) {
+        self.message = message
+        self.author = author
+        self.after = after
+        self.before = before
+    }
+
+    /// True when no field is set, which would match every commit.
+    public var isEmpty: Bool {
+        message == nil && author == nil && after == nil && before == nil
+    }
+}
+
 /// One page of a filtered history walk.
 public struct CommitPage: Sendable, Hashable {
     /// The commits that matched, newest first.

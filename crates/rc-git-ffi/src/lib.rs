@@ -17,8 +17,9 @@ use std::path::Path;
 use std::ptr;
 
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitPage, CommitSummary, DiffHunk,
-    DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
+    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage, CommitSummary,
+    DiffHunk, DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry,
+    WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
@@ -1617,14 +1618,66 @@ pub unsafe extern "C" fn rcgit_path_history(
     }
 }
 
-/// Releases a value from `rcgit_path_history`.
+/// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
 ///
 /// # Safety
-/// `page` is NULL or came from `rcgit_path_history` and is not freed twice.
+/// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_commit_page_free(page: *mut RcGitCommitPage) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(page) };
+}
+
+/// Commits reachable from `tip` that match the filter, newest first. `message` and `author`
+/// are nullable case-insensitive substrings; `after` and `before` bound the commit time and
+/// are ignored when `i64::MIN` and `i64::MAX` respectively. `after` also terminates the
+/// walk. Pages like `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `message` and
+/// `author` are NULL or NUL-terminated strings. `error` is NULL or valid for writing a
+/// `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_search_commits(
+    repo: *const RcGitRepo,
+    tip: *const RcGitOid,
+    message: *const c_char,
+    author: *const c_char,
+    after: i64,
+    before: i64,
+    scan_skip: usize,
+    limit: usize,
+    max_scan: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitPage {
+    // SAFETY: forwarded from this function's contract; `message` and `author` are read only
+    // when non-NULL.
+    let (repo, tip, message, author, error) = unsafe {
+        (
+            repo_arg(repo),
+            oid_arg(tip),
+            (!message.is_null()).then(|| bytes_arg(message)).flatten(),
+            (!author.is_null()).then(|| bytes_arg(author)).flatten(),
+            Out::new(error),
+        )
+    };
+    let (Some(repo), Some(tip)) = (repo, tip) else {
+        error.report("repo or tip is NULL or malformed");
+        return ptr::null_mut();
+    };
+    let filter = CommitFilter {
+        message: message.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+        author: author.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+        after: (after != i64::MIN).then_some(after),
+        before: (before != i64::MAX).then_some(before),
+    };
+    match repo.search_commits(tip, &filter, scan_skip, limit, max_scan) {
+        Ok(page) => export(RcGitCommitPage::export(page)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
 }
 
 /// Lists every file that differs between two trees, renames detected, sorted by path. `from`
@@ -2680,6 +2733,73 @@ mod tests {
         assert!(null.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_commit_page_free(ptr::null_mut()) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn search_commits_filters_and_pages() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tip = resolve(repo, "main");
+        let needle = CString::new("docs").unwrap();
+
+        let page = unsafe {
+            rcgit_search_commits(
+                repo,
+                &raw const tip,
+                needle.as_ptr(),
+                ptr::null(),
+                i64::MIN,
+                i64::MAX,
+                0,
+                10,
+                100,
+                &raw mut error,
+            )
+        };
+        assert!(!page.is_null(), "{}", take_error(&mut error));
+        let page_ref = unsafe { &*page };
+        let commits = unsafe { std::slice::from_raw_parts(page_ref.commits, page_ref.len) };
+        assert_eq!(commits.len(), 1);
+        assert_eq!(text(commits[0].title), COMMIT_2_TITLE);
+        assert_eq!(page_ref.scanned, 2);
+        assert!(page_ref.complete);
+        unsafe { rcgit_commit_page_free(page) };
+
+        let all = unsafe {
+            rcgit_search_commits(
+                repo,
+                &raw const tip,
+                ptr::null(),
+                ptr::null(),
+                i64::MIN,
+                i64::MAX,
+                0,
+                10,
+                100,
+                &raw mut error,
+            )
+        };
+        assert_eq!(unsafe { &*all }.len, 2, "NULL filters match everything");
+        unsafe { rcgit_commit_page_free(all) };
+
+        let null = unsafe {
+            rcgit_search_commits(
+                ptr::null(),
+                &raw const tip,
+                ptr::null(),
+                ptr::null(),
+                i64::MIN,
+                i64::MAX,
+                0,
+                10,
+                100,
+                &raw mut error,
+            )
+        };
+        assert!(null.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_repo_free(repo) };
     }
 

@@ -127,6 +127,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    @objc func searchCommits(_ sender: Any?) {
+        guard !isEmpty else { return }
+        setMode(.history)
+        historyController.focusSearch()
+    }
+
     @objc func showFileHistory(_ sender: Any?) {
         guard let path = model.openedFilePath else { return }
         setMode(.history)
@@ -141,6 +147,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         if menuItem.action == #selector(showFileHistory(_:)) {
             return model.openedFilePath != nil
+        }
+        if menuItem.action == #selector(searchCommits(_:)) {
+            return !isEmpty
         }
         if menuItem.action == #selector(goToFile(_:)) {
             return !isEmpty
@@ -289,6 +298,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             setMode(.history)
             Task { await self.model.showPathHistory(path) }
+        }
+        model.onSearchChanged = { [weak self] in
+            guard let self else { return }
+            historyController.renderSearch(
+                active: model.searchFilter != nil, results: model.searchResults,
+                scanned: model.searchScanned, complete: model.searchComplete,
+                searching: model.isSearching)
+        }
+        historyController.onSearchFilterChanged = { [weak self] filter in
+            guard let self else { return }
+            if let filter {
+                Task { await self.model.search(filter) }
+            } else {
+                model.clearSearch()
+            }
+        }
+        historyController.onNeedsMoreSearch = { [weak self] in
+            guard let self else { return }
+            Task { await self.model.loadMoreSearchResults() }
+        }
+        historyController.onJumpToRevision = { [weak self] spec in
+            guard let self else { return }
+            Task { await self.model.jumpToRevision(spec) }
         }
         historyController.onSelectCommit = { [weak self] commit in
             guard let self else { return }

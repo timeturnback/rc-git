@@ -55,6 +55,17 @@ fn every_operation_leaves_git_dir_untouched() {
         repo.commit_details(commit.oid).unwrap();
     }
     repo.path_history(tip, "README.md", 0, 100, 1000).unwrap();
+    let filter = rc_git_core::CommitFilter {
+        message: Some("docs".to_owned()),
+        ..rc_git_core::CommitFilter::default()
+    };
+    assert!(
+        !repo
+            .search_commits(tip, &filter, 0, 100, 1000)
+            .unwrap()
+            .commits
+            .is_empty()
+    );
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(

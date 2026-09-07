@@ -71,6 +71,18 @@ public final class BrowserModel {
     public static let historyPageSize = 100
     /// How many commits one repository call may examine while filtering by path.
     public static let pathHistoryScanChunk = 5_000
+    /// How many commits one repository call may examine while searching.
+    public static let searchScanChunk = 10_000
+
+    /// The active search, or `nil` while the pane shows the plain history.
+    public private(set) var searchFilter: CommitFilter?
+    /// Matches found so far, newest first.
+    public private(set) var searchResults: [CommitSummary] = []
+    /// How many commits the search has examined, for progress display.
+    public private(set) var searchScanned = 0
+    /// True when the search walked to the end of history.
+    public private(set) var searchComplete = false
+    public private(set) var isSearching = false
 
     /// Fired after refs, HEAD, or the selected ref changed.
     public var onRefsChanged: (() -> Void)?
@@ -80,6 +92,8 @@ public final class BrowserModel {
     public var onFileChanged: (() -> Void)?
     /// Fired after `history` changed.
     public var onHistoryChanged: (() -> Void)?
+    /// Fired after the search filter, results, or progress changed.
+    public var onSearchChanged: (() -> Void)?
     /// Fired after `diffCommit`, `commitChanges`, or `fileDiff` changed.
     public var onDiffChanged: (() -> Void)?
     /// Fired when a background operation failed with a message worth showing.
@@ -90,6 +104,7 @@ public final class BrowserModel {
     private var refreshGeneration = 0
     private var historyGeneration = 0
     private var diffGeneration = 0
+    private var searchGeneration = 0
     /// The tip whose history the history pane shows. Kept while browsing one of its commits.
     private var historyAnchor: Oid?
     /// Pages already walked, per tip. A tip is immutable, so entries never go stale.
@@ -466,6 +481,7 @@ public final class BrowserModel {
         historyGeneration += 1
         isLoadingHistory = false
         historyScope = .path(path)
+        clearSearch()
         clearCommitDetail()
         if let cached = pathHistoryCache[PathHistoryKey(tip: tip, path: path)] {
             history = cached.commits
@@ -486,11 +502,110 @@ public final class BrowserModel {
         resetHistory(anchor: historyAnchor)
     }
 
+    // MARK: Search
+
+    /// Starts a search over the current anchor's history, streaming matches in scan chunks.
+    /// An empty filter clears instead. A newer search, scope change, or ref switch between
+    /// chunks drops the rest of the walk.
+    public func search(_ filter: CommitFilter) async {
+        guard repository != nil, historyAnchor != nil else { return }
+        if filter.isEmpty {
+            clearSearch()
+            return
+        }
+        searchGeneration += 1
+        searchFilter = filter
+        searchResults = []
+        searchScanned = 0
+        searchComplete = false
+        isSearching = true
+        onSearchChanged?()
+        await continueSearch(target: Self.historyPageSize)
+    }
+
+    /// Fetches the next page of matches for the active search.
+    public func loadMoreSearchResults() async {
+        guard searchFilter != nil, !isSearching, !searchComplete else { return }
+        isSearching = true
+        onSearchChanged?()
+        await continueSearch(target: searchResults.count + Self.historyPageSize)
+    }
+
+    /// Drops the active search; the plain history is still loaded and shows again at once.
+    public func clearSearch() {
+        searchGeneration += 1
+        let hadSearch = searchFilter != nil
+        searchFilter = nil
+        searchResults = []
+        searchScanned = 0
+        searchComplete = false
+        isSearching = false
+        if hadSearch {
+            onSearchChanged?()
+        }
+    }
+
+    /// Resolves a revision — an abbreviated hash, a ref name, anything `rev-parse` accepts —
+    /// and shows that commit's detail.
+    public func jumpToRevision(_ spec: String) async {
+        guard let repository else { return }
+        let result = await Task.detached(priority: .userInitiated) {
+            () -> Result<Oid, RepositoryError> in
+            do { return .success(try repository.resolve(spec)) } catch {
+                return .failure(Self.wrap(error))
+            }
+        }.value
+        switch result {
+        case let .success(oid):
+            await jumpToCommit(oid)
+        case let .failure(error):
+            fail(error.message)
+        }
+    }
+
+    private func continueSearch(target: Int) async {
+        guard let repository, let tip = historyAnchor, let filter = searchFilter else { return }
+        let generation = searchGeneration
+        let chunk = Self.searchScanChunk
+        while searchResults.count < target, !searchComplete {
+            let skip = searchScanned
+            let remaining = target - searchResults.count
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> Result<CommitPage, RepositoryError> in
+                do {
+                    return .success(
+                        try repository.searchCommits(
+                            tip: tip, filter: filter, scanSkip: skip, limit: remaining,
+                            maxScan: chunk))
+                } catch {
+                    return .failure(Self.wrap(error))
+                }
+            }.value
+            guard generation == searchGeneration else { return }
+            switch result {
+            case let .success(page):
+                searchResults += page.commits
+                searchScanned += page.scanned
+                searchComplete = page.complete
+                onSearchChanged?()
+            case let .failure(error):
+                isSearching = false
+                onSearchChanged?()
+                fail(error.message)
+                return
+            }
+        }
+        guard generation == searchGeneration else { return }
+        isSearching = false
+        onSearchChanged?()
+    }
+
     private func resetHistory(anchor: Oid?) {
         historyGeneration += 1
         isLoadingHistory = false
         historyAnchor = anchor
         historyScope = .all
+        clearSearch()
         clearCommitDetail()
         if let anchor, let cached = historyCache[anchor] {
             history = cached.commits

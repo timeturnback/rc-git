@@ -5,7 +5,9 @@ import RcGitKit
 /// the line diff of the picked file. Commits load a page at a time when scrolled near the
 /// end; the detail loads on selection, one tree diff and one blob diff at a time.
 @MainActor
-final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+    NSSearchFieldDelegate
+{
     var onNeedsMore: (() -> Void)?
     var onBrowseCommit: ((CommitSummary) -> Void)?
     var onSelectCommit: ((CommitSummary) -> Void)?
@@ -13,6 +15,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     var onJumpToCommit: ((Oid) -> Void)?
     var onDetailBack: (() -> Void)?
     var onClearScope: (() -> Void)?
+    var onSearchFilterChanged: ((CommitFilter?) -> Void)?
+    var onNeedsMoreSearch: (() -> Void)?
+    var onJumpToRevision: ((String) -> Void)?
 
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
@@ -31,6 +36,24 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let scopeBar = NSStackView()
     private let scopeLabel = NSTextField(labelWithString: "")
     private var scopedPath: String?
+
+    private let searchArea = NSStackView()
+    private let searchField = NSSearchField()
+    private let searchScopeControl = NSSegmentedControl(
+        labels: ["Message", "Author"], trackingMode: .selectOne, target: nil, action: nil)
+    private let searchProgress = NSTextField(labelWithString: "")
+    private let datesToggle = NSButton()
+    private let datesRow = NSStackView()
+    private let sinceCheck = NSButton()
+    private let sincePicker = NSDatePicker()
+    private let untilCheck = NSButton()
+    private let untilPicker = NSDatePicker()
+    private var searchActive = false
+    private var searchResults: [CommitSummary] = []
+    private var searchComplete = false
+
+    /// The rows the commit table shows: search matches while a search is active.
+    private var displayed: [CommitSummary] { searchActive ? searchResults : commits }
 
     private let detailHeader = NSStackView()
     private let detailTitle = NSTextField(wrappingLabelWithString: "")
@@ -88,15 +111,21 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         placeholder.translatesAutoresizingMaskIntoConstraints = false
 
         buildScopeBar()
+        buildSearchArea()
 
         let commitsPane = NSView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scopeBar.translatesAutoresizingMaskIntoConstraints = false
+        searchArea.translatesAutoresizingMaskIntoConstraints = false
+        commitsPane.addSubview(searchArea)
         commitsPane.addSubview(scopeBar)
         commitsPane.addSubview(scroll)
         commitsPane.addSubview(placeholder)
         NSLayoutConstraint.activate([
-            scopeBar.topAnchor.constraint(equalTo: commitsPane.topAnchor),
+            searchArea.topAnchor.constraint(equalTo: commitsPane.topAnchor),
+            searchArea.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
+            searchArea.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
+            scopeBar.topAnchor.constraint(equalTo: searchArea.bottomAnchor),
             scopeBar.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
             scopeBar.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: scopeBar.bottomAnchor),
@@ -220,6 +249,148 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     @objc private func clearScopeClicked(_ sender: Any?) {
         onClearScope?()
+    }
+
+    private func buildSearchArea() {
+        searchField.placeholderString = "Search commits"
+        searchField.delegate = self
+        searchField.target = self
+        searchField.action = #selector(searchSubmitted(_:))
+        searchField.sendsWholeSearchString = false
+        searchScopeControl.selectedSegment = 0
+        searchScopeControl.target = self
+        searchScopeControl.action = #selector(searchOptionsChanged(_:))
+        searchProgress.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        searchProgress.textColor = .secondaryLabelColor
+
+        datesToggle.title = "Dates"
+        datesToggle.setButtonType(.pushOnPushOff)
+        datesToggle.bezelStyle = .accessoryBarAction
+        datesToggle.controlSize = .small
+        datesToggle.target = self
+        datesToggle.action = #selector(datesToggled(_:))
+
+        let fieldRow = NSStackView(views: [
+            searchField, searchScopeControl, datesToggle, searchProgress,
+        ])
+        fieldRow.orientation = .horizontal
+        fieldRow.alignment = .centerY
+        fieldRow.spacing = 6
+
+        for (check, title) in [(sinceCheck, "Since"), (untilCheck, "Until")] {
+            check.title = title
+            check.setButtonType(.switch)
+            check.controlSize = .small
+            check.target = self
+            check.action = #selector(searchOptionsChanged(_:))
+        }
+        for picker in [sincePicker, untilPicker] {
+            picker.datePickerStyle = .textFieldAndStepper
+            picker.datePickerElements = [.yearMonthDay]
+            picker.controlSize = .small
+            picker.target = self
+            picker.action = #selector(searchOptionsChanged(_:))
+        }
+        sincePicker.dateValue = Date(timeIntervalSinceNow: -30 * 24 * 3600)
+        untilPicker.dateValue = Date()
+        datesRow.orientation = .horizontal
+        datesRow.alignment = .centerY
+        datesRow.spacing = 6
+        for view in [sinceCheck, sincePicker, untilCheck, untilPicker] {
+            datesRow.addArrangedSubview(view)
+        }
+        datesRow.isHidden = true
+
+        searchArea.orientation = .vertical
+        searchArea.alignment = .leading
+        searchArea.spacing = 4
+        searchArea.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        searchArea.detachesHiddenViews = true
+        searchArea.addArrangedSubview(fieldRow)
+        searchArea.addArrangedSubview(datesRow)
+        NSLayoutConstraint.activate([
+            fieldRow.widthAnchor.constraint(equalTo: searchArea.widthAnchor, constant: -20),
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+        ])
+    }
+
+    /// Moves keyboard focus into the search field.
+    func focusSearch() {
+        view.window?.makeFirstResponder(searchField)
+    }
+
+    /// Renders search state: swaps the table to the matches while a search is active.
+    func renderSearch(
+        active: Bool, results: [CommitSummary], scanned: Int, complete: Bool, searching: Bool
+    ) {
+        let wasActive = searchActive
+        searchActive = active
+        searchResults = results
+        searchComplete = complete
+        if active {
+            searchProgress.stringValue =
+                searching
+                ? "Searched \(scanned) commits…"
+                : "\(results.count) matches in \(scanned) commits"
+            placeholder.stringValue = "No matching commits"
+            placeholder.isHidden = !results.isEmpty || searching
+        } else {
+            searchProgress.stringValue = ""
+            setScope(path: scopedPath)
+            placeholder.isHidden = !commits.isEmpty
+        }
+        isReloading = true
+        table.reloadData()
+        isReloading = false
+        if active != wasActive {
+            table.scrollRowToVisible(0)
+        }
+        requestMoreIfNearEnd()
+    }
+
+    private func emitFilter() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        var filter = CommitFilter()
+        if !query.isEmpty {
+            if searchScopeControl.selectedSegment == 1 {
+                filter.author = query
+            } else {
+                filter.message = query
+            }
+        }
+        if !datesRow.isHidden {
+            if sinceCheck.state == .on {
+                filter.after = Int64(sincePicker.dateValue.timeIntervalSince1970)
+            }
+            if untilCheck.state == .on {
+                filter.before = Int64(untilPicker.dateValue.timeIntervalSince1970)
+            }
+        }
+        onSearchFilterChanged?(filter.isEmpty ? nil : filter)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSSearchField) === searchField else { return }
+        emitFilter()
+    }
+
+    @objc private func searchOptionsChanged(_ sender: Any?) {
+        emitFilter()
+    }
+
+    @objc private func datesToggled(_ sender: Any?) {
+        datesRow.isHidden = datesToggle.state != .on
+        emitFilter()
+    }
+
+    @objc private func searchSubmitted(_ sender: Any?) {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        let isHex = query.count >= 4 && query.allSatisfy(\.isHexDigit)
+        if isHex {
+            onJumpToRevision?(query)
+        } else {
+            emitFilter()
+        }
     }
 
     private func buildDetailHeader() {
@@ -350,7 +521,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Highlights the row of a commit reached by a parent link or back jump, when loaded.
     func selectCommitRow(_ oid: Oid) {
-        guard let row = commits.firstIndex(where: { $0.oid == oid }), table.selectedRow != row
+        guard let row = displayed.firstIndex(where: { $0.oid == oid }), table.selectedRow != row
         else { return }
         isReloading = true
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -361,9 +532,10 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// Replaces the rows. Called with the accumulated pages, so a reload keeps the scroll
     /// position: only rows below the previous end are new.
     func reload(_ commits: [CommitSummary], complete: Bool) {
-        let selected = table.selectedRow
         self.commits = commits
         self.complete = complete
+        guard !searchActive else { return }
+        let selected = table.selectedRow
         placeholder.isHidden = !commits.isEmpty || !complete
         isReloading = true
         table.reloadData()
@@ -461,11 +633,16 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func requestMoreIfNearEnd() {
-        guard !complete, view.window != nil else { return }
+        let done = searchActive ? searchComplete : complete
+        guard !done, view.window != nil else { return }
         let visible = scroll.contentView.documentVisibleRect
         let height = table.frame.height
         if visible.maxY >= height - Self.prefetchMargin {
-            onNeedsMore?()
+            if searchActive {
+                onNeedsMoreSearch?()
+            } else {
+                onNeedsMore?()
+            }
         }
     }
 
@@ -488,20 +665,20 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func browseClicked(_ sender: Any?) {
-        guard commits.indices.contains(actedRow) else { return }
-        onBrowseCommit?(commits[actedRow])
+        guard displayed.indices.contains(actedRow) else { return }
+        onBrowseCommit?(displayed[actedRow])
     }
 
     @objc private func copyHash(_ sender: Any?) {
-        guard commits.indices.contains(actedRow) else { return }
+        guard displayed.indices.contains(actedRow) else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(commits[actedRow].oid.hex, forType: .string)
+        NSPasteboard.general.setString(displayed[actedRow].oid.hex, forType: .string)
     }
 
     // MARK: NSTableViewDataSource
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === table ? commits.count : changes.count
+        tableView === table ? displayed.count : changes.count
     }
 
     // MARK: NSTableViewDelegate
@@ -509,8 +686,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isReloading, let tableView = notification.object as? NSTableView else { return }
         if tableView === table {
-            guard commits.indices.contains(table.selectedRow) else { return }
-            onSelectCommit?(commits[table.selectedRow])
+            guard displayed.indices.contains(table.selectedRow) else { return }
+            onSelectCommit?(displayed[table.selectedRow])
         } else {
             guard changes.indices.contains(changesTable.selectedRow) else { return }
             onSelectChange?(changes[changesTable.selectedRow])
@@ -531,8 +708,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.toolTip = change.sourcePath.map { "\(change.path) ← \($0)" } ?? change.path
             return cell
         }
-        guard commits.indices.contains(row) else { return nil }
-        let commit = commits[row]
+        guard displayed.indices.contains(row) else { return nil }
+        let commit = displayed[row]
         let cell = reusableCell(in: table, for: tableColumn.identifier)
         switch tableColumn.identifier.rawValue {
         case "hash":

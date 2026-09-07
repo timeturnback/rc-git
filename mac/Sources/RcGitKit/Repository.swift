@@ -192,13 +192,46 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             throw Repository.take(error, fallback: "cannot walk history of '\(path)'")
         }
         defer { rcgit_commit_page_free(page) }
-        let c = page.pointee
+        return Repository.commitPage(page.pointee)
+    }
+
+    /// Commits reachable from `tip` matching every set field of `filter`, newest first.
+    /// Pages like `pathHistory`; a set `after` also terminates the walk at that time.
+    public func searchCommits(
+        tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int
+    ) throws -> CommitPage {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let page = tip.withC { tipPtr in
+            Repository.withOptionalCString(filter.message) { messagePtr in
+                Repository.withOptionalCString(filter.author) { authorPtr in
+                    rcgit_search_commits(
+                        handle, tipPtr, messagePtr, authorPtr,
+                        filter.after ?? Int64.min, filter.before ?? Int64.max,
+                        scanSkip, limit, maxScan, &error)
+                }
+            }
+        }
+        guard let page else {
+            throw Repository.take(error, fallback: "cannot search history from \(tip)")
+        }
+        defer { rcgit_commit_page_free(page) }
+        return Repository.commitPage(page.pointee)
+    }
+
+    private static func commitPage(_ c: RcGitCommitPage) -> CommitPage {
         var commits: [CommitSummary] = []
         commits.reserveCapacity(c.len)
         for index in 0..<c.len {
             commits.append(CommitSummary(c: c.commits[index]))
         }
         return CommitPage(commits: commits, scanned: c.scanned, complete: c.complete)
+    }
+
+    private static func withOptionalCString<T>(
+        _ string: String?, _ body: (UnsafePointer<CChar>?) -> T
+    ) -> T {
+        guard let string else { return body(nil) }
+        return string.withCString(body)
     }
 
     /// Every file that differs between the trees of two revisions, sorted by path. `nil` for

@@ -1,6 +1,6 @@
 //! Path-filtered history against a purpose-built branch-and-merge fixture.
 
-use rc_git_core::{CommitPage, Repository};
+use rc_git_core::{CommitFilter, CommitPage, Repository};
 use rc_git_testkit::Fixture;
 
 /// Six commits, oldest first: `root` adds `file.txt` and `dir/a.txt`; `topic change` (branch
@@ -131,6 +131,117 @@ fn path_history_pages_with_a_scan_cursor() {
     let limited = repo.path_history(tip, "file.txt", 0, 1, 1000).unwrap();
     assert_eq!(titles(&limited), ["evil merge"]);
     assert!(!limited.complete, "the limit stopped the walk early");
+}
+
+#[test]
+fn search_matches_message_title_and_body_case_insensitively() {
+    let fx = merge_fixture();
+    fx.commit_with_body(
+        "body probe",
+        "A Needle in the body.",
+        "2024-01-07T00:00:00+0000",
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let by_title = CommitFilter {
+        message: Some("MERGE".to_owned()),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &by_title, 0, 100, 1000).unwrap();
+    assert_eq!(titles(&page), ["evil merge", "clean merge"]);
+    assert!(page.complete);
+
+    let by_body = CommitFilter {
+        message: Some("needle".to_owned()),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &by_body, 0, 100, 1000).unwrap();
+    assert_eq!(titles(&page), ["body probe"]);
+}
+
+#[test]
+fn search_matches_author_name_and_email() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let by_email = CommitFilter {
+        author: Some("author@example.com".to_owned()),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &by_email, 0, 100, 1000).unwrap();
+    assert_eq!(
+        page.commits.len(),
+        6,
+        "every fixture commit shares the author"
+    );
+
+    let nobody = CommitFilter {
+        author: Some("nobody".to_owned()),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &nobody, 0, 100, 1000).unwrap();
+    assert!(page.commits.is_empty());
+    assert!(page.complete);
+
+    let empty = CommitFilter::default();
+    let page = repo.search_commits(tip, &empty, 0, 100, 1000).unwrap();
+    assert_eq!(page.commits.len(), 6, "an empty filter matches everything");
+}
+
+#[test]
+fn search_time_floor_terminates_the_walk_and_ceiling_filters() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let floor = CommitFilter {
+        after: Some(1_704_326_400),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &floor, 0, 100, 1000).unwrap();
+    assert_eq!(titles(&page), ["evil merge", "hack change", "clean merge"]);
+    assert_eq!(
+        page.scanned, 3,
+        "the cutoff stopped the walk before older commits"
+    );
+    assert!(page.complete);
+
+    let ceiling = CommitFilter {
+        before: Some(1_704_153_600),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &ceiling, 0, 100, 1000).unwrap();
+    assert_eq!(titles(&page), ["topic change", "root"]);
+    assert_eq!(
+        page.scanned, 6,
+        "a ceiling filters but cannot stop the walk"
+    );
+}
+
+#[test]
+fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let nothing = CommitFilter {
+        message: Some("zzz".to_owned()),
+        ..CommitFilter::default()
+    };
+
+    let page = repo.search_commits(tip, &nothing, 0, 100, 2).unwrap();
+    assert!(page.commits.is_empty());
+    assert_eq!(page.scanned, 2);
+    assert!(
+        !page.complete,
+        "the cap stopped the walk, not the end of history"
+    );
+
+    let rest = repo.search_commits(tip, &nothing, 2, 100, 1000).unwrap();
+    assert!(rest.commits.is_empty());
+    assert_eq!(rest.scanned, 4);
+    assert!(rest.complete);
 }
 
 #[test]

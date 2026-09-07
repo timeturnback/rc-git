@@ -14,6 +14,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// one scanned commit, so `scanSkip` indexes into this list.
     var pathHistories: [String: [CommitSummary]] = [:]
     var pathHistoryCalls = 0
+    var resolves: [String: Oid] = [:]
+    var searchCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
     var blames: [String: [BlameRange]] = [:]
@@ -37,6 +39,13 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         }
         if fail { throw RepositoryError("cannot list refs: transient lock") }
         return result
+    }
+
+    func resolve(_ spec: String) throws -> Oid {
+        guard let found = lock.withLock({ resolves[spec] }) else {
+            throw RepositoryError("'\(spec)' is not a revision in this repository")
+        }
+        return found
     }
 
     func resolveTree(_ spec: String) throws -> Oid {
@@ -123,6 +132,38 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
 
     static func pathKey(tip: Oid, path: String) -> String {
         "\(tip.hex):\(path)"
+    }
+
+    /// Filters the commits stored for `tip` by title and author, one scanned per stored
+    /// commit, so `scanSkip` indexes the unfiltered list.
+    func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
+        throws -> CommitPage
+    {
+        let found = lock.withLock { () -> [CommitSummary]? in
+            searchCalls += 1
+            return commits[tip]
+        }
+        guard let found else {
+            throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
+        }
+        let slice = found.dropFirst(scanSkip).prefix(maxScan)
+        var matched: [CommitSummary] = []
+        var scanned = 0
+        for commit in slice {
+            scanned += 1
+            let messageOK = filter.message.map { commit.title.localizedCaseInsensitiveContains($0) }
+            let authorOK = filter.author.map {
+                commit.authorName.localizedCaseInsensitiveContains($0)
+                    || commit.authorEmail.localizedCaseInsensitiveContains($0)
+            }
+            if messageOK ?? true, authorOK ?? true {
+                matched.append(commit)
+                if matched.count >= limit { break }
+            }
+        }
+        return CommitPage(
+            commits: matched, scanned: scanned,
+            complete: scanSkip + scanned >= found.count)
     }
 
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] {

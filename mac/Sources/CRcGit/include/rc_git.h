@@ -632,11 +632,31 @@ struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
                                            size_t max_scan,
                                            char **error);
 
-// Releases a value from `rcgit_path_history`.
+// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
 //
 // # Safety
-// `page` is NULL or came from `rcgit_path_history` and is not freed twice.
+// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
 void rcgit_commit_page_free(struct RcGitCommitPage *page);
+
+// Commits reachable from `tip` that match the filter, newest first. `message` and `author`
+// are nullable case-insensitive substrings; `after` and `before` bound the commit time and
+// are ignored when `i64::MIN` and `i64::MAX` respectively. `after` also terminates the
+// walk. Pages like `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `message` and
+// `author` are NULL or NUL-terminated strings. `error` is NULL or valid for writing a
+// `char *`.
+struct RcGitCommitPage *rcgit_search_commits(const struct RcGitRepo *repo,
+                                             const struct RcGitOid *tip,
+                                             const char *message,
+                                             const char *author,
+                                             int64_t after,
+                                             int64_t before,
+                                             size_t scan_skip,
+                                             size_t limit,
+                                             size_t max_scan,
+                                             char **error);
 
 // Lists every file that differs between two trees, renames detected, sorted by path. `from`
 // and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,

@@ -206,6 +206,10 @@ private final class FailingRepository: RepositoryReading, @unchecked Sendable {
     func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
         -> CommitPage
     { throw RepositoryError("no") }
+    func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
+        throws -> CommitPage
+    { throw RepositoryError("no") }
+    func resolve(_ spec: String) throws -> Oid { throw RepositoryError("no") }
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] { throw RepositoryError("no") }
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff {
         throw RepositoryError("no")
