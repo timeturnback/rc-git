@@ -27,3 +27,8 @@ paths: mac/**
 - Tests use `FakeRepository` for behavior and `GitFixture` for the real bridge; both build the
   same standard repository as `rc-git-testkit`, keep them in step.
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
+- Never collapse a view with a height-0 constraint while it has visible subviews — hide it
+  inside an `NSStackView` with `detachesHiddenViews`. Give scroll content in a split a
+  min-height floor, and version `autosaveName` (`.v2`) whenever split/layout structure
+  changes: autosave records broken layouts and re-imposes them on every launch
+  (`docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md`).

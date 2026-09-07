@@ -15,4 +15,8 @@ paths: crates/**/tests/**, crates/rc-git-testkit/**, mac/Tests/**
   input at the FFI boundary.
 - `tests/read_only.rs` must exercise every core operation. When you add one, add it there.
 - Unit tests may `unwrap`; library code may not. Integration test files carry
-  `#![expect(clippy::unwrap_used, ...)]` for their helpers.
+  `#![expect(clippy::unwrap_used, ...)]` only when a helper *outside* `#[test]` fns unwraps —
+  `allow-unwrap-in-tests` in `clippy.toml` already covers `#[test]` bodies, so the expect is
+  otherwise unfulfilled and fails `-D warnings`.
+- Timing-raced tests (slow-load vs fast-load) need wide margins: suites run in parallel and
+  a 20 ms hop can overrun a 0.2 s delay under load. Use ≥1 s for the "slow" side.

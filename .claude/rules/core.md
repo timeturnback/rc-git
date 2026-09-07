@@ -21,3 +21,8 @@ paths: crates/rc-git-core/**
   scriptable. `docs/ffi.md` has the FFI half.
 - Fixtures come from `rc-git-testkit`. Write `.git` internals by hand only to simulate
   corruption, as `a_broken_ref_is_reported_without_hiding_the_rest` does.
+- Filtered history walks page by scan cursor (`scan_skip`/`scanned`/`max_scan` on
+  `CommitPage`), never by match count or oid cursor — an oid cursor drops side branches, and
+  match-skip re-does the filtering work. Cap every call so it cannot hold a pool handle
+  through a long scan. A time floor maps to `Sorting::ByCommitTimeCutoff`, which terminates
+  the walk instead of filtering; gix 0.87 has no topo order in `rev_walk`.
