@@ -232,6 +232,46 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.worktreeFile(path: "nope.txt") }
     }
 
+    @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("alpha.txt", "stash me\n")
+        try fixture.git(["stash", "push", "-q", "-m", "kept"])
+        try fixture.write("alpha.txt", "alpha\nbeta\n")
+        try fixture.write("untracked.txt", "new\n")
+        try FileManager.default.removeItem(
+            at: URL(fileURLWithPath: fixture.path).appendingPathComponent("Zeta.txt"))
+        let repo = try Repository(path: fixture.path)
+        let tree = try repo.resolveTree("HEAD")
+
+        let report = try repo.worktreeStatus(tree: tree)
+        #expect(!report.truncated)
+        #expect(report.scanned > 0)
+        let rows = report.entries.map { ($0.path, $0.status) }
+        #expect(rows.map(\.0) == ["Zeta.txt", "alpha.txt", "untracked.txt"])
+        #expect(rows.map(\.1) == [.deleted, .modified, .untracked])
+        let modified = report.entries[1]
+        #expect(modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
+
+        guard
+            case let .text(hunks) = try repo.diffWorktreeFile(
+                path: "alpha.txt", old: modified.oid)
+        else {
+            Issue.record("expected a text diff")
+            return
+        }
+        #expect(hunks.count == 1)
+        #expect(throws: RepositoryError.self) {
+            try repo.diffWorktreeFile(path: "nope.txt", old: nil)
+        }
+
+        let stashes = try repo.stashList()
+        #expect(stashes.count == 1)
+        #expect(stashes[0].index == 0)
+        #expect(stashes[0].message.hasSuffix("kept"))
+        #expect(stashes[0].oid.hex == fixture.revParse("stash@{0}"))
+    }
+
     @Test func repositoryIsUsableFromManyThreadsAtOnce() async throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

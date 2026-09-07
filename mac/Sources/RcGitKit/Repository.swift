@@ -7,6 +7,9 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     /// Default cap for `readBlob`: 8 MiB, matching the core.
     public static let defaultBlobLimit: UInt64 = 8 * 1024 * 1024
 
+    /// Default cap for `worktreeStatus`, matching the path-search precedent.
+    public static let defaultStatusScanCap = 200_000
+
     private let handle: OpaquePointer
 
     /// Opens a working directory or a `.git` directory.
@@ -270,7 +273,26 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             throw Repository.take(error, fallback: "cannot diff blobs")
         }
         defer { rcgit_blob_diff_free(diff) }
-        let c = diff.pointee
+        return Repository.blobDiff(from: diff.pointee)
+    }
+
+    /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
+    /// bytes. `nil` for `old` renders an untracked file as pure additions.
+    public func diffWorktreeFile(
+        path: String, old: Oid?, limit: UInt64 = Repository.defaultBlobLimit, context: UInt32 = 3
+    ) throws -> BlobDiff {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let diff = withOptionalOid(old) { oldPtr in
+            rcgit_diff_worktree_file(handle, oldPtr, path, limit, context, &error)
+        }
+        guard let diff else {
+            throw Repository.take(error, fallback: "cannot diff '\(path)' against the tree")
+        }
+        defer { rcgit_blob_diff_free(diff) }
+        return Repository.blobDiff(from: diff.pointee)
+    }
+
+    private static func blobDiff(from c: RcGitBlobDiff) -> BlobDiff {
         switch c.kind {
         case RcGitBlobDiffKind_Text:
             var hunks: [DiffHunk] = []
@@ -341,6 +363,53 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             missing.append(TreeEntry(c: list.pointee.missing[index]))
         }
         return WorktreeListing(entries: entries, missing: missing)
+    }
+
+    /// Every changed working-tree path against `tree`: modified, untracked, and deleted
+    /// files, sorted by path. The walk stops at `maxScan` visited entries and reports the
+    /// truncation.
+    public func worktreeStatus(tree: Oid, maxScan: Int = Repository.defaultStatusScanCap)
+        throws -> StatusReport
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let list = tree.withC { rcgit_worktree_status(handle, $0, maxScan, &error) }
+        guard let list else {
+            throw Repository.take(error, fallback: "cannot scan the working tree")
+        }
+        defer { rcgit_status_list_free(list) }
+        var entries: [StatusEntry] = []
+        entries.reserveCapacity(list.pointee.len)
+        for index in 0..<list.pointee.len {
+            let c = list.pointee.entries[index]
+            entries.append(
+                StatusEntry(
+                    path: String(cString: c.path),
+                    kind: EntryKind(c: c.kind),
+                    status: WorktreeStatus(c: c.status),
+                    oid: c.has_oid ? Oid(c: c.oid) : nil,
+                    size: c.size
+                ))
+        }
+        return StatusReport(
+            entries: entries, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
+    }
+
+    /// Every stash entry, newest first; empty when the repository has no stash.
+    public func stashList() throws -> [StashEntry] {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let list = rcgit_stash_list(handle, &error) else {
+            throw Repository.take(error, fallback: "cannot read the stash")
+        }
+        defer { rcgit_stash_list_free(list) }
+        var entries: [StashEntry] = []
+        entries.reserveCapacity(list.pointee.len)
+        for index in 0..<list.pointee.len {
+            let c = list.pointee.entries[index]
+            entries.append(
+                StashEntry(
+                    index: c.index, oid: Oid(c: c.oid), message: String(cString: c.message)))
+        }
+        return entries
     }
 
     /// Reads one working-tree file for display; a symlink yields its target as text.

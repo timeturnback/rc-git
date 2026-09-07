@@ -234,6 +234,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 case .modified: ("M", .systemOrange)
                 case .untracked: ("U", .systemGreen)
                 case .ignored: ("I", .tertiaryLabelColor)
+                case .deleted: ("D", .systemRed)
                 case .unchanged, nil: nil
                 }
             }

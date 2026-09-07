@@ -755,6 +755,84 @@ impl Drop for RcGitWorktreeList {
     }
 }
 
+/// One changed path from a full working-tree scan.
+#[repr(C)]
+pub struct RcGitStatusEntry {
+    /// Repository-relative path with `/` separators; may be non-UTF-8.
+    pub path: *mut c_char,
+    /// The kind on disk; the tree's kind for a deleted path.
+    pub kind: RcGitEntryKind,
+    /// Always modified, untracked, or deleted; clean and ignored paths are not listed.
+    pub status: RcGitWorktreeStatus,
+    /// False when the compared tree has no blob at this path.
+    pub has_oid: bool,
+    /// The blob at the same path in the compared tree.
+    pub oid: RcGitOid,
+    /// Size on disk in bytes; 0 for deleted files.
+    pub size: u64,
+}
+
+impl Drop for RcGitStatusEntry {
+    fn drop(&mut self) {
+        // SAFETY: `path` was produced by `export_string` and is released once here.
+        unsafe { release_string(self.path) };
+    }
+}
+
+/// Every changed path in the working tree, with the walk's own cost accounting.
+#[repr(C)]
+pub struct RcGitStatusList {
+    /// `len` changed paths, sorted by path.
+    pub entries: *mut RcGitStatusEntry,
+    /// Number of entries.
+    pub len: usize,
+    /// Entries visited before the walk finished or hit its cap.
+    pub scanned: usize,
+    /// True when the walk stopped at the cap before covering the whole tree.
+    pub truncated: bool,
+}
+
+impl Drop for RcGitStatusList {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.entries, self.len) };
+    }
+}
+
+/// One stashed change set, as `git stash list` shows it.
+#[repr(C)]
+pub struct RcGitStashEntry {
+    /// Position in the stash, so 0 is `stash@{0}`, the newest.
+    pub index: usize,
+    /// The stash commit.
+    pub oid: RcGitOid,
+    /// The reflog message, e.g. `WIP on main: 1a2b3c4 Subject`.
+    pub message: *mut c_char,
+}
+
+impl Drop for RcGitStashEntry {
+    fn drop(&mut self) {
+        // SAFETY: `message` was produced by `export_string` and is released once here.
+        unsafe { release_string(self.message) };
+    }
+}
+
+/// Every stash entry, newest first.
+#[repr(C)]
+pub struct RcGitStashList {
+    /// `len` stash entries, newest first.
+    pub entries: *mut RcGitStashEntry,
+    /// Number of entries.
+    pub len: usize,
+}
+
+impl Drop for RcGitStashList {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.entries, self.len) };
+    }
+}
+
 /// What a highlighted region means, for the view to color.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1768,7 +1846,18 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
         return ptr::null_mut();
     };
     match repo.diff_blobs(old, new, limit, context) {
-        Ok(BlobDiff::Text { hunks }) => {
+        Ok(diff) => export_blob_diff(diff, limit),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Exports any [`BlobDiff`] outcome as one owned `RcGitBlobDiff`.
+fn export_blob_diff(diff: BlobDiff, limit: u64) -> *mut RcGitBlobDiff {
+    match diff {
+        BlobDiff::Text { hunks } => {
             let mut exported = Vec::with_capacity(hunks.len());
             for hunk in hunks {
                 exported.push(RcGitDiffHunk::export(hunk));
@@ -1784,7 +1873,7 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
                 limit,
             })
         }
-        Ok(BlobDiff::Binary { old_size, new_size }) => export(RcGitBlobDiff {
+        BlobDiff::Binary { old_size, new_size } => export(RcGitBlobDiff {
             kind: RcGitBlobDiffKind::Binary,
             hunks: ptr::null_mut(),
             hunk_count: 0,
@@ -1793,7 +1882,7 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
             size: 0,
             limit,
         }),
-        Ok(BlobDiff::TooLarge { size, limit }) => export(RcGitBlobDiff {
+        BlobDiff::TooLarge { size, limit } => export(RcGitBlobDiff {
             kind: RcGitBlobDiffKind::TooLarge,
             hunks: ptr::null_mut(),
             hunk_count: 0,
@@ -1802,10 +1891,6 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
             size,
             limit,
         }),
-        Err(err) => {
-            error.report(err);
-            ptr::null_mut()
-        }
     }
 }
 
@@ -1973,6 +2058,148 @@ pub unsafe extern "C" fn rcgit_worktree_read(
             ptr::null_mut()
         }
     }
+}
+
+/// Walks the whole working tree against `tree` and returns every changed path: modified,
+/// untracked, and deleted files, sorted by path. The walk stops after visiting `max_scan`
+/// entries and reports the truncation. Release with `rcgit_status_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
+/// NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_worktree_status(
+    repo: *const RcGitRepo,
+    tree: *const RcGitOid,
+    max_scan: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitStatusList {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, tree, error) = unsafe { (repo_arg(repo), oid_arg(tree), Out::new(error)) };
+    let (Some(repo), Some(tree)) = (repo, tree) else {
+        error.report("repo or tree is NULL or malformed");
+        return ptr::null_mut();
+    };
+    match repo.worktree_status(tree, max_scan) {
+        Ok(report) => {
+            let mut entries = Vec::with_capacity(report.entries.len());
+            for entry in report.entries {
+                entries.push(RcGitStatusEntry {
+                    path: export_string(Vec::from(entry.path)),
+                    kind: entry.kind.into(),
+                    status: entry.status.into(),
+                    has_oid: entry.oid.is_some(),
+                    oid: entry.oid.map_or_else(RcGitOid::empty, RcGitOid::from),
+                    size: entry.size,
+                });
+            }
+            let (entries, len) = export_vec(entries);
+            export(RcGitStatusList {
+                entries,
+                len,
+                scanned: report.scanned,
+                truncated: report.truncated,
+            })
+        }
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_worktree_status`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_status_list_free(list: *mut RcGitStatusList) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(list) };
+}
+
+/// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
+/// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Release
+/// with `rcgit_blob_diff_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
+/// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_diff_worktree_file(
+    repo: *const RcGitRepo,
+    old: *const RcGitOid,
+    path: *const c_char,
+    limit: u64,
+    context: u32,
+    error: *mut *mut c_char,
+) -> *mut RcGitBlobDiff {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, old, path, error) = unsafe {
+        (
+            repo_arg(repo),
+            optional_oid_arg(old),
+            bytes_arg(path),
+            Out::new(error),
+        )
+    };
+    let (Some(repo), Ok(old), Some(path)) = (repo, old, path) else {
+        error.report("repo or path is NULL, or the oid is malformed");
+        return ptr::null_mut();
+    };
+    match repo.diff_worktree_file(old, &String::from_utf8_lossy(path), limit, context) {
+        Ok(diff) => export_blob_diff(diff, limit),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Lists every stash entry, newest first, from the `refs/stash` reflog. A repository with no
+/// stash returns an empty list. Release with `rcgit_stash_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_stash_list(
+    repo: *const RcGitRepo,
+    error: *mut *mut c_char,
+) -> *mut RcGitStashList {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
+    let Some(repo) = repo else {
+        error.report("repo is NULL");
+        return ptr::null_mut();
+    };
+    match repo.stash_list() {
+        Ok(stashes) => {
+            let mut entries = Vec::with_capacity(stashes.len());
+            for entry in stashes {
+                entries.push(RcGitStashEntry {
+                    index: entry.index,
+                    oid: entry.oid.into(),
+                    message: export_string(entry.message.into_bytes()),
+                });
+            }
+            let (entries, len) = export_vec(entries);
+            export(RcGitStashList { entries, len })
+        }
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_stash_list`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_stash_list_free(list: *mut RcGitStashList) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(list) };
 }
 
 /// Highlights `len` bytes of `data` as the language `name`'s extension implies. Returns NULL
@@ -3063,6 +3290,87 @@ mod tests {
         let list =
             unsafe { rcgit_worktree_entries(repo, ptr::null(), dir.as_ptr(), &raw mut error) };
         assert!(list.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test arranges the fixture's working tree; the library never mutates"
+    )]
+    fn worktree_status_and_stash_cross_the_boundary() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"stash me\n");
+        fx.git(&["stash", "push", "-q", "-m", "kept"]);
+        fx.write("alpha.txt", b"omega\n");
+        fx.write("untracked.txt", b"new\n");
+        std::fs::remove_file(fx.path().join("Zeta.txt")).unwrap();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tree = resolve(repo, "HEAD^{tree}");
+
+        let list = unsafe { rcgit_worktree_status(repo, &raw const tree, 100_000, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        assert!(!list_ref.truncated);
+        assert!(list_ref.scanned > 0);
+        let entries = unsafe { std::slice::from_raw_parts(list_ref.entries, list_ref.len) };
+        let rows: Vec<(String, RcGitWorktreeStatus)> = entries
+            .iter()
+            .map(|entry| (text(entry.path), entry.status))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Zeta.txt".to_owned(), RcGitWorktreeStatus::Deleted),
+                ("alpha.txt".to_owned(), RcGitWorktreeStatus::Modified),
+                ("untracked.txt".to_owned(), RcGitWorktreeStatus::Untracked),
+            ]
+        );
+        assert!(entries[0].has_oid);
+        assert_eq!(hex(&entries[0].oid), fx.rev_parse("HEAD:Zeta.txt"));
+        unsafe { rcgit_status_list_free(list) };
+
+        let path = CString::new("alpha.txt").unwrap();
+        let old = resolve(repo, "HEAD:alpha.txt");
+        let diff = unsafe {
+            rcgit_diff_worktree_file(
+                repo,
+                &raw const old,
+                path.as_ptr(),
+                1 << 20,
+                3,
+                &raw mut error,
+            )
+        };
+        assert!(!diff.is_null(), "{}", take_error(&mut error));
+        let diff_ref = unsafe { &*diff };
+        assert_eq!(diff_ref.kind, RcGitBlobDiffKind::Text);
+        assert_eq!(diff_ref.hunk_count, 1);
+        unsafe { rcgit_blob_diff_free(diff) };
+
+        let stashes = unsafe { rcgit_stash_list(repo, &raw mut error) };
+        assert!(!stashes.is_null(), "{}", take_error(&mut error));
+        let stashes_ref = unsafe { &*stashes };
+        assert_eq!(stashes_ref.len, 1);
+        let stash_entries =
+            unsafe { std::slice::from_raw_parts(stashes_ref.entries, stashes_ref.len) };
+        assert_eq!(stash_entries[0].index, 0);
+        assert!(text(stash_entries[0].message).ends_with("kept"));
+        assert_eq!(hex(&stash_entries[0].oid), fx.rev_parse("stash@{0}"));
+        unsafe { rcgit_stash_list_free(stashes) };
+
+        let list = unsafe { rcgit_worktree_status(repo, ptr::null(), 100_000, &raw mut error) };
+        assert!(list.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        let diff = unsafe {
+            rcgit_diff_worktree_file(repo, ptr::null(), ptr::null(), 1 << 20, 3, &raw mut error)
+        };
+        assert!(diff.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        let stashes = unsafe { rcgit_stash_list(ptr::null(), &raw mut error) };
+        assert!(stashes.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_repo_free(repo) };
     }

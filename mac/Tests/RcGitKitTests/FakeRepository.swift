@@ -21,6 +21,15 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blames: [String: [BlameRange]] = [:]
     var worktreeListings: [String: WorktreeListing] = [:]
     var worktreeFiles: [String: BlobContent] = [:]
+    /// The full-repo status walk result, replaced by tests as the "disk" changes.
+    var statusReport = StatusReport(entries: [], scanned: 0, truncated: false)
+    var statusCalls = 0
+    var failNextStatus = false
+    /// Per path, the worktree-vs-blob diff.
+    var worktreeDiffs: [String: BlobDiff] = [:]
+    var stashes: [StashEntry] = []
+    /// Slept inside `worktreeStatus`, for racing loads.
+    var statusDelay: TimeInterval = 0
     var listing = RefListing(refs: [])
     var headValue = Head(refName: nil, target: nil)
     var treeOfMap: [Oid: Oid] = [:]
@@ -212,6 +221,32 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             return .tooLarge(size: UInt64(data.count), limit: limit)
         }
         return found
+    }
+
+    func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport {
+        let (report, delay, fail) = lock.withLock { () -> (StatusReport, TimeInterval, Bool) in
+            statusCalls += 1
+            let fail = failNextStatus
+            failNextStatus = false
+            return (statusReport, statusDelay, fail)
+        }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        if fail { throw RepositoryError("scan working tree: transient failure") }
+        return report
+    }
+
+    func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
+        -> BlobDiff
+    {
+        let found = lock.withLock { worktreeDiffs[path] }
+        guard let found else {
+            throw RepositoryError("read working tree file: '\(path)': missing")
+        }
+        return found
+    }
+
+    func stashList() throws -> [StashEntry] {
+        lock.withLock { stashes }
     }
 }
 

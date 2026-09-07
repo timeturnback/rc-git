@@ -353,3 +353,73 @@ fn status_overlays_the_working_tree_against_head() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("no-such-dir"));
 }
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test arranges the fixture's working tree; the binary never mutates"
+)]
+fn changes_lists_every_changed_path_flat() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("untracked.txt", b"new\n");
+    fx.write("src/lib.rs", b"changed\n");
+    std::fs::remove_file(fx.path().join("Zeta.txt")).unwrap();
+
+    let out = rc_git(&["changes", path]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout(&out),
+        "D\tZeta.txt\nM\tsrc/lib.rs\n?\tuntracked.txt\n"
+    );
+
+    let out = rc_git(&["changes", path, "--max-scan", "1"]);
+    assert!(out.status.success());
+    assert!(stderr(&out).contains("truncated after scanning 2 entries"));
+
+    let out = rc_git(&["changes", path, "--bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("--bogus"));
+}
+
+#[test]
+fn stash_lists_entries_newest_first() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["stash", path]);
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), "");
+
+    fx.write("alpha.txt", b"stash one\n");
+    fx.git(&["stash", "push", "-q", "-m", "first"]);
+    fx.write("alpha.txt", b"stash two\n");
+    fx.git(&["stash", "push", "-q", "-m", "second"]);
+
+    let out = rc_git(&["stash", path]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].starts_with("0\t"), "{}", lines[0]);
+    assert!(lines[0].ends_with("second"), "{}", lines[0]);
+    assert!(lines[1].starts_with("1\t"), "{}", lines[1]);
+    assert!(lines[1].ends_with("first"), "{}", lines[1]);
+}
+
+#[test]
+fn diff_worktree_shows_hunks_against_head() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"alpha\nbeta\n");
+
+    let out = rc_git(&["diff", path, "--worktree", "alpha.txt"]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    assert!(text.starts_with("@@ "), "{text}");
+    assert!(text.contains("+beta\n"), "{text}");
+
+    let out = rc_git(&["diff", path, "--worktree"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("diff --worktree needs <path>"));
+}

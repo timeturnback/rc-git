@@ -410,6 +410,52 @@ typedef struct RcGitWorktreeList {
   size_t missing_len;
 } RcGitWorktreeList;
 
+// One changed path from a full working-tree scan.
+typedef struct RcGitStatusEntry {
+  // Repository-relative path with `/` separators; may be non-UTF-8.
+  char *path;
+  // The kind on disk; the tree's kind for a deleted path.
+  enum RcGitEntryKind kind;
+  // Always modified, untracked, or deleted; clean and ignored paths are not listed.
+  enum RcGitWorktreeStatus status;
+  // False when the compared tree has no blob at this path.
+  bool has_oid;
+  // The blob at the same path in the compared tree.
+  struct RcGitOid oid;
+  // Size on disk in bytes; 0 for deleted files.
+  uint64_t size;
+} RcGitStatusEntry;
+
+// Every changed path in the working tree, with the walk's own cost accounting.
+typedef struct RcGitStatusList {
+  // `len` changed paths, sorted by path.
+  struct RcGitStatusEntry *entries;
+  // Number of entries.
+  size_t len;
+  // Entries visited before the walk finished or hit its cap.
+  size_t scanned;
+  // True when the walk stopped at the cap before covering the whole tree.
+  bool truncated;
+} RcGitStatusList;
+
+// One stashed change set, as `git stash list` shows it.
+typedef struct RcGitStashEntry {
+  // Position in the stash, so 0 is `stash@{0}`, the newest.
+  size_t index;
+  // The stash commit.
+  struct RcGitOid oid;
+  // The reflog message, e.g. `WIP on main: 1a2b3c4 Subject`.
+  char *message;
+} RcGitStashEntry;
+
+// Every stash entry, newest first.
+typedef struct RcGitStashList {
+  // `len` stash entries, newest first.
+  struct RcGitStashEntry *entries;
+  // Number of entries.
+  size_t len;
+} RcGitStashList;
+
 // One highlighted region: byte offsets into the highlighted data, half-open.
 typedef struct RcGitHighlightSpan {
   // First byte of the region.
@@ -746,6 +792,51 @@ struct RcGitBlob *rcgit_worktree_read(const struct RcGitRepo *repo,
                                       const char *path,
                                       uint64_t limit,
                                       char **error);
+
+// Walks the whole working tree against `tree` and returns every changed path: modified,
+// untracked, and deleted files, sorted by path. The walk stops after visiting `max_scan`
+// entries and reports the truncation. Release with `rcgit_status_list_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
+// NULL or valid for writing a `char *`.
+struct RcGitStatusList *rcgit_worktree_status(const struct RcGitRepo *repo,
+                                              const struct RcGitOid *tree,
+                                              size_t max_scan,
+                                              char **error);
+
+// Releases a value from `rcgit_worktree_status`.
+//
+// # Safety
+// `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
+void rcgit_status_list_free(struct RcGitStatusList *list);
+
+// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
+// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Release
+// with `rcgit_blob_diff_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
+// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+struct RcGitBlobDiff *rcgit_diff_worktree_file(const struct RcGitRepo *repo,
+                                               const struct RcGitOid *old,
+                                               const char *path,
+                                               uint64_t limit,
+                                               uint32_t context,
+                                               char **error);
+
+// Lists every stash entry, newest first, from the `refs/stash` reflog. A repository with no
+// stash returns an empty list. Release with `rcgit_stash_list_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+struct RcGitStashList *rcgit_stash_list(const struct RcGitRepo *repo, char **error);
+
+// Releases a value from `rcgit_stash_list`.
+//
+// # Safety
+// `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
+void rcgit_stash_list_free(struct RcGitStashList *list);
 
 // Highlights `len` bytes of `data` as the language `name`'s extension implies. Returns NULL
 // with `*error` untouched when the extension maps to no known language, so plain text costs

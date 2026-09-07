@@ -28,8 +28,11 @@ usage: rc-git [--time] <command> <repo> [args]
           [--max-scan N]                  commits matching every given filter
   show    <repo> <rev>                    one commit: header lines, then the message
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
+  diff    <repo> --worktree <path>        one working-tree file's hunks against HEAD
   blame   <repo> <rev> <path>             which commit introduced each line
   status  <repo> [dir]                    one working-tree directory against HEAD
+  changes <repo> [--max-scan N]           every changed working-tree path against HEAD
+  stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
 
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit
@@ -53,6 +56,8 @@ enum Verb {
     Diff,
     Blame,
     Status,
+    Changes,
+    Stash,
     Resolve,
 }
 
@@ -70,6 +75,8 @@ impl Verb {
             "diff" => Some(Self::Diff),
             "blame" => Some(Self::Blame),
             "status" => Some(Self::Status),
+            "changes" => Some(Self::Changes),
+            "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
             _ => None,
         }
@@ -88,6 +95,8 @@ impl Verb {
             Self::Diff => "diff",
             Self::Blame => "blame",
             Self::Status => "status",
+            Self::Changes => "changes",
+            Self::Stash => "stash",
             Self::Resolve => "resolve",
         }
     }
@@ -159,6 +168,8 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Diff => diff(&repo, &invocation.args, &mut out)?,
         Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
         Verb::Status => status(&repo, &invocation.args, &mut out)?,
+        Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
+        Verb::Stash => stash(&repo, &mut out)?,
         Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
     };
     let command_elapsed = started_at.elapsed();
@@ -421,6 +432,15 @@ fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
 }
 
 fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    if args.first().is_some_and(|arg| arg == "--worktree") {
+        let [_, path] = args else {
+            bail!("diff --worktree needs <path>\n\n{USAGE}");
+        };
+        let tree = repo.resolve_tree("HEAD")?;
+        let old = repo.entry_at_path(tree, path)?.map(|entry| entry.oid);
+        let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
+        return render_blob_diff(diff, path, out);
+    }
     let [old_rev, new_rev, rest @ ..] = args else {
         bail!("diff needs <old> <new>\n\n{USAGE}");
     };
@@ -450,7 +470,12 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     if old_blob.is_none() && new_blob.is_none() {
         bail!("'{path}' does not exist at {old_rev} or {new_rev}");
     }
-    match repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)? {
+    let diff = repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
+    render_blob_diff(diff, path, out)
+}
+
+fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<ExitCode> {
+    match diff {
         BlobDiff::Text { hunks } => {
             for hunk in hunks {
                 writeln!(
@@ -505,6 +530,51 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
             out,
             "{}\t{}\t{}\t{}\t{}",
             range.commit, range.start_line, range.line_count, commit.author_name, commit.title
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let mut max_scan = 200_000;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--max-scan" {
+            max_scan = number(iter.next(), "--max-scan")?;
+        } else {
+            bail!("changes does not take '{arg}'\n\n{USAGE}");
+        }
+    }
+    let tree = repo.resolve_tree("HEAD")?;
+    let report = repo.worktree_status(tree, max_scan)?;
+    for entry in &report.entries {
+        let letter = match entry.status {
+            WorktreeStatus::Unchanged => " ",
+            WorktreeStatus::Modified => "M",
+            WorktreeStatus::Untracked => "?",
+            WorktreeStatus::Ignored => "!",
+            WorktreeStatus::Deleted => "D",
+        };
+        writeln!(out, "{letter}\t{}", String::from_utf8_lossy(&entry.path))?;
+    }
+    if report.truncated {
+        writeln!(
+            io::stderr().lock(),
+            "truncated after scanning {} entries",
+            report.scanned
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn stash(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+    for entry in repo.stash_list()? {
+        writeln!(
+            out,
+            "{}\t{}\t{}",
+            entry.index,
+            &entry.oid.to_hex()[..12],
+            entry.message
         )?;
     }
     Ok(ExitCode::SUCCESS)

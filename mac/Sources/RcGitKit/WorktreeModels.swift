@@ -6,14 +6,70 @@ public enum WorktreeStatus: Sendable, Hashable {
     case modified
     case untracked
     case ignored
+    case deleted
 
     init(c: RcGitWorktreeStatus) {
         switch c {
         case RcGitWorktreeStatus_Unchanged: self = .unchanged
         case RcGitWorktreeStatus_Modified: self = .modified
         case RcGitWorktreeStatus_Untracked: self = .untracked
+        case RcGitWorktreeStatus_Deleted: self = .deleted
         default: self = .ignored
         }
+    }
+}
+
+/// One changed path from a full working-tree scan.
+public struct StatusEntry: Sendable, Hashable {
+    /// Repository-relative path with `/` separators.
+    public let path: String
+    /// The kind on disk; the tree's kind for a deleted path.
+    public let kind: EntryKind
+    /// Always `.modified`, `.untracked`, or `.deleted`.
+    public let status: WorktreeStatus
+    /// The blob at the same path in the compared tree; `nil` for untracked files.
+    public let oid: Oid?
+    /// Size on disk in bytes; 0 for deleted files.
+    public let size: UInt64
+
+    public init(path: String, kind: EntryKind, status: WorktreeStatus, oid: Oid?, size: UInt64) {
+        self.path = path
+        self.kind = kind
+        self.status = status
+        self.oid = oid
+        self.size = size
+    }
+}
+
+/// Every changed path in the working tree, with the walk's own cost accounting.
+public struct StatusReport: Sendable, Hashable {
+    /// Changed paths, sorted by path.
+    public let entries: [StatusEntry]
+    /// Entries visited before the walk finished or hit its cap.
+    public let scanned: Int
+    /// Whether the walk stopped at the cap before covering the whole tree.
+    public let truncated: Bool
+
+    public init(entries: [StatusEntry], scanned: Int, truncated: Bool) {
+        self.entries = entries
+        self.scanned = scanned
+        self.truncated = truncated
+    }
+}
+
+/// One stashed change set, as `git stash list` shows it.
+public struct StashEntry: Sendable, Hashable {
+    /// Position in the stash, so 0 is `stash@{0}`, the newest.
+    public let index: Int
+    /// The stash commit.
+    public let oid: Oid
+    /// The reflog message, e.g. `WIP on main: 1a2b3c4 Subject`.
+    public let message: String
+
+    public init(index: Int, oid: Oid, message: String) {
+        self.index = index
+        self.oid = oid
+        self.message = message
     }
 }
 

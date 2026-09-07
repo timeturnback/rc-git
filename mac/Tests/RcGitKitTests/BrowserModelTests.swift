@@ -222,4 +222,11 @@ private final class FailingRepository: RepositoryReading, @unchecked Sendable {
     func worktreeFile(path: String, limit: UInt64) throws -> BlobContent {
         throw RepositoryError("no")
     }
+    func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport {
+        throw RepositoryError("no")
+    }
+    func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
+        -> BlobDiff
+    { throw RepositoryError("no") }
+    func stashList() throws -> [StashEntry] { throw RepositoryError("no") }
 }
