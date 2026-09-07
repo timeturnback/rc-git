@@ -1,0 +1,29 @@
+# rc-git never mutates a repository from library code and never shells out.
+# Every method here is a write path or a process spawn. Adding a caller means
+# routing it through rc-git-guard first; see docs/safety.md.
+disallowed-methods = [
+    { path = "gix::Repository::edit_reference", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::edit_references", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::edit_references_as", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::reference", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::tag_reference", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::tag", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::commit", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::commit_as", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::write_object", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::write_blob", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::write_blob_stream", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::worktree", reason = "worktree reads go through crate::worktree, which uses std::fs reads only" },
+    { path = "std::process::Command::new", reason = "never shell out to git; use gix. Test fixtures may expect() this lint with a reason" },
+    { path = "std::fs::remove_file", reason = "core never deletes; see docs/safety.md" },
+    { path = "std::fs::remove_dir", reason = "core never deletes; see docs/safety.md" },
+    { path = "std::fs::remove_dir_all", reason = "core never deletes; see docs/safety.md" },
+    { path = "std::fs::write", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::File::create", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::rename", reason = "core never moves files; see docs/safety.md" },
+]
+
+# Unit tests may unwrap/panic; library code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

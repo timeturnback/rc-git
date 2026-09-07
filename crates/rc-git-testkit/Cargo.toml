@@ -1,0 +1,27 @@
+[package]
+name = "rc-git-testkit"
+description = "Throwaway git repositories for tests; the only crate that runs the git CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+tempfile.workspace = true
+
+# Test support: a broken fixture must fail loudly, so panics are the right tool here.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+allow_attributes = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+module_name_repetitions = "allow"
+similar_names = "allow"

@@ -1,0 +1,49 @@
+# Runs through prek (`prek install` once per clone). Every hook is a local system command so
+# the tool versions are the ones on the machine, the same ones scripts/check.sh uses.
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: ffi-header
+        name: FFI header in sync
+        entry: scripts/gen-header.sh --verify
+        language: system
+        files: ^(crates/rc-git-ffi/|mac/Sources/CRcGit/)
+        pass_filenames: false
+      - id: swift-format
+        name: swift-format lint
+        entry: xcrun swift-format lint --strict
+        language: system
+        types: [swift]
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+      - id: shfmt
+        name: shfmt
+        entry: shfmt -d
+        language: system
+        types: [shell]
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/
+        pass_filenames: false
+      - id: zizmor
+        name: zizmor
+        entry: zizmor
+        language: system
+        files: ^\.github/workflows/

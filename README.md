@@ -1,0 +1,72 @@
+# rc-git
+
+A fast git browser for macOS. Open a repository, pick a branch, tag, or commit, walk the
+tree, read files, page through history, diff, blame, and see the working tree's status. It
+never runs `git`: a Rust core built on [gitoxide](https://github.com/GitoxideLabs/gitoxide)
+reads the object database directly and a native AppKit window shows the result. Reading
+never writes a byte; the only mutations are branch and tag management, and each one passes
+through a policy that backs up what it deletes.
+
+## Build
+
+```sh
+brew install cbindgen cargo-deny
+scripts/build-app.sh      # produces RCGit.app in the repository root
+open RCGit.app ~/code/some-repo
+```
+
+Requires a stable Rust toolchain and Xcode 16 or newer.
+
+## Use
+
+Open a repository with ⌘O, from the Open Recent menu, by dragging its folder onto the window,
+by passing a path on the command line, or with `open -a RCGit <path>`. The sidebar lists the
+working tree, branches, remote branches, and tags; selecting one shows its tree, and the app
+follows along when refs change on disk. Folders load when expanded, files open with syntax
+highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by fuzzy name.
+
+The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as you scroll, and
+selecting a commit shows the files it changed with a line diff; double-click to browse the
+tree at that commit. ⌥⌘B blames the open file. The Working Tree row overlays each file's
+status against `HEAD` — modified, untracked, ignored, deleted. Right-click a ref to create
+or delete branches and tags: deletions demand the ref's typed name and write a backup under
+`refs/rc-git/backup/` first.
+
+The window adapts to its size: below 760 points wide the sidebar folds away, below 560 points or
+in a portrait shape the tree stacks above the file. Toggle the sidebar with ⌃⌘S.
+
+The same core ships as a command-line tool for scripts and for measuring:
+
+```sh
+cargo run --release -p rc-git-cli -- --time ls ~/code/some-repo main src
+cargo run --release -p rc-git-cli -- cat ~/code/some-repo v1.2 README.md
+cargo run --release -p rc-git-cli -- log ~/code/some-repo -n 10
+cargo run --release -p rc-git-cli -- diff ~/code/some-repo v1.1 v1.2 src/main.rs
+cargo run --release -p rc-git-cli -- blame ~/code/some-repo main src/main.rs
+cargo run --release -p rc-git-cli -- status ~/code/some-repo
+```
+
+## Safety
+
+The core cannot write. The workspace's `clippy.toml` rejects every gix write API and every
+filesystem mutation at lint time, a test compares `.git` byte for byte before and after every
+operation, and repositories open in isolated mode so an untrusted checkout cannot pull in
+configuration from anywhere else. Actions that change a repository — today, branch and tag
+management — pass through `rc-git-guard`, a policy that denies deletions on protected
+branches outright, requires the ref's name to be typed for anything that loses work, and
+writes a backup ref before deleting. `docs/safety.md` has the full table.
+
+## Layout
+
+```
+crates/rc-git-core       read-only gix wrapper, keyed by object id
+crates/rc-git-guard      policy for destructive actions, and the one write path
+crates/rc-git-highlight  tree-sitter syntax highlighting
+crates/rc-git-ffi        C ABI for the Swift app
+crates/rc-git-cli        rc-git binary
+crates/rc-git-testkit    fixture repositories for tests
+mac/                     Swift package: RcGitKit (logic, tested) and RcGitApp (AppKit)
+docs/                    architecture, performance, safety, ffi, testing, development, roadmap
+```
+
+`scripts/check.sh` runs everything CI runs.

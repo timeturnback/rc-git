@@ -1,0 +1,23 @@
+[package]
+name = "rc-git-cli"
+description = "Command-line front end over rc-git-core, for scripts, agents, and benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "rc-git"
+path = "src/main.rs"
+
+[dependencies]
+rc-git-core.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+rc-git-testkit.workspace = true
+
+[lints]
+workspace = true

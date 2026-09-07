@@ -1,0 +1,19 @@
+[package]
+name = "rc-git-guard"
+description = "Policy engine that classifies git actions and decides what confirmation they need"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+gix.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rc-git-testkit.workspace = true
+
+[lints]
+workspace = true

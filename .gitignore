@@ -1,0 +1,7 @@
+/target/
+/mac/.build/
+/mac/.swiftpm/
+*.app/
+DerivedData/
+.DS_Store
+.claude/settings.local.json

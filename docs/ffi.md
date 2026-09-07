@@ -1,0 +1,45 @@
+# FFI
+
+`crates/rc-git-ffi` exposes `rc-git-core` as a C ABI. `cbindgen` turns it into
+`mac/Sources/CRcGit/include/rc_git.h`, and `mac/Sources/RcGitKit/Repository.swift` wraps it
+in Swift value types.
+
+## Contract
+
+- A pointer returned by an `rcgit_*` function belongs to the caller until it is passed to the
+  matching `rcgit_*_free`. Freeing `NULL` is a no-op.
+- A `char *` is NUL-terminated. Names that are not UTF-8 pass through as raw bytes.
+- A function that can fail takes `char **error`. On failure it returns `NULL` (or
+  `RCGIT_ERROR`) and, when `error` is not `NULL`, stores a message to release with
+  `rcgit_string_free`. On success `*error` is untouched, which is why the Swift side
+  distinguishes "not found" from "failed" for `rcgit_entry_at_path`.
+- Object ids cross as `RcGitOid`: 32 bytes plus a length, 20 for SHA-1.
+- An `RcGitRepo` may be used from any thread, including several at once.
+- Statuses: `RCGIT_OK` (0) and `RCGIT_ERROR` (-1) for functions that fill an out parameter.
+
+## Memory
+
+Every `#[repr(C)]` struct that owns pointers implements `Drop`, so releasing the outer box
+releases everything inside it. Arrays are `Box<[T]>` turned into a pointer and a length by
+`export_vec` and rebuilt by `release_vec`. Strings are `CString::into_raw` and
+`CString::from_raw`. Nothing is allocated with `malloc`, so nothing may be freed with `free`.
+
+## Adding a function
+
+1. Add the operation to `rc-git-core` with tests (see `.claude/rules/core.md`).
+2. In `crates/rc-git-ffi/src/lib.rs`, add the `#[repr(C)]` type if needed with a `Drop` impl,
+   then the `pub unsafe extern "C" fn` with a `# Safety` section and one `// SAFETY:` block
+   that reads every pointer argument through `repo_arg`, `oid_arg`, `bytes_arg`, `Out::new`.
+3. Add a test in the same file that calls it, checks the error path with `NULL` input, and
+   frees what it received.
+4. Run `scripts/gen-header.sh` and commit the regenerated header.
+5. Add the Swift method to `Repository.swift`, free in `defer`, convert to value types.
+6. Add a case to `RepositoryIntegrationTests.swift`.
+
+`scripts/gen-header.sh --verify` in the pre-commit hook and CI fails when step 4 is skipped.
+
+## Linking
+
+`mac/Package.swift` links `librc_git_ffi.a` from `target/release` through the `CRcGit` system
+library target and its module map. `scripts/build.sh` builds the library and regenerates the
+header before invoking `swift build`; run it once after cloning or after touching Rust.
