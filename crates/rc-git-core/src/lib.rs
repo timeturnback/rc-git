@@ -15,6 +15,7 @@ mod log;
 mod oid;
 mod refs;
 mod repo;
+mod stash;
 mod tree;
 mod worktree;
 
@@ -30,5 +31,6 @@ pub use log::{CommitDetail, CommitSummary};
 pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
 pub use repo::Repository;
+pub use stash::StashEntry;
 pub use tree::{EntryKind, TreeEntry, sort_for_display};
 pub use worktree::{StatusEntry, StatusReport, WorktreeEntry, WorktreeListing, WorktreeStatus};

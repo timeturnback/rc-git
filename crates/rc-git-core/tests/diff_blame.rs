@@ -257,3 +257,86 @@ fn blame_reports_missing_paths_and_bad_tips() {
     let blob = repo.resolve("main:README.md").unwrap();
     assert!(repo.blame(blob, "README.md").is_err());
 }
+
+#[test]
+fn worktree_diff_shows_disk_edits_against_the_blob() {
+    let fx = Fixture::standard();
+    fx.write("alpha.txt", b"alpha\nbeta\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let old = oid(&fx.rev_parse("HEAD:alpha.txt"));
+    let BlobDiff::Text { hunks } = repo
+        .diff_worktree_file(
+            Some(old),
+            "alpha.txt",
+            DEFAULT_BLOB_LIMIT,
+            DEFAULT_DIFF_CONTEXT,
+        )
+        .unwrap()
+    else {
+        panic!("expected a text diff");
+    };
+    assert_eq!(hunks.len(), 1);
+    let added: Vec<String> = hunks[0]
+        .lines
+        .iter()
+        .filter(|line| line.kind == DiffLineKind::Added)
+        .map(|line| line.text.to_string())
+        .collect();
+    assert_eq!(added, ["beta"]);
+}
+
+#[test]
+fn worktree_diff_of_an_untracked_file_is_pure_additions() {
+    let fx = Fixture::standard();
+    fx.write("new.txt", b"one\ntwo\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let BlobDiff::Text { hunks } = repo
+        .diff_worktree_file(None, "new.txt", DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)
+        .unwrap()
+    else {
+        panic!("expected a text diff");
+    };
+    assert!(
+        hunks[0]
+            .lines
+            .iter()
+            .all(|line| line.kind == DiffLineKind::Added)
+    );
+    assert_eq!(hunks[0].lines.len(), 2);
+}
+
+#[test]
+fn worktree_diff_reports_binary_size_limits_and_missing_files() {
+    let fx = Fixture::standard();
+    fx.write("bin.dat", b"\x89PNG\0\0changed");
+    let repo = Repository::open(fx.path()).unwrap();
+    let old = oid(&fx.rev_parse("HEAD:bin.dat"));
+    let diff = repo
+        .diff_worktree_file(
+            Some(old),
+            "bin.dat",
+            DEFAULT_BLOB_LIMIT,
+            DEFAULT_DIFF_CONTEXT,
+        )
+        .unwrap();
+    assert!(matches!(diff, BlobDiff::Binary { .. }), "{diff:?}");
+
+    let readme = oid(&fx.rev_parse("HEAD:README.md"));
+    let diff = repo
+        .diff_worktree_file(Some(readme), "README.md", 3, DEFAULT_DIFF_CONTEXT)
+        .unwrap();
+    assert!(
+        matches!(diff, BlobDiff::TooLarge { limit: 3, .. }),
+        "{diff:?}"
+    );
+
+    let err = repo
+        .diff_worktree_file(
+            None,
+            "missing.txt",
+            DEFAULT_BLOB_LIMIT,
+            DEFAULT_DIFF_CONTEXT,
+        )
+        .unwrap_err();
+    assert!(matches!(err, Error::Worktree { .. }), "{err}");
+}

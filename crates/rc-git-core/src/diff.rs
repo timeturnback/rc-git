@@ -5,7 +5,7 @@ use gix::diff::blob::unified_diff::{ConsumeHunk, ContextSize, HunkHeader};
 use gix::diff::blob::{Algorithm, Diff, InternedInput, UnifiedDiff};
 use gix::object::tree::diff::{Action, Change};
 
-use crate::blob::is_binary;
+use crate::blob::{BlobContent, is_binary};
 use crate::error::{Error, ObjectKind, Result, git, object};
 use crate::oid::Oid;
 use crate::repo::Repository;
@@ -164,28 +164,31 @@ impl Repository {
     ) -> Result<BlobDiff> {
         let old_data = self.blob_for_diff(old, limit)?;
         let new_data = self.blob_for_diff(new, limit)?;
-        let (old_data, new_data) = match (old_data, new_data) {
-            (DiffSide::Text(old), DiffSide::Text(new)) => (old, new),
-            (DiffSide::TooLarge { size, limit }, _) | (_, DiffSide::TooLarge { size, limit }) => {
-                return Ok(BlobDiff::TooLarge { size, limit });
-            }
-            (old, new) => {
-                return Ok(BlobDiff::Binary {
-                    old_size: old.size(),
-                    new_size: new.size(),
-                });
-            }
+        diff_sides(old_data, new_data, context)
+    }
+
+    /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
+    /// bytes: gitattributes filters and eol conversion are not applied. `old` is absent for
+    /// an untracked file, which makes the diff pure additions. Each side's size is checked
+    /// against `limit` before decoding.
+    ///
+    /// # Errors
+    /// [`Error::Object`] when `old` is missing, [`Error::WrongKind`] when it is not a blob,
+    /// [`Error::Worktree`](crate::Error::Worktree) when the file cannot be read.
+    pub fn diff_worktree_file(
+        &self,
+        old: Option<Oid>,
+        path: &str,
+        limit: u64,
+        context: u32,
+    ) -> Result<BlobDiff> {
+        let old_data = self.blob_for_diff(old, limit)?;
+        let new_data = match self.worktree_file(path, limit)? {
+            BlobContent::Text { data, .. } => DiffSide::Text(data),
+            BlobContent::Binary { size } => DiffSide::Binary { size },
+            BlobContent::TooLarge { size, limit } => DiffSide::TooLarge { size, limit },
         };
-        let input = InternedInput::new(old_data.as_slice(), new_data.as_slice());
-        let diff = Diff::compute(Algorithm::Histogram, &input);
-        let unified = UnifiedDiff::new(
-            &diff,
-            &input,
-            CollectHunks::default(),
-            ContextSize::symmetrical(context),
-        );
-        let hunks = unified.consume().map_err(git("collect diff hunks"))?;
-        Ok(BlobDiff::Text { hunks })
+        diff_sides(old_data, new_data, context)
     }
 
     fn blob_for_diff(&self, oid: Option<Oid>, limit: u64) -> Result<DiffSide> {
@@ -217,6 +220,32 @@ impl Repository {
             Ok(DiffSide::Text(data))
         })
     }
+}
+
+/// Runs the line diff once both sides are classified.
+fn diff_sides(old: DiffSide, new: DiffSide, context: u32) -> Result<BlobDiff> {
+    let (old_data, new_data) = match (old, new) {
+        (DiffSide::Text(old), DiffSide::Text(new)) => (old, new),
+        (DiffSide::TooLarge { size, limit }, _) | (_, DiffSide::TooLarge { size, limit }) => {
+            return Ok(BlobDiff::TooLarge { size, limit });
+        }
+        (old, new) => {
+            return Ok(BlobDiff::Binary {
+                old_size: old.size(),
+                new_size: new.size(),
+            });
+        }
+    };
+    let input = InternedInput::new(old_data.as_slice(), new_data.as_slice());
+    let diff = Diff::compute(Algorithm::Histogram, &input);
+    let unified = UnifiedDiff::new(
+        &diff,
+        &input,
+        CollectHunks::default(),
+        ContextSize::symmetrical(context),
+    );
+    let hunks = unified.consume().map_err(git("collect diff hunks"))?;
+    Ok(BlobDiff::Text { hunks })
 }
 
 enum DiffSide {

@@ -28,6 +28,8 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 #[test]
 fn every_operation_leaves_git_dir_untouched() {
     let fx = Fixture::standard();
+    fx.write("alpha.txt", b"stashed\n");
+    fx.git(&["stash", "push", "-q", "-m", "kept for reading"]);
     let before = snapshot(&fx.git_dir());
     assert!(
         before.len() > 10,
@@ -83,6 +85,9 @@ fn every_operation_leaves_git_dir_untouched() {
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
     let status = repo.worktree_status(root, 100_000).unwrap();
     assert!(!status.truncated);
+    repo.diff_worktree_file(None, "README.md", DEFAULT_BLOB_LIMIT, 3)
+        .unwrap();
+    assert_eq!(repo.stash_list().unwrap().len(), 1);
     drop(repo);
 
     assert_eq!(snapshot(&fx.git_dir()), before);
