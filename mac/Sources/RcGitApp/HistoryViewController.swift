@@ -12,6 +12,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     var onSelectChange: ((TreeChange) -> Void)?
     var onJumpToCommit: ((Oid) -> Void)?
     var onDetailBack: (() -> Void)?
+    var onClearScope: (() -> Void)?
 
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
@@ -26,6 +27,10 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var complete = false
     private var changes: [TreeChange] = []
     private var isReloading = false
+
+    private let scopeBar = NSStackView()
+    private let scopeLabel = NSTextField(labelWithString: "")
+    private var scopedPath: String?
 
     private let detailHeader = NSStackView()
     private let detailTitle = NSTextField(wrappingLabelWithString: "")
@@ -82,12 +87,19 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         placeholder.textColor = .secondaryLabelColor
         placeholder.translatesAutoresizingMaskIntoConstraints = false
 
+        buildScopeBar()
+
         let commitsPane = NSView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        scopeBar.translatesAutoresizingMaskIntoConstraints = false
+        commitsPane.addSubview(scopeBar)
         commitsPane.addSubview(scroll)
         commitsPane.addSubview(placeholder)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: commitsPane.topAnchor),
+            scopeBar.topAnchor.constraint(equalTo: commitsPane.topAnchor),
+            scopeBar.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
+            scopeBar.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: scopeBar.bottomAnchor),
             scroll.bottomAnchor.constraint(equalTo: commitsPane.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: commitsPane.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
@@ -175,6 +187,39 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             container.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
         return container
+    }
+
+    private var scopeBarCollapsed: NSLayoutConstraint?
+
+    private func buildScopeBar() {
+        scopeLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        scopeLabel.lineBreakMode = .byTruncatingMiddle
+        let clear = NSButton(
+            title: "✕", target: self, action: #selector(clearScopeClicked(_:)))
+        clear.bezelStyle = .accessoryBarAction
+        clear.controlSize = .small
+        scopeBar.orientation = .horizontal
+        scopeBar.alignment = .centerY
+        scopeBar.spacing = 6
+        scopeBar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        scopeBar.addArrangedSubview(scopeLabel)
+        scopeBar.addArrangedSubview(clear)
+        scopeBar.clipsToBounds = true
+        let collapsed = scopeBar.heightAnchor.constraint(equalToConstant: 0)
+        collapsed.isActive = true
+        scopeBarCollapsed = collapsed
+    }
+
+    /// Shows or hides the path chip above the commit list.
+    func setScope(path: String?) {
+        scopedPath = path
+        scopeLabel.stringValue = path.map { "History of \($0)" } ?? ""
+        scopeBarCollapsed?.isActive = path == nil
+        placeholder.stringValue = path == nil ? "No commits" : "No commits touch this path"
+    }
+
+    @objc private func clearScopeClicked(_ sender: Any?) {
+        onClearScope?()
     }
 
     private func buildDetailHeader() {

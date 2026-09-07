@@ -46,6 +46,73 @@ import Testing
         #expect(model.history.count == 150, "a complete history never re-fetches")
     }
 
+    @Test func pathScopeFiltersAndRestores() async {
+        await model.attach(repo)
+        await model.loadMoreHistory()
+        #expect(model.history.count == 100)
+        let touching = [
+            commitSummary(oid(0xA1), title: "touch 1"), commitSummary(oid(0xA2), title: "touch 2"),
+        ]
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "src/a.rs")] =
+                touching
+        }
+        await model.showPathHistory("src/a.rs")
+        #expect(model.historyScope == .path("src/a.rs"))
+        #expect(model.history.map(\.title) == ["touch 1", "touch 2"])
+        #expect(model.historyComplete)
+        model.clearHistoryScope()
+        #expect(model.historyScope == .all)
+        #expect(model.history.count == 100, "the unfiltered pages come back from the cache")
+    }
+
+    @Test func pathScopeCachesPerTipAndPath() async {
+        await model.attach(repo)
+        await model.loadMoreHistory()
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "a")] = [
+                commitSummary(oid(0xA1), title: "touch a")
+            ]
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "b")] = [
+                commitSummary(oid(0xB1), title: "touch b")
+            ]
+        }
+        await model.showPathHistory("a")
+        #expect(model.history.map(\.title) == ["touch a"])
+        await model.showPathHistory("b")
+        #expect(model.history.map(\.title) == ["touch b"])
+        let calls = repo.lock.withLock { repo.pathHistoryCalls }
+        await model.showPathHistory("a")
+        #expect(model.history.map(\.title) == ["touch a"])
+        #expect(
+            repo.lock.withLock { repo.pathHistoryCalls } == calls,
+            "a complete scope comes back without a walk")
+    }
+
+    @Test func pathScopeWalksInChunksAndScopeChangeDropsTheRest() async {
+        await model.attach(repo)
+        let touching = (0..<150).map { index in
+            commitSummary(oid(UInt8(index % 250)), title: "touch \(index)")
+        }
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "big")] = touching
+        }
+        await model.showPathHistory("big")
+        #expect(model.history.count == 100, "one page even though more commits match")
+        #expect(!model.historyComplete)
+        await model.loadMoreHistory()
+        #expect(model.history.count == 150)
+        #expect(model.historyComplete)
+    }
+
+    @Test func pathScopeErrorSurfaces() async {
+        await model.attach(repo)
+        var reported: String?
+        model.onError = { reported = $0 }
+        await model.showPathHistory("unknown")
+        #expect(reported?.contains("start commit walk") == true)
+    }
+
     @Test func historyIsCachedPerTipAcrossReselection() async {
         await model.attach(repo)
         await model.loadMoreHistory()

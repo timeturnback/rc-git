@@ -91,6 +91,10 @@ enum MainMenu {
             item(
                 "Show Blame", #selector(MainWindowController.showBlame(_:)), "b",
                 [.command, .option]))
+        menu.addItem(
+            item(
+                "History of This File", #selector(MainWindowController.showFileHistory(_:)), "h",
+                [.command, .option]))
         menu.addItem(.separator())
         menu.addItem(
             item(

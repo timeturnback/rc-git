@@ -10,6 +10,13 @@ public enum FileState: Equatable, Sendable {
     case failed(TreeEntry, String)
 }
 
+/// What the history pane lists: everything reachable from the anchor, or only the commits
+/// that changed one path.
+public enum HistoryScope: Equatable, Sendable {
+    case all
+    case path(String)
+}
+
 /// What the commit detail header shows.
 public enum CommitDetailState: Equatable, Sendable {
     case empty
@@ -55,11 +62,15 @@ public final class BrowserModel {
 
     /// Commits of the selected ref loaded so far, newest first.
     public private(set) var history: [CommitSummary] = []
-    /// True once a page came back shorter than `historyPageSize`.
+    /// True once a page came back shorter than `historyPageSize`, or a filtered walk ended.
     public private(set) var historyComplete = false
     public private(set) var isLoadingHistory = false
+    /// Whether the history pane shows everything or one path's commits.
+    public private(set) var historyScope: HistoryScope = .all
     /// How many commits one call to `loadMoreHistory` fetches.
     public static let historyPageSize = 100
+    /// How many commits one repository call may examine while filtering by path.
+    public static let pathHistoryScanChunk = 5_000
 
     /// Fired after refs, HEAD, or the selected ref changed.
     public var onRefsChanged: (() -> Void)?
@@ -83,6 +94,13 @@ public final class BrowserModel {
     private var historyAnchor: Oid?
     /// Pages already walked, per tip. A tip is immutable, so entries never go stale.
     private var historyCache: [Oid: (commits: [CommitSummary], complete: Bool)] = [:]
+    /// Filtered pages already walked, per tip and path. Immutable keys, so never stale.
+    private struct PathHistoryKey: Hashable {
+        let tip: Oid
+        let path: String
+    }
+    private var pathHistoryCache:
+        [PathHistoryKey: (commits: [CommitSummary], scanned: Int, complete: Bool)] = [:]
     /// Flattened file lists, per root tree. Content-addressed like every other cache.
     private var pathIndices: [Oid: PathIndex] = [:]
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
@@ -96,6 +114,7 @@ public final class BrowserModel {
         self.repository = repository
         trees.removeAll()
         historyCache.removeAll()
+        pathHistoryCache.removeAll()
         pathIndices.removeAll()
         highlightCache.removeAll()
         indexBuild?.task.cancel()
@@ -361,8 +380,18 @@ public final class BrowserModel {
 
     /// Fetches the next page of commits for the history pane. Does nothing while a page is
     /// loading, after the last page, or when nothing is selected. Pages accumulate in a
-    /// cache keyed by the tip, so switching away and back does not re-walk.
+    /// cache keyed by the tip — and the path when scoped — so switching away and back does
+    /// not re-walk.
     public func loadMoreHistory() async {
+        switch historyScope {
+        case .all:
+            await loadMoreLog()
+        case let .path(path):
+            await loadMorePathHistory(path)
+        }
+    }
+
+    private func loadMoreLog() async {
         guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete
         else { return }
         isLoadingHistory = true
@@ -389,10 +418,91 @@ public final class BrowserModel {
         }
     }
 
+    /// One page of path-scoped history, walked in scan chunks so a long stretch without a
+    /// match never blocks a repository handle and a scope change between chunks drops the
+    /// rest.
+    private func loadMorePathHistory(_ path: String) async {
+        guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete
+        else { return }
+        isLoadingHistory = true
+        let generation = historyGeneration
+        let key = PathHistoryKey(tip: tip, path: path)
+        let target = history.count + Self.historyPageSize
+        let chunk = Self.pathHistoryScanChunk
+        while history.count < target, !historyComplete {
+            let skip = pathHistoryCache[key]?.scanned ?? 0
+            let remaining = target - history.count
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> Result<CommitPage, RepositoryError> in
+                do {
+                    return .success(
+                        try repository.pathHistory(
+                            tip: tip, path: path, scanSkip: skip, limit: remaining,
+                            maxScan: chunk))
+                } catch {
+                    return .failure(Self.wrap(error))
+                }
+            }.value
+            guard generation == historyGeneration else { return }
+            switch result {
+            case let .success(page):
+                history += page.commits
+                historyComplete = page.complete
+                pathHistoryCache[key] = (history, skip + page.scanned, page.complete)
+                onHistoryChanged?()
+            case let .failure(error):
+                isLoadingHistory = false
+                fail(error.message)
+                return
+            }
+        }
+        isLoadingHistory = false
+    }
+
+    /// Scopes the history pane to the commits that changed `path`, keeping the current
+    /// anchor. Cached pages for the same tip and path come back without a walk.
+    public func showPathHistory(_ path: String) async {
+        guard repository != nil, let tip = historyAnchor else { return }
+        historyGeneration += 1
+        isLoadingHistory = false
+        historyScope = .path(path)
+        clearCommitDetail()
+        if let cached = pathHistoryCache[PathHistoryKey(tip: tip, path: path)] {
+            history = cached.commits
+            historyComplete = cached.complete
+        } else {
+            history = []
+            historyComplete = false
+        }
+        onHistoryChanged?()
+        if !historyComplete {
+            await loadMoreHistory()
+        }
+    }
+
+    /// Returns the history pane to the unfiltered list of the current anchor.
+    public func clearHistoryScope() {
+        guard historyScope != .all else { return }
+        resetHistory(anchor: historyAnchor)
+    }
+
     private func resetHistory(anchor: Oid?) {
         historyGeneration += 1
         isLoadingHistory = false
         historyAnchor = anchor
+        historyScope = .all
+        clearCommitDetail()
+        if let anchor, let cached = historyCache[anchor] {
+            history = cached.commits
+            historyComplete = cached.complete
+        } else {
+            history = []
+            historyComplete = false
+        }
+        onHistoryChanged?()
+    }
+
+    private func clearCommitDetail() {
         diffGeneration += 1
         detailBackStack = []
         if diffCommit != nil {
@@ -402,14 +512,6 @@ public final class BrowserModel {
             commitDetail = .empty
             onDiffChanged?()
         }
-        if let anchor, let cached = historyCache[anchor] {
-            history = cached.commits
-            historyComplete = cached.complete
-        } else {
-            history = []
-            historyComplete = false
-        }
-        onHistoryChanged?()
     }
 
     // MARK: Diff and blame

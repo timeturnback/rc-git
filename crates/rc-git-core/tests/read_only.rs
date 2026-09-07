@@ -54,6 +54,7 @@ fn every_operation_leaves_git_dir_untouched() {
         repo.commit(commit.oid).unwrap();
         repo.commit_details(commit.oid).unwrap();
     }
+    repo.path_history(tip, "README.md", 0, 100, 1000).unwrap();
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(

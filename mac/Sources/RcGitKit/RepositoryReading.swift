@@ -10,6 +10,8 @@ public protocol RepositoryReading: Sendable {
     func log(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary]
     func commit(_ oid: Oid) throws -> CommitSummary
     func commitDetails(_ oid: Oid) throws -> CommitDetail
+    func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
+        -> CommitPage
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange]
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff
     func blame(tip: Oid, path: String) throws -> [BlameRange]

@@ -127,8 +127,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    @objc func showFileHistory(_ sender: Any?) {
+        guard let path = model.openedFilePath else { return }
+        setMode(.history)
+        Task { [weak self] in
+            await self?.model.showPathHistory(path)
+        }
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(showBlame(_:)) {
+            return model.openedFilePath != nil
+        }
+        if menuItem.action == #selector(showFileHistory(_:)) {
             return model.openedFilePath != nil
         }
         if menuItem.action == #selector(goToFile(_:)) {
@@ -247,6 +258,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onHistoryChanged = { [weak self] in
             guard let self else { return }
+            if case let .path(path) = model.historyScope {
+                historyController.setScope(path: path)
+            } else {
+                historyController.setScope(path: nil)
+            }
             historyController.reload(model.history, complete: model.historyComplete)
         }
         model.onDiffChanged = { [weak self] in
@@ -265,6 +281,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         historyController.onDetailBack = { [weak self] in
             guard let self else { return }
             Task { await self.model.goBackInDetail() }
+        }
+        historyController.onClearScope = { [weak self] in
+            self?.model.clearHistoryScope()
+        }
+        treeController.onShowHistory = { [weak self] path in
+            guard let self else { return }
+            setMode(.history)
+            Task { await self.model.showPathHistory(path) }
         }
         historyController.onSelectCommit = { [weak self] commit in
             guard let self else { return }

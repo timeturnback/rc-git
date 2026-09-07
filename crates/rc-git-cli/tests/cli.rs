@@ -155,6 +155,30 @@ fn log_pages_newest_first() {
 }
 
 #[test]
+fn filelog_lists_commits_that_changed_a_path() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let lib = stdout(&rc_git(&["filelog", path, "src/lib.rs"]));
+    assert_eq!(lib.lines().count(), 1);
+    assert!(lib.ends_with(&format!("{COMMIT_2_TITLE}\n")));
+
+    let readme = stdout(&rc_git(&["filelog", path, "README.md", "main"]));
+    assert_eq!(readme.lines().count(), 1);
+    assert!(readme.ends_with(&format!("{COMMIT_1_TITLE}\n")));
+
+    let chunked = stdout(&rc_git(&["filelog", path, "README.md", "--max-scan", "1"]));
+    assert_eq!(chunked, readme, "chunked scanning changes nothing");
+
+    let none = stdout(&rc_git(&["filelog", path, "nope.txt"]));
+    assert!(none.is_empty());
+
+    let missing = rc_git(&["filelog", path]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(stderr(&missing).contains("filelog needs <path>"));
+}
+
+#[test]
 fn show_prints_header_and_message() {
     let fx = Fixture::standard();
     fx.commit_with_body("Detail commit", "The body.", "2024-01-04T00:00:00+0000");

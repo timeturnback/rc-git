@@ -10,6 +10,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var commits: [Oid: [CommitSummary]] = [:]
     var summaries: [Oid: CommitSummary] = [:]
     var details: [Oid: CommitDetail] = [:]
+    /// Per "tip.hex:path", the full matching history. The fake treats every stored commit as
+    /// one scanned commit, so `scanSkip` indexes into this list.
+    var pathHistories: [String: [CommitSummary]] = [:]
+    var pathHistoryCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
     var blames: [String: [BlameRange]] = [:]
@@ -99,6 +103,26 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             summary: summary, body: "", committerName: summary.authorName,
             committerEmail: summary.authorEmail, committerTime: summary.authorTime,
             committerOffset: summary.authorOffset, tree: oid)
+    }
+
+    func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
+        -> CommitPage
+    {
+        let found = lock.withLock { () -> [CommitSummary]? in
+            pathHistoryCalls += 1
+            return pathHistories[FakeRepository.pathKey(tip: tip, path: path)]
+        }
+        guard let found else {
+            throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
+        }
+        let slice = found.dropFirst(scanSkip).prefix(min(limit, maxScan))
+        return CommitPage(
+            commits: Array(slice), scanned: slice.count,
+            complete: scanSkip + slice.count >= found.count)
+    }
+
+    static func pathKey(tip: Oid, path: String) -> String {
+        "\(tip.hex):\(path)"
     }
 
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] {

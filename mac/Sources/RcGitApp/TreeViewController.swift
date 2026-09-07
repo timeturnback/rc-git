@@ -8,6 +8,7 @@ import RcGitKit
 final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     var childrenProvider: ((Oid, String) async throws -> [BrowseRow])?
     var onOpenFile: ((BrowseRow, String) -> Void)?
+    var onShowHistory: ((String) -> Void)?
     var onError: ((String) -> Void)?
 
     final class Node {
@@ -43,6 +44,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.allowsEmptySelection = true
         outline.target = self
         outline.doubleAction = #selector(toggleSelected(_:))
+        outline.menu = buildMenu()
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -107,6 +109,36 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 onError?(String(describing: error))
             }
         }
+    }
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        let history = NSMenuItem(
+            title: "Show File History", action: #selector(showHistoryClicked(_:)),
+            keyEquivalent: "")
+        history.target = self
+        menu.addItem(history)
+        let copy = NSMenuItem(
+            title: "Copy Path", action: #selector(copyPath(_:)), keyEquivalent: "")
+        copy.target = self
+        menu.addItem(copy)
+        return menu
+    }
+
+    private var actedNode: Node? {
+        let row = outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow
+        return outline.item(atRow: row) as? Node
+    }
+
+    @objc private func showHistoryClicked(_ sender: Any?) {
+        guard let node = actedNode else { return }
+        onShowHistory?(node.path)
+    }
+
+    @objc private func copyPath(_ sender: Any?) {
+        guard let node = actedNode else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(node.path, forType: .string)
     }
 
     @objc private func toggleSelected(_ sender: Any?) {

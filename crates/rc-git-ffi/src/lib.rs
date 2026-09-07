@@ -17,8 +17,8 @@ use std::path::Path;
 use std::ptr;
 
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitSummary, DiffHunk, DiffLineKind,
-    EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
+    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitPage, CommitSummary, DiffHunk,
+    DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
@@ -396,6 +396,42 @@ pub struct RcGitCommitList {
 }
 
 impl Drop for RcGitCommitList {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.commits, self.len) };
+    }
+}
+
+/// One page of a filtered history walk.
+#[repr(C)]
+pub struct RcGitCommitPage {
+    /// `len` matching commits, newest first.
+    pub commits: *mut RcGitCommit,
+    /// Number of matching commits.
+    pub len: usize,
+    /// How many commits the call examined past its `scan_skip`.
+    pub scanned: usize,
+    /// True when the walk reached the end of history within this call.
+    pub complete: bool,
+}
+
+impl RcGitCommitPage {
+    fn export(page: CommitPage) -> Self {
+        let mut exported = Vec::with_capacity(page.commits.len());
+        for commit in page.commits {
+            exported.push(RcGitCommit::export(commit));
+        }
+        let (commits, len) = export_vec(exported);
+        Self {
+            commits,
+            len,
+            scanned: page.scanned,
+            complete: page.complete,
+        }
+    }
+}
+
+impl Drop for RcGitCommitPage {
     fn drop(&mut self) {
         // SAFETY: the array was produced by `export_vec` with this length.
         unsafe { release_vec(self.commits, self.len) };
@@ -1536,6 +1572,61 @@ pub unsafe extern "C" fn rcgit_commit_detail_free(detail: *mut RcGitCommitDetail
     unsafe { release(detail) };
 }
 
+/// Commits reachable from `tip` that changed `path`, newest first. Examines at most
+/// `max_scan` commits past `scan_skip` and reports how many it examined, so the caller loops
+/// pages until `complete`. Release with `rcgit_commit_page_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
+/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_path_history(
+    repo: *const RcGitRepo,
+    tip: *const RcGitOid,
+    path: *const c_char,
+    scan_skip: usize,
+    limit: usize,
+    max_scan: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitPage {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, tip, path, error) = unsafe {
+        (
+            repo_arg(repo),
+            oid_arg(tip),
+            bytes_arg(path),
+            Out::new(error),
+        )
+    };
+    let (Some(repo), Some(tip), Some(path)) = (repo, tip, path) else {
+        error.report("repo, tip, or path is NULL or malformed");
+        return ptr::null_mut();
+    };
+    match repo.path_history(
+        tip,
+        &String::from_utf8_lossy(path),
+        scan_skip,
+        limit,
+        max_scan,
+    ) {
+        Ok(page) => export(RcGitCommitPage::export(page)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_path_history`.
+///
+/// # Safety
+/// `page` is NULL or came from `rcgit_path_history` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_commit_page_free(page: *mut RcGitCommitPage) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(page) };
+}
+
 /// Lists every file that differs between two trees, renames detected, sorted by path. `from`
 /// and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,
 /// which turns a root commit's diff into pure additions. Release with
@@ -2528,6 +2619,67 @@ mod tests {
         let page = unsafe { rcgit_log(repo, &raw const tip, 1, 10, &raw mut error) };
         assert_eq!(unsafe { &*page }.len, 1);
         unsafe { rcgit_commit_list_free(page) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn path_history_pages_with_a_scan_cursor() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tip = resolve(repo, "main");
+        let file = CString::new("src/lib.rs").unwrap();
+
+        let page = unsafe {
+            rcgit_path_history(
+                repo,
+                &raw const tip,
+                file.as_ptr(),
+                0,
+                10,
+                100,
+                &raw mut error,
+            )
+        };
+        assert!(!page.is_null(), "{}", take_error(&mut error));
+        let page_ref = unsafe { &*page };
+        let commits = unsafe { std::slice::from_raw_parts(page_ref.commits, page_ref.len) };
+        assert_eq!(commits.len(), 1);
+        assert_eq!(text(commits[0].title), COMMIT_2_TITLE);
+        assert_eq!(page_ref.scanned, 2);
+        assert!(page_ref.complete);
+        unsafe { rcgit_commit_page_free(page) };
+
+        let capped = unsafe {
+            rcgit_path_history(
+                repo,
+                &raw const tip,
+                file.as_ptr(),
+                0,
+                10,
+                1,
+                &raw mut error,
+            )
+        };
+        let capped_ref = unsafe { &*capped };
+        assert_eq!(capped_ref.scanned, 1);
+        assert!(!capped_ref.complete);
+        unsafe { rcgit_commit_page_free(capped) };
+
+        let null = unsafe {
+            rcgit_path_history(
+                repo,
+                &raw const tip,
+                ptr::null(),
+                0,
+                10,
+                100,
+                &raw mut error,
+            )
+        };
+        assert!(null.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        unsafe { rcgit_commit_page_free(ptr::null_mut()) };
         unsafe { rcgit_repo_free(repo) };
     }
 

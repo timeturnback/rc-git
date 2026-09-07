@@ -23,6 +23,7 @@ usage: rc-git [--time] <command> <repo> [args]
   ls      <repo> [rev] [path]             entries of a directory at a revision (default HEAD)
   cat     <repo> <rev> <path> [limit]     file contents; limit in bytes, default 8 MiB
   log     <repo> [rev] [-n N] [--skip N]  commits, newest first (default 20)
+  filelog <repo> <path> [rev] [-n N] [--max-scan N]  commits that changed a path
   show    <repo> <rev>                    one commit: header lines, then the message
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   blame   <repo> <rev> <path>             which commit introduced each line
@@ -44,6 +45,7 @@ enum Verb {
     Ls,
     Cat,
     Log,
+    Filelog,
     Show,
     Diff,
     Blame,
@@ -59,6 +61,7 @@ impl Verb {
             "ls" => Some(Self::Ls),
             "cat" => Some(Self::Cat),
             "log" => Some(Self::Log),
+            "filelog" => Some(Self::Filelog),
             "show" => Some(Self::Show),
             "diff" => Some(Self::Diff),
             "blame" => Some(Self::Blame),
@@ -75,6 +78,7 @@ impl Verb {
             Self::Ls => "ls",
             Self::Cat => "cat",
             Self::Log => "log",
+            Self::Filelog => "filelog",
             Self::Show => "show",
             Self::Diff => "diff",
             Self::Blame => "blame",
@@ -144,6 +148,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Ls => ls(&repo, &invocation.args, &mut out)?,
         Verb::Cat => cat(&repo, &invocation.args, &mut out)?,
         Verb::Log => log(&repo, &invocation.args, &mut out)?,
+        Verb::Filelog => filelog(&repo, &invocation.args, &mut out)?,
         Verb::Show => show(&repo, &invocation.args, &mut out)?,
         Verb::Diff => diff(&repo, &invocation.args, &mut out)?,
         Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
@@ -288,6 +293,42 @@ fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
             "{}\t{}\t{}\t{}",
             commit.oid, commit.author_time, commit.author_name, commit.title
         )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let [path, rest @ ..] = args else {
+        bail!("filelog needs <path>\n\n{USAGE}");
+    };
+    let mut rev = "HEAD";
+    let mut limit = 20;
+    let mut max_scan = 5000;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-n" => limit = number(iter.next(), "-n")?,
+            "--max-scan" => max_scan = number(iter.next(), "--max-scan")?,
+            other => rev = other,
+        }
+    }
+    let tip = repo.resolve(rev)?;
+    let mut printed = 0;
+    let mut scan_skip = 0;
+    loop {
+        let page = repo.path_history(tip, path, scan_skip, limit - printed, max_scan)?;
+        for commit in &page.commits {
+            writeln!(
+                out,
+                "{}\t{}\t{}\t{}",
+                commit.oid, commit.author_time, commit.author_name, commit.title
+            )?;
+        }
+        printed += page.commits.len();
+        scan_skip += page.scanned;
+        if page.complete || printed >= limit {
+            break;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

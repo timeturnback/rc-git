@@ -27,6 +27,12 @@ constraints are clear.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).
   The CLI gained `diff`, `blame`, and `status` verbs.
+- **Per-file history.** "Show File History" on tree rows and ⌥⌘H for the open file scope the
+  History pane to the commits that changed one path, with a chip to clear. `path_history`
+  walks like `log` and compares the entry at the path against every parent (clean merges hide,
+  root commits count, renames are not followed), examining at most `max_scan` commits per call
+  so pages stream in chunks and a scope change between chunks cancels the rest. Pages cache by
+  `(tip, path)`. The CLI gained `filelog`.
 - **Commit detail.** Selecting a commit loads `commit_details` alongside the tree diff: full
   message body, committer when it differs from the author, refs pointing at the commit
   (computed from the ref listing, no extra walk), and parent links. Parent links and revision

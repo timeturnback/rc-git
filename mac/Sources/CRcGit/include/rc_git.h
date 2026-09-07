@@ -280,6 +280,18 @@ typedef struct RcGitCommitDetail {
   struct RcGitOid tree;
 } RcGitCommitDetail;
 
+// One page of a filtered history walk.
+typedef struct RcGitCommitPage {
+  // `len` matching commits, newest first.
+  struct RcGitCommit *commits;
+  // Number of matching commits.
+  size_t len;
+  // How many commits the call examined past its `scan_skip`.
+  size_t scanned;
+  // True when the walk reached the end of history within this call.
+  bool complete;
+} RcGitCommitPage;
+
 // One changed file between two trees.
 typedef struct RcGitTreeChange {
   // What happened.
@@ -604,6 +616,27 @@ struct RcGitCommitDetail *rcgit_commit_details(const struct RcGitRepo *repo,
 // # Safety
 // `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
 void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
+
+// Commits reachable from `tip` that changed `path`, newest first. Examines at most
+// `max_scan` commits past `scan_skip` and reports how many it examined, so the caller loops
+// pages until `complete`. Release with `rcgit_commit_page_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
+// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
+                                           const struct RcGitOid *tip,
+                                           const char *path,
+                                           size_t scan_skip,
+                                           size_t limit,
+                                           size_t max_scan,
+                                           char **error);
+
+// Releases a value from `rcgit_path_history`.
+//
+// # Safety
+// `page` is NULL or came from `rcgit_path_history` and is not freed twice.
+void rcgit_commit_page_free(struct RcGitCommitPage *page);
 
 // Lists every file that differs between two trees, renames detected, sorted by path. `from`
 // and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,

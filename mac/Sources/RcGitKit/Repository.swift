@@ -176,6 +176,31 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return commits
     }
 
+    /// Commits reachable from `tip` that changed `path`, newest first. Examines at most
+    /// `maxScan` commits past `scanSkip`; loop on the returned page's `scanned` until
+    /// `complete`.
+    public func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int)
+        throws -> CommitPage
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let page = tip.withC { tipPtr in
+            path.withCString { pathPtr in
+                rcgit_path_history(handle, tipPtr, pathPtr, scanSkip, limit, maxScan, &error)
+            }
+        }
+        guard let page else {
+            throw Repository.take(error, fallback: "cannot walk history of '\(path)'")
+        }
+        defer { rcgit_commit_page_free(page) }
+        let c = page.pointee
+        var commits: [CommitSummary] = []
+        commits.reserveCapacity(c.len)
+        for index in 0..<c.len {
+            commits.append(CommitSummary(c: c.commits[index]))
+        }
+        return CommitPage(commits: commits, scanned: c.scanned, complete: c.complete)
+    }
+
     /// Every file that differs between the trees of two revisions, sorted by path. `nil` for
     /// `from` stands for the empty tree, so a root commit diffs as pure additions.
     public func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] {

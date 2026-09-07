@@ -83,6 +83,29 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs.oid) }
     }
 
+    @Test func walksPathHistoryWithAScanCursor() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let repo = try Repository(path: fixture.path)
+        let tip = try repo.resolve("main")
+
+        let page = try repo.pathHistory(
+            tip: tip, path: "src/lib.rs", scanSkip: 0, limit: 10, maxScan: 100)
+        #expect(page.commits.map(\.title) == ["Add docs and library"])
+        #expect(page.scanned == 2)
+        #expect(page.complete)
+
+        let capped = try repo.pathHistory(
+            tip: tip, path: "src/lib.rs", scanSkip: 0, limit: 10, maxScan: 1)
+        #expect(capped.scanned == 1)
+        #expect(!capped.complete)
+
+        let missing = try repo.pathHistory(
+            tip: tip, path: "nope.txt", scanSkip: 0, limit: 10, maxScan: 100)
+        #expect(missing.commits.isEmpty)
+        #expect(missing.complete)
+    }
+
     @Test func readsCommitDetails() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

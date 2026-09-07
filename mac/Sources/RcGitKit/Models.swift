@@ -148,6 +148,22 @@ public struct CommitSummary: Sendable, Hashable, Identifiable {
     }
 }
 
+/// One page of a filtered history walk.
+public struct CommitPage: Sendable, Hashable {
+    /// The commits that matched, newest first.
+    public let commits: [CommitSummary]
+    /// How many commits the call examined past its scan skip.
+    public let scanned: Int
+    /// True when the walk reached the end of history within this call.
+    public let complete: Bool
+
+    public init(commits: [CommitSummary], scanned: Int, complete: Bool) {
+        self.commits = commits
+        self.scanned = scanned
+        self.complete = complete
+    }
+}
+
 /// Everything a commit detail view shows beyond the summary.
 public struct CommitDetail: Sendable, Hashable {
     public let summary: CommitSummary

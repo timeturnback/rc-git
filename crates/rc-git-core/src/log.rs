@@ -120,7 +120,7 @@ impl Repository {
     }
 }
 
-fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {
+pub(crate) fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {
     let oid = Oid::from_gix(commit.id);
     let decoded = commit.decode().map_err(object("decode commit", oid))?;
     let author = decoded.author().map_err(object("decode author", oid))?;

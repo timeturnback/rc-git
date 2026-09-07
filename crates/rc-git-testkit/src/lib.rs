@@ -105,6 +105,15 @@ impl Fixture {
         self.run(args, &[])
     }
 
+    /// Like [`git`](Self::git) with extra environment variables, for commands that need a
+    /// fixed date, such as `merge`.
+    ///
+    /// # Panics
+    /// When git cannot be started or exits non-zero.
+    pub fn git_with_env(&self, args: &[&str], extra_env: &[(&str, &str)]) {
+        self.run(args, extra_env);
+    }
+
     #[expect(
         clippy::disallowed_methods,
         reason = "test fixtures are built with the git CLI"
