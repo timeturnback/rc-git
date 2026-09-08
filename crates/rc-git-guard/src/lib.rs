@@ -74,6 +74,29 @@ pub enum Action {
     /// `git gc --prune` or `reflog expire`: deletes unreachable objects, which is the undo
     /// for every action above.
     Prune,
+    /// Commit selected working-tree changes to the checked-out branch. Adds objects and
+    /// advances the branch; loses nothing.
+    Commit {
+        /// Number of files in the commit.
+        files: usize,
+    },
+    /// Record selected changes as a stash commit, then restore those files to `HEAD`
+    /// content. The stash keeps everything it removed from disk.
+    StashPush {
+        /// Number of files being stashed.
+        files: usize,
+    },
+    /// Write a stash's changes back to the working tree, keeping the stash entry. Refused
+    /// in the write path when any affected file is dirty, so it overwrites nothing.
+    StashApply,
+    /// Apply a stash and drop it once every file is restored. The reflog line goes away,
+    /// but the restored changes are the content it held.
+    StashPop,
+    /// Delete a stash entry without applying it. Nothing else remembers those changes.
+    StashDrop {
+        /// The entry being dropped, e.g. `stash@{1}`.
+        name: String,
+    },
 }
 
 /// How much an action can lose.
@@ -97,11 +120,15 @@ impl Action {
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
             | Action::Push { force: false, .. }
-            | Action::DiscardWorkingChanges { files: 0 } => Risk::Safe,
+            | Action::DiscardWorkingChanges { files: 0 }
+            | Action::Commit { .. }
+            | Action::StashApply => Risk::Safe,
             Action::DeleteLocalBranch { merged: true, .. }
             | Action::RewriteHistory {
                 published: false, ..
-            } => Risk::Recoverable,
+            }
+            | Action::StashPush { .. }
+            | Action::StashPop => Risk::Recoverable,
             Action::Push { force: true, .. }
             | Action::DeleteLocalBranch { merged: false, .. }
             | Action::DeleteRemoteBranch { .. }
@@ -111,7 +138,8 @@ impl Action {
                 published: true, ..
             }
             | Action::DiscardWorkingChanges { .. }
-            | Action::Prune => Risk::Destructive,
+            | Action::Prune
+            | Action::StashDrop { .. } => Risk::Destructive,
         }
     }
 }
@@ -214,7 +242,9 @@ impl Policy {
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
             | Action::Push { force: false, .. }
-            | Action::DiscardWorkingChanges { files: 0 } => Decision::Allow,
+            | Action::DiscardWorkingChanges { files: 0 }
+            | Action::Commit { .. }
+            | Action::StashApply => Decision::Allow,
             Action::Push { branch, force: true } => {
                 if self.is_protected(branch) {
                     return deny(&format!("force-pushing to protected branch '{branch}'"));
@@ -265,6 +295,25 @@ impl Policy {
                 "Delete unreachable objects. Nothing deleted before this can be recovered afterwards.".to_owned(),
                 Some("prune"),
                 false,
+            ),
+            Action::StashPush { files } => confirm(
+                risk,
+                format!("Stash the changes in {files} file(s) and restore them to HEAD content."),
+                None,
+                false,
+            ),
+            Action::StashPop => confirm(
+                risk,
+                "Apply the stash to the working tree and drop it once every file is restored."
+                    .to_owned(),
+                None,
+                true,
+            ),
+            Action::StashDrop { name } => confirm(
+                risk,
+                format!("Delete {name} without applying it. This cannot be undone."),
+                Some("drop"),
+                true,
             ),
         }
     }
@@ -351,6 +400,45 @@ mod tests {
             policy.evaluate(&Action::DiscardWorkingChanges { files: 0 }),
             Decision::Allow
         );
+        assert_eq!(
+            policy.evaluate(&Action::Commit { files: 3 }),
+            Decision::Allow,
+            "a commit adds objects and advances the checked-out branch; it loses nothing"
+        );
+        assert_eq!(
+            policy.evaluate(&Action::StashApply),
+            Decision::Allow,
+            "the write path refuses dirty files itself, so apply overwrites nothing"
+        );
+    }
+
+    #[test]
+    fn stash_actions_scale_with_what_is_lost() {
+        let policy = Policy::default();
+        let push = challenge(policy.evaluate(&Action::StashPush { files: 2 }));
+        assert_eq!(
+            (push.risk, push.typed_phrase.as_deref(), push.backup_ref),
+            (Risk::Recoverable, None, false),
+            "the stash commit is the record; there is nothing else to back up"
+        );
+        assert!(push.verify("").is_some(), "no phrase means a plain confirm");
+
+        let pop = challenge(policy.evaluate(&Action::StashPop));
+        assert_eq!(
+            (pop.risk, pop.typed_phrase.as_deref(), pop.backup_ref),
+            (Risk::Recoverable, None, true)
+        );
+
+        let drop = challenge(policy.evaluate(&Action::StashDrop {
+            name: "stash@{1}".into(),
+        }));
+        assert_eq!(
+            (drop.risk, drop.typed_phrase.as_deref(), drop.backup_ref),
+            (Risk::Destructive, Some("drop"), true)
+        );
+        assert!(drop.summary.contains("stash@{1}"), "{}", drop.summary);
+        assert!(drop.verify("drop").is_some());
+        assert!(drop.verify("Drop").is_none());
     }
 
     #[test]

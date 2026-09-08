@@ -59,6 +59,11 @@ FFI functions. Every other row of the table is settled policy waiting for its fe
 | rewrite published history | **deny** | type the branch name, backup ref |
 | discard working changes | type `discard` | same |
 | prune unreachable objects | type `prune` | same |
+| commit selected changes | allow (adds objects, advances the checked-out branch) | same |
+| stash push | confirm (the stash commit is the record) | same |
+| stash apply | allow (the write path refuses dirty files) | same |
+| stash pop | confirm, backup ref | same |
+| stash drop | type `drop`, backup ref | same |
 
 Protected patterns default to `main`, `master`, and `release/*`. A `Deny` cannot be confirmed
 away inside rc-git; the message points the user at git itself. A `Confirm` produces a
