@@ -524,3 +524,205 @@ mod commit_and_discard {
         assert!(matches!(err, ActionError::HunkMismatch { .. }), "{err}");
     }
 }
+
+mod stash {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "tests arrange the fixture's working tree; only the guard mutates the repository"
+    )]
+
+    use rc_git_guard::Policy;
+    use rc_git_guard::actions::{
+        ActionError, Identity, stash_apply, stash_drop, stash_pop, stash_push,
+    };
+    use rc_git_testkit::Fixture;
+
+    fn identity() -> Identity {
+        Identity {
+            name: "Test User".to_owned(),
+            email: "test@example.com".to_owned(),
+        }
+    }
+
+    fn stash_list(fx: &Fixture) -> String {
+        fx.git_output(&["stash", "list", "--format=%gs"])
+    }
+
+    #[test]
+    fn a_pushed_stash_is_one_real_git_can_list_and_pop() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stashed content\n");
+        fx.write("brand-new.txt", b"untracked goes in too\n");
+
+        let saved = stash_push(
+            fx.path(),
+            &policy,
+            &["alpha.txt".to_owned(), "brand-new.txt".to_owned()],
+            Some("half-done work"),
+            Some(identity()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(saved.message, "On main: half-done work");
+        assert_eq!(saved.oid, fx.rev_parse("stash@{0}"));
+        assert_eq!(stash_list(&fx), "On main: half-done work");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "the stashed file is back at HEAD content"
+        );
+        assert!(!fx.path().join("brand-new.txt").exists());
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+        // The compat proof: the real git pops what rc-git pushed.
+        fx.git(&["stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stashed content\n"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("brand-new.txt")).unwrap(),
+            b"untracked goes in too\n"
+        );
+    }
+
+    #[test]
+    fn our_pop_restores_a_stash_the_real_git_pushed() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"from real git\n");
+        fx.git(&["stash", "push", "-q", "-m", "real one"]);
+
+        let deleted = stash_pop(fx.path(), &policy, 0, None).unwrap();
+        assert_eq!(deleted.full_name, "stash@{0}");
+        assert_eq!(
+            deleted.backup_ref.as_deref(),
+            Some("refs/rc-git/backup/stash/0")
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"from real git\n"
+        );
+        assert_eq!(stash_list(&fx), "", "the entry is gone");
+        assert_eq!(
+            fx.git_output(&["status", "--porcelain"]),
+            "M alpha.txt".to_owned(),
+            "the restored change is an ordinary unstaged edit"
+        );
+    }
+
+    #[test]
+    fn dropping_the_middle_of_three_keeps_the_others_in_order() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two", "three"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        assert_eq!(
+            stash_list(&fx),
+            "On main: three\nOn main: two\nOn main: one"
+        );
+        let two = fx.rev_parse("stash@{1}");
+
+        let err = stash_drop(fx.path(), &policy, 1, Some("wrong")).unwrap_err();
+        assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
+        assert_eq!(
+            stash_list(&fx),
+            "On main: three\nOn main: two\nOn main: one"
+        );
+
+        let deleted = stash_drop(fx.path(), &policy, 1, Some("drop")).unwrap();
+        assert_eq!(deleted.full_name, "stash@{1}");
+        assert_eq!(
+            deleted.backup_ref.as_deref(),
+            Some("refs/rc-git/backup/stash/1")
+        );
+        assert_eq!(stash_list(&fx), "On main: three\nOn main: one");
+        assert_eq!(
+            fx.rev_parse("refs/rc-git/backup/stash/1"),
+            two,
+            "the backup keeps the dropped stash commit"
+        );
+        // The rewritten reflog is still one git accepts end to end.
+        fx.git(&["stash", "drop", "-q", "stash@{0}"]);
+        assert_eq!(stash_list(&fx), "On main: one");
+    }
+
+    #[test]
+    fn dropping_the_newest_updates_the_ref_and_dropping_the_last_deletes_it() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let one = fx.rev_parse("stash@{1}");
+
+        stash_drop(fx.path(), &policy, 0, Some("drop")).unwrap();
+        assert_eq!(stash_list(&fx), "On main: one");
+        assert_eq!(fx.rev_parse("refs/stash"), one);
+
+        stash_drop(fx.path(), &policy, 0, Some("drop")).unwrap();
+        assert_eq!(stash_list(&fx), "");
+        assert!(
+            !fx.git_output(&["for-each-ref", "--format=%(refname)"])
+                .contains("refs/stash")
+        );
+    }
+
+    #[test]
+    fn apply_refuses_a_dirty_path_and_touches_nothing() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stash me\n");
+        fx.git(&["stash", "push", "-q", "-m", "kept"]);
+        fx.write("alpha.txt", b"conflicting edit\n");
+
+        let err = stash_apply(fx.path(), &policy, 0, None).unwrap_err();
+        assert!(matches!(err, ActionError::DirtyPath { .. }), "{err}");
+        assert!(err.to_string().contains("alpha.txt"), "{err}");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"conflicting edit\n",
+            "nothing was written"
+        );
+        assert_eq!(stash_list(&fx), "On main: kept", "the stash survives");
+
+        // Clean state again: apply works and keeps the entry.
+        fx.git(&["checkout", "-q", "--", "alpha.txt"]);
+        stash_apply(fx.path(), &policy, 0, None).unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stash me\n"
+        );
+        assert_eq!(stash_list(&fx), "On main: kept");
+    }
+
+    #[test]
+    fn stashing_a_deleted_file_brings_it_back_and_pop_deletes_it_again() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        std::fs::remove_file(fx.path().join("Zeta.txt")).unwrap();
+
+        stash_push(
+            fx.path(),
+            &policy,
+            &["Zeta.txt".to_owned()],
+            None,
+            Some(identity()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("Zeta.txt")).unwrap(),
+            b"zeta\n",
+            "the deletion is stashed, so the file is back"
+        );
+        assert!(stash_list(&fx).starts_with("WIP on main:"));
+
+        stash_pop(fx.path(), &policy, 0, None).unwrap();
+        assert!(!fx.path().join("Zeta.txt").exists());
+    }
+}

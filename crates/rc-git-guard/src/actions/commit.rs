@@ -190,7 +190,7 @@ pub(super) fn tree_of(repo: &gix::Repository, commit: ObjectId) -> ActionResult<
 
 /// The edit for committing `path` exactly as disk has it: an addition or replacement from
 /// the file's bytes, or a removal when the file is gone.
-fn whole_file_edit(
+pub(super) fn whole_file_edit(
     repo: &gix::Repository,
     work_dir: &Path,
     base_tree: Option<ObjectId>,

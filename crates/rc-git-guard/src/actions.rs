@@ -15,11 +15,13 @@ use crate::{Action, Challenge, Confirmation, Decision, Policy, Risk};
 
 mod commit;
 mod discard;
+mod stash;
 mod treebuild;
 mod workfile;
 
 pub use commit::{Committed, commit};
 pub use discard::{discard_files, discard_hunks};
+pub use stash::{StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
 
 /// Who a commit or stash is recorded as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,12 +72,26 @@ fn apply_edit(
     op: &'static str,
     name: &str,
 ) -> ActionResult<()> {
+    apply_edit_as(repo, edit, op, name, "rc-git", "rc-git@localhost")
+}
+
+/// Applies one ref edit with an explicit reflog committer. The stash uses the user's own
+/// identity here because `git stash list` shows the reflog's author; everything else goes
+/// through [`apply_edit`].
+fn apply_edit_as(
+    repo: &gix::Repository,
+    edit: RefEdit,
+    op: &'static str,
+    name: &str,
+    committer_name: &str,
+    committer_email: &str,
+) -> ActionResult<()> {
     let time = gix::date::Time::now_local_or_utc()
         .format(gix::date::time::Format::Raw)
         .unwrap_or_else(|_| "0 +0000".to_owned());
     let committer = gix::actor::SignatureRef {
-        name: "rc-git".into(),
-        email: "rc-git@localhost".into(),
+        name: committer_name.into(),
+        email: committer_email.into(),
         time: &time,
     };
     #[expect(
