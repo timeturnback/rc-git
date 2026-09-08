@@ -494,6 +494,36 @@ typedef struct RcGitGuardDecision {
   bool merged;
 } RcGitGuardDecision;
 
+// What a completed commit produced.
+typedef struct RcGitCommitResult {
+  // Hex id of the new commit.
+  char *oid;
+  // Short name of the branch that advanced.
+  char *branch;
+} RcGitCommitResult;
+
+// One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
+typedef struct RcGitHunkStamp {
+  // 1-based first line of the hunk on the tree side.
+  uint32_t old_start;
+  // Lines the hunk covers on the tree side, context included.
+  uint32_t old_lines;
+  // 1-based first line of the hunk on the disk side.
+  uint32_t new_start;
+  // Lines the hunk covers on the disk side, context included.
+  uint32_t new_lines;
+} RcGitHunkStamp;
+
+// One file of a commit selection. Caller-owned input: nothing here is freed by rc-git.
+typedef struct RcGitCommitFile {
+  // Repository-relative path, NUL-terminated.
+  const char *path;
+  // NULL (with `hunk_count` 0) commits the whole file; otherwise only these hunks.
+  const struct RcGitHunkStamp *hunks;
+  // Number of entries behind `hunks`.
+  size_t hunk_count;
+} RcGitCommitFile;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -925,6 +955,133 @@ int32_t rcgit_guard_tag_delete(const char *repo_path,
                                const char *input,
                                char **backup,
                                char **error);
+
+// The policy's decision for committing `files` selected files. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_commit(size_t files);
+
+// The policy's decision for stashing `files` selected files. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_push(size_t files);
+
+// The policy's decision for applying a stash entry. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_apply(void);
+
+// The policy's decision for popping a stash entry. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_pop(void);
+
+// The policy's decision for dropping `stash@{index}`. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_drop(size_t index);
+
+// The policy's decision for discarding changes in `files` files. Pure; release with
+// `rcgit_guard_decision_free`.
+struct RcGitGuardDecision *rcgit_guard_plan_discard(size_t files);
+
+// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
+// hex commit the change list was built against, or NULL on an unborn branch; the commit is
+// refused when `HEAD` moved. `author_name`/`author_email` override the repository's own
+// `user.name`/`user.email` (pass both or neither). Release with `rcgit_commit_result_free`.
+//
+// # Safety
+// `repo_path` and `message` are NUL-terminated strings; `author_name`, `author_email`,
+// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
+// `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
+// `char *`.
+struct RcGitCommitResult *rcgit_guard_commit(const char *repo_path,
+                                             const char *message,
+                                             const char *author_name,
+                                             const char *author_email,
+                                             const char *expected_head,
+                                             const struct RcGitCommitFile *files,
+                                             size_t len,
+                                             const char *input,
+                                             char **error);
+
+// Releases a value from `rcgit_guard_commit`.
+//
+// # Safety
+// `result` is NULL or came from `rcgit_guard_commit` and is not freed twice.
+void rcgit_commit_result_free(struct RcGitCommitResult *result);
+
+// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
+// `HEAD` state. `message` is the optional stash message. Returns `RCGIT_OK` or
+// `RCGIT_ERROR`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated string; `message`, `author_name`, `author_email`, and
+// `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
+// strings. `error` is NULL or valid for writing a `char *`.
+int32_t rcgit_guard_stash_push(const char *repo_path,
+                               const char *const *paths,
+                               size_t len,
+                               const char *message,
+                               const char *author_name,
+                               const char *author_email,
+                               const char *input,
+                               char **error);
+
+// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
+// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
+// for writing a `char *`.
+int32_t rcgit_guard_stash_apply(const char *repo_path,
+                                size_t index,
+                                const char *input,
+                                char **error);
+
+// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
+// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
+// `RCGIT_OK` or `RCGIT_ERROR`.
+//
+// # Safety
+// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
+int32_t rcgit_guard_stash_pop(const char *repo_path,
+                              size_t index,
+                              const char *input,
+                              char **backup,
+                              char **error);
+
+// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
+//
+// # Safety
+// As `rcgit_guard_stash_pop`.
+int32_t rcgit_guard_stash_drop(const char *repo_path,
+                               size_t index,
+                               const char *input,
+                               char **backup,
+                               char **error);
+
+// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files
+// are deleted. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated string; `input` is NULL or one. `paths` points to `len`
+// readable, non-NULL NUL-terminated strings. `error` is NULL or valid for writing a
+// `char *`.
+int32_t rcgit_guard_discard(const char *repo_path,
+                            const char *const *paths,
+                            size_t len,
+                            const char *input,
+                            char **error);
+
+// Discards only the given hunks of one file, keeping its other changes. Returns `RCGIT_OK`
+// or `RCGIT_ERROR`.
+//
+// # Safety
+// `repo_path` and `path` are NUL-terminated strings; `input` is NULL or one. `stamps`
+// points to `len` readable `RcGitHunkStamp`s. `error` is NULL or valid for writing a
+// `char *`.
+int32_t rcgit_guard_discard_hunks(const char *repo_path,
+                                  const char *path,
+                                  const struct RcGitHunkStamp *stamps,
+                                  size_t len,
+                                  const char *input,
+                                  char **error);
 
 // Resolves a revision expression (`main`, `v1.0`, `HEAD~2`, an abbreviated hash) to the object
 // it names. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.

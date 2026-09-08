@@ -22,10 +22,11 @@ use rc_git_core::{
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
-    plan_tag_delete,
+    ActionError, FileSelection, HunkStamp, Identity, commit, create_branch, create_tag,
+    delete_branch, delete_tag, discard_files, discard_hunks, plan_branch_delete, plan_tag_delete,
+    stash_apply, stash_drop, stash_pop, stash_push,
 };
-use rc_git_guard::{Decision, Policy, Risk};
+use rc_git_guard::{Action, Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
 
 /// Status for functions that fill an out parameter: success.
@@ -2503,6 +2504,514 @@ fn finish_action(result: Result<(), ActionError>, error: &Out<*mut c_char>) -> i
     }
 }
 
+/// One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitHunkStamp {
+    /// 1-based first line of the hunk on the tree side.
+    pub old_start: u32,
+    /// Lines the hunk covers on the tree side, context included.
+    pub old_lines: u32,
+    /// 1-based first line of the hunk on the disk side.
+    pub new_start: u32,
+    /// Lines the hunk covers on the disk side, context included.
+    pub new_lines: u32,
+}
+
+/// One file of a commit selection. Caller-owned input: nothing here is freed by rc-git.
+#[repr(C)]
+pub struct RcGitCommitFile {
+    /// Repository-relative path, NUL-terminated.
+    pub path: *const c_char,
+    /// NULL (with `hunk_count` 0) commits the whole file; otherwise only these hunks.
+    pub hunks: *const RcGitHunkStamp,
+    /// Number of entries behind `hunks`.
+    pub hunk_count: usize,
+}
+
+/// What a completed commit produced.
+#[repr(C)]
+pub struct RcGitCommitResult {
+    /// Hex id of the new commit.
+    pub oid: *mut c_char,
+    /// Short name of the branch that advanced.
+    pub branch: *mut c_char,
+}
+
+impl Drop for RcGitCommitResult {
+    fn drop(&mut self) {
+        // SAFETY: both strings were produced by `export_string` and are released once here.
+        unsafe {
+            release_string(self.oid);
+            release_string(self.branch);
+        }
+    }
+}
+
+/// The policy's decision for committing `files` selected files. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_commit(files: usize) -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::Commit { files });
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// The policy's decision for stashing `files` selected files. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_stash_push(files: usize) -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::StashPush { files });
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// The policy's decision for applying a stash entry. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_stash_apply() -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::StashApply);
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// The policy's decision for popping a stash entry. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_stash_pop() -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::StashPop);
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// The policy's decision for dropping `stash@{index}`. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_stash_drop(index: usize) -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::StashDrop {
+        name: format!("stash@{{{index}}}"),
+    });
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// The policy's decision for discarding changes in `files` files. Pure; release with
+/// `rcgit_guard_decision_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_guard_plan_discard(files: usize) -> *mut RcGitGuardDecision {
+    let decision = Policy::default().evaluate(&Action::DiscardWorkingChanges { files });
+    export(RcGitGuardDecision::export(decision, false))
+}
+
+/// Reads a caller-owned array of NUL-terminated strings into owned lossy strings.
+///
+/// # Safety
+/// `ptr` is NULL (with `len` 0) or points to `len` readable, non-NULL `char *`s.
+unsafe fn read_string_array(ptr: *const *const c_char, len: usize) -> Option<Vec<String>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded from this function's contract.
+    let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut strings = Vec::with_capacity(len);
+    for item in raw {
+        // SAFETY: forwarded from this function's contract.
+        let bytes = unsafe { bytes_arg(*item) }?;
+        strings.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    Some(strings)
+}
+
+/// Reads a caller-owned array of `RcGitCommitFile` into owned selections.
+///
+/// # Safety
+/// `ptr` points to `len` readable `RcGitCommitFile`s whose inner pointers honor that
+/// struct's contract.
+unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec<FileSelection>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded from this function's contract.
+    let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut selections = Vec::with_capacity(len);
+    for file in raw {
+        // SAFETY: forwarded from this function's contract.
+        let path_bytes = unsafe { bytes_arg(file.path) }?;
+        let path = String::from_utf8_lossy(path_bytes).into_owned();
+        if file.hunks.is_null() || file.hunk_count == 0 {
+            selections.push(FileSelection::Whole { path });
+            continue;
+        }
+        // SAFETY: forwarded from this function's contract.
+        let stamps = unsafe { std::slice::from_raw_parts(file.hunks, file.hunk_count) };
+        selections.push(FileSelection::Hunks {
+            path,
+            hunks: stamps
+                .iter()
+                .map(|stamp| HunkStamp {
+                    old_start: stamp.old_start,
+                    old_lines: stamp.old_lines,
+                    new_start: stamp.new_start,
+                    new_lines: stamp.new_lines,
+                })
+                .collect(),
+        });
+    }
+    Some(selections)
+}
+
+/// An identity when both halves were given; `None` to fall back to the repository's config.
+fn identity_from(name: Option<&[u8]>, email: Option<&[u8]>) -> Option<Identity> {
+    match (name, email) {
+        (Some(name), Some(email)) => Some(Identity {
+            name: String::from_utf8_lossy(name).into_owned(),
+            email: String::from_utf8_lossy(email).into_owned(),
+        }),
+        (Some(_) | None, Some(_) | None) => None,
+    }
+}
+
+/// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
+/// hex commit the change list was built against, or NULL on an unborn branch; the commit is
+/// refused when `HEAD` moved. `author_name`/`author_email` override the repository's own
+/// `user.name`/`user.email` (pass both or neither). Release with `rcgit_commit_result_free`.
+///
+/// # Safety
+/// `repo_path` and `message` are NUL-terminated strings; `author_name`, `author_email`,
+/// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
+/// `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
+/// `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_commit(
+    repo_path: *const c_char,
+    message: *const c_char,
+    author_name: *const c_char,
+    author_email: *const c_char,
+    expected_head: *const c_char,
+    files: *const RcGitCommitFile,
+    len: usize,
+    input: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitResult {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, message, author, expected_head, selections, input, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            bytes_arg(message),
+            identity_from(bytes_arg(author_name), bytes_arg(author_email)),
+            bytes_arg(expected_head),
+            read_selections(files, len),
+            bytes_arg(input),
+            Out::new(error),
+        )
+    };
+    let (Some(repo_path), Some(message), Some(selections)) = (repo_path, message, selections)
+    else {
+        error.report("repo_path, message, or a selection path is NULL");
+        return ptr::null_mut();
+    };
+    let expected_head = expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    match commit(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        &String::from_utf8_lossy(message),
+        author,
+        expected_head.as_deref(),
+        &selections,
+        input.as_deref(),
+    ) {
+        Ok(committed) => export(RcGitCommitResult {
+            oid: export_string(committed.oid.into_bytes()),
+            branch: export_string(committed.branch.into_bytes()),
+        }),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_guard_commit`.
+///
+/// # Safety
+/// `result` is NULL or came from `rcgit_guard_commit` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_commit_result_free(result: *mut RcGitCommitResult) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(result) };
+}
+
+/// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
+/// `HEAD` state. `message` is the optional stash message. Returns `RCGIT_OK` or
+/// `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string; `message`, `author_name`, `author_email`, and
+/// `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
+/// strings. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_stash_push(
+    repo_path: *const c_char,
+    paths: *const *const c_char,
+    len: usize,
+    message: *const c_char,
+    author_name: *const c_char,
+    author_email: *const c_char,
+    input: *const c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, paths, message, author, input, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            read_string_array(paths, len),
+            bytes_arg(message),
+            identity_from(bytes_arg(author_name), bytes_arg(author_email)),
+            bytes_arg(input),
+            Out::new(error),
+        )
+    };
+    let (Some(repo_path), Some(paths)) = (repo_path, paths) else {
+        error.report("repo_path or a path is NULL");
+        return RCGIT_ERROR;
+    };
+    let message = message.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    match stash_push(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        &paths,
+        message.as_deref(),
+        author,
+        input.as_deref(),
+    ) {
+        Ok(_) => RCGIT_OK,
+        Err(err) => {
+            error.report(err);
+            RCGIT_ERROR
+        }
+    }
+}
+
+/// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
+/// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
+/// for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_stash_apply(
+    repo_path: *const c_char,
+    index: usize,
+    input: *const c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, input, error) =
+        unsafe { (bytes_arg(repo_path), bytes_arg(input), Out::new(error)) };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    finish_action(
+        stash_apply(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            index,
+            input.as_deref(),
+        ),
+        &error,
+    )
+}
+
+/// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
+/// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
+/// `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_stash_pop(
+    repo_path: *const c_char,
+    index: usize,
+    input: *const c_char,
+    backup: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, input, backup, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            bytes_arg(input),
+            Out::new(backup),
+            Out::new(error),
+        )
+    };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    match stash_pop(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        index,
+        input.as_deref(),
+    ) {
+        Ok(deleted) => {
+            if let Some(backup_ref) = deleted.backup_ref {
+                backup.set(export_string(backup_ref));
+            }
+            RCGIT_OK
+        }
+        Err(err) => {
+            error.report(err);
+            RCGIT_ERROR
+        }
+    }
+}
+
+/// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
+///
+/// # Safety
+/// As `rcgit_guard_stash_pop`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_stash_drop(
+    repo_path: *const c_char,
+    index: usize,
+    input: *const c_char,
+    backup: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, input, backup, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            bytes_arg(input),
+            Out::new(backup),
+            Out::new(error),
+        )
+    };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    match stash_drop(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        index,
+        input.as_deref(),
+    ) {
+        Ok(deleted) => {
+            if let Some(backup_ref) = deleted.backup_ref {
+                backup.set(export_string(backup_ref));
+            }
+            RCGIT_OK
+        }
+        Err(err) => {
+            error.report(err);
+            RCGIT_ERROR
+        }
+    }
+}
+
+/// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files
+/// are deleted. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `paths` points to `len`
+/// readable, non-NULL NUL-terminated strings. `error` is NULL or valid for writing a
+/// `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_discard(
+    repo_path: *const c_char,
+    paths: *const *const c_char,
+    len: usize,
+    input: *const c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, paths, input, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            read_string_array(paths, len),
+            bytes_arg(input),
+            Out::new(error),
+        )
+    };
+    let (Some(repo_path), Some(paths)) = (repo_path, paths) else {
+        error.report("repo_path or a path is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    finish_action(
+        discard_files(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            &paths,
+            input.as_deref(),
+        ),
+        &error,
+    )
+}
+
+/// Discards only the given hunks of one file, keeping its other changes. Returns `RCGIT_OK`
+/// or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` and `path` are NUL-terminated strings; `input` is NULL or one. `stamps`
+/// points to `len` readable `RcGitHunkStamp`s. `error` is NULL or valid for writing a
+/// `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_discard_hunks(
+    repo_path: *const c_char,
+    path: *const c_char,
+    stamps: *const RcGitHunkStamp,
+    len: usize,
+    input: *const c_char,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, path, stamps, input, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            bytes_arg(path),
+            (!stamps.is_null() && len > 0)
+                .then(|| std::slice::from_raw_parts(stamps, len).to_vec()),
+            bytes_arg(input),
+            Out::new(error),
+        )
+    };
+    let (Some(repo_path), Some(path), Some(stamps)) = (repo_path, path, stamps) else {
+        error.report("repo_path, path, or stamps is NULL");
+        return RCGIT_ERROR;
+    };
+    let stamps: Vec<HunkStamp> = stamps
+        .iter()
+        .map(|stamp| HunkStamp {
+            old_start: stamp.old_start,
+            old_lines: stamp.old_lines,
+            new_start: stamp.new_start,
+            new_lines: stamp.new_lines,
+        })
+        .collect();
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    finish_action(
+        discard_hunks(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            &String::from_utf8_lossy(path),
+            &stamps,
+            input.as_deref(),
+        ),
+        &error,
+    )
+}
+
 /// Resolves a revision expression (`main`, `v1.0`, `HEAD~2`, an abbreviated hash) to the object
 /// it names. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
 ///
@@ -3373,6 +3882,174 @@ mod tests {
         assert!(stashes.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn guard_plans_carry_the_changes_tab_policy() {
+        let plan = rcgit_guard_plan_discard(3);
+        let plan_ref = unsafe { &*plan };
+        assert_eq!(plan_ref.kind, RcGitDecisionKind::Confirm);
+        assert_eq!(text(plan_ref.typed_phrase), "discard");
+        unsafe { rcgit_guard_decision_free(plan) };
+        let plan = rcgit_guard_plan_stash_drop(1);
+        let plan_ref = unsafe { &*plan };
+        assert_eq!(text(plan_ref.typed_phrase), "drop");
+        assert!(plan_ref.backup_ref);
+        unsafe { rcgit_guard_decision_free(plan) };
+        let plan = rcgit_guard_plan_stash_push(2);
+        assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Confirm);
+        unsafe { rcgit_guard_decision_free(plan) };
+        let plan = rcgit_guard_plan_stash_apply();
+        assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Allow);
+        unsafe { rcgit_guard_decision_free(plan) };
+        let plan = rcgit_guard_plan_stash_pop();
+        assert!(unsafe { &*plan }.backup_ref);
+        unsafe { rcgit_guard_decision_free(plan) };
+        let plan = rcgit_guard_plan_commit(2);
+        assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Allow);
+        unsafe { rcgit_guard_decision_free(plan) };
+    }
+
+    #[test]
+    fn guarded_commit_stash_and_discard_cross_the_boundary() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+
+        // Commit one whole file.
+        fx.write("alpha.txt", b"via ffi\n");
+        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let message = CString::new("FFI commit").unwrap();
+        let name = CString::new("FFI User").unwrap();
+        let email = CString::new("ffi@example.com").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        let result = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                message.as_ptr(),
+                name.as_ptr(),
+                email.as_ptr(),
+                head.as_ptr(),
+                &raw const file,
+                1,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert!(!result.is_null(), "{}", take_error(&mut error));
+        let result_ref = unsafe { &*result };
+        assert_eq!(text(result_ref.branch), "main");
+        assert_eq!(text(result_ref.oid), fx.rev_parse("HEAD"));
+        unsafe { rcgit_commit_result_free(result) };
+        assert_eq!(fx.git_output(&["log", "-1", "--format=%s"]), "FFI commit");
+
+        // Stash push and pop round-trip.
+        fx.write("alpha.txt", b"stash via ffi\n");
+        let paths = [path.as_ptr()];
+        let status = unsafe {
+            rcgit_guard_stash_push(
+                repo_path.as_ptr(),
+                paths.as_ptr(),
+                1,
+                ptr::null(),
+                name.as_ptr(),
+                email.as_ptr(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"via ffi\n"
+        );
+        let mut backup = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_stash_pop(
+                repo_path.as_ptr(),
+                0,
+                ptr::null(),
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(take_string(backup), "refs/rc-git/backup/stash/0");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stash via ffi\n"
+        );
+
+        // Discard with the wrong phrase fails; the right phrase restores.
+        let wrong = CString::new("nope").unwrap();
+        let status = unsafe {
+            rcgit_guard_discard(
+                repo_path.as_ptr(),
+                paths.as_ptr(),
+                1,
+                wrong.as_ptr(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("confirmation"));
+        let phrase = CString::new("discard").unwrap();
+        let status = unsafe {
+            rcgit_guard_discard(
+                repo_path.as_ptr(),
+                paths.as_ptr(),
+                1,
+                phrase.as_ptr(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"via ffi\n"
+        );
+    }
+
+    #[test]
+    fn guarded_mutations_report_null_arguments() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let message = CString::new("msg").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let phrase = CString::new("discard").unwrap();
+        let mut error = ptr::null_mut();
+        let result = unsafe {
+            rcgit_guard_commit(
+                ptr::null(),
+                message.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert!(result.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        let status = unsafe {
+            rcgit_guard_discard_hunks(
+                repo_path.as_ptr(),
+                path.as_ptr(),
+                ptr::null(),
+                0,
+                phrase.as_ptr(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("NULL"));
     }
 
     #[test]

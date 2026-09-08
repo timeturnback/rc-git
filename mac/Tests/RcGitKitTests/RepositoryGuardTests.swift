@@ -41,4 +41,53 @@ import Testing
             repoPath: fixture.path, name: "v1.0", input: "v1.0")
         #expect(tagBackup == "refs/rc-git/backup/tag/v1.0")
     }
+
+    @Test func plansCarryTheChangesTabPolicy() {
+        #expect(RepositoryGuard.planCommit(files: 2)?.kind == .allow)
+        #expect(RepositoryGuard.planStashApply()?.kind == .allow)
+        let push = RepositoryGuard.planStashPush(files: 3)
+        #expect(push?.kind == .confirm)
+        #expect(push?.typedPhrase == nil)
+        let pop = RepositoryGuard.planStashPop()
+        #expect(pop?.kind == .confirm)
+        #expect(pop?.backupRef == true)
+        let drop = RepositoryGuard.planStashDrop(index: 1)
+        #expect(drop?.typedPhrase == "drop")
+        #expect(drop?.summary.contains("stash@{1}") == true)
+        let discard = RepositoryGuard.planDiscard(files: 4)
+        #expect(discard?.typedPhrase == "discard")
+        #expect(discard?.risk == .destructive)
+    }
+
+    @Test func commitsStashesAndDiscardsThroughTheBridge() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let author = CommitIdentity(name: "Bridge User", email: "bridge@example.com")
+        try fixture.write("alpha.txt", "bridge edit\n")
+        let head = fixture.revParse("HEAD")
+
+        let outcome = try RepositoryGuard.commit(
+            repoPath: fixture.path, message: "Bridge commit", author: author,
+            expectedHead: head, selections: [.whole(path: "alpha.txt")], input: nil)
+        #expect(outcome.branch == "main")
+        #expect(outcome.oid == fixture.revParse("HEAD"))
+        #expect(
+            try fixture.gitOutput(["log", "-1", "--format=%an|%s"]) == "Bridge User|Bridge commit")
+        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+
+        try fixture.write("alpha.txt", "stash via bridge\n")
+        try RepositoryGuard.stashPush(
+            repoPath: fixture.path, paths: ["alpha.txt"], message: "bridged",
+            author: author, input: nil)
+        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, index: 0, input: nil)
+        #expect(backup == "refs/rc-git/backup/stash/0")
+
+        #expect(throws: RepositoryError.self) {
+            try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: "no")
+        }
+        try RepositoryGuard.discard(
+            repoPath: fixture.path, paths: ["alpha.txt"], input: "discard")
+        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+    }
 }
