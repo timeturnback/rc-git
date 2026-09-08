@@ -15,6 +15,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     enum ContentMode: Int {
         case files = 0
         case history = 1
+        case changes = 2
     }
 
     private let outerSplit = NSSplitViewController()
@@ -24,9 +25,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let treeController = TreeViewController()
     private let fileController = FileViewController()
     private let historyController = HistoryViewController()
+    private let changesController = ChangesViewController()
+    private var changesModel: ChangesModel?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
     private var refWatcher: RefWatcher?
+    private var worktreeWatcher: WorktreeWatcher?
+    /// Set when the working tree changed while another tab was frontmost; the switch to
+    /// the Changes tab pays the rescan then.
+    private var changesDirty = false
     private var modeControl: NSSegmentedControl?
     private var currentLayout: Layout?
     private var sidebarCollapsedByPolicy = false
@@ -78,19 +85,57 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let watcher = RefWatcher(gitDir: repository.gitDirectory) { [weak self] in
             Task { @MainActor [weak self] in
                 await self?.model.refreshRefs()
+                // A commit or stash from the terminal moves refs and the change list both.
+                self?.worktreeDidChange()
             }
         }
         watcher.start()
         refWatcher = watcher
+
+        let changes = ChangesModel(repository: repository)
+        changesModel = changes
+        wireChanges(changes)
+        changesDirty = true
+        worktreeWatcher?.stop()
+        worktreeWatcher = nil
+        if let workDir = repository.workingDirectory {
+            let treeWatcher = WorktreeWatcher(
+                workDir: workDir, gitDir: repository.gitDirectory
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.worktreeDidChange()
+                }
+            }
+            treeWatcher.start()
+            worktreeWatcher = treeWatcher
+        }
         Task { await model.attach(repository) }
     }
 
-    /// Shows the tree and file panes or the commit history.
+    /// The working tree moved: rescan now when the Changes tab is frontmost, otherwise
+    /// remember to rescan on the next switch to it.
+    private func worktreeDidChange() {
+        guard let changesModel else { return }
+        if contentTabs.selectedTabViewItemIndex == ContentMode.changes.rawValue {
+            Task { await changesModel.refresh() }
+        } else {
+            changesDirty = true
+        }
+    }
+
+    /// Shows the tree and file panes, the commit history, or the working-tree changes.
     func setMode(_ mode: ContentMode) {
         contentTabs.selectedTabViewItemIndex = mode.rawValue
         modeControl?.selectedSegment = mode.rawValue
         if mode == .history, model.history.isEmpty {
             Task { await model.loadMoreHistory() }
+        }
+        if mode == .changes, let changesModel {
+            let needsLoad = changesDirty || changesModel.statusState == .idle
+            changesDirty = false
+            if needsLoad {
+                Task { await changesModel.refresh() }
+            }
         }
     }
 
@@ -100,6 +145,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showHistory(_ sender: Any?) {
         setMode(.history)
+    }
+
+    @objc func showChanges(_ sender: Any?) {
+        setMode(.changes)
     }
 
     @objc func goToFile(_ sender: Any?) {
@@ -166,6 +215,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func windowWillClose(_ notification: Notification) {
         refWatcher?.stop()
         refWatcher = nil
+        worktreeWatcher?.stop()
+        worktreeWatcher = nil
         goToFileController.close()
         blamePanel.close()
         onClose?()
@@ -223,6 +274,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         contentTabs.tabStyle = .unspecified
         contentTabs.addTabViewItem(NSTabViewItem(viewController: contentSplit))
         contentTabs.addTabViewItem(NSTabViewItem(viewController: historyController))
+        contentTabs.addTabViewItem(NSTabViewItem(viewController: changesController))
 
         outerSplit.addSplitViewItem(sidebar)
         outerSplit.addSplitViewItem(NSSplitViewItem(viewController: contentTabs))
@@ -394,6 +446,211 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    // MARK: Changes tab
+
+    /// Connects a fresh `ChangesModel` to the Changes pane and routes its actions through
+    /// the guard.
+    private func wireChanges(_ changes: ChangesModel) {
+        changes.onStatusChanged = { [weak self] in
+            guard let self, let changesModel else { return }
+            changesController.renderStatus(changesModel.statusState)
+            changesController.refreshTicks()
+        }
+        changes.onDiffChanged = { [weak self] in
+            guard let self, let changesModel else { return }
+            changesController.renderDiff(changesModel.diffState)
+        }
+        changes.onStashChanged = { [weak self] in
+            guard let self, let changesModel else { return }
+            changesController.renderStashes(changesModel.stashes)
+        }
+        changes.onError = { [weak self] message in
+            self?.presentError(message)
+        }
+        changesController.isTicked = { [weak self] path in
+            self?.changesModel?.isTicked(path) ?? true
+        }
+        changesController.isHunkTicked = { [weak self] path, stamp in
+            self?.changesModel?.isHunkTicked(path, stamp) ?? true
+        }
+        changesController.onSelectEntry = { [weak self] entry in
+            guard let self, let changesModel else { return }
+            Task { await changesModel.select(entry) }
+        }
+        changesController.onToggleEntry = { [weak self] path, ticked in
+            self?.changesModel?.setTicked(path, ticked)
+        }
+        changesController.onToggleHunk = { [weak self] path, stamp, all in
+            self?.changesModel?.toggleHunk(path, stamp, all: all)
+        }
+        changesController.onCommit = { [weak self] message in
+            self?.performCommit(message)
+        }
+        changesController.onStashPush = { [weak self] in
+            self?.performStashPush()
+        }
+        changesController.onStashApply = { [weak self] index in
+            self?.performStashAction(
+                verb: "Apply Stash", decision: RepositoryGuard.planStashApply()
+            ) { path, input in
+                try RepositoryGuard.stashApply(repoPath: path, index: index, input: input)
+            }
+        }
+        changesController.onStashPop = { [weak self] index in
+            self?.performStashAction(
+                verb: "Pop Stash", decision: RepositoryGuard.planStashPop()
+            ) { path, input in
+                _ = try RepositoryGuard.stashPop(repoPath: path, index: index, input: input)
+            }
+        }
+        changesController.onStashDrop = { [weak self] index in
+            self?.performStashAction(
+                verb: "Drop Stash", decision: RepositoryGuard.planStashDrop(index: index)
+            ) { path, input in
+                _ = try RepositoryGuard.stashDrop(repoPath: path, index: index, input: input)
+            }
+        }
+        changesController.onDiscard = { [weak self] paths in
+            self?.performStashAction(
+                verb: "Discard Changes", decision: RepositoryGuard.planDiscard(files: paths.count)
+            ) { path, input in
+                try RepositoryGuard.discard(repoPath: path, paths: paths, input: input)
+            }
+        }
+        changesController.onDiscardHunk = { [weak self] filePath, stamp in
+            self?.performStashAction(
+                verb: "Discard Hunk", decision: RepositoryGuard.planDiscard(files: 1)
+            ) { path, input in
+                try RepositoryGuard.discardHunks(
+                    repoPath: path, path: filePath, stamps: [stamp], input: input)
+            }
+        }
+    }
+
+    private func performCommit(_ message: String, identity: CommitIdentity? = nil) {
+        guard let path = repositoryPath, let changes = changesModel else { return }
+        let selections = changes.selections
+        guard !selections.isEmpty else { return }
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            presentError("Enter a commit message first.")
+            return
+        }
+        guard let decision = RepositoryGuard.planCommit(files: selections.count) else { return }
+        let expectedHead = changes.expectedHead
+        let author = identity ?? Self.savedIdentity()
+        followDecision(decision, verb: "Commit") { input in
+            _ = try RepositoryGuard.commit(
+                repoPath: path, message: message, author: author,
+                expectedHead: expectedHead, selections: selections, input: input)
+        } onSuccess: { [weak self] in
+            self?.changesController.clearMessage()
+            self?.refreshChanges()
+        } onFailure: { [weak self] failure in
+            guard let self else { return }
+            if failure.contains("user.name and user.email") {
+                promptForIdentity { [weak self] identity in
+                    Self.saveIdentity(identity)
+                    self?.performCommit(message, identity: identity)
+                }
+            } else {
+                presentError(failure)
+            }
+        }
+    }
+
+    private func performStashPush() {
+        guard let path = repositoryPath, let changes = changesModel else { return }
+        let paths = changes.tickedPaths
+        guard !paths.isEmpty,
+            let decision = RepositoryGuard.planStashPush(files: paths.count)
+        else { return }
+        let message = changesController.commitMessage
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let author = Self.savedIdentity()
+        followDecision(decision, verb: "Stash") { input in
+            try RepositoryGuard.stashPush(
+                repoPath: path, paths: paths, message: message.isEmpty ? nil : message,
+                author: author, input: input)
+        } onSuccess: { [weak self] in
+            self?.changesController.clearMessage()
+            self?.refreshChanges()
+        } onFailure: { [weak self] failure in
+            guard let self else { return }
+            if failure.contains("user.name and user.email") {
+                promptForIdentity { [weak self] identity in
+                    Self.saveIdentity(identity)
+                    self?.performStashPush()
+                }
+            } else {
+                presentError(failure)
+            }
+        }
+    }
+
+    /// One guarded stash or discard action: plan, challenge, run, refresh.
+    private func performStashAction(
+        verb: String, decision: GuardDecision?,
+        perform: @escaping @Sendable (String, String?) throws -> Void
+    ) {
+        guard let path = repositoryPath, let decision else { return }
+        followDecision(
+            decision, verb: verb,
+            perform: { input in try perform(path, input) },
+            onSuccess: { [weak self] in self?.refreshChanges() },
+            onFailure: nil)
+    }
+
+    private func refreshChanges() {
+        guard let changesModel else { return }
+        Task { await changesModel.refresh() }
+    }
+
+    private static let identityNameKey = "rc-git.identity.name"
+    private static let identityEmailKey = "rc-git.identity.email"
+
+    private static func savedIdentity() -> CommitIdentity? {
+        let defaults = UserDefaults.standard
+        guard let name = defaults.string(forKey: identityNameKey),
+            let email = defaults.string(forKey: identityEmailKey),
+            !name.isEmpty, !email.isEmpty
+        else { return nil }
+        return CommitIdentity(name: name, email: email)
+    }
+
+    private static func saveIdentity(_ identity: CommitIdentity) {
+        UserDefaults.standard.set(identity.name, forKey: identityNameKey)
+        UserDefaults.standard.set(identity.email, forKey: identityEmailKey)
+    }
+
+    /// Asks for a commit identity once: the repository's own config sets none, and the
+    /// isolated open never reads the global one. The answer persists in app defaults.
+    private func promptForIdentity(completion: @escaping (CommitIdentity) -> Void) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Who is committing?"
+        alert.informativeText =
+            "This repository's own config sets no user.name/user.email. rc-git never reads "
+            + "your global git config, so enter the identity to record; it is remembered."
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        nameField.placeholderString = "Name"
+        let emailField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        emailField.placeholderString = "email@example.com"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
+        box.addSubview(nameField)
+        box.addSubview(emailField)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            let email = emailField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard response == .alertFirstButtonReturn, !name.isEmpty, !email.isEmpty else {
+                return
+            }
+            completion(CommitIdentity(name: name, email: email))
+        }
+    }
+
     // MARK: Guarded mutations
 
     /// Routes a context-menu request through the guard: names are asked for with a small
@@ -455,12 +712,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         _ decision: GuardDecision, verb: String,
         perform: @escaping @Sendable (String?) throws -> String?
     ) {
+        followDecision(
+            decision, verb: verb, perform: { _ = try perform($0) },
+            onSuccess: nil, onFailure: nil)
+    }
+
+    /// As above, with hooks: `onSuccess` refreshes what the action changed, `onFailure`
+    /// replaces the default error alert (the commit path uses it to ask for an identity).
+    private func followDecision(
+        _ decision: GuardDecision, verb: String,
+        perform: @escaping @Sendable (String?) throws -> Void,
+        onSuccess: (() -> Void)?,
+        onFailure: ((String) -> Void)?
+    ) {
         switch decision.kind {
         case .allow:
-            runGuarded { _ = try perform(nil) }
+            runGuarded({ try perform(nil) }, onSuccess: onSuccess, onFailure: onFailure)
         case .confirm:
             presentChallenge(decision, verb: verb) { [weak self] input in
-                self?.runGuarded { _ = try perform(input) }
+                self?.runGuarded(
+                    { try perform(input) }, onSuccess: onSuccess, onFailure: onFailure)
             }
         case .deny:
             guard let window else { return }
@@ -523,13 +794,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// Runs one guarded mutation off the main thread and reports its failure. Success needs
-    /// no handling: the ref watcher sees the change and refreshes the sidebar.
-    private func runGuarded(_ work: @escaping @Sendable () throws -> Void) {
+    /// Runs one guarded mutation off the main thread. By default success needs no handling —
+    /// the watchers see the change and refresh — and failure shows the standard alert.
+    private func runGuarded(
+        _ work: @escaping @Sendable () throws -> Void,
+        onSuccess: (() -> Void)? = nil,
+        onFailure: ((String) -> Void)? = nil
+    ) {
         Task { [weak self] in
             let outcome = await Task.detached { Result { try work() } }.value
-            if case let .failure(error) = outcome {
-                self?.presentError(String(describing: error))
+            switch outcome {
+            case .success:
+                onSuccess?()
+            case let .failure(error):
+                let message = (error as? RepositoryError)?.message ?? String(describing: error)
+                if let onFailure {
+                    onFailure(message)
+                } else {
+                    self?.presentError(message)
+                }
             }
         }
     }
@@ -561,7 +844,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     ) -> NSToolbarItem? {
         guard itemIdentifier == Self.viewModeItem else { return nil }
         let control = NSSegmentedControl(
-            labels: ["Files", "History"], trackingMode: .selectOne, target: self,
+            labels: ["Files", "History", "Changes"], trackingMode: .selectOne, target: self,
             action: #selector(modeChanged(_:)))
         control.selectedSegment = ContentMode.files.rawValue
         modeControl = control

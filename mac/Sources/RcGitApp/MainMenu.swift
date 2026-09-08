@@ -86,6 +86,7 @@ enum MainMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(item("Files", #selector(MainWindowController.showFiles(_:)), "1"))
         menu.addItem(item("History", #selector(MainWindowController.showHistory(_:)), "2"))
+        menu.addItem(item("Changes", #selector(MainWindowController.showChanges(_:)), "3"))
         menu.addItem(.separator())
         menu.addItem(
             item(

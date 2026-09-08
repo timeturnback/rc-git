@@ -613,7 +613,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                 showDiffPlaceholder("\(change.path): no line changes")
                 return
             }
-            diffText.textStorage?.setAttributedString(Self.attributed(hunks: hunks))
+            diffText.textStorage?.setAttributedString(DiffRendering.attributed(hunks: hunks))
             diffText.scroll(.zero)
         case let .binary(oldSize, newSize):
             showDiffPlaceholder(
@@ -624,33 +624,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                 "\(change.path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
             )
         }
-    }
-
-    static func attributed(hunks: [DiffHunk]) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        for (index, hunk) in hunks.enumerated() {
-            if index > 0 {
-                result.append(NSAttributedString(string: "\n", attributes: [.font: monoFont]))
-            }
-            result.append(
-                NSAttributedString(
-                    string:
-                        "@@ -\(hunk.oldStart),\(hunk.oldLines) +\(hunk.newStart),\(hunk.newLines) @@\n",
-                    attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-            for line in hunk.lines {
-                let (sign, color): (String, NSColor) =
-                    switch line.kind {
-                    case .context: (" ", .labelColor)
-                    case .added: ("+", .systemGreen)
-                    case .removed: ("-", .systemRed)
-                    }
-                result.append(
-                    NSAttributedString(
-                        string: sign + line.text + "\n",
-                        attributes: [.font: monoFont, .foregroundColor: color]))
-            }
-        }
-        return result
     }
 
     @objc private func boundsChanged(_ notification: Notification) {
