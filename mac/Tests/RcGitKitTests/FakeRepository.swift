@@ -58,7 +58,11 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func resolveTree(_ spec: String) throws -> Oid {
-        throw RepositoryError("'\(spec)' is not a revision in this repository")
+        let mapped = lock.withLock { resolves[spec].flatMap { treeOfMap[$0] } }
+        guard let mapped else {
+            throw RepositoryError("'\(spec)' is not a revision in this repository")
+        }
+        return mapped
     }
 
     func treeOf(_ oid: Oid) throws -> Oid {
