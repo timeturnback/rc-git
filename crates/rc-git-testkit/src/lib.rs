@@ -170,6 +170,10 @@ impl Fixture {
     ///
     /// # Panics
     /// On I/O failure.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures write their own files"
+    )]
     pub fn symlink(&self, target: &str, relative: &str) {
         std::os::unix::fs::symlink(target, self.dir.path().join(relative)).expect("create symlink");
     }

@@ -21,6 +21,12 @@ disallowed-methods = [
     { path = "std::fs::write", reason = "core never writes files; see docs/safety.md" },
     { path = "std::fs::File::create", reason = "core never writes files; see docs/safety.md" },
     { path = "std::fs::rename", reason = "core never moves files; see docs/safety.md" },
+    { path = "std::fs::create_dir", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::create_dir_all", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::set_permissions", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::os::unix::fs::symlink", reason = "core never writes files; see docs/safety.md" },
+    { path = "gix_index::File::write", reason = "core is read-only; index writes go through rc-git-guard" },
+    { path = "gix_index::File::write_to", reason = "core is read-only; index writes go through rc-git-guard" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.

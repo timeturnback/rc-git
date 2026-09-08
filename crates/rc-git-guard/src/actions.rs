@@ -13,6 +13,55 @@ use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
 use crate::{Action, Challenge, Confirmation, Decision, Policy, Risk};
 
+mod commit;
+mod discard;
+mod treebuild;
+mod workfile;
+
+pub use commit::{Committed, commit};
+pub use discard::{discard_files, discard_hunks};
+
+/// Who a commit or stash is recorded as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// `user.name`.
+    pub name: String,
+    /// `user.email`.
+    pub email: String,
+}
+
+/// One hunk of a worktree diff, identified by its unified header ranges. The write path
+/// recomputes the diff and requires every stamp to match a current hunk exactly, so a file
+/// edited after selection is refused instead of spliced wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HunkStamp {
+    /// 1-based first line of the hunk on the tree side.
+    pub old_start: u32,
+    /// Lines the hunk covers on the tree side, context included.
+    pub old_lines: u32,
+    /// 1-based first line of the hunk on the disk side.
+    pub new_start: u32,
+    /// Lines the hunk covers on the disk side, context included.
+    pub new_lines: u32,
+}
+
+/// What of one file goes into a commit or a stash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileSelection {
+    /// The whole file as it is on disk; addition, modification, or deletion is inferred.
+    Whole {
+        /// Repository-relative path with `/` separators.
+        path: String,
+    },
+    /// Only the given hunks of a tracked, modified text file.
+    Hunks {
+        /// Repository-relative path with `/` separators.
+        path: String,
+        /// The selected hunks, in file order.
+        hunks: Vec<HunkStamp>,
+    },
+}
+
 /// Applies one ref edit as the synthetic `rc-git` committer, so reflog entries never depend
 /// on user configuration the isolated open refuses to read.
 fn apply_edit(
@@ -65,6 +114,31 @@ pub enum ActionError {
         /// The branch involved.
         name: String,
     },
+    /// `HEAD` is detached; committing needs a checked-out branch.
+    #[error("cannot commit: HEAD is detached; check out a branch first")]
+    DetachedHead,
+    /// The repository moved under the UI between planning and acting.
+    #[error("{op}: the repository changed since the list was built; refresh and retry")]
+    StaleRepository {
+        /// What was being done.
+        op: &'static str,
+    },
+    /// A selected hunk no longer matches the file on disk.
+    #[error("'{path}' changed since its hunks were selected; refresh and retry")]
+    HunkMismatch {
+        /// The file involved.
+        path: String,
+    },
+    /// A stash restore would overwrite uncommitted changes.
+    #[error("cannot apply the stash: '{path}' has uncommitted changes; use git directly")]
+    DirtyPath {
+        /// The file involved.
+        path: String,
+    },
+    /// No author identity is available: the repository's own config sets no
+    /// `user.name`/`user.email` and none was passed in.
+    #[error("cannot commit: set user.name and user.email, or provide an identity")]
+    MissingIdentity,
     /// The underlying git operation failed.
     #[error("{op} '{name}': {source}")]
     Git {
