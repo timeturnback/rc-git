@@ -1357,6 +1357,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rc-git-core",
+ "rc-git-guard",
  "rc-git-testkit",
 ]
 

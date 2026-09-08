@@ -53,6 +53,13 @@ constraints are clear.
   deletions demand the typed name, and a backup ref under `refs/rc-git/backup/` is written
   before anything is removed. The checked-out branch and protected branches cannot be
   deleted. Exposed over the FFI (`rcgit_guard_*`) and in the sidebar's context menu.
+- **Changes tab.** A third pane (⌘3) with the full-repo change list (`worktree_status`, one
+  capped background walk with ignored directories pruned unopened), per-file and per-hunk
+  ticks, a worktree diff against `HEAD`, a commit box, and the stash list. Commit, stash
+  push/apply/pop/drop, and discard all go through `rc-git-guard`; the stash is written in
+  git's own format and proven against the real `git stash` in tests. Raw-byte semantics
+  throughout: gitattributes filters and eol conversion are not honored. `WorktreeWatcher`
+  refreshes the list when files change on disk while the tab is frontmost.
 
 ## Planned
 
@@ -63,5 +70,6 @@ constraints are clear.
   code. When it lands it goes through `rc-git-guard` like every other action.
 - **Reveal in tree from path search.** Jump-to-file opens the file; expanding the tree to
   show it selected is still missing.
-- **Working-tree watching.** The ref watcher covers `.git`; edits to files on disk refresh
-  only when the listing reloads.
+- **Filters in the Changes tab.** Honoring gitattributes filters and `core.autocrlf` in
+  status, diff, commit, and restore needs gix's `attributes` feature, which pulls in the
+  process-spawning filter-driver machinery — a safety decision before a code change.

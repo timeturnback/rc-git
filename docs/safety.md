@@ -41,9 +41,10 @@ Opening a repository someone else produced must be harmless.
 
 `rc-git-guard` decides what a user must do before any action that changes a repository, and
 its `actions` module is the only code in rc-git that performs one. Today that means branch
-and tag creation and deletion, driven from the sidebar's context menu and the `rcgit_guard_*`
-FFI functions. Every other row of the table is settled policy waiting for its feature.
-`Policy::evaluate` maps an `Action` to a `Decision`:
+and tag creation and deletion from the sidebar, and — from the Changes tab — committing
+selected files or hunks, the stash lifecycle, and discarding uncommitted changes, all driven
+through the `rcgit_guard_*` FFI functions. Every other row of the table is settled policy
+waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 | Action | Protected branch | Elsewhere |
 |---|---|---|
@@ -70,9 +71,28 @@ away inside rc-git; the message points the user at git itself. A `Confirm` produ
 `Challenge`; only `Challenge::verify` with the exact phrase yields a `Confirmation`, and the
 write path holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
-branch tip or the tag object itself — with numbered slots (`-2`, `-3`, …) so no backup ever
-overwrites an earlier one. Two more rules live in the write path itself: the checked-out
-branch cannot be deleted, and a ref is never created over an existing one.
+branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
+so no backup ever overwrites an earlier one. Two more rules live in the write path itself:
+the checked-out branch cannot be deleted, and a ref is never created over an existing one.
+
+The Changes tab's write paths add their own guarantees:
+
+- **Raw bytes throughout.** Status, diffs, commits, and restores all work on the file's raw
+  bytes: gitattributes filters and `core.autocrlf` are not honored (matching the Files
+  view), so what the diff shows is exactly what a commit records and a restore writes.
+- **Commit** builds blobs from disk, rewrites only the touched directories, and advances the
+  branch through the same single ref-edit funnel — only if `HEAD` still is the commit the
+  change list was built against. Hunk selections are re-validated against a fresh diff and
+  refused when the file moved. The committed paths are then updated in `.git/index` so
+  terminal `git status` agrees; entries staged from the terminal for other paths survive.
+- **Stash** entries are written in git's own format — `git stash list`, `apply`, `pop`, and
+  `drop` all accept them — and rc-git's apply refuses to touch any file that is not exactly
+  at the stash's base state, so it can never overwrite uncommitted work. Ticked untracked
+  files go into the stash tree itself rather than git's third-parent scheme; `git stash pop`
+  recreates them all the same.
+- **Discard** and stash restores write through one helper that removes the old file first,
+  so a write never follows a stale symlink, and deleting an already-gone file is not an
+  error — a retried action lands in the state it retries from.
 
 ## Supply chain
 

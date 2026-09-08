@@ -423,3 +423,75 @@ fn diff_worktree_shows_hunks_against_head() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("diff --worktree needs <path>"));
 }
+
+#[test]
+fn commit_and_discard_drive_the_guard_from_the_command_line() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"cli edit\n");
+
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "CLI commit",
+        "--author",
+        "CLI User <cli@example.com>",
+        "alpha.txt",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let line = stdout(&out);
+    assert!(line.ends_with("\tmain\n"), "{line}");
+    assert_eq!(
+        fx.git_output(&["log", "-1", "--format=%an|%s"]),
+        "CLI User|CLI commit"
+    );
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+    fx.write("alpha.txt", b"dirty again\n");
+    let out = rc_git(&["discard", path, "alpha.txt"]);
+    assert_eq!(out.status.code(), Some(1), "no --confirm means refusal");
+    assert!(stderr(&out).contains("confirmation"));
+    let out = rc_git(&["discard", path, "--confirm", "discard", "alpha.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn the_stash_verbs_round_trip() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"stash me\n");
+
+    let out = rc_git(&[
+        "stash-push",
+        path,
+        "-m",
+        "cli stash",
+        "--author",
+        "CLI User <cli@example.com>",
+        "alpha.txt",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).ends_with("\tOn main: cli stash\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+    let out = rc_git(&["stash-apply", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+        b"stash me\n"
+    );
+    fx.git(&["checkout", "-q", "--", "alpha.txt"]);
+
+    let out = rc_git(&["stash-drop", path, "0"]);
+    assert_eq!(out.status.code(), Some(1), "drop needs --confirm drop");
+    let out = rc_git(&["stash-drop", path, "0", "--confirm", "drop"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "refs/rc-git/backup/stash/0\n");
+    assert_eq!(fx.git_output(&["stash", "list"]), "");
+}

@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 rc-git-core.workspace = true
+rc-git-guard.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]

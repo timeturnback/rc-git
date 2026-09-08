@@ -35,6 +35,13 @@ usage: rc-git [--time] <command> <repo> [args]
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
 
+  commit      <repo> -m <msg> [--author \"Name <email>\"] <path>...  commit files to the branch
+  stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] <path>... stash files, restore to HEAD
+  stash-apply <repo> [n]                  write stash@{n} back to the working tree
+  stash-pop   <repo> [n]                  apply stash@{n}, then drop it
+  stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
+  discard     <repo> --confirm discard <path>...  restore files to HEAD, delete untracked
+
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit
 ";
 
@@ -59,6 +66,12 @@ enum Verb {
     Changes,
     Stash,
     Resolve,
+    Commit,
+    StashPush,
+    StashApply,
+    StashPop,
+    StashDrop,
+    Discard,
 }
 
 impl Verb {
@@ -78,6 +91,12 @@ impl Verb {
             "changes" => Some(Self::Changes),
             "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
+            "commit" => Some(Self::Commit),
+            "stash-push" => Some(Self::StashPush),
+            "stash-apply" => Some(Self::StashApply),
+            "stash-pop" => Some(Self::StashPop),
+            "stash-drop" => Some(Self::StashDrop),
+            "discard" => Some(Self::Discard),
             _ => None,
         }
     }
@@ -98,6 +117,12 @@ impl Verb {
             Self::Changes => "changes",
             Self::Stash => "stash",
             Self::Resolve => "resolve",
+            Self::Commit => "commit",
+            Self::StashPush => "stash-push",
+            Self::StashApply => "stash-apply",
+            Self::StashPop => "stash-pop",
+            Self::StashDrop => "stash-drop",
+            Self::Discard => "discard",
         }
     }
 }
@@ -171,6 +196,24 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
         Verb::Stash => stash(&repo, &mut out)?,
         Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
+        Verb::Commit => commit_verb(&repo, &invocation.repo, &invocation.args, &mut out)?,
+        Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::StashApply => stash_index_verb(
+            &invocation.repo,
+            &invocation.args,
+            StashVerb::Apply,
+            &mut out,
+        )?,
+        Verb::StashPop => {
+            stash_index_verb(&invocation.repo, &invocation.args, StashVerb::Pop, &mut out)?
+        }
+        Verb::StashDrop => stash_index_verb(
+            &invocation.repo,
+            &invocation.args,
+            StashVerb::Drop,
+            &mut out,
+        )?,
+        Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
     };
     let command_elapsed = started_at.elapsed();
 
@@ -608,6 +651,164 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     for missing in &listing.missing {
         writeln!(out, "D\t-\t{}", missing.name_lossy())?;
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Flags shared by the mutating verbs: `-m`, `--author`, `--confirm`, and positional paths.
+#[derive(Default)]
+struct MutationArgs {
+    message: Option<String>,
+    author: Option<rc_git_guard::actions::Identity>,
+    confirm: Option<String>,
+    paths: Vec<String>,
+}
+
+fn parse_mutation(args: &[String]) -> Result<MutationArgs> {
+    let mut parsed = MutationArgs::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-m" | "--message" => {
+                parsed.message = Some(text_value(iter.next(), "-m")?);
+            }
+            "--author" => {
+                let raw = text_value(iter.next(), "--author")?;
+                parsed.author = Some(parse_author(&raw)?);
+            }
+            "--confirm" => {
+                parsed.confirm = Some(text_value(iter.next(), "--confirm")?);
+            }
+            other => parsed.paths.push(other.to_owned()),
+        }
+    }
+    Ok(parsed)
+}
+
+/// `"Name <email>"`, as `git --author` takes it.
+fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
+    let Some((name, rest)) = raw.split_once('<') else {
+        bail!("--author needs \"Name <email>\", got '{raw}'");
+    };
+    let Some(email) = rest.strip_suffix('>') else {
+        bail!("--author needs \"Name <email>\", got '{raw}'");
+    };
+    Ok(rc_git_guard::actions::Identity {
+        name: name.trim().to_owned(),
+        email: email.trim().to_owned(),
+    })
+}
+
+fn commit_verb(
+    repo: &Repository,
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let parsed = parse_mutation(args)?;
+    let message = parsed
+        .message
+        .with_context(|| format!("commit needs -m <msg>\n\n{USAGE}"))?;
+    if parsed.paths.is_empty() {
+        bail!("commit needs at least one <path>\n\n{USAGE}");
+    }
+    let expected = repo.resolve("HEAD").ok().map(|oid| oid.to_hex());
+    let selections: Vec<rc_git_guard::actions::FileSelection> = parsed
+        .paths
+        .iter()
+        .map(|path| rc_git_guard::actions::FileSelection::Whole { path: path.clone() })
+        .collect();
+    let done = rc_git_guard::actions::commit(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        &message,
+        parsed.author,
+        expected.as_deref(),
+        &selections,
+        parsed.confirm.as_deref(),
+    )?;
+    writeln!(out, "{}\t{}", done.oid, done.branch)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn stash_push_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let parsed = parse_mutation(args)?;
+    if parsed.paths.is_empty() {
+        bail!("stash-push needs at least one <path>\n\n{USAGE}");
+    }
+    let saved = rc_git_guard::actions::stash_push(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        &parsed.paths,
+        parsed.message.as_deref(),
+        parsed.author,
+        parsed.confirm.as_deref(),
+    )?;
+    writeln!(out, "{}\t{}", saved.oid, saved.message)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Clone, Copy)]
+enum StashVerb {
+    Apply,
+    Pop,
+    Drop,
+}
+
+fn stash_index_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    verb: StashVerb,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let parsed = parse_mutation(args)?;
+    let index = match parsed.paths.first() {
+        Some(raw) => raw
+            .parse()
+            .with_context(|| format!("'{raw}' is not a stash index"))?,
+        None => 0,
+    };
+    let policy = rc_git_guard::Policy::default();
+    let input = parsed.confirm.as_deref();
+    match verb {
+        StashVerb::Apply => {
+            rc_git_guard::actions::stash_apply(repo_path, &policy, index, input)?;
+        }
+        StashVerb::Pop => {
+            let deleted = rc_git_guard::actions::stash_pop(repo_path, &policy, index, input)?;
+            if let Some(backup) = deleted.backup_ref {
+                writeln!(out, "{backup}")?;
+            }
+        }
+        StashVerb::Drop => {
+            let deleted = rc_git_guard::actions::stash_drop(repo_path, &policy, index, input)?;
+            if let Some(backup) = deleted.backup_ref {
+                writeln!(out, "{backup}")?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn discard_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let parsed = parse_mutation(args)?;
+    if parsed.paths.is_empty() {
+        bail!("discard needs at least one <path>\n\n{USAGE}");
+    }
+    rc_git_guard::actions::discard_files(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        &parsed.paths,
+        parsed.confirm.as_deref(),
+    )?;
+    let _ = out;
     Ok(ExitCode::SUCCESS)
 }
 

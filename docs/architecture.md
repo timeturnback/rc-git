@@ -12,8 +12,9 @@ rc-git-core   gix wrapper. Repository pool, refs, trees, blobs, log, revision pa
 
 `rc-git-cli` sits beside the Swift package on top of the core and exposes the same operations
 to scripts. `rc-git-guard` holds the mutation policy and, in its `actions` module, the one
-write path (branch and tag management); `safety.md` has the rules. `rc-git-highlight` is a
-pure tree-sitter wrapper the FFI exposes for the file pane.
+write path: branch and tag management, commits built from working-tree selections, the stash
+lifecycle, and discards; `safety.md` has the rules. `rc-git-highlight` is a pure tree-sitter
+wrapper the FFI exposes for the file pane.
 
 ## Opening a repository
 
