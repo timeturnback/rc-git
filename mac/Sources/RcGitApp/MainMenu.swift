@@ -48,6 +48,7 @@ enum MainMenu {
 
     private static func fileMenu(recentMenu: NSMenu) -> NSMenu {
         let menu = NSMenu(title: "File")
+        menu.addItem(item("New Tab", #selector(AppDelegate.newWindowForTab(_:)), "t"))
         menu.addItem(item("Open Repository…", #selector(AppDelegate.openDocument(_:)), "o"))
         let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recent.submenu = recentMenu
@@ -116,6 +117,19 @@ enum MainMenu {
         let menu = NSMenu(title: "Window")
         menu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
         menu.addItem(item("Zoom", #selector(NSWindow.performZoom(_:)), ""))
+        menu.addItem(.separator())
+        menu.addItem(
+            item(
+                "Show Previous Tab", #selector(NSWindow.selectPreviousTab(_:)), "[",
+                [.command, .shift]))
+        menu.addItem(
+            item(
+                "Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "]",
+                [.command, .shift]))
+        menu.addItem(
+            item(
+                "Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:)), ""))
+        menu.addItem(item("Merge All Windows", #selector(NSWindow.mergeAllWindows(_:)), ""))
         menu.addItem(.separator())
         menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), ""))
         NSApp.windowsMenu = menu

@@ -5,6 +5,7 @@ import RcGitKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
+    private let openTabs = OpenTabs()
     private let recentMenu = NSMenu(title: "Open Recent")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -13,10 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if paths.isEmpty {
-            newWindow().showWindow(nil)
+            restoreTabs()
         } else {
             for path in paths { open(path: path) }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        saveTabs()
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -54,15 +59,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildRecentMenu()
     }
 
-    /// Opens a repository in an empty window, or a new one when every window is in use.
+    /// Adds an empty tab; also gives the tab bar its "+" button (AppKit shows it when
+    /// something in the responder chain implements this selector).
+    @objc func newWindowForTab(_ sender: Any?) {
+        newWindow().showWindow(nil)
+    }
+
+    /// Opens a repository in an empty tab, or a new one when every tab is in use. A
+    /// repository that is already open gets its existing tab selected instead.
     func open(path: String) {
         let path = (path as NSString).standardizingPath
+        if let existing = controllers.first(where: { $0.repositoryPath == path }) {
+            existing.showWindow(nil)
+            return
+        }
         do {
             let repository = try Repository(path: path)
             recents.note(path)
             rebuildRecentMenu()
             let controller = controllers.first(where: { $0.isEmpty }) ?? newWindow()
             controller.show(repository, path: path)
+            saveTabs()
         } catch {
             let alert = NSAlert()
             alert.messageText = "Could not open repository"
@@ -75,14 +92,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func newWindow() -> MainWindowController {
         let controller = MainWindowController()
-        if let last = controllers.last?.window, let window = controller.window {
-            window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY))
+        if let window = controller.window,
+            let host = NSApp.mainWindow ?? controllers.last?.window
+        {
+            host.addTabbedWindow(window, ordered: .above)
         }
         controllers.append(controller)
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
+            self?.saveTabs()
         }
         return controller
+    }
+
+    // MARK: Tab persistence
+
+    /// Reopens the tabs of the previous run, silently skipping repositories that no longer
+    /// open, and selects the tab that was selected then. Falls back to one empty tab.
+    private func restoreTabs() {
+        var opened: [MainWindowController] = []
+        for path in openTabs.paths {
+            guard let repository = try? Repository(path: path) else { continue }
+            let controller = newWindow()
+            controller.show(repository, path: path)
+            opened.append(controller)
+        }
+        guard !opened.isEmpty else {
+            newWindow().showWindow(nil)
+            return
+        }
+        opened[OpenTabs.clampedSelection(openTabs.selectedIndex, count: opened.count)]
+            .showWindow(nil)
+        saveTabs()
+    }
+
+    /// Records the open repositories in on-screen tab order plus the selected tab. Runs on
+    /// every open and close and once more at quit, which also captures drag reordering.
+    private func saveTabs() {
+        var ordered: [MainWindowController] = []
+        if let group = controllers.first?.window?.tabGroup {
+            ordered = group.windows.compactMap { window in
+                controllers.first { $0.window === window }
+            }
+        }
+        for controller in controllers where !ordered.contains(where: { $0 === controller }) {
+            ordered.append(controller)
+        }
+        let withRepository = ordered.filter { $0.repositoryPath != nil }
+        let selectedWindow = controllers.first?.window?.tabGroup?.selectedWindow
+        openTabs.save(
+            paths: withRepository.compactMap(\.repositoryPath),
+            selectedIndex: withRepository.firstIndex { $0.window === selectedWindow } ?? 0)
     }
 
     private func rebuildRecentMenu() {

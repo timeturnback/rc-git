@@ -38,7 +38,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var currentLayout: Layout?
     private var sidebarCollapsedByPolicy = false
     private var repositoryName = ""
-    private var repositoryPath: String?
+    private(set) var repositoryPath: String?
     private var hasWorkingTree = false
 
     init() {
@@ -50,6 +50,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         )
         window.minSize = NSSize(width: 440, height: 320)
         window.title = "rc-git"
+        // Every repository lives in its own tab of one window group. A tab that is not
+        // selected keeps its whole view hierarchy, model, and watchers, so switching
+        // tabs reorders windows and reads nothing from any repository.
+        window.tabbingMode = .preferred
+        window.tabbingIdentifier = "rc-git.browser"
         window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = false
         super.init(window: window)

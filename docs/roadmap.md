@@ -60,6 +60,14 @@ constraints are clear.
   git's own format and proven against the real `git stash` in tests. Raw-byte semantics
   throughout: gitattributes filters and eol conversion are not honored. `WorktreeWatcher`
   refreshes the list when files change on disk while the tab is frontmost.
+- **Multiple repositories in tabs.** Every repository opens in its own tab of one native
+  window group (⌘T for an empty tab, "+" in the tab bar, ⇧⌘[ / ⇧⌘] to move between them).
+  Each tab is a full `MainWindowController` — model, caches, and watchers stay alive while
+  the tab is in the background — so switching tabs reorders windows and reads nothing.
+  Opening a repository that is already open selects its existing tab. `OpenTabs` (RcGitKit)
+  persists the tab list and selection through `UserDefaults` — saved on every open, close,
+  and at quit — and a relaunch reopens them, silently skipping repositories that no longer
+  open.
 
 ## Planned
 
