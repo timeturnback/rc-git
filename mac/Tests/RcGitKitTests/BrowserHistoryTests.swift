@@ -418,6 +418,26 @@ import Testing
         #expect(message.contains("read blob"))
     }
 
+    @Test func closingTheCommitDetailEmptiesItAndDropsTheBackStack() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        await model.jumpToCommit(parentCommit)
+        var events = 0
+        model.onDiffChanged = { events += 1 }
+        model.closeCommitDetail()
+        #expect(model.diffCommit == nil)
+        #expect(model.commitChanges.isEmpty)
+        #expect(model.detailBackStack.isEmpty)
+        guard case .empty = model.commitDetail else {
+            Issue.record("expected an empty detail after close, got \(model.commitDetail)")
+            return
+        }
+        #expect(events == 1, "the view hears one change to dismiss the drawer")
+        model.closeCommitDetail()
+        #expect(events == 1, "closing an already-empty detail is silent")
+    }
+
     @Test func switchingRefsClearsTheCommitDetail() async {
         await model.attach(repo)
         await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))

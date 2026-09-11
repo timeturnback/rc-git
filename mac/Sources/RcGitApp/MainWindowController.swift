@@ -349,6 +349,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             Task { await self.model.goBackInDetail() }
         }
+        historyController.onCloseDetail = { [weak self] in
+            self?.model.closeCommitDetail()
+        }
         historyController.onClearScope = { [weak self] in
             self?.model.clearHistoryScope()
         }

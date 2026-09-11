@@ -14,6 +14,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     var onSelectChange: ((TreeChange) -> Void)?
     var onJumpToCommit: ((Oid) -> Void)?
     var onDetailBack: (() -> Void)?
+    var onCloseDetail: (() -> Void)?
     var onClearScope: (() -> Void)?
     var onSearchFilterChanged: ((CommitFilter?) -> Void)?
     var onNeedsMoreSearch: (() -> Void)?
@@ -64,6 +65,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let detailBody = NSTextField(wrappingLabelWithString: "")
     private let parentsRow = NSStackView()
     private let backButton = NSButton()
+    private let closeButton = NSButton()
+    private var detailPane: NSView?
     private var parentOids: [Oid] = []
 
     private static let dateFormatter: DateFormatter = {
@@ -121,8 +124,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         buildSearchArea()
 
         // A stack with detachesHiddenViews, so the hidden scope bar costs no height and
-        // never fights a collapse constraint. The list keeps a minimum height so the split
-        // can never crush it to nothing.
+        // never fights a collapse constraint. The list keeps a minimum width so the detail
+        // drawer can never crush it to nothing.
         let commitsStack = NSStackView(views: [searchArea, scopeBar, scroll])
         commitsStack.orientation = .vertical
         commitsStack.alignment = .leading
@@ -145,19 +148,25 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             searchArea.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scopeBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
             placeholder.centerXAnchor.constraint(equalTo: commitsPane.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: commitsPane.centerYAnchor),
         ])
 
+        // The commit list fills the tab; the detail is a drawer on the right that only
+        // exists while a commit is open. Hidden arranged subviews collapse with their
+        // divider, so the closed drawer costs no width.
+        let detail = buildDetailPane()
+        detail.isHidden = true
+        detailPane = detail
         let split = NSSplitView()
-        split.isVertical = false
+        split.isVertical = true
         split.dividerStyle = .thin
-        // v2: the pre-fix build autosaved a crushed divider position under the old name.
-        split.autosaveName = "rc-git.history.v2"
+        // v3: the layout moved from a bottom detail pane to a right drawer.
+        split.autosaveName = "rc-git.history.v3"
         split.addArrangedSubview(commitsPane)
-        split.addArrangedSubview(buildDetailPane())
-        split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
+        split.addArrangedSubview(detail)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 1)
         view = split
     }
 
@@ -197,11 +206,14 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         diffPlaceholder.textColor = .secondaryLabelColor
         diffPlaceholder.translatesAutoresizingMaskIntoConstraints = false
 
+        // Inside the drawer the changed files sit above the diff: the drawer is tall and
+        // narrow, so side-by-side panes would leave no room for diff lines.
         let detailSplit = NSSplitView()
-        detailSplit.isVertical = true
+        detailSplit.isVertical = false
         detailSplit.dividerStyle = .thin
-        detailSplit.autosaveName = "rc-git.history-detail.v2"
-        changesScroll.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        // v3: the layout moved from side-by-side panes to stacked ones.
+        detailSplit.autosaveName = "rc-git.history-detail.v3"
+        changesScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
         detailSplit.addArrangedSubview(changesScroll)
         detailSplit.addArrangedSubview(diffScroll)
         detailSplit.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
@@ -230,8 +242,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             detailSplit.widthAnchor.constraint(equalTo: stacked.widthAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            changesScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            changesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
         return container
     }
@@ -426,6 +438,19 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         backButton.target = self
         backButton.action = #selector(detailBackClicked(_:))
 
+        closeButton.title = "✕"
+        closeButton.bezelStyle = .accessoryBarAction
+        closeButton.controlSize = .small
+        closeButton.target = self
+        closeButton.action = #selector(closeDetailClicked(_:))
+        closeButton.toolTip = "Close commit"
+
+        let titleRow = NSStackView(views: [detailTitle, closeButton])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .top
+        titleRow.spacing = 6
+        detailTitle.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+
         parentsRow.orientation = .horizontal
         parentsRow.spacing = 6
         parentsRow.alignment = .centerY
@@ -435,15 +460,19 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         detailHeader.spacing = 3
         detailHeader.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         detailHeader.detachesHiddenViews = true
-        for view in [detailTitle, detailRefs, detailAuthor, detailCommitter, detailBody] {
+        for view in [titleRow, detailRefs, detailAuthor, detailCommitter, detailBody] {
             detailHeader.addArrangedSubview(view)
         }
         detailHeader.addArrangedSubview(parentsRow)
+        titleRow.widthAnchor.constraint(equalTo: detailHeader.widthAnchor, constant: -20)
+            .isActive = true
         detailHeader.isHidden = true
     }
 
-    /// Renders the detail header: message, refs, identities, and parent navigation.
+    /// Renders the detail header: message, refs, identities, and parent navigation. Any
+    /// state but `.empty` opens the drawer; `.empty` closes it.
     func renderCommitDetail(_ state: CommitDetailState, canGoBack: Bool) {
+        detailPane?.isHidden = state == .empty
         switch state {
         case .empty:
             detailHeader.isHidden = true
@@ -530,6 +559,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     @objc private func detailBackClicked(_ sender: Any?) {
         onDetailBack?()
+    }
+
+    @objc private func closeDetailClicked(_ sender: Any?) {
+        table.deselectAll(nil)
+        onCloseDetail?()
     }
 
     /// Highlights the row of a commit reached by a parent link or back jump, when loaded.

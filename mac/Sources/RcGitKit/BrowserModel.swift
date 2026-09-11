@@ -639,6 +639,12 @@ public final class BrowserModel {
         onHistoryChanged?()
     }
 
+    /// Closes the commit detail: drops the back stack and returns the detail state to
+    /// `.empty`, so the view can dismiss its drawer.
+    public func closeCommitDetail() {
+        clearCommitDetail()
+    }
+
     private func clearCommitDetail() {
         diffGeneration += 1
         detailBackStack = []
