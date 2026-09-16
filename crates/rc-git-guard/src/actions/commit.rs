@@ -449,7 +449,7 @@ pub(super) fn write_object(
 /// removes deleted ones, leaving every other entry untouched, so terminal `git status` shows
 /// the committed paths as clean instead of staged reverse-modifications. The stale
 /// tree-cache extension is dropped rather than rewritten; git rebuilds it on demand.
-fn update_index(
+pub(in crate::actions) fn update_index(
     repo: &gix::Repository,
     work_dir: &Path,
     changes: &[(String, Option<(ObjectId, EntryKind)>)],

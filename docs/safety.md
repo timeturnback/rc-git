@@ -49,6 +49,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | Action | Protected branch | Elsewhere |
 |---|---|---|
 | fetch, checkout, plain push | allow | allow |
+| pull (fast-forward) | allow (the write path refuses dirty files) | same |
 | create branch, create tag | allow (never overwrites) | allow (never overwrites) |
 | force push | **deny** | type the branch name |
 | delete local branch, merged | **deny** | confirm |

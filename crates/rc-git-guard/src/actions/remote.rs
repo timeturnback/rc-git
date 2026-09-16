@@ -9,8 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::{ActionError, ActionResult, open};
 
 mod fetch;
+mod pull;
 
 pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
+pub use pull::{PullOutcome, pull_fast_forward};
 
 /// A username and token for one HTTPS host. Never stored and never logged by this crate.
 #[derive(Clone, PartialEq, Eq)]

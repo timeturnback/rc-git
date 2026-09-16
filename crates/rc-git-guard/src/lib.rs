@@ -28,6 +28,13 @@ pub enum Action {
         /// Branch, tag, or commit being checked out.
         target: String,
     },
+    /// Move the checked-out branch forward to its upstream when the upstream strictly
+    /// contains it. Refused in the write path when any affected file is dirty, so it
+    /// overwrites nothing.
+    PullFastForward {
+        /// Branch being advanced, without `refs/heads/`.
+        branch: String,
+    },
     /// Upload commits. Without `force`, the server rejects a push that would drop history.
     Push {
         /// Branch being pushed, without `refs/heads/`.
@@ -119,6 +126,7 @@ impl Action {
             | Action::CreateLocalBranch { .. }
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
+            | Action::PullFastForward { .. }
             | Action::Push { force: false, .. }
             | Action::DiscardWorkingChanges { files: 0 }
             | Action::Commit { .. }
@@ -241,6 +249,7 @@ impl Policy {
             | Action::CreateLocalBranch { .. }
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
+            | Action::PullFastForward { .. }
             | Action::Push { force: false, .. }
             | Action::DiscardWorkingChanges { files: 0 }
             | Action::Commit { .. }
@@ -388,6 +397,13 @@ mod tests {
                 target: "main".into()
             }),
             Decision::Allow
+        );
+        assert_eq!(
+            policy.evaluate(&Action::PullFastForward {
+                branch: "main".into()
+            }),
+            Decision::Allow,
+            "a fast-forward loses nothing; the write path refuses dirty files itself"
         );
         assert_eq!(
             policy.evaluate(&Action::Push {
