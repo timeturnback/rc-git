@@ -27,6 +27,12 @@ disallowed-methods = [
     { path = "std::os::unix::fs::symlink", reason = "core never writes files; see docs/safety.md" },
     { path = "gix_index::File::write", reason = "core is read-only; index writes go through rc-git-guard" },
     { path = "gix_index::File::write_to", reason = "core is read-only; index writes go through rc-git-guard" },
+    { path = "gix::Repository::remote_at", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix::Repository::find_remote", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix::Repository::find_fetch_remote", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix::Remote::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix::Remote::to_connection_with_transport", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix_protocol::handshake", reason = "network entry point; remote I/O goes through rc-git-guard" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.

@@ -8,6 +8,10 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+mod http;
+
+pub use http::HttpGitServer;
+
 /// A temporary directory holding a repository. Deleted on drop.
 #[derive(Debug)]
 pub struct Fixture {
@@ -114,6 +118,35 @@ impl Fixture {
         self.run(args, extra_env);
     }
 
+    /// Runs `git` expecting it to fail, returning its stderr for assertions.
+    ///
+    /// # Panics
+    /// When git cannot be started or exits zero.
+    #[must_use]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures are built with the git CLI"
+    )]
+    pub fn git_expect_failure(&self, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(self.dir.path())
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.dir.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("run git");
+        assert!(
+            !output.status.success(),
+            "git {} unexpectedly succeeded",
+            args.join(" ")
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
     #[expect(
         clippy::disallowed_methods,
         reason = "test fixtures are built with the git CLI"
@@ -148,6 +181,27 @@ impl Fixture {
     #[must_use]
     pub fn rev_parse(&self, spec: &str) -> String {
         self.git_output(&["rev-parse", spec])
+    }
+
+    /// Serves this repository over smart HTTP, with pushes enabled
+    /// (`http.receivepack=true`).
+    ///
+    /// # Panics
+    /// When the server cannot start.
+    #[must_use]
+    pub fn serve_http(&self) -> HttpGitServer {
+        self.git(&["config", "http.receivepack", "true"]);
+        HttpGitServer::serve(&self.git_dir())
+    }
+
+    /// Like [`serve_http`](Self::serve_http), demanding HTTP Basic credentials.
+    ///
+    /// # Panics
+    /// When the server cannot start.
+    #[must_use]
+    pub fn serve_http_with_auth(&self, user: &str, pass: &str) -> HttpGitServer {
+        self.git(&["config", "http.receivepack", "true"]);
+        HttpGitServer::serve_with_auth(&self.git_dir(), user, pass)
     }
 
     /// Writes a file below the working directory, creating parent directories.
