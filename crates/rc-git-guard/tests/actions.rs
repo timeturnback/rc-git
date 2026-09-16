@@ -382,7 +382,7 @@ mod commit_and_discard {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, ActionError::DetachedHead), "{err}");
+        assert!(matches!(err, ActionError::DetachedHead { .. }), "{err}");
         assert_eq!(fx.rev_parse("main"), head, "nothing moved");
     }
 

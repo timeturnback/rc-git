@@ -15,12 +15,16 @@ use crate::{Action, Challenge, Confirmation, Decision, Policy, Risk};
 
 mod commit;
 mod discard;
+mod remote;
 mod stash;
 mod treebuild;
 mod workfile;
 
 pub use commit::{Committed, commit};
 pub use discard::{discard_files, discard_hunks};
+pub use remote::{
+    Credentials, FetchOutcome, RefUpdate, UpstreamStatus, fetch_upstream, upstream_status,
+};
 pub use stash::{StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
 
 /// Who a commit or stash is recorded as.
@@ -130,9 +134,12 @@ pub enum ActionError {
         /// The branch involved.
         name: String,
     },
-    /// `HEAD` is detached; committing needs a checked-out branch.
-    #[error("cannot commit: HEAD is detached; check out a branch first")]
-    DetachedHead,
+    /// `HEAD` is detached; the operation needs a checked-out branch.
+    #[error("cannot {op}: HEAD is detached; check out a branch first")]
+    DetachedHead {
+        /// What was being done.
+        op: &'static str,
+    },
     /// The repository moved under the UI between planning and acting.
     #[error("{op}: the repository changed since the list was built; refresh and retry")]
     StaleRepository {
@@ -155,6 +162,58 @@ pub enum ActionError {
     /// `user.name`/`user.email` and none was passed in.
     #[error("cannot commit: set user.name and user.email, or provide an identity")]
     MissingIdentity,
+    /// The remote wants credentials rc-git does not have, or rejected the ones given.
+    #[error("{op}: '{host}' requires authentication or rejected the credentials")]
+    AuthRequired {
+        /// What was being done.
+        op: &'static str,
+        /// The host to authenticate with.
+        host: String,
+    },
+    /// The remote's transport is not HTTPS; rc-git would have to spawn a process for it.
+    #[error("{op}: remote '{name}' uses '{scheme}'; rc-git only supports https:// remotes")]
+    UnsupportedRemote {
+        /// What was being done.
+        op: &'static str,
+        /// The remote involved.
+        name: String,
+        /// The URL scheme that was refused.
+        scheme: String,
+    },
+    /// The branch has no configured upstream remote.
+    #[error("{op}: branch '{branch}' has no upstream; configure branch.{branch}.remote first")]
+    NoUpstream {
+        /// What was being done.
+        op: &'static str,
+        /// The branch involved.
+        branch: String,
+    },
+    /// Local and upstream have both moved; a fast-forward is impossible.
+    #[error(
+        "cannot fast-forward '{branch}': local is {ahead} ahead and {behind} behind; reconcile with git"
+    )]
+    Diverged {
+        /// The branch involved.
+        branch: String,
+        /// Commits only the local branch has.
+        ahead: usize,
+        /// Commits only the upstream has.
+        behind: usize,
+    },
+    /// The remote branch moved past the last fetch; a plain push would lose its commits.
+    #[error(
+        "push rejected: '{branch}' on the remote has commits you don't have; fetch and pull first"
+    )]
+    PushRejected {
+        /// The branch involved.
+        branch: String,
+    },
+    /// The user cancelled before or during the transfer.
+    #[error("{op}: cancelled")]
+    Cancelled {
+        /// What was being done.
+        op: &'static str,
+    },
     /// The underlying git operation failed.
     #[error("{op} '{name}': {source}")]
     Git {
