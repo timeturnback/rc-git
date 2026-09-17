@@ -1,0 +1,147 @@
+//! Pack generation for push: enumerate the commits the remote lacks, expand them to
+//! trees and blobs, and write a self-contained (never thin) pack v2 into memory.
+
+use std::sync::atomic::AtomicBool;
+
+use gix::ObjectId;
+
+use crate::actions::{ActionError, ActionResult};
+
+const OP: &str = "push";
+
+/// A pack holding everything reachable from `tip` that is not reachable from `haves`,
+/// plus how many commits that is. The pack is empty (still valid) when the remote
+/// already has every object, e.g. when a new branch points at an existing commit.
+pub(super) struct BuiltPack {
+    /// The complete pack bytes, header and trailing hash included.
+    pub bytes: Vec<u8>,
+    /// Commits included.
+    pub commits: usize,
+}
+
+/// Enumerates and packs the objects to send.
+///
+/// # Errors
+/// [`ActionError::Git`] when the walk or the pack writer fails, [`ActionError::Cancelled`]
+/// when `cancel` was set during counting.
+pub(super) fn build_pack(
+    repo: &gix::Repository,
+    tip: ObjectId,
+    haves: &[ObjectId],
+    cancel: &AtomicBool,
+) -> ActionResult<BuiltPack> {
+    let walk = repo
+        .rev_walk([tip])
+        .with_hidden(haves.iter().copied())
+        .all()
+        .map_err(|source| ActionError::Git {
+            op: OP,
+            name: tip.to_string(),
+            source: Box::new(source),
+        })?;
+    let mut commits: Vec<ObjectId> = Vec::new();
+    for info in walk {
+        let info = info.map_err(|source| ActionError::Git {
+            op: OP,
+            name: tip.to_string(),
+            source: Box::new(source),
+        })?;
+        commits.push(info.id);
+    }
+    let commit_count = commits.len();
+    if commit_count == 0 {
+        return Ok(BuiltPack {
+            bytes: empty_pack(repo.object_hash())?,
+            commits: 0,
+        });
+    }
+
+    // `repo.objects` is a memory-Proxy wrapper without a pack-level Find impl; the
+    // cache underneath implements it. Pack generation stores pack ids for later
+    // lookup, so the handle must keep packs mapped.
+    let mut db = (*repo.objects).clone();
+    db.prevent_pack_unload();
+    let input = Box::new(commits.into_iter().map(Ok))
+        as Box<
+            dyn Iterator<
+                    Item = Result<ObjectId, Box<dyn std::error::Error + Send + Sync + 'static>>,
+                > + Send,
+        >;
+    let (counts, _outcome) = gix_pack::data::output::count::objects(
+        db.clone(),
+        input,
+        &gix::progress::Discard,
+        cancel,
+        gix_pack::data::output::count::objects::Options {
+            thread_limit: Some(1),
+            input_object_expansion:
+                gix_pack::data::output::count::objects::ObjectExpansion::TreeAdditionsComparedToAncestor,
+            ..Default::default()
+        },
+    )
+    .map_err(|source| ActionError::Git {
+        op: OP,
+        name: "object enumeration".to_owned(),
+        source: Box::new(source),
+    })?;
+
+    let entry_count = u32::try_from(counts.len()).map_err(|_| ActionError::Git {
+        op: OP,
+        name: "pack".to_owned(),
+        source: "more than u32::MAX objects in one push".into(),
+    })?;
+    let entries = gix_pack::data::output::entry::iter_from_counts(
+        counts,
+        db,
+        Box::new(gix::progress::Discard),
+        gix_pack::data::output::entry::iter_from_counts::Options {
+            allow_thin_pack: false,
+            ..Default::default()
+        },
+    );
+    let mut bytes = Vec::new();
+    let writer = gix_pack::data::output::bytes::FromEntriesIter::new(
+        gix::features::parallel::InOrderIter::from(entries),
+        &mut bytes,
+        entry_count,
+        gix_pack::data::Version::V2,
+        repo.object_hash(),
+    );
+    for written in writer {
+        written.map_err(|source| ActionError::Git {
+            op: OP,
+            name: "pack".to_owned(),
+            source: Box::new(source),
+        })?;
+    }
+    Ok(BuiltPack {
+        bytes,
+        commits: commit_count,
+    })
+}
+
+/// A valid pack containing zero objects: header plus trailing hash.
+fn empty_pack(hash: gix::hash::Kind) -> ActionResult<Vec<u8>> {
+    let empty = std::iter::empty::<Result<Vec<gix_pack::data::output::Entry>, EmptyError>>();
+    let mut bytes = Vec::new();
+    let writer = gix_pack::data::output::bytes::FromEntriesIter::new(
+        empty,
+        &mut bytes,
+        0,
+        gix_pack::data::Version::V2,
+        hash,
+    );
+    for written in writer {
+        written.map_err(|source| ActionError::Git {
+            op: OP,
+            name: "pack".to_owned(),
+            source: Box::new(source),
+        })?;
+    }
+    Ok(bytes)
+}
+
+/// The impossible error of an empty entry stream.
+#[derive(Debug, thiserror::Error)]
+#[error("unreachable")]
+struct EmptyError;

@@ -26,6 +26,13 @@ fn bare_copy(origin: &Fixture) -> (Fixture, std::path::PathBuf) {
     let bare = Fixture::empty_dir();
     let path = bare.path().join("remote.git");
     origin.git(&["clone", "--bare", "--quiet", ".", &path.to_string_lossy()]);
+    bare.git(&[
+        "--git-dir",
+        "remote.git",
+        "config",
+        "http.receivepack",
+        "true",
+    ]);
     (bare, path)
 }
 
@@ -441,4 +448,201 @@ fn pull_refuses_a_detached_head() {
     remoted.clone.git(&["checkout", "-q", "--detach"]);
     let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("detached");
     assert!(matches!(err, ActionError::DetachedHead { .. }), "{err}");
+}
+
+// --- push ---
+
+use rc_git_guard::actions::push_upstream;
+
+#[test]
+fn push_uploads_commits_and_updates_the_tracking_ref() {
+    let remoted = remoted();
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    let tip = remoted.clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .expect("push");
+    assert_eq!(outcome.remote, "origin");
+    assert_eq!(outcome.branch, "main");
+    assert_eq!(outcome.pushed_commits, 1);
+    assert_eq!(outcome.new.to_string(), tip);
+    assert_eq!(
+        bare_tip(&remoted),
+        tip,
+        "the served repository must have the commit"
+    );
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        tip,
+        "the tracking ref must be advanced"
+    );
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!((status.ahead, status.behind), (0, 0));
+}
+
+#[test]
+fn push_with_nothing_new_is_a_no_op() {
+    let remoted = remoted();
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .expect("push");
+    assert_eq!(outcome.pushed_commits, 0);
+    assert_eq!(outcome.old, Some(outcome.new));
+}
+
+#[test]
+fn push_creates_a_new_branch_from_an_existing_commit() {
+    let remoted = remoted();
+    remoted.clone.git(&["checkout", "-q", "-b", "topic"]);
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .expect("push");
+    assert_eq!(outcome.branch, "topic");
+    assert_eq!(outcome.old, None);
+    assert_eq!(
+        outcome.pushed_commits, 0,
+        "every object already exists remotely"
+    );
+    assert_eq!(
+        remoted
+            .bare
+            .git_output(&["--git-dir", "remote.git", "rev-parse", "topic"]),
+        remoted.clone.rev_parse("HEAD")
+    );
+}
+
+#[test]
+fn push_is_rejected_when_the_remote_moved() {
+    let remoted = remoted();
+    advance_origin(&remoted);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .expect_err("rejected");
+    assert!(matches!(err, ActionError::PushRejected { .. }), "{err}");
+    assert_ne!(bare_tip(&remoted), remoted.clone.rev_parse("HEAD"));
+}
+
+#[test]
+fn push_against_an_auth_server_requires_credentials() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = bare_copy(&origin);
+    let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let clone = Fixture::empty_dir();
+    let with_creds = server.url().replace("http://", "http://user:sekret@");
+    clone.git(&[
+        "-c",
+        "credential.helper=",
+        "clone",
+        "--quiet",
+        &with_creds,
+        ".",
+    ]);
+    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let anonymous = push_upstream(
+        clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    );
+    assert!(
+        matches!(anonymous, Err(ActionError::AuthRequired { .. })),
+        "{anonymous:?}"
+    );
+
+    let outcome = push_upstream(
+        clone.path(),
+        &Policy::default(),
+        Some(&Credentials {
+            username: "user".to_owned(),
+            token: "sekret".to_owned(),
+        }),
+        &AtomicBool::new(false),
+    )
+    .expect("authenticated push");
+    assert_eq!(outcome.pushed_commits, 1);
+    assert_eq!(
+        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]),
+        clone.rev_parse("HEAD")
+    );
+}
+
+#[test]
+fn push_surfaces_a_hook_rejection() {
+    let remoted = remoted();
+    remoted.bare.write(
+        "remote.git/hooks/pre-receive",
+        b"#!/bin/sh\necho refused by policy >&2\nexit 1\n",
+    );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test setup marks the hook executable"
+    )]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            remoted.bare.path().join("remote.git/hooks/pre-receive"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod hook");
+    }
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .expect_err("hook rejects");
+    let message = err.to_string();
+    assert!(message.contains("refused"), "{message}");
+    assert_ne!(bare_tip(&remoted), remoted.clone.rev_parse("HEAD"));
+}
+
+#[test]
+fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
+    let remoted = remoted();
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        None,
+        &AtomicBool::new(true),
+    )
+    .expect_err("cancelled");
+    assert!(
+        matches!(err, ActionError::Cancelled { op: "push" }),
+        "{err}"
+    );
 }

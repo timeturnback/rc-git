@@ -9,10 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::{ActionError, ActionResult, open};
 
 mod fetch;
+mod pack;
 mod pull;
+mod push;
+mod report;
 
 pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
+pub use push::{PushOutcome, push_upstream};
 
 /// A username and token for one HTTPS host. Never stored and never logged by this crate.
 #[derive(Clone, PartialEq, Eq)]
@@ -301,5 +305,38 @@ fn bail_if_cancelled(cancel: &AtomicBool, op: &'static str) -> ActionResult<()> 
     if cancel.load(Ordering::SeqCst) {
         return Err(ActionError::Cancelled { op });
     }
+    Ok(())
+}
+
+/// Whether `ancestor` is reachable from `tip`.
+fn is_ancestor(repo: &gix::Repository, ancestor: gix::ObjectId, tip: gix::ObjectId) -> bool {
+    if ancestor == tip {
+        return true;
+    }
+    repo.merge_base(ancestor, tip)
+        .is_ok_and(|base| base.detach() == ancestor)
+}
+
+/// Gives the repository an in-memory `user.name`/`user.email` so reflog lines can be
+/// written under the isolated open. The configuration file on disk is never touched.
+fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionResult<()> {
+    let mut config = repo.config_snapshot_mut();
+    let mut set = |key: &'static dyn gix::config::tree::Key, value: &str| -> ActionResult<()> {
+        config
+            .set_value(key, value)
+            .map_err(|source| ActionError::Git {
+                op,
+                name: "configuration".to_owned(),
+                source: Box::new(source),
+            })?;
+        Ok(())
+    };
+    set(&gix::config::tree::User::NAME, "rc-git")?;
+    set(&gix::config::tree::User::EMAIL, "rc-git@localhost")?;
+    config.commit().map_err(|source| ActionError::Git {
+        op,
+        name: "configuration".to_owned(),
+        source: Box::new(source),
+    })?;
     Ok(())
 }

@@ -13,7 +13,7 @@ use crate::actions::commit::{blob_data, update_index, work_dir};
 use crate::actions::{ActionError, ActionResult, confirm, open, workfile};
 use crate::{Action, Policy};
 
-use super::{count_ahead_behind, current_branch, peel_ref, tracking_ref_name};
+use super::{count_ahead_behind, current_branch, is_ancestor, peel_ref, tracking_ref_name};
 
 const OP: &str = "pull";
 
@@ -107,15 +107,6 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
         new,
         files_changed: changes.len(),
     })
-}
-
-/// Whether `ancestor` is reachable from `tip`.
-fn is_ancestor(repo: &gix::Repository, ancestor: ObjectId, tip: ObjectId) -> bool {
-    if ancestor == tip {
-        return true;
-    }
-    repo.merge_base(ancestor, tip)
-        .is_ok_and(|base| base.detach() == ancestor)
 }
 
 /// The per-path changes between the two commits, renames split into a deletion and an

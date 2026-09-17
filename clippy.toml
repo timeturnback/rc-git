@@ -33,6 +33,7 @@ disallowed-methods = [
     { path = "gix::Remote::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "gix::Remote::to_connection_with_transport", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "gix_protocol::handshake", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix_transport::client::blocking_io::connect::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.

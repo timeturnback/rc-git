@@ -51,36 +51,7 @@ pub fn fetch_upstream(
     let _proof = confirm(decision, OP, "remote", None)?;
     bail_if_cancelled(cancel, OP)?;
     let mut repo = open(repo_path, OP, "repository")?;
-    // The tracking-ref updates write reflog lines, which need a committer the
-    // isolated open does not provide. In-memory only; the repository's own
-    // configuration file is never touched.
-    {
-        let mut config = repo.config_snapshot_mut();
-        let set = |config: &mut gix::config::SnapshotMut<'_>,
-                   key: &'static dyn gix::config::tree::Key,
-                   value: &str|
-         -> ActionResult<()> {
-            config
-                .set_value(key, value)
-                .map_err(|source| ActionError::Git {
-                    op: OP,
-                    name: "configuration".to_owned(),
-                    source: Box::new(source),
-                })?;
-            Ok(())
-        };
-        set(&mut config, &gix::config::tree::User::NAME, "rc-git")?;
-        set(
-            &mut config,
-            &gix::config::tree::User::EMAIL,
-            "rc-git@localhost",
-        )?;
-        config.commit().map_err(|source| ActionError::Git {
-            op: OP,
-            name: "configuration".to_owned(),
-            source: Box::new(source),
-        })?;
-    }
+    super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
     let (branch, _tip) = current_branch(&repo, OP)?;
     let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
