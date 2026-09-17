@@ -15,6 +15,12 @@
 // Status for functions that fill an out parameter: failure, see `error`.
 #define RCGIT_ERROR -1
 
+// Status for remote functions: the host wants credentials it did not get; see `error`.
+#define RCGIT_AUTH_REQUIRED -2
+
+// Status for remote functions: local and remote history diverged; see `error`.
+#define RCGIT_DIVERGED -3
+
 // Namespace of a reference.
 typedef enum RcGitRefKind {
   // `refs/heads/*`
@@ -523,6 +529,53 @@ typedef struct RcGitCommitFile {
   // Number of entries behind `hunks`.
   size_t hunk_count;
 } RcGitCommitFile;
+
+// Where the checked-out branch pushes and pulls, as of the last fetch. Free with
+// `rcgit_remote_status_free`.
+typedef struct RcGitRemoteStatus {
+  // Upstream remote name, e.g. `origin`. Empty when `has_upstream` is false.
+  char *remote;
+  // Fetch URL of that remote, userinfo removed.
+  char *url;
+  // Host (with port when present) parsed from the URL — the credential key.
+  char *host;
+  // Short name of the checked-out branch.
+  char *branch;
+  // Commits on the branch that the tracking ref does not have.
+  size_t ahead;
+  // Commits on the tracking ref that the branch does not have.
+  size_t behind;
+  // Whether the branch has a configured upstream at all.
+  bool has_upstream;
+} RcGitRemoteStatus;
+
+// What a fetch changed. Plain data, no free function.
+typedef struct RcGitFetchOutcome {
+  // Remote-tracking refs created or moved.
+  size_t updated_refs;
+  // Commits the branch is ahead of its tracking ref after the fetch.
+  size_t ahead;
+  // Commits the branch is behind its tracking ref after the fetch.
+  size_t behind;
+} RcGitFetchOutcome;
+
+// What a fast-forward pull did. Plain data, no free function.
+typedef struct RcGitPullOutcome {
+  // The commit the branch now points at.
+  struct RcGitOid new_head;
+  // Files the working tree changed.
+  size_t files_changed;
+  // Whether there was nothing to pull.
+  bool already_up_to_date;
+} RcGitPullOutcome;
+
+// What a push did. Plain data, no free function.
+typedef struct RcGitPushOutcome {
+  // Commits uploaded.
+  size_t pushed_commits;
+  // Whether there was nothing to push.
+  bool already_up_to_date;
+} RcGitPushOutcome;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1118,6 +1171,55 @@ int32_t rcgit_tree_of(const struct RcGitRepo *repo,
 // # Safety
 // `oid` points to a readable `RcGitOid`.
 char *rcgit_oid_hex(const struct RcGitOid *oid);
+
+// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
+// Returns NULL on failure, with the message in `error`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated path; `error` is NULL or valid for writing a `char *`.
+struct RcGitRemoteStatus *rcgit_guard_remote_preflight(const char *repo_path, char **error);
+
+// Releases a status returned by `rcgit_guard_remote_preflight`.
+//
+// # Safety
+// `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
+void rcgit_remote_status_free(struct RcGitRemoteStatus *status);
+
+// Fetches from the branch's upstream remote, updating remote-tracking refs. HTTPS only.
+// `username`/`token` may both be NULL for an anonymous attempt. Returns `RCGIT_OK`,
+// `RCGIT_ERROR`, or `RCGIT_AUTH_REQUIRED`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
+// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
+// writing a `char *`.
+int32_t rcgit_guard_fetch(const char *repo_path,
+                          const char *username,
+                          const char *token,
+                          struct RcGitFetchOutcome *out,
+                          char **error);
+
+// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
+// Returns `RCGIT_OK`, `RCGIT_ERROR`, or `RCGIT_DIVERGED`.
+//
+// # Safety
+// `repo_path` is a NUL-terminated path; `out` is NULL or valid for writing; `error` is
+// NULL or valid for writing a `char *`.
+int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out, char **error);
+
+// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
+// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or
+// `RCGIT_DIVERGED` (the remote has commits the branch lacks).
+//
+// # Safety
+// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
+// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
+// writing a `char *`.
+int32_t rcgit_guard_push(const char *repo_path,
+                         const char *username,
+                         const char *token,
+                         struct RcGitPushOutcome *out,
+                         char **error);
 
 #ifdef __cplusplus
 }  // extern "C"

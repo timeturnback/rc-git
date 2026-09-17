@@ -15,6 +15,7 @@ use std::fmt::Display;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::AtomicBool;
 
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage, CommitSummary,
@@ -22,9 +23,10 @@ use rc_git_core::{
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, FileSelection, HunkStamp, Identity, commit, create_branch, create_tag,
-    delete_branch, delete_tag, discard_files, discard_hunks, plan_branch_delete, plan_tag_delete,
-    stash_apply, stash_drop, stash_pop, stash_push,
+    ActionError, Credentials, FileSelection, HunkStamp, Identity, commit, create_branch,
+    create_tag, delete_branch, delete_tag, discard_files, discard_hunks, fetch_upstream,
+    plan_branch_delete, plan_tag_delete, pull_fast_forward, push_upstream, stash_apply, stash_drop,
+    stash_pop, stash_push, upstream_status,
 };
 use rc_git_guard::{Action, Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
@@ -33,6 +35,10 @@ use rc_git_highlight::{Class, Language};
 pub const RCGIT_OK: i32 = 0;
 /// Status for functions that fill an out parameter: failure, see `error`.
 pub const RCGIT_ERROR: i32 = -1;
+/// Status for remote functions: the host wants credentials it did not get; see `error`.
+pub const RCGIT_AUTH_REQUIRED: i32 = -2;
+/// Status for remote functions: local and remote history diverged; see `error`.
+pub const RCGIT_DIVERGED: i32 = -3;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -3124,6 +3130,287 @@ pub unsafe extern "C" fn rcgit_oid_hex(oid: *const RcGitOid) -> *mut c_char {
     export_string(oid.to_hex())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Remote operations. Network I/O runs through rc-git-guard; credentials come from the
+// caller, so no credential helper is ever spawned.
+// ---------------------------------------------------------------------------------------------
+
+/// Where the checked-out branch pushes and pulls, as of the last fetch. Free with
+/// `rcgit_remote_status_free`.
+#[repr(C)]
+pub struct RcGitRemoteStatus {
+    /// Upstream remote name, e.g. `origin`. Empty when `has_upstream` is false.
+    pub remote: *mut c_char,
+    /// Fetch URL of that remote, userinfo removed.
+    pub url: *mut c_char,
+    /// Host (with port when present) parsed from the URL — the credential key.
+    pub host: *mut c_char,
+    /// Short name of the checked-out branch.
+    pub branch: *mut c_char,
+    /// Commits on the branch that the tracking ref does not have.
+    pub ahead: usize,
+    /// Commits on the tracking ref that the branch does not have.
+    pub behind: usize,
+    /// Whether the branch has a configured upstream at all.
+    pub has_upstream: bool,
+}
+
+impl Drop for RcGitRemoteStatus {
+    fn drop(&mut self) {
+        // SAFETY: every string was produced by `export_string` and is released once here.
+        unsafe {
+            release_string(self.remote);
+            release_string(self.url);
+            release_string(self.host);
+            release_string(self.branch);
+        }
+    }
+}
+
+/// What a fetch changed. Plain data, no free function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitFetchOutcome {
+    /// Remote-tracking refs created or moved.
+    pub updated_refs: usize,
+    /// Commits the branch is ahead of its tracking ref after the fetch.
+    pub ahead: usize,
+    /// Commits the branch is behind its tracking ref after the fetch.
+    pub behind: usize,
+}
+
+/// What a fast-forward pull did. Plain data, no free function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitPullOutcome {
+    /// The commit the branch now points at.
+    pub new_head: RcGitOid,
+    /// Files the working tree changed.
+    pub files_changed: usize,
+    /// Whether there was nothing to pull.
+    pub already_up_to_date: bool,
+}
+
+/// What a push did. Plain data, no free function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitPushOutcome {
+    /// Commits uploaded.
+    pub pushed_commits: usize,
+    /// Whether there was nothing to push.
+    pub already_up_to_date: bool,
+}
+
+/// Maps a remote-action error to its status code and reports the message.
+fn finish_remote(error: &Out<*mut c_char>, err: &ActionError) -> i32 {
+    error.report(err);
+    match err {
+        ActionError::AuthRequired { .. } => RCGIT_AUTH_REQUIRED,
+        ActionError::Diverged { .. } | ActionError::PushRejected { .. } => RCGIT_DIVERGED,
+        ActionError::Denied { .. }
+        | ActionError::NotConfirmed { .. }
+        | ActionError::CheckedOut { .. }
+        | ActionError::DetachedHead { .. }
+        | ActionError::StaleRepository { .. }
+        | ActionError::HunkMismatch { .. }
+        | ActionError::DirtyPath { .. }
+        | ActionError::MissingIdentity
+        | ActionError::UnsupportedRemote { .. }
+        | ActionError::NoUpstream { .. }
+        | ActionError::Cancelled { .. }
+        | ActionError::Git { .. } => RCGIT_ERROR,
+    }
+}
+
+/// The caller's credentials, when both parts were given.
+///
+/// # Safety
+/// Both pointers are NULL or NUL-terminated strings.
+unsafe fn credentials_from(username: *const c_char, token: *const c_char) -> Option<Credentials> {
+    // SAFETY: forwarded from this function's contract.
+    let (username, token) = unsafe { (bytes_arg(username), bytes_arg(token)) };
+    match (username, token) {
+        (Some(username), Some(token)) => Some(Credentials {
+            username: String::from_utf8_lossy(username).into_owned(),
+            token: String::from_utf8_lossy(token).into_owned(),
+        }),
+        (Some(_) | None, Some(_) | None) => None,
+    }
+}
+
+/// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
+/// Returns NULL on failure, with the message in `error`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_remote_preflight(
+    repo_path: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut RcGitRemoteStatus {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, error) = unsafe { (bytes_arg(repo_path), Out::new(error)) };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return ptr::null_mut();
+    };
+    match upstream_status(Path::new(OsStr::from_bytes(repo_path))) {
+        Ok(status) => export(RcGitRemoteStatus {
+            remote: export_string(status.remote),
+            url: export_string(status.url),
+            host: export_string(status.host),
+            branch: export_string(status.branch),
+            ahead: status.ahead,
+            behind: status.behind,
+            has_upstream: status.has_upstream,
+        }),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a status returned by `rcgit_guard_remote_preflight`.
+///
+/// # Safety
+/// `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(status) }
+}
+
+/// Fetches from the branch's upstream remote, updating remote-tracking refs. HTTPS only.
+/// `username`/`token` may both be NULL for an anonymous attempt. Returns `RCGIT_OK`,
+/// `RCGIT_ERROR`, or `RCGIT_AUTH_REQUIRED`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
+/// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
+/// writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_fetch(
+    repo_path: *const c_char,
+    username: *const c_char,
+    token: *const c_char,
+    out: *mut RcGitFetchOutcome,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, creds, out, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            credentials_from(username, token),
+            Out::new(out),
+            Out::new(error),
+        )
+    };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let repo_path = Path::new(OsStr::from_bytes(repo_path));
+    let cancel = AtomicBool::new(false);
+    match fetch_upstream(repo_path, &Policy::default(), creds.as_ref(), &cancel) {
+        Ok(outcome) => {
+            let (ahead, behind) =
+                upstream_status(repo_path).map_or((0, 0), |status| (status.ahead, status.behind));
+            out.set(RcGitFetchOutcome {
+                updated_refs: outcome.updated_refs.len(),
+                ahead,
+                behind,
+            });
+            RCGIT_OK
+        }
+        Err(err) => finish_remote(&error, &err),
+    }
+}
+
+/// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
+/// Returns `RCGIT_OK`, `RCGIT_ERROR`, or `RCGIT_DIVERGED`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `out` is NULL or valid for writing; `error` is
+/// NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_pull_ff(
+    repo_path: *const c_char,
+    out: *mut RcGitPullOutcome,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, out, error) = unsafe { (bytes_arg(repo_path), Out::new(out), Out::new(error)) };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    match pull_fast_forward(Path::new(OsStr::from_bytes(repo_path)), &Policy::default()) {
+        Ok(outcome) => {
+            out.set(RcGitPullOutcome {
+                new_head: Oid::from_bytes(outcome.new.as_slice()).map_or(
+                    RcGitOid {
+                        bytes: [0; 32],
+                        len: 0,
+                    },
+                    RcGitOid::from,
+                ),
+                files_changed: outcome.files_changed,
+                already_up_to_date: outcome.old == outcome.new,
+            });
+            RCGIT_OK
+        }
+        Err(err) => finish_remote(&error, &err),
+    }
+}
+
+/// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
+/// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or
+/// `RCGIT_DIVERGED` (the remote has commits the branch lacks).
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
+/// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
+/// writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_push(
+    repo_path: *const c_char,
+    username: *const c_char,
+    token: *const c_char,
+    out: *mut RcGitPushOutcome,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, creds, out, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            credentials_from(username, token),
+            Out::new(out),
+            Out::new(error),
+        )
+    };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let cancel = AtomicBool::new(false);
+    match push_upstream(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        creds.as_ref(),
+        &cancel,
+    ) {
+        Ok(outcome) => {
+            out.set(RcGitPushOutcome {
+                pushed_commits: outcome.pushed_commits,
+                already_up_to_date: outcome.old == Some(outcome.new),
+            });
+            RCGIT_OK
+        }
+        Err(err) => finish_remote(&error, &err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -3882,6 +4169,112 @@ mod tests {
         assert!(stashes.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn remote_preflight_reports_upstream_or_its_absence() {
+        let fx = Fixture::standard();
+        let path = CString::new(fx.path().to_str().unwrap()).unwrap();
+        let mut error = ptr::null_mut();
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert!(!status_ref.has_upstream);
+        assert_eq!(text(status_ref.branch), "main");
+        unsafe { rcgit_remote_status_free(status) };
+
+        fx.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        fx.git(&["config", "branch.main.remote", "origin"]);
+        fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert!(status_ref.has_upstream);
+        assert_eq!(text(status_ref.remote), "origin");
+        assert_eq!(text(status_ref.host), "example.com");
+        assert_eq!(text(status_ref.url), "https://example.com/repo.git");
+        unsafe { rcgit_remote_status_free(status) };
+
+        let status = unsafe { rcgit_guard_remote_preflight(ptr::null(), &raw mut error) };
+        assert!(status.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    #[test]
+    fn remote_actions_reject_null_paths_and_map_status_codes() {
+        let mut error = ptr::null_mut();
+        let mut fetch_out = RcGitFetchOutcome {
+            updated_refs: 0,
+            ahead: 0,
+            behind: 0,
+        };
+        let code = unsafe {
+            rcgit_guard_fetch(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut fetch_out,
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("NULL"));
+
+        let mut pull_out = RcGitPullOutcome {
+            new_head: RcGitOid {
+                bytes: [0; 32],
+                len: 0,
+            },
+            files_changed: 0,
+            already_up_to_date: false,
+        };
+        let code = unsafe { rcgit_guard_pull_ff(ptr::null(), &raw mut pull_out, &raw mut error) };
+        assert_eq!(code, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("NULL"));
+
+        let mut push_out = RcGitPushOutcome {
+            pushed_commits: 0,
+            already_up_to_date: false,
+        };
+        let code = unsafe {
+            rcgit_guard_push(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut push_out,
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("NULL"));
+
+        // An ssh remote is refused with RCGIT_ERROR before any connection is made.
+        let fx = Fixture::standard();
+        fx.git(&["remote", "add", "origin", "ssh://git@example.com/x.git"]);
+        let path = CString::new(fx.path().to_str().unwrap()).unwrap();
+        let code = unsafe {
+            rcgit_guard_fetch(
+                path.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut fetch_out,
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("ssh"));
+
+        // A diverged pull maps to RCGIT_DIVERGED: fake a tracking ref behind a local
+        // commit on both sides.
+        let fx = Fixture::standard();
+        fx.git(&["config", "branch.main.remote", "origin"]);
+        fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
+        fx.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        fx.git(&["update-ref", "refs/remotes/origin/main", "feature"]);
+        let path = CString::new(fx.path().to_str().unwrap()).unwrap();
+        let code = unsafe { rcgit_guard_pull_ff(path.as_ptr(), &raw mut pull_out, &raw mut error) };
+        assert_eq!(code, RCGIT_DIVERGED);
+        assert!(take_error(&mut error).contains("cannot fast-forward"));
     }
 
     #[test]
