@@ -36,6 +36,11 @@ mac/.build/release/RcGitApp ~/code/repo    # without a bundle
 Agents do not launch the app; see the working agreement in `CLAUDE.md`. Reproduce with the
 CLI: `cargo run -p rc-git-cli -- --time ls <repo>`.
 
+The app is ad-hoc signed, so every rebuild is a new code identity and the login keychain
+re-prompts for each remote host's stored token ("Always Allow" makes it once per rebuild).
+A stable signing identity in `scripts/build-app.sh` is the real fix; until then the prompt
+churn is expected during development.
+
 ## Lint configuration
 
 | File | Governs |

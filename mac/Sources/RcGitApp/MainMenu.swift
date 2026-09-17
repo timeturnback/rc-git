@@ -11,6 +11,7 @@ enum MainMenu {
         main.addItem(submenu(fileMenu(recentMenu: recentMenu)))
         main.addItem(submenu(editMenu()))
         main.addItem(submenu(viewMenu()))
+        main.addItem(submenu(repositoryMenu()))
         main.addItem(submenu(windowMenu()))
         return main
     }
@@ -110,6 +111,28 @@ enum MainMenu {
             item(
                 "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f",
                 [.command, .control]))
+        return menu
+    }
+
+    private static func repositoryMenu() -> NSMenu {
+        let menu = NSMenu(title: "Repository")
+        menu.addItem(
+            item(
+                "Fetch", #selector(MainWindowController.fetchRemote(_:)), "f",
+                [.command, .option]))
+        menu.addItem(
+            item(
+                "Pull", #selector(MainWindowController.pullRemote(_:)), "u",
+                [.command, .shift]))
+        menu.addItem(
+            item(
+                "Push", #selector(MainWindowController.pushRemote(_:)), "p",
+                [.command, .shift]))
+        menu.addItem(.separator())
+        menu.addItem(
+            item(
+                "Sync", #selector(MainWindowController.syncRepository(_:)), "r",
+                [.command, .shift]))
         return menu
     }
 

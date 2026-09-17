@@ -27,6 +27,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let historyController = HistoryViewController()
     private let changesController = ChangesViewController()
     private var changesModel: ChangesModel?
+    private var syncModel: SyncModel?
+    private var syncButton: NSButton?
+    private var syncSpinner: NSProgressIndicator?
+    private var syncToolbarItem: NSToolbarItem?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
     private var refWatcher: RefWatcher?
@@ -92,6 +96,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 await self?.model.refreshRefs()
                 // A commit or stash from the terminal moves refs and the change list both.
                 self?.worktreeDidChange()
+                await self?.syncModel?.refreshStatus()
             }
         }
         watcher.start()
@@ -100,6 +105,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let changes = ChangesModel(repository: repository)
         changesModel = changes
         wireChanges(changes)
+        let sync = SyncModel(
+            repoPath: path, performer: GuardSyncPerformer(), store: KeychainCredentialStore())
+        syncModel = sync
+        wireSync(sync)
+        Task { await sync.refreshStatus() }
         changesDirty = true
         worktreeWatcher?.stop()
         worktreeWatcher = nil
@@ -208,6 +218,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if menuItem.action == #selector(goToFile(_:)) {
             return !isEmpty
         }
+        let syncSelectors = [
+            #selector(fetchRemote(_:)), #selector(pullRemote(_:)),
+            #selector(pushRemote(_:)), #selector(syncRepository(_:)),
+        ]
+        if let action = menuItem.action, syncSelectors.contains(action) {
+            guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
+            let status = syncModel.remoteStatus
+            if action == #selector(pullRemote(_:)) {
+                menuItem.title =
+                    (status?.behind ?? 0) > 0 ? "Pull \(status!.behind) Commit(s)" : "Pull"
+            }
+            if action == #selector(pushRemote(_:)) {
+                menuItem.title =
+                    (status?.ahead ?? 0) > 0 ? "Push \(status!.ahead) Commit(s)" : "Push"
+            }
+            if action == #selector(fetchRemote(_:)) {
+                return true
+            }
+            return status?.hasUpstream != false
+        }
         return true
     }
 
@@ -222,6 +252,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         refWatcher = nil
         worktreeWatcher?.stop()
         worktreeWatcher = nil
+        syncModel = nil
         goToFileController.close()
         blamePanel.close()
         onClose?()
@@ -659,6 +690,130 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    // MARK: Sync
+
+    @objc func fetchRemote(_ sender: Any?) {
+        Task { await syncModel?.fetch() }
+    }
+
+    @objc func pullRemote(_ sender: Any?) {
+        Task { await syncModel?.pull() }
+    }
+
+    @objc func pushRemote(_ sender: Any?) {
+        Task { await syncModel?.push() }
+    }
+
+    @objc func syncRepository(_ sender: Any?) {
+        Task { await syncModel?.sync() }
+    }
+
+    private func wireSync(_ sync: SyncModel) {
+        sync.onStateChanged = { [weak self] in
+            self?.renderSyncState()
+        }
+        sync.onCredentialsNeeded = { [weak self] host, resume in
+            self?.promptForCredentials(host: host, completion: resume)
+        }
+    }
+
+    private func renderSyncState() {
+        guard let sync = syncModel else { return }
+        switch sync.state {
+        case .idle:
+            showSyncSpinner(false)
+            syncToolbarItem?.toolTip = idleSyncTooltip()
+        case let .running(step):
+            showSyncSpinner(true)
+            syncToolbarItem?.toolTip =
+                switch step {
+                case .fetch: "Fetching…"
+                case .pull: "Pulling…"
+                case .push: "Pushing…"
+                }
+        case let .done(summary):
+            showSyncSpinner(false)
+            syncToolbarItem?.toolTip = idleSyncTooltip()
+            if summary.pulledFiles > 0 {
+                worktreeDidChange()
+            }
+            sync.reset()
+        case let .diverged(message):
+            showSyncSpinner(false)
+            presentDiverged(message)
+            sync.reset()
+        case let .failed(_, message):
+            showSyncSpinner(false)
+            presentError(message, title: "rc-git could not sync")
+            sync.reset()
+        }
+    }
+
+    private func showSyncSpinner(_ busy: Bool) {
+        syncButton?.isHidden = busy
+        syncSpinner?.isHidden = !busy
+        if busy {
+            syncSpinner?.startAnimation(nil)
+        } else {
+            syncSpinner?.stopAnimation(nil)
+        }
+    }
+
+    /// "Sync — 2 to push, 3 to pull" while idle, from the last preflight.
+    private func idleSyncTooltip() -> String {
+        guard let status = syncModel?.remoteStatus, status.hasUpstream else { return "Sync" }
+        if status.ahead == 0 && status.behind == 0 {
+            return "Sync — up to date"
+        }
+        var parts: [String] = []
+        if status.ahead > 0 { parts.append("\(status.ahead) to push") }
+        if status.behind > 0 { parts.append("\(status.behind) to pull") }
+        return "Sync — " + parts.joined(separator: ", ")
+    }
+
+    private func presentDiverged(_ message: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Branch and upstream have diverged"
+        alert.informativeText =
+            message + "\n\nReconcile in git (merge or rebase), then sync again."
+        alert.alertStyle = .informational
+        alert.beginSheetModal(for: window)
+    }
+
+    /// Asks for a username and token for `host`. The token field is secure; what the
+    /// server accepts is remembered in the login keychain by the model.
+    private func promptForCredentials(host: String, completion: @escaping (Credentials?) -> Void) {
+        guard let window else {
+            completion(nil)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Sign in to \(host)"
+        alert.informativeText =
+            "rc-git talks to HTTPS remotes with a personal access token. The token is "
+            + "remembered in your login keychain once the server accepts it."
+        let userField = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        userField.placeholderString = "Username"
+        let tokenField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        tokenField.placeholderString = "Token"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
+        box.addSubview(userField)
+        box.addSubview(tokenField)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Sign In")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            let username = userField.stringValue.trimmingCharacters(in: .whitespaces)
+            let token = tokenField.stringValue
+            guard response == .alertFirstButtonReturn, !username.isEmpty, !token.isEmpty else {
+                completion(nil)
+                return
+            }
+            completion(Credentials(username: username, token: token))
+        }
+    }
+
     // MARK: Guarded mutations
 
     /// Routes a context-menu request through the guard: names are asked for with a small
@@ -825,10 +980,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    private func presentError(_ message: String) {
+    private func presentError(
+        _ message: String, title: String = "rc-git could not read the repository"
+    ) {
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = "rc-git could not read the repository"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.beginSheetModal(for: window)
@@ -837,9 +994,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: NSToolbarDelegate
 
     private static let viewModeItem = NSToolbarItem.Identifier("rc-git.viewMode")
+    private static let syncItem = NSToolbarItem.Identifier("rc-git.sync")
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, Self.viewModeItem, .flexibleSpace]
+        [
+            .toggleSidebar, .sidebarTrackingSeparator, Self.viewModeItem, .flexibleSpace,
+            Self.syncItem,
+        ]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -850,15 +1011,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         _ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
-        guard itemIdentifier == Self.viewModeItem else { return nil }
-        let control = NSSegmentedControl(
-            labels: ["Files", "History", "Changes"], trackingMode: .selectOne, target: self,
-            action: #selector(modeChanged(_:)))
-        control.selectedSegment = ContentMode.files.rawValue
-        modeControl = control
-        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.view = control
-        item.label = "View"
-        return item
+        switch itemIdentifier {
+        case Self.viewModeItem:
+            let control = NSSegmentedControl(
+                labels: ["Files", "History", "Changes"], trackingMode: .selectOne, target: self,
+                action: #selector(modeChanged(_:)))
+            control.selectedSegment = ContentMode.files.rawValue
+            modeControl = control
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = control
+            item.label = "View"
+            return item
+        case Self.syncItem:
+            let button = NSButton(
+                image: NSImage(
+                    systemSymbolName: "arrow.triangle.2.circlepath",
+                    accessibilityDescription: "Sync")!,
+                target: self, action: #selector(syncRepository(_:)))
+            button.bezelStyle = .texturedRounded
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.isDisplayedWhenStopped = false
+            spinner.isHidden = true
+            let box = NSStackView(views: [button, spinner])
+            box.orientation = .horizontal
+            syncButton = button
+            syncSpinner = spinner
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = box
+            item.label = "Sync"
+            item.toolTip = "Sync"
+            syncToolbarItem = item
+            return item
+        default:
+            return nil
+        }
     }
 }

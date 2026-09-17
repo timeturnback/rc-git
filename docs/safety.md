@@ -13,8 +13,14 @@ Four layers enforce it, and each catches what the others miss.
 2. **Test.** `crates/rc-git-core/tests/read_only.rs` snapshots every file under `.git`, runs
    every core operation — working-tree listings and file reads included — and compares the
    snapshot byte for byte.
-3. **Features.** `gix` is compiled without network, checkout, or credential features. Code
-   that could push, fetch, or check out does not exist in the binary. The `index` and
+3. **Features.** The read-only crates compile `gix` without checkout or credential
+   features. `rc-git-guard` alone enables the HTTPS transport
+   (`blocking-http-transport-curl`, system libcurl), and clippy bans every network entry
+   point — `remote_at`, `find_remote`, `connect`, `handshake` — outside the guard's
+   `actions/remote` module. That feature also compiles gix's credential-helper and prompt
+   machinery into the binary; it is unreachable, because every connection installs a
+   credential callback that answers from caller-supplied credentials and never consults
+   the helper cascade, and `Command::new` stays banned workspace-wide. The `index` and
    `excludes` features are on so the working-tree view can honor ignore rules; both read.
 4. **Unsafe.** `unsafe_code` is forbidden in every crate except `rc-git-ffi`, where each block
    carries a documented contract and clippy denies undocumented ones.
@@ -35,14 +41,18 @@ Opening a repository someone else produced must be harmless.
 - Errors are messages, never panics. Clippy denies `unwrap`, `expect`, `panic`, `todo`, and
   `unimplemented` outside tests; release builds abort on panic rather than unwind across the
   C boundary.
-- No network code is compiled in. Nothing rc-git does can leave the machine.
+- Network I/O exists only behind `rc-git-guard`'s fetch, pull, push, and sync actions,
+  speaks HTTPS only (plain `http://` is accepted for loopback hosts, so tests can run a
+  local server end to end), and sends credentials only when the caller passed them.
+  Nothing else rc-git does can leave the machine.
 
 ## Guarding mutations
 
 `rc-git-guard` decides what a user must do before any action that changes a repository, and
 its `actions` module is the only code in rc-git that performs one. Today that means branch
-and tag creation and deletion from the sidebar, and — from the Changes tab — committing
-selected files or hunks, the stash lifecycle, and discarding uncommitted changes, all driven
+and tag creation and deletion from the sidebar; from the Changes tab, committing selected
+files or hunks, the stash lifecycle, and discarding uncommitted changes; and the remote
+operations — fetch, fast-forward pull, plain push, and their sync composition — all driven
 through the `rcgit_guard_*` FFI functions. Every other row of the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
@@ -94,6 +104,23 @@ The Changes tab's write paths add their own guarantees:
 - **Discard** and stash restores write through one helper that removes the old file first,
   so a write never follows a stale symlink, and deleting an already-gone file is not an
   error — a retried action lands in the state it retries from.
+
+The remote operations add their own guarantees:
+
+- **Fetch** runs gix's own fetch machinery: the pack lands in `.git/objects/pack` and the
+  remote-tracking refs move inside that one call — the single ref-write path that does not
+  go through `apply_edit`. Tracking-ref updates lose nothing. `FETCH_HEAD` is never
+  written.
+- **Fast-forward pull** applies the tree diff to exactly the changed paths. Any dirty or
+  staged overlap — an untracked file in the way included — refuses the whole pull before a
+  byte is written. The branch ref moves last, expecting the old tip, so an interruption
+  leaves visibly modified files rather than what looks like lost work, and a branch moved
+  from the terminal mid-pull fails the ref edit instead of clobbering it.
+- **Push** is never force from rc-git: the remote tip must be an ancestor of the local tip,
+  checked client-side before anything is sent and enforced again by the server. The pack is
+  self-contained (never thin). A rejection surfaces the server's reason verbatim.
+- **Credentials** are per-host, supplied by the caller (the app reads the login keychain),
+  passed through the FFI per call, and never stored or logged by the Rust side.
 
 ## Supply chain
 

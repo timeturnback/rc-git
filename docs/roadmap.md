@@ -69,13 +69,22 @@ constraints are clear.
   and at quit — and a relaunch reopens them, silently skipping repositories that no longer
   open.
 
+- **Fetch, pull, push, sync.** HTTPS only, pure gix, no process ever spawned: the one
+  transport that needs no `ssh` or `git-upload-pack` child. gix fetches; push is a
+  hand-rolled send-pack (gix has none) — handshake via `gix-protocol`, a client-side
+  fast-forward check, a self-contained pack from `gix-pack`, `report-status` parsed by
+  hand. Pull is fast-forward only and refuses dirty overlap; divergence reports
+  ahead/behind and points at git. All four go through `rc-git-guard`
+  (`actions/remote/`), are exposed over the FFI with typed auth/diverged status codes,
+  and reach the app as a Repository menu plus a toolbar Sync button driven by
+  `SyncModel` (RcGitKit). Credentials are per-host PATs in the login keychain, prompted
+  on 401 and stored only once the server accepts them. SSH and `file://` remotes are
+  refused with a message naming the scheme. The CLI gained `fetch`, `pull`, `push`,
+  `sync` (token via `RC_GIT_TOKEN`, auth failures exit 5); tests run against a real
+  `git http-backend` behind the test kit's loopback HTTP server.
+
 ## Planned
 
-- **Fetch.** Deliberately not started. Every gix transport except HTTPS spawns a process
-  (`ssh`, or `git-upload-pack` for local paths), which collides with the promise that
-  rc-git never spawns one, and HTTPS pulls in curl plus a credential story. Deciding which
-  of those promises bends — and how fetch is confirmed and reported — comes before any
-  code. When it lands it goes through `rc-git-guard` like every other action.
 - **Reveal in tree from path search.** Jump-to-file opens the file; expanding the tree to
   show it selected is still missing.
 - **Filters in the Changes tab.** Honoring gitattributes filters and `core.autocrlf` in
