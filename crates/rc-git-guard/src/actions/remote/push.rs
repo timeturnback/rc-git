@@ -14,8 +14,9 @@ use crate::{Action, Policy};
 
 use super::report::Report;
 use super::{
-    Credentials, authenticate_with, bail_if_cancelled, configured_remote_name, current_branch,
-    host_of, is_ancestor, map_network_error, pack, report, require_https, set_reflog_identity,
+    Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
+    configured_remote_name, current_branch, host_of, is_ancestor, map_network_error, pack, report,
+    set_reflog_identity, ssh_not_yet_wired, vet_remote_url,
 };
 
 const OP: &str = "push";
@@ -47,7 +48,7 @@ pub struct PushOutcome {
 pub fn push_upstream(
     repo_path: &Path,
     policy: &Policy,
-    creds: Option<&Credentials>,
+    auth: RemoteAuth<'_>,
     cancel: &AtomicBool,
 ) -> ActionResult<PushOutcome> {
     let mut repo = open(repo_path, OP, "repository")?;
@@ -75,12 +76,14 @@ pub fn push_upstream(
             branch: branch.clone(),
         }
     })?;
-    require_https(&url, OP, &remote_name)?;
+    if vet_remote_url(&url, OP, &remote_name)? == RemoteScheme::Ssh {
+        return Err(ssh_not_yet_wired(OP, &remote_name));
+    }
     let host = host_of(&url);
     let full_ref = format!("refs/heads/{branch}");
 
     let mut transport = connect(&url, &host)?;
-    let (remote_old, haves) = advertise(&repo, &mut transport, &host, creds, &full_ref)?;
+    let (remote_old, haves) = advertise(&repo, &mut transport, &host, auth.creds, &full_ref)?;
     if remote_old == Some(tip) {
         return Ok(PushOutcome {
             remote: remote_name,

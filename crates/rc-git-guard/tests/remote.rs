@@ -9,7 +9,17 @@
 use std::sync::atomic::AtomicBool;
 
 use rc_git_guard::Policy;
-use rc_git_guard::actions::{ActionError, Credentials, fetch_upstream, upstream_status};
+use rc_git_guard::actions::{
+    ActionError, Credentials, RemoteAuth, fetch_upstream, upstream_status,
+};
+
+/// `RemoteAuth` carrying only credentials, as most tests need.
+fn auth(creds: &Credentials) -> RemoteAuth<'_> {
+    RemoteAuth {
+        creds: Some(creds),
+        ..RemoteAuth::default()
+    }
+}
 use rc_git_testkit::Fixture;
 
 /// An origin repository, a bare copy served over HTTP from a sibling directory
@@ -114,7 +124,7 @@ fn fetch_updates_the_tracking_ref_and_reports_it() {
     let outcome = fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("fetch");
@@ -141,7 +151,7 @@ fn fetch_with_nothing_new_reports_no_updates() {
     let outcome = fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("fetch");
@@ -174,7 +184,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
     let anonymous = fetch_upstream(
         clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     );
     assert!(
@@ -185,7 +195,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
     let wrong = fetch_upstream(
         clone.path(),
         &Policy::default(),
-        Some(&Credentials {
+        auth(&Credentials {
             username: "user".to_owned(),
             token: "wrong".to_owned(),
         }),
@@ -207,7 +217,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
     let outcome = fetch_upstream(
         clone.path(),
         &Policy::default(),
-        Some(&Credentials {
+        auth(&Credentials {
             username: "user".to_owned(),
             token: "sekret".to_owned(),
         }),
@@ -224,7 +234,7 @@ fn non_https_remotes_are_refused_by_scheme() {
     let err = fetch_upstream(
         fixture.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect_err("ssh refused");
@@ -237,7 +247,7 @@ fn non_https_remotes_are_refused_by_scheme() {
     let err = fetch_upstream(
         fixture.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect_err("non-loopback http refused");
@@ -253,7 +263,7 @@ fn fetch_without_a_remote_reports_no_upstream() {
     let err = fetch_upstream(
         fixture.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect_err("no remote");
@@ -266,7 +276,7 @@ fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
     let err = fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(true),
     )
     .expect_err("cancelled");
@@ -286,7 +296,7 @@ fn fetch_clone(remoted: &Remoted) {
     fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("fetch");
@@ -466,7 +476,7 @@ fn push_uploads_commits_and_updates_the_tracking_ref() {
     let outcome = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("push");
@@ -494,7 +504,7 @@ fn push_with_nothing_new_is_a_no_op() {
     let outcome = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("push");
@@ -510,7 +520,7 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
     let outcome = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect("push");
@@ -540,7 +550,7 @@ fn push_is_rejected_when_the_remote_moved() {
     let err = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect_err("rejected");
@@ -570,7 +580,7 @@ fn push_against_an_auth_server_requires_credentials() {
     let anonymous = push_upstream(
         clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     );
     assert!(
@@ -581,7 +591,7 @@ fn push_against_an_auth_server_requires_credentials() {
     let outcome = push_upstream(
         clone.path(),
         &Policy::default(),
-        Some(&Credentials {
+        auth(&Credentials {
             username: "user".to_owned(),
             token: "sekret".to_owned(),
         }),
@@ -622,7 +632,7 @@ fn push_surfaces_a_hook_rejection() {
     let err = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(false),
     )
     .expect_err("hook rejects");
@@ -637,7 +647,7 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
     let err = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
-        None,
+        RemoteAuth::default(),
         &AtomicBool::new(true),
     )
     .expect_err("cancelled");

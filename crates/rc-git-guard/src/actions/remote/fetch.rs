@@ -9,8 +9,8 @@ use crate::actions::{ActionError, ActionResult, confirm, open};
 use crate::{Action, Policy};
 
 use super::{
-    Credentials, authenticate_with, bail_if_cancelled, configured_remote_name, current_branch,
-    host_of, map_network_error, require_https,
+    RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
+    current_branch, host_of, map_network_error, ssh_not_yet_wired, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -34,17 +34,17 @@ pub struct FetchOutcome {
 }
 
 /// Fetches from the checked-out branch's remote (`origin` when none is configured),
-/// using the remote's own refspecs. HTTPS only; `creds` answer the server's 401.
+/// using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401.
 ///
 /// # Errors
-/// [`ActionError::UnsupportedRemote`] for a non-HTTPS remote, [`ActionError::AuthRequired`]
-/// when the server rejects the credentials, [`ActionError::Cancelled`] when `cancel` is
-/// set, [`ActionError::NoUpstream`] when no remote is configured, [`ActionError::Git`]
-/// for every other failure.
+/// [`ActionError::UnsupportedRemote`] for a remote scheme rc-git does not speak,
+/// [`ActionError::AuthRequired`] when the server rejects the credentials,
+/// [`ActionError::Cancelled`] when `cancel` is set, [`ActionError::NoUpstream`] when no
+/// remote is configured, [`ActionError::Git`] for every other failure.
 pub fn fetch_upstream(
     repo_path: &Path,
     policy: &Policy,
-    creds: Option<&Credentials>,
+    auth: RemoteAuth<'_>,
     cancel: &AtomicBool,
 ) -> ActionResult<FetchOutcome> {
     let decision = policy.evaluate(&Action::Fetch);
@@ -76,7 +76,9 @@ pub fn fetch_upstream(
             branch: branch.clone(),
         })?
         .clone();
-    require_https(&url, OP, &remote_name)?;
+    if vet_remote_url(&url, OP, &remote_name)? == RemoteScheme::Ssh {
+        return Err(ssh_not_yet_wired(OP, &remote_name));
+    }
     let host = host_of(&url);
 
     #[expect(
@@ -87,7 +89,7 @@ pub fn fetch_upstream(
         .connect(gix::remote::Direction::Fetch)
         .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
     let outcome = connection
-        .with_credentials(authenticate_with(creds.cloned()))
+        .with_credentials(authenticate_with(auth.creds.cloned()))
         .prepare_fetch(
             gix::progress::Discard,
             gix::remote::ref_map::Options::default(),

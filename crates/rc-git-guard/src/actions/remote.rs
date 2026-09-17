@@ -38,18 +38,30 @@ pub struct SyncOutcome {
 pub fn sync(
     repo_path: &Path,
     policy: &crate::Policy,
-    creds: Option<&Credentials>,
+    auth: RemoteAuth<'_>,
     cancel: &AtomicBool,
 ) -> ActionResult<SyncOutcome> {
-    let fetch = fetch_upstream(repo_path, policy, creds, cancel)?;
+    let fetch = fetch_upstream(repo_path, policy, auth, cancel)?;
     let pull = pull_fast_forward(repo_path, policy)?;
     let status = upstream_status(repo_path)?;
     let push = if status.ahead > 0 {
-        Some(push_upstream(repo_path, policy, creds, cancel)?)
+        Some(push_upstream(repo_path, policy, auth, cancel)?)
     } else {
         None
     };
     Ok(SyncOutcome { fetch, pull, push })
+}
+
+/// Everything a remote operation may need to authenticate, borrowed from the caller.
+/// For HTTPS remotes only `creds` matters; for SSH remotes `creds.token` doubles as the
+/// key passphrase (`username` is ignored) and `accepted_hostkey` is the SHA256
+/// fingerprint the user approved for an otherwise unknown host.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RemoteAuth<'a> {
+    /// HTTPS username/token, or SSH key passphrase in `token`.
+    pub creds: Option<&'a Credentials>,
+    /// A host-key fingerprint (`SHA256:...`) the user chose to trust.
+    pub accepted_hostkey: Option<&'a str>,
 }
 
 /// A username and token for one HTTPS host. Never stored and never logged by this crate.
@@ -233,17 +245,41 @@ fn count_ahead_behind(
     Ok((count(local, upstream)?, count(upstream, local)?))
 }
 
-/// Refuses every URL rc-git will not talk to: anything but `https://`, except plain
-/// `http://` to a loopback host so tests can run a local server end to end.
-fn require_https(url: &gix::Url, op: &'static str, remote_name: &str) -> ActionResult<()> {
+/// The transport family a vetted remote URL belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteScheme {
+    /// `https://`, or plain `http://` to a loopback host so tests can run a local
+    /// server end to end.
+    Https,
+    /// `ssh://` or an scp-like `git@host:path` URL.
+    Ssh,
+}
+
+/// Classifies the URL, refusing every scheme rc-git will not talk to (`git://`,
+/// `file://`, non-loopback `http://`).
+fn vet_remote_url(
+    url: &gix::Url,
+    op: &'static str,
+    remote_name: &str,
+) -> ActionResult<RemoteScheme> {
     match url.scheme {
-        gix::url::Scheme::Https => Ok(()),
-        gix::url::Scheme::Http if is_loopback(url) => Ok(()),
+        gix::url::Scheme::Https => Ok(RemoteScheme::Https),
+        gix::url::Scheme::Http if is_loopback(url) => Ok(RemoteScheme::Https),
+        gix::url::Scheme::Ssh => Ok(RemoteScheme::Ssh),
         ref scheme => Err(ActionError::UnsupportedRemote {
             op,
             name: remote_name.to_owned(),
             scheme: scheme.as_str().to_owned(),
         }),
+    }
+}
+
+/// Placeholder until the ssh transport lands: refuses the remote exactly as before.
+fn ssh_not_yet_wired(op: &'static str, remote_name: &str) -> ActionError {
+    ActionError::UnsupportedRemote {
+        op,
+        name: remote_name.to_owned(),
+        scheme: "ssh".to_owned(),
     }
 }
 

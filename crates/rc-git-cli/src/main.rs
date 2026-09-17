@@ -928,7 +928,10 @@ fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -
     let outcome = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
-        creds.as_ref(),
+        rc_git_guard::actions::RemoteAuth {
+            creds: creds.as_ref(),
+            ..rc_git_guard::actions::RemoteAuth::default()
+        },
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &outcome)?;
@@ -941,7 +944,10 @@ fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
     let fetch = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &policy,
-        creds.as_ref(),
+        rc_git_guard::actions::RemoteAuth {
+            creds: creds.as_ref(),
+            ..rc_git_guard::actions::RemoteAuth::default()
+        },
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &fetch)?;
@@ -955,7 +961,10 @@ fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
     let outcome = rc_git_guard::actions::push_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
-        creds.as_ref(),
+        rc_git_guard::actions::RemoteAuth {
+            creds: creds.as_ref(),
+            ..rc_git_guard::actions::RemoteAuth::default()
+        },
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_push(out, &outcome)?;
@@ -967,7 +976,10 @@ fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
     let outcome = rc_git_guard::actions::sync(
         repo_path,
         &rc_git_guard::Policy::default(),
-        creds.as_ref(),
+        rc_git_guard::actions::RemoteAuth {
+            creds: creds.as_ref(),
+            ..rc_git_guard::actions::RemoteAuth::default()
+        },
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &outcome.fetch)?;

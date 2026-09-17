@@ -23,10 +23,10 @@ use rc_git_core::{
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, Credentials, FileSelection, HunkStamp, Identity, commit, create_branch,
-    create_tag, delete_branch, delete_tag, discard_files, discard_hunks, fetch_upstream,
-    plan_branch_delete, plan_tag_delete, pull_fast_forward, push_upstream, stash_apply, stash_drop,
-    stash_pop, stash_push, upstream_status,
+    ActionError, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth, commit,
+    create_branch, create_tag, delete_branch, delete_tag, discard_files, discard_hunks,
+    fetch_upstream, plan_branch_delete, plan_tag_delete, pull_fast_forward, push_upstream,
+    stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
 };
 use rc_git_guard::{Action, Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
@@ -3312,7 +3312,11 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
     };
     let repo_path = Path::new(OsStr::from_bytes(repo_path));
     let cancel = AtomicBool::new(false);
-    match fetch_upstream(repo_path, &Policy::default(), creds.as_ref(), &cancel) {
+    let auth = RemoteAuth {
+        creds: creds.as_ref(),
+        ..RemoteAuth::default()
+    };
+    match fetch_upstream(repo_path, &Policy::default(), auth, &cancel) {
         Ok(outcome) => {
             let (ahead, behind) =
                 upstream_status(repo_path).map_or((0, 0), |status| (status.ahead, status.behind));
@@ -3394,10 +3398,14 @@ pub unsafe extern "C" fn rcgit_guard_push(
         return RCGIT_ERROR;
     };
     let cancel = AtomicBool::new(false);
+    let auth = RemoteAuth {
+        creds: creds.as_ref(),
+        ..RemoteAuth::default()
+    };
     match push_upstream(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        creds.as_ref(),
+        auth,
         &cancel,
     ) {
         Ok(outcome) => {
