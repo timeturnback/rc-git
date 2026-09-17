@@ -91,3 +91,27 @@ import Testing
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 }
+
+/// The remote preflight, driven through the C ABI against a real fixture.
+@Suite struct RemotePreflightTests {
+    @Test func preflightMarshalsUpstreamConfigurationAndCounts() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+
+        var status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
+        #expect(!status.hasUpstream)
+        #expect(status.branch == "main")
+
+        try fixture.git(["remote", "add", "origin", "https://example.com:8443/repo.git"])
+        try fixture.git(["config", "branch.main.remote", "origin"])
+        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+        status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
+        #expect(status.hasUpstream)
+        #expect(status.remote == "origin")
+        #expect(status.host == "example.com:8443")
+        #expect(status.url == "https://example.com:8443/repo.git")
+        // The fixture's refs/remotes/origin/main sits at HEAD, so nothing is ahead or behind.
+        #expect(status.ahead == 0)
+        #expect(status.behind == 0)
+    }
+}

@@ -362,3 +362,151 @@ public enum RepositoryGuard {
         return String(cString: pointer)
     }
 }
+
+/// Where the checked-out branch pushes and pulls, as of the last fetch.
+public struct RemoteStatus: Sendable, Hashable {
+    /// Upstream remote name, e.g. `origin`. Empty when `hasUpstream` is false.
+    public let remote: String
+    /// Fetch URL of the remote, userinfo removed.
+    public let url: String
+    /// Host (with port when present) parsed from the URL — the Keychain key.
+    public let host: String
+    /// Short name of the checked-out branch.
+    public let branch: String
+    public let ahead: Int
+    public let behind: Int
+    public let hasUpstream: Bool
+}
+
+/// A per-host username and token. Deliberately not `CustomStringConvertible`; never log it.
+public struct Credentials: Sendable {
+    public let username: String
+    public let token: String
+
+    public init(username: String, token: String) {
+        self.username = username
+        self.token = token
+    }
+}
+
+/// How a remote operation failed, typed so the caller can prompt or explain.
+public enum SyncError: Error, Sendable, Hashable {
+    /// The host wants credentials it did not get, or rejected the given ones.
+    case authRequired(message: String)
+    /// Local and remote history diverged; reconcile in git.
+    case diverged(message: String)
+    /// Everything else, message ready to show.
+    case failure(message: String)
+
+    public var message: String {
+        switch self {
+        case let .authRequired(message), let .diverged(message), let .failure(message): message
+        }
+    }
+}
+
+/// What a fetch changed.
+public struct FetchOutcome: Sendable, Hashable {
+    /// Remote-tracking refs created or moved.
+    public let updatedRefs: Int
+    /// Branch vs tracking ref after the fetch.
+    public let ahead: Int
+    public let behind: Int
+}
+
+/// What a fast-forward pull did.
+public struct PullOutcome: Sendable, Hashable {
+    /// The commit the branch now points at; `nil` when nothing changed.
+    public let newHead: Oid?
+    public let commitsAdvanced: Bool
+    public let filesChanged: Int
+    public let alreadyUpToDate: Bool
+}
+
+/// What a push did.
+public struct PushOutcome: Sendable, Hashable {
+    public let pushedCommits: Int
+    public let alreadyUpToDate: Bool
+}
+
+extension RepositoryGuard {
+    /// The checked-out branch's upstream and ahead/behind counts. Local, no network.
+    public static func remotePreflight(repoPath: String) throws -> RemoteStatus {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let status = rcgit_guard_remote_preflight(repoPath, &error) else {
+            throw take(error, fallback: "cannot read the upstream status")
+        }
+        defer { rcgit_remote_status_free(status) }
+        let value = status.pointee
+        return RemoteStatus(
+            remote: value.remote.map { String(cString: $0) } ?? "",
+            url: value.url.map { String(cString: $0) } ?? "",
+            host: value.host.map { String(cString: $0) } ?? "",
+            branch: value.branch.map { String(cString: $0) } ?? "",
+            ahead: value.ahead,
+            behind: value.behind,
+            hasUpstream: value.has_upstream
+        )
+    }
+
+    /// Fetches from the branch's upstream remote. HTTPS only; `credentials` may be `nil`
+    /// for an anonymous attempt.
+    public static func fetch(repoPath: String, credentials: Credentials?) throws(SyncError)
+        -> FetchOutcome
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        var out = RcGitFetchOutcome(updated_refs: 0, ahead: 0, behind: 0)
+        let status = withOwnedCStrings([credentials?.username, credentials?.token]) { strings in
+            rcgit_guard_fetch(repoPath, strings[0], strings[1], &out, &error)
+        }
+        guard status == RCGIT_OK else {
+            throw syncError(status, error, fallback: "cannot fetch")
+        }
+        return FetchOutcome(
+            updatedRefs: out.updated_refs, ahead: out.ahead, behind: out.behind)
+    }
+
+    /// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
+    public static func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        var out = RcGitPullOutcome(
+            new_head: RcGitOid(), files_changed: 0, already_up_to_date: false)
+        let status = rcgit_guard_pull_ff(repoPath, &out, &error)
+        guard status == RCGIT_OK else {
+            throw syncError(status, error, fallback: "cannot pull")
+        }
+        return PullOutcome(
+            newHead: out.already_up_to_date ? nil : Oid(c: out.new_head),
+            commitsAdvanced: !out.already_up_to_date,
+            filesChanged: out.files_changed,
+            alreadyUpToDate: out.already_up_to_date
+        )
+    }
+
+    /// Pushes the checked-out branch to its upstream. Plain push only.
+    public static func push(repoPath: String, credentials: Credentials?) throws(SyncError)
+        -> PushOutcome
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        var out = RcGitPushOutcome(pushed_commits: 0, already_up_to_date: false)
+        let status = withOwnedCStrings([credentials?.username, credentials?.token]) { strings in
+            rcgit_guard_push(repoPath, strings[0], strings[1], &out, &error)
+        }
+        guard status == RCGIT_OK else {
+            throw syncError(status, error, fallback: "cannot push")
+        }
+        return PushOutcome(
+            pushedCommits: out.pushed_commits, alreadyUpToDate: out.already_up_to_date)
+    }
+
+    private static func syncError(
+        _ status: Int32, _ error: UnsafeMutablePointer<CChar>?, fallback: String
+    ) -> SyncError {
+        let message = takeString(error) ?? fallback
+        switch status {
+        case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
+        case RCGIT_DIVERGED: return .diverged(message: message)
+        default: return .failure(message: message)
+        }
+    }
+}

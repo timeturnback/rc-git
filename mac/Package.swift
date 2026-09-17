@@ -24,6 +24,8 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L", rustLibDir]),
                 .linkedLibrary("rc_git_ffi"),
+                // The Rust side's HTTPS transport uses the system libcurl.
+                .linkedLibrary("curl"),
             ]
         ),
 
