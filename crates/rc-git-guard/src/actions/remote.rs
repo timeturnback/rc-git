@@ -18,6 +18,40 @@ pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
 pub use push::{PushOutcome, push_upstream};
 
+/// What one sync pass did: fetch, fast-forward, and — when the branch was ahead — push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOutcome {
+    /// The fetch that ran first.
+    pub fetch: FetchOutcome,
+    /// The fast-forward that followed.
+    pub pull: PullOutcome,
+    /// The push, `None` when the branch had nothing to push.
+    pub push: Option<PushOutcome>,
+}
+
+/// Fetch, fast-forward the checked-out branch, then push it when it is ahead.
+/// Stops at the first failure; a divergence surfaces as [`ActionError::Diverged`]
+/// from the pull step before anything is uploaded.
+///
+/// # Errors
+/// Everything [`fetch_upstream`], [`pull_fast_forward`], and [`push_upstream`] report.
+pub fn sync(
+    repo_path: &Path,
+    policy: &crate::Policy,
+    creds: Option<&Credentials>,
+    cancel: &AtomicBool,
+) -> ActionResult<SyncOutcome> {
+    let fetch = fetch_upstream(repo_path, policy, creds, cancel)?;
+    let pull = pull_fast_forward(repo_path, policy)?;
+    let status = upstream_status(repo_path)?;
+    let push = if status.ahead > 0 {
+        Some(push_upstream(repo_path, policy, creds, cancel)?)
+    } else {
+        None
+    };
+    Ok(SyncOutcome { fetch, pull, push })
+}
+
 /// A username and token for one HTTPS host. Never stored and never logged by this crate.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {

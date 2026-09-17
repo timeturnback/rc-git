@@ -19,6 +19,11 @@ anyhow.workspace = true
 
 [dev-dependencies]
 rc-git-testkit.workspace = true
+# Tests talk Basic auth to the loopback HTTP server; release builds keep the
+# clear-text refusal because this feature is dev-only.
+gix-transport = { version = "=0.59.2", default-features = false, features = [
+    "http-client-insecure-credentials",
+] }
 
 [lints]
 workspace = true

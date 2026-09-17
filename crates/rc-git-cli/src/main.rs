@@ -42,13 +42,20 @@ usage: rc-git [--time] <command> <repo> [args]
   stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
   discard     <repo> --confirm discard <path>...  restore files to HEAD, delete untracked
 
-exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit
+  fetch <repo> [--username U] [--token T]  update remote-tracking refs from the upstream remote
+  pull  <repo> [--username U] [--token T]  fetch, then fast-forward the current branch
+  push  <repo> [--username U] [--token T]  upload the current branch to its upstream
+  sync  <repo> [--username U] [--token T]  fetch, fast-forward, then push
+  The token may also come from RC_GIT_TOKEN, which keeps it out of process lists.
+
+exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit, 5 authentication required
 ";
 
 const EXIT_ERROR: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_BINARY: u8 = 3;
 const EXIT_TOO_LARGE: u8 = 4;
+const EXIT_AUTH: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verb {
@@ -72,6 +79,10 @@ enum Verb {
     StashPop,
     StashDrop,
     Discard,
+    Fetch,
+    Pull,
+    Push,
+    Sync,
 }
 
 impl Verb {
@@ -97,6 +108,10 @@ impl Verb {
             "stash-pop" => Some(Self::StashPop),
             "stash-drop" => Some(Self::StashDrop),
             "discard" => Some(Self::Discard),
+            "fetch" => Some(Self::Fetch),
+            "pull" => Some(Self::Pull),
+            "push" => Some(Self::Push),
+            "sync" => Some(Self::Sync),
             _ => None,
         }
     }
@@ -123,6 +138,10 @@ impl Verb {
             Self::StashPop => "stash-pop",
             Self::StashDrop => "stash-drop",
             Self::Discard => "discard",
+            Self::Fetch => "fetch",
+            Self::Pull => "pull",
+            Self::Push => "push",
+            Self::Sync => "sync",
         }
     }
 }
@@ -147,6 +166,12 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             let _ = writeln!(io::stderr().lock(), "error: {err:#}");
+            if matches!(
+                err.downcast_ref::<rc_git_guard::actions::ActionError>(),
+                Some(rc_git_guard::actions::ActionError::AuthRequired { .. })
+            ) {
+                return ExitCode::from(EXIT_AUTH);
+            }
             ExitCode::from(EXIT_ERROR)
         }
     }
@@ -214,6 +239,10 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
             &mut out,
         )?,
         Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Fetch => fetch_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Pull => pull_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Push => push_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Sync => sync_verb(&invocation.repo, &invocation.args, &mut out)?,
     };
     let command_elapsed = started_at.elapsed();
 
@@ -823,5 +852,129 @@ fn resolve(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
         bail!("resolve needs <rev>\n\n{USAGE}");
     };
     writeln!(out, "{}", repo.resolve(rev)?)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `--username U` / `--token T` from `args`, the token falling back to `RC_GIT_TOKEN`.
+fn parse_credentials(args: &[String]) -> Result<Option<rc_git_guard::actions::Credentials>> {
+    let mut username = None;
+    let mut token = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--username" => {
+                username = Some(iter.next().context("--username needs a value")?.to_owned());
+            }
+            "--token" => {
+                token = Some(iter.next().context("--token needs a value")?.to_owned());
+            }
+            other => bail!("unknown argument '{other}'\n\n{USAGE}"),
+        }
+    }
+    if token.is_none()
+        && let Ok(env_token) = std::env::var("RC_GIT_TOKEN")
+        && !env_token.is_empty()
+    {
+        token = Some(env_token);
+    }
+    match (username, token) {
+        (Some(username), Some(token)) => {
+            Ok(Some(rc_git_guard::actions::Credentials { username, token }))
+        }
+        (None, None) => Ok(None),
+        (Some(_), None) => bail!("--username was given without --token (or RC_GIT_TOKEN)"),
+        (None, Some(_)) => bail!("a token was given without --username"),
+    }
+}
+
+fn write_fetch(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::FetchOutcome) -> Result<()> {
+    if outcome.updated_refs.is_empty() {
+        writeln!(out, "fetch\t{}\tup to date", outcome.remote)?;
+    }
+    for update in &outcome.updated_refs {
+        writeln!(out, "fetch\t{}\t{}", update.name, update.target)?;
+    }
+    Ok(())
+}
+
+fn write_pull(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PullOutcome) -> Result<()> {
+    if outcome.old == outcome.new {
+        writeln!(out, "pull\t{}\tup to date", outcome.branch)?;
+    } else {
+        writeln!(
+            out,
+            "pull\t{}\t{}\t{}\t{} file(s)",
+            outcome.branch, outcome.old, outcome.new, outcome.files_changed
+        )?;
+    }
+    Ok(())
+}
+
+fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -> Result<()> {
+    if outcome.old == Some(outcome.new) {
+        writeln!(out, "push\t{}\tup to date", outcome.branch)?;
+    } else {
+        writeln!(
+            out,
+            "push\t{}\t{}/{}\t{} commit(s)",
+            outcome.branch, outcome.remote, outcome.branch, outcome.pushed_commits
+        )?;
+    }
+    Ok(())
+}
+
+fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let creds = parse_credentials(args)?;
+    let outcome = rc_git_guard::actions::fetch_upstream(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        creds.as_ref(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    write_fetch(out, &outcome)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let creds = parse_credentials(args)?;
+    let policy = rc_git_guard::Policy::default();
+    let fetch = rc_git_guard::actions::fetch_upstream(
+        repo_path,
+        &policy,
+        creds.as_ref(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    write_fetch(out, &fetch)?;
+    let outcome = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
+    write_pull(out, &outcome)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let creds = parse_credentials(args)?;
+    let outcome = rc_git_guard::actions::push_upstream(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        creds.as_ref(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    write_push(out, &outcome)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let creds = parse_credentials(args)?;
+    let outcome = rc_git_guard::actions::sync(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        creds.as_ref(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    write_fetch(out, &outcome.fetch)?;
+    write_pull(out, &outcome.pull)?;
+    match &outcome.push {
+        Some(push) => write_push(out, push)?,
+        None => writeln!(out, "push\tup to date")?,
+    }
     Ok(ExitCode::SUCCESS)
 }

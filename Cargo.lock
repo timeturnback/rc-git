@@ -1472,6 +1472,7 @@ name = "rc-git-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gix-transport",
  "rc-git-core",
  "rc-git-guard",
  "rc-git-testkit",

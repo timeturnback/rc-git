@@ -495,3 +495,128 @@ fn the_stash_verbs_round_trip() {
     assert_eq!(stdout(&out), "refs/rc-git/backup/stash/0\n");
     assert_eq!(fx.git_output(&["stash", "list"]), "");
 }
+
+// --- network verbs against the test HTTP server ---
+
+/// Origin, a served bare copy (pushes enabled), and a clone with `origin` upstream.
+fn served_clone() -> (Fixture, Fixture, rc_git_testkit::HttpGitServer, Fixture) {
+    let origin = Fixture::standard();
+    let bare = Fixture::empty_dir();
+    let bare_path = bare.path().join("remote.git");
+    origin.git(&[
+        "clone",
+        "--bare",
+        "--quiet",
+        ".",
+        bare_path.to_str().unwrap(),
+    ]);
+    bare.git(&[
+        "--git-dir",
+        "remote.git",
+        "config",
+        "http.receivepack",
+        "true",
+    ]);
+    let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
+    let clone = Fixture::empty_dir();
+    clone.git(&["clone", "--quiet", &server.url(), "."]);
+    (origin, bare, server, clone)
+}
+
+#[test]
+fn sync_fetches_pulls_and_pushes() {
+    let (origin, bare, _server, clone) = served_clone();
+    // Remote gains one commit; local gains none, then commits one after the pull.
+    origin.write("news.txt", b"news\n");
+    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
+    origin.git(&[
+        "push",
+        "--quiet",
+        bare.path().join("remote.git").to_str().unwrap(),
+        "main",
+    ]);
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["sync", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("fetch\trefs/remotes/origin/main"), "{text}");
+    assert!(text.contains("pull\tmain\t"), "{text}");
+    assert!(text.contains("push\tup to date"), "{text}");
+
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let out = rc_git(&["sync", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("push\tmain\torigin/main\t1 commit(s)"),
+        "{text}"
+    );
+    assert_eq!(
+        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]),
+        clone.rev_parse("HEAD")
+    );
+}
+
+#[test]
+fn network_verbs_report_auth_with_exit_code_5() {
+    let origin = Fixture::standard();
+    let bare = Fixture::empty_dir();
+    let bare_path = bare.path().join("remote.git");
+    origin.git(&[
+        "clone",
+        "--bare",
+        "--quiet",
+        ".",
+        bare_path.to_str().unwrap(),
+    ]);
+    let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let clone = Fixture::empty_dir();
+    let with_creds = server.url().replace("http://", "http://user:sekret@");
+    clone.git(&[
+        "-c",
+        "credential.helper=",
+        "clone",
+        "--quiet",
+        &with_creds,
+        ".",
+    ]);
+    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["fetch", path]);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("requires authentication"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = rc_git(&["fetch", path, "--username", "user", "--token", "sekret"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn pull_reports_divergence_as_an_error() {
+    let (origin, bare, _server, clone) = served_clone();
+    origin.write("news.txt", b"news\n");
+    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
+    origin.git(&[
+        "push",
+        "--quiet",
+        bare.path().join("remote.git").to_str().unwrap(),
+        "main",
+    ]);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["pull", path]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("cannot fast-forward"),
+        "{}",
+        stderr(&out)
+    );
+}
