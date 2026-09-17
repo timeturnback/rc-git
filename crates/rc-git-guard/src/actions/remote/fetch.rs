@@ -10,7 +10,7 @@ use crate::{Action, Policy};
 
 use super::{
     RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
-    current_branch, host_of, map_network_error, ssh_not_yet_wired, vet_remote_url,
+    current_branch, host_of, map_network_error, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -76,37 +76,69 @@ pub fn fetch_upstream(
             branch: branch.clone(),
         })?
         .clone();
-    if vet_remote_url(&url, OP, &remote_name)? == RemoteScheme::Ssh {
-        return Err(ssh_not_yet_wired(OP, &remote_name));
-    }
+    let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
-    )]
-    let connection = remote
-        .connect(gix::remote::Direction::Fetch)
-        .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
-    let outcome = connection
-        .with_credentials(authenticate_with(auth.creds.cloned()))
-        .prepare_fetch(
-            gix::progress::Discard,
-            gix::remote::ref_map::Options::default(),
-        )
-        .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?
-        .receive(gix::progress::Discard, cancel)
-        .map_err(|source| {
-            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                return ActionError::Cancelled { op: OP };
-            }
-            map_network_error(Box::new(source), OP, &remote_name, &host)
-        })?;
+    let outcome = match scheme {
+        RemoteScheme::Https => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
+            )]
+            let connection = remote
+                .connect(gix::remote::Direction::Fetch)
+                .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
+            let connection = connection.with_credentials(authenticate_with(auth.creds.cloned()));
+            run_fetch(connection, &remote_name, &host, cancel)?
+        }
+        RemoteScheme::Ssh => {
+            let transport = super::ssh::transport(
+                &url,
+                auth,
+                gix::protocol::transport::Service::UploadPack,
+                gix::protocol::transport::Protocol::V2,
+                cancel,
+                OP,
+            )?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
+            )]
+            let connection = remote.to_connection_with_transport(transport);
+            run_fetch(connection, &remote_name, &host, cancel)?
+        }
+    };
 
     Ok(FetchOutcome {
         remote: remote_name,
         updated_refs: updated_refs(&outcome),
     })
+}
+
+/// Runs the prepared connection through negotiation and pack receive, mapping errors
+/// the same way for both transports.
+fn run_fetch<T>(
+    connection: gix::remote::Connection<'_, '_, '_, T>,
+    remote_name: &str,
+    host: &str,
+    cancel: &AtomicBool,
+) -> ActionResult<gix::remote::fetch::Outcome>
+where
+    T: gix::protocol::transport::client::blocking_io::Transport,
+{
+    connection
+        .prepare_fetch(
+            gix::progress::Discard,
+            gix::remote::ref_map::Options::default(),
+        )
+        .map_err(|source| map_network_error(Box::new(source), OP, remote_name, host))?
+        .receive(gix::progress::Discard, cancel)
+        .map_err(|source| {
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                return ActionError::Cancelled { op: OP };
+            }
+            map_network_error(Box::new(source), OP, remote_name, host)
+        })
 }
 
 /// The refs a fetch actually created or moved; refs the edits merely asserted

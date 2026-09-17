@@ -39,6 +39,9 @@ pub const RCGIT_ERROR: i32 = -1;
 pub const RCGIT_AUTH_REQUIRED: i32 = -2;
 /// Status for remote functions: local and remote history diverged; see `error`.
 pub const RCGIT_DIVERGED: i32 = -3;
+/// Status for remote functions over ssh: the host's key is not known; `hostkey` holds
+/// `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
+pub const RCGIT_HOSTKEY_UNKNOWN: i32 = -4;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -3201,12 +3204,23 @@ pub struct RcGitPushOutcome {
     pub already_up_to_date: bool,
 }
 
-/// Maps a remote-action error to its status code and reports the message.
-fn finish_remote(error: &Out<*mut c_char>, err: &ActionError) -> i32 {
+/// Maps a remote-action error to its status code and reports the message. An unknown
+/// host key additionally fills `hostkey` with `"<key type> <fingerprint>"`.
+fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &ActionError) -> i32 {
     error.report(err);
     match err {
-        ActionError::AuthRequired { .. } => RCGIT_AUTH_REQUIRED,
+        ActionError::AuthRequired { .. } | ActionError::PassphraseRequired { .. } => {
+            RCGIT_AUTH_REQUIRED
+        }
         ActionError::Diverged { .. } | ActionError::PushRejected { .. } => RCGIT_DIVERGED,
+        ActionError::UnknownHostKey {
+            key_type,
+            fingerprint,
+            ..
+        } => {
+            hostkey.set(export_string(format!("{key_type} {fingerprint}")));
+            RCGIT_HOSTKEY_UNKNOWN
+        }
         ActionError::Denied { .. }
         | ActionError::NotConfirmed { .. }
         | ActionError::CheckedOut { .. }
@@ -3216,9 +3230,71 @@ fn finish_remote(error: &Out<*mut c_char>, err: &ActionError) -> i32 {
         | ActionError::DirtyPath { .. }
         | ActionError::MissingIdentity
         | ActionError::UnsupportedRemote { .. }
+        | ActionError::HostKeyMismatch { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::Cancelled { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
+    }
+}
+
+/// Authentication inputs for the remote functions. Every field may be NULL: `username`
+/// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
+/// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
+/// and `ssh_dir` to use `~/.ssh`.
+#[repr(C)]
+pub struct RcGitRemoteAuth {
+    /// HTTPS username, or NULL.
+    pub username: *const c_char,
+    /// HTTPS token, or the ssh key passphrase, or NULL.
+    pub token: *const c_char,
+    /// An approved `SHA256:...` host-key fingerprint, or NULL.
+    pub accepted_hostkey: *const c_char,
+    /// Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.
+    pub ssh_dir: *const c_char,
+}
+
+/// Owned mirror of [`RcGitRemoteAuth`], so the borrowed [`RemoteAuth`] the guard wants
+/// can be built from stable storage.
+#[derive(Default)]
+struct OwnedRemoteAuth {
+    creds: Option<Credentials>,
+    accepted_hostkey: Option<String>,
+    ssh_dir: Option<std::path::PathBuf>,
+}
+
+impl OwnedRemoteAuth {
+    /// Reads the caller's struct.
+    ///
+    /// # Safety
+    /// `auth` is NULL or valid, and its non-NULL fields are NUL-terminated strings.
+    unsafe fn read(auth: *const RcGitRemoteAuth) -> Self {
+        if auth.is_null() {
+            return Self::default();
+        }
+        // SAFETY: forwarded from this function's contract.
+        let (creds, accepted_hostkey, ssh_dir) = unsafe {
+            let auth = &*auth;
+            (
+                credentials_from(auth.username, auth.token),
+                bytes_arg(auth.accepted_hostkey)
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+                bytes_arg(auth.ssh_dir)
+                    .map(|bytes| std::path::PathBuf::from(OsStr::from_bytes(bytes))),
+            )
+        };
+        Self {
+            creds,
+            accepted_hostkey,
+            ssh_dir,
+        }
+    }
+
+    fn borrow(&self) -> RemoteAuth<'_> {
+        RemoteAuth {
+            creds: self.creds.as_ref(),
+            accepted_hostkey: self.accepted_hostkey.as_deref(),
+            ssh_dir: self.ssh_dir.as_deref(),
+        }
     }
 }
 
@@ -3281,28 +3357,30 @@ pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus
     unsafe { release(status) }
 }
 
-/// Fetches from the branch's upstream remote, updating remote-tracking refs. HTTPS only.
-/// `username`/`token` may both be NULL for an anonymous attempt. Returns `RCGIT_OK`,
-/// `RCGIT_ERROR`, or `RCGIT_AUTH_REQUIRED`.
+/// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
+/// may be NULL for an anonymous attempt with default ssh configuration. Returns
+/// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or `RCGIT_HOSTKEY_UNKNOWN`
+/// (`hostkey` then holds the offered key for the user to verify).
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
-/// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
-/// writing a `char *`.
+/// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+/// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
+/// are each NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_fetch(
     repo_path: *const c_char,
-    username: *const c_char,
-    token: *const c_char,
+    auth: *const RcGitRemoteAuth,
     out: *mut RcGitFetchOutcome,
+    hostkey: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, creds, out, error) = unsafe {
+    let (repo_path, auth, out, hostkey, error) = unsafe {
         (
             bytes_arg(repo_path),
-            credentials_from(username, token),
+            OwnedRemoteAuth::read(auth),
             Out::new(out),
+            Out::new(hostkey),
             Out::new(error),
         )
     };
@@ -3312,11 +3390,7 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
     };
     let repo_path = Path::new(OsStr::from_bytes(repo_path));
     let cancel = AtomicBool::new(false);
-    let auth = RemoteAuth {
-        creds: creds.as_ref(),
-        ..RemoteAuth::default()
-    };
-    match fetch_upstream(repo_path, &Policy::default(), auth, &cancel) {
+    match fetch_upstream(repo_path, &Policy::default(), auth.borrow(), &cancel) {
         Ok(outcome) => {
             let (ahead, behind) =
                 upstream_status(repo_path).map_or((0, 0), |status| (status.ahead, status.behind));
@@ -3327,7 +3401,7 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
             });
             RCGIT_OK
         }
-        Err(err) => finish_remote(&error, &err),
+        Err(err) => finish_remote(&error, &hostkey, &err),
     }
 }
 
@@ -3343,8 +3417,15 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
     out: *mut RcGitPullOutcome,
     error: *mut *mut c_char,
 ) -> i32 {
-    // SAFETY: forwarded from this function's contract.
-    let (repo_path, out, error) = unsafe { (bytes_arg(repo_path), Out::new(out), Out::new(error)) };
+    // SAFETY: forwarded from this function's contract; the null Out is trivially valid.
+    let (repo_path, out, no_hostkey, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            Out::new(out),
+            Out::new(ptr::null_mut()),
+            Out::new(error),
+        )
+    };
     let Some(repo_path) = repo_path else {
         error.report("repo_path is NULL");
         return RCGIT_ERROR;
@@ -3364,32 +3445,35 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
             });
             RCGIT_OK
         }
-        Err(err) => finish_remote(&error, &err),
+        // Pull is local-only; it can never produce a host-key report.
+        Err(err) => finish_remote(&error, &no_hostkey, &err),
     }
 }
 
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
-/// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or
-/// `RCGIT_DIVERGED` (the remote has commits the branch lacks).
+/// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`,
+/// `RCGIT_DIVERGED` (the remote has commits the branch lacks), or
+/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
-/// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
-/// writing a `char *`.
+/// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+/// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
+/// are each NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_push(
     repo_path: *const c_char,
-    username: *const c_char,
-    token: *const c_char,
+    auth: *const RcGitRemoteAuth,
     out: *mut RcGitPushOutcome,
+    hostkey: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, creds, out, error) = unsafe {
+    let (repo_path, auth, out, hostkey, error) = unsafe {
         (
             bytes_arg(repo_path),
-            credentials_from(username, token),
+            OwnedRemoteAuth::read(auth),
             Out::new(out),
+            Out::new(hostkey),
             Out::new(error),
         )
     };
@@ -3398,14 +3482,10 @@ pub unsafe extern "C" fn rcgit_guard_push(
         return RCGIT_ERROR;
     };
     let cancel = AtomicBool::new(false);
-    let auth = RemoteAuth {
-        creds: creds.as_ref(),
-        ..RemoteAuth::default()
-    };
     match push_upstream(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        auth,
+        auth.borrow(),
         &cancel,
     ) {
         Ok(outcome) => {
@@ -3415,7 +3495,7 @@ pub unsafe extern "C" fn rcgit_guard_push(
             });
             RCGIT_OK
         }
-        Err(err) => finish_remote(&error, &err),
+        Err(err) => finish_remote(&error, &hostkey, &err),
     }
 }
 
@@ -4220,8 +4300,8 @@ mod tests {
             rcgit_guard_fetch(
                 ptr::null(),
                 ptr::null(),
-                ptr::null(),
                 &raw mut fetch_out,
+                ptr::null_mut(),
                 &raw mut error,
             )
         };
@@ -4248,29 +4328,29 @@ mod tests {
             rcgit_guard_push(
                 ptr::null(),
                 ptr::null(),
-                ptr::null(),
                 &raw mut push_out,
+                ptr::null_mut(),
                 &raw mut error,
             )
         };
         assert_eq!(code, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("NULL"));
 
-        // An ssh remote is refused with RCGIT_ERROR before any connection is made.
+        // A git:// remote is refused with RCGIT_ERROR before any connection is made.
         let fx = Fixture::standard();
-        fx.git(&["remote", "add", "origin", "ssh://git@example.com/x.git"]);
+        fx.git(&["remote", "add", "origin", "git://example.com/x.git"]);
         let path = CString::new(fx.path().to_str().unwrap()).unwrap();
         let code = unsafe {
             rcgit_guard_fetch(
                 path.as_ptr(),
                 ptr::null(),
-                ptr::null(),
                 &raw mut fetch_out,
+                ptr::null_mut(),
                 &raw mut error,
             )
         };
         assert_eq!(code, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("ssh"));
+        assert!(take_error(&mut error).contains("git"));
 
         // A diverged pull maps to RCGIT_DIVERGED: fake a tracking ref behind a local
         // commit on both sides.
@@ -4283,6 +4363,75 @@ mod tests {
         let code = unsafe { rcgit_guard_pull_ff(path.as_ptr(), &raw mut pull_out, &raw mut error) };
         assert_eq!(code, RCGIT_DIVERGED);
         assert!(take_error(&mut error).contains("cannot fast-forward"));
+    }
+
+    #[test]
+    fn ssh_unknown_hostkey_maps_to_its_status_and_an_accepted_retry_succeeds() {
+        let origin = Fixture::standard();
+        let bare = Fixture::empty_dir();
+        let bare_path = bare.path().join("remote.git");
+        origin.git(&[
+            "clone",
+            "--bare",
+            "--quiet",
+            ".",
+            &bare_path.to_string_lossy(),
+        ]);
+        let server = rc_git_testkit::SshGitServer::serve(&bare_path);
+        let clone = Fixture::empty_dir();
+        clone.git(&["clone", "--quiet", &bare_path.to_string_lossy(), "."]);
+        clone.git(&["remote", "set-url", "origin", &server.url()]);
+        let ssh_home = Fixture::empty_dir();
+        server.write_client_key(ssh_home.path());
+
+        let path = CString::new(clone.path().to_str().unwrap()).unwrap();
+        let ssh_dir = CString::new(ssh_home.path().to_str().unwrap()).unwrap();
+        let auth = RcGitRemoteAuth {
+            username: ptr::null(),
+            token: ptr::null(),
+            accepted_hostkey: ptr::null(),
+            ssh_dir: ssh_dir.as_ptr(),
+        };
+        let mut fetch_out = RcGitFetchOutcome {
+            updated_refs: 0,
+            ahead: 0,
+            behind: 0,
+        };
+        let mut hostkey = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let code = unsafe {
+            rcgit_guard_fetch(
+                path.as_ptr(),
+                &raw const auth,
+                &raw mut fetch_out,
+                &raw mut hostkey,
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_HOSTKEY_UNKNOWN);
+        let offered = take_error(&mut hostkey);
+        assert_eq!(
+            offered,
+            format!("ssh-ed25519 {}", server.host_fingerprint())
+        );
+        assert!(take_error(&mut error).contains("not a known host"));
+
+        let accepted = CString::new(server.host_fingerprint()).unwrap();
+        let auth = RcGitRemoteAuth {
+            accepted_hostkey: accepted.as_ptr(),
+            ..auth
+        };
+        let code = unsafe {
+            rcgit_guard_fetch(
+                path.as_ptr(),
+                &raw const auth,
+                &raw mut fetch_out,
+                &raw mut hostkey,
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_OK, "{}", take_error(&mut error));
+        assert!(hostkey.is_null());
     }
 
     #[test]

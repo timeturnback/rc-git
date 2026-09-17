@@ -1,7 +1,8 @@
-//! Remote operations over HTTPS, and the plumbing they share: upstream resolution,
-//! URL vetting, and credential injection. rc-git speaks HTTPS only — every other
-//! transport would spawn a process — and credentials always come from the caller,
-//! so gix's helper cascade (which spawns `git credential-*`) is never consulted.
+//! Remote operations over HTTPS and SSH, and the plumbing they share: upstream
+//! resolution, URL vetting, and credential injection. Both transports are in-process —
+//! HTTPS through gix's curl backend, SSH through russh (`ssh/`) — so no child process
+//! is ever spawned. Credentials always come from the caller; gix's helper cascade
+//! (which spawns `git credential-*`) is never consulted.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +14,7 @@ mod pack;
 mod pull;
 mod push;
 mod report;
+mod ssh;
 
 pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
@@ -62,6 +64,9 @@ pub struct RemoteAuth<'a> {
     pub creds: Option<&'a Credentials>,
     /// A host-key fingerprint (`SHA256:...`) the user chose to trust.
     pub accepted_hostkey: Option<&'a str>,
+    /// Where `config`, `known_hosts`, and default keys live; `~/.ssh` when `None`.
+    /// Tests point it at a fixture directory.
+    pub ssh_dir: Option<&'a std::path::Path>,
 }
 
 /// A username and token for one HTTPS host. Never stored and never logged by this crate.
@@ -271,15 +276,6 @@ fn vet_remote_url(
             name: remote_name.to_owned(),
             scheme: scheme.as_str().to_owned(),
         }),
-    }
-}
-
-/// Placeholder until the ssh transport lands: refuses the remote exactly as before.
-fn ssh_not_yet_wired(op: &'static str, remote_name: &str) -> ActionError {
-    ActionError::UnsupportedRemote {
-        op,
-        name: remote_name.to_owned(),
-        scheme: "ssh".to_owned(),
     }
 }
 

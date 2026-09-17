@@ -171,8 +171,11 @@ pub enum ActionError {
         /// The host to authenticate with.
         host: String,
     },
-    /// The remote's transport is not HTTPS; rc-git would have to spawn a process for it.
-    #[error("{op}: remote '{name}' uses '{scheme}'; rc-git only supports https:// remotes")]
+    /// The remote's URL scheme is one rc-git does not speak (`git://`, `file://`,
+    /// non-loopback `http://`).
+    #[error(
+        "{op}: remote '{name}' uses '{scheme}'; rc-git only supports https:// and ssh:// remotes"
+    )]
     UnsupportedRemote {
         /// What was being done.
         op: &'static str,
@@ -180,6 +183,46 @@ pub enum ActionError {
         name: String,
         /// The URL scheme that was refused.
         scheme: String,
+    },
+    /// The SSH server's host key is not in `known_hosts`; the user must verify and
+    /// approve its fingerprint before rc-git will talk to the host.
+    #[error(
+        "{op}: '{host}' is not a known host; its {key_type} key fingerprint is {fingerprint}. Verify it before trusting."
+    )]
+    UnknownHostKey {
+        /// What was being done.
+        op: &'static str,
+        /// The host whose key is unknown.
+        host: String,
+        /// The key's algorithm, e.g. `ssh-ed25519`.
+        key_type: String,
+        /// The key's fingerprint, `SHA256:...`.
+        fingerprint: String,
+    },
+    /// The SSH server offered a key that contradicts `known_hosts`. Never overridable
+    /// inside rc-git.
+    #[error(
+        "{op}: the {key_type} host key for '{host}' does not match known_hosts (offered {fingerprint}); this may be a man-in-the-middle — investigate with ssh directly"
+    )]
+    HostKeyMismatch {
+        /// What was being done.
+        op: &'static str,
+        /// The host whose key changed.
+        host: String,
+        /// The offered key's algorithm.
+        key_type: String,
+        /// The offered key's fingerprint, `SHA256:...`.
+        fingerprint: String,
+    },
+    /// An SSH private key is encrypted and no (or the wrong) passphrase was supplied.
+    #[error("{op}: the key '{key}' for '{host}' is encrypted; enter its passphrase")]
+    PassphraseRequired {
+        /// What was being done.
+        op: &'static str,
+        /// The host being authenticated with.
+        host: String,
+        /// Path of the encrypted key file.
+        key: String,
     },
     /// The branch has no configured upstream remote.
     #[error("{op}: branch '{branch}' has no upstream; configure branch.{branch}.remote first")]

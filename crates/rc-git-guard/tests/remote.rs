@@ -228,18 +228,18 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
 }
 
 #[test]
-fn non_https_remotes_are_refused_by_scheme() {
+fn unsupported_remote_schemes_are_refused() {
     let fixture = Fixture::standard();
-    fixture.git(&["remote", "add", "origin", "ssh://git@example.com/x.git"]);
+    fixture.git(&["remote", "add", "origin", "git://example.com/x.git"]);
     let err = fetch_upstream(
         fixture.path(),
         &Policy::default(),
         RemoteAuth::default(),
         &AtomicBool::new(false),
     )
-    .expect_err("ssh refused");
+    .expect_err("git protocol refused");
     assert!(
-        matches!(&err, ActionError::UnsupportedRemote { scheme, .. } if scheme == "ssh"),
+        matches!(&err, ActionError::UnsupportedRemote { scheme, .. } if scheme == "git"),
         "{err}"
     );
 
@@ -655,4 +655,221 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
         matches!(err, ActionError::Cancelled { op: "push" }),
         "{err}"
     );
+}
+
+// ---- ssh ----------------------------------------------------------------------------
+
+/// An origin repository, a bare copy served over loopback ssh, a local clone whose
+/// `origin` points at the ssh URL, and a fixture `~/.ssh`-style directory.
+struct SshRemoted {
+    origin: Fixture,
+    bare: Fixture,
+    server: rc_git_testkit::SshGitServer,
+    clone: Fixture,
+    ssh_home: Fixture,
+}
+
+impl SshRemoted {
+    /// `RemoteAuth` pointing at the fixture ssh directory.
+    fn auth(&self) -> RemoteAuth<'_> {
+        RemoteAuth {
+            ssh_dir: Some(self.ssh_home.path()),
+            ..RemoteAuth::default()
+        }
+    }
+}
+
+/// Serves a bare copy over ssh; the clone is made from the local path (the git CLI
+/// never speaks to the test server) and re-pointed at the ssh URL.
+fn ssh_remoted() -> SshRemoted {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = bare_copy(&origin);
+    let server = rc_git_testkit::SshGitServer::serve(&bare_path);
+    let clone = Fixture::empty_dir();
+    clone.git(&["clone", "--quiet", &bare_path.to_string_lossy(), "."]);
+    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let ssh_home = Fixture::empty_dir();
+    server.write_client_key(ssh_home.path());
+    SshRemoted {
+        origin,
+        bare,
+        server,
+        clone,
+        ssh_home,
+    }
+}
+
+/// Adds one commit to the ssh-served bare repository, past what the clone has.
+fn advance_ssh_origin(remoted: &SshRemoted) {
+    remoted.origin.write("news.txt", b"news\n");
+    remoted
+        .origin
+        .commit("News on origin", "2024-03-01T00:00:00+0000");
+    let target = remoted.bare.path().join("remote.git");
+    remoted
+        .origin
+        .git(&["push", "--quiet", &target.to_string_lossy(), "main"]);
+}
+
+#[test]
+fn ssh_fetch_updates_the_tracking_ref() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    advance_ssh_origin(&remoted);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect("ssh fetch");
+    assert_eq!(outcome.remote, "origin");
+    assert_eq!(outcome.updated_refs.len(), 1);
+    assert_eq!(outcome.updated_refs[0].name, "refs/remotes/origin/main");
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!((status.ahead, status.behind), (0, 1));
+    drop(remoted.server);
+}
+
+#[test]
+fn ssh_push_uploads_commits_and_updates_the_tracking_ref() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect("ssh push");
+    assert_eq!(outcome.pushed_commits, 1);
+    let tip = remoted
+        .bare
+        .git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
+    assert_eq!(tip, remoted.clone.rev_parse("HEAD"));
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!((status.ahead, status.behind), (0, 0));
+}
+
+#[test]
+fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
+    // No known_hosts entry is written, so the host is unknown.
+    let remoted = ssh_remoted();
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect_err("unknown host refused");
+    let ActionError::UnknownHostKey {
+        key_type,
+        fingerprint,
+        ..
+    } = &err
+    else {
+        panic!("expected UnknownHostKey, got {err}");
+    };
+    assert_eq!(key_type, "ssh-ed25519");
+    assert_eq!(fingerprint, &remoted.server.host_fingerprint());
+
+    let accepted = remoted.server.host_fingerprint();
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            accepted_hostkey: Some(&accepted),
+            ..remoted.auth()
+        },
+        &AtomicBool::new(false),
+    )
+    .expect("accepted fingerprint fetch");
+}
+
+#[test]
+fn ssh_host_key_mismatch_is_fatal() {
+    let remoted = ssh_remoted();
+    remoted
+        .server
+        .write_mismatched_known_hosts(remoted.ssh_home.path());
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect_err("mismatch refused");
+    assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
+    assert!(err.to_string().contains("man-in-the-middle"), "{err}");
+}
+
+#[test]
+fn ssh_wrong_key_reports_auth_required() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    remoted
+        .server
+        .write_unauthorized_client_key(remoted.ssh_home.path());
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect_err("wrong key refused");
+    assert!(matches!(&err, ActionError::AuthRequired { .. }), "{err}");
+}
+
+#[test]
+fn ssh_encrypted_key_requires_a_passphrase_and_opens_with_it() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    let passphrase = remoted
+        .server
+        .write_encrypted_client_key(remoted.ssh_home.path());
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect_err("encrypted key without passphrase");
+    assert!(
+        matches!(&err, ActionError::PassphraseRequired { .. }),
+        "{err}"
+    );
+
+    let creds = Credentials {
+        username: String::new(),
+        token: passphrase.to_owned(),
+    };
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            creds: Some(&creds),
+            ..remoted.auth()
+        },
+        &AtomicBool::new(false),
+    )
+    .expect("passphrase fetch");
+}
+
+#[test]
+fn scp_like_urls_parse_as_the_ssh_scheme() {
+    // The router keys on gix's URL parsing; this pins the scp-like form to `Ssh` so a
+    // gix upgrade cannot silently reroute it.
+    let url = gix::url::parse(gix::bstr::BStr::new("git@example.com:x/y.git")).expect("parse");
+    assert_eq!(url.scheme, gix::url::Scheme::Ssh);
+    assert_eq!(url.host(), Some("example.com"));
 }

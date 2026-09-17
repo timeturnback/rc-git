@@ -16,6 +16,11 @@ in Swift value types.
 - Object ids cross as `RcGitOid`: 32 bytes plus a length, 20 for SHA-1.
 - An `RcGitRepo` may be used from any thread, including several at once.
 - Statuses: `RCGIT_OK` (0) and `RCGIT_ERROR` (-1) for functions that fill an out parameter.
+  Remote functions add `RCGIT_AUTH_REQUIRED` (-2), `RCGIT_DIVERGED` (-3), and
+  `RCGIT_HOSTKEY_UNKNOWN` (-4, ssh only: the `hostkey` out parameter holds
+  `"<key type> <SHA256 fingerprint>"` to show the user, released with
+  `rcgit_string_free`). Their inputs travel in one `RcGitRemoteAuth` struct whose fields
+  may all be `NULL`.
 
 ## Memory
 

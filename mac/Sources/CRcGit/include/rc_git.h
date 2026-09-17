@@ -21,6 +21,10 @@
 // Status for remote functions: local and remote history diverged; see `error`.
 #define RCGIT_DIVERGED -3
 
+// Status for remote functions over ssh: the host's key is not known; `hostkey` holds
+// `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
+#define RCGIT_HOSTKEY_UNKNOWN -4
+
 // Namespace of a reference.
 typedef enum RcGitRefKind {
   // `refs/heads/*`
@@ -548,6 +552,21 @@ typedef struct RcGitRemoteStatus {
   // Whether the branch has a configured upstream at all.
   bool has_upstream;
 } RcGitRemoteStatus;
+
+// Authentication inputs for the remote functions. Every field may be NULL: `username`
+// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
+// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
+// and `ssh_dir` to use `~/.ssh`.
+typedef struct RcGitRemoteAuth {
+  // HTTPS username, or NULL.
+  const char *username;
+  // HTTPS token, or the ssh key passphrase, or NULL.
+  const char *token;
+  // An approved `SHA256:...` host-key fingerprint, or NULL.
+  const char *accepted_hostkey;
+  // Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.
+  const char *ssh_dir;
+} RcGitRemoteAuth;
 
 // What a fetch changed. Plain data, no free function.
 typedef struct RcGitFetchOutcome {
@@ -1185,18 +1204,19 @@ struct RcGitRemoteStatus *rcgit_guard_remote_preflight(const char *repo_path, ch
 // `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
 void rcgit_remote_status_free(struct RcGitRemoteStatus *status);
 
-// Fetches from the branch's upstream remote, updating remote-tracking refs. HTTPS only.
-// `username`/`token` may both be NULL for an anonymous attempt. Returns `RCGIT_OK`,
-// `RCGIT_ERROR`, or `RCGIT_AUTH_REQUIRED`.
+// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
+// may be NULL for an anonymous attempt with default ssh configuration. Returns
+// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or `RCGIT_HOSTKEY_UNKNOWN`
+// (`hostkey` then holds the offered key for the user to verify).
 //
 // # Safety
-// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
-// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
-// writing a `char *`.
+// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
+// are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_fetch(const char *repo_path,
-                          const char *username,
-                          const char *token,
+                          const struct RcGitRemoteAuth *auth,
                           struct RcGitFetchOutcome *out,
+                          char **hostkey,
                           char **error);
 
 // Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
@@ -1208,17 +1228,18 @@ int32_t rcgit_guard_fetch(const char *repo_path,
 int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out, char **error);
 
 // Pushes the checked-out branch to its upstream. Plain push only; a force push is not
-// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or
-// `RCGIT_DIVERGED` (the remote has commits the branch lacks).
+// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`,
+// `RCGIT_DIVERGED` (the remote has commits the branch lacks), or
+// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
 //
 // # Safety
-// `repo_path` is a NUL-terminated path; `username` and `token` are each NULL or
-// NUL-terminated; `out` is NULL or valid for writing; `error` is NULL or valid for
-// writing a `char *`.
+// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
+// are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_push(const char *repo_path,
-                         const char *username,
-                         const char *token,
+                         const struct RcGitRemoteAuth *auth,
                          struct RcGitPushOutcome *out,
+                         char **hostkey,
                          char **error);
 
 #ifdef __cplusplus

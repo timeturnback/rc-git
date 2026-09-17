@@ -16,7 +16,7 @@ use super::report::Report;
 use super::{
     Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
     configured_remote_name, current_branch, host_of, is_ancestor, map_network_error, pack, report,
-    set_reflog_identity, ssh_not_yet_wired, vet_remote_url,
+    set_reflog_identity, vet_remote_url,
 };
 
 const OP: &str = "push";
@@ -76,13 +76,21 @@ pub fn push_upstream(
             branch: branch.clone(),
         }
     })?;
-    if vet_remote_url(&url, OP, &remote_name)? == RemoteScheme::Ssh {
-        return Err(ssh_not_yet_wired(OP, &remote_name));
-    }
+    let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
     let full_ref = format!("refs/heads/{branch}");
 
-    let mut transport = connect(&url, &host)?;
+    let mut transport = match scheme {
+        RemoteScheme::Https => connect(&url, &host)?,
+        RemoteScheme::Ssh => super::ssh::transport(
+            &url,
+            auth,
+            gix::protocol::transport::Service::ReceivePack,
+            gix::protocol::transport::Protocol::V1,
+            cancel,
+            OP,
+        )?,
+    };
     let (remote_old, haves) = advertise(&repo, &mut transport, &host, auth.creds, &full_ref)?;
     if remote_old == Some(tip) {
         return Ok(PushOutcome {
