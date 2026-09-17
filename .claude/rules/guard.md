@@ -29,3 +29,10 @@ performs one. Branch and tag management go through here; so does everything that
 - Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
 - Every rule change updates the table in `docs/safety.md`, the tests in `lib.rs`, and the
   tests in `tests/actions.rs` together.
+- Remote I/O lives in `actions/remote/` only; the network entry points (`find_remote`,
+  `Remote::connect`, `handshake`, …) are clippy-banned everywhere else. HTTPS only —
+  `require_https` allows plain http for loopback hosts so tests run end to end. Always
+  install the credential closure; never let gix's helper cascade run (it spawns).
+  `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
+  push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
+  `http-client-insecure-credentials`).

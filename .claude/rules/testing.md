@@ -20,3 +20,9 @@ paths: crates/**/tests/**, crates/rc-git-testkit/**, mac/Tests/**
   otherwise unfulfilled and fails `-D warnings`.
 - Timing-raced tests (slow-load vs fast-load) need wide margins: suites run in parallel and
   a 20 ms hop can overrun a 0.2 s delay under load. Use ≥1 s for the "slow" side.
+- Network tests use `HttpGitServer` (testkit): serve a `git clone --bare` copy placed in a
+  **sibling** temp dir — a bare clone inside the origin's working tree gets swept into the
+  next `git add -A` commit and poisons the diff. Set `http.receivepack=true` on the served
+  repo or pushes 403. Basic-auth-over-http needs the dev-only
+  `http-client-insecure-credentials` gix-transport feature in the testing crate's
+  dev-dependencies.
