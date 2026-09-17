@@ -15,6 +15,10 @@ gix-packetline.workspace = true
 gix-pack.workspace = true
 rc-git-core.workspace = true
 thiserror.workspace = true
+russh.workspace = true
+russh-config.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 rc-git-testkit.workspace = true

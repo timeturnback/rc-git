@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 tempfile.workspace = true
+russh.workspace = true
+tokio = { workspace = true, features = ["process", "macros"] }
 
 # Test support: a broken fixture must fail loudly, so panics are the right tool here.
 [lints.rust]
