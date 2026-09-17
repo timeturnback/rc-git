@@ -9,8 +9,10 @@ use std::process::Command;
 use tempfile::TempDir;
 
 mod http;
+mod ssh;
 
 pub use http::HttpGitServer;
+pub use ssh::SshGitServer;
 
 /// A temporary directory holding a repository. Deleted on drop.
 #[derive(Debug)]
@@ -192,6 +194,16 @@ impl Fixture {
     pub fn serve_http(&self) -> HttpGitServer {
         self.git(&["config", "http.receivepack", "true"]);
         HttpGitServer::serve(&self.git_dir())
+    }
+
+    /// Serves this repository over loopback ssh, publickey auth against the fixture
+    /// client keys.
+    ///
+    /// # Panics
+    /// When the server cannot start.
+    #[must_use]
+    pub fn serve_ssh(&self) -> SshGitServer {
+        SshGitServer::serve(&self.git_dir())
     }
 
     /// Like [`serve_http`](Self::serve_http), demanding HTTP Basic credentials.
