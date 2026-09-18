@@ -14,14 +14,17 @@ Four layers enforce it, and each catches what the others miss.
    every core operation — working-tree listings and file reads included — and compares the
    snapshot byte for byte.
 3. **Features.** The read-only crates compile `gix` without checkout or credential
-   features. `rc-git-guard` alone enables the HTTPS transport
-   (`blocking-http-transport-curl`, system libcurl), and clippy bans every network entry
-   point — `remote_at`, `find_remote`, `connect`, `handshake` — outside the guard's
-   `actions/remote` module. That feature also compiles gix's credential-helper and prompt
-   machinery into the binary; it is unreachable, because every connection installs a
-   credential callback that answers from caller-supplied credentials and never consults
-   the helper cascade, and `Command::new` stays banned workspace-wide. The `index` and
-   `excludes` features are on so the working-tree view can honor ignore rules; both read.
+   features. `rc-git-guard` alone enables the transports — HTTPS
+   (`blocking-http-transport-curl`, system libcurl) and SSH (russh, in-process; no `ssh`
+   child) — and clippy bans every network entry point — `remote_at`, `find_remote`,
+   `connect`, `handshake` — outside the guard's `actions/remote` module. The curl
+   feature also compiles gix's credential-helper and prompt machinery into the binary;
+   it is unreachable, because every connection installs a credential callback that
+   answers from caller-supplied credentials and never consults the helper cascade, and
+   `Command::new` stays banned workspace-wide. The ssh side reads `~/.ssh` (config,
+   `known_hosts`, keys) and writes none of it; host-key approvals live in the app's own
+   defaults. The `index` and `excludes` features are on so the working-tree view can
+   honor ignore rules; both read.
 4. **Unsafe.** `unsafe_code` is forbidden in every crate except `rc-git-ffi`, where each block
    carries a documented contract and clippy denies undocumented ones.
 
@@ -42,9 +45,11 @@ Opening a repository someone else produced must be harmless.
   `unimplemented` outside tests; release builds abort on panic rather than unwind across the
   C boundary.
 - Network I/O exists only behind `rc-git-guard`'s fetch, pull, push, and sync actions,
-  speaks HTTPS only (plain `http://` is accepted for loopback hosts, so tests can run a
-  local server end to end), and sends credentials only when the caller passed them.
-  Nothing else rc-git does can leave the machine.
+  speaks HTTPS and SSH only (plain `http://` is accepted for loopback hosts, so tests
+  can run a local server end to end), and sends credentials only when the caller passed
+  them. SSH host keys are verified against a read-only `known_hosts`: an unknown key is
+  refused until the user approves its fingerprint, and a contradicting key is always
+  fatal. Nothing else rc-git does can leave the machine.
 
 ## Guarding mutations
 

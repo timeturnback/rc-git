@@ -69,19 +69,28 @@ constraints are clear.
   and at quit — and a relaunch reopens them, silently skipping repositories that no longer
   open.
 
-- **Fetch, pull, push, sync.** HTTPS only, pure gix, no process ever spawned: the one
-  transport that needs no `ssh` or `git-upload-pack` child. gix fetches; push is a
-  hand-rolled send-pack (gix has none) — handshake via `gix-protocol`, a client-side
-  fast-forward check, a self-contained pack from `gix-pack`, `report-status` parsed by
-  hand. Pull is fast-forward only and refuses dirty overlap; divergence reports
-  ahead/behind and points at git. All four go through `rc-git-guard`
-  (`actions/remote/`), are exposed over the FFI with typed auth/diverged status codes,
-  and reach the app as a Repository menu plus a toolbar Sync button driven by
-  `SyncModel` (RcGitKit). Credentials are per-host PATs in the login keychain, prompted
-  on 401 and stored only once the server accepts them. SSH and `file://` remotes are
-  refused with a message naming the scheme. The CLI gained `fetch`, `pull`, `push`,
-  `sync` (token via `RC_GIT_TOKEN`, auth failures exit 5); tests run against a real
-  `git http-backend` behind the test kit's loopback HTTP server.
+- **Fetch, pull, push, sync.** HTTPS and SSH, both in-process, no child ever spawned:
+  HTTPS through gix's curl backend, SSH through russh running `git-upload-pack` /
+  `git-receive-pack` on the server with the channel bridged to gix's blocking
+  git-protocol `Connection`. gix fetches; push is a hand-rolled send-pack (gix has
+  none) — handshake via `gix-protocol`, a client-side fast-forward check, a
+  self-contained pack from `gix-pack`, `report-status` parsed by hand. Pull is
+  fast-forward only and refuses dirty overlap; divergence reports ahead/behind and
+  points at git. All four go through `rc-git-guard` (`actions/remote/`, ssh in
+  `actions/remote/ssh/`), are exposed over the FFI with typed
+  auth/diverged/host-key status codes, and reach the app as a Repository menu plus a
+  toolbar Sync button driven by `SyncModel` (RcGitKit). HTTPS credentials are per-host
+  PATs in the login keychain, prompted on 401 and stored only once the server accepts
+  them. SSH authenticates via the ssh-agent, then `IdentityFile` and default keys; an
+  encrypted key prompts for its passphrase (stored per host under the ssh keychain
+  protocol). `known_hosts` is read, never written: an unknown host shows its
+  fingerprint for trust-on-first-use (approvals persist app-side), a contradicting key
+  is fatal with no in-app override. `git://` and `file://` remotes are refused with a
+  message naming the scheme. The CLI's `fetch`, `pull`, `push`, `sync` take
+  `--accept-hostkey` and `--ssh-dir` (token via `RC_GIT_TOKEN`, passphrase via
+  `RC_GIT_KEY_PASSPHRASE`; auth failures exit 5, unverified host keys exit 6); tests
+  run against a real `git http-backend` and a russh loopback SSH server in the test
+  kit.
 
 ## Planned
 

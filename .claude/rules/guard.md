@@ -30,9 +30,13 @@ performs one. Branch and tag management go through here; so does everything that
 - Every rule change updates the table in `docs/safety.md`, the tests in `lib.rs`, and the
   tests in `tests/actions.rs` together.
 - Remote I/O lives in `actions/remote/` only; the network entry points (`find_remote`,
-  `Remote::connect`, `handshake`, …) are clippy-banned everywhere else. HTTPS only —
-  `require_https` allows plain http for loopback hosts so tests run end to end. Always
-  install the credential closure; never let gix's helper cascade run (it spawns).
+  `Remote::connect`, `handshake`, …) are clippy-banned everywhere else. HTTPS and SSH —
+  `vet_remote_url` routes the scheme, allowing plain http for loopback hosts so tests
+  run end to end. The ssh transport (`actions/remote/ssh/`) is in-process russh:
+  `known_hosts` is never written (approvals arrive as `RemoteAuth::accepted_hostkey`),
+  channel streams must drop inside the transport's runtime, and the passphrase rides
+  `Credentials::token`. On the HTTPS side always install the credential closure; never
+  let gix's helper cascade run (it spawns).
   `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).
