@@ -42,13 +42,17 @@ usage: rc-git [--time] <command> <repo> [args]
   stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
   discard     <repo> --confirm discard <path>...  restore files to HEAD, delete untracked
 
-  fetch <repo> [--username U] [--token T]  update remote-tracking refs from the upstream remote
-  pull  <repo> [--username U] [--token T]  fetch, then fast-forward the current branch
-  push  <repo> [--username U] [--token T]  upload the current branch to its upstream
-  sync  <repo> [--username U] [--token T]  fetch, fast-forward, then push
-  The token may also come from RC_GIT_TOKEN, which keeps it out of process lists.
+  fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
+  pull  <repo> [remote options]           fetch, then fast-forward the current branch
+  push  <repo> [remote options]           upload the current branch to its upstream
+  sync  <repo> [remote options]           fetch, fast-forward, then push
+  Remote options: --username U, --token T (HTTPS; the token may also come from
+  RC_GIT_TOKEN, which keeps it out of process lists), --accept-hostkey SHA256:...
+  (trust this ssh host-key fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh,
+  an encrypted key's passphrase comes from RC_GIT_KEY_PASSPHRASE.
 
-exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit, 5 authentication required
+exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
+  5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey)
 ";
 
 const EXIT_ERROR: u8 = 1;
@@ -56,6 +60,7 @@ const EXIT_USAGE: u8 = 2;
 const EXIT_BINARY: u8 = 3;
 const EXIT_TOO_LARGE: u8 = 4;
 const EXIT_AUTH: u8 = 5;
+const EXIT_HOSTKEY: u8 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verb {
@@ -166,11 +171,15 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             let _ = writeln!(io::stderr().lock(), "error: {err:#}");
-            if matches!(
-                err.downcast_ref::<rc_git_guard::actions::ActionError>(),
-                Some(rc_git_guard::actions::ActionError::AuthRequired { .. })
-            ) {
-                return ExitCode::from(EXIT_AUTH);
+            match err.downcast_ref::<rc_git_guard::actions::ActionError>() {
+                Some(
+                    rc_git_guard::actions::ActionError::AuthRequired { .. }
+                    | rc_git_guard::actions::ActionError::PassphraseRequired { .. },
+                ) => return ExitCode::from(EXIT_AUTH),
+                Some(rc_git_guard::actions::ActionError::UnknownHostKey { .. }) => {
+                    return ExitCode::from(EXIT_HOSTKEY);
+                }
+                Some(_) | None => {}
             }
             ExitCode::from(EXIT_ERROR)
         }
@@ -855,10 +864,31 @@ fn resolve(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
-/// `--username U` / `--token T` from `args`, the token falling back to `RC_GIT_TOKEN`.
-fn parse_credentials(args: &[String]) -> Result<Option<rc_git_guard::actions::Credentials>> {
+/// Everything a remote verb's arguments and environment provide.
+struct RemoteArgs {
+    creds: Option<rc_git_guard::actions::Credentials>,
+    accepted_hostkey: Option<String>,
+    ssh_dir: Option<std::path::PathBuf>,
+}
+
+impl RemoteArgs {
+    fn auth(&self) -> rc_git_guard::actions::RemoteAuth<'_> {
+        rc_git_guard::actions::RemoteAuth {
+            creds: self.creds.as_ref(),
+            accepted_hostkey: self.accepted_hostkey.as_deref(),
+            ssh_dir: self.ssh_dir.as_deref(),
+        }
+    }
+}
+
+/// `--username U` / `--token T` (the token falling back to `RC_GIT_TOKEN`),
+/// `--accept-hostkey F`, and `--ssh-dir D`. With no token, `RC_GIT_KEY_PASSPHRASE`
+/// supplies an ssh key passphrase.
+fn parse_remote_args(args: &[String]) -> Result<RemoteArgs> {
     let mut username = None;
     let mut token = None;
+    let mut accepted_hostkey = None;
+    let mut ssh_dir = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -867,6 +897,18 @@ fn parse_credentials(args: &[String]) -> Result<Option<rc_git_guard::actions::Cr
             }
             "--token" => {
                 token = Some(iter.next().context("--token needs a value")?.to_owned());
+            }
+            "--accept-hostkey" => {
+                accepted_hostkey = Some(
+                    iter.next()
+                        .context("--accept-hostkey needs a value")?
+                        .to_owned(),
+                );
+            }
+            "--ssh-dir" => {
+                ssh_dir = Some(std::path::PathBuf::from(
+                    iter.next().context("--ssh-dir needs a value")?,
+                ));
             }
             other => bail!("unknown argument '{other}'\n\n{USAGE}"),
         }
@@ -877,14 +919,25 @@ fn parse_credentials(args: &[String]) -> Result<Option<rc_git_guard::actions::Cr
     {
         token = Some(env_token);
     }
-    match (username, token) {
+    let creds = match (username, token) {
         (Some(username), Some(token)) => {
-            Ok(Some(rc_git_guard::actions::Credentials { username, token }))
+            Some(rc_git_guard::actions::Credentials { username, token })
         }
-        (None, None) => Ok(None),
+        (None, None) => match std::env::var("RC_GIT_KEY_PASSPHRASE") {
+            Ok(passphrase) if !passphrase.is_empty() => Some(rc_git_guard::actions::Credentials {
+                username: String::new(),
+                token: passphrase,
+            }),
+            Ok(_) | Err(_) => None,
+        },
         (Some(_), None) => bail!("--username was given without --token (or RC_GIT_TOKEN)"),
         (None, Some(_)) => bail!("a token was given without --username"),
-    }
+    };
+    Ok(RemoteArgs {
+        creds,
+        accepted_hostkey,
+        ssh_dir,
+    })
 }
 
 fn write_fetch(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::FetchOutcome) -> Result<()> {
@@ -924,14 +977,11 @@ fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -
 }
 
 fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let creds = parse_credentials(args)?;
+    let remote = parse_remote_args(args)?;
     let outcome = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
-        rc_git_guard::actions::RemoteAuth {
-            creds: creds.as_ref(),
-            ..rc_git_guard::actions::RemoteAuth::default()
-        },
+        remote.auth(),
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &outcome)?;
@@ -939,15 +989,12 @@ fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -
 }
 
 fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let creds = parse_credentials(args)?;
+    let remote = parse_remote_args(args)?;
     let policy = rc_git_guard::Policy::default();
     let fetch = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &policy,
-        rc_git_guard::actions::RemoteAuth {
-            creds: creds.as_ref(),
-            ..rc_git_guard::actions::RemoteAuth::default()
-        },
+        remote.auth(),
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &fetch)?;
@@ -957,14 +1004,11 @@ fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
 }
 
 fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let creds = parse_credentials(args)?;
+    let remote = parse_remote_args(args)?;
     let outcome = rc_git_guard::actions::push_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
-        rc_git_guard::actions::RemoteAuth {
-            creds: creds.as_ref(),
-            ..rc_git_guard::actions::RemoteAuth::default()
-        },
+        remote.auth(),
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_push(out, &outcome)?;
@@ -972,14 +1016,11 @@ fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
 }
 
 fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let creds = parse_credentials(args)?;
+    let remote = parse_remote_args(args)?;
     let outcome = rc_git_guard::actions::sync(
         repo_path,
         &rc_git_guard::Policy::default(),
-        rc_git_guard::actions::RemoteAuth {
-            creds: creds.as_ref(),
-            ..rc_git_guard::actions::RemoteAuth::default()
-        },
+        remote.auth(),
         &std::sync::atomic::AtomicBool::new(false),
     )?;
     write_fetch(out, &outcome.fetch)?;

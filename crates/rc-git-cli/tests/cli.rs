@@ -620,3 +620,43 @@ fn pull_reports_divergence_as_an_error() {
         stderr(&out)
     );
 }
+
+#[test]
+fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
+    let origin = Fixture::standard();
+    let bare = Fixture::empty_dir();
+    let bare_path = bare.path().join("remote.git");
+    origin.git(&[
+        "clone",
+        "--bare",
+        "--quiet",
+        ".",
+        bare_path.to_str().unwrap(),
+    ]);
+    let server = rc_git_testkit::SshGitServer::serve(&bare_path);
+    let clone = Fixture::empty_dir();
+    clone.git(&["clone", "--quiet", bare_path.to_str().unwrap(), "."]);
+    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let ssh_home = Fixture::empty_dir();
+    server.write_client_key(ssh_home.path());
+    let path = clone.path().to_str().unwrap();
+    let ssh_dir = ssh_home.path().to_str().unwrap();
+
+    let out = rc_git(&["fetch", path, "--ssh-dir", ssh_dir]);
+    assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&server.host_fingerprint()),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = rc_git(&[
+        "fetch",
+        path,
+        "--ssh-dir",
+        ssh_dir,
+        "--accept-hostkey",
+        &server.host_fingerprint(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
