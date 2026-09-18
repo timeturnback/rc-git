@@ -26,6 +26,9 @@ let package = Package(
                 .linkedLibrary("rc_git_ffi"),
                 // The Rust side's HTTPS transport uses the system libcurl.
                 .linkedLibrary("curl"),
+                // The ssh transport's OpenSSH-config parsing resolves the local user
+                // through SystemConfiguration.
+                .linkedFramework("SystemConfiguration"),
             ]
         ),
 

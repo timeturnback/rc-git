@@ -3,9 +3,11 @@ import Foundation
 /// The seam between the sync workflow and the FFI, so tests never open a socket.
 public protocol SyncPerforming: Sendable {
     func preflight(repoPath: String) throws -> RemoteStatus
-    func fetch(repoPath: String, credentials: Credentials?) throws -> FetchOutcome
+    func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
+        -> FetchOutcome
     func pullFastForward(repoPath: String) throws -> PullOutcome
-    func push(repoPath: String, credentials: Credentials?) throws -> PushOutcome
+    func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
+        -> PushOutcome
 }
 
 /// Production performer: forwards to `RepositoryGuard`.
@@ -16,16 +18,22 @@ public struct GuardSyncPerformer: SyncPerforming {
         try RepositoryGuard.remotePreflight(repoPath: repoPath)
     }
 
-    public func fetch(repoPath: String, credentials: Credentials?) throws -> FetchOutcome {
-        try RepositoryGuard.fetch(repoPath: repoPath, credentials: credentials)
+    public func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?)
+        throws -> FetchOutcome
+    {
+        try RepositoryGuard.fetch(
+            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
     }
 
     public func pullFastForward(repoPath: String) throws -> PullOutcome {
         try RepositoryGuard.pullFastForward(repoPath: repoPath)
     }
 
-    public func push(repoPath: String, credentials: Credentials?) throws -> PushOutcome {
-        try RepositoryGuard.push(repoPath: repoPath, credentials: credentials)
+    public func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?)
+        throws -> PushOutcome
+    {
+        try RepositoryGuard.push(
+            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
     }
 }
 
@@ -71,19 +79,31 @@ public final class SyncModel {
     }
 
     public var onStateChanged: (() -> Void)?
-    /// Fires on the main actor when a network step needs credentials for `host`.
-    /// Resume with `nil` to cancel the flow; the model retries otherwise.
-    public var onCredentialsNeeded: ((String, @escaping (Credentials?) -> Void) -> Void)?
+    /// Fires on the main actor when a network step needs credentials for `host`. The
+    /// kind says what to ask for: an HTTPS token, or an ssh key passphrase. Resume with
+    /// `nil` to cancel the flow; the model retries otherwise.
+    public var onCredentialsNeeded:
+        ((String, CredentialKind, @escaping (Credentials?) -> Void) -> Void)?
+    /// Fires on the main actor when an ssh host is unknown: host and
+    /// `"<key type> <fingerprint>"`. Resume with `true` to trust and retry.
+    public var onHostKeyNeeded: ((String, String, @escaping (Bool) -> Void) -> Void)?
 
     private let repoPath: String
     private let performer: SyncPerforming
     private let store: CredentialStoring
+    private let hostKeys: HostKeyStoring
     private var generation = 0
 
-    public init(repoPath: String, performer: SyncPerforming, store: CredentialStoring) {
+    public init(
+        repoPath: String,
+        performer: SyncPerforming,
+        store: CredentialStoring,
+        hostKeys: HostKeyStoring = UserDefaultsHostKeyStore()
+    ) {
         self.repoPath = repoPath
         self.performer = performer
         self.store = store
+        self.hostKeys = hostKeys
     }
 
     /// Re-reads the upstream status. Cheap and local; a no-op while a workflow runs.
@@ -200,8 +220,9 @@ public final class SyncModel {
     }
 
     private func runFetch() async throws -> FetchOutcome {
-        try await networkStep(.fetch) { performer, repoPath, credentials in
-            try performer.fetch(repoPath: repoPath, credentials: credentials)
+        try await networkStep(.fetch) { performer, repoPath, credentials, acceptedHostKey in
+            try performer.fetch(
+                repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
         }
     }
 
@@ -232,29 +253,41 @@ public final class SyncModel {
     }
 
     private func runPush() async throws -> PushOutcome {
-        try await networkStep(.push) { performer, repoPath, credentials in
-            try performer.push(repoPath: repoPath, credentials: credentials)
+        try await networkStep(.push) { performer, repoPath, credentials, acceptedHostKey in
+            try performer.push(
+                repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
         }
     }
 
     /// Runs one network step with the credential loop: stored credentials (or none)
-    /// first, then prompt-and-retry on `authRequired`, storing only what worked.
+    /// first, then prompt-and-retry on `authRequired`, storing only what worked. An
+    /// unknown ssh host key gets one trust prompt, separate from the credential
+    /// attempts; the accepted fingerprint persists in `hostKeys`.
     private func networkStep<Outcome: Sendable>(
         _ step: SyncStep,
-        _ operation: @escaping @Sendable (SyncPerforming, String, Credentials?) throws -> Outcome
+        _ operation:
+            @escaping @Sendable (SyncPerforming, String, Credentials?, String?) throws
+            -> Outcome
     ) async throws -> Outcome {
         enter(step)
         let host = remoteStatus?.host ?? ""
-        var credentials = (try? store.credentials(host: host)) ?? nil
+        let kind: CredentialKind =
+            (remoteStatus?.usesSsh ?? false) ? .sshPassphrase : .httpsToken
+        var credentials = (try? store.credentials(host: host, kind: kind)) ?? nil
+        var acceptedHostKey = hostKeys.fingerprint(host: host)
         var fromPrompt = false
-        for attempt in 0..<Self.promptLimit {
+        var hostKeyPrompted = false
+        var authAttempts = 0
+        while true {
             let performer = performer
             let repoPath = repoPath
             let attemptCredentials = credentials
+            let attemptHostKey = acceptedHostKey
             let result = await Task.detached(priority: .userInitiated) {
                 () -> Result<Outcome, SyncError> in
                 do {
-                    return .success(try operation(performer, repoPath, attemptCredentials))
+                    return .success(
+                        try operation(performer, repoPath, attemptCredentials, attemptHostKey))
                 } catch let error as SyncError {
                     return .failure(error)
                 } catch {
@@ -264,22 +297,36 @@ public final class SyncModel {
             switch result {
             case let .success(outcome):
                 if fromPrompt, let credentials {
-                    try? store.store(credentials, host: host)
+                    try? store.store(credentials, host: host, kind: kind)
                 }
                 return outcome
+            case let .failure(.hostKeyUnknown(message, hostKey)):
+                guard !hostKeyPrompted else {
+                    throw StepFailure(step: step, message: message, diverged: false)
+                }
+                hostKeyPrompted = true
+                guard await promptForHostKey(host: host, hostKey: hostKey) else {
+                    throw StepFailure(
+                        step: step, message: "host not trusted", diverged: false)
+                }
+                let fingerprint = String(
+                    hostKey.split(separator: " ").last ?? Substring(hostKey))
+                hostKeys.store(fingerprint: fingerprint, host: host)
+                acceptedHostKey = fingerprint
             case let .failure(error):
                 guard case .authRequired = error else {
                     throw StepFailure(
                         step: step, message: error.message, diverged: isDiverged(error))
                 }
-                guard attempt + 1 < Self.promptLimit else {
+                authAttempts += 1
+                guard authAttempts < Self.promptLimit else {
                     throw StepFailure(
                         step: step,
                         message: "'\(host)' kept rejecting the credentials",
                         diverged: false
                     )
                 }
-                guard let prompted = await promptForCredentials(host: host) else {
+                guard let prompted = await promptForCredentials(host: host, kind: kind) else {
                     throw StepFailure(
                         step: step, message: "authentication canceled", diverged: false)
                 }
@@ -287,18 +334,22 @@ public final class SyncModel {
                 fromPrompt = true
             }
         }
-        throw StepFailure(
-            step: step,
-            message: "'\(host)' kept rejecting the credentials",
-            diverged: false
-        )
     }
 
-    private func promptForCredentials(host: String) async -> Credentials? {
+    private func promptForCredentials(host: String, kind: CredentialKind) async -> Credentials? {
         guard let onCredentialsNeeded else { return nil }
         return await withCheckedContinuation { continuation in
-            onCredentialsNeeded(host) { credentials in
+            onCredentialsNeeded(host, kind) { credentials in
                 continuation.resume(returning: credentials)
+            }
+        }
+    }
+
+    private func promptForHostKey(host: String, hostKey: String) async -> Bool {
+        guard let onHostKeyNeeded else { return false }
+        return await withCheckedContinuation { continuation in
+            onHostKeyNeeded(host, hostKey) { trusted in
+                continuation.resume(returning: trusted)
             }
         }
     }

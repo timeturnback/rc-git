@@ -15,6 +15,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private let lock = NSLock()
     private var script: Script
     private(set) var fetchCredentials: [Credentials?] = []
+    private(set) var fetchHostKeys: [String?] = []
     private(set) var pushCredentials: [Credentials?] = []
     private(set) var pullCalls = 0
     private(set) var pushCalls = 0
@@ -49,10 +50,13 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return status
     }
 
-    func fetch(repoPath: String, credentials: Credentials?) throws -> FetchOutcome {
+    func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
+        -> FetchOutcome
+    {
         lock.lock()
         defer { lock.unlock() }
         fetchCredentials.append(credentials)
+        fetchHostKeys.append(acceptedHostKey)
         guard !script.fetches.isEmpty else {
             throw SyncError.failure(message: "unexpected fetch")
         }
@@ -69,7 +73,9 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return try script.pulls.removeFirst().get()
     }
 
-    func push(repoPath: String, credentials: Credentials?) throws -> PushOutcome {
+    func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
+        -> PushOutcome
+    {
         lock.lock()
         defer { lock.unlock() }
         pushCredentials.append(credentials)
@@ -89,25 +95,57 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
         self.items = items
     }
 
-    func credentials(host: String) throws -> Credentials? {
+    private func key(_ host: String, _ kind: CredentialKind) -> String {
+        kind == .httpsToken ? host : "\(host)#ssh"
+    }
+
+    func credentials(host: String, kind: CredentialKind) throws -> Credentials? {
+        lock.lock()
+        defer { lock.unlock() }
+        return items[key(host, kind)]
+    }
+
+    func store(_ credentials: Credentials, host: String, kind: CredentialKind) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        items[key(host, kind)] = credentials
+    }
+
+    func delete(host: String, kind: CredentialKind) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        items[key(host, kind)] = nil
+    }
+
+    var stored: [String: Credentials] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+}
+
+/// In-memory host-key approvals for tests.
+private final class InMemoryHostKeyStore: HostKeyStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String: String] = [:]
+
+    init(_ items: [String: String] = [:]) {
+        self.items = items
+    }
+
+    func fingerprint(host: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
         return items[host]
     }
 
-    func store(_ credentials: Credentials, host: String) throws {
+    func store(fingerprint: String, host: String) {
         lock.lock()
         defer { lock.unlock() }
-        items[host] = credentials
+        items[host] = fingerprint
     }
 
-    func delete(host: String) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        items[host] = nil
-    }
-
-    var stored: [String: Credentials] {
+    var stored: [String: String] {
         lock.lock()
         defer { lock.unlock() }
         return items
@@ -123,10 +161,12 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
 @Suite struct SyncModelTests {
     private func model(
         _ script: StubSyncPerformer.Script,
-        store: InMemoryCredentialStore = InMemoryCredentialStore()
+        store: InMemoryCredentialStore = InMemoryCredentialStore(),
+        hostKeys: InMemoryHostKeyStore = InMemoryHostKeyStore()
     ) -> (SyncModel, StubSyncPerformer, InMemoryCredentialStore) {
         let performer = StubSyncPerformer(script: script)
-        let model = SyncModel(repoPath: "/tmp/repo", performer: performer, store: store)
+        let model = SyncModel(
+            repoPath: "/tmp/repo", performer: performer, store: store, hostKeys: hostKeys)
         return (model, performer, store)
     }
 
@@ -163,7 +203,7 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
                 ]
             ), store: store)
         var promptedHost: String?
-        model.onCredentialsNeeded = { host, resume in
+        model.onCredentialsNeeded = { host, _, resume in
             promptedHost = host
             resume(Credentials(username: "user", token: "sekret"))
         }
@@ -192,7 +232,7 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
                 ]
             ), store: store)
         var prompts = 0
-        model.onCredentialsNeeded = { _, resume in
+        model.onCredentialsNeeded = { _, _, resume in
             prompts += 1
             resume(Credentials(username: "user", token: "wrong"))
         }
@@ -214,7 +254,7 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
                 preflights: [StubSyncPerformer.upstream()],
                 fetches: [.failure(.authRequired(message: "401"))]
             ))
-        model.onCredentialsNeeded = { _, resume in resume(nil) }
+        model.onCredentialsNeeded = { _, _, resume in resume(nil) }
         await model.refreshStatus()
         await model.fetch()
 
@@ -311,5 +351,117 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
         }
         model.reset()
         #expect(model.state == .idle)
+    }
+    private static func sshUpstream(host: String = "git.example.com") -> RemoteStatus {
+        RemoteStatus(
+            remote: "origin",
+            url: "ssh://git@\(host)/repo.git",
+            host: host,
+            branch: "main",
+            ahead: 0,
+            behind: 0,
+            hasUpstream: true
+        )
+    }
+
+    @Test func unknownHostKeyPromptsOncePersistsAndRetries() async {
+        let hostKeys = InMemoryHostKeyStore()
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(
+                        .hostKeyUnknown(
+                            message: "not a known host",
+                            hostKey: "ssh-ed25519 SHA256:abc123")),
+                    .success(cleanFetch),
+                ]
+            ), hostKeys: hostKeys)
+        var promptedKey: String?
+        model.onHostKeyNeeded = { _, hostKey, resume in
+            promptedKey = hostKey
+            resume(true)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(promptedKey == "ssh-ed25519 SHA256:abc123")
+        if case .done = model.state {
+        } else {
+            Issue.record("expected done, got \(model.state)")
+        }
+        #expect(performer.fetchHostKeys == [nil, "SHA256:abc123"])
+        #expect(hostKeys.stored["git.example.com"] == "SHA256:abc123")
+    }
+
+    @Test func decliningTheHostKeyFailsTheStep() async {
+        let hostKeys = InMemoryHostKeyStore()
+        let (model, _, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(
+                        .hostKeyUnknown(
+                            message: "not a known host",
+                            hostKey: "ssh-ed25519 SHA256:abc123"))
+                ]
+            ), hostKeys: hostKeys)
+        model.onHostKeyNeeded = { _, _, resume in resume(false) }
+        await model.refreshStatus()
+        await model.fetch()
+
+        if case let .failed(_, message) = model.state {
+            #expect(message.contains("not trusted"))
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(hostKeys.stored.isEmpty, "a declined key must not be stored")
+    }
+
+    @Test func aStoredFingerprintSkipsThePrompt() async {
+        let hostKeys = InMemoryHostKeyStore(["git.example.com": "SHA256:abc123"])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [.success(cleanFetch)]
+            ), hostKeys: hostKeys)
+        var prompted = false
+        model.onHostKeyNeeded = { _, _, resume in
+            prompted = true
+            resume(true)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(!prompted, "a stored fingerprint must be passed without asking")
+        #expect(performer.fetchHostKeys == ["SHA256:abc123"])
+    }
+
+    @Test func sshPassphrasePromptRetriesAndStoresUnderTheSshKind() async {
+        let store = InMemoryCredentialStore()
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(.authRequired(message: "key is encrypted")),
+                    .success(cleanFetch),
+                ]
+            ), store: store)
+        var promptedKind: CredentialKind?
+        model.onCredentialsNeeded = { _, kind, resume in
+            promptedKind = kind
+            resume(Credentials(username: "", token: "opensesame"))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(promptedKind == .sshPassphrase)
+        if case .done = model.state {
+        } else {
+            Issue.record("expected done, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.last??.token == "opensesame")
+        #expect(store.stored["git.example.com#ssh"]?.token == "opensesame")
+        #expect(store.stored["git.example.com"] == nil)
     }
 }

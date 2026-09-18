@@ -376,6 +376,12 @@ public struct RemoteStatus: Sendable, Hashable {
     public let ahead: Int
     public let behind: Int
     public let hasUpstream: Bool
+
+    /// Whether the upstream is an ssh remote (`ssh://` or the scp-like `git@host:path`).
+    public var usesSsh: Bool {
+        if url.hasPrefix("ssh://") { return true }
+        return !url.contains("://") && url.contains("@") && url.contains(":")
+    }
 }
 
 /// A per-host username and token. Deliberately not `CustomStringConvertible`; never log it.
@@ -391,16 +397,22 @@ public struct Credentials: Sendable {
 
 /// How a remote operation failed, typed so the caller can prompt or explain.
 public enum SyncError: Error, Sendable, Hashable {
-    /// The host wants credentials it did not get, or rejected the given ones.
+    /// The host wants credentials it did not get, or rejected the given ones. Over ssh
+    /// this also covers an encrypted key that needs its passphrase.
     case authRequired(message: String)
     /// Local and remote history diverged; reconcile in git.
     case diverged(message: String)
+    /// The ssh host's key is not known; `hostKey` is `"<key type> <fingerprint>"` for
+    /// the user to verify before trusting.
+    case hostKeyUnknown(message: String, hostKey: String)
     /// Everything else, message ready to show.
     case failure(message: String)
 
     public var message: String {
         switch self {
-        case let .authRequired(message), let .diverged(message), let .failure(message): message
+        case let .authRequired(message), let .diverged(message), let .failure(message),
+            let .hostKeyUnknown(message, _):
+            message
         }
     }
 }
@@ -449,18 +461,25 @@ extension RepositoryGuard {
         )
     }
 
-    /// Fetches from the branch's upstream remote. HTTPS only; `credentials` may be `nil`
-    /// for an anonymous attempt.
-    public static func fetch(repoPath: String, credentials: Credentials?) throws(SyncError)
-        -> FetchOutcome
-    {
+    /// Fetches from the branch's upstream remote. `credentials` may be `nil` for an
+    /// anonymous attempt (over ssh, the token field carries the key passphrase);
+    /// `acceptedHostKey` is a fingerprint the user approved for an unknown host.
+    public static func fetch(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil
+    ) throws(SyncError) -> FetchOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
+        var hostkey: UnsafeMutablePointer<CChar>? = nil
         var out = RcGitFetchOutcome(updated_refs: 0, ahead: 0, behind: 0)
-        let status = withOwnedCStrings([credentials?.username, credentials?.token]) { strings in
-            rcgit_guard_fetch(repoPath, strings[0], strings[1], &out, &error)
+        let status = withOwnedCStrings([
+            credentials?.username, credentials?.token, acceptedHostKey,
+        ]) { strings in
+            var auth = RcGitRemoteAuth(
+                username: strings[0], token: strings[1], accepted_hostkey: strings[2],
+                ssh_dir: nil)
+            return rcgit_guard_fetch(repoPath, &auth, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {
-            throw syncError(status, error, fallback: "cannot fetch")
+            throw syncError(status, error, hostkey, fallback: "cannot fetch")
         }
         return FetchOutcome(
             updatedRefs: out.updated_refs, ahead: out.ahead, behind: out.behind)
@@ -484,28 +503,37 @@ extension RepositoryGuard {
     }
 
     /// Pushes the checked-out branch to its upstream. Plain push only.
-    public static func push(repoPath: String, credentials: Credentials?) throws(SyncError)
-        -> PushOutcome
-    {
+    public static func push(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil
+    ) throws(SyncError) -> PushOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
+        var hostkey: UnsafeMutablePointer<CChar>? = nil
         var out = RcGitPushOutcome(pushed_commits: 0, already_up_to_date: false)
-        let status = withOwnedCStrings([credentials?.username, credentials?.token]) { strings in
-            rcgit_guard_push(repoPath, strings[0], strings[1], &out, &error)
+        let status = withOwnedCStrings([
+            credentials?.username, credentials?.token, acceptedHostKey,
+        ]) { strings in
+            var auth = RcGitRemoteAuth(
+                username: strings[0], token: strings[1], accepted_hostkey: strings[2],
+                ssh_dir: nil)
+            return rcgit_guard_push(repoPath, &auth, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {
-            throw syncError(status, error, fallback: "cannot push")
+            throw syncError(status, error, hostkey, fallback: "cannot push")
         }
         return PushOutcome(
             pushedCommits: out.pushed_commits, alreadyUpToDate: out.already_up_to_date)
     }
 
     private static func syncError(
-        _ status: Int32, _ error: UnsafeMutablePointer<CChar>?, fallback: String
+        _ status: Int32, _ error: UnsafeMutablePointer<CChar>?,
+        _ hostkey: UnsafeMutablePointer<CChar>? = nil, fallback: String
     ) -> SyncError {
         let message = takeString(error) ?? fallback
         switch status {
         case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
         case RCGIT_DIVERGED: return .diverged(message: message)
+        case RCGIT_HOSTKEY_UNKNOWN:
+            return .hostKeyUnknown(message: message, hostKey: takeString(hostkey) ?? "")
         default: return .failure(message: message)
         }
     }
