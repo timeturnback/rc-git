@@ -50,7 +50,9 @@ pub(in crate::actions::remote) fn resolve(
         Some(dir) => dir.to_path_buf(),
         None => default_ssh_dir(op)?,
     };
-    let config = load_config(&ssh_dir, &host, op, url)?;
+    // Only `host_config` carries what the config file said: `russh_config::parse`
+    // leaves `Config::host_name` as the queried alias and `user`/`port` as `None`.
+    let config = load_config(&ssh_dir, &host, op, url)?.map(|config| config.host_config);
     let user = url
         .user()
         .map(str::to_owned)
@@ -70,9 +72,10 @@ pub(in crate::actions::remote) fn resolve(
         .unwrap_or(22);
     let host_name = config
         .as_ref()
-        .map_or_else(|| host.clone(), |config| config.host_name.clone());
+        .and_then(|config| config.hostname.clone())
+        .unwrap_or_else(|| host.clone());
     let mut identities = config
-        .and_then(|config| config.host_config.identity_file)
+        .and_then(|config| config.identity_file)
         .unwrap_or_default();
     for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
         let default = ssh_dir.join(name);
@@ -132,6 +135,11 @@ fn default_ssh_dir(op: &'static str) -> ActionResult<PathBuf> {
 
 /// Parses `<ssh_dir>/config` for `host`. `None` when the file does not exist; an
 /// unreadable or unparseable file is an error rather than a silently wrong connection.
+///
+/// Two legal OpenSSH spellings are normalized for russh-config's parser: tab
+/// separators become spaces (it splits on a single space and would silently skip the
+/// line), and global options before the first `Host` block get a `Host *` header (it
+/// rejects them outright).
 fn load_config(
     ssh_dir: &Path,
     host: &str,
@@ -142,13 +150,22 @@ fn load_config(
     if !path.exists() {
         return Ok(None);
     }
-    russh_config::parse_path(&path, host)
-        .map(Some)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: super::super::redacted(url),
-            source: format!("cannot parse '{}': {source}", path.display()).into(),
-        })
+    let parse_err = |source: &dyn std::fmt::Display| ActionError::Git {
+        op,
+        name: super::super::redacted(url),
+        source: format!("cannot parse '{}': {source}", path.display()).into(),
+    };
+    let contents = std::fs::read_to_string(&path).map_err(|source| parse_err(&source))?;
+    let contents = contents.replace('\t', " ");
+    match russh_config::parse(&contents, host) {
+        Ok(config) => Ok(Some(config)),
+        Err(russh_config::Error::HostNotFound) => {
+            russh_config::parse(&format!("Host *\n{contents}"), host)
+                .map(Some)
+                .map_err(|source| parse_err(&source))
+        }
+        Err(source) => Err(parse_err(&source)),
+    }
 }
 
 fn git_err(op: &'static str, url: &gix::Url, message: &str) -> ActionError {
@@ -156,5 +173,89 @@ fn git_err(op: &'static str, url: &gix::Url, message: &str) -> ActionError {
         op,
         name: super::super::redacted(url),
         source: message.to_owned().into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(s: &str) -> gix::Url {
+        gix::url::parse(gix::bstr::BStr::new(s)).expect("parse url")
+    }
+
+    /// The multi-account alias pattern: the alias resolves through `HostName`, and
+    /// `User`, `Port`, and `IdentityFile` come from the matching block.
+    #[test]
+    fn config_host_name_user_port_and_identity_are_honored() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host bitbucket.org-work\n\
+              \tHostName bitbucket.org\n\
+              \tUser worker\n\
+              \tPort 2222\n\
+              \tIdentityFile ./work_key\n",
+        );
+        let target = resolve(
+            &url("ssh://bitbucket.org-work/team/repo.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(target.host, "bitbucket.org-work");
+        assert_eq!(target.host_name, "bitbucket.org");
+        assert_eq!(target.user, "worker");
+        assert_eq!(target.port, 2222);
+        assert_eq!(target.identities[0], PathBuf::from("./work_key"));
+    }
+
+    /// The URL always wins over the config for user and port.
+    #[test]
+    fn url_user_and_port_beat_the_config() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("config", b"Host example.com\n  User worker\n  Port 2222\n");
+        let target = resolve(
+            &url("ssh://git@example.com:2200/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(target.host_name, "example.com");
+        assert_eq!(target.user, "git");
+        assert_eq!(target.port, 2200);
+    }
+
+    /// Global options before the first `Host` block are legal OpenSSH and must not
+    /// fail the parse (russh-config rejects them without the retry).
+    #[test]
+    fn global_options_before_the_first_host_block_parse() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"AddKeysToAgent yes\n\nHost example.com\n  HostName real.example.com\n",
+        );
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(target.host_name, "real.example.com");
+    }
+
+    /// No config file: URL host is dialed as written, defaults fill the rest.
+    #[test]
+    fn no_config_uses_the_url_verbatim() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(target.host_name, "example.com");
+        assert_eq!(target.port, 22);
+        assert_eq!(target.identities.len(), 3);
     }
 }

@@ -36,7 +36,9 @@ pub(super) type ReportSlot = Arc<Mutex<Option<HostKeyReport>>>;
 
 /// The russh client handler: host-key policy only, everything else default.
 pub(super) struct HostKeyHandler {
-    host: String,
+    /// The name actually dialed (ssh-config `HostName`) — the `known_hosts` lookup key,
+    /// exactly as OpenSSH records entries. An alias URL still finds the real host's key.
+    host_name: String,
     port: u16,
     known_hosts: PathBuf,
     accepted: Option<String>,
@@ -46,7 +48,7 @@ pub(super) struct HostKeyHandler {
 impl HostKeyHandler {
     pub(super) fn new(target: &SshTarget, accepted: Option<&str>, report: ReportSlot) -> Self {
         Self {
-            host: target.host.clone(),
+            host_name: target.host_name.clone(),
             port: target.port,
             known_hosts: target.known_hosts(),
             accepted: accepted.map(str::to_owned),
@@ -85,7 +87,12 @@ impl HostKeyHandler {
         if self.accepted.as_deref() == Some(fingerprint.as_str()) {
             return Ok(true);
         }
-        match russh::keys::check_known_hosts_path(&self.host, self.port, &key, &self.known_hosts) {
+        match russh::keys::check_known_hosts_path(
+            &self.host_name,
+            self.port,
+            &key,
+            &self.known_hosts,
+        ) {
             Ok(true) => Ok(true),
             Ok(false) => {
                 self.record(HostKeyReport::Unknown {

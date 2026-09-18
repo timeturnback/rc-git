@@ -873,3 +873,42 @@ fn scp_like_urls_parse_as_the_ssh_scheme() {
     assert_eq!(url.scheme, gix::url::Scheme::Ssh);
     assert_eq!(url.host(), Some("example.com"));
 }
+
+#[test]
+fn ssh_config_alias_resolves_hostname_user_and_port() {
+    // The multi-account pattern that produced "failed to lookup address information":
+    // the URL names an alias; HostName, Port, and User come from the ssh config, and
+    // known_hosts is keyed by the dialed name, not the alias.
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    remoted.ssh_home.write(
+        "config",
+        format!(
+            "Host bitbucket.org-work\n\
+             \tHostName 127.0.0.1\n\
+             \tPort {}\n\
+             \tUser git\n",
+            remoted.server.port()
+        )
+        .as_bytes(),
+    );
+    remoted.clone.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        &format!(
+            "ssh://bitbucket.org-work{}",
+            remoted.bare.path().join("remote.git").display()
+        ),
+    ]);
+    advance_ssh_origin(&remoted);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &AtomicBool::new(false),
+    )
+    .expect("alias fetch");
+    assert_eq!(outcome.updated_refs.len(), 1);
+}
