@@ -27,6 +27,14 @@ at whatever is about to be deleted, so the previous state can be restored by han
 Backups are numbered rather than overwritten, so repeating an action never destroys an
 earlier backup.
 
+## Highlight span
+
+One colored region of a file: a half-open byte range plus a class naming what the region
+means. A file's spans are ordered by start and never overlap — nested captures flatten to
+the innermost one — because the view applies exactly one color per range. A producer that
+combines several grammar layers, as markdown does for its inline prose and fenced code,
+must re-impose this contract before the spans leave the highlighter.
+
 ## Isolated open
 
 How every repository is opened: only the repository's own configuration is read — no
