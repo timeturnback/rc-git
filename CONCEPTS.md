@@ -39,7 +39,19 @@ operation.
 ## Remote operations
 
 The guard's network actions: fetch, fast-forward pull, plain push, and their sync
-composition. They speak HTTPS only — the one git transport that needs no child
-process — and are never force: a push the remote would have to discard history to
+composition. They speak HTTPS and SSH, both in-process so no child process is ever
+spawned, and are never force: a push the remote would have to discard history to
 accept is refused before anything is sent. Credentials are per-host, supplied by the
 caller per call, and never stored by the core.
+
+## Host-key trust
+
+How an SSH server proves its identity to rc-git. The user's `known_hosts` is consulted
+read-only and never written; a host it does not know is refused until the user approves
+the offered key's fingerprint, and that approval is remembered by the app itself, per
+host.
+
+A key that contradicts `known_hosts` is refused with no way to approve it inside
+rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
+by the name actually dialed, so a config alias shares the trust of the real host behind
+it.
