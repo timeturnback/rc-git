@@ -112,8 +112,9 @@ public struct TreeEntry: Sendable, Hashable, Identifiable {
 
 /// What a blob read produced.
 public enum BlobContent: Sendable, Hashable {
-    /// Raw bytes, not validated as UTF-8, and byte offsets where lines begin.
-    case text(data: [UInt8], lineStarts: [UInt32])
+    /// Raw bytes, byte offsets where lines begin, and whether the bytes are valid UTF-8
+    /// (checked once in the core, so decoding needs no second scan).
+    case text(data: [UInt8], lineStarts: [UInt32], validUTF8: Bool)
     /// Contains a NUL byte near the start.
     case binary(size: UInt64)
     /// Larger than the requested limit; nothing was decoded.

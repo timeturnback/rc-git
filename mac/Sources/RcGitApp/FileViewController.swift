@@ -1,9 +1,17 @@
 import AppKit
 import RcGitKit
 
+/// An immutable object handed from a background build to the main actor. `NSAttributedString`
+/// is safe to construct off-main and read on-main once no one else mutates it.
+private struct BuiltText: @unchecked Sendable {
+    let value: NSAttributedString
+}
+
 /// Shows one file: a header with path and size, then read-only monospaced text with line
-/// numbers. Uses a TextKit 1 stack with non-contiguous layout so multi-megabyte files open
-/// without laying out every line first.
+/// numbers, or a rendered preview for markdown. Uses a TextKit 1 stack with non-contiguous
+/// layout so multi-megabyte files open without laying out every line first. The attributed
+/// string is built off the main actor, and syntax colors are applied as temporary attributes
+/// for the visible range only, so no pass over the whole document ever runs on the main actor.
 @MainActor
 final class FileViewController: NSViewController {
     var onLoadAnyway: ((TreeEntry, UInt64) -> Void)?
@@ -12,9 +20,15 @@ final class FileViewController: NSViewController {
 
     /// Files above this size are never offered for display, even with "Load anyway".
     static let hardLimit: UInt64 = 512 * 1024 * 1024
+    /// Markdown above this size opens in source mode; parsing a preview would not be quick.
+    static let previewLimit = 4 * 1024 * 1024
+    /// Syntax colors are applied per chunk of this many UTF-16 units as chunks scroll in.
+    static let highlightChunk = 4096
 
     private let pathLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    private let modePicker = NSSegmentedControl(
+        labels: ["Preview", "Source"], trackingMode: .selectOne, target: nil, action: nil)
     private let placeholder = NSTextField(wrappingLabelWithString: "Select a file")
     private let loadAnyway = NSButton(title: "Load anyway", target: nil, action: nil)
     private let scroll = NSScrollView()
@@ -22,7 +36,16 @@ final class FileViewController: NSViewController {
     private var textView: NSTextView!
     private var ruler: LineNumberRulerView!
     private var tooLargeEntry: (TreeEntry, UInt64)?
-    private var highlightGeneration = 0
+
+    /// Bumped on every content change; every background build checks it before applying.
+    private var contentGeneration = 0
+    private var current: (entry: TreeEntry, document: TextDocument)?
+    /// Whether the markdown pane shows the rendered preview; remembered across files.
+    private var markdownPrefersPreview = true
+    /// UTF-16 highlight ranges for the whole document, sorted and non-overlapping.
+    private var highlightRanges: [(range: NSRange, class: HighlightClass)] = []
+    /// Chunks of `Self.highlightChunk` UTF-16 units already colored.
+    private var appliedChunks = IndexSet()
 
     override func loadView() {
         pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
@@ -33,8 +56,14 @@ final class FileViewController: NSViewController {
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.alignment = .right
         detailLabel.setContentHuggingPriority(.required, for: .horizontal)
+        modePicker.segmentStyle = .roundRect
+        modePicker.controlSize = .small
+        modePicker.target = self
+        modePicker.action = #selector(modeChanged(_:))
+        modePicker.isHidden = true
+        modePicker.setContentHuggingPriority(.required, for: .horizontal)
 
-        let header = NSStackView(views: [pathLabel, detailLabel])
+        let header = NSStackView(views: [pathLabel, detailLabel, modePicker])
         header.orientation = .horizontal
         header.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         header.setHuggingPriority(.required, for: .vertical)
@@ -74,6 +103,9 @@ final class FileViewController: NSViewController {
         scroll.verticalRulerView = ruler
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(visibleRegionChanged(_:)),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
 
         placeholder.alignment = .center
         placeholder.textColor = .secondaryLabelColor
@@ -110,13 +142,19 @@ final class FileViewController: NSViewController {
         render(.empty)
     }
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    // Computed and nonisolated: the source build runs off the main actor, and NSFont itself
+    // caches instances.
+    private nonisolated static var font: NSFont {
+        NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    }
 
     func render(_ state: FileState) {
         tooLargeEntry = nil
         loadAnyway.isHidden = true
         switch state {
         case .empty:
+            current = nil
+            modePicker.isHidden = true
             showPlaceholder("Select a file")
             pathLabel.stringValue = ""
             detailLabel.stringValue = ""
@@ -129,13 +167,17 @@ final class FileViewController: NSViewController {
                 "\(document.lineCount) lines · \(ByteFormat.string(UInt64(document.byteCount)))"
             if document.isLossy { details += " · not valid UTF-8" }
             detailLabel.stringValue = details
-            showText(document.text)
-            applyHighlightsLater(entry: entry, document: document)
+            current = (entry, document)
+            presentContent()
         case let .binary(entry, size):
+            current = nil
+            modePicker.isHidden = true
             pathLabel.stringValue = entry.name
             detailLabel.stringValue = ByteFormat.string(size)
             showPlaceholder("\(entry.name) is a binary file (\(ByteFormat.string(size))).")
         case let .tooLarge(entry, size, limit):
+            current = nil
+            modePicker.isHidden = true
             pathLabel.stringValue = entry.name
             detailLabel.stringValue = ByteFormat.string(size)
             showPlaceholder(
@@ -146,6 +188,8 @@ final class FileViewController: NSViewController {
                 loadAnyway.isHidden = false
             }
         case let .failed(entry, message):
+            current = nil
+            modePicker.isHidden = true
             pathLabel.stringValue = entry.name
             detailLabel.stringValue = ""
             showPlaceholder(message)
@@ -157,11 +201,110 @@ final class FileViewController: NSViewController {
         onLoadAnyway?(entry, size)
     }
 
-    /// Fetches spans in the background and colors the text if it is still on screen. The
-    /// plain paint above never waits on the parse.
-    private func applyHighlightsLater(entry: TreeEntry, document: TextDocument) {
-        highlightGeneration += 1
-        let generation = highlightGeneration
+    @objc private func modeChanged(_ sender: Any?) {
+        markdownPrefersPreview = modePicker.selectedSegment == 0
+        presentContent()
+    }
+
+    // MARK: Content
+
+    private static func isMarkdown(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return lowered.hasSuffix(".md") || lowered.hasSuffix(".markdown")
+    }
+
+    /// Shows the current document in the chosen mode. The attributed string is built off the
+    /// main actor; a stale build is dropped by generation.
+    private func presentContent() {
+        guard let (entry, document) = current else { return }
+        contentGeneration += 1
+        let generation = contentGeneration
+        clearHighlights()
+        let previewable =
+            Self.isMarkdown(entry.name) && document.byteCount <= Self.previewLimit
+        modePicker.isHidden = !previewable
+        let preview = previewable && markdownPrefersPreview
+        modePicker.selectedSegment = preview ? 0 : 1
+        let text = document.text
+        Task { [weak self] in
+            let built = await Task.detached(priority: .userInitiated) { () -> BuiltText in
+                if preview {
+                    return BuiltText(value: MarkdownRenderer.render(text))
+                }
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: FileViewController.font,
+                    .foregroundColor: NSColor.textColor,
+                ]
+                return BuiltText(
+                    value: NSAttributedString(string: text, attributes: attributes))
+            }.value
+            guard let self, generation == self.contentGeneration else { return }
+            self.show(built.value, asPreview: preview, lineStarts: document.utf16LineStarts)
+            if !preview {
+                self.fetchHighlights(entry: entry, document: document, generation: generation)
+            }
+        }
+    }
+
+    private func show(_ text: NSAttributedString, asPreview: Bool, lineStarts: [Int]) {
+        placeholder.isHidden = true
+        scroll.isHidden = false
+        if asPreview {
+            configureForPreview()
+        } else {
+            configureForSource()
+        }
+        textStorage.setAttributedString(text)
+        ruler.setLineStarts(asPreview ? [] : lineStarts)
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.scroll(.zero)
+    }
+
+    /// Source mode: no wrapping, one fragment per line, the ruler visible.
+    private func configureForSource() {
+        scroll.rulersVisible = true
+        scroll.hasHorizontalScroller = true
+        textView.isHorizontallyResizable = true
+        textView.autoresizingMask = []
+        if let container = textView.textContainer {
+            container.widthTracksTextView = false
+            container.size = NSSize(
+                width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        }
+    }
+
+    /// Preview mode: wrapped prose, no ruler. The ruler assumes one fragment per line, which
+    /// wrapping breaks, so it is hidden here.
+    private func configureForPreview() {
+        scroll.rulersVisible = false
+        scroll.hasHorizontalScroller = false
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        if let container = textView.textContainer {
+            container.widthTracksTextView = true
+            container.size = NSSize(
+                width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        }
+        textView.setFrameSize(
+            NSSize(width: scroll.contentSize.width, height: textView.frame.height))
+    }
+
+    private func showPlaceholder(_ message: String) {
+        contentGeneration += 1
+        clearHighlights()
+        placeholder.stringValue = message
+        placeholder.isHidden = false
+        scroll.isHidden = true
+        textStorage.setAttributedString(NSAttributedString(string: ""))
+        ruler.setLineStarts([])
+    }
+
+    // MARK: Highlighting
+
+    /// Fetches spans in the background, maps them to UTF-16 off the main actor, and colors
+    /// only what is visible; scrolling colors the rest chunk by chunk. The plain paint never
+    /// waits on the parse.
+    private func fetchHighlights(entry: TreeEntry, document: TextDocument, generation: Int) {
         guard let highlightProvider else { return }
         Task { [weak self] in
             guard let spans = await highlightProvider(entry, document), !spans.isEmpty else {
@@ -171,15 +314,75 @@ final class FileViewController: NSViewController {
             let ranges = await Task.detached(priority: .utility) {
                 HighlightMapper.utf16Ranges(for: spans, in: text)
             }.value
-            guard let self, generation == self.highlightGeneration else { return }
-            let storage = self.textStorage
-            guard storage.length > 0 else { return }
-            storage.beginEditing()
-            for (range, highlightClass) in ranges where NSMaxRange(range) <= storage.length {
-                storage.addAttribute(
-                    .foregroundColor, value: Self.color(for: highlightClass), range: range)
+            guard let self, generation == self.contentGeneration else { return }
+            self.highlightRanges = ranges
+            self.appliedChunks.removeAll()
+            self.applyVisibleHighlights()
+        }
+    }
+
+    private func clearHighlights() {
+        highlightRanges = []
+        appliedChunks.removeAll()
+        if let layoutManager = textView?.layoutManager, textStorage.length > 0 {
+            layoutManager.removeTemporaryAttribute(
+                .foregroundColor,
+                forCharacterRange: NSRange(location: 0, length: textStorage.length)
+            )
+        }
+    }
+
+    @objc private func visibleRegionChanged(_ notification: Notification) {
+        applyVisibleHighlights()
+    }
+
+    /// Colors the chunks covering the visible range plus one screen of margin. Temporary
+    /// attributes change no layout, so applying them costs only the visible spans.
+    private func applyVisibleHighlights() {
+        guard !highlightRanges.isEmpty, let layoutManager = textView.layoutManager,
+            let container = textView.textContainer, textStorage.length > 0
+        else { return }
+        let visible = textView.visibleRect
+        let expanded = visible.insetBy(dx: 0, dy: -visible.height).intersection(textView.bounds)
+        guard !expanded.isEmpty else { return }
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: expanded, in: container)
+        let charRange = layoutManager.characterRange(
+            forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard charRange.length > 0 else { return }
+        let firstChunk = charRange.location / Self.highlightChunk
+        let lastChunk = (NSMaxRange(charRange) - 1) / Self.highlightChunk
+        for chunk in firstChunk...lastChunk where !appliedChunks.contains(chunk) {
+            appliedChunks.insert(chunk)
+            applyChunk(chunk, layoutManager: layoutManager)
+        }
+    }
+
+    /// Applies every stored range touching one chunk. Ranges are sorted and non-overlapping,
+    /// so a binary search finds the first candidate and a linear walk covers the rest.
+    private func applyChunk(_ chunk: Int, layoutManager: NSLayoutManager) {
+        let chunkStart = chunk * Self.highlightChunk
+        let chunkEnd = min(chunkStart + Self.highlightChunk, textStorage.length)
+        guard chunkStart < chunkEnd else { return }
+        var low = 0
+        var high = highlightRanges.count
+        while low < high {
+            let mid = (low + high) / 2
+            if NSMaxRange(highlightRanges[mid].range) <= chunkStart {
+                low = mid + 1
+            } else {
+                high = mid
             }
-            storage.endEditing()
+        }
+        var index = low
+        while index < highlightRanges.count {
+            let (range, highlightClass) = highlightRanges[index]
+            if range.location >= chunkEnd { break }
+            if NSMaxRange(range) <= textStorage.length {
+                layoutManager.addTemporaryAttribute(
+                    .foregroundColor, value: Self.color(for: highlightClass),
+                    forCharacterRange: range)
+            }
+            index += 1
         }
     }
 
@@ -188,36 +391,19 @@ final class FileViewController: NSViewController {
         case .attribute: return .systemBrown
         case .comment: return .secondaryLabelColor
         case .constant: return .systemOrange
+        case .emphasis: return .systemPurple
         case .function: return .systemTeal
+        case .heading: return .systemBlue
         case .keyword: return .systemPurple
+        case .link: return .linkColor
         case .number: return .systemOrange
         case .operator: return .labelColor
         case .property: return .systemIndigo
         case .punctuation: return .labelColor
         case .string: return .systemRed
+        case .strong: return .systemPurple
         case .type: return .systemBlue
         case .variable: return .labelColor
         }
-    }
-
-    private func showPlaceholder(_ message: String) {
-        placeholder.stringValue = message
-        placeholder.isHidden = false
-        scroll.isHidden = true
-        textStorage.setAttributedString(NSAttributedString(string: ""))
-        ruler.update()
-    }
-
-    private func showText(_ text: String) {
-        placeholder.isHidden = true
-        scroll.isHidden = false
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: FileViewController.font,
-            .foregroundColor: NSColor.textColor,
-        ]
-        textStorage.setAttributedString(NSAttributedString(string: text, attributes: attributes))
-        textView.setSelectedRange(NSRange(location: 0, length: 0))
-        textView.scroll(.zero)
-        ruler.update()
     }
 }

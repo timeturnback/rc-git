@@ -127,8 +127,15 @@ public final class BrowserModel {
     /// Flattened file lists, per root tree. Content-addressed like every other cache.
     private var pathIndices: [Oid: PathIndex] = [:]
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
-    /// Syntax spans, per blob. Content-addressed like every other cache.
+    /// Syntax spans, per blob. Content-addressed like every other cache, but bounded: span
+    /// arrays for large files run to megabytes, so the least recently used entries are
+    /// evicted past `Self.highlightCacheLimit` files or `Self.highlightCacheSpanLimit` spans.
     private var highlightCache: [Oid: [HighlightSpan]] = [:]
+    /// Least recently used first.
+    private var highlightCacheOrder: [Oid] = []
+    private var highlightCacheSpanCount = 0
+    static let highlightCacheLimit = 16
+    static let highlightCacheSpanLimit = 1_500_000
 
     public init() {}
 
@@ -140,6 +147,8 @@ public final class BrowserModel {
         pathHistoryCache.removeAll()
         pathIndices.removeAll()
         highlightCache.removeAll()
+        highlightCacheOrder.removeAll()
+        highlightCacheSpanCount = 0
         indexBuild?.task.cancel()
         indexBuild = nil
         browsedCommit = nil
@@ -318,15 +327,18 @@ public final class BrowserModel {
         fileState = .loading(entry)
         onFileChanged?()
         let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<BlobContent, RepositoryError> in
-            do { return .success(try repository.worktreeFile(path: path, limit: limit)) } catch {
+            () -> Result<FileState, RepositoryError> in
+            do {
+                let content = try repository.worktreeFile(path: path, limit: limit)
+                return .success(Self.state(for: entry, content: content))
+            } catch {
                 return .failure(Self.wrap(error))
             }
         }.value
         guard generation == fileGeneration else { return }
         switch result {
-        case let .success(content):
-            fileState = Self.state(for: entry, content: content)
+        case let .success(state):
+            fileState = state
         case let .failure(error):
             fileState = .failed(entry, error.message)
         }
@@ -384,15 +396,18 @@ public final class BrowserModel {
         fileState = .loading(entry)
         onFileChanged?()
         let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<BlobContent, RepositoryError> in
-            do { return .success(try repository.readBlob(entry.oid, limit: limit)) } catch {
+            () -> Result<FileState, RepositoryError> in
+            do {
+                let content = try repository.readBlob(entry.oid, limit: limit)
+                return .success(Self.state(for: entry, content: content))
+            } catch {
                 return .failure(Self.wrap(error))
             }
         }.value
         guard generation == fileGeneration else { return }
         switch result {
-        case let .success(content):
-            fileState = Self.state(for: entry, content: content)
+        case let .success(state):
+            fileState = state
         case let .failure(error):
             fileState = .failed(entry, error.message)
         }
@@ -799,16 +814,38 @@ public final class BrowserModel {
     {
         guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
         let cacheable = !entry.oid.bytes.isEmpty
-        if cacheable, let cached = highlightCache[entry.oid] { return cached }
+        if cacheable, let cached = highlightCache[entry.oid] {
+            if let index = highlightCacheOrder.firstIndex(of: entry.oid) {
+                highlightCacheOrder.remove(at: index)
+                highlightCacheOrder.append(entry.oid)
+            }
+            return cached
+        }
         let name = entry.name
         let text = document.text
         let spans = await Task.detached(priority: .utility) {
             Highlighter.highlight(name: name, data: Array(text.utf8))
         }.value
         if cacheable, let spans {
-            highlightCache[entry.oid] = spans
+            storeHighlights(spans, for: entry.oid)
         }
         return spans
+    }
+
+    /// Inserts one entry and evicts from the least recently used end until both caps hold.
+    private func storeHighlights(_ spans: [HighlightSpan], for oid: Oid) {
+        if highlightCache[oid] == nil {
+            highlightCacheOrder.append(oid)
+            highlightCacheSpanCount += spans.count
+            highlightCache[oid] = spans
+        }
+        while highlightCacheOrder.count > Self.highlightCacheLimit
+            || highlightCacheSpanCount > Self.highlightCacheSpanLimit
+        {
+            guard highlightCacheOrder.count > 1 else { break }
+            let evicted = highlightCacheOrder.removeFirst()
+            highlightCacheSpanCount -= highlightCache.removeValue(forKey: evicted)?.count ?? 0
+        }
     }
 
     // MARK: Path search
@@ -851,11 +888,13 @@ public final class BrowserModel {
 
     // MARK: Helpers
 
-    /// Maps blob content to a pane state. Pure, so the mapping is testable.
-    public static func state(for entry: TreeEntry, content: BlobContent) -> FileState {
+    /// Maps blob content to a pane state. Pure and nonisolated: building a `TextDocument`
+    /// walks the whole content, so the file-open paths call this off the main actor.
+    nonisolated public static func state(for entry: TreeEntry, content: BlobContent) -> FileState {
         switch content {
-        case let .text(data, lineStarts):
-            return .text(entry, TextDocument(bytes: data, lineStarts: lineStarts))
+        case let .text(data, lineStarts, validUTF8):
+            return .text(
+                entry, TextDocument(bytes: data, lineStarts: lineStarts, validUTF8: validUTF8))
         case let .binary(size):
             return .binary(entry, size: size)
         case let .tooLarge(size, limit):

@@ -266,7 +266,8 @@ fn read_blob_distinguishes_text_binary_and_oversize() {
         repo.read_blob(main_rs, DEFAULT_BLOB_LIMIT).unwrap(),
         BlobContent::Text {
             data: MAIN_RS.to_vec(),
-            line_starts: vec![0, 12, 32]
+            line_starts: vec![0, 12, 32],
+            valid_utf8: true,
         }
     );
     assert_eq!(

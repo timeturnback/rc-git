@@ -2,7 +2,8 @@ import AppKit
 
 /// Draws a line number beside every visible line fragment. Wrapping is off in the file pane,
 /// so each fragment is one line; the number comes from a binary search over the UTF-16
-/// offsets where lines start, computed once per document.
+/// offsets where lines start, which arrive precomputed with the document — this view never
+/// scans the text itself.
 final class LineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
     private var lineStarts: [Int] = [0]
@@ -21,22 +22,11 @@ final class LineNumberRulerView: NSRulerView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("not used") }
 
-    /// Recomputes line starts for the current text and resizes the gutter to fit the count.
-    func update() {
-        guard let string = textView?.string as NSString? else { return }
-        var starts = [0]
-        var location = 0
-        let length = string.length
-        while location < length {
-            let found = string.range(
-                of: "\n", options: [], range: NSRange(location: location, length: length - location)
-            )
-            if found.location == NSNotFound { break }
-            location = found.location + 1
-            if location < length { starts.append(location) }
-        }
-        lineStarts = starts
-        let digits = max(3, String(starts.count).count)
+    /// Installs the document's precomputed UTF-16 line starts and resizes the gutter to fit
+    /// the count. Pass an empty array to reset for an empty or hidden document.
+    func setLineStarts(_ starts: [Int]) {
+        lineStarts = starts.isEmpty ? [0] : starts
+        let digits = max(3, String(lineStarts.count).count)
         let width = (String(repeating: "8", count: digits) as NSString).size(withAttributes: [
             .font: font
         ]).width

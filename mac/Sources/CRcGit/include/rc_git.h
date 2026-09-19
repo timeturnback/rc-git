@@ -117,24 +117,32 @@ typedef enum RcGitHighlightClass {
   RcGitHighlightClass_Comment = 1,
   // Named constants and enum cases.
   RcGitHighlightClass_Constant = 2,
+  // Emphasized prose in markdown.
+  RcGitHighlightClass_Emphasis = 3,
   // Function and method names.
-  RcGitHighlightClass_Function = 3,
+  RcGitHighlightClass_Function = 4,
+  // Markdown headings.
+  RcGitHighlightClass_Heading = 5,
   // Language keywords.
-  RcGitHighlightClass_Keyword = 4,
+  RcGitHighlightClass_Keyword = 6,
+  // Link destinations and references.
+  RcGitHighlightClass_Link = 7,
   // Numeric literals.
-  RcGitHighlightClass_Number = 5,
+  RcGitHighlightClass_Number = 8,
   // Operators.
-  RcGitHighlightClass_Operator = 6,
+  RcGitHighlightClass_Operator = 9,
   // Object keys and struct fields.
-  RcGitHighlightClass_Property = 7,
+  RcGitHighlightClass_Property = 10,
   // Brackets and delimiters.
-  RcGitHighlightClass_Punctuation = 8,
+  RcGitHighlightClass_Punctuation = 11,
   // String and character literals.
-  RcGitHighlightClass_String = 9,
+  RcGitHighlightClass_String = 12,
+  // Strongly emphasized prose in markdown.
+  RcGitHighlightClass_Strong = 13,
   // Type names.
-  RcGitHighlightClass_Type = 10,
+  RcGitHighlightClass_Type = 14,
   // Variables and parameters.
-  RcGitHighlightClass_Variable = 11,
+  RcGitHighlightClass_Variable = 15,
 } RcGitHighlightClass;
 
 // The policy's answer for a proposed action.
@@ -244,6 +252,9 @@ typedef struct RcGitBlob {
   uint32_t *line_starts;
   // Length of `line_starts`.
   size_t line_count;
+  // Whether `data` is valid UTF-8, so decoding it is lossless. Text only; checked in the
+  // core so no caller re-scans the bytes.
+  bool valid_utf8;
 } RcGitBlob;
 
 // The parts of a commit a list shows.

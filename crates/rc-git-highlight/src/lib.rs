@@ -19,6 +19,9 @@ pub enum Language {
     JavaScript,
     /// JSON: `.json`.
     Json,
+    /// Markdown: `.md`, `.markdown`. Fenced code blocks are highlighted in their own
+    /// language when it is one the highlighter knows.
+    Markdown,
     /// Python: `.py`.
     Python,
     /// Rust: `.rs`.
@@ -41,6 +44,7 @@ impl Language {
             "c" | "h" => Some(Self::C),
             "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
             "json" => Some(Self::Json),
+            "md" | "markdown" => Some(Self::Markdown),
             "py" => Some(Self::Python),
             "rs" => Some(Self::Rust),
             "swift" => Some(Self::Swift),
@@ -58,11 +62,30 @@ impl Language {
             Self::C => "c",
             Self::JavaScript => "javascript",
             Self::Json => "json",
+            Self::Markdown => "markdown",
             Self::Python => "python",
             Self::Rust => "rust",
             Self::Swift => "swift",
             Self::Toml => "toml",
             Self::Yaml => "yaml",
+        }
+    }
+
+    /// Picks a language from an injection name, as written after a markdown code fence.
+    /// Accepts the common aliases fences use, case-insensitively.
+    fn from_injection(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "bash" | "sh" | "shell" | "zsh" => Some(Self::Bash),
+            "c" => Some(Self::C),
+            "javascript" | "js" | "jsx" => Some(Self::JavaScript),
+            "json" => Some(Self::Json),
+            "markdown" | "md" => Some(Self::Markdown),
+            "python" | "py" => Some(Self::Python),
+            "rust" | "rs" => Some(Self::Rust),
+            "swift" => Some(Self::Swift),
+            "toml" => Some(Self::Toml),
+            "yaml" | "yml" => Some(Self::Yaml),
+            _ => None,
         }
     }
 
@@ -76,7 +99,27 @@ impl Language {
     }
 }
 
-const LANGUAGE_COUNT: usize = 9;
+const LANGUAGE_COUNT: usize = 10;
+
+/// The markdown inline grammar, reachable only through markdown's injections. Configured with
+/// the same capture names as every other grammar, so classes mean the same thing everywhere.
+fn markdown_inline_configuration() -> Option<&'static HighlightConfiguration> {
+    static CONFIG: OnceLock<Option<HighlightConfiguration>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let mut config = HighlightConfiguration::new(
+                tree_sitter_md::INLINE_LANGUAGE.into(),
+                "markdown_inline",
+                tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+                "",
+                "",
+            )
+            .ok()?;
+            config.configure(&CAPTURE_NAMES);
+            Some(config)
+        })
+        .as_ref()
+}
 
 /// What a span means, for the view to color. One flat set for every language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,10 +130,16 @@ pub enum Class {
     Comment,
     /// Named constants and enum cases.
     Constant,
+    /// Emphasized prose, `*like this*` in markdown.
+    Emphasis,
     /// Function and method names.
     Function,
+    /// Markdown headings.
+    Heading,
     /// Language keywords.
     Keyword,
+    /// Link destinations and references.
+    Link,
     /// Numeric literals.
     Number,
     /// Operators.
@@ -101,6 +150,8 @@ pub enum Class {
     Punctuation,
     /// String and character literals, escapes included.
     String,
+    /// Strongly emphasized prose, `**like this**` in markdown.
+    Strong,
     /// Type names.
     Type,
     /// Variables and parameters worth tinting.
@@ -109,7 +160,7 @@ pub enum Class {
 
 /// The capture names the queries are matched against, in the order `CLASS_FOR_NAME` maps.
 /// Dotted capture names fall back to their longest prefix here, per tree-sitter's rules.
-const CAPTURE_NAMES: [&str; 16] = [
+const CAPTURE_NAMES: [&str; 23] = [
     "attribute",
     "comment",
     "constant",
@@ -119,16 +170,23 @@ const CAPTURE_NAMES: [&str; 16] = [
     "function",
     "keyword",
     "label",
+    "none",
     "number",
     "operator",
     "property",
     "punctuation",
     "string",
+    "text.emphasis",
+    "text.literal",
+    "text.reference",
+    "text.strong",
+    "text.title",
+    "text.uri",
     "type",
     "variable",
 ];
 
-const CLASS_FOR_NAME: [Option<Class>; 16] = [
+const CLASS_FOR_NAME: [Option<Class>; 23] = [
     Some(Class::Attribute),
     Some(Class::Comment),
     Some(Class::Constant),
@@ -138,11 +196,18 @@ const CLASS_FOR_NAME: [Option<Class>; 16] = [
     Some(Class::Function),
     Some(Class::Keyword),
     Some(Class::Constant),
+    None,
     Some(Class::Number),
     Some(Class::Operator),
     Some(Class::Property),
     Some(Class::Punctuation),
     Some(Class::String),
+    Some(Class::Emphasis),
+    Some(Class::String),
+    Some(Class::Link),
+    Some(Class::Strong),
+    Some(Class::Heading),
+    Some(Class::Link),
     Some(Class::Type),
     Some(Class::Variable),
 ];
@@ -177,15 +242,41 @@ pub enum Error {
     },
 }
 
-/// Highlights `data`, returning spans ordered by start. Nested captures flatten to the
-/// innermost one, which is what a single-color-per-range text view needs.
+/// Highlights `data`, returning non-overlapping spans ordered by start. Nested captures
+/// flatten to the innermost one, which is what a single-color-per-range text view needs.
+/// Markdown additionally highlights its inline prose and fenced code blocks whose language
+/// it knows; an unknown fence language stays plain.
 ///
 /// # Errors
 /// [`Error::Grammar`] when the language cannot be loaded, [`Error::Parse`] when parsing
 /// fails outright. An unparseable region inside an otherwise fine file is not an error;
 /// tree-sitter recovers and the region simply gets no spans.
 pub fn highlight(data: &[u8], language: Language) -> Result<Vec<Span>, Error> {
-    let config = language.configuration()?;
+    match language {
+        Language::Markdown => highlight_markdown(data, 0),
+        Language::Bash
+        | Language::C
+        | Language::JavaScript
+        | Language::Json
+        | Language::Python
+        | Language::Rust
+        | Language::Swift
+        | Language::Toml
+        | Language::Yaml => single_layer(language.configuration()?, data, language),
+    }
+}
+
+/// Runs one grammar over `data` and flattens the events to innermost-wins spans.
+///
+/// Injections are resolved by hand in [`highlight_markdown`] instead of through
+/// `tree_sitter_highlight`'s own layer merge: with injections the merged event stream
+/// interleaves `HighlightStart`/`HighlightEnd` across layers in the wrong order at equal
+/// offsets, which mis-attributes source runs.
+fn single_layer(
+    config: &HighlightConfiguration,
+    data: &[u8],
+    language: Language,
+) -> Result<Vec<Span>, Error> {
     let mut highlighter = Highlighter::new();
     let events = highlighter
         .highlight(config, data, None, None, |_| None)
@@ -219,6 +310,214 @@ pub fn highlight(data: &[u8], language: Language) -> Result<Vec<Span>, Error> {
     Ok(spans)
 }
 
+/// Markdown fences may nest more markdown; beyond this depth an inner markdown fence
+/// stays plain instead of recursing further.
+const MARKDOWN_FENCE_DEPTH: u8 = 3;
+
+/// Highlights markdown: the block grammar for structure, the inline grammar for prose inside
+/// every `inline` node, and the named language for every fenced code block and metadata
+/// section. Inner spans win over the block layer's, so emphasis inside a heading and keywords
+/// inside a fence keep their own class.
+fn highlight_markdown(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
+    let config = Language::Markdown.configuration()?;
+    let base = single_layer(config, data, Language::Markdown)?;
+    let overlays = markdown_overlays(data, depth);
+    Ok(merge_overlays(base, overlays))
+}
+
+/// Collects spans from every injected region of a markdown document. A region that fails to
+/// parse simply contributes nothing; the file still shows its block-level color.
+fn markdown_overlays(data: &[u8], depth: u8) -> Vec<Span> {
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_md::LANGUAGE.into())
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(data, None) else {
+        return Vec::new();
+    };
+    let mut overlays = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        let mut descend = true;
+        match node.kind() {
+            "inline" => {
+                append_region(
+                    &mut overlays,
+                    data,
+                    node.byte_range(),
+                    Region::Inline,
+                    depth,
+                );
+                descend = false;
+            }
+            "fenced_code_block" => {
+                append_fence(&mut overlays, data, node, depth);
+                descend = false;
+            }
+            "minus_metadata" => {
+                let region = Region::Fence(Language::Yaml);
+                append_region(&mut overlays, data, node.byte_range(), region, depth);
+                descend = false;
+            }
+            "plus_metadata" => {
+                let region = Region::Fence(Language::Toml);
+                append_region(&mut overlays, data, node.byte_range(), region, depth);
+                descend = false;
+            }
+            _ => {}
+        }
+        if descend && cursor.goto_first_child() {
+            continue 'walk;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    overlays.sort_unstable_by_key(|span| span.start);
+    overlays
+}
+
+/// What fills an injected markdown region.
+#[derive(Clone, Copy)]
+enum Region {
+    /// Prose: emphasis, links, code spans, via the inline grammar.
+    Inline,
+    /// A fenced code block or metadata section in a known language.
+    Fence(Language),
+}
+
+/// Reads a fence's info string and highlights its content in that language, when known.
+fn append_fence(overlays: &mut Vec<Span>, data: &[u8], node: tree_sitter::Node, depth: u8) {
+    let mut language = None;
+    let mut content = None;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "info_string" => {
+                let mut info_cursor = child.walk();
+                for part in child.named_children(&mut info_cursor) {
+                    if part.kind() == "language" {
+                        language = std::str::from_utf8(&data[part.byte_range()])
+                            .ok()
+                            .and_then(Language::from_injection);
+                    }
+                }
+            }
+            "code_fence_content" => content = Some(child.byte_range()),
+            _ => {}
+        }
+    }
+    let (Some(language), Some(content)) = (language, content) else {
+        return;
+    };
+    append_region(overlays, data, content, Region::Fence(language), depth);
+}
+
+/// Highlights one region's slice and appends its spans shifted back to document offsets.
+fn append_region(
+    overlays: &mut Vec<Span>,
+    data: &[u8],
+    range: std::ops::Range<usize>,
+    region: Region,
+    depth: u8,
+) {
+    let Some(slice) = data.get(range.clone()) else {
+        return;
+    };
+    let spans = match region {
+        Region::Inline => markdown_inline_configuration()
+            .ok_or(Error::Grammar {
+                language: Language::Markdown,
+            })
+            .and_then(|config| single_layer(config, slice, Language::Markdown)),
+        Region::Fence(Language::Markdown) => {
+            if depth >= MARKDOWN_FENCE_DEPTH {
+                return;
+            }
+            highlight_markdown(slice, depth + 1)
+        }
+        Region::Fence(language) => language
+            .configuration()
+            .and_then(|config| single_layer(config, slice, language)),
+    };
+    let Ok(spans) = spans else { return };
+    let offset = u32::try_from(range.start).unwrap_or(u32::MAX);
+    for span in spans {
+        overlays.push(Span {
+            start: span.start.saturating_add(offset),
+            end: span.end.saturating_add(offset),
+            class: span.class,
+        });
+    }
+}
+
+/// Merges overlay spans into base spans, both sorted and internally non-overlapping. An
+/// overlay is deeper than the base, so base spans are clipped around every overlay they touch
+/// and the result stays sorted and non-overlapping.
+fn merge_overlays(base: Vec<Span>, overlays: Vec<Span>) -> Vec<Span> {
+    if overlays.is_empty() {
+        return base;
+    }
+    let mut clipped = Vec::with_capacity(base.len());
+    let mut first_relevant = 0;
+    for span in &base {
+        while first_relevant < overlays.len() && overlays[first_relevant].end <= span.start {
+            first_relevant += 1;
+        }
+        let mut cursor = span.start;
+        let mut index = first_relevant;
+        while index < overlays.len() && overlays[index].start < span.end {
+            let cut = overlays[index];
+            if cut.start > cursor {
+                clipped.push(Span {
+                    start: cursor,
+                    end: cut.start,
+                    class: span.class,
+                });
+            }
+            cursor = cursor.max(cut.end);
+            if cut.end >= span.end {
+                break;
+            }
+            index += 1;
+        }
+        if cursor < span.end {
+            clipped.push(Span {
+                start: cursor,
+                end: span.end,
+                class: span.class,
+            });
+        }
+    }
+    let mut merged = Vec::with_capacity(clipped.len() + overlays.len());
+    let mut left = clipped.into_iter().peekable();
+    let mut right = overlays.into_iter().peekable();
+    loop {
+        match (left.peek(), right.peek()) {
+            (Some(a), Some(b)) => {
+                if a.start <= b.start {
+                    merged.extend(left.next());
+                } else {
+                    merged.extend(right.next());
+                }
+            }
+            (Some(_), None) => merged.extend(left.next()),
+            (None, Some(_)) => merged.extend(right.next()),
+            (None, None) => break,
+        }
+    }
+    merged
+}
+
 fn build_configuration(
     language: Language,
 ) -> Result<HighlightConfiguration, Box<dyn std::error::Error>> {
@@ -238,6 +537,10 @@ fn build_configuration(
         Language::Json => (
             tree_sitter_json::LANGUAGE.into(),
             tree_sitter_json::HIGHLIGHTS_QUERY,
+        ),
+        Language::Markdown => (
+            tree_sitter_md::LANGUAGE.into(),
+            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
         ),
         Language::Python => (
             tree_sitter_python::LANGUAGE.into(),
@@ -288,6 +591,14 @@ mod tests {
         assert_eq!(Language::from_file_name("App.SWIFT"), Some(Language::Swift));
         assert_eq!(Language::from_file_name("a.tar.yml"), Some(Language::Yaml));
         assert_eq!(Language::from_file_name("script.sh"), Some(Language::Bash));
+        assert_eq!(
+            Language::from_file_name("README.md"),
+            Some(Language::Markdown)
+        );
+        assert_eq!(
+            Language::from_file_name("notes.MARKDOWN"),
+            Some(Language::Markdown)
+        );
         assert_eq!(Language::from_file_name("noext"), None);
         assert_eq!(Language::from_file_name("photo.png"), None);
         assert_eq!(Language::from_file_name(""), None);
@@ -309,11 +620,12 @@ mod tests {
 
     #[test]
     fn every_language_grammar_loads_and_highlights() {
-        let samples: [(Language, &[u8]); 9] = [
+        let samples: [(Language, &[u8]); 10] = [
             (Language::Bash, b"echo \"hi\" # done\n"),
             (Language::C, b"int main(void) { return 0; }\n"),
             (Language::JavaScript, b"const x = 1; // c\n"),
             (Language::Json, b"{\"key\": [1, true]}\n"),
+            (Language::Markdown, b"# Title\n\nSome *prose*.\n"),
             (Language::Python, b"def f():\n    return 'x'\n"),
             (Language::Rust, b"pub fn f() -> u32 { 1 }\n"),
             (Language::Swift, b"func f() -> Int { return 1 }\n"),
@@ -325,6 +637,46 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             assert!(!spans.is_empty(), "{} produced no spans", language.name());
         }
+    }
+
+    #[test]
+    fn markdown_prose_is_classified() {
+        let data = b"# Title\n\nSome *soft* and **hard** emphasis, a `span`,\nand a [link](https://example.com).\n";
+        let spans = highlight(data, Language::Markdown).unwrap();
+        assert!(classes_at(&spans, data, "Title").contains(&Class::Heading));
+        assert!(classes_at(&spans, data, "soft").contains(&Class::Emphasis));
+        assert!(classes_at(&spans, data, "hard").contains(&Class::Strong));
+        assert!(classes_at(&spans, data, "`span`").contains(&Class::String));
+        assert!(classes_at(&spans, data, "https://example.com").contains(&Class::Link));
+    }
+
+    #[test]
+    fn markdown_code_fences_highlight_in_their_own_language() {
+        let data = b"# Doc\n\n```rust\nfn fenced() -> u32 { 1 }\n```\n\n```nosuchlang\nfn ignored() {}\n```\n";
+        let spans = highlight(data, Language::Markdown).unwrap();
+        assert!(classes_at(&spans, data, "fn fenced").contains(&Class::Keyword));
+        assert!(classes_at(&spans, data, "fenced").contains(&Class::Function));
+        assert!(
+            !classes_at(&spans, data, "ignored").contains(&Class::Function),
+            "an unknown fence language stays plain"
+        );
+    }
+
+    #[test]
+    fn markdown_merged_spans_stay_ordered_and_disjoint() {
+        let data = b"# A *bold* title\n\n---\nkey: value\n---\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
+        let spans = highlight(data, Language::Markdown).unwrap();
+        assert!(!spans.is_empty());
+        for window in spans.windows(2) {
+            assert!(
+                window[0].end <= window[1].start,
+                "spans overlap: {:?} then {:?}",
+                window[0],
+                window[1]
+            );
+        }
+        assert!(classes_at(&spans, data, "bold").contains(&Class::Emphasis));
+        assert!(classes_at(&spans, data, "title").contains(&Class::Heading));
     }
 
     #[test]

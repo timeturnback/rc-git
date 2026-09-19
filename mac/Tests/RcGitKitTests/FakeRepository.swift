@@ -93,7 +93,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         guard let content else {
             throw RepositoryError("read blob: object \(oid) is missing or unreadable")
         }
-        if case let .text(data, _) = content, UInt64(data.count) > limit {
+        if case let .text(data, _, _) = content, UInt64(data.count) > limit {
             return .tooLarge(size: UInt64(data.count), limit: limit)
         }
         return content
@@ -221,7 +221,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         guard let found else {
             throw RepositoryError("read working tree file: '\(path)': missing")
         }
-        if case let .text(data, _) = found, UInt64(data.count) > limit {
+        if case let .text(data, _, _) = found, UInt64(data.count) > limit {
             return .tooLarge(size: UInt64(data.count), limit: limit)
         }
         return found
@@ -271,5 +271,5 @@ func textBlob(_ string: String) -> BlobContent {
     where byte == UInt8(ascii: "\n") && index + 1 < bytes.count {
         starts.append(UInt32(index + 1))
     }
-    return .text(data: bytes, lineStarts: starts)
+    return .text(data: bytes, lineStarts: starts, validUTF8: true)
 }

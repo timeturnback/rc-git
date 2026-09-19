@@ -145,7 +145,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         case RcGitBlobKind_Text:
             let data = Array(UnsafeBufferPointer(start: c.data, count: c.data_len))
             let lineStarts = Array(UnsafeBufferPointer(start: c.line_starts, count: c.line_count))
-            return .text(data: data, lineStarts: lineStarts)
+            return .text(data: data, lineStarts: lineStarts, validUTF8: c.valid_utf8)
         case RcGitBlobKind_Binary:
             return .binary(size: c.size)
         default:
@@ -426,7 +426,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         case RcGitBlobKind_Text:
             let data = Array(UnsafeBufferPointer(start: c.data, count: c.data_len))
             let lineStarts = Array(UnsafeBufferPointer(start: c.line_starts, count: c.line_count))
-            return .text(data: data, lineStarts: lineStarts)
+            return .text(data: data, lineStarts: lineStarts, validUTF8: c.valid_utf8)
         case RcGitBlobKind_Binary:
             return .binary(size: c.size)
         default:

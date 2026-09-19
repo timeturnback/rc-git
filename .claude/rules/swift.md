@@ -17,7 +17,9 @@ paths: mac/**
   user's manual collapse is respected.
 - The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
   line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
-  `LineNumberRulerView`.
+  `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
+  Syntax colors are temporary attributes applied per visible chunk; never add a layout-
+  affecting attribute (font, paragraph style) through that path.
 - In `MainWindowController.init`, views are built before `setFrameAutosaveName`: the frame
   restore resizes the window and fires `windowDidResize` -> `applyLayout()` synchronously, and an
   exception there is swallowed by launch Apple Event handling, leaving the app windowless

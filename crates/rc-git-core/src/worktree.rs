@@ -193,9 +193,11 @@ impl Repository {
                 .map_err(|source| worktree_error("read symlink", path, Box::new(source)))?;
             let data = target.into_os_string().into_encoded_bytes();
             let starts = line_starts(&data);
+            let valid_utf8 = std::str::from_utf8(&data).is_ok();
             return Ok(BlobContent::Text {
                 data,
                 line_starts: starts,
+                valid_utf8,
             });
         }
         if meta.is_dir() {
@@ -215,9 +217,11 @@ impl Repository {
             return Ok(BlobContent::Binary { size });
         }
         let starts = line_starts(&data);
+        let valid_utf8 = std::str::from_utf8(&data).is_ok();
         Ok(BlobContent::Text {
             data,
             line_starts: starts,
+            valid_utf8,
         })
     }
 

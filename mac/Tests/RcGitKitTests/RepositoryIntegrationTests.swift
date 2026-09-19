@@ -58,12 +58,13 @@ import Testing
         #expect(mainRs.kind == .blob)
         #expect(try repo.entry(at: "nope", under: root) == nil)
         #expect(try repo.blobSize(mainRs.oid) == 34)
-        guard case let .text(data, lineStarts) = try repo.readBlob(mainRs.oid) else {
+        guard case let .text(data, lineStarts, validUTF8) = try repo.readBlob(mainRs.oid) else {
             Issue.record("expected text")
             return
         }
         #expect(String(decoding: data, as: UTF8.self) == "fn main() {\n    println!(\"hi\");\n}\n")
         #expect(lineStarts == [0, 12, 32])
+        #expect(validUTF8)
 
         let bin = try #require(try repo.entry(at: "bin.dat", under: root))
         #expect(try repo.readBlob(bin.oid) == .binary(size: 12))
@@ -224,7 +225,7 @@ import Testing
         #expect(readme.status == .unchanged)
         #expect(readme.oid?.hex == fixture.revParse("HEAD:README.md"))
 
-        guard case let .text(data, _) = try repo.worktreeFile(path: "untracked.txt") else {
+        guard case let .text(data, _, _) = try repo.worktreeFile(path: "untracked.txt") else {
             Issue.record("expected text")
             return
         }

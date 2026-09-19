@@ -47,11 +47,17 @@ Nothing below that folder is touched.
 `openFile` bumps the file generation, publishes `.loading`, and calls `readBlob` with a size
 limit. The core reads the object header first; anything above the limit returns `tooLarge`
 without decoding. Otherwise the blob is inflated, checked for a NUL in its first 8000 bytes
-(git's own binary rule), and, when text, indexed with `memchr` for line starts. The result is
-applied only if the generation still matches.
+(git's own binary rule), and, when text, indexed with `memchr` for line starts and validated
+as UTF-8 — once, here, so no display layer re-scans the bytes. The result is applied only if
+the generation still matches.
 
-The file pane decodes the bytes as UTF-8 with replacement, sets them on a TextKit 1 text
-storage with non-contiguous layout, and draws line numbers for visible fragments only.
+Still off the main actor, the bytes decode as UTF-8 with replacement into a `TextDocument`
+carrying UTF-16 line starts. The file pane builds the attributed string in the background
+too, sets it on a TextKit 1 text storage with non-contiguous layout, and draws line numbers
+for visible fragments from the precomputed starts. Syntax colors arrive later as temporary
+attributes for the visible chunk only; scrolling colors further chunks. Markdown files can
+render as a styled preview instead (Foundation's markdown parser, wrapped text, ruler
+hidden), toggled from the file pane header.
 
 ## Threading
 

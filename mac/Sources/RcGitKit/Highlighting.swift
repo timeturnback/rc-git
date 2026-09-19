@@ -6,13 +6,17 @@ public enum HighlightClass: Sendable, Hashable {
     case attribute
     case comment
     case constant
+    case emphasis
     case function
+    case heading
     case keyword
+    case link
     case number
     case `operator`
     case property
     case punctuation
     case string
+    case strong
     case type
     case variable
 
@@ -21,13 +25,17 @@ public enum HighlightClass: Sendable, Hashable {
         case RcGitHighlightClass_Attribute: self = .attribute
         case RcGitHighlightClass_Comment: self = .comment
         case RcGitHighlightClass_Constant: self = .constant
+        case RcGitHighlightClass_Emphasis: self = .emphasis
         case RcGitHighlightClass_Function: self = .function
+        case RcGitHighlightClass_Heading: self = .heading
         case RcGitHighlightClass_Keyword: self = .keyword
+        case RcGitHighlightClass_Link: self = .link
         case RcGitHighlightClass_Number: self = .number
         case RcGitHighlightClass_Operator: self = .operator
         case RcGitHighlightClass_Property: self = .property
         case RcGitHighlightClass_Punctuation: self = .punctuation
         case RcGitHighlightClass_String: self = .string
+        case RcGitHighlightClass_Strong: self = .strong
         case RcGitHighlightClass_Type: self = .type
         default: self = .variable
         }

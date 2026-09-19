@@ -287,6 +287,9 @@ pub struct RcGitBlob {
     pub line_starts: *mut u32,
     /// Length of `line_starts`.
     pub line_count: usize,
+    /// Whether `data` is valid UTF-8, so decoding it is lossless. Text only; checked in the
+    /// core so no caller re-scans the bytes.
+    pub valid_utf8: bool,
 }
 
 impl Drop for RcGitBlob {
@@ -853,24 +856,32 @@ pub enum RcGitHighlightClass {
     Comment = 1,
     /// Named constants and enum cases.
     Constant = 2,
+    /// Emphasized prose in markdown.
+    Emphasis = 3,
     /// Function and method names.
-    Function = 3,
+    Function = 4,
+    /// Markdown headings.
+    Heading = 5,
     /// Language keywords.
-    Keyword = 4,
+    Keyword = 6,
+    /// Link destinations and references.
+    Link = 7,
     /// Numeric literals.
-    Number = 5,
+    Number = 8,
     /// Operators.
-    Operator = 6,
+    Operator = 9,
     /// Object keys and struct fields.
-    Property = 7,
+    Property = 10,
     /// Brackets and delimiters.
-    Punctuation = 8,
+    Punctuation = 11,
     /// String and character literals.
-    String = 9,
+    String = 12,
+    /// Strongly emphasized prose in markdown.
+    Strong = 13,
     /// Type names.
-    Type = 10,
+    Type = 14,
     /// Variables and parameters.
-    Variable = 11,
+    Variable = 15,
 }
 
 impl From<Class> for RcGitHighlightClass {
@@ -879,13 +890,17 @@ impl From<Class> for RcGitHighlightClass {
             Class::Attribute => Self::Attribute,
             Class::Comment => Self::Comment,
             Class::Constant => Self::Constant,
+            Class::Emphasis => Self::Emphasis,
             Class::Function => Self::Function,
+            Class::Heading => Self::Heading,
             Class::Keyword => Self::Keyword,
+            Class::Link => Self::Link,
             Class::Number => Self::Number,
             Class::Operator => Self::Operator,
             Class::Property => Self::Property,
             Class::Punctuation => Self::Punctuation,
             Class::String => Self::String,
+            Class::Strong => Self::Strong,
             Class::Type => Self::Type,
             Class::Variable => Self::Variable,
         }
@@ -1465,7 +1480,11 @@ pub unsafe extern "C" fn rcgit_blob_read(
 
 fn export_blob(content: BlobContent, limit: u64) -> RcGitBlob {
     match content {
-        BlobContent::Text { data, line_starts } => {
+        BlobContent::Text {
+            data,
+            line_starts,
+            valid_utf8,
+        } => {
             let size = u64::try_from(data.len()).unwrap_or(u64::MAX);
             let mut starts = Vec::with_capacity(line_starts.len());
             for start in line_starts {
@@ -1481,6 +1500,7 @@ fn export_blob(content: BlobContent, limit: u64) -> RcGitBlob {
                 data_len,
                 line_starts,
                 line_count,
+                valid_utf8,
             }
         }
         BlobContent::Binary { size } => RcGitBlob {
@@ -1491,6 +1511,7 @@ fn export_blob(content: BlobContent, limit: u64) -> RcGitBlob {
             data_len: 0,
             line_starts: ptr::null_mut(),
             line_count: 0,
+            valid_utf8: false,
         },
         BlobContent::TooLarge { size, limit } => RcGitBlob {
             kind: RcGitBlobKind::TooLarge,
@@ -1500,6 +1521,7 @@ fn export_blob(content: BlobContent, limit: u64) -> RcGitBlob {
             data_len: 0,
             line_starts: ptr::null_mut(),
             line_count: 0,
+            valid_utf8: false,
         },
     }
 }
@@ -3719,6 +3741,7 @@ mod tests {
             unsafe { std::slice::from_raw_parts(blob_ref.line_starts, blob_ref.line_count) },
             [0, 12, 32]
         );
+        assert!(blob_ref.valid_utf8);
         unsafe { rcgit_blob_free(blob) };
 
         let bin = resolve(repo, "main:bin.dat");

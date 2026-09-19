@@ -13,9 +13,17 @@ constraints are clear.
   pages per tip, and offers "Browse Files at This Commit". Selecting a commit shows the
   files it changed against its first parent and each file's line diff.
 - **Syntax highlighting.** Tree-sitter in `rc-git-highlight`, exposed as
-  `rcgit_highlight`, cached by blob id in `BrowserModel`, applied after first paint so
-  plain text never waits on a parse. Languages: bash, C, JavaScript, JSON, Python, Rust,
-  Swift, TOML, YAML. Files that are not valid UTF-8 or exceed 2 MiB stay plain.
+  `rcgit_highlight`, cached by blob id in `BrowserModel` (LRU-bounded), applied after first
+  paint so plain text never waits on a parse — and only for the visible chunk, as temporary
+  attributes, so a large file never pays a whole-document pass on the main actor. Languages:
+  bash, C, JavaScript, JSON, markdown, Python, Rust, Swift, TOML, YAML. Markdown highlights
+  its inline prose and fenced code blocks in their own language (injections resolved by hand;
+  `tree_sitter_highlight`'s own layer merge mis-orders events). Files that are not valid
+  UTF-8 or exceed 2 MiB stay plain.
+- **Markdown view.** `.md` files open as a rendered preview (Foundation's markdown parser
+  styled via presentation intents, built off the main actor, no web view) with a
+  Preview/Source toggle in the file pane header; source mode keeps line numbers and syntax
+  color. Markdown over 4 MiB opens in source mode only.
 - **Path search.** ⇧⌘O flattens the selected root once in the background — the one
   feature that walks a whole tree — keyed by root tree id, cancellable, capped at 200 000
   entries, and offers fuzzy jump-to-file. Every directory read lands in the shared tree

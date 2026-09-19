@@ -128,13 +128,17 @@ fn worktree_file_reads_text_binary_symlink_and_limits() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
 
-    let BlobContent::Text { data, line_starts } =
-        repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap()
+    let BlobContent::Text {
+        data,
+        line_starts,
+        valid_utf8,
+    } = repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap()
     else {
         panic!("expected text");
     };
     assert_eq!(data, rc_git_testkit::README);
     assert_eq!(line_starts, [0, 10, 11]);
+    assert!(valid_utf8);
 
     let BlobContent::Binary { size } = repo.worktree_file("bin.dat", DEFAULT_BLOB_LIMIT).unwrap()
     else {

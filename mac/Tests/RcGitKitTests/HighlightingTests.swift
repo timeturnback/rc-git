@@ -77,16 +77,43 @@ import Testing
 
         let entry = TreeEntry(name: "main.rs", oid: oid(0x42), kind: .blob)
         let document = TextDocument(
-            bytes: Array("fn main() {}\n".utf8), lineStarts: [0])
+            bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
         let first = await model.highlights(for: entry, document: document)
         #expect(first?.isEmpty == false)
         let second = await model.highlights(for: entry, document: document)
         #expect(first == second)
 
-        let lossy = TextDocument(bytes: [0x66, 0xFF, 0x6F], lineStarts: [0])
+        let lossy = TextDocument(bytes: [0x66, 0xFF, 0x6F], lineStarts: [0], validUTF8: false)
         #expect(lossy.isLossy)
         let none = await model.highlights(
             for: TreeEntry(name: "bad.rs", oid: oid(0x43), kind: .blob), document: lossy)
         #expect(none == nil, "misaligned offsets are worse than plain text")
+    }
+
+    @Test func markdownHighlightsCrossTheBridge() {
+        let data = Array("# Title\n\n```rust\nfn f() {}\n```\n".utf8)
+        let spans = Highlighter.highlight(name: "README.md", data: data)
+        #expect(spans?.contains { $0.class == .heading } == true)
+        #expect(spans?.contains { $0.class == .keyword } == true, "fenced rust keeps its color")
+    }
+
+    @Test func spanCacheEvictsLeastRecentlyUsedPastTheEntryCap() async {
+        let model = BrowserModel()
+        let repo = FakeRepository()
+        repo.listing = RefListing(refs: [])
+        repo.headValue = Head(refName: nil, target: nil)
+        await model.attach(repo)
+
+        let document = TextDocument(
+            bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
+        for seed in 0...BrowserModel.highlightCacheLimit {
+            let entry = TreeEntry(name: "f\(seed).rs", oid: oid(UInt8(seed + 1)), kind: .blob)
+            let spans = await model.highlights(for: entry, document: document)
+            #expect(spans?.isEmpty == false)
+        }
+        // One over the cap: the first entry was evicted, everything still answers.
+        let again = await model.highlights(
+            for: TreeEntry(name: "f0.rs", oid: oid(1), kind: .blob), document: document)
+        #expect(again?.isEmpty == false)
     }
 }

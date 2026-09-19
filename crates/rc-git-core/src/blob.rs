@@ -13,12 +13,15 @@ pub const DEFAULT_BLOB_LIMIT: u64 = 8 * 1024 * 1024;
 /// What a blob read produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobContent {
-    /// Text, not validated as UTF-8. `line_starts` comes from [`line_starts`].
+    /// Text, as stored. `line_starts` comes from [`line_starts`].
     Text {
         /// The bytes as stored.
         data: Vec<u8>,
         /// Byte offset where each line begins.
         line_starts: Vec<usize>,
+        /// Whether `data` is valid UTF-8, checked here once so no display layer has to
+        /// re-scan the bytes to learn whether decoding was lossy.
+        valid_utf8: bool,
     },
     /// Contains a NUL byte near the start; not decoded for display.
     Binary {
@@ -90,7 +93,12 @@ fn classify(data: Vec<u8>) -> BlobContent {
         };
     }
     let line_starts = line_starts(&data);
-    BlobContent::Text { data, line_starts }
+    let valid_utf8 = std::str::from_utf8(&data).is_ok();
+    BlobContent::Text {
+        data,
+        line_starts,
+        valid_utf8,
+    }
 }
 
 /// Applies git's binary heuristic: a NUL byte within the first
@@ -159,9 +167,24 @@ mod tests {
             classify(b"x\ny".to_vec()),
             BlobContent::Text {
                 data: b"x\ny".to_vec(),
-                line_starts: vec![0, 2]
+                line_starts: vec![0, 2],
+                valid_utf8: true,
             }
         );
         assert_eq!(classify(vec![1, 0, 2]), BlobContent::Binary { size: 3 });
+    }
+
+    #[test]
+    fn classify_flags_invalid_utf8_that_is_still_text() {
+        // Latin-1 "café\n": no NUL, so it is text, but 0xE9 is not valid UTF-8.
+        let latin1 = b"caf\xE9\n".to_vec();
+        assert_eq!(
+            classify(latin1.clone()),
+            BlobContent::Text {
+                data: latin1,
+                line_starts: vec![0],
+                valid_utf8: false,
+            }
+        );
     }
 }
