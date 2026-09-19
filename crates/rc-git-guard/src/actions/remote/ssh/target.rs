@@ -8,10 +8,11 @@ use crate::actions::{ActionError, ActionResult};
 /// Where and how to connect for one ssh remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::actions::remote) struct SshTarget {
-    /// The host as written in the URL — the `known_hosts` lookup key and what the
-    /// user sees in prompts.
+    /// The host as written in the URL — what the user sees in prompts and the key
+    /// app-side host-key approvals are stored under.
     pub host: String,
-    /// The host actually dialed: ssh-config `HostName`, or `host` when unset.
+    /// The host actually dialed: ssh-config `HostName`, or `host` when unset. The
+    /// `known_hosts` lookup key, exactly as OpenSSH records entries.
     pub host_name: String,
     /// URL port, else ssh-config `Port`, else 22.
     pub port: u16,
@@ -249,6 +250,26 @@ mod tests {
         assert_eq!(target.host_name, "example.com");
         assert_eq!(target.user, "git");
         assert_eq!(target.port, 2200);
+    }
+
+    /// A tab as the key/value separator is legal OpenSSH; russh-config splits on a
+    /// single space and would silently skip the line without the normalization.
+    #[test]
+    fn tab_separated_key_value_lines_are_honored() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host example.com
+HostName	real.example.com
+",
+        );
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(target.host_name, "real.example.com");
     }
 
     /// Global options before the first `Host` block are legal OpenSSH and must not

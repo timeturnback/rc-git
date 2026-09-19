@@ -84,6 +84,8 @@ impl HostKeyHandler {
         };
         let key_type = key.algorithm().to_string();
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        // Deliberately checked before known_hosts: an accepted fingerprint is one the
+        // user explicitly verified, so it wins even over a later contradicting entry.
         if self.accepted.as_deref() == Some(fingerprint.as_str()) {
             return Ok(true);
         }
