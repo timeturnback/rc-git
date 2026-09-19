@@ -151,6 +151,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             if needsLoad {
                 Task { await changesModel.refresh() }
             }
+            // The sync row shows commit counts; re-read them on every switch to the tab.
+            Task { await syncModel?.refreshStatus() }
         }
     }
 
@@ -226,12 +228,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
             let status = syncModel.remoteStatus
             if action == #selector(pullRemote(_:)) {
-                menuItem.title =
-                    (status?.behind ?? 0) > 0 ? "Pull \(status!.behind) Commit(s)" : "Pull"
+                menuItem.title = SyncTitles.pull(status)
             }
             if action == #selector(pushRemote(_:)) {
-                menuItem.title =
-                    (status?.ahead ?? 0) > 0 ? "Push \(status!.ahead) Commit(s)" : "Push"
+                menuItem.title = SyncTitles.push(status)
             }
             if action == #selector(fetchRemote(_:)) {
                 return true
@@ -556,6 +556,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 try RepositoryGuard.discard(repoPath: path, paths: paths, input: input)
             }
         }
+        changesController.onFetch = { [weak self] in
+            self?.fetchRemote(nil)
+        }
+        changesController.onPull = { [weak self] in
+            self?.pullRemote(nil)
+        }
+        changesController.onPush = { [weak self] in
+            self?.pushRemote(nil)
+        }
         changesController.onDiscardHunk = { [weak self] filePath, stamp in
             self?.performStashAction(
                 verb: "Discard Hunk", decision: RepositoryGuard.planDiscard(files: 1)
@@ -722,6 +731,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func renderSyncState() {
         guard let sync = syncModel else { return }
+        changesController.renderSync(status: sync.remoteStatus, busy: sync.isBusy)
         switch sync.state {
         case .idle:
             showSyncSpinner(false)

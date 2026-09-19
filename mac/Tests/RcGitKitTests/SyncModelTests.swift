@@ -465,3 +465,22 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
         #expect(store.stored["git.example.com"] == nil)
     }
 }
+
+@Suite struct SyncTitlesTests {
+    @Test func noPreflightYetShowsTheBareVerbs() {
+        #expect(SyncTitles.pull(nil) == "Pull")
+        #expect(SyncTitles.push(nil) == "Push")
+    }
+
+    @Test func upToDateShowsTheBareVerbs() {
+        let status = StubSyncPerformer.upstream()
+        #expect(SyncTitles.pull(status) == "Pull")
+        #expect(SyncTitles.push(status) == "Push")
+    }
+
+    @Test func countsFromTheLastPreflightPluralize() {
+        let status = StubSyncPerformer.upstream(ahead: 3, behind: 1)
+        #expect(SyncTitles.push(status) == "Push 3 Commits")
+        #expect(SyncTitles.pull(status) == "Pull 1 Commit")
+    }
+}

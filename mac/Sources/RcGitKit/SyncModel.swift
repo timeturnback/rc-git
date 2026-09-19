@@ -37,6 +37,22 @@ public struct GuardSyncPerformer: SyncPerforming {
     }
 }
 
+/// Titles for the Pull and Push controls: the bare verb, or the verb with the commit
+/// count from the last preflight.
+public enum SyncTitles {
+    public static func pull(_ status: RemoteStatus?) -> String {
+        title("Pull", count: status?.behind ?? 0)
+    }
+
+    public static func push(_ status: RemoteStatus?) -> String {
+        title("Push", count: status?.ahead ?? 0)
+    }
+
+    private static func title(_ verb: String, count: Int) -> String {
+        count > 0 ? "\(verb) \(count) Commit\(count == 1 ? "" : "s")" : verb
+    }
+}
+
 /// One step of the sync workflow.
 public enum SyncStep: Sendable, Hashable {
     case fetch

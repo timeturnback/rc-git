@@ -18,6 +18,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var onDiscard: (([String]) -> Void)?
     var onDiscardHunk: ((String, HunkStamp) -> Void)?
     var onRefresh: (() -> Void)?
+    var onFetch: (() -> Void)?
+    var onPull: (() -> Void)?
+    var onPush: (() -> Void)?
     /// The model's tick state, injected so rendering never duplicates it.
     var isTicked: ((String) -> Bool)?
     var isHunkTicked: ((String, HunkStamp) -> Bool)?
@@ -35,6 +38,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let popButton = NSButton(title: "Pop", target: nil, action: nil)
     private let dropButton = NSButton(title: "Drop…", target: nil, action: nil)
+    private let fetchButton = NSButton(title: "Fetch", target: nil, action: nil)
+    private let pullButton = NSButton(title: "Pull", target: nil, action: nil)
+    private let pushButton = NSButton(title: "Push", target: nil, action: nil)
     private let messageText = NSTextView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let commitButton = NSButton(title: "Commit", target: nil, action: nil)
@@ -102,6 +108,22 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func buildLeftPane() -> NSView {
+        for (button, action): (NSButton, Selector) in [
+            (fetchButton, #selector(fetchClicked(_:))),
+            (pullButton, #selector(pullClicked(_:))),
+            (pushButton, #selector(pushClicked(_:))),
+        ] {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            // Disabled until the window controller renders the first remote status.
+            button.isEnabled = false
+        }
+        let syncRow = NSStackView(views: [fetchButton, pullButton, pushButton, NSView()])
+        syncRow.orientation = .horizontal
+        syncRow.spacing = 6
+
         truncationLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         truncationLabel.textColor = .secondaryLabelColor
         truncationLabel.isHidden = true
@@ -156,8 +178,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         actionRow.spacing = 6
 
         let stack = NSStackView(views: [
-            filesScroll, truncationLabel, stashLabel, stashScroll, stashButtons, messageScroll,
-            actionRow,
+            syncRow, filesScroll, truncationLabel, stashLabel, stashScroll, stashButtons,
+            messageScroll, actionRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -177,6 +199,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
         let inset: CGFloat = 8
         NSLayoutConstraint.activate([
+            syncRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             stack.topAnchor.constraint(equalTo: pane.topAnchor),
             stack.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
@@ -325,6 +348,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         diffTable.reloadData()
     }
 
+    /// Re-renders the sync row from the last preflight: commit counts in the button
+    /// titles, everything disabled while a workflow runs, pull/push disabled without
+    /// an upstream.
+    func renderSync(status: RemoteStatus?, busy: Bool) {
+        pullButton.title = SyncTitles.pull(status)
+        pushButton.title = SyncTitles.push(status)
+        let hasUpstream = status?.hasUpstream != false
+        fetchButton.isEnabled = !busy
+        pullButton.isEnabled = !busy && hasUpstream
+        pushButton.isEnabled = !busy && hasUpstream
+    }
+
     func renderStashes(_ stashes: [StashEntry]) {
         self.stashes = stashes
         reloadPreservingSelection(stashTable)
@@ -374,6 +409,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     // MARK: Actions
+
+    @objc private func fetchClicked(_ sender: Any?) {
+        onFetch?()
+    }
+
+    @objc private func pullClicked(_ sender: Any?) {
+        onPull?()
+    }
+
+    @objc private func pushClicked(_ sender: Any?) {
+        onPush?()
+    }
 
     @objc private func commitClicked(_ sender: Any?) {
         onCommit?(messageText.string)
