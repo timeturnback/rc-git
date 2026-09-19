@@ -136,10 +136,12 @@ fn default_ssh_dir(op: &'static str) -> ActionResult<PathBuf> {
 /// Parses `<ssh_dir>/config` for `host`. `None` when the file does not exist; an
 /// unreadable or unparseable file is an error rather than a silently wrong connection.
 ///
-/// Two legal OpenSSH spellings are normalized for russh-config's parser: tab
+/// Three legal OpenSSH spellings are normalized for russh-config's parser: tab
 /// separators become spaces (it splits on a single space and would silently skip the
-/// line), and global options before the first `Host` block get a `Host *` header (it
-/// rejects them outright).
+/// line), global options before the first `Host` block get a `Host *` header (it
+/// rejects them outright), and `Host` patterns are lowercased along with the query —
+/// OpenSSH matches host names case-insensitively, russh-config's glob does not, and
+/// gix has already lowercased the URL's host.
 fn load_config(
     ssh_dir: &Path,
     host: &str,
@@ -156,16 +158,39 @@ fn load_config(
         source: format!("cannot parse '{}': {source}", path.display()).into(),
     };
     let contents = std::fs::read_to_string(&path).map_err(|source| parse_err(&source))?;
-    let contents = contents.replace('\t', " ");
-    match russh_config::parse(&contents, host) {
+    let contents = normalize_config(&contents);
+    let host = host.to_lowercase();
+    match russh_config::parse(&contents, &host) {
         Ok(config) => Ok(Some(config)),
         Err(russh_config::Error::HostNotFound) => {
-            russh_config::parse(&format!("Host *\n{contents}"), host)
+            russh_config::parse(&format!("Host *\n{contents}"), &host)
                 .map(Some)
                 .map_err(|source| parse_err(&source))
         }
         Err(source) => Err(parse_err(&source)),
     }
+}
+
+/// Tabs become spaces; `Host` pattern lines are lowercased in full (patterns are host
+/// names, matched case-insensitively by OpenSSH). Values on every other line keep
+/// their case — an `IdentityFile` path is case-sensitive on disk.
+fn normalize_config(contents: &str) -> String {
+    let mut normalized = String::with_capacity(contents.len());
+    for line in contents.lines() {
+        let line = line.replace('\t', " ");
+        if line
+            .trim_start()
+            .split(' ')
+            .next()
+            .is_some_and(|key| key.eq_ignore_ascii_case("host"))
+        {
+            normalized.push_str(&line.to_lowercase());
+        } else {
+            normalized.push_str(&line);
+        }
+        normalized.push('\n');
+    }
+    normalized
 }
 
 fn git_err(op: &'static str, url: &gix::Url, message: &str) -> ActionError {
@@ -242,6 +267,30 @@ mod tests {
         )
         .expect("resolve");
         assert_eq!(target.host_name, "real.example.com");
+    }
+
+    /// The exact failure from the field: a mixed-case alias in the config, queried
+    /// with the host gix already lowercased. OpenSSH matches case-insensitively;
+    /// russh-config's glob does not, so both sides are normalized.
+    #[test]
+    fn mixed_case_host_patterns_match_the_lowercased_url_host() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host github.com-ExampleWork
+              	HostName github.com
+              	IdentityFile ./Work_Key
+",
+        );
+        let target = resolve(
+            &url("ssh://git@github.com-examplework/x/y.git"),
+            Some(dir.path()),
+            "push",
+        )
+        .expect("resolve");
+        assert_eq!(target.host_name, "github.com");
+        // Values outside Host lines keep their case: paths are case-sensitive.
+        assert_eq!(target.identities[0], PathBuf::from("./Work_Key"));
     }
 
     /// No config file: URL host is dialed as written, defaults fill the rest.
