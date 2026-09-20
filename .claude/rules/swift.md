@@ -64,7 +64,19 @@ paths: mac/**
   same standard repository as `rc-git-testkit`, keep them in step.
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
 - Never collapse a view with a height-0 constraint while it has visible subviews — hide it
-  inside an `NSStackView` with `detachesHiddenViews`. Give scroll content in a split a
-  min-height floor, and version `autosaveName` (`.v2`) whenever split/layout structure
-  changes: autosave records broken layouts and re-imposes them on every launch
+  inside an `NSStackView` with `detachesHiddenViews`.
+- Floor **every** pane of a bare `NSSplitView`, on the axis that split can crush (vertical takes
+  height, horizontal takes width), and re-audit when a pane is added or the split is
+  restructured — a split is only as safe as its least-floored pane.
+- A floor is not enough on its own: `autosaveName` restores a divider position as a *frame*, so
+  an Auto Layout floor never undoes it. Clamp the divider with `NSSplitViewDelegate`
+  `constrainMinCoordinate`/`constrainMaxCoordinate`; that is the only thing that binds a
+  restored position. Version `autosaveName` to discard poison already stored, never as the fix —
+  a bump alone just resets the clock, which is how `.v3` was poisoned days after `.v2`.
+  `NSSplitViewController` items are exempt: their `minimumThickness` already does this
+  (`MainWindowController` sets it on both items of `outerSplit`).
+- Diagnose a pane stuck at zero with
+  `defaults read <bundle-id> "NSSplitView Subview Frames <autosaveName>"` before touching layout
+  code — entries are `x, y, w, h, isCollapsed, isHidden`, and it separates a live layout bug from
+  restored state without launching the app
   (`docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md`).
