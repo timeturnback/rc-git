@@ -20,6 +20,10 @@ paths: mac/**
   section is hidden through `detachesHiddenViews`, and AppKit drops an ancestor's constraints
   for a detached view for good, so a section carries no constraint to anything outside itself
   — size it with hugging and with a toggled low-priority height on the refs, which never leave.
+- A view the stack has never laid out while attached gets no alignment constraint either, and
+  unhiding does not backfill one: anything added hidden (a section, the truncation note) sizes
+  to its content until `show` re-makes its width constraint by hand
+  (`docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md`).
 - The sidebar collapses with `.preferResizingSiblingsWithFixedSplitView`, so the window keeps
   its size; `.preferResizingSplitViewWithFixedSiblings` shrinks the window instead. The
   toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
