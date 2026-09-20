@@ -38,8 +38,10 @@ status against `HEAD` — modified, untracked, ignored, deleted. Right-click a r
 or delete branches and tags: deletions demand the ref's typed name and write a backup under
 `refs/rc-git/backup/` first.
 
-The window adapts to its size: below 760 points wide the sidebar folds away, below 560 points or
-in a portrait shape the tree stacks above the file. Toggle the sidebar with ⌃⌘S.
+The window adapts to its size: below 760 points wide the sidebar folds away. The file always
+sits right of the tree, and the tree widens only as far as its rows need, so the file pane
+takes the rest of the window. Drag the divider and that width is yours from then on. Toggle
+the sidebar with ⌃⌘S.
 
 The same core ships as a command-line tool for scripts and for measuring:
 

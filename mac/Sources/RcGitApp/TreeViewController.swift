@@ -10,6 +10,8 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     var onOpenFile: ((BrowseRow, String) -> Void)?
     var onShowHistory: ((String) -> Void)?
     var onError: ((String) -> Void)?
+    /// Fires with `contentWidth` whenever the visible rows change, so the pane can hug them.
+    var onContentWidthChanged: ((CGFloat) -> Void)?
 
     final class Node {
         let row: BrowseRow
@@ -80,10 +82,28 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.reloadData()
         guard let root else {
             placeholder.isHidden = false
+            reportContentWidth()
             return
         }
         placeholder.isHidden = true
         load(root, path: "", into: nil)
+    }
+
+    /// Row chrome outside the label: disclosure triangle, icon, cell insets, and room for
+    /// the vertical scroller.
+    private static let rowChromeWidth: CGFloat = 46
+
+    /// The width that shows every row currently on the outline in full. Only expanded rows
+    /// are measured, so the cost follows what is on screen, not repository size.
+    private func reportContentWidth() {
+        guard let onContentWidthChanged else { return }
+        var widest: CGFloat = 0
+        for row in 0..<outline.numberOfRows {
+            guard let node = outline.item(atRow: row) as? Node else { continue }
+            let indent = CGFloat(outline.level(forRow: row)) * outline.indentationPerLevel
+            widest = max(widest, indent + Self.label(for: node.row).size().width)
+        }
+        onContentWidthChanged(widest + Self.rowChromeWidth)
     }
 
     private func load(_ tree: Oid, path: String, into parent: Node?) {
@@ -103,6 +123,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                     roots = nodes
                     outline.reloadData()
                 }
+                reportContentWidth()
             } catch {
                 guard generation == self.generation else { return }
                 parent?.isLoading = false
@@ -178,6 +199,14 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         if node.children == nil, !node.isLoading {
             load(node.entry.oid, path: node.path, into: node)
         }
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        reportContentWidth()
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        reportContentWidth()
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any)

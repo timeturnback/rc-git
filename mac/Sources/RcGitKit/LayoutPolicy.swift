@@ -1,37 +1,33 @@
 import CoreGraphics
 
-/// How the three panes are arranged.
+/// How the panes are arranged. The tree always sits left of the file, whatever the window
+/// shape, so only the sidebar changes with size.
 public struct Layout: Equatable, Sendable {
     /// Whether the refs sidebar has room to stay open.
     public var showsSidebar: Bool
-    /// Whether the tree and the file sit side by side or the tree sits above the file.
-    public var contentAxis: ContentAxis
 
-    public init(showsSidebar: Bool, contentAxis: ContentAxis) {
+    public init(showsSidebar: Bool) {
         self.showsSidebar = showsSidebar
-        self.contentAxis = contentAxis
     }
-}
-
-public enum ContentAxis: Equatable, Sendable {
-    case horizontal
-    case vertical
 }
 
 /// Chooses a layout for a window size. Pure, so the thresholds are testable without AppKit.
 public enum LayoutPolicy {
     /// Below this width the sidebar collapses so the tree and file keep usable widths.
     public static let sidebarMinimumWidth: CGFloat = 760
-    /// Below this width the tree stacks above the file regardless of aspect ratio.
-    public static let stackBelowWidth: CGFloat = 560
-    /// A window taller than this many times its width stacks the panes.
-    public static let portraitRatio: CGFloat = 1.15
+    /// The narrowest the tree pane goes, however short its rows are.
+    public static let treeMinimumWidth: CGFloat = 160
+    /// The widest the tree pane goes, however long its rows are. Past this the file pane
+    /// matters more than a path read in full.
+    public static let treeMaximumWidth: CGFloat = 460
 
     public static func layout(for size: CGSize) -> Layout {
-        let stacked = size.width < stackBelowWidth || size.height > size.width * portraitRatio
-        return Layout(
-            showsSidebar: size.width >= sidebarMinimumWidth,
-            contentAxis: stacked ? .vertical : .horizontal
-        )
+        Layout(showsSidebar: size.width >= sidebarMinimumWidth)
+    }
+
+    /// The tree pane width that shows rows `contentWidth` wide, clamped so the file pane
+    /// keeps the rest of the window.
+    public static func treeWidth(forContent contentWidth: CGFloat) -> CGFloat {
+        min(max(contentWidth, treeMinimumWidth), treeMaximumWidth)
     }
 }
