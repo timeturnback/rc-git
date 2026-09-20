@@ -1,13 +1,21 @@
 import AppKit
 import RcGitKit
 
+/// A label the mouse passes through. The commit box's placeholder sits over the text view and
+/// must not take the click that puts the caret there.
+private final class PassthroughLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// The Changes view, split across the window: the sidebar section holds every changed
 /// working-tree path with a tick per file, the stash list, and the commit box, while the tab
 /// itself holds one file's diff against `HEAD` with a tick per hunk. Renders state the window
 /// controller pushes in and forwards every action back out; it never classifies or performs a
 /// mutation itself.
 @MainActor
-final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+    NSTextViewDelegate
+{
     var onSelectEntry: ((StatusEntry) -> Void)?
     var onToggleEntry: ((String, Bool) -> Void)?
     var onToggleHunk: ((String, HunkStamp, [HunkStamp]) -> Void)?
@@ -36,6 +44,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let filesPlaceholder = NSTextField(labelWithString: "No changes")
     private let truncationLabel = NSTextField(labelWithString: "")
     private let stashTable = NSTableView()
+    private let stashScroll = NSScrollView()
+    private let stashGroup = NSStackView()
     private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let popButton = NSButton(title: "Pop", target: nil, action: nil)
     private let dropButton = NSButton(title: "Drop…", target: nil, action: nil)
@@ -43,6 +53,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let pullButton = NSButton(title: "Pull", target: nil, action: nil)
     private let pushButton = NSButton(title: "Push", target: nil, action: nil)
     private let messageText = NSTextView()
+    private let messageScroll = NSScrollView()
+    private let messagePlaceholder = PassthroughLabel(labelWithString: "Commit message")
     private let summaryLabel = NSTextField(labelWithString: "")
     private let commitButton = NSButton(title: "Commit", target: nil, action: nil)
     private let stashButton = NSButton(title: "Stash", target: nil, action: nil)
@@ -55,6 +67,14 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private var diffRows: [DiffRow] = []
     private var diffPath: String?
     private var isReloading = false
+    /// Re-made every time their row shows: the stack gives no width to a view it has not laid
+    /// out, and it drops the one made here whenever the row is hidden again.
+    private var truncationWidth: NSLayoutConstraint?
+    private var stashWidth: NSLayoutConstraint?
+    private weak var sectionStack: NSStackView?
+
+    /// The gutter the sidebar section keeps on both sides.
+    private static let sectionInset: CGFloat = 8
 
     // MARK: Layout
 
@@ -126,7 +146,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let stashLabel = NSTextField(labelWithString: "Stashes")
         stashLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         stashLabel.textColor = .secondaryLabelColor
-        let stashScroll = NSScrollView()
         stashScroll.documentView = stashTable
         stashScroll.hasVerticalScroller = true
         stashScroll.autohidesScrollers = true
@@ -145,17 +164,29 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let stashButtons = NSStackView(views: [applyButton, popButton, dropButton])
         stashButtons.orientation = .horizontal
         stashButtons.spacing = 6
+        // One group, so a repository with no stashes hides the header, the list, and the
+        // buttons together instead of showing an empty box under a heading.
+        stashGroup.orientation = .vertical
+        stashGroup.alignment = .width
+        stashGroup.spacing = 6
+        for row in [stashLabel, stashScroll, stashButtons] as [NSView] {
+            stashGroup.addArrangedSubview(row)
+        }
 
         messageText.isRichText = false
         messageText.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         messageText.isVerticallyResizable = true
         messageText.autoresizingMask = [.width]
         messageText.textContainer?.widthTracksTextView = true
-        let messageScroll = NSScrollView()
+        messageText.delegate = self
         messageScroll.documentView = messageText
         messageScroll.hasVerticalScroller = true
         messageScroll.autohidesScrollers = true
         messageScroll.borderType = .bezelBorder
+        // NSTextView has no placeholder, so one sits over the empty box.
+        messagePlaceholder.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        messagePlaceholder.textColor = .placeholderTextColor
+        messagePlaceholder.translatesAutoresizingMaskIntoConstraints = false
 
         summaryLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         summaryLabel.textColor = .secondaryLabelColor
@@ -173,15 +204,16 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         actionRow.spacing = 6
 
         let stack = NSStackView(views: [
-            syncRow, filesScroll, truncationLabel, stashLabel, stashScroll, stashButtons,
-            messageScroll, actionRow,
+            syncRow, filesScroll, truncationLabel, stashGroup, messageScroll, actionRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
         stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
+        stack.edgeInsets = NSEdgeInsets(
+            top: 6, left: Self.sectionInset, bottom: Self.sectionInset, right: Self.sectionInset)
         stack.detachesHiddenViews = true
+        sectionStack = stack
         filesScroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
         stashScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
         messageScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
@@ -190,9 +222,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         stack.translatesAutoresizingMaskIntoConstraints = false
         pane.addSubview(stack)
         pane.addSubview(filesPlaceholder)
+        pane.addSubview(messagePlaceholder)
         filesPlaceholder.textColor = .secondaryLabelColor
         filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
-        let inset: CGFloat = 8
+        let inset = Self.sectionInset
         // The list keeps a usable height, but yields before the layout breaks: it shares
         // the sidebar with the ref list now.
         let filesFloor = filesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150)
@@ -205,7 +238,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             stack.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
             filesScroll.widthAnchor.constraint(
                 equalTo: stack.widthAnchor, constant: -2 * inset),
-            stashScroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             messageScroll.widthAnchor.constraint(
                 equalTo: stack.widthAnchor, constant: -2 * inset),
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
@@ -214,7 +246,13 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             messageScroll.heightAnchor.constraint(equalToConstant: 64),
             filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),
             filesPlaceholder.centerYAnchor.constraint(equalTo: filesScroll.centerYAnchor),
+            // The text container's own inset, so the placeholder sits on the caret.
+            messagePlaceholder.leadingAnchor.constraint(
+                equalTo: messageScroll.leadingAnchor, constant: 5),
+            messagePlaceholder.topAnchor.constraint(
+                equalTo: messageScroll.topAnchor, constant: 2),
         ])
+        show(stashGroup, visible: true, width: &stashWidth)
         return pane
     }
 
@@ -285,16 +323,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             entries = report.entries
             filesPlaceholder.isHidden = !entries.isEmpty
             filesPlaceholder.stringValue = "No changes"
-            truncationLabel.isHidden = !report.truncated
-            if report.truncated {
-                truncationLabel.stringValue =
-                    "Scan stopped after \(report.scanned) entries; the list is incomplete."
-            }
+            showTruncation(
+                report.truncated
+                    ? "Scan stopped after \(report.scanned) entries; the list is incomplete."
+                    : nil)
         case let .failed(message):
             entries = []
             filesPlaceholder.isHidden = false
             filesPlaceholder.stringValue = message
-            truncationLabel.isHidden = true
+            showTruncation(nil)
         }
         reloadPreservingSelection(filesTable)
         refreshSummary()
@@ -363,6 +400,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         self.stashes = stashes
         reloadPreservingSelection(stashTable)
         updateStashButtons()
+        show(stashGroup, visible: !stashes.isEmpty, width: &stashWidth)
     }
 
     /// Re-renders tick checkboxes after the model's tick state moved.
@@ -378,6 +416,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func clearMessage() {
         messageText.string = ""
+        refreshMessagePlaceholder()
+    }
+
+    func textDidChange(_ notification: Notification) {
+        refreshMessagePlaceholder()
+    }
+
+    private func refreshMessagePlaceholder() {
+        messagePlaceholder.isHidden = !messageText.string.isEmpty
     }
 
     private func refreshSummary() {
@@ -385,6 +432,27 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         summaryLabel.stringValue = entries.isEmpty ? "" : "\(ticked) of \(entries.count) selected"
         commitButton.isEnabled = ticked > 0
         stashButton.isEnabled = ticked > 0
+    }
+
+    /// Shows the scan-truncation note, or hides it.
+    private func showTruncation(_ message: String?) {
+        if let message { truncationLabel.stringValue = message }
+        show(truncationLabel, visible: message != nil, width: &truncationWidth)
+    }
+
+    /// Shows or hides a row of the sidebar section, carrying the row's width by hand. The
+    /// stack only gives its own width to a view it has laid out, so a row that is hidden when
+    /// the stack first lays out would never get one, and a row it detaches loses the one it
+    /// has: the width is made again on every show.
+    private func show(_ row: NSView, visible: Bool, width: inout NSLayoutConstraint?) {
+        width?.isActive = false
+        width = nil
+        row.isHidden = !visible
+        guard visible, let stack = sectionStack else { return }
+        let constraint = row.widthAnchor.constraint(
+            equalTo: stack.widthAnchor, constant: -2 * Self.sectionInset)
+        constraint.isActive = true
+        width = constraint
     }
 
     private func showDiffPlaceholder(_ message: String) {

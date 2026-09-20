@@ -19,6 +19,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     var onSelect: ((RefEntry) -> Void)?
     var onSelectWorkingTree: (() -> Void)?
     var onRefAction: ((RefMenuAction, RefEntry) -> Void)?
+    /// Fires after the rows change, so the sidebar can re-fit the list to whole rows.
+    var onRowsChanged: (() -> Void)?
 
     private final class Section {
         let title: String
@@ -39,6 +41,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private var head: Head?
     private var selected: RefEntry?
     private let workingTreeRow = WorkingTreeRow()
+    private static let stackSpacing: CGFloat = 6
+    private static let topInset: CGFloat = 8
     private var showsWorkingTree = false
     private var workingTreeSelected = false
     private var isReloading = false
@@ -73,12 +77,29 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
         let stack = NSStackView(views: [search, scroll])
         stack.orientation = .vertical
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 0, right: 8)
+        stack.spacing = Self.stackSpacing
+        stack.edgeInsets = NSEdgeInsets(top: Self.topInset, left: 8, bottom: 0, right: 8)
         stack.setHuggingPriority(.defaultLow, for: .vertical)
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.setVisibilityPriority(.mustHold, for: scroll)
         view = stack
+    }
+
+    /// The tallest height up to `limit` that ends the list on a row boundary, so the section
+    /// under the refs never starts across half a branch. Group headers and branch rows are
+    /// different heights, so the boundaries come from the rows themselves; the walk stops at
+    /// the first row past the limit, and so reads only the rows that fit on screen.
+    func heightEndingOnARow(atMost limit: CGFloat) -> CGFloat {
+        let chrome = Self.topInset + search.intrinsicContentSize.height + Self.stackSpacing
+        let available = limit - chrome
+        guard available > 0, outline.numberOfRows > 0 else { return limit }
+        var fitted: CGFloat = 0
+        for row in 0..<outline.numberOfRows {
+            let bottom = outline.rect(ofRow: row).maxY
+            guard bottom <= available else { break }
+            fitted = bottom
+        }
+        return fitted > 0 ? chrome + fitted : limit
     }
 
     func reload(
@@ -124,6 +145,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             outline.deselectAll(nil)
         }
         isReloading = false
+        onRowsChanged?()
     }
 
     private func rowOf(_ ref: RefEntry) -> Int? {

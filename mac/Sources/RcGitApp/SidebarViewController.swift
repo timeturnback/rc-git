@@ -15,6 +15,7 @@ final class SidebarViewController: NSViewController {
     private let separator = NSBox()
     private var sections: [NSView] = []
     private var refsHeight: NSLayoutConstraint?
+    private var sectionWidth: NSLayoutConstraint?
 
     /// Registers a section and hides it. The window controller adds one per mode that has
     /// one, then calls `show(section:)` on every mode switch. `controller` is the owner to
@@ -36,17 +37,36 @@ final class SidebarViewController: NSViewController {
     /// Shows one registered section, or none at all.
     func show(section: NSView?) {
         loadViewIfNeeded()
+        sectionWidth?.isActive = false
+        sectionWidth = nil
         for candidate in sections {
             candidate.isHidden = candidate !== section
         }
         separator.isHidden = section == nil
+        fitRefsToWholeRows()
         refsHeight?.isActive = section != nil
+        guard let section else { return }
+        // A section joins the stack hidden, so it is detached before the stack ever lays out
+        // and never receives the `.width` alignment constraint the stack gives a view it laid
+        // out — it would size to its content's own width and sit against the trailing edge.
+        // The stack never makes that constraint later either, and AppKit drops an ancestor's
+        // constraints for a view it detaches, so the width is given again on every show.
+        let width = section.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        width.isActive = true
+        sectionWidth = width
+    }
+
+    /// Ends the ref list on a row boundary, so the section under it never starts across half
+    /// a branch. The rows change with the repository, so this runs again on every reload.
+    private func fitRefsToWholeRows() {
+        refsHeight?.constant = refs.heightEndingOnARow(atMost: Self.refsHeightBesideASection)
     }
 
     override func loadView() {
         separator.boxType = .separator
         separator.isHidden = true
 
+        refs.onRowsChanged = { [weak self] in self?.fitRefsToWholeRows() }
         addChild(refs)
         stack.orientation = .vertical
         stack.alignment = .width
