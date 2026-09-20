@@ -63,3 +63,12 @@ A key that contradicts `known_hosts` is refused with no way to approve it inside
 rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
 by the name actually dialed, so a config alias shares the trust of the real host behind
 it.
+
+## Session handover
+
+What a self-update passes to the build that replaces it: the open tabs, in on-screen
+order, with the selected one. It is a handover rather than a save because both processes
+are alive at once — the new build reads the state while the old one is still running, so
+the write is flushed before the launch and the old process stops writing afterwards. The
+state is scoped by bundle identifier, which is why the identifier never depends on a
+version or a build number.

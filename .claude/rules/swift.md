@@ -31,6 +31,10 @@ paths: mac/**
   identifier by hand. Work the updater does outside the process — toolchain probe, checkout
   read, pull, build, relaunch — goes behind `UpdateEnvironment` so `UpdateModel` stays
   testable.
+- State the relaunched build reads — the open tabs — is handed over, not just saved:
+  `OpenTabs.handOff` flushes the write because both processes are alive at the launch, and
+  `AppDelegate.tabsHandedOff` stops the old process writing afterwards
+  (`docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md`).
 - `UpdateModel` runs one of two modes. `.update` (release) fetches and refuses a dirty
   checkout; `.rebuild` (dev) builds the working tree as it stands and has no up-to-date
   shortcut, because the tree moves without the commit. Do not make `.rebuild` fetch.
