@@ -74,9 +74,11 @@ just one pane with a min-height floor and one without.
   ```
 
   Entries are `x, y, w, h, isCollapsed, isHidden`; subview 1 is the diff scroll view, at
-  height 0. The release bundle held the same shape, and the outer split's key
-  `rc-git.history.v3` recorded the whole drawer at 101pt — the file list's 100pt floor plus a
-  1pt divider, i.e. the drawer sized to its own minimum.
+  height 0. The release domain `com.timeturnback.rcgit` held the same zero-height shape — and
+  there, the outer split's key `rc-git.history.v3` also recorded the whole drawer at 101pt, the
+  file list's 100pt floor plus a 1pt divider, i.e. the drawer starved to its own minimum. The
+  `.dev` domain's outer split was healthy at 865pt, so the two bundles were poisoned to
+  different depths: read both before concluding anything.
 - Rebuilding with corrected layout code still shows the broken pane, because the crushed
   position is restored from user defaults on launch.
 - The failure survives restarts but is per-machine state, not code state. A fresh user account
@@ -96,8 +98,10 @@ just one pane with a min-height floor and one without.
   first round. It did not resolve the report. (session history)
 - **Applying this doc's own prevention rules — and still shipping the bug.** The `.v3` drawer
   rewrite (`08d943c`) followed them literally: both autosave names bumped `v2` -> `v3`, and a
-  min-height floor added. The floor went on the changed-files scroll view; the diff scroll view
-  that same commit introduced got none. Compliance was not protection.
+  min-height floor added. The floor went on the changed-files scroll view and the diff scroll
+  view got none — and that commit had just flipped `detailSplit.isVertical` from `true` to
+  `false`, restacking the drawer from side-by-side to changes-above-diff and making the diff a
+  height-bearing pane for the first time. Compliance was not protection.
 - **Trusting an Auto Layout floor to undo a restored position.** The instinct is that
   `diffScroll.heightAnchor >= 150` is the whole fix. It is not, on a machine whose defaults are
   already poisoned: the restored position arrives as a *frame*, and a floor added afterwards
@@ -134,9 +138,11 @@ scopeBar.isHidden = path == nil
 ```
 
 **2. Give every pane of the split its own floor, with `.fill` distribution.** Each pane is a
-vertical stack with `distribution = .fill` and `detachesHiddenViews`; the scroll view takes the
-lowest vertical hugging (`rawValue: 1`) so it soaks up remaining height while the bars hug at
-`.defaultHigh`. Both floors of the detail drawer are named constants
+vertical stack with `distribution = .fill` and `detachesHiddenViews`, and the stretchy member
+takes the lowest vertical hugging (`rawValue: 1`) so it soaks up remaining height while the bars
+hug at `.defaultHigh`. That member is the scroll view in the commits pane but the split itself
+in the drawer, where `changesScroll` is deliberately at `.defaultHigh` — port the gradient, not
+the literal view type. Both floors of the detail drawer are named constants
 (`HistoryViewController.swift:28-29`), applied in `buildDetailPane()` (`:255-257`):
 
 ```swift
@@ -163,7 +169,7 @@ children rather than split panes, so it is precedent for the value, not for the 
 **3. Clamp the divider through `NSSplitViewDelegate`.** This is the durable part, and the one
 thing the 2026-09-07 fix lacked. The controller conforms, the detail split takes it as its
 delegate (`HistoryViewController.swift:224`), and the two coordinate methods make the bad
-position unreachable (`:678-696`):
+position unreachable (`:675-696`):
 
 ```swift
 // MARK: NSSplitViewDelegate
@@ -265,10 +271,11 @@ no pixels. The user saw the loading state and never the result.
 - **Floor every pane of a split, on the axis that split can crush, and re-audit the floors
   whenever a pane is added or the split is restructured.** A split is only as safe as its
   least-floored pane. This rule in its singular form ("give scroll content in a split a floor")
-  is what `08d943c` satisfied by flooring one of two panes — the unfloored one being the pane
-  that commit had just introduced. A vertical split takes height, a horizontal one takes width,
-  and a restructure can flip which axis is at risk: that same commit correctly swapped the
-  commits pane's height floor for a width one, and the diff pane it added got neither.
+  is what `08d943c` satisfied by flooring one of two panes. A vertical split takes height, a
+  horizontal one takes width, and a **restructure flips which axis is at risk** — which is the
+  whole story of that commit: it flipped both splits' orientation at once, correctly swapping the
+  commits pane's height floor for a width one, and leaving the diff pane with no floor on the
+  height axis it had just started bearing. Neither pane was new; the geometry was.
 - **An Auto Layout floor is not sufficient against autosave; pair it with `NSSplitViewDelegate`
   min/max coordinate clamping.** The floor governs computed layout; the delegate governs the
   divider position, including the one restored from user defaults, which arrives as a frame and
@@ -299,9 +306,13 @@ no pixels. The user saw the loading state and never the result.
 - **A placeholder that lives in a different view from the content it replaces can lie.** A
   flash-then-nothing symptom *with* a visible loading state is evidence the load worked and the
   render target is the problem.
-- **This split-plus-autosave pattern now exists in several places** — the commits pane, the
-  commit-detail drawer, and the Changes tab modeled on `HistoryViewController`. A fix applied to
-  only one of them is the shape of this recurrence. (session history)
+- **Know every autosaving split in the app, and fix them as a set.** There are exactly three
+  `autosaveName` sites: `HistoryViewController:173` and `:223` (both fixed here) and
+  `MainWindowController:346` (`rc-git.main.v2`, an `NSSplitViewController` covered by
+  `minimumThickness`). The Changes tab is *not* one of them despite being modeled on
+  `HistoryViewController` — it has no `NSSplitView` at all, so its `>= 150` floors are ordinary
+  constraints on plain subviews and need no delegate. A fix applied to only one site is the shape
+  of this recurrence.
 
 ## Related Issues
 
