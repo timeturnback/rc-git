@@ -23,7 +23,9 @@ public struct AppBuild: Sendable, Hashable {
     public let variant: AppVariant
     /// `CFBundleName`: `rc-git`, or `rc-git (dev)` for the dev bundle.
     public let name: String
-    /// `CFBundleShortVersionString`, e.g. `0.1.0`.
+    /// `CFBundleShortVersionString`, e.g. `0.1.42`. The template in `mac/Info.plist`
+    /// carries the major and minor; `scripts/build-app.sh` makes the patch the commit
+    /// count, so the version moves with every commit on master.
     public let version: String
     /// `CFBundleVersion`: the commit count at build time.
     public let build: String
@@ -98,9 +100,20 @@ public struct AppBuild: Sendable, Hashable {
         }
     }
 
-    /// `0.1.0 (42) · a3f91c2`, with a `+` on the commit when the checkout was dirty.
+    /// What the window titlebar shows beside its title: `0.1.42`, with a `+` when the
+    /// checkout was dirty at build time.
+    public var shortVersion: String {
+        dirty ? "\(version)+" : version
+    }
+
+    /// `0.1.0 (42) · a3f91c2`, with a `+` on the commit when the checkout was dirty. The
+    /// build number is dropped when the version already ends in it, which is what
+    /// `scripts/build-app.sh` stamps: both are the commit count.
     public var versionLine: String {
-        var line = "\(version) (\(build))"
+        var line = version
+        if !version.hasSuffix(".\(build)") {
+            line += " (\(build))"
+        }
         if let shortCommit {
             line += " · \(shortCommit)\(dirty ? "+" : "")"
         }

@@ -67,6 +67,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // which fires windowDidResize and runs applyLayout.
         buildSplitViews()
         buildToolbar()
+        buildVersionBadge()
         wireModel()
         window.center()
         window.setFrameAutosaveName("rc-git.window")
@@ -328,6 +329,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window?.toolbar = toolbar
+    }
+
+    /// The version the bundle was stamped with, beside the window title. The stamp cannot
+    /// change while the app runs, so the badge is built once and never updated. Frames are
+    /// set by hand: this view lives in the titlebar, outside the content view's layout.
+    private func buildVersionBadge() {
+        guard let window else { return }
+        let build = AppBuild.current
+        let label = NSTextField(labelWithString: build.shortVersion)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.toolTip = build.versionLine
+        label.sizeToFit()
+        let height: CGFloat = 28
+        let inset: CGFloat = 6
+        label.frame = NSRect(
+            x: inset, y: ((height - label.frame.height) / 2).rounded(),
+            width: label.frame.width, height: label.frame.height)
+        label.autoresizingMask = [.minYMargin, .maxYMargin]
+        let container = NSView(
+            frame: NSRect(x: 0, y: 0, width: label.frame.width + inset * 2, height: height))
+        container.addSubview(label)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = container
+        accessory.layoutAttribute = .leading
+        window.addTitlebarAccessoryViewController(accessory)
     }
 
     private func wireModel() {

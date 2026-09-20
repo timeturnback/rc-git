@@ -118,10 +118,15 @@ them and Cargo dependencies weekly.
 ## Versions
 
 Rust crates share `workspace.package.version`; the FFI reports it through `rcgit_version`.
-`mac/Info.plist` carries the app's `CFBundleShortVersionString`. Bump both together.
+
+The app's version needs no bump. `mac/Info.plist` carries the major and minor of
+`CFBundleShortVersionString`; `scripts/build-app.sh` replaces the patch with the commit
+count, so `0.1.0` in the template ships as `0.1.42` and every commit on master moves it.
+Edit the template only to start a new series. The window titlebar shows that version beside
+its title, with a `+` when the checkout was dirty at build time.
 
 `scripts/build-app.sh` stamps the rest into the bundle's `Info.plist`: `CFBundleVersion`
-(the commit count), `RCGitVariant`, `RCGitSourceRoot`, `RCGitSourceCommit`,
-`RCGitSourceDirty`, and `RCGitBuildDate`. `AppBuild` (RcGitKit) reads them; a bundle with no
-stamp reports itself as a dev build with no checkout to rebuild from, so it gets no menu
-item at all.
+(the same commit count, as the monotonic build number), `RCGitVariant`, `RCGitSourceRoot`,
+`RCGitSourceCommit`, `RCGitSourceDirty`, and `RCGitBuildDate`. `AppBuild` (RcGitKit) reads
+them; a bundle with no stamp reports itself as a dev build with no checkout to rebuild from,
+so it gets no menu item at all.

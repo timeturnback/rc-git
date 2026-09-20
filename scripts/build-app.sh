@@ -83,9 +83,16 @@ count="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
 dirty=false
 [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ] && dirty=true
 
+# The version's patch is the commit count, so a commit on master is the only thing that
+# moves it and nothing has to be bumped by hand. mac/Info.plist carries the major and minor;
+# CFBundleVersion stays the bare count, which is the monotonic build number macOS wants.
+series="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist" 2>/dev/null ||
+  echo 0.1.0)"
+
 stamp CFBundleIdentifier "$BUNDLE_ID"
 stamp CFBundleName "$NAME"
 stamp CFBundleDisplayName "$NAME"
+stamp CFBundleShortVersionString "${series%.*}.$count"
 stamp CFBundleVersion "$count"
 stamp RCGitVariant "$VARIANT"
 stamp RCGitSourceRoot "$ROOT"

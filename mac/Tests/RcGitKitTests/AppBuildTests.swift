@@ -39,7 +39,23 @@ import Testing
     @Test func aDirtyBuildMarksItsCommit() {
         let build = AppBuild(info: Self.stamped(["RCGitSourceDirty": "true"]))
         #expect(build.dirty)
+        #expect(build.shortVersion == "0.1.0+")
         #expect(build.versionLine == "0.1.0 (42) · a3f91c2+")
+    }
+
+    /// `scripts/build-app.sh` makes the version's patch the commit count, which is also the
+    /// build number. The titlebar shows the version alone; the update window must not
+    /// repeat the count in parentheses.
+    @Test func aCommitCountVersionDropsTheRepeatedBuildNumber() {
+        let build = AppBuild(info: Self.stamped(["CFBundleShortVersionString": "0.1.42"]))
+        #expect(build.shortVersion == "0.1.42")
+        #expect(build.versionLine == "0.1.42 · a3f91c2")
+    }
+
+    /// A build number that only looks like the version's patch still belongs on the line.
+    @Test func aDifferentBuildNumberStays() {
+        let build = AppBuild(info: Self.stamped(["CFBundleShortVersionString": "0.1.420"]))
+        #expect(build.versionLine == "0.1.420 (42) · a3f91c2")
     }
 
     /// The dev bundle rebuilds itself in its own checkout; it never touches
