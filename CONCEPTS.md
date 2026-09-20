@@ -64,6 +64,15 @@ rc-git — like a guard deny, the message points the user at ssh itself. Lookup 
 by the name actually dialed, so a config alias shares the trust of the real host behind
 it.
 
+## Tick
+
+What the user includes in the next commit or stash. Every changed file starts ticked, and an
+untick survives a rescan by path rather than by position. A tick is whole-file by default; a
+file whose hunks are ticked individually carries only those hunks, and ticking every hunk
+collapses back to a whole-file tick while unticking the last one unticks the file. A row that
+stands for several files — a folder in the change list — is ticked when all of them are, mixed
+when only some are, and one click moves the whole set.
+
 ## Session handover
 
 What a self-update passes to the build that replaces it: the open tabs, in on-screen

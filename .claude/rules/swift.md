@@ -29,6 +29,14 @@ paths: mac/**
   toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
   `DropHostViewController` rather than being the window's content controller, and a separator
   that cannot measure its split throws the items after it across the titlebar on collapse.
+- A cell whose label carries an `NSAttributedString` puts its truncation in the string's
+  `.paragraphStyle`; `lineBreakMode` on the field only applies to a plain `stringValue` and the
+  text clips with no ellipsis. Keep a row's controls in one `NSTableCellView` on `centerYAnchor`
+  rather than in separate table columns
+  (`docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md`).
+- The Changes list is one `NSOutlineView` serving both groupings from `ChangeTree` (RcGitKit,
+  pure and tested); flat rows are childless roots. Node identity dies on every reload, so
+  expansion and selection are restored by path, never by row index.
 - The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
   line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
   `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
