@@ -1,10 +1,11 @@
 import AppKit
 import RcGitKit
 
-/// The Changes tab: every changed working-tree path with a tick per file, one file's diff
-/// against `HEAD` with a tick per hunk, a commit box, and the stash list. Renders state the
-/// window controller pushes in and forwards every action back out; it never classifies or
-/// performs a mutation itself.
+/// The Changes view, split across the window: the sidebar section holds every changed
+/// working-tree path with a tick per file, the stash list, and the commit box, while the tab
+/// itself holds one file's diff against `HEAD` with a tick per hunk. Renders state the window
+/// controller pushes in and forwards every action back out; it never classifies or performs a
+/// mutation itself.
 @MainActor
 final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     var onSelectEntry: ((StatusEntry) -> Void)?
@@ -57,24 +58,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     // MARK: Layout
 
+    /// The tab itself is the diff alone; the file list and the commit box live in the
+    /// window sidebar, built by `makeSidebarSection()`.
     override func loadView() {
+        view = buildDiffPane()
+    }
+
+    /// The change list, the stash list, and the commit box, for the window sidebar. Call
+    /// once, before the sidebar lays out.
+    func makeSidebarSection() -> NSView {
         buildFilesTable()
         buildStashTable()
-        let leftPane = buildLeftPane()
-        let diffPane = buildDiffPane()
-
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.autosaveName = "rc-git.changes.v1"
-        split.addArrangedSubview(leftPane)
-        split.addArrangedSubview(diffPane)
-        split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
-        NSLayoutConstraint.activate([
-            leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            diffPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
-        ])
-        view = split
+        return buildSection()
     }
 
     private func buildFilesTable() {
@@ -107,7 +102,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         stashTable.delegate = self
     }
 
-    private func buildLeftPane() -> NSView {
+    private func buildSection() -> NSView {
         for (button, action): (NSButton, Selector) in [
             (fetchButton, #selector(fetchClicked(_:))),
             (pullButton, #selector(pullClicked(_:))),
@@ -198,6 +193,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         filesPlaceholder.textColor = .secondaryLabelColor
         filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
         let inset: CGFloat = 8
+        // The list keeps a usable height, but yields before the layout breaks: it shares
+        // the sidebar with the ref list now.
+        let filesFloor = filesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150)
+        filesFloor.priority = NSLayoutConstraint.Priority(rawValue: 700)
         NSLayoutConstraint.activate([
             syncRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             stack.topAnchor.constraint(equalTo: pane.topAnchor),
@@ -210,7 +209,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             messageScroll.widthAnchor.constraint(
                 equalTo: stack.widthAnchor, constant: -2 * inset),
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
-            filesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            filesFloor,
             stashScroll.heightAnchor.constraint(equalToConstant: 96),
             messageScroll.heightAnchor.constraint(equalToConstant: 64),
             filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),

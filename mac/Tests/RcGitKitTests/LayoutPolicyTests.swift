@@ -10,30 +10,35 @@ import Testing
     }
 
     @Test func narrowWindowHidesSidebar() {
-        let layout = LayoutPolicy.layout(for: CGSize(width: 700, height: 600))
+        let layout = LayoutPolicy.layout(for: CGSize(width: 500, height: 600))
         #expect(layout == Layout(showsSidebar: false))
     }
 
     @Test func portraitWindowKeepsTheSidebarRuleOnly() {
         #expect(LayoutPolicy.layout(for: CGSize(width: 900, height: 1400)).showsSidebar)
-        #expect(!LayoutPolicy.layout(for: CGSize(width: 500, height: 1400)).showsSidebar)
+        #expect(!LayoutPolicy.layout(for: CGSize(width: 480, height: 1400)).showsSidebar)
     }
 
     @Test func sidebarThresholdIsInclusive() {
         let atSidebar = LayoutPolicy.layout(
-            for: CGSize(width: LayoutPolicy.sidebarMinimumWidth, height: 400))
+            for: CGSize(width: LayoutPolicy.sidebarWindowWidth, height: 400))
         #expect(atSidebar.showsSidebar)
         let belowSidebar = LayoutPolicy.layout(
-            for: CGSize(width: LayoutPolicy.sidebarMinimumWidth - 1, height: 400))
+            for: CGSize(width: LayoutPolicy.sidebarWindowWidth - 1, height: 400))
         #expect(!belowSidebar.showsSidebar)
     }
 
-    @Test func treeWidthFollowsItsContentBetweenTheBounds() {
-        #expect(LayoutPolicy.treeWidth(forContent: 300) == 300)
+    @Test func sidebarWidthFollowsItsContentBetweenTheBounds() {
+        #expect(LayoutPolicy.sidebarWidth(forContent: 300) == 300)
     }
 
-    @Test func treeWidthClampsToTheBounds() {
-        #expect(LayoutPolicy.treeWidth(forContent: 0) == LayoutPolicy.treeMinimumWidth)
-        #expect(LayoutPolicy.treeWidth(forContent: 4000) == LayoutPolicy.treeMaximumWidth)
+    @Test func sidebarWidthClampsToTheBounds() {
+        #expect(LayoutPolicy.sidebarWidth(forContent: 0) == LayoutPolicy.sidebarMinimumWidth)
+        #expect(LayoutPolicy.sidebarWidth(forContent: 4000) == LayoutPolicy.sidebarMaximumWidth)
+    }
+
+    @Test func theSidebarFitsBesideTheDetailPaneAtTheThreshold() {
+        #expect(LayoutPolicy.sidebarMaximumWidth < LayoutPolicy.sidebarWindowWidth)
+        #expect(LayoutPolicy.sidebarMinimumWidth < LayoutPolicy.sidebarMaximumWidth)
     }
 }

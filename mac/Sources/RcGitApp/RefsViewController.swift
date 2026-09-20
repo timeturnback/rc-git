@@ -1,7 +1,8 @@
 import AppKit
 import RcGitKit
 
-/// Sidebar listing the working tree, branches, remote branches, and tags, with a filter field.
+/// The top of the sidebar: the working tree, branches, remote branches, and tags, with a
+/// filter field.
 @MainActor
 final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSSearchFieldDelegate, NSMenuDelegate

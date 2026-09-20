@@ -1,8 +1,9 @@
 import AppKit
 import RcGitKit
 
-/// One browser window: refs sidebar, directory tree, file pane. Owns a `BrowserModel` and
-/// applies `LayoutPolicy` as the window changes size.
+/// One browser window: a sidebar carrying the refs and the mode's navigation — the directory
+/// tree, or the change list and commit box — beside the detail pane. Owns a `BrowserModel`
+/// and applies `LayoutPolicy` as the window changes size.
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate,
     NSMenuItemValidation
@@ -19,9 +20,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     private let outerSplit = NSSplitViewController()
-    private let contentSplit = NSSplitViewController()
     private let contentTabs = NSTabViewController()
-    private let refsController = RefsViewController()
+    private let sidebarController = SidebarViewController()
     private let treeController = TreeViewController()
     private let fileController = FileViewController()
     private let historyController = HistoryViewController()
@@ -41,11 +41,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var modeControl: NSSegmentedControl?
     private var currentLayout: Layout?
     private var sidebarCollapsedByPolicy = false
-    /// Set once the user drags the tree divider; the automatic fit stands back after that.
-    private static let treeWidthPinnedKey = "rc-git.tree-width-pinned"
+    /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
+    private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned"
     private var repositoryName = ""
     private(set) var repositoryPath: String?
     private var hasWorkingTree = false
+    /// The Changes view's list and commit box, hosted in the sidebar.
+    private var changesSection: NSView?
+
+    /// The ref list inside the sidebar; the sidebar stacks a mode's section under it.
+    private var refsController: RefsViewController { sidebarController.refs }
 
     init() {
         let window = NSWindow(
@@ -141,10 +146,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// Shows the tree and file panes, the commit history, or the working-tree changes.
+    /// Shows the file pane, the commit history, or the working-tree changes, and puts the
+    /// section that belongs to the mode in the sidebar.
     func setMode(_ mode: ContentMode) {
         contentTabs.selectedTabViewItemIndex = mode.rawValue
         modeControl?.selectedSegment = mode.rawValue
+        switch mode {
+        case .files: sidebarController.show(section: treeController.view)
+        case .history: sidebarController.show(section: nil)
+        case .changes: sidebarController.show(section: changesSection)
+        }
         if mode == .history, model.history.isEmpty {
             Task { await model.loadMoreHistory() }
         }
@@ -253,7 +264,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(
             self, name: NSSplitView.didResizeSubviewsNotification,
-            object: contentSplit.splitView)
+            object: outerSplit.splitView)
         refWatcher?.stop()
         refWatcher = nil
         worktreeWatcher?.stop()
@@ -283,60 +294,59 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     }
 
-    /// Sizes the tree pane to the rows it is showing so the file pane keeps the rest of the
-    /// window. A divider the user dragged is theirs from then on, so the fit stops.
-    private func fitTreeWidth(to contentWidth: CGFloat) {
-        guard !UserDefaults.standard.bool(forKey: Self.treeWidthPinnedKey) else { return }
-        contentSplit.splitView.setPosition(
-            LayoutPolicy.treeWidth(forContent: contentWidth), ofDividerAt: 0)
+    /// Sizes the sidebar to the tree rows it is showing so the detail pane keeps the rest of
+    /// the window. A divider the user dragged is theirs from then on, so the fit stops, and
+    /// only the tree measures its rows, so the fit runs only while the tree is showing.
+    private func fitSidebarWidth(to contentWidth: CGFloat) {
+        guard !UserDefaults.standard.bool(forKey: Self.sidebarWidthPinnedKey),
+            contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue,
+            // A width for a collapsed sidebar would re-open it behind the user.
+            outerSplit.splitViewItems.first?.isCollapsed == false
+        else { return }
+        outerSplit.splitView.setPosition(
+            LayoutPolicy.sidebarWidth(forContent: contentWidth), ofDividerAt: 0)
     }
 
-    @objc private func contentSplitDidResize(_ notification: Notification) {
+    @objc private func sidebarDidResize(_ notification: Notification) {
         // Present only when a divider drag caused the resize, not when the window changed.
         guard notification.userInfo?["NSSplitViewDividerIndex"] != nil else { return }
-        UserDefaults.standard.set(true, forKey: Self.treeWidthPinnedKey)
+        UserDefaults.standard.set(true, forKey: Self.sidebarWidthPinnedKey)
     }
 
     // MARK: Construction
 
     private func buildSplitViews() {
-        let sidebar = NSSplitViewItem(sidebarWithViewController: refsController)
-        sidebar.minimumThickness = 180
-        sidebar.maximumThickness = 380
+        // The sidebar carries the navigation for every mode: the refs, and under them the
+        // tree or the change list. The content area beside it is the detail alone.
+        sidebarController.add(section: treeController.view, from: treeController)
+        let changes = changesController.makeSidebarSection()
+        changesSection = changes
+        sidebarController.add(section: changes)
+        sidebarController.show(section: treeController.view)
+
+        let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarController)
+        sidebar.minimumThickness = LayoutPolicy.sidebarMinimumWidth
+        sidebar.maximumThickness = LayoutPolicy.sidebarMaximumWidth
         sidebar.canCollapse = true
-        sidebar.collapseBehavior = .preferResizingSplitViewWithFixedSiblings
-
-        // The tree holds the width it is given and the file pane absorbs every change, so a
-        // wider window is a wider file pane.
-        let tree = NSSplitViewItem(contentListWithViewController: treeController)
-        tree.minimumThickness = LayoutPolicy.treeMinimumWidth
-        tree.canCollapse = false
-        tree.holdingPriority = NSLayoutConstraint.Priority(rawValue: 251)
-
-        let file = NSSplitViewItem(viewController: fileController)
-        file.minimumThickness = 240
-        file.canCollapse = false
-        file.holdingPriority = NSLayoutConstraint.Priority(rawValue: 249)
-
-        contentSplit.addSplitViewItem(tree)
-        contentSplit.addSplitViewItem(file)
-        contentSplit.splitView.isVertical = true
-        contentSplit.splitView.dividerStyle = .thin
-        // .v2: the split no longer flips to horizontal, so a saved stacked position would
-        // come back as a width.
-        contentSplit.splitView.autosaveName = "rc-git.content.v2"
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(contentSplitDidResize(_:)),
-            name: NSSplitView.didResizeSubviewsNotification, object: contentSplit.splitView)
+        // Collapsing gives the width to the pane beside it; the window keeps the size the
+        // user gave it.
+        sidebar.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
 
         contentTabs.tabStyle = .unspecified
-        contentTabs.addTabViewItem(NSTabViewItem(viewController: contentSplit))
+        contentTabs.addTabViewItem(NSTabViewItem(viewController: fileController))
         contentTabs.addTabViewItem(NSTabViewItem(viewController: historyController))
         contentTabs.addTabViewItem(NSTabViewItem(viewController: changesController))
 
+        let content = NSSplitViewItem(viewController: contentTabs)
+        content.minimumThickness = 240
         outerSplit.addSplitViewItem(sidebar)
-        outerSplit.addSplitViewItem(NSSplitViewItem(viewController: contentTabs))
-        outerSplit.splitView.autosaveName = "rc-git.main"
+        outerSplit.addSplitViewItem(content)
+        // .v2: the tree moved into the sidebar, so a saved width is a width for different
+        // content and the content split it used to share is gone.
+        outerSplit.splitView.autosaveName = "rc-git.main.v2"
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sidebarDidResize(_:)),
+            name: NSSplitView.didResizeSubviewsNotification, object: outerSplit.splitView)
         let host = DropHostViewController(hosting: outerSplit)
         host.onDropDirectory = { path in
             (NSApp.delegate as? AppDelegate)?.open(path: path)
@@ -524,7 +534,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.presentError(message)
         }
         treeController.onContentWidthChanged = { [weak self] width in
-            self?.fitTreeWidth(to: width)
+            self?.fitSidebarWidth(to: width)
         }
         fileController.onLoadAnyway = { [weak self] entry, limit in
             guard let self else { return }
@@ -1039,11 +1049,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private static let viewModeItem = NSToolbarItem.Identifier("rc-git.viewMode")
     private static let syncItem = NSToolbarItem.Identifier("rc-git.sync")
 
+    /// No `.sidebarTrackingSeparator`: it is vended by `NSSplitViewController` for the split
+    /// it owns, and this window's split sits inside `DropHostViewController` rather than
+    /// being the window's own content controller. Tracking a split it cannot measure, the
+    /// separator sat off the divider while the sidebar was open and threw the items it
+    /// carries across the titlebar when the sidebar collapsed.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
-            .toggleSidebar, .sidebarTrackingSeparator, Self.viewModeItem, .flexibleSpace,
-            Self.syncItem,
-        ]
+        [.toggleSidebar, Self.viewModeItem, .flexibleSpace, Self.syncItem]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
