@@ -15,6 +15,16 @@ paths: mac/**
 - Window size decisions go through `LayoutPolicy.layout(for:)` and its tests. The window
   controller applies the result and remembers whether it collapsed the sidebar itself, so a
   user's manual collapse is respected.
+- The sidebar is the navigation for every mode: `SidebarViewController` keeps the refs on top
+  and swaps the mode's section under them (tree, or the Changes list and commit box). A
+  section is hidden through `detachesHiddenViews`, and AppKit drops an ancestor's constraints
+  for a detached view for good, so a section carries no constraint to anything outside itself
+  — size it with hugging and with a toggled low-priority height on the refs, which never leave.
+- The sidebar collapses with `.preferResizingSiblingsWithFixedSplitView`, so the window keeps
+  its size; `.preferResizingSplitViewWithFixedSiblings` shrinks the window instead. The
+  toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
+  `DropHostViewController` rather than being the window's content controller, and a separator
+  that cannot measure its split throws the items after it across the titlebar on collapse.
 - The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
   line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
   `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
