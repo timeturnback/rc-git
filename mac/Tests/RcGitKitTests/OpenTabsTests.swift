@@ -27,6 +27,18 @@ import Testing
         #expect(tabs.selectedIndex == 0)
     }
 
+    /// The handover to a relaunching build writes the same state as a save; what it adds is
+    /// the flush, which cannot be observed from inside one process.
+    @Test func handsOffTheSameStateItSaves() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tabs = OpenTabs(defaults: defaults)
+        tabs.handOff(paths: ["/one", "/two"], selectedIndex: 1)
+        #expect(tabs.paths == ["/one", "/two"])
+        #expect(tabs.selectedIndex == 1)
+    }
+
     @Test func savedSelectionOutsideTheListFallsBackToFirst() {
         let suite = "rc-git.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

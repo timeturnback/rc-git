@@ -26,6 +26,16 @@ public struct OpenTabs {
             Self.clampedSelection(selectedIndex, count: paths.count), forKey: Self.selectedKey)
     }
 
+    /// Saves for a build that is about to replace this one, and forces the write out.
+    /// `UserDefaults` hands changes to `cfprefsd` asynchronously, and the relaunched app
+    /// reads these keys within milliseconds — while this process is still alive, so the
+    /// on-disk domain it reads is whatever was last flushed. Without the flush the new app
+    /// reads an older list and opens an empty window.
+    public func handOff(paths: [String], selectedIndex: Int) {
+        save(paths: paths, selectedIndex: selectedIndex)
+        defaults.synchronize()
+    }
+
     public func clear() {
         defaults.removeObject(forKey: Self.pathsKey)
         defaults.removeObject(forKey: Self.selectedKey)

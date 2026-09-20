@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recentMenu = NSMenu(title: "Open Recent")
     private let build = AppBuild.current
     private var updateController: UpdateWindowController?
+    /// Set once the tabs were handed to a relaunching build; see `handOffTabs`.
+    private var tabsHandedOff = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(
@@ -68,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showUpdate(_ sender: Any?) {
         let controller =
             updateController
-            ?? UpdateWindowController(build: build, saveState: { [weak self] in self?.saveTabs() })
+            ?? UpdateWindowController(
+                build: build, handOffState: { [weak self] in self?.handOffTabs() })
         updateController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -145,6 +148,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// every open and close, once more at quit, and once before a self-update relaunches,
     /// which also captures drag reordering.
     func saveTabs() {
+        // This process outlives the launch of its replacement. A write after the handover
+        // would land on top of whatever the new process has already recorded.
+        guard !tabsHandedOff else { return }
+        let state = tabState()
+        openTabs.save(paths: state.paths, selectedIndex: state.selectedIndex)
+    }
+
+    /// Hands the tabs to the build that is about to replace this one, flushed so the new
+    /// process reads them, and stops recording after that.
+    func handOffTabs() {
+        let state = tabState()
+        openTabs.handOff(paths: state.paths, selectedIndex: state.selectedIndex)
+        tabsHandedOff = true
+    }
+
+    private func tabState() -> (paths: [String], selectedIndex: Int) {
         var ordered: [MainWindowController] = []
         if let group = controllers.first?.window?.tabGroup {
             ordered = group.windows.compactMap { window in
@@ -156,9 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let withRepository = ordered.filter { $0.repositoryPath != nil }
         let selectedWindow = controllers.first?.window?.tabGroup?.selectedWindow
-        openTabs.save(
-            paths: withRepository.compactMap(\.repositoryPath),
-            selectedIndex: withRepository.firstIndex { $0.window === selectedWindow } ?? 0)
+        return (
+            withRepository.compactMap(\.repositoryPath),
+            withRepository.firstIndex { $0.window === selectedWindow } ?? 0
+        )
     }
 
     private func rebuildRecentMenu() {

@@ -24,9 +24,10 @@ final class UpdateWindowController: NSWindowController {
     /// upstream. It is what every label in the window reads.
     private var isRebuild: Bool { build.updateMode == .rebuild }
 
-    /// `saveState` runs just before the new bundle is launched, so the tabs the relaunched
-    /// app reopens are the ones on screen now.
-    init(build: AppBuild, saveState: @escaping @MainActor @Sendable () -> Void) {
+    /// `handOffState` runs just before the new bundle is launched, so the tabs the
+    /// relaunched app reopens are the ones on screen now. It flushes them: this process is
+    /// still alive when the new one reads them.
+    init(build: AppBuild, handOffState: @escaping @MainActor @Sendable () -> Void) {
         self.build = build
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 440),
@@ -41,7 +42,7 @@ final class UpdateWindowController: NSWindowController {
                 mode: mode,
                 relaunchPath: relaunchPath,
                 window: { [weak window] in window },
-                willRelaunch: saveState)
+                willRelaunch: handOffState)
         }
         model = UpdateModel(
             build: build, environment: environment ?? UnavailableUpdateEnvironment())
