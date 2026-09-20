@@ -7,9 +7,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recents = RecentRepositories()
     private let openTabs = OpenTabs()
     private let recentMenu = NSMenu(title: "Open Recent")
+    private let build = AppBuild.current
+    private var updateController: UpdateWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = MainMenu.build(recentMenu: recentMenu)
+        NSApp.mainMenu = MainMenu.build(
+            recentMenu: recentMenu, appName: build.name, canUpdate: build.canSelfUpdate)
         rebuildRecentMenu()
         NSApp.activate(ignoringOtherApps: true)
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
@@ -57,6 +60,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func clearRecents(_ sender: Any?) {
         recents.clear()
         rebuildRecentMenu()
+    }
+
+    /// Opens the update window, which rebuilds the release bundle from the checkout it was
+    /// built from and relaunches into it. Only the release bundle has the menu item.
+    @objc func showUpdate(_ sender: Any?) {
+        let controller =
+            updateController
+            ?? UpdateWindowController(build: build, saveState: { [weak self] in self?.saveTabs() })
+        updateController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Adds an empty tab; also gives the tab bar its "+" button (AppKit shows it when
@@ -127,8 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on
-    /// every open and close and once more at quit, which also captures drag reordering.
-    private func saveTabs() {
+    /// every open and close, once more at quit, and once before a self-update relaunches,
+    /// which also captures drag reordering.
+    func saveTabs() {
         var ordered: [MainWindowController] = []
         if let group = controllers.first?.window?.tabGroup {
             ordered = group.windows.compactMap { window in

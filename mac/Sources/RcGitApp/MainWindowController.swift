@@ -794,79 +794,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         alert.beginSheetModal(for: window)
     }
 
-    /// Asks for a username and token (HTTPS) or a key passphrase (ssh) for `host`. The
-    /// secret field is secure; what the server accepts is remembered in the login
-    /// keychain by the model.
     private func promptForCredentials(
         host: String, kind: CredentialKind, completion: @escaping (Credentials?) -> Void
     ) {
-        guard let window else {
-            completion(nil)
-            return
-        }
-        let alert = NSAlert()
-        let userField = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
-        userField.placeholderString = "Username"
-        let secretField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        switch kind {
-        case .httpsToken:
-            alert.messageText = "Sign in to \(host)"
-            alert.informativeText =
-                "rc-git talks to HTTPS remotes with a personal access token. The token is "
-                + "remembered in your login keychain once the server accepts it."
-            secretField.placeholderString = "Token"
-            let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
-            box.addSubview(userField)
-            box.addSubview(secretField)
-            alert.accessoryView = box
-        case .sshPassphrase:
-            alert.messageText = "Unlock the ssh key for \(host)"
-            alert.informativeText =
-                "The ssh key for this remote is encrypted. The passphrase is remembered "
-                + "in your login keychain once the server accepts the key."
-            secretField.placeholderString = "Passphrase"
-            secretField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-            let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
-            box.addSubview(secretField)
-            alert.accessoryView = box
-        }
-        alert.addButton(withTitle: kind == .httpsToken ? "Sign In" : "Unlock")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            let username = userField.stringValue.trimmingCharacters(in: .whitespaces)
-            let secret = secretField.stringValue
-            guard response == .alertFirstButtonReturn, !secret.isEmpty else {
-                completion(nil)
-                return
-            }
-            if kind == .httpsToken, username.isEmpty {
-                completion(nil)
-                return
-            }
-            completion(Credentials(username: username, token: secret))
-        }
+        SyncPrompts.credentials(on: window, host: host, kind: kind, completion: completion)
     }
 
-    /// Shows an unknown ssh host key for the user to verify before trusting.
     private func promptForHostKey(
         host: String, hostKey: String, completion: @escaping (Bool) -> Void
     ) {
-        guard let window else {
-            completion(false)
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = "Trust \(host)?"
-        alert.informativeText =
-            "This host is not in known_hosts. Its key is:\n\n\(hostKey)\n\n"
-            + "Verify the fingerprint through a trusted channel before continuing. "
-            + "rc-git remembers the approval for this host; known_hosts is never modified."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Trust and Continue")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            completion(response == .alertFirstButtonReturn)
-        }
+        SyncPrompts.hostKey(on: window, host: host, hostKey: hostKey, completion: completion)
     }
 
     // MARK: Guarded mutations

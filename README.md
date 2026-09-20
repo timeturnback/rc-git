@@ -11,11 +11,17 @@ through a policy that backs up what it deletes.
 
 ```sh
 brew install cbindgen cargo-deny
-scripts/build-app.sh      # produces RCGit.app in the repository root
-open RCGit.app ~/code/some-repo
+scripts/install-app.sh    # builds and installs /Applications/RCGit.app
+open -a RCGit ~/code/some-repo
 ```
 
 Requires a stable Rust toolchain and Xcode 16 or newer.
+
+Afterwards the app updates itself: **Update rc-git** in the app menu fetches and
+fast-forwards the checkout it was built from, rebuilds, reinstalls, and relaunches into the
+new version with the same tabs open. `scripts/build-app.sh --dev` builds a separate
+`RCGit-dev.app` — its own identifier, its own tabs, an orange icon — for trying changes
+without disturbing the installed app.
 
 ## Use
 

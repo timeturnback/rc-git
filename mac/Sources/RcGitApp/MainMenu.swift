@@ -5,9 +5,11 @@ import AppKit
 /// app delegate.
 @MainActor
 enum MainMenu {
-    static func build(recentMenu: NSMenu) -> NSMenu {
+    /// `canUpdate` adds the self-update item; the dev bundle and any unstamped build
+    /// leave it out, because neither knows which checkout to build from.
+    static func build(recentMenu: NSMenu, appName: String, canUpdate: Bool) -> NSMenu {
         let main = NSMenu()
-        main.addItem(submenu(appMenu()))
+        main.addItem(submenu(appMenu(appName: appName, canUpdate: canUpdate)))
         main.addItem(submenu(fileMenu(recentMenu: recentMenu)))
         main.addItem(submenu(editMenu()))
         main.addItem(submenu(viewMenu()))
@@ -31,19 +33,25 @@ enum MainMenu {
         return item
     }
 
-    private static func appMenu() -> NSMenu {
-        let menu = NSMenu(title: "rc-git")
+    private static func appMenu(appName: String, canUpdate: Bool) -> NSMenu {
+        let menu = NSMenu(title: appName)
         menu.addItem(
-            item("About rc-git", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
+            item(
+                "About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                ""))
+        if canUpdate {
+            menu.addItem(.separator())
+            menu.addItem(item("Update rc-git…", #selector(AppDelegate.showUpdate(_:)), ""))
+        }
         menu.addItem(.separator())
-        menu.addItem(item("Hide rc-git", #selector(NSApplication.hide(_:)), "h"))
+        menu.addItem(item("Hide \(appName)", #selector(NSApplication.hide(_:)), "h"))
         menu.addItem(
             item(
                 "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
                 [.command, .option]))
         menu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:)), ""))
         menu.addItem(.separator())
-        menu.addItem(item("Quit rc-git", #selector(NSApplication.terminate(_:)), "q"))
+        menu.addItem(item("Quit \(appName)", #selector(NSApplication.terminate(_:)), "q"))
         return menu
     }
 

@@ -45,9 +45,12 @@ zizmor .github/workflows
 
 if ((fast == 0)); then
   step "rust release library"
-  cargo build --release -p rc-git-ffi
+  # Same platform floor as scripts/build.sh: without it ring's assembly objects are built
+  # for the host SDK and the Swift link warns on every one of them.
+  MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release -p rc-git-ffi
   step "swift-format"
-  xcrun swift-format lint --strict --recursive mac/Sources mac/Tests mac/Package.swift
+  xcrun swift-format lint --strict --recursive \
+    mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
   step "swift build"
   swift build --package-path mac
   step "swift test"
