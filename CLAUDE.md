@@ -23,7 +23,8 @@ cargo test --workspace            # Rust tests; fixtures are built with the git 
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 scripts/build.sh                  # release Rust lib + header + swift build
 swift test --package-path mac     # RcGitKit tests; run scripts/build.sh once first
-scripts/build-app.sh              # assemble RCGit.app, ad-hoc signed
+scripts/build-app.sh [--dev]      # assemble RCGit.app, or RCGit-dev.app, ad-hoc signed
+scripts/install-app.sh            # build the release bundle into /Applications
 cargo run -p rc-git-cli -- --time ls <repo> [rev] [path]   # CLI and benchmark tool
 ```
 
@@ -52,6 +53,9 @@ header drifts.
 
 - Never launch the app to verify a change. Build, lint, and tests are the scope; the user runs
   `RCGit.app` and reports what breaks. Reproduce and measure with the CLI instead.
+- The release and dev bundles differ only by `CFBundleIdentifier`, name, icon, and build config.
+  That identifier scopes `UserDefaults`, so it is what keeps their tabs apart and what carries
+  tabs through a self-update — never make it depend on a version or build number.
 - Ask before adding a dependency on either side. Rust versions are pinned exactly and pass
   `cargo deny`; the Swift package has none.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.
