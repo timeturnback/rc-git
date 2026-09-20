@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(
-            recentMenu: recentMenu, appName: build.name, canUpdate: build.canSelfUpdate)
+            recentMenu: recentMenu, appName: build.name, updateMode: build.updateMode)
         rebuildRecentMenu()
         NSApp.activate(ignoringOtherApps: true)
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
@@ -62,8 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildRecentMenu()
     }
 
-    /// Opens the update window, which rebuilds the release bundle from the checkout it was
-    /// built from and relaunches into it. Only the release bundle has the menu item.
+    /// Opens the update window, which rebuilds this bundle from the checkout it was built
+    /// from and relaunches into it: from upstream for the release app, from the working
+    /// tree as it stands for the dev bundle. An unstamped build has no menu item.
     @objc func showUpdate(_ sender: Any?) {
         let controller =
             updateController

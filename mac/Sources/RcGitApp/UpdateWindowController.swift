@@ -1,8 +1,10 @@
 import AppKit
 import RcGitKit
 
-/// The "Update rc-git" window: what is installed, what the update will do, a live build
-/// log, and one button that fetches, fast-forwards, rebuilds, installs, and relaunches.
+/// The update window: what is installed, what the update will do, a live build log, and
+/// one button. On the release bundle that button fetches, fast-forwards, rebuilds,
+/// installs, and relaunches; on the dev bundle it rebuilds the working tree as it stands
+/// and relaunches, which is the edit-run loop without a terminal.
 ///
 /// It is a window rather than a sheet because the update outlives every repository
 /// window: the last step quits the app and launches the new bundle, which reopens the
@@ -15,8 +17,12 @@ final class UpdateWindowController: NSWindowController {
     private let sourceLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let spinner = NSProgressIndicator()
-    private let actionButton = NSButton(title: "Update and Relaunch", target: nil, action: nil)
+    private let actionButton = NSButton(title: "", target: nil, action: nil)
     private let logView = NSTextView()
+
+    /// Whether this bundle rebuilds itself from the working tree instead of updating from
+    /// upstream. It is what every label in the window reads.
+    private var isRebuild: Bool { build.updateMode == .rebuild }
 
     /// `saveState` runs just before the new bundle is launched, so the tabs the relaunched
     /// app reopens are the ones on screen now.
@@ -27,16 +33,20 @@ final class UpdateWindowController: NSWindowController {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         var environment: AppUpdateEnvironment?
-        if let sourceRoot = build.sourceRoot {
+        if let sourceRoot = build.sourceRoot, let mode = build.updateMode,
+            let relaunchPath = build.relaunchPath
+        {
             environment = AppUpdateEnvironment(
                 sourceRoot: sourceRoot,
+                mode: mode,
+                relaunchPath: relaunchPath,
                 window: { [weak window] in window },
                 willRelaunch: saveState)
         }
         model = UpdateModel(
             build: build, environment: environment ?? UnavailableUpdateEnvironment())
         super.init(window: window)
-        window.title = "Update rc-git"
+        window.title = isRebuild ? "Rebuild \(build.name)" : "Update rc-git"
         window.contentMinSize = NSSize(width: 460, height: 320)
         window.contentView = buildContentView()
         window.center()
@@ -135,29 +145,35 @@ final class UpdateWindowController: NSWindowController {
     // MARK: Rendering
 
     private func render() {
-        installedLabel.stringValue = "Installed: \(build.versionLine)\(builtSuffix())"
-        sourceLabel.stringValue =
-            build.sourceRoot.map { "Builds from \($0), fast-forwarded from its upstream first." }
-            ?? "This bundle was not built by scripts/build-app.sh, so it cannot update itself."
+        let heading = isRebuild ? "Running" : "Installed"
+        installedLabel.stringValue = "\(heading): \(build.versionLine)\(builtSuffix())"
+        sourceLabel.stringValue = sourceDescription()
         renderState()
         renderLog()
+    }
+
+    private func sourceDescription() -> String {
+        guard let sourceRoot = build.sourceRoot else {
+            return "This bundle was not built by scripts/build-app.sh, so it cannot rebuild itself."
+        }
+        return isRebuild
+            ? "Rebuilds \(sourceRoot) as it stands now — no fetch, uncommitted work included."
+            : "Builds from \(sourceRoot), fast-forwarded from its upstream first."
     }
 
     private func renderState() {
         switch model.state {
         case .idle:
             spinner.stopAnimation(nil)
-            statusLabel.stringValue = "Fetch, rebuild, install, relaunch. Tabs come back."
-            actionButton.title = "Update and Relaunch"
-            actionButton.isEnabled = build.canSelfUpdate
+            statusLabel.stringValue =
+                isRebuild
+                ? "Rebuild and relaunch. Tabs come back."
+                : "Fetch, rebuild, install, relaunch. Tabs come back."
+            actionButton.title = isRebuild ? "Rebuild and Relaunch" : "Update and Relaunch"
+            actionButton.isEnabled = build.updateMode != nil
         case let .running(step):
             spinner.startAnimation(nil)
-            statusLabel.stringValue =
-                switch step {
-                case .preflight: "Checking the toolchain and the checkout…"
-                case .sync: "Fetching and fast-forwarding the checkout…"
-                case .install: "Building and installing — this takes a few minutes…"
-                }
+            statusLabel.stringValue = runningDescription(step)
             actionButton.isEnabled = false
         case .upToDate:
             spinner.stopAnimation(nil)
@@ -166,14 +182,25 @@ final class UpdateWindowController: NSWindowController {
             actionButton.isEnabled = true
         case .installed:
             spinner.startAnimation(nil)
-            statusLabel.stringValue = "Installed. Relaunching…"
+            statusLabel.stringValue = "\(isRebuild ? "Built" : "Installed"). Relaunching…"
             actionButton.isEnabled = false
         case let .failed(step, message):
             spinner.stopAnimation(nil)
-            statusLabel.stringValue = "\(Self.name(of: step)) failed: \(message)"
+            statusLabel.stringValue = "\(name(of: step)) failed: \(message)"
             statusLabel.toolTip = message
             actionButton.title = "Try Again"
-            actionButton.isEnabled = build.canSelfUpdate
+            actionButton.isEnabled = build.updateMode != nil
+        }
+    }
+
+    private func runningDescription(_ step: UpdateStep) -> String {
+        switch step {
+        case .preflight: "Checking the toolchain and the checkout…"
+        case .sync: "Fetching and fast-forwarding the checkout…"
+        case .install:
+            isRebuild
+                ? "Building the dev bundle — this takes a moment…"
+                : "Building and installing — this takes a few minutes…"
         }
     }
 
@@ -194,11 +221,11 @@ final class UpdateWindowController: NSWindowController {
         return " · built \(formatter.string(from: date))"
     }
 
-    private static func name(of step: UpdateStep) -> String {
+    private func name(of step: UpdateStep) -> String {
         switch step {
         case .preflight: "Preflight"
         case .sync: "Fetch"
-        case .install: "Install"
+        case .install: isRebuild ? "Build" : "Install"
         }
     }
 }

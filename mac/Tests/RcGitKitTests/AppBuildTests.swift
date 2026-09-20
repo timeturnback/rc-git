@@ -26,7 +26,8 @@ import Testing
         #expect(build.sourceRoot == "/Users/dev/rc-git")
         #expect(build.shortCommit == "a3f91c2")
         #expect(build.dirty == false)
-        #expect(build.canSelfUpdate)
+        #expect(build.updateMode == .update)
+        #expect(build.relaunchPath == "/Applications/RCGit.app")
         #expect(build.versionLine == "0.1.0 (42) · a3f91c2")
         let expected = DateComponents(
             calendar: Calendar(identifier: .gregorian), timeZone: TimeZone(identifier: "UTC"),
@@ -41,12 +42,15 @@ import Testing
         #expect(build.versionLine == "0.1.0 (42) · a3f91c2+")
     }
 
-    @Test func theDevBundleNeverSelfUpdates() {
+    /// The dev bundle rebuilds itself in its own checkout; it never touches
+    /// `/Applications`.
+    @Test func theDevBundleRebuildsItselfInPlace() {
         let build = AppBuild(
             info: Self.stamped(["RCGitVariant": "dev", "CFBundleName": "rc-git (dev)"]))
         #expect(build.variant == .dev)
         #expect(build.name == "rc-git (dev)")
-        #expect(!build.canSelfUpdate)
+        #expect(build.updateMode == .rebuild)
+        #expect(build.relaunchPath == "/Users/dev/rc-git/RCGit-dev.app")
     }
 
     /// A bare `swift run` has no stamp at all: it must degrade, not crash, and must not
@@ -58,7 +62,8 @@ import Testing
         #expect(build.commit == nil)
         #expect(build.shortCommit == nil)
         #expect(build.buildDate == nil)
-        #expect(!build.canSelfUpdate)
+        #expect(build.updateMode == nil)
+        #expect(build.relaunchPath == nil)
         #expect(build.versionLine == "0 (0)")
     }
 
@@ -67,6 +72,6 @@ import Testing
         let build = AppBuild(info: Self.stamped(["RCGitSourceCommit": "unknown"]))
         #expect(build.commit == nil)
         #expect(build.versionLine == "0.1.0 (42)")
-        #expect(build.canSelfUpdate)
+        #expect(build.updateMode == .update)
     }
 }

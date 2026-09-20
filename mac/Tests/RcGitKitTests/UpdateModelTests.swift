@@ -206,16 +206,31 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         #expect(model.state == .failed(step: .preflight, message: "cannot open /checkout"))
     }
 
-    @Test func theDevBundleRefusesBeforeAnyWork() async {
+    /// The dev loop rebuilds the working tree as it stands: no fetch, and uncommitted work
+    /// goes into the build instead of stopping it. The checkout is at the commit this
+    /// bundle was built from, which for a release update would mean "already up to date" —
+    /// a rebuild has no such shortcut, because the tree moves without the commit.
+    @Test func theDevBundleRebuildsTheWorkingTreeWithoutFetching() async {
         let (model, environment) = Self.model(
-            .init(), build: Self.build(variant: .dev, sourceRoot: "/checkout"))
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: ["a.rs"]))
+            ]),
+            build: Self.build(variant: .dev))
         await model.start()
-        guard case let .failed(step, message) = model.state else {
+        #expect(model.state == .installed)
+        #expect(environment.calls == ["missingTools", "sourceState", "install", "relaunch"])
+        #expect(model.log.contains("uncommitted work goes in: a.rs"))
+    }
+
+    @Test func aDevBundleWithNoStampNamesTheDevScript() async {
+        let (model, environment) = Self.model(
+            .init(), build: Self.build(variant: .dev, sourceRoot: nil))
+        await model.start()
+        guard case .failed(.preflight, let message) = model.state else {
             Issue.record("expected a preflight failure, got \(model.state)")
             return
         }
-        #expect(step == .preflight)
-        #expect(message.contains("dev bundle"))
+        #expect(message.contains("scripts/build-app.sh --dev"))
         #expect(environment.calls.isEmpty)
     }
 
@@ -223,10 +238,11 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         let (model, environment) = Self.model(
             .init(), build: Self.build(variant: .release, sourceRoot: nil))
         await model.start()
-        guard case .failed(.preflight, _) = model.state else {
+        guard case .failed(.preflight, let message) = model.state else {
             Issue.record("expected a preflight failure, got \(model.state)")
             return
         }
+        #expect(message.contains("scripts/install-app.sh"))
         #expect(environment.calls.isEmpty)
     }
 

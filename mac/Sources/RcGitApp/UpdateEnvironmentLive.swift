@@ -124,12 +124,18 @@ private final class ExitSignal: @unchecked Sendable {
 
 /// The real `UpdateEnvironment`: a login shell for the toolchain and the build, the core
 /// for the checkout's state, `SyncModel` for the fetch and fast-forward — the same guarded
-/// path the Changes tab pulls through — and `NSWorkspace` for the relaunch.
+/// path the Changes tab pulls through — and `NSWorkspace` for the relaunch. A `.rebuild`
+/// never reaches `sync`, so the dev loop needs no network and no credentials.
 struct AppUpdateEnvironment: UpdateEnvironment {
     /// What the build needs and macOS does not ship.
     static let requiredTools = ["cargo", "swift", "cbindgen"]
 
     let sourceRoot: String
+    /// What this update produces, which decides the script that runs and whether the
+    /// checkout is fetched first.
+    let mode: UpdateMode
+    /// The bundle to launch once the build finishes.
+    let relaunchPath: String
     /// The window sheets attach to, resolved when a prompt is actually needed.
     let window: @MainActor @Sendable () -> NSWindow?
     /// Runs on the main actor just before the new bundle is launched.
@@ -192,25 +198,34 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }
     }
 
+    /// The script this mode runs, relative to the checkout, and the arguments it takes.
+    private var buildScript: (path: String, arguments: String) {
+        switch mode {
+        case .update: ("scripts/install-app.sh", "")
+        case .rebuild: ("scripts/build-app.sh", " --dev")
+        }
+    }
+
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
-        let script = Shell.quote("\(sourceRoot)/scripts/install-app.sh")
-        let outcome = await Shell.run("exec \(script)", in: sourceRoot, onOutput: onOutput)
+        let script = buildScript
+        let command = "exec \(Shell.quote("\(sourceRoot)/\(script.path)"))\(script.arguments)"
+        let outcome = await Shell.run(command, in: sourceRoot, onOutput: onOutput)
         guard outcome.status != 0 else { return nil }
         let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"
-        return "scripts/install-app.sh failed (status \(outcome.status)): \(lastLine)"
+        return "\(script.path)\(script.arguments) failed (status \(outcome.status)): \(lastLine)"
     }
 
     func relaunch() async -> String? {
         await MainActor.run { willRelaunch() }
-        let installed = URL(fileURLWithPath: AppBuild.installedPath)
+        let target = URL(fileURLWithPath: relaunchPath)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.activates = true
         do {
             _ = try await NSWorkspace.shared.openApplication(
-                at: installed, configuration: configuration)
+                at: target, configuration: configuration)
         } catch {
-            return "installed, but could not launch \(installed.path): \(error)"
+            return "built, but could not launch \(target.path): \(error)"
         }
         await MainActor.run { NSApp.terminate(nil) }
         return nil

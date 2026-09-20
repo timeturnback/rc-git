@@ -17,6 +17,8 @@ public struct AppBuild: Sendable, Hashable {
     /// Where `scripts/install-app.sh` puts the release bundle, and what a self-update
     /// replaces and relaunches.
     public static let installedPath = "/Applications/RCGit.app"
+    /// What `scripts/build-app.sh --dev` names the dev bundle inside its own checkout.
+    public static let devBundleName = "RCGit-dev.app"
 
     public let variant: AppVariant
     /// `CFBundleName`: `rc-git`, or `rc-git (dev)` for the dev bundle.
@@ -78,9 +80,22 @@ public struct AppBuild: Sendable, Hashable {
         commit.map { String($0.prefix(7)) }
     }
 
-    /// Whether "Update rc-git" can run: the release bundle knows which checkout built it.
-    public var canSelfUpdate: Bool {
-        variant == .release && sourceRoot != nil
+    /// What this bundle's update does, or `nil` when it carries no checkout to build from.
+    /// The release bundle fast-forwards the checkout before building; the dev bundle
+    /// rebuilds the working tree as it stands, which is the whole point of the edit-run
+    /// loop.
+    public var updateMode: UpdateMode? {
+        guard sourceRoot != nil else { return nil }
+        return variant == .release ? .update : .rebuild
+    }
+
+    /// The bundle an update launches when the build finishes: the installed release app,
+    /// or the dev bundle in the checkout that built it.
+    public var relaunchPath: String? {
+        switch variant {
+        case .release: Self.installedPath
+        case .dev: sourceRoot.map { "\($0)/\(Self.devBundleName)" }
+        }
     }
 
     /// `0.1.0 (42) · a3f91c2`, with a `+` on the commit when the checkout was dirty.

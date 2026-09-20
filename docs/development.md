@@ -36,6 +36,9 @@ open RCGit-dev.app                 # or: open -a RCGit ~/code/repo for the relea
 mac/.build/debug/RcGitApp ~/code/repo      # without a bundle
 ```
 
+Build the dev bundle from the terminal once; after that ⌘R inside it rebuilds and relaunches
+without losing tabs (see below).
+
 | | release | dev |
 |---|---|---|
 | Bundle | `/Applications/RCGit.app` | `<checkout>/RCGit-dev.app` |
@@ -55,10 +58,12 @@ cached in `build/icons/` and regenerated whenever that script is newer.
 Agents do not launch the app; see the working agreement in `CLAUDE.md`. Reproduce with the
 CLI: `cargo run -p rc-git-cli -- --time ls <repo>`.
 
-## Updating the release app
+## Rebuilding from inside the app
 
-The release bundle is stamped with the checkout and commit it was built from, and
-"Update rc-git" in the app menu rebuilds it from there:
+Both bundles are stamped with the checkout and commit they were built from, and both have
+an app-menu item that rebuilds themselves from there. They differ in what they build.
+
+**Release — "Update rc-git":**
 
 1. **Preflight.** The login shell must find `cargo`, `swift`, and `cbindgen`, and the
    checkout must have no uncommitted tracked changes.
@@ -71,7 +76,20 @@ The release bundle is stamped with the checkout and commit it was built from, an
 
 When the checkout is already at the commit the running bundle was built from, the window
 says so and the button becomes "Rebuild Anyway" rather than spending minutes on a rebuild.
-The dev bundle has no such menu item — it is rebuilt from the terminal.
+
+**Dev — "Rebuild and Relaunch" (⌘R):** preflight, then `scripts/build-app.sh --dev`, then
+relaunch. No fetch, no network, no credentials, and no dirty check — it builds the working
+tree exactly as it stands, because putting work in progress into the running app is the
+point. It never reports "up to date": the tree moves without the commit. The log names the
+uncommitted files going in.
+
+That is the edit-run loop: edit, ⌘R, look. Tabs come back on the other side because they
+live in `UserDefaults` under a bundle identifier the rebuild does not change — though only
+the open repositories and the selected tab are restored, not what each tab was showing.
+
+`scripts/build-app.sh` assembles into `build/stage/` and swaps at the end. The dev bundle
+runs that script to replace itself, and a bundle deleted out from under a live process
+loses every resource it has not already loaded.
 
 The app is ad-hoc signed, so every rebuild is a new code identity and the login keychain
 re-prompts for each remote host's stored token ("Always Allow" makes it once per rebuild).
@@ -105,4 +123,5 @@ Rust crates share `workspace.package.version`; the FFI reports it through `rcgit
 `scripts/build-app.sh` stamps the rest into the bundle's `Info.plist`: `CFBundleVersion`
 (the commit count), `RCGitVariant`, `RCGitSourceRoot`, `RCGitSourceCommit`,
 `RCGitSourceDirty`, and `RCGitBuildDate`. `AppBuild` (RcGitKit) reads them; a bundle with no
-stamp reports itself as a dev build that cannot self-update.
+stamp reports itself as a dev build with no checkout to rebuild from, so it gets no menu
+item at all.

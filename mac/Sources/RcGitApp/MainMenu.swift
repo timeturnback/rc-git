@@ -1,15 +1,17 @@
 import AppKit
+import RcGitKit
 
 /// The main menu, built in code so the app needs no nib. Actions use the standard AppKit
 /// selectors and travel the responder chain; only the open and recent items point at the
 /// app delegate.
 @MainActor
 enum MainMenu {
-    /// `canUpdate` adds the self-update item; the dev bundle and any unstamped build
-    /// leave it out, because neither knows which checkout to build from.
-    static func build(recentMenu: NSMenu, appName: String, canUpdate: Bool) -> NSMenu {
+    /// `updateMode` adds the item that rebuilds the app: the release bundle updates from
+    /// upstream, the dev bundle rebuilds the working tree. An unstamped build has neither,
+    /// because it does not know which checkout to build from.
+    static func build(recentMenu: NSMenu, appName: String, updateMode: UpdateMode?) -> NSMenu {
         let main = NSMenu()
-        main.addItem(submenu(appMenu(appName: appName, canUpdate: canUpdate)))
+        main.addItem(submenu(appMenu(appName: appName, updateMode: updateMode)))
         main.addItem(submenu(fileMenu(recentMenu: recentMenu)))
         main.addItem(submenu(editMenu()))
         main.addItem(submenu(viewMenu()))
@@ -33,15 +35,23 @@ enum MainMenu {
         return item
     }
 
-    private static func appMenu(appName: String, canUpdate: Bool) -> NSMenu {
+    private static func appMenu(appName: String, updateMode: UpdateMode?) -> NSMenu {
         let menu = NSMenu(title: appName)
         menu.addItem(
             item(
                 "About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                 ""))
-        if canUpdate {
+        if let updateMode {
             menu.addItem(.separator())
-            menu.addItem(item("Update rc-git…", #selector(AppDelegate.showUpdate(_:)), ""))
+            // The dev bundle earns a key equivalent: rebuilding is the edit-run loop, not
+            // an occasional errand. Cmd-R is free; the Repository menu's Sync is Cmd-Shift-R.
+            switch updateMode {
+            case .update:
+                menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:)), ""))
+            case .rebuild:
+                menu.addItem(
+                    item("Rebuild and Relaunch…", #selector(AppDelegate.showUpdate(_:)), "r"))
+            }
         }
         menu.addItem(.separator())
         menu.addItem(item("Hide \(appName)", #selector(NSApplication.hide(_:)), "h"))

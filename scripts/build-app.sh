@@ -6,9 +6,10 @@
 #   scripts/build-app.sh --dev        dev bundle     -> RCGit-dev.app
 #
 # The two bundles carry different identifiers, so they keep separate tabs, recents, and
-# window state, and different icons, so the Dock never confuses them. The release bundle is
-# stamped with the commit and the checkout it was built from; that stamp is what the app's
-# "Update rc-git" window reads.
+# window state, and different icons, so the Dock never confuses them. Both are stamped with
+# the commit and the checkout they were built from; that stamp is what the app's update
+# window reads — "Update rc-git" in the release app, "Rebuild and Relaunch" in the dev one,
+# which runs this script with --dev.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -58,14 +59,17 @@ BIN="$(swift build --package-path "$ROOT/mac" -c "$CONFIG" --show-bin-path)/RcGi
   exit 1
 }
 
-# Replace any previous bundle. Plain -r (not -rf) so a wrong path fails loudly.
-[ -d "$APP" ] && rm -r "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/RCGit"
-cp "$ROOT/mac/Info.plist" "$APP/Contents/Info.plist"
-cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
+# Assemble under build/ and swap at the end. "Rebuild and Relaunch" runs this script from
+# the dev bundle it is replacing, and a bundle deleted out from under a live process loses
+# every resource it has not already loaded. Plain -r (not -rf) so a wrong path fails loudly.
+STAGE="$ROOT/build/stage/$(basename "$APP")"
+[ -d "$STAGE" ] && rm -r "$STAGE"
+mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
+cp "$BIN" "$STAGE/Contents/MacOS/RCGit"
+cp "$ROOT/mac/Info.plist" "$STAGE/Contents/Info.plist"
+cp "$ICON" "$STAGE/Contents/Resources/AppIcon.icns"
 
-plist="$APP/Contents/Info.plist"
+plist="$STAGE/Contents/Info.plist"
 
 # Sets a key whether or not the template already carries it.
 stamp() {
@@ -90,8 +94,13 @@ stamp RCGitSourceDirty "$dirty"
 stamp RCGitBuildDate "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Ad-hoc signature: enough for local use, no developer account needed.
-codesign --force --sign - "$APP" >/dev/null 2>&1 || {
+codesign --force --sign - "$STAGE" >/dev/null 2>&1 || {
   echo "warning: ad-hoc codesign failed; the app may not launch" >&2
 }
+
+# The swap. A rename on the same filesystem, so the window where the bundle is missing is
+# as short as it can be.
+[ -d "$APP" ] && rm -r "$APP"
+mv "$STAGE" "$APP"
 
 echo "built $APP"

@@ -5,9 +5,20 @@ public enum UpdateStep: Sendable, Hashable {
     /// Toolchain and checkout checks. Nothing has been touched yet.
     case preflight
     /// Fetch and fast-forward the checkout, through the guard, like any other pull.
+    /// `.rebuild` skips it.
     case sync
-    /// Build the release bundle and swap it into `/Applications`.
+    /// Build the bundle and put it in place.
     case install
+}
+
+/// What an update does, which is decided by the bundle running it.
+public enum UpdateMode: Sendable, Hashable {
+    /// The release bundle: fetch, fast-forward, rebuild, install into `/Applications`,
+    /// relaunch. Refuses a dirty checkout, and stops early when the commit has not moved.
+    case update
+    /// The dev bundle: rebuild from the working tree as it stands and relaunch. No fetch
+    /// and no dirty check — putting work in progress into the running app is the point.
+    case rebuild
 }
 
 /// Where a self-update stands.
@@ -65,8 +76,9 @@ public protocol UpdateEnvironment: Sendable {
     func relaunch() async -> String?
 }
 
-/// Drives one self-update: preflight, fetch and fast-forward, build, install, relaunch.
-/// Stops at the first failure and keeps the log, so the window can show what happened.
+/// Drives one update: preflight, fetch and fast-forward, build, install, relaunch. The
+/// bundle's `UpdateMode` decides whether the fetch happens at all. Stops at the first
+/// failure and keeps the log, so the window can show what happened.
 ///
 /// Open tabs are not this model's concern — they live in `UserDefaults` under the bundle
 /// identifier, which an update does not change, so the relaunched app reopens them.
@@ -94,20 +106,44 @@ public final class UpdateModel {
     }
 
     /// Runs the whole update. `force` builds even when the checkout is already at the
-    /// commit this bundle was built from.
+    /// commit this bundle was built from; it means nothing in `.rebuild`, which always
+    /// builds.
     public func start(force: Bool = false) async {
         guard !isBusy else { return }
         log = []
-        guard build.canSelfUpdate, let root = build.sourceRoot else {
-            fail(
-                .preflight,
-                build.variant == .dev
-                    ? "this is the dev bundle; update the release app from it instead"
-                    : "this bundle carries no source checkout; reinstall with "
-                        + "scripts/install-app.sh")
+        guard let mode = build.updateMode, let root = build.sourceRoot else {
+            fail(.preflight, Self.unstampedMessage(build.variant))
             return
         }
+        guard let before = await preflight(root: root) else { return }
+        switch mode {
+        case .update:
+            guard await fastForward(from: before, force: force) else { return }
+        case .rebuild:
+            if !before.dirtyPaths.isEmpty {
+                note("uncommitted work goes in: \(Self.list(before.dirtyPaths))")
+            }
+        }
+        await buildAndRelaunch()
+    }
 
+    /// Returns terminal states to `.idle` so the window can start a second attempt.
+    public func reset() {
+        guard !isBusy else { return }
+        state = .idle
+        onChanged?()
+    }
+
+    /// `a.rs, b.rs and 3 more` — enough to recognize the work without a wall of paths.
+    public static func list(_ paths: [String], limit: Int = 3) -> String {
+        guard paths.count > limit else { return paths.joined(separator: ", ") }
+        let shown = paths.prefix(limit).joined(separator: ", ")
+        return "\(shown) and \(paths.count - limit) more"
+    }
+
+    /// Checks the toolchain and reads the checkout. `nil` when the update must stop; the
+    /// state already says why.
+    private func preflight(root: String) async -> SourceState? {
         enter(.preflight)
         note("checkout: \(root)")
         let missing = await environment.missingTools()
@@ -116,29 +152,39 @@ public final class UpdateModel {
                 .preflight,
                 "your login shell cannot find \(missing.joined(separator: ", ")); "
                     + "add the toolchain to your shell profile and try again")
-            return
+            return nil
         }
-        guard let before = await readSource(step: .preflight) else { return }
+        guard let state = await readSource(step: .preflight) else { return nil }
+        note("on \(state.branch ?? "a detached HEAD")")
+        return state
+    }
+
+    /// The `.update` half: refuse uncommitted work, fetch and fast-forward, then compare
+    /// the result with the commit this bundle was built from. `false` when the update must
+    /// stop, either because a step failed or because there is nothing new to build.
+    private func fastForward(from before: SourceState, force: Bool) async -> Bool {
         guard before.dirtyPaths.isEmpty else {
             fail(.preflight, "the checkout has uncommitted work: \(Self.list(before.dirtyPaths))")
-            return
+            return false
         }
-        note("on \(before.branch ?? "a detached HEAD")")
-
         enter(.sync)
         note("fetching and fast-forwarding")
         if let message = await environment.sync() {
             fail(.sync, message)
-            return
+            return false
         }
-        guard let after = await readSource(step: .sync) else { return }
+        guard let after = await readSource(step: .sync) else { return false }
         note("checkout is at \(String(after.commit.prefix(7)))")
         if !force, after.commit == build.commit {
             state = .upToDate
             onChanged?()
-            return
+            return false
         }
+        return true
+    }
 
+    /// Builds the bundle, puts it in place, and launches it.
+    private func buildAndRelaunch() async {
         enter(.install)
         if let message = await environment.install(onOutput: { [weak self] line in
             Task { @MainActor in self?.note(line) }
@@ -154,18 +200,11 @@ public final class UpdateModel {
         onChanged?()
     }
 
-    /// Returns terminal states to `.idle` so the window can start a second attempt.
-    public func reset() {
-        guard !isBusy else { return }
-        state = .idle
-        onChanged?()
-    }
-
-    /// `a.rs, b.rs and 3 more` — enough to recognize the work without a wall of paths.
-    public static func list(_ paths: [String], limit: Int = 3) -> String {
-        guard paths.count > limit else { return paths.joined(separator: ", ") }
-        let shown = paths.prefix(limit).joined(separator: ", ")
-        return "\(shown) and \(paths.count - limit) more"
+    /// A bundle with no `RCGitSourceRoot` stamp cannot know what to build; the message
+    /// names the script that stamps the variant it claims to be.
+    private static func unstampedMessage(_ variant: AppVariant) -> String {
+        "this bundle carries no source checkout; rebuild it with "
+            + (variant == .dev ? "scripts/build-app.sh --dev" : "scripts/install-app.sh")
     }
 
     private func readSource(step: UpdateStep) async -> SourceState? {
