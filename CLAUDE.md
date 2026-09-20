@@ -56,6 +56,9 @@ header drifts.
 - The release and dev bundles differ only by `CFBundleIdentifier`, name, icon, and build config.
   That identifier scopes `UserDefaults`, so it is what keeps their tabs apart and what carries
   tabs through a self-update — never make it depend on a version or build number.
+- Both bundles rebuild themselves by running `scripts/build-app.sh`, so that script assembles
+  into `build/stage/` and deletes the old bundle last. Never delete it before the build: the
+  dev bundle is the process running the script.
 - Ask before adding a dependency on either side. Rust versions are pinned exactly and pass
   `cargo deny`; the Swift package has none.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.

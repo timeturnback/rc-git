@@ -27,9 +27,13 @@ paths: mac/**
   delegate callbacks safe during construction: `.first`, not `[0]`.
 - Icons come from `Icons` (cached per extension). Do not call `NSWorkspace` from cell code.
 - Anything that differs between the installed app and the dev bundle reads `AppBuild`
-  (variant, source checkout, commit); never test the bundle identifier by hand. Work the
-  updater does outside the process — toolchain probe, checkout read, pull, build, relaunch —
-  goes behind `UpdateEnvironment` so `UpdateModel` stays testable.
+  (variant, source checkout, commit, `updateMode`, `relaunchPath`); never test the bundle
+  identifier by hand. Work the updater does outside the process — toolchain probe, checkout
+  read, pull, build, relaunch — goes behind `UpdateEnvironment` so `UpdateModel` stays
+  testable.
+- `UpdateModel` runs one of two modes. `.update` (release) fetches and refuses a dirty
+  checkout; `.rebuild` (dev) builds the working tree as it stands and has no up-to-date
+  shortcut, because the tree moves without the commit. Do not make `.rebuild` fetch.
 - Tests use `FakeRepository` for behavior and `GitFixture` for the real bridge; both build the
   same standard repository as `rc-git-testkit`, keep them in step.
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
