@@ -577,8 +577,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self, let changesModel else { return }
             Task { await changesModel.select(entry) }
         }
-        changesController.onToggleEntry = { [weak self] path, ticked in
-            self?.changesModel?.setTicked(path, ticked)
+        changesController.onTogglePaths = { [weak self] paths, ticked in
+            self?.changesModel?.setTicked(paths, ticked)
         }
         changesController.onToggleHunk = { [weak self] path, stamp, all in
             self?.changesModel?.toggleHunk(path, stamp, all: all)

@@ -63,7 +63,7 @@ import Testing
         #expect(model.isTicked("a.txt"))
         #expect(model.tickedPaths == ["a.txt", "b.txt", "gone.txt"])
 
-        model.setTicked("b.txt", false)
+        model.setTicked(["b.txt"], false)
         #expect(model.tickedPaths == ["a.txt", "gone.txt"])
         #expect(
             model.selections == [.whole(path: "a.txt"), .whole(path: "gone.txt")])

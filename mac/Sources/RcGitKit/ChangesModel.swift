@@ -165,13 +165,17 @@ public final class ChangesModel {
         isTicked(path) && tickedHunks[path] != nil
     }
 
-    public func setTicked(_ path: String, _ ticked: Bool) {
-        if ticked {
-            untickedPaths.remove(path)
-        } else {
-            untickedPaths.insert(path)
+    /// Ticks or unticks whole files. A folder row in the Changes list hands over every path
+    /// beneath it, so one click moves them together and renders once.
+    public func setTicked(_ paths: [String], _ ticked: Bool) {
+        for path in paths {
+            if ticked {
+                untickedPaths.remove(path)
+            } else {
+                untickedPaths.insert(path)
+            }
+            tickedHunks[path] = nil
         }
-        tickedHunks[path] = nil
         onStatusChanged?()
     }
 
