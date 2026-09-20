@@ -6,7 +6,7 @@ import RcGitKit
 /// end; the detail loads on selection, one tree diff and one blob diff at a time.
 @MainActor
 final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
-    NSSearchFieldDelegate
+    NSSearchFieldDelegate, NSSplitViewDelegate
 {
     var onNeedsMore: (() -> Void)?
     var onBrowseCommit: ((CommitSummary) -> Void)?
@@ -22,6 +22,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
+
+    /// The height neither pane of the detail drawer may drop below. A pane at zero reads as a
+    /// missing feature, and `NSSplitView` autosave records the zero and re-imposes it.
+    private static let changesPaneFloor: CGFloat = 100
+    private static let diffPaneFloor: CGFloat = 150
 
     private let table = NSTableView()
     private let scroll = NSScrollView()
@@ -67,6 +72,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let backButton = NSButton()
     private let closeButton = NSButton()
     private var detailPane: NSView?
+    private var detailSplit: NSSplitView?
     private var parentOids: [Oid] = []
 
     private static let dateFormatter: DateFormatter = {
@@ -162,8 +168,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
-        // v3: the layout moved from a bottom detail pane to a right drawer.
-        split.autosaveName = "rc-git.history.v3"
+        // v4: v3 autosaved the drawer at the height of its own minimum, which is what starved
+        // the detail split underneath it.
+        split.autosaveName = "rc-git.history.v4"
         split.addArrangedSubview(commitsPane)
         split.addArrangedSubview(detail)
         split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 1)
@@ -211,8 +218,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let detailSplit = NSSplitView()
         detailSplit.isVertical = false
         detailSplit.dividerStyle = .thin
-        // v3: the layout moved from side-by-side panes to stacked ones.
-        detailSplit.autosaveName = "rc-git.history-detail.v3"
+        // v4: v3 autosaved a divider parked at the bottom, leaving the diff pane at zero
+        // height on every launch. The delegate below keeps that position unreachable now.
+        detailSplit.autosaveName = "rc-git.history-detail.v4"
+        detailSplit.delegate = self
+        self.detailSplit = detailSplit
         changesScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
         detailSplit.addArrangedSubview(changesScroll)
         detailSplit.addArrangedSubview(diffScroll)
@@ -242,7 +252,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             detailSplit.widthAnchor.constraint(equalTo: stacked.widthAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            changesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100),
+            changesScroll.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: Self.changesPaneFloor),
+            diffScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.diffPaneFloor),
             container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
         return container
@@ -658,6 +670,29 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                 "\(change.path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
             )
         }
+    }
+
+    // MARK: NSSplitViewDelegate
+
+    /// Keeps the drawer's divider inside the two floors. Auto Layout alone cannot do this: a
+    /// restored autosave position is applied as a frame, and a pane parked at zero height
+    /// looks to the user like the diff feature is missing.
+    func splitView(
+        _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === detailSplit else { return proposedMinimumPosition }
+        return max(proposedMinimumPosition, Self.changesPaneFloor)
+    }
+
+    func splitView(
+        _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === detailSplit else { return proposedMaximumPosition }
+        let lastOpen =
+            splitView.bounds.height - splitView.dividerThickness - Self.diffPaneFloor
+        return min(proposedMaximumPosition, max(Self.changesPaneFloor, lastOpen))
     }
 
     @objc private func boundsChanged(_ notification: Notification) {
