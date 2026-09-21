@@ -74,7 +74,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | reset --hard | type the branch name, backup ref | same |
 | rewrite unpublished history | confirm, backup ref | same |
 | rewrite published history | **deny** | type the branch name, backup ref |
-| discard working changes | type `discard` | same |
+| discard working changes | confirm (no backup: the bytes are nowhere else) | same |
 | prune unreachable objects | type `prune` | same |
 | commit selected changes | allow (adds objects, advances the checked-out branch) | same |
 | stash push | confirm (the stash commit is the record) | same |
@@ -84,7 +84,8 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 Protected patterns default to `main`, `master`, and `release/*`. A `Deny` cannot be confirmed
 away inside rc-git; the message points the user at git itself. A `Confirm` produces a
-`Challenge`; only `Challenge::verify` with the exact phrase yields a `Confirmation`, and the
+`Challenge`; only `Challenge::verify` — with the exact phrase when the challenge names one,
+which the rows above spell out — yields a `Confirmation`, and the
 write path holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)

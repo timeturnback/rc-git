@@ -4462,7 +4462,10 @@ mod tests {
         let plan = rcgit_guard_plan_discard(3);
         let plan_ref = unsafe { &*plan };
         assert_eq!(plan_ref.kind, RcGitDecisionKind::Confirm);
-        assert_eq!(text(plan_ref.typed_phrase), "discard");
+        assert!(
+            plan_ref.typed_phrase.is_null(),
+            "discard is answered by a plain confirm"
+        );
         unsafe { rcgit_guard_decision_free(plan) };
         let plan = rcgit_guard_plan_stash_drop(1);
         let plan_ref = unsafe { &*plan };
@@ -4558,26 +4561,13 @@ mod tests {
             b"stash via ffi\n"
         );
 
-        // Discard with the wrong phrase fails; the right phrase restores.
-        let wrong = CString::new("nope").unwrap();
+        // Discard needs no phrase: a NULL input restores.
         let status = unsafe {
             rcgit_guard_discard(
                 repo_path.as_ptr(),
                 paths.as_ptr(),
                 1,
-                wrong.as_ptr(),
-                &raw mut error,
-            )
-        };
-        assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("confirmation"));
-        let phrase = CString::new("discard").unwrap();
-        let status = unsafe {
-            rcgit_guard_discard(
-                repo_path.as_ptr(),
-                paths.as_ptr(),
-                1,
-                phrase.as_ptr(),
+                ptr::null(),
                 &raw mut error,
             )
         };
@@ -4594,7 +4584,6 @@ mod tests {
         let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
         let message = CString::new("msg").unwrap();
         let path = CString::new("alpha.txt").unwrap();
-        let phrase = CString::new("discard").unwrap();
         let mut error = ptr::null_mut();
         let result = unsafe {
             rcgit_guard_commit(
@@ -4617,7 +4606,7 @@ mod tests {
                 path.as_ptr(),
                 ptr::null(),
                 0,
-                phrase.as_ptr(),
+                ptr::null(),
                 &raw mut error,
             )
         };

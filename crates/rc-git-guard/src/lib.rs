@@ -296,7 +296,7 @@ impl Policy {
             Action::DiscardWorkingChanges { files } => confirm(
                 risk,
                 format!("Discard uncommitted changes in {files} file(s). This cannot be undone."),
-                Some("discard"),
+                None,
                 false,
             ),
             Action::Prune => confirm(
@@ -579,7 +579,11 @@ mod tests {
         assert!(reset.summary.contains("2 commit(s)"));
 
         let discard = challenge(policy.evaluate(&Action::DiscardWorkingChanges { files: 3 }));
-        assert_eq!(discard.typed_phrase.as_deref(), Some("discard"));
+        assert_eq!(
+            (discard.risk, discard.typed_phrase.as_deref()),
+            (Risk::Destructive, None),
+            "discard is destructive, but a plain confirm answers it"
+        );
         assert!(
             !discard.backup_ref,
             "uncommitted changes have nothing to back up into a ref"

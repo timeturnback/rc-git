@@ -441,26 +441,17 @@ mod commit_and_discard {
     }
 
     #[test]
-    fn discard_restores_tracked_files_and_deletes_untracked_after_the_typed_phrase() {
+    fn discard_restores_tracked_files_and_deletes_untracked() {
         let fx = Fixture::standard();
         let policy = Policy::default();
         fx.write("alpha.txt", b"dirty\n");
         fx.write("untracked.txt", b"junk\n");
 
-        let err = discard_files(fx.path(), &policy, &["alpha.txt".to_owned()], Some("wrong"))
-            .unwrap_err();
-        assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
-        assert_eq!(
-            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
-            b"dirty\n",
-            "nothing happened"
-        );
-
         discard_files(
             fx.path(),
             &policy,
             &["alpha.txt".to_owned(), "untracked.txt".to_owned()],
-            Some("discard"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -478,7 +469,7 @@ mod commit_and_discard {
         std::fs::remove_file(fx.path().join("link")).unwrap();
         fx.write("link", b"now a plain file\n");
 
-        discard_files(fx.path(), &policy, &["link".to_owned()], Some("discard")).unwrap();
+        discard_files(fx.path(), &policy, &["link".to_owned()], None).unwrap();
         assert_eq!(
             std::fs::read_link(fx.path().join("link")).unwrap().to_str(),
             Some("README.md")
@@ -499,28 +490,14 @@ mod commit_and_discard {
 
         let found = stamps(&fx, "hunky.txt");
         assert_eq!(found.len(), 2);
-        discard_hunks(
-            fx.path(),
-            &policy,
-            "hunky.txt",
-            &[found[0]],
-            Some("discard"),
-        )
-        .unwrap();
+        discard_hunks(fx.path(), &policy, "hunky.txt", &[found[0]], None).unwrap();
         assert_eq!(
             std::fs::read(fx.path().join("hunky.txt")).unwrap(),
             b"l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nAPPENDED\n",
             "the first hunk's change is gone, the appended line survives"
         );
 
-        let err = discard_hunks(
-            fx.path(),
-            &policy,
-            "hunky.txt",
-            &[found[0]],
-            Some("discard"),
-        )
-        .unwrap_err();
+        let err = discard_hunks(fx.path(), &policy, "hunky.txt", &[found[0]], None).unwrap_err();
         assert!(matches!(err, ActionError::HunkMismatch { .. }), "{err}");
     }
 }

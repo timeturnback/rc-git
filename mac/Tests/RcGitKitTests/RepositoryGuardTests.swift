@@ -55,7 +55,8 @@ import Testing
         #expect(drop?.typedPhrase == "drop")
         #expect(drop?.summary.contains("stash@{1}") == true)
         let discard = RepositoryGuard.planDiscard(files: 4)
-        #expect(discard?.typedPhrase == "discard")
+        #expect(discard?.kind == .confirm)
+        #expect(discard?.typedPhrase == nil)
         #expect(discard?.risk == .destructive)
     }
 
@@ -83,11 +84,7 @@ import Testing
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, index: 0, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
 
-        #expect(throws: RepositoryError.self) {
-            try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: "no")
-        }
-        try RepositoryGuard.discard(
-            repoPath: fixture.path, paths: ["alpha.txt"], input: "discard")
+        try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 }

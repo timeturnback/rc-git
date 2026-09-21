@@ -1,6 +1,7 @@
 //! Discard uncommitted changes: restore tracked files to their `HEAD` bytes, delete
 //! untracked files, or splice selected hunks out of one file. Destructive under the policy,
-//! so every entry point demands the typed phrase before touching disk.
+//! so every entry point goes through [`confirm`] before touching disk. The challenge carries
+//! no typed phrase: a plain confirm answers it.
 
 use std::path::Path;
 
@@ -12,11 +13,10 @@ use crate::{Action, Policy};
 const OP: &str = "discard";
 
 /// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written
-/// back to disk, an untracked path is deleted. The policy demands the typed phrase
-/// `discard`; nothing is touched until it matches.
+/// back to disk, an untracked path is deleted. The policy asks for a plain confirm, so
+/// `input` may be `None`.
 ///
 /// # Errors
-/// [`ActionError::NotConfirmed`] when the typed input does not match,
 /// [`ActionError::Git`] when a path can be neither restored nor deleted.
 pub fn discard_files(
     repo_path: &Path,
@@ -50,10 +50,10 @@ pub fn discard_files(
 
 /// Discards only `stamps` of `path`: the diff is recomputed, every stamp must match a
 /// current hunk, and the file is rewritten with the unselected changes kept — that is, the
-/// selected hunks' changes are gone.
+/// selected hunks' changes are gone. The policy asks for a plain confirm, so `input` may be
+/// `None`.
 ///
 /// # Errors
-/// [`ActionError::NotConfirmed`] when the typed input does not match,
 /// [`ActionError::HunkMismatch`] when the file moved under the selection.
 pub fn discard_hunks(
     repo_path: &Path,

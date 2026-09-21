@@ -450,9 +450,6 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
 
     fx.write("alpha.txt", b"dirty again\n");
     let out = rc_git(&["discard", path, "alpha.txt"]);
-    assert_eq!(out.status.code(), Some(1), "no --confirm means refusal");
-    assert!(stderr(&out).contains("confirmation"));
-    let out = rc_git(&["discard", path, "--confirm", "discard", "alpha.txt"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
 }

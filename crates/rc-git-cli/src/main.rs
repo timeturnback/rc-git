@@ -40,7 +40,7 @@ usage: rc-git [--time] <command> <repo> [args]
   stash-apply <repo> [n]                  write stash@{n} back to the working tree
   stash-pop   <repo> [n]                  apply stash@{n}, then drop it
   stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
-  discard     <repo> --confirm discard <path>...  restore files to HEAD, delete untracked
+  discard     <repo> <path>...            restore files to HEAD, delete untracked
 
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
   pull  <repo> [remote options]           fetch, then fast-forward the current branch
