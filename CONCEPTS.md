@@ -73,6 +73,14 @@ collapses back to a whole-file tick while unticking the last one unticks the fil
 stands for several files — a folder in the change list — is ticked when all of them are, mixed
 when only some are, and one click moves the whole set.
 
+## Preflight
+
+The checks a self-update runs before it touches anything: the login shell must find the
+build's tools, and the checkout must be readable — plus, for a release update, free of
+uncommitted tracked changes. Both halves run outside the process, so both are bounded and
+both are logged before they run: a preflight that cannot answer fails with a reason rather
+than leaving the window spinning on one line.
+
 ## Session handover
 
 What a self-update passes to the build that replaces it: the open tabs, in on-screen

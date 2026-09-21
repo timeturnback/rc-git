@@ -53,6 +53,15 @@ paths: mac/**
   identifier by hand. Work the updater does outside the process — toolchain probe, checkout
   read, pull, build, relaunch — goes behind `UpdateEnvironment` so `UpdateModel` stays
   testable.
+- Every step the updater runs outside the process is bounded and is logged *before* it runs,
+  never after: the probe carries a timeout and a kill, the result type has a failure case that
+  says it could not answer, and the log's last line is the step that stalled. Nothing may have
+  only "success" and "forever" as outcomes
+  (`docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md`).
+- One reader per `Pipe`. Setting a `readabilityHandler` and also calling
+  `readDataToEndOfFile()` reads one descriptor from two places, and the second blocks until
+  EOF — which a grandchild that inherited the write end never delivers, long after
+  `terminationHandler` has fired. Drain on a thread that stops at EOF, and bound that wait too.
 - State the relaunched build reads — the open tabs — is handed over, not just saved:
   `OpenTabs.handOff` flushes the write because both processes are alive at the launch, and
   `AppDelegate.tabsHandedOff` stops the old process writing afterwards
