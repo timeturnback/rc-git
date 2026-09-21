@@ -9,11 +9,21 @@ enum Shell {
     struct Outcome: Sendable {
         let status: Int32
         let lines: [String]
+        /// Whether the command ran past its limit and was killed.
+        let timedOut: Bool
     }
 
-    /// Runs `script`, streaming merged stdout and stderr one line at a time.
+    /// How long the last bytes get to arrive after the process exits. A grandchild that
+    /// inherited the pipe keeps it open, so this wait is bounded like every other.
+    private static let drainGrace = Duration.seconds(2)
+    /// How long a killed process gets to die before `SIGKILL`.
+    private static let killGrace = Duration.seconds(2)
+
+    /// Runs `script`, streaming merged stdout and stderr one line at a time. With a
+    /// `timeout`, a command still running at the limit is killed and the outcome says so:
+    /// nothing here waits forever.
     static func run(
-        _ script: String, in directory: String,
+        _ script: String, in directory: String, timeout: Duration? = nil,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async -> Outcome {
         let process = Process()
@@ -26,27 +36,81 @@ enum Shell {
         process.standardError = pipe
 
         let collector = LineCollector(onOutput: onOutput)
-        let exit = ExitSignal()
-        process.terminationHandler = { _ in exit.signal() }
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            collector.take(handle.availableData)
-        }
+        let exited = Signal()
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
         } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
             collector.take(Data("cannot run /bin/zsh: \(error)\n".utf8))
-            return Outcome(status: -1, lines: collector.finish())
+            return Outcome(status: -1, lines: collector.finish(), timedOut: false)
         }
-        await exit.wait()
-        pipe.fileHandleForReading.readabilityHandler = nil
-        collector.take(pipe.fileHandleForReading.readDataToEndOfFile())
-        return Outcome(status: process.terminationStatus, lines: collector.finish())
+
+        let drained = drain(pipe.fileHandleForReading, into: collector)
+        let expired = Flag()
+        let watchdog = timeout.map { limit in
+            kill(process.processIdentifier, after: limit, recording: expired)
+        }
+        await exited.wait()
+        watchdog?.cancel()
+        await drained.wait(upTo: drainGrace)
+        return Outcome(
+            status: process.terminationStatus, lines: collector.finish(), timedOut: expired.isSet)
+    }
+
+    /// Reads the pipe to EOF on a thread of its own. `availableData` blocks, and a blocked
+    /// cooperative thread stalls every other task in the app; one reader also keeps this
+    /// off the `readabilityHandler`/`readDataToEndOfFile` pair, which read the same
+    /// descriptor from two places. The thread ends at EOF.
+    private static func drain(_ handle: FileHandle, into collector: LineCollector) -> Signal {
+        let finished = Signal()
+        Thread.detachNewThread {
+            while true {
+                let data = handle.availableData
+                if data.isEmpty { break }
+                collector.take(data)
+            }
+            finished.signal()
+        }
+        return finished
+    }
+
+    /// Kills `pid` once `limit` has passed: `SIGTERM`, then `SIGKILL` for a process that
+    /// ignores it. Cancelled the moment the process exits on its own.
+    private static func kill(
+        _ pid: Int32, after limit: Duration, recording expired: Flag
+    ) -> Task<Void, Never> {
+        Task {
+            try? await Task.sleep(for: limit)
+            guard !Task.isCancelled else { return }
+            expired.set()
+            Darwin.kill(pid, SIGTERM)
+            try? await Task.sleep(for: killGrace)
+            guard !Task.isCancelled else { return }
+            Darwin.kill(pid, SIGKILL)
+        }
     }
 
     /// Single-quotes a path for the shell, so a directory with a space still runs.
     static func quote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+/// A one-shot flag, set from whichever thread gets there first.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 
@@ -92,9 +156,9 @@ private final class LineCollector: @unchecked Sendable {
     }
 }
 
-/// One-shot process-exit signal. The termination handler is installed before the process
-/// runs, so a process that exits immediately cannot be missed.
-private final class ExitSignal: @unchecked Sendable {
+/// A one-shot signal, awaited once. Both users install it before the thing that fires it
+/// starts, so an event that happens immediately cannot be missed.
+private final class Signal: @unchecked Sendable {
     private let lock = NSLock()
     private var signaled = false
     private var continuation: CheckedContinuation<Void, Never>?
@@ -120,6 +184,18 @@ private final class ExitSignal: @unchecked Sendable {
             lock.unlock()
         }
     }
+
+    /// Waits, giving up after `limit`. Giving up signals the signal, which is one-shot and
+    /// has no other waiter, so nothing is left dangling.
+    func wait(upTo limit: Duration) async {
+        let timer = Task {
+            try? await Task.sleep(for: limit)
+            guard !Task.isCancelled else { return }
+            self.signal()
+        }
+        await wait()
+        timer.cancel()
+    }
 }
 
 /// The real `UpdateEnvironment`: a login shell for the toolchain and the build, the core
@@ -129,6 +205,10 @@ private final class ExitSignal: @unchecked Sendable {
 struct AppUpdateEnvironment: UpdateEnvironment {
     /// What the build needs and macOS does not ship.
     static let requiredTools = ["cargo", "swift", "cbindgen"]
+    /// A probe that cannot answer in this long is stuck, not slow: it is three `command -v`
+    /// builtins in a login shell. Killing it turns a window that spins forever into one
+    /// that names what to try in a terminal.
+    static let toolchainTimeoutSeconds = 20
 
     let sourceRoot: String
     /// What this update produces, which decides the script that runs and whether the
@@ -141,12 +221,26 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// Runs on the main actor just before the new bundle is launched.
     let willRelaunch: @MainActor @Sendable () -> Void
 
-    func missingTools() async -> [String] {
+    func toolchain() async -> ToolchainCheck {
         let tools = Self.requiredTools.joined(separator: " ")
         let outcome = await Shell.run(
             "for tool in \(tools); do command -v $tool >/dev/null || echo $tool; done",
-            in: sourceRoot)
-        return outcome.lines.filter { Self.requiredTools.contains($0) }
+            in: sourceRoot, timeout: .seconds(Self.toolchainTimeoutSeconds))
+        if outcome.timedOut {
+            return .failure(
+                "the toolchain check did not answer in \(Self.toolchainTimeoutSeconds)s and was "
+                    + "killed; your login shell is hanging — run "
+                    + "`zsh -lc 'command -v \(Self.requiredTools[0])'` in a terminal to see where")
+        }
+        let missing = outcome.lines.filter { Self.requiredTools.contains($0) }
+        guard missing.isEmpty else { return .missing(missing) }
+        guard outcome.status == 0 else {
+            let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"
+            return .failure(
+                "your login shell failed the toolchain check (status \(outcome.status)): \(lastLine)"
+            )
+        }
+        return .ready
     }
 
     /// `refs/heads/master` as `master`; `nil` on a detached HEAD.

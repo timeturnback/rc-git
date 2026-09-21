@@ -66,7 +66,9 @@ an app-menu item that rebuilds themselves from there. They differ in what they b
 **Release — "Update rc-git":**
 
 1. **Preflight.** The login shell must find `cargo`, `swift`, and `cbindgen`, and the
-   checkout must have no uncommitted tracked changes.
+   checkout must have no uncommitted tracked changes. The log names each half before it
+   runs, and the toolchain probe is killed after 20 seconds: a login shell that hangs
+   fails the update with what to run in a terminal instead of spinning forever.
 2. **Fetch and fast-forward** through `rc-git-guard`, exactly like the Changes tab's Pull —
    same credential prompts, same refusal when the branch has diverged.
 3. **Build and install** by running `scripts/install-app.sh`, with its output streaming into

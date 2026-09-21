@@ -56,6 +56,17 @@ public enum SourceStateResult: Sendable, Hashable {
     case failure(String)
 }
 
+/// What probing the toolchain produced.
+public enum ToolchainCheck: Sendable, Hashable {
+    /// Every tool the build needs is on the login shell's `PATH`.
+    case ready
+    /// Tools the login shell cannot find.
+    case missing([String])
+    /// The probe itself did not answer: the shell could not run, it failed, or it ran past
+    /// its limit and was killed. A probe that hangs is a failure, not a wait.
+    case failure(String)
+}
+
 /// Everything a self-update touches outside the model: the toolchain, the checkout, the
 /// build script, and the relaunch. The app supplies the real implementation; tests supply
 /// a double, so the state machine is tested without building anything.
@@ -63,8 +74,9 @@ public enum SourceStateResult: Sendable, Hashable {
 /// Every call reports failure as a message rather than throwing: the model turns it into
 /// `UpdateState.failed` with the step it belongs to.
 public protocol UpdateEnvironment: Sendable {
-    /// Tools the build needs that the login shell cannot find. Empty when all are there.
-    func missingTools() async -> [String]
+    /// Whether the login shell can find every tool the build needs. Bounded by the
+    /// implementation: it answers rather than hanging.
+    func toolchain() async -> ToolchainCheck
     /// The checkout's commit and dirty paths, or why they could not be read.
     func sourceState() async -> SourceStateResult
     /// Fetches and fast-forwards the checkout. `nil` on success.
@@ -143,17 +155,27 @@ public final class UpdateModel {
 
     /// Checks the toolchain and reads the checkout. `nil` when the update must stop; the
     /// state already says why.
+    ///
+    /// Both halves are logged before they run, not after: the log is the only thing that
+    /// says which one an update is sitting in.
     private func preflight(root: String) async -> SourceState? {
         enter(.preflight)
         note("checkout: \(root)")
-        let missing = await environment.missingTools()
-        guard missing.isEmpty else {
+        note("checking the toolchain")
+        switch await environment.toolchain() {
+        case .ready:
+            break
+        case let .missing(tools):
             fail(
                 .preflight,
-                "your login shell cannot find \(missing.joined(separator: ", ")); "
+                "your login shell cannot find \(tools.joined(separator: ", ")); "
                     + "add the toolchain to your shell profile and try again")
             return nil
+        case let .failure(message):
+            fail(.preflight, message)
+            return nil
         }
+        note("reading the checkout")
         guard let state = await readSource(step: .preflight) else { return nil }
         note("on \(state.branch ?? "a detached HEAD")")
         return state

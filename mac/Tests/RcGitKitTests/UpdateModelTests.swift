@@ -8,7 +8,7 @@ import Testing
 /// calls one step at a time, so the mutable state needs no lock.
 private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendable {
     struct Script {
-        var missingTools: [String] = []
+        var toolchain: ToolchainCheck = .ready
         /// One entry per `sourceState` call: preflight reads it, then the sync step does.
         var sourceStates: [SourceStateResult] = []
         var syncFailure: String?
@@ -24,9 +24,9 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         self.script = script
     }
 
-    func missingTools() async -> [String] {
-        calls.append("missingTools")
-        return script.missingTools
+    func toolchain() async -> ToolchainCheck {
+        calls.append("toolchain")
+        return script.toolchain
     }
 
     /// Answers each call with the next scripted state, repeating the last one.
@@ -88,7 +88,7 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         #expect(model.state == .installed)
         #expect(
             environment.calls == [
-                "missingTools", "sourceState", "sync", "sourceState", "install", "relaunch",
+                "toolchain", "sourceState", "sync", "sourceState", "install", "relaunch",
             ])
         #expect(model.log.contains("on master"))
         #expect(model.log.contains("built RCGit.app"))
@@ -116,7 +116,7 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     }
 
     @Test func aMissingToolFailsPreflightWithoutTouchingTheCheckout() async {
-        let (model, environment) = Self.model(.init(missingTools: ["cargo", "cbindgen"]))
+        let (model, environment) = Self.model(.init(toolchain: .missing(["cargo", "cbindgen"])))
         await model.start()
         guard case let .failed(step, message) = model.state else {
             Issue.record("expected a preflight failure, got \(model.state)")
@@ -124,7 +124,35 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         }
         #expect(step == .preflight)
         #expect(message.contains("cargo, cbindgen"))
-        #expect(environment.calls == ["missingTools"])
+        #expect(environment.calls == ["toolchain"])
+    }
+
+    /// A probe that cannot answer is a failure with the reason, not a window that spins:
+    /// the checkout is never read, and the message is what the environment said.
+    @Test func anUnanswerableToolchainCheckFailsPreflight() async {
+        let (model, environment) = Self.model(
+            .init(toolchain: .failure("the toolchain check did not answer in 20s and was killed")))
+        await model.start()
+        #expect(
+            model.state
+                == .failed(
+                    step: .preflight,
+                    message: "the toolchain check did not answer in 20s and was killed"))
+        #expect(environment.calls == ["toolchain"])
+    }
+
+    /// Each half of preflight is logged before it runs, so a stall in either one says which.
+    @Test func preflightLogsBothHalvesBeforeRunningThem() async {
+        let (model, _) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
+            ]))
+        await model.start(force: true)
+        #expect(model.log.contains("checking the toolchain"))
+        #expect(model.log.contains("reading the checkout"))
+        let toolchain = model.log.firstIndex(of: "checking the toolchain")
+        let checkout = model.log.firstIndex(of: "reading the checkout")
+        #expect(toolchain ?? 0 < checkout ?? 0)
     }
 
     @Test func uncommittedWorkStopsTheUpdate() async {
@@ -218,7 +246,7 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
             build: Self.build(variant: .dev))
         await model.start()
         #expect(model.state == .installed)
-        #expect(environment.calls == ["missingTools", "sourceState", "install", "relaunch"])
+        #expect(environment.calls == ["toolchain", "sourceState", "install", "relaunch"])
         #expect(model.log.contains("uncommitted work goes in: a.rs"))
     }
 
@@ -247,7 +275,7 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     }
 
     @Test func resetReturnsAFailureToIdle() async {
-        let (model, _) = Self.model(.init(missingTools: ["cargo"]))
+        let (model, _) = Self.model(.init(toolchain: .missing(["cargo"])))
         await model.start()
         model.reset()
         #expect(model.state == .idle)

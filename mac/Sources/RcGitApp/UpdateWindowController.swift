@@ -236,7 +236,7 @@ final class UpdateWindowController: NSWindowController {
 private struct UnavailableUpdateEnvironment: UpdateEnvironment {
     private static let reason = "this bundle carries no source checkout"
 
-    func missingTools() async -> [String] { [] }
+    func toolchain() async -> ToolchainCheck { .failure(Self.reason) }
     func sourceState() async -> SourceStateResult { .failure(Self.reason) }
     func sync() async -> String? { Self.reason }
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { Self.reason }
