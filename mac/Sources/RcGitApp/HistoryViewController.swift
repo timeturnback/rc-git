@@ -23,10 +23,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
 
-    /// The height neither pane of the detail drawer may drop below. A pane at zero reads as a
-    /// missing feature, and `NSSplitView` autosave records the zero and re-imposes it.
-    private static let changesPaneFloor: CGFloat = 100
-    private static let diffPaneFloor: CGFloat = 150
+    /// The height neither pane of the detail drawer may drop below, from `LayoutPolicy`.
+    private static let changesPaneFloor = LayoutPolicy.historyChangesFloor
+    private static let diffPaneFloor = LayoutPolicy.historyDiffFloor
 
     private let table = NSTableView()
     private let scroll = NSScrollView()
@@ -218,15 +217,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let detailSplit = NSSplitView()
         detailSplit.isVertical = false
         detailSplit.dividerStyle = .thin
-        // v4: v3 autosaved a divider parked at the bottom, leaving the diff pane at zero
-        // height on every launch. The delegate below keeps that position unreachable now.
-        detailSplit.autosaveName = "rc-git.history-detail.v4"
+        // v5: v4 parked the divider at the bottom again, leaving the diff pane at zero height.
+        // The delegate below now lays the panes out itself, so no position reaches that state.
+        detailSplit.autosaveName = "rc-git.history-detail.v5"
         detailSplit.delegate = self
         self.detailSplit = detailSplit
-        changesScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
         detailSplit.addArrangedSubview(changesScroll)
         detailSplit.addArrangedSubview(diffScroll)
-        detailSplit.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 0)
 
         buildDetailHeader()
 
@@ -252,9 +249,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             detailSplit.widthAnchor.constraint(equalTo: stacked.widthAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            changesScroll.heightAnchor.constraint(
-                greaterThanOrEqualToConstant: Self.changesPaneFloor),
-            diffScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.diffPaneFloor),
+            // The floor belongs to the split, not to its panes: the split positions its panes
+            // by frame, so a per-pane height constraint only fights the frame it is given and
+            // loses silently. Here it asks the drawer for room for both panes and the divider.
+            detailSplit.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: Self.changesPaneFloor + Self.diffPaneFloor
+                    + detailSplit.dividerThickness),
             container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
         return container
@@ -672,11 +672,53 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    /// Re-clamps the drawer after every layout pass, which is where a divider position
+    /// restored from the autosave first reaches the screen. `layoutDetailPanes` keeps a legal
+    /// position untouched, so this converges on the first pass.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        layoutDetailPanes()
+    }
+
     // MARK: NSSplitViewDelegate
 
-    /// Keeps the drawer's divider inside the two floors. Auto Layout alone cannot do this: a
-    /// restored autosave position is applied as a frame, and a pane parked at zero height
-    /// looks to the user like the diff feature is missing.
+    /// Lays the drawer's two panes out. `NSSplitView` sizes arranged subviews by frame and
+    /// asks the coordinate clamps below only while the user drags the divider — never from
+    /// `adjustSubviews`, and never for the position the autosave restores. Owning the resize
+    /// is what puts a zero-height pane out of reach; the clamps alone did not.
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        guard splitView === detailSplit else {
+            splitView.adjustSubviews()
+            return
+        }
+        layoutDetailPanes()
+    }
+
+    private func layoutDetailPanes() {
+        guard let split = detailSplit, split.arrangedSubviews.count == 2 else { return }
+        let divider = split.dividerThickness
+        let available = split.bounds.height - divider
+        guard available > 0, split.bounds.width > 0 else { return }
+        let changesHeight = LayoutPolicy.splitPane(
+            available: available, preferred: split.arrangedSubviews[0].frame.height,
+            firstFloor: Self.changesPaneFloor, secondFloor: Self.diffPaneFloor)
+        let diffHeight = available - changesHeight
+        // A split with horizontal dividers is flipped, so the changes pane starts at the top.
+        let changesY = split.isFlipped ? 0 : diffHeight + divider
+        let diffY = split.isFlipped ? changesHeight + divider : 0
+        place(split.arrangedSubviews[0], y: changesY, height: changesHeight, in: split)
+        place(split.arrangedSubviews[1], y: diffY, height: diffHeight, in: split)
+    }
+
+    private func place(_ view: NSView, y: CGFloat, height: CGFloat, in split: NSSplitView) {
+        let frame = NSRect(x: 0, y: y, width: split.bounds.width, height: height)
+        guard view.frame != frame else { return }
+        view.frame = frame
+    }
+
+    /// Keeps a divider drag inside the two floors, so a drag cannot end where
+    /// `layoutDetailPanes` would have to pull it back from. Drags are all these two methods
+    /// govern: AppKit asks them nothing about a resize or about the position it restores.
     func splitView(
         _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int

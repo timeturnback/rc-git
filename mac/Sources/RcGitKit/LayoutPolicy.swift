@@ -23,6 +23,11 @@ public enum LayoutPolicy {
     /// The widest the sidebar goes, however long its rows are. Past this the detail pane
     /// matters more than a path read in full.
     public static let sidebarMaximumWidth: CGFloat = 460
+    /// The height neither pane of the History commit drawer may drop below. A pane at zero
+    /// reads as a missing feature, and `NSSplitView` autosave records the zero and re-imposes
+    /// it on the next launch.
+    public static let historyChangesFloor: CGFloat = 100
+    public static let historyDiffFloor: CGFloat = 150
 
     public static func layout(for size: CGSize) -> Layout {
         Layout(showsSidebar: size.width >= sidebarWindowWidth)
@@ -32,5 +37,21 @@ public enum LayoutPolicy {
     /// keeps the rest of the window.
     public static func sidebarWidth(forContent contentWidth: CGFloat) -> CGFloat {
         min(max(contentWidth, sidebarMinimumWidth), sidebarMaximumWidth)
+    }
+
+    /// The first pane's size along a split's axis, out of the `available` space the two panes
+    /// share — the divider already taken off.
+    ///
+    /// `preferred` is where the divider sits now, kept whenever both floors still fit. Space
+    /// too small for both floors is split between them in proportion, so neither pane reaches
+    /// zero and the divider stays where a drag can reach it.
+    public static func splitPane(
+        available: CGFloat, preferred: CGFloat, firstFloor: CGFloat, secondFloor: CGFloat
+    ) -> CGFloat {
+        guard available > 0 else { return 0 }
+        guard available >= firstFloor + secondFloor else {
+            return available * firstFloor / (firstFloor + secondFloor)
+        }
+        return min(max(preferred, firstFloor), available - secondFloor)
     }
 }

@@ -41,4 +41,48 @@ import Testing
         #expect(LayoutPolicy.sidebarMaximumWidth < LayoutPolicy.sidebarWindowWidth)
         #expect(LayoutPolicy.sidebarMinimumWidth < LayoutPolicy.sidebarMaximumWidth)
     }
+
+    @Test func splitPaneKeepsADividerBothFloorsAllow() {
+        #expect(
+            LayoutPolicy.splitPane(
+                available: 800, preferred: 300, firstFloor: 100, secondFloor: 150) == 300)
+    }
+
+    @Test func splitPaneLiftsADividerOffTheFirstFloor() {
+        #expect(
+            LayoutPolicy.splitPane(
+                available: 800, preferred: 10, firstFloor: 100, secondFloor: 150) == 100)
+    }
+
+    @Test func splitPaneKeepsTheSecondPaneOffZero() {
+        // The poisoned autosave: the divider parked at the bottom, the diff pane at zero.
+        #expect(
+            LayoutPolicy.splitPane(
+                available: 763, preferred: 763, firstFloor: 100, secondFloor: 150) == 613)
+    }
+
+    @Test func splitPaneSharesSpaceTooSmallForBothFloors() {
+        let first = LayoutPolicy.splitPane(
+            available: 50, preferred: 50, firstFloor: 100, secondFloor: 150)
+        #expect(first == 20)
+        #expect(50 - first == 30)
+    }
+
+    @Test func splitPaneHasNoNegativeOrZeroSpaceCase() {
+        #expect(
+            LayoutPolicy.splitPane(
+                available: 0, preferred: 400, firstFloor: 100, secondFloor: 150) == 0)
+        #expect(
+            LayoutPolicy.splitPane(
+                available: -10, preferred: 400, firstFloor: 100, secondFloor: 150) == 0)
+    }
+
+    @Test func theHistoryDrawerFloorsLeaveBothPanesUsable() {
+        let available = LayoutPolicy.historyChangesFloor + LayoutPolicy.historyDiffFloor
+        let changes = LayoutPolicy.splitPane(
+            available: available, preferred: 0, firstFloor: LayoutPolicy.historyChangesFloor,
+            secondFloor: LayoutPolicy.historyDiffFloor)
+        #expect(changes == LayoutPolicy.historyChangesFloor)
+        #expect(available - changes == LayoutPolicy.historyDiffFloor)
+    }
 }
