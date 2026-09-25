@@ -27,14 +27,58 @@ import Testing
         #expect(tabs.selectedIndex == 0)
     }
 
-    /// The handover to a relaunching build writes the same state as a save; what it adds is
+    /// The handover to a relaunching build writes the same state as a record; what it adds is
     /// the flush, which cannot be observed from inside one process.
-    @Test func handsOffTheSameStateItSaves() {
+    @Test func handsOffTheSameStateItRecords() {
         let suite = "rc-git.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let tabs = OpenTabs(defaults: defaults)
-        tabs.handOff(paths: ["/one", "/two"], selectedIndex: 1)
+        tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
+        tabs.handOff(live: ["/two", "/one"], selectedIndex: 1)
+        #expect(tabs.paths == ["/two", "/one", "/three"])
+        #expect(tabs.selectedIndex == 1)
+    }
+
+    @Test func mergeKeepsTabsThatAreNoLongerOpen() {
+        #expect(
+            OpenTabs.merged(live: ["/two"], saved: ["/one", "/two", "/three"])
+                == ["/two", "/one", "/three"])
+        #expect(OpenTabs.merged(live: [], saved: ["/one", "/two"]) == ["/one", "/two"])
+        #expect(OpenTabs.merged(live: ["/one"], saved: []) == ["/one"])
+        #expect(OpenTabs.merged(live: ["/one", "/one"], saved: ["/one"]) == ["/one"])
+    }
+
+    /// Closing a tab must not decide the next launch: what is recorded is the live order
+    /// plus everything that was saved before it.
+    @Test func recordAddsAndNeverDrops() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tabs = OpenTabs(defaults: defaults)
+        tabs.record(live: ["/one", "/two"], selectedIndex: 1)
+        #expect(tabs.paths == ["/one", "/two"])
+
+        tabs.record(live: ["/one"], selectedIndex: 0)  // closed /two
+        #expect(tabs.paths == ["/one", "/two"])
+        #expect(tabs.selectedIndex == 0)
+
+        tabs.record(live: [], selectedIndex: 0)  // closed the window, then quit
+        #expect(tabs.paths == ["/one", "/two"])
+
+        tabs.record(live: ["/three"], selectedIndex: 0)
+        #expect(tabs.paths == ["/three", "/one", "/two"])
+    }
+
+    /// The restore at launch is the one write that shrinks the list, so a repository that
+    /// no longer opens is not retried on every launch.
+    @Test func saveReplacesTheListSoRestoreCanPrune() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tabs = OpenTabs(defaults: defaults)
+        tabs.record(live: ["/one", "/gone", "/two"], selectedIndex: 2)
+        tabs.save(paths: ["/one", "/two"], selectedIndex: 1)
         #expect(tabs.paths == ["/one", "/two"])
         #expect(tabs.selectedIndex == 1)
     }

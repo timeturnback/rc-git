@@ -78,7 +78,11 @@ enum MainMenu {
                 "Go to File…", #selector(MainWindowController.goToFile(_:)), "o",
                 [.command, .shift]))
         menu.addItem(.separator())
-        menu.addItem(item("Close Window", #selector(NSWindow.performClose(_:)), "w"))
+        menu.addItem(item("Close Tab", #selector(NSWindow.performClose(_:)), "w"))
+        menu.addItem(
+            item(
+                "Close Window", #selector(AppDelegate.closeWindowGroup(_:)), "w",
+                [.command, .shift]))
         return menu
     }
 

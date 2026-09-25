@@ -83,6 +83,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newWindow().showWindow(nil)
     }
 
+    /// Closes every tab of the front window group; ⌘W closes only the tab on screen. Neither
+    /// drops a repository from the saved tab list — see `saveTabs`.
+    @objc func closeWindowGroup(_ sender: Any?) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        for tab in window.tabGroup?.windows ?? [window] { tab.performClose(nil) }
+    }
+
     /// Opens a repository in an empty tab, or a new one when every tab is in use. A
     /// repository that is already open gets its existing tab selected instead.
     func open(path: String) {
@@ -127,6 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Reopens the tabs of the previous run, silently skipping repositories that no longer
     /// open, and selects the tab that was selected then. Falls back to one empty tab.
+    ///
+    /// This is the only place the list shrinks: a path that no longer opens is dropped here,
+    /// so it is not retried on every launch. Closing a tab never drops one — see `saveTabs`.
     private func restoreTabs() {
         var opened: [MainWindowController] = []
         for path in openTabs.paths {
@@ -136,30 +146,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             opened.append(controller)
         }
         guard !opened.isEmpty else {
+            openTabs.clear()
             newWindow().showWindow(nil)
             return
         }
-        opened[OpenTabs.clampedSelection(openTabs.selectedIndex, count: opened.count)]
-            .showWindow(nil)
-        saveTabs()
+        let selected = OpenTabs.clampedSelection(openTabs.selectedIndex, count: opened.count)
+        opened[selected].showWindow(nil)
+        openTabs.save(paths: opened.compactMap(\.repositoryPath), selectedIndex: selected)
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on
     /// every open and close, once more at quit, and once before a self-update relaunches,
     /// which also captures drag reordering.
+    ///
+    /// Adding only: a tab closed with ⌘W, a whole window closed with ⇧⌘W, and quitting with
+    /// ⌘Q all leave the saved repositories in the list, so the next launch reopens them.
     func saveTabs() {
         // This process outlives the launch of its replacement. A write after the handover
         // would land on top of whatever the new process has already recorded.
         guard !tabsHandedOff else { return }
         let state = tabState()
-        openTabs.save(paths: state.paths, selectedIndex: state.selectedIndex)
+        openTabs.record(live: state.paths, selectedIndex: state.selectedIndex)
     }
 
     /// Hands the tabs to the build that is about to replace this one, flushed so the new
     /// process reads them, and stops recording after that.
     func handOffTabs() {
         let state = tabState()
-        openTabs.handOff(paths: state.paths, selectedIndex: state.selectedIndex)
+        openTabs.handOff(live: state.paths, selectedIndex: state.selectedIndex)
         tabsHandedOff = true
     }
 

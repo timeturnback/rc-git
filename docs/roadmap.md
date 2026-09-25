@@ -72,10 +72,12 @@ constraints are clear.
   window group (⌘T for an empty tab, "+" in the tab bar, ⇧⌘[ / ⇧⌘] to move between them).
   Each tab is a full `MainWindowController` — model, caches, and watchers stay alive while
   the tab is in the background — so switching tabs reorders windows and reads nothing.
-  Opening a repository that is already open selects its existing tab. `OpenTabs` (RcGitKit)
-  persists the tab list and selection through `UserDefaults` — saved on every open, close,
-  and at quit — and a relaunch reopens them, silently skipping repositories that no longer
-  open.
+  Opening a repository that is already open selects its existing tab. ⌘W closes the tab on
+  screen, ⇧⌘W the whole window group. `OpenTabs` (RcGitKit) persists the tab list and
+  selection through `UserDefaults` — recorded on every open, close, and at quit — and a
+  relaunch reopens them. Closing never drops a repository from that list, so ⌘W, ⇧⌘W and ⌘Q
+  all come back with the same tabs; the restore is the one write that shrinks it, dropping
+  the repositories that no longer open.
 
 - **Fetch, pull, push, sync.** HTTPS and SSH, both in-process, no child ever spawned:
   HTTPS through gix's curl backend, SSH through russh running `git-upload-pack` /
