@@ -238,6 +238,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             #selector(fetchRemote(_:)), #selector(pullRemote(_:)),
             #selector(pushRemote(_:)), #selector(syncRepository(_:)),
         ]
+        if menuItem.action == #selector(cancelSync(_:)) {
+            return syncModel?.isCancellable ?? false
+        }
         if let action = menuItem.action, syncSelectors.contains(action) {
             guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
             let status = syncModel.remoteStatus
@@ -778,6 +781,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Task { await syncModel?.sync() }
     }
 
+    /// Stops the running fetch, pull, or push. The flag reaches the transfer itself,
+    /// so this is not a "stop waiting and pretend" — the step ends and the workflow
+    /// unwinds without touching anything further.
+    @objc func cancelSync(_ sender: Any?) {
+        syncModel?.cancelRunning()
+    }
+
     private func wireSync(_ sync: SyncModel) {
         sync.onStateChanged = { [weak self] in
             self?.renderSyncState()
@@ -799,12 +809,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             syncToolbarItem?.toolTip = idleSyncTooltip()
         case let .running(step):
             showSyncSpinner(true)
-            syncToolbarItem?.toolTip =
-                switch step {
-                case .fetch: "Fetching…"
-                case .pull: "Pulling…"
-                case .push: "Pushing…"
-                }
+            syncToolbarItem?.toolTip = "\(runningVerb(step)) — click to cancel"
+        case let .cancelling(step):
+            showSyncSpinner(true)
+            syncToolbarItem?.toolTip = "Cancelling the \(runningVerb(step).lowercased())…"
         case let .done(summary):
             showSyncSpinner(false)
             syncToolbarItem?.toolTip = idleSyncTooltip()
@@ -823,8 +831,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// What the running step is doing, for the tooltip.
+    private func runningVerb(_ step: SyncStep) -> String {
+        switch step {
+        case .fetch: "Fetching"
+        case .pull: "Pulling"
+        case .push: "Pushing"
+        }
+    }
+
+    /// The toolbar button stays on screen for the whole transfer and becomes the way
+    /// to stop it; the spinner sits beside it rather than replacing it. Hiding the
+    /// button while busy is what used to leave a stuck sync with nothing to click.
     private func showSyncSpinner(_ busy: Bool) {
-        syncButton?.isHidden = busy
+        let cancellable = syncModel?.isCancellable ?? false
+        syncButton?.image = NSImage(
+            systemSymbolName: busy ? "stop.circle" : "arrow.triangle.2.circlepath",
+            accessibilityDescription: busy ? "Cancel Sync" : "Sync")
+        syncButton?.action = busy ? #selector(cancelSync(_:)) : #selector(syncRepository(_:))
+        syncButton?.isEnabled = !busy || cancellable
         syncSpinner?.isHidden = !busy
         if busy {
             syncSpinner?.startAnimation(nil)

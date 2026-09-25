@@ -982,7 +982,7 @@ fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &std::sync::atomic::AtomicBool::new(false),
+        &rc_git_guard::actions::Cancel::new(),
     )?;
     write_fetch(out, &outcome)?;
     Ok(ExitCode::SUCCESS)
@@ -995,7 +995,7 @@ fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
         repo_path,
         &policy,
         remote.auth(),
-        &std::sync::atomic::AtomicBool::new(false),
+        &rc_git_guard::actions::Cancel::new(),
     )?;
     write_fetch(out, &fetch)?;
     let outcome = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
@@ -1009,7 +1009,7 @@ fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &std::sync::atomic::AtomicBool::new(false),
+        &rc_git_guard::actions::Cancel::new(),
     )?;
     write_push(out, &outcome)?;
     Ok(ExitCode::SUCCESS)
@@ -1021,7 +1021,7 @@ fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &std::sync::atomic::AtomicBool::new(false),
+        &rc_git_guard::actions::Cancel::new(),
     )?;
     write_fetch(out, &outcome.fetch)?;
     write_pull(out, &outcome.pull)?;

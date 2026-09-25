@@ -5,7 +5,9 @@
 //! (which spawns `git credential-*`) is never consulted.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use super::{ActionError, ActionResult, open};
 
@@ -19,6 +21,56 @@ mod ssh;
 pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
 pub use push::{PushOutcome, push_upstream};
+
+/// How long dialing, the TLS or ssh handshake, and authentication may take together.
+pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a transfer may move no bytes before it counts as dead. A git server sends
+/// keepalives every few seconds while it thinks, so this much total silence means the
+/// connection is gone rather than the server being slow on a large repository.
+pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often a blocked read or write wakes to look at the cancel flag. It bounds how
+/// long a cancel takes to land; the wake costs one timer while the socket is silent
+/// and nothing at all while bytes are arriving.
+pub(super) const CANCEL_POLL: Duration = Duration::from_millis(200);
+
+/// A shared "stop" flag for one remote operation, cloneable so the transport can hold
+/// it after the call that started the transfer has returned. Setting it from another
+/// thread ends the operation with [`ActionError::Cancelled`]: the ssh transport wakes
+/// out of its read within a fifth of a second, and the pack steps of both transports
+/// check it between objects.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    /// A flag nobody has set yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks the operation holding this flag to stop. Safe from any thread.
+    pub fn signal(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Cancel::signal`] has been called.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// The raw flag, for the gix APIs that take `&AtomicBool` as their interrupt.
+    pub(super) fn flag(&self) -> &AtomicBool {
+        &self.0
+    }
+
+    /// A handle the ssh transport keeps for as long as the connection lives.
+    pub(super) fn share(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.0)
+    }
+}
 
 /// What one sync pass did: fetch, fast-forward, and — when the branch was ahead — push.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +93,7 @@ pub fn sync(
     repo_path: &Path,
     policy: &crate::Policy,
     auth: RemoteAuth<'_>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> ActionResult<SyncOutcome> {
     let fetch = fetch_upstream(repo_path, policy, auth, cancel)?;
     let pull = pull_fast_forward(repo_path, policy)?;
@@ -367,11 +419,25 @@ fn map_network_error(
 
 /// Returns [`ActionError::Cancelled`] when the flag is already set, so a cancelled
 /// operation never opens a connection.
-fn bail_if_cancelled(cancel: &AtomicBool, op: &'static str) -> ActionResult<()> {
-    if cancel.load(Ordering::SeqCst) {
+fn bail_if_cancelled(cancel: &Cancel, op: &'static str) -> ActionResult<()> {
+    if cancel.is_cancelled() {
         return Err(ActionError::Cancelled { op });
     }
     Ok(())
+}
+
+/// Transport timeouts for the HTTPS backend. A repository opened with
+/// `Options::isolated()` reads no global configuration, so `http.lowSpeedLimit` and
+/// friends can only come from here; without them curl waits forever on a peer that
+/// accepts the connection and then goes quiet.
+///
+/// `low_speed_limit_bytes_per_second` is 1 rather than a realistic rate on purpose:
+/// the pair means "fail when fewer than 1 byte moves for [`IDLE_TIMEOUT`]", which
+/// never punishes a slow link, only a dead one.
+fn http_timeouts(options: &mut gix::protocol::transport::client::blocking_io::http::Options) {
+    options.connect_timeout = Some(CONNECT_TIMEOUT);
+    options.low_speed_limit_bytes_per_second = 1;
+    options.low_speed_time_seconds = IDLE_TIMEOUT.as_secs();
 }
 
 /// Whether `ancestor` is reachable from `tip`.

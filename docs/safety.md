@@ -127,6 +127,13 @@ The remote operations add their own guarantees:
   self-contained (never thin). A rejection surfaces the server's reason verbatim.
 - **Credentials** are per-host, supplied by the caller (the app reads the login keychain),
   passed through the FFI per call, and never stored or logged by the Rust side.
+- **Every transfer ends.** Each remote call carries an `RcGitCancel` the app can signal
+  from another thread; the ssh transport wakes out of its read within 200 ms to look at
+  it, and the pack steps check it between objects. A connection that stops moving bytes
+  dies on its own after 120 seconds — `http.lowSpeedLimit`/`lowSpeedTime` set in code
+  for curl (an isolated open reads no global config), an idle budget per read and write
+  for ssh — with 30 seconds for dialing and the handshake. A cancelled operation stops
+  between steps: nothing is left half-applied.
 
 ## Supply chain
 

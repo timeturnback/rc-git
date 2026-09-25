@@ -19,6 +19,9 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private(set) var pushCredentials: [Credentials?] = []
     private(set) var pullCalls = 0
     private(set) var pushCalls = 0
+    /// Called on the step's own thread, with that step's token, before the step
+    /// answers. A test uses it to cancel exactly while the transfer is in flight.
+    var duringStep: (@Sendable (CancelToken) -> Void)?
 
     init(script: Script) {
         self.script = script
@@ -50,9 +53,11 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return status
     }
 
-    func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
-        -> FetchOutcome
-    {
+    func fetch(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> FetchOutcome {
+        duringStep?(cancel)
         lock.lock()
         defer { lock.unlock() }
         fetchCredentials.append(credentials)
@@ -73,9 +78,11 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return try script.pulls.removeFirst().get()
     }
 
-    func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
-        -> PushOutcome
-    {
+    func push(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> PushOutcome {
+        duringStep?(cancel)
         lock.lock()
         defer { lock.unlock() }
         pushCredentials.append(credentials)
@@ -463,6 +470,67 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
         #expect(performer.fetchCredentials.last??.token == "opensesame")
         #expect(store.stored["git.example.com#ssh"]?.token == "opensesame")
         #expect(store.stored["git.example.com"] == nil)
+    }
+
+    @Test func cancellingMidStepEndsIdleWithoutAnErrorOrTheRemainingSteps() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(ahead: 1)],
+                fetches: [.failure(.failure(message: "fetch: cancelled"))],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ))
+        // The real transfer sees the flag and fails; the stub stands in for that, and
+        // cancels from the step's own thread the way the toolbar button does.
+        performer.duringStep = { cancel in cancel.signal() }
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(model.state == .idle, "a cancel is not a failure to report")
+        #expect(performer.pullCalls == 0, "a cancelled fetch must stop the workflow")
+        #expect(performer.pushCalls == 0)
+        #expect(!model.isBusy)
+    }
+
+    @Test func cancellingIsRefusedWhenNothingIsRunningAndTheNextSyncStillWorks() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ))
+        await model.refreshStatus()
+        model.cancelRunning()
+        #expect(model.state == .idle)
+        #expect(!model.isCancellable)
+
+        // The flag a cancel raises belongs to one workflow: the next one starts clean.
+        await model.sync()
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1)))
+        #expect(performer.pushCalls == 1)
+    }
+
+    @Test func aCancelledAuthFailureDoesNotReopenTheCredentialPrompt() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401"))]
+            ))
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "user", token: "token"))
+        }
+        performer.duringStep = { cancel in cancel.signal() }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(prompts == 0, "the user already said stop")
+        #expect(model.state == .idle)
+        #expect(performer.fetchCredentials.count == 1, "no retry after a cancel")
     }
 }
 

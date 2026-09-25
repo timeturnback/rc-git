@@ -15,7 +15,6 @@ use std::fmt::Display;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
-use std::sync::atomic::AtomicBool;
 
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage, CommitSummary,
@@ -23,7 +22,7 @@ use rc_git_core::{
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth, commit,
+    ActionError, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth, commit,
     create_branch, create_tag, delete_branch, delete_tag, discard_files, discard_hunks,
     fetch_upstream, plan_branch_delete, plan_tag_delete, pull_fast_forward, push_upstream,
     stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
@@ -42,6 +41,9 @@ pub const RCGIT_DIVERGED: i32 = -3;
 /// Status for remote functions over ssh: the host's key is not known; `hostkey` holds
 /// `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
 pub const RCGIT_HOSTKEY_UNKNOWN: i32 = -4;
+/// Status for remote functions: the caller signalled the `RcGitCancel` it passed in.
+/// Nothing was left half-applied; the operation stopped between steps.
+pub const RCGIT_CANCELLED: i32 = -5;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -3254,8 +3256,8 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::UnsupportedRemote { .. }
         | ActionError::HostKeyMismatch { .. }
         | ActionError::NoUpstream { .. }
-        | ActionError::Cancelled { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
+        ActionError::Cancelled { .. } => RCGIT_CANCELLED,
     }
 }
 
@@ -3379,28 +3381,79 @@ pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus
     unsafe { release(status) }
 }
 
+/// A cancellation flag for one remote operation. Opaque: create with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
+/// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
+/// once the operation has returned.
+pub struct RcGitCancel(Cancel);
+
+/// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcgit_cancel_new() -> *mut RcGitCancel {
+    export(RcGitCancel(Cancel::new()))
+}
+
+/// Asks the operation holding `cancel` to stop. Safe to call from a thread other than
+/// the one inside the operation, which is the point: that thread is blocked in it.
+/// The operation then fails with `RCGIT_CANCELLED`. NULL is a no-op.
+///
+/// # Safety
+/// `cancel` is NULL or came from `rcgit_cancel_new` and has not been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_cancel_signal(cancel: *const RcGitCancel) {
+    // SAFETY: forwarded from this function's contract.
+    if let Some(cancel) = unsafe { cancel_arg(cancel) } {
+        cancel.signal();
+    }
+}
+
+/// Releases a flag. Free it only after the operation it was passed to has returned.
+///
+/// # Safety
+/// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
+/// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_cancel_free(cancel: *mut RcGitCancel) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(cancel) };
+}
+
+/// # Safety
+/// `cancel` is NULL or a pointer from `rcgit_cancel_new` that has not been freed.
+unsafe fn cancel_arg<'a>(cancel: *const RcGitCancel) -> Option<&'a Cancel> {
+    if cancel.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded from this function's contract.
+    Some(&unsafe { &*cancel }.0)
+}
+
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
-/// may be NULL for an anonymous attempt with default ssh configuration. Returns
-/// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or `RCGIT_HOSTKEY_UNKNOWN`
-/// (`hostkey` then holds the offered key for the user to verify).
+/// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
+/// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
+/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
+/// then holds the offered key for the user to verify).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-/// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
-/// are each NULL or valid for writing a `char *`.
+/// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+/// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+/// `error` are each NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_fetch(
     repo_path: *const c_char,
     auth: *const RcGitRemoteAuth,
+    cancel: *const RcGitCancel,
     out: *mut RcGitFetchOutcome,
     hostkey: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, auth, out, hostkey, error) = unsafe {
+    let (repo_path, auth, cancel, out, hostkey, error) = unsafe {
         (
             bytes_arg(repo_path),
             OwnedRemoteAuth::read(auth),
+            cancel_arg(cancel),
             Out::new(out),
             Out::new(hostkey),
             Out::new(error),
@@ -3411,8 +3464,9 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
         return RCGIT_ERROR;
     };
     let repo_path = Path::new(OsStr::from_bytes(repo_path));
-    let cancel = AtomicBool::new(false);
-    match fetch_upstream(repo_path, &Policy::default(), auth.borrow(), &cancel) {
+    let never = Cancel::new();
+    let cancel = cancel.unwrap_or(&never);
+    match fetch_upstream(repo_path, &Policy::default(), auth.borrow(), cancel) {
         Ok(outcome) => {
             let (ahead, behind) =
                 upstream_status(repo_path).map_or((0, 0), |status| (status.ahead, status.behind));
@@ -3473,27 +3527,31 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
 }
 
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
-/// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`,
+/// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
+/// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
 /// `RCGIT_DIVERGED` (the remote has commits the branch lacks), or
 /// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-/// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
-/// are each NULL or valid for writing a `char *`.
+/// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+/// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+/// `error` are each NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_push(
     repo_path: *const c_char,
     auth: *const RcGitRemoteAuth,
+    cancel: *const RcGitCancel,
     out: *mut RcGitPushOutcome,
     hostkey: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, auth, out, hostkey, error) = unsafe {
+    let (repo_path, auth, cancel, out, hostkey, error) = unsafe {
         (
             bytes_arg(repo_path),
             OwnedRemoteAuth::read(auth),
+            cancel_arg(cancel),
             Out::new(out),
             Out::new(hostkey),
             Out::new(error),
@@ -3503,12 +3561,13 @@ pub unsafe extern "C" fn rcgit_guard_push(
         error.report("repo_path is NULL");
         return RCGIT_ERROR;
     };
-    let cancel = AtomicBool::new(false);
+    let never = Cancel::new();
+    let cancel = cancel.unwrap_or(&never);
     match push_upstream(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
         auth.borrow(),
-        &cancel,
+        cancel,
     ) {
         Ok(outcome) => {
             out.set(RcGitPushOutcome {
@@ -4323,6 +4382,7 @@ mod tests {
             rcgit_guard_fetch(
                 ptr::null(),
                 ptr::null(),
+                ptr::null(),
                 &raw mut fetch_out,
                 ptr::null_mut(),
                 &raw mut error,
@@ -4351,6 +4411,7 @@ mod tests {
             rcgit_guard_push(
                 ptr::null(),
                 ptr::null(),
+                ptr::null(),
                 &raw mut push_out,
                 ptr::null_mut(),
                 &raw mut error,
@@ -4366,6 +4427,7 @@ mod tests {
         let code = unsafe {
             rcgit_guard_fetch(
                 path.as_ptr(),
+                ptr::null(),
                 ptr::null(),
                 &raw mut fetch_out,
                 ptr::null_mut(),
@@ -4386,6 +4448,62 @@ mod tests {
         let code = unsafe { rcgit_guard_pull_ff(path.as_ptr(), &raw mut pull_out, &raw mut error) };
         assert_eq!(code, RCGIT_DIVERGED);
         assert!(take_error(&mut error).contains("cannot fast-forward"));
+    }
+
+    #[test]
+    fn a_signalled_cancel_stops_a_remote_action_with_its_own_status() {
+        let cancel = rcgit_cancel_new();
+        assert!(!cancel.is_null());
+
+        let fx = Fixture::standard();
+        fx.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        fx.git(&["config", "branch.main.remote", "origin"]);
+        fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let path = CString::new(fx.path().to_str().unwrap()).unwrap();
+        let mut fetch_out = RcGitFetchOutcome {
+            updated_refs: 0,
+            ahead: 0,
+            behind: 0,
+        };
+        let mut error = ptr::null_mut();
+
+        // Signalled from this thread before the call; a real caller signals from
+        // another while this one is blocked inside the transfer.
+        unsafe { rcgit_cancel_signal(cancel) };
+        let code = unsafe {
+            rcgit_guard_fetch(
+                path.as_ptr(),
+                ptr::null(),
+                cancel,
+                &raw mut fetch_out,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_CANCELLED);
+        assert!(take_error(&mut error).contains("cancelled"));
+
+        let mut push_out = RcGitPushOutcome {
+            pushed_commits: 0,
+            already_up_to_date: false,
+        };
+        let code = unsafe {
+            rcgit_guard_push(
+                path.as_ptr(),
+                ptr::null(),
+                cancel,
+                &raw mut push_out,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_CANCELLED);
+        assert!(take_error(&mut error).contains("cancelled"));
+
+        unsafe { rcgit_cancel_free(cancel) };
+        // NULL is accepted everywhere a flag is taken, and means "never cancelled".
+        unsafe { rcgit_cancel_signal(ptr::null()) };
+        unsafe { rcgit_cancel_free(ptr::null_mut()) };
     }
 
     #[test]
@@ -4426,6 +4544,7 @@ mod tests {
             rcgit_guard_fetch(
                 path.as_ptr(),
                 &raw const auth,
+                ptr::null(),
                 &raw mut fetch_out,
                 &raw mut hostkey,
                 &raw mut error,
@@ -4448,6 +4567,7 @@ mod tests {
             rcgit_guard_fetch(
                 path.as_ptr(),
                 &raw const auth,
+                ptr::null(),
                 &raw mut fetch_out,
                 &raw mut hostkey,
                 &raw mut error,

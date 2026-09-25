@@ -32,7 +32,6 @@ tempfile = "=3.27.0"
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-config = "=0.58.0"
 tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
-tokio-util = { version = "=0.7.19", default-features = false, features = ["io-util"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

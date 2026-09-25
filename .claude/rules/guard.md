@@ -27,6 +27,11 @@ performs one. Branch and tag management go through here; so does everything that
 - Protected patterns default to `main`, `master`, `release/*`. Users may add patterns, never
   remove the defaults through the UI.
 - Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
+- Every remote entry point takes a `Cancel` and must stay interruptible: no new blocking
+  call without a cancel poll and an idle budget (`CANCEL_POLL`, `IDLE_TIMEOUT` in
+  `actions/remote.rs`). A blocking read with neither is how a sync gets stuck forever.
+  Build a tokio timer inside the `async` block, never as an argument to `block_on`: a
+  `Sleep` needs the runtime context that `block_on` has not entered yet.
 - Every rule change updates the table in `docs/safety.md`, the tests in `lib.rs`, and the
   tests in `tests/actions.rs` together.
 - Remote I/O lives in `actions/remote/` only; the network entry points (`find_remote`,

@@ -1,13 +1,19 @@
 import Foundation
 
-/// The seam between the sync workflow and the FFI, so tests never open a socket.
+/// The seam between the sync workflow and the FFI, so tests never open a socket. The
+/// network steps take the operation's `CancelToken`; it is the only way to reach a
+/// thread already blocked inside a transfer.
 public protocol SyncPerforming: Sendable {
     func preflight(repoPath: String) throws -> RemoteStatus
-    func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
-        -> FetchOutcome
+    func fetch(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> FetchOutcome
     func pullFastForward(repoPath: String) throws -> PullOutcome
-    func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?) throws
-        -> PushOutcome
+    func push(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> PushOutcome
 }
 
 /// Production performer: forwards to `RepositoryGuard`.
@@ -18,22 +24,26 @@ public struct GuardSyncPerformer: SyncPerforming {
         try RepositoryGuard.remotePreflight(repoPath: repoPath)
     }
 
-    public func fetch(repoPath: String, credentials: Credentials?, acceptedHostKey: String?)
-        throws -> FetchOutcome
-    {
+    public func fetch(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> FetchOutcome {
         try RepositoryGuard.fetch(
-            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
+            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
+            cancel: cancel)
     }
 
     public func pullFastForward(repoPath: String) throws -> PullOutcome {
         try RepositoryGuard.pullFastForward(repoPath: repoPath)
     }
 
-    public func push(repoPath: String, credentials: Credentials?, acceptedHostKey: String?)
-        throws -> PushOutcome
-    {
+    public func push(
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        cancel: CancelToken
+    ) throws -> PushOutcome {
         try RepositoryGuard.push(
-            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
+            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
+            cancel: cancel)
     }
 }
 
@@ -71,6 +81,8 @@ public struct SyncSummary: Sendable, Hashable {
 public enum SyncState: Sendable, Hashable {
     case idle
     case running(SyncStep)
+    /// Stopping: the user asked, the step has been told, and the workflow is unwinding.
+    case cancelling(SyncStep)
     case done(SyncSummary)
     /// Local and upstream both moved; informative and terminal.
     case diverged(message: String)
@@ -90,6 +102,14 @@ public final class SyncModel {
     public private(set) var remoteStatus: RemoteStatus?
 
     public var isBusy: Bool {
+        switch state {
+        case .running, .cancelling: true
+        case .idle, .done, .diverged, .failed: false
+        }
+    }
+
+    /// Whether the running workflow can still be asked to stop.
+    public var isCancellable: Bool {
         if case .running = state { return true }
         return false
     }
@@ -109,6 +129,9 @@ public final class SyncModel {
     private let store: CredentialStoring
     private let hostKeys: HostKeyStoring
     private var generation = 0
+    /// The running workflow's flag. One per workflow: a token that has been signalled
+    /// stays signalled, so the next workflow gets a fresh one.
+    private var cancel = CancelToken()
 
     public init(
         repoPath: String,
@@ -141,6 +164,17 @@ public final class SyncModel {
     public func reset() {
         guard !isBusy else { return }
         state = .idle
+        onStateChanged?()
+    }
+
+    /// Asks the running workflow to stop. The flag reaches the step itself — the ssh
+    /// transport wakes out of its read, the pack steps check it between objects — so
+    /// this does not wait for a dead connection to time out. A no-op when nothing is
+    /// running or a cancel is already under way.
+    public func cancelRunning() {
+        guard case let .running(step) = state else { return }
+        cancel.signal()
+        state = .cancelling(step)
         onStateChanged?()
     }
 
@@ -200,6 +234,7 @@ public final class SyncModel {
         guard !isBusy, preflightAllows() else { return }
         generation += 1
         let generation = generation
+        cancel = CancelToken()
         do {
             let summary = try await body(self)
             guard generation == self.generation else { return }
@@ -207,13 +242,19 @@ public final class SyncModel {
                 summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
         } catch let failure as StepFailure {
             guard generation == self.generation else { return }
+            // A cancel unwinds through whatever the step reported — the guard's own
+            // cancelled error over ssh, a transport error over HTTPS where curl is cut
+            // off mid-request. What the user asked for decides the state, not which of
+            // those arrived.
             state =
-                failure.diverged
-                ? .diverged(message: failure.message)
-                : .failed(step: failure.step, message: failure.message)
+                switch (cancel.isSignalled, failure.diverged) {
+                case (true, _): .idle
+                case (false, true): .diverged(message: failure.message)
+                case (false, false): .failed(step: failure.step, message: failure.message)
+                }
         } catch {
             guard generation == self.generation else { return }
-            state = .failed(step: .fetch, message: "\(error)")
+            state = cancel.isSignalled ? .idle : .failed(step: .fetch, message: "\(error)")
         }
         onStateChanged?()
         await refreshStatus()
@@ -236,9 +277,10 @@ public final class SyncModel {
     }
 
     private func runFetch() async throws -> FetchOutcome {
-        try await networkStep(.fetch) { performer, repoPath, credentials, acceptedHostKey in
+        try await networkStep(.fetch) { performer, repoPath, credentials, hostKey, cancel in
             try performer.fetch(
-                repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
+                repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
+                cancel: cancel)
         }
     }
 
@@ -269,9 +311,10 @@ public final class SyncModel {
     }
 
     private func runPush() async throws -> PushOutcome {
-        try await networkStep(.push) { performer, repoPath, credentials, acceptedHostKey in
+        try await networkStep(.push) { performer, repoPath, credentials, hostKey, cancel in
             try performer.push(
-                repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey)
+                repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
+                cancel: cancel)
         }
     }
 
@@ -282,8 +325,8 @@ public final class SyncModel {
     private func networkStep<Outcome: Sendable>(
         _ step: SyncStep,
         _ operation:
-            @escaping @Sendable (SyncPerforming, String, Credentials?, String?) throws
-            -> Outcome
+            @escaping @Sendable (SyncPerforming, String, Credentials?, String?, CancelToken)
+            throws -> Outcome
     ) async throws -> Outcome {
         enter(step)
         let host = remoteStatus?.host ?? ""
@@ -295,15 +338,20 @@ public final class SyncModel {
         var hostKeyPrompted = false
         var authAttempts = 0
         while true {
+            // Covers the gap a sheet opens: a cancel raised while the user is looking
+            // at a prompt must not start another attempt when they answer it.
+            try bailIfCancelled(step)
             let performer = performer
             let repoPath = repoPath
             let attemptCredentials = credentials
             let attemptHostKey = acceptedHostKey
+            let cancel = cancel
             let result = await Task.detached(priority: .userInitiated) {
                 () -> Result<Outcome, SyncError> in
                 do {
                     return .success(
-                        try operation(performer, repoPath, attemptCredentials, attemptHostKey))
+                        try operation(
+                            performer, repoPath, attemptCredentials, attemptHostKey, cancel))
                 } catch let error as SyncError {
                     return .failure(error)
                 } catch {
@@ -317,6 +365,7 @@ public final class SyncModel {
                 }
                 return outcome
             case let .failure(.hostKeyUnknown(message, hostKey)):
+                try bailIfCancelled(step)
                 guard !hostKeyPrompted else {
                     throw StepFailure(step: step, message: message, diverged: false)
                 }
@@ -334,6 +383,7 @@ public final class SyncModel {
                     throw StepFailure(
                         step: step, message: error.message, diverged: isDiverged(error))
                 }
+                try bailIfCancelled(step)
                 authAttempts += 1
                 guard authAttempts < Self.promptLimit else {
                     throw StepFailure(
@@ -373,6 +423,14 @@ public final class SyncModel {
     private func enter(_ step: SyncStep) {
         state = .running(step)
         onStateChanged?()
+    }
+
+    /// Stops the retry loop when the user cancelled: a cancelled transfer can surface
+    /// as an auth or host-key failure, and neither should put a sheet on screen after
+    /// the user has already said stop.
+    private func bailIfCancelled(_ step: SyncStep) throws(StepFailure) {
+        guard cancel.isSignalled else { return }
+        throw StepFailure(step: step, message: "cancelled", diverged: false)
     }
 
     private func isDiverged(_ error: SyncError) -> Bool {

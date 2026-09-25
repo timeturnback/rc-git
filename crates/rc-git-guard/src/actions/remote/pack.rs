@@ -1,11 +1,11 @@
 //! Pack generation for push: enumerate the commits the remote lacks, expand them to
 //! trees and blobs, and write a self-contained (never thin) pack v2 into memory.
 
-use std::sync::atomic::AtomicBool;
-
 use gix::ObjectId;
 
 use crate::actions::{ActionError, ActionResult};
+
+use super::Cancel;
 
 const OP: &str = "push";
 
@@ -28,7 +28,7 @@ pub(super) fn build_pack(
     repo: &gix::Repository,
     tip: ObjectId,
     haves: &[ObjectId],
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> ActionResult<BuiltPack> {
     let walk = repo
         .rev_walk([tip])
@@ -71,7 +71,7 @@ pub(super) fn build_pack(
         db.clone(),
         input,
         &gix::progress::Discard,
-        cancel,
+        cancel.flag(),
         gix_pack::data::output::count::objects::Options {
             thread_limit: Some(1),
             input_object_expansion:

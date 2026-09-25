@@ -151,6 +151,10 @@ enum MainMenu {
             item(
                 "Sync", #selector(MainWindowController.syncRepository(_:)), "r",
                 [.command, .shift]))
+        menu.addItem(
+            item(
+                "Cancel Sync", #selector(MainWindowController.cancelSync(_:)), ".",
+                [.command]))
         return menu
     }
 

@@ -23,8 +23,9 @@ mod workfile;
 pub use commit::{Committed, commit};
 pub use discard::{discard_files, discard_hunks};
 pub use remote::{
-    Credentials, FetchOutcome, PullOutcome, PushOutcome, RefUpdate, RemoteAuth, SyncOutcome,
-    UpstreamStatus, fetch_upstream, pull_fast_forward, push_upstream, sync, upstream_status,
+    Cancel, Credentials, FetchOutcome, PullOutcome, PushOutcome, RefUpdate, RemoteAuth,
+    SyncOutcome, UpstreamStatus, fetch_upstream, pull_fast_forward, push_upstream, sync,
+    upstream_status,
 };
 pub use stash::{StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
 

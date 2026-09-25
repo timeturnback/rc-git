@@ -395,6 +395,48 @@ public struct Credentials: Sendable {
     }
 }
 
+/// A flag the app raises to stop a fetch or a push that is already running. The guard
+/// polls it between steps and inside the ssh transport's reads, so a cancel lands
+/// within a fraction of a second instead of waiting for a dead connection to notice.
+///
+/// One token belongs to one operation. Hold it until that operation returns: the Rust
+/// side borrows it for the whole call, and `deinit` frees it.
+public final class CancelToken: @unchecked Sendable {
+    fileprivate let handle: OpaquePointer?
+    private let lock = NSLock()
+    private var signalled = false
+
+    public init() {
+        handle = rcgit_cancel_new()
+    }
+
+    /// Whether [`signal`](signal()) has been called, so a caller unwinding an operation
+    /// can tell a cancel from a genuine failure.
+    public var isSignalled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return signalled
+    }
+
+    /// Asks the running operation to stop. Safe from any thread, and the point of the
+    /// type: the thread inside the operation is blocked and cannot ask itself.
+    public func signal() {
+        lock.lock()
+        signalled = true
+        lock.unlock()
+        rcgit_cancel_signal(handle)
+    }
+
+    deinit {
+        rcgit_cancel_free(handle)
+    }
+}
+
+extension Optional where Wrapped == CancelToken {
+    /// The C flag, or NULL when the caller passed none.
+    fileprivate var pointer: OpaquePointer? { self?.handle }
+}
+
 /// How a remote operation failed, typed so the caller can prompt or explain.
 public enum SyncError: Error, Sendable, Hashable {
     /// The host wants credentials it did not get, or rejected the given ones. Over ssh
@@ -405,13 +447,16 @@ public enum SyncError: Error, Sendable, Hashable {
     /// The ssh host's key is not known; `hostKey` is `"<key type> <fingerprint>"` for
     /// the user to verify before trusting.
     case hostKeyUnknown(message: String, hostKey: String)
+    /// The app signalled the operation's `CancelToken`. Nothing was half-applied; the
+    /// operation stopped between steps.
+    case cancelled(message: String)
     /// Everything else, message ready to show.
     case failure(message: String)
 
     public var message: String {
         switch self {
-        case let .authRequired(message), let .diverged(message), let .failure(message),
-            let .hostKeyUnknown(message, _):
+        case let .authRequired(message), let .cancelled(message), let .diverged(message),
+            let .failure(message), let .hostKeyUnknown(message, _):
             message
         }
     }
@@ -465,7 +510,8 @@ extension RepositoryGuard {
     /// anonymous attempt (over ssh, the token field carries the key passphrase);
     /// `acceptedHostKey` is a fingerprint the user approved for an unknown host.
     public static func fetch(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil,
+        cancel: CancelToken? = nil
     ) throws(SyncError) -> FetchOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
@@ -476,7 +522,7 @@ extension RepositoryGuard {
             var auth = RcGitRemoteAuth(
                 username: strings[0], token: strings[1], accepted_hostkey: strings[2],
                 ssh_dir: nil)
-            return rcgit_guard_fetch(repoPath, &auth, &out, &hostkey, &error)
+            return rcgit_guard_fetch(repoPath, &auth, cancel.pointer, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {
             throw syncError(status, error, hostkey, fallback: "cannot fetch")
@@ -504,7 +550,8 @@ extension RepositoryGuard {
 
     /// Pushes the checked-out branch to its upstream. Plain push only.
     public static func push(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil
+        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil,
+        cancel: CancelToken? = nil
     ) throws(SyncError) -> PushOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
@@ -515,7 +562,7 @@ extension RepositoryGuard {
             var auth = RcGitRemoteAuth(
                 username: strings[0], token: strings[1], accepted_hostkey: strings[2],
                 ssh_dir: nil)
-            return rcgit_guard_push(repoPath, &auth, &out, &hostkey, &error)
+            return rcgit_guard_push(repoPath, &auth, cancel.pointer, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {
             throw syncError(status, error, hostkey, fallback: "cannot push")
@@ -531,6 +578,7 @@ extension RepositoryGuard {
         let message = takeString(error) ?? fallback
         switch status {
         case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
+        case RCGIT_CANCELLED: return .cancelled(message: message)
         case RCGIT_DIVERGED: return .diverged(message: message)
         case RCGIT_HOSTKEY_UNKNOWN:
             return .hostKeyUnknown(message: message, hostKey: takeString(hostkey) ?? "")

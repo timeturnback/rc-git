@@ -5,7 +5,6 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 
 use gix::ObjectId;
 
@@ -14,9 +13,9 @@ use crate::{Action, Policy};
 
 use super::report::Report;
 use super::{
-    Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
-    configured_remote_name, current_branch, host_of, is_ancestor, map_network_error, pack, report,
-    set_reflog_identity, vet_remote_url,
+    Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
+    configured_remote_name, current_branch, host_of, http_timeouts, is_ancestor, map_network_error,
+    pack, report, set_reflog_identity, vet_remote_url,
 };
 
 const OP: &str = "push";
@@ -49,7 +48,7 @@ pub fn push_upstream(
     repo_path: &Path,
     policy: &Policy,
     auth: RemoteAuth<'_>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> ActionResult<PushOutcome> {
     let mut repo = open(repo_path, OP, "repository")?;
     set_reflog_identity(&mut repo, OP)?;
@@ -241,30 +240,33 @@ fn send(
     }
 }
 
-/// Opens the HTTP transport for `url`.
+/// Opens the HTTP transport for `url`, with rc-git's connect and idle timeouts on it.
+/// `connect::Options` carries no HTTP settings, so they go on afterwards through the
+/// transport's own `configure`; without them curl waits forever on a dead peer.
 fn connect(
     url: &gix::Url,
     host: &str,
 ) -> ActionResult<Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>> {
+    use gix::protocol::transport::client::TransportWithoutIO;
+    let failed = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
+        map_network_error(source, OP, url.to_bstring().to_string().as_str(), host)
+    };
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
     )]
-    gix::protocol::transport::client::blocking_io::connect::connect(
+    let mut transport = gix::protocol::transport::client::blocking_io::connect::connect(
         url.clone(),
         gix::protocol::transport::client::blocking_io::connect::Options {
             version: gix::protocol::transport::Protocol::V1,
             ..Default::default()
         },
     )
-    .map_err(|source| {
-        map_network_error(
-            Box::new(source),
-            OP,
-            url.to_bstring().to_string().as_str(),
-            host,
-        )
-    })
+    .map_err(|source| failed(Box::new(source)))?;
+    let mut options = gix::protocol::transport::client::blocking_io::http::Options::default();
+    http_timeouts(&mut options);
+    transport.configure(&options).map_err(failed)?;
+    Ok(transport)
 }
 
 /// Moves `refs/remotes/<remote>/<branch>` to the pushed tip so ahead/behind reads 0

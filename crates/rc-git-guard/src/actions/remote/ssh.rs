@@ -3,9 +3,7 @@
 //! channel. No child process is ever spawned — the same invariant the HTTPS path
 //! keeps. `known_hosts` is consulted read-only; trust decisions live with the caller.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use gix::protocol::transport::client::git::ConnectMode;
 use gix::protocol::transport::{Protocol, Service};
@@ -13,7 +11,7 @@ use russh::client::{Handle, Msg};
 
 use crate::actions::{ActionError, ActionResult};
 
-use super::{RemoteAuth, bail_if_cancelled};
+use super::{CONNECT_TIMEOUT, Cancel, RemoteAuth, bail_if_cancelled};
 
 mod auth;
 mod hostkey;
@@ -24,15 +22,12 @@ use hostkey::{HostKeyHandler, HostKeyReport, ReportSlot};
 use session::{SessionHold, SshRead, SshWrite};
 use target::SshTarget;
 
-/// Dialing plus handshake plus authentication must finish within this; channel I/O
-/// afterwards is unbounded because large transfers are legitimate.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Boxed transport type shared with the HTTPS push path.
 type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>;
 
 /// Opens an ssh connection to `url`'s host, authenticates, execs the git service, and
-/// wraps the channel as a blocking git-protocol transport.
+/// wraps the channel as a blocking git-protocol transport. The transport keeps a share
+/// of `cancel`, so setting the flag after this returns still stops the transfer.
 ///
 /// # Errors
 /// [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] from host-key
@@ -44,7 +39,7 @@ pub(super) fn transport(
     auth: RemoteAuth<'_>,
     service: Service,
     desired_version: Protocol,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
     op: &'static str,
 ) -> ActionResult<BoxedTransport> {
     let target = target::resolve(url, auth.ssh_dir, op)?;
@@ -71,9 +66,10 @@ pub(super) fn transport(
     let (read_half, write_half) = tokio::io::split(channel.into_stream());
     let handle = runtime.handle().clone();
     let hold = SessionHold::new(client, runtime);
+    let watch = session::Watch::new(cancel, op);
     let connection = gix::protocol::transport::client::git::blocking_io::Connection::new(
-        SshRead::new(read_half, handle.clone(), &hold),
-        SshWrite::new(write_half, handle, &hold),
+        SshRead::new(read_half, handle.clone(), &hold, watch.clone()),
+        SshWrite::new(write_half, handle, &hold, watch),
         desired_version,
         url.path.clone(),
         None::<(String, _)>,

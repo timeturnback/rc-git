@@ -3,14 +3,13 @@
 //! tracking refs itself; nothing else is touched, and `FETCH_HEAD` is never written.
 
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 
 use crate::actions::{ActionError, ActionResult, confirm, open};
 use crate::{Action, Policy};
 
 use super::{
-    RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
-    current_branch, host_of, map_network_error, vet_remote_url,
+    Cancel, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
+    current_branch, host_of, http_timeouts, map_network_error, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -45,7 +44,7 @@ pub fn fetch_upstream(
     repo_path: &Path,
     policy: &Policy,
     auth: RemoteAuth<'_>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> ActionResult<FetchOutcome> {
     let decision = policy.evaluate(&Action::Fetch);
     let _proof = confirm(decision, OP, "remote", None)?;
@@ -88,7 +87,11 @@ pub fn fetch_upstream(
             let connection = remote
                 .connect(gix::remote::Direction::Fetch)
                 .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
-            let connection = connection.with_credentials(authenticate_with(auth.creds.cloned()));
+            let mut connection =
+                connection.with_credentials(authenticate_with(auth.creds.cloned()));
+            if let Some(options) = timed_http_options(&repo, &url, &remote_name) {
+                connection.set_transport_options(options);
+            }
             run_fetch(connection, &remote_name, &host, cancel)?
         }
         RemoteScheme::Ssh => {
@@ -115,26 +118,55 @@ pub fn fetch_upstream(
     })
 }
 
+/// The repository's own HTTP transport options with rc-git's timeouts applied, or
+/// `None` when the repository configures none — gix then builds its defaults, which
+/// this overrides in turn by returning a fresh set.
+fn timed_http_options(
+    repo: &gix::Repository,
+    url: &gix::Url,
+    remote_name: &str,
+) -> Option<Box<dyn std::any::Any>> {
+    use gix::bstr::{BStr, ByteSlice};
+    let url = url.to_bstring();
+    let mut options = repo
+        .transport_options(url.as_bstr(), Some(<&BStr>::from(remote_name.as_bytes())))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            Box::new(gix::protocol::transport::client::blocking_io::http::Options::default())
+        });
+    let http =
+        options.downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()?;
+    http_timeouts(http);
+    Some(options)
+}
+
 /// Runs the prepared connection through negotiation and pack receive, mapping errors
 /// the same way for both transports.
 fn run_fetch<T>(
     connection: gix::remote::Connection<'_, '_, '_, T>,
     remote_name: &str,
     host: &str,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> ActionResult<gix::remote::fetch::Outcome>
 where
     T: gix::protocol::transport::client::blocking_io::Transport,
 {
-    connection
+    let prepared = connection
         .prepare_fetch(
             gix::progress::Discard,
             gix::remote::ref_map::Options::default(),
         )
-        .map_err(|source| map_network_error(Box::new(source), OP, remote_name, host))?
-        .receive(gix::progress::Discard, cancel)
         .map_err(|source| {
-            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            if cancel.is_cancelled() {
+                return ActionError::Cancelled { op: OP };
+            }
+            map_network_error(Box::new(source), OP, remote_name, host)
+        })?;
+    prepared
+        .receive(gix::progress::Discard, cancel.flag())
+        .map_err(|source| {
+            if cancel.is_cancelled() {
                 return ActionError::Cancelled { op: OP };
             }
             map_network_error(Box::new(source), OP, remote_name, host)

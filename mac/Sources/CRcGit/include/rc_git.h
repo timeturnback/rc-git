@@ -25,6 +25,10 @@
 // `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
 #define RCGIT_HOSTKEY_UNKNOWN -4
 
+// Status for remote functions: the caller signalled the `RcGitCancel` it passed in.
+// Nothing was left half-applied; the operation stopped between steps.
+#define RCGIT_CANCELLED -5
+
 // Namespace of a reference.
 typedef enum RcGitRefKind {
   // `refs/heads/*`
@@ -164,6 +168,12 @@ typedef enum RcGitRisk {
   // Loses something nothing remembers.
   RcGitRisk_Destructive = 2,
 } RcGitRisk;
+
+// A cancellation flag for one remote operation. Opaque: create with
+// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
+// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
+// once the operation has returned.
+typedef struct RcGitCancel RcGitCancel;
 
 // An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
 typedef struct RcGitRepo RcGitRepo;
@@ -1215,17 +1225,38 @@ struct RcGitRemoteStatus *rcgit_guard_remote_preflight(const char *repo_path, ch
 // `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
 void rcgit_remote_status_free(struct RcGitRemoteStatus *status);
 
+// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
+struct RcGitCancel *rcgit_cancel_new(void);
+
+// Asks the operation holding `cancel` to stop. Safe to call from a thread other than
+// the one inside the operation, which is the point: that thread is blocked in it.
+// The operation then fails with `RCGIT_CANCELLED`. NULL is a no-op.
+//
+// # Safety
+// `cancel` is NULL or came from `rcgit_cancel_new` and has not been freed.
+void rcgit_cancel_signal(const struct RcGitCancel *cancel);
+
+// Releases a flag. Free it only after the operation it was passed to has returned.
+//
+// # Safety
+// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
+// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
+void rcgit_cancel_free(struct RcGitCancel *cancel);
+
 // Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
-// may be NULL for an anonymous attempt with default ssh configuration. Returns
-// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, or `RCGIT_HOSTKEY_UNKNOWN`
-// (`hostkey` then holds the offered key for the user to verify).
+// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
+// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
+// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
+// then holds the offered key for the user to verify).
 //
 // # Safety
 // `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
-// are each NULL or valid for writing a `char *`.
+// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+// `error` are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_fetch(const char *repo_path,
                           const struct RcGitRemoteAuth *auth,
+                          const struct RcGitCancel *cancel,
                           struct RcGitFetchOutcome *out,
                           char **hostkey,
                           char **error);
@@ -1239,16 +1270,19 @@ int32_t rcgit_guard_fetch(const char *repo_path,
 int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out, char **error);
 
 // Pushes the checked-out branch to its upstream. Plain push only; a force push is not
-// offered here. Returns `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`,
+// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
+// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
 // `RCGIT_DIVERGED` (the remote has commits the branch lacks), or
 // `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
 //
 // # Safety
 // `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-// NUL-terminated fields; `out` is NULL or valid for writing; `hostkey` and `error`
-// are each NULL or valid for writing a `char *`.
+// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+// `error` are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_push(const char *repo_path,
                          const struct RcGitRemoteAuth *auth,
+                         const struct RcGitCancel *cancel,
                          struct RcGitPushOutcome *out,
                          char **hostkey,
                          char **error);

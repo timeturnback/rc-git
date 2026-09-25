@@ -6,12 +6,18 @@
 //! behind the test kit's loopback listener). The git CLI builds the fixtures; the
 //! guard is the only code under test that touches the network.
 
-use std::sync::atomic::AtomicBool;
-
 use rc_git_guard::Policy;
 use rc_git_guard::actions::{
-    ActionError, Credentials, RemoteAuth, fetch_upstream, upstream_status,
+    ActionError, Cancel, Credentials, RemoteAuth, fetch_upstream, upstream_status,
 };
+
+/// A flag that is already set, for the tests that check a cancelled operation never
+/// reaches the network.
+fn cancelled() -> Cancel {
+    let cancel = Cancel::new();
+    cancel.signal();
+    cancel
+}
 
 /// `RemoteAuth` carrying only credentials, as most tests need.
 fn auth(creds: &Credentials) -> RemoteAuth<'_> {
@@ -125,7 +131,7 @@ fn fetch_updates_the_tracking_ref_and_reports_it() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("fetch");
     assert_eq!(outcome.remote, "origin");
@@ -152,7 +158,7 @@ fn fetch_with_nothing_new_reports_no_updates() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("fetch");
     assert!(
@@ -185,7 +191,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
         clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     );
     assert!(
         matches!(anonymous, Err(ActionError::AuthRequired { .. })),
@@ -199,7 +205,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
             username: "user".to_owned(),
             token: "wrong".to_owned(),
         }),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     );
     assert!(
         matches!(wrong, Err(ActionError::AuthRequired { .. })),
@@ -221,7 +227,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
             username: "user".to_owned(),
             token: "sekret".to_owned(),
         }),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("authenticated fetch");
     assert!(!outcome.updated_refs.is_empty());
@@ -235,7 +241,7 @@ fn unsupported_remote_schemes_are_refused() {
         fixture.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("git protocol refused");
     assert!(
@@ -248,7 +254,7 @@ fn unsupported_remote_schemes_are_refused() {
         fixture.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("non-loopback http refused");
     assert!(
@@ -264,7 +270,7 @@ fn fetch_without_a_remote_reports_no_upstream() {
         fixture.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("no remote");
     assert!(matches!(err, ActionError::NoUpstream { .. }), "{err}");
@@ -277,7 +283,7 @@ fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(true),
+        &cancelled(),
     )
     .expect_err("cancelled");
     assert!(
@@ -297,7 +303,7 @@ fn fetch_clone(remoted: &Remoted) {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("fetch");
 }
@@ -477,7 +483,7 @@ fn push_uploads_commits_and_updates_the_tracking_ref() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("push");
     assert_eq!(outcome.remote, "origin");
@@ -505,7 +511,7 @@ fn push_with_nothing_new_is_a_no_op() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("push");
     assert_eq!(outcome.pushed_commits, 0);
@@ -521,7 +527,7 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("push");
     assert_eq!(outcome.branch, "topic");
@@ -551,7 +557,7 @@ fn push_is_rejected_when_the_remote_moved() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("rejected");
     assert!(matches!(err, ActionError::PushRejected { .. }), "{err}");
@@ -581,7 +587,7 @@ fn push_against_an_auth_server_requires_credentials() {
         clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     );
     assert!(
         matches!(anonymous, Err(ActionError::AuthRequired { .. })),
@@ -595,7 +601,7 @@ fn push_against_an_auth_server_requires_credentials() {
             username: "user".to_owned(),
             token: "sekret".to_owned(),
         }),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("authenticated push");
     assert_eq!(outcome.pushed_commits, 1);
@@ -633,7 +639,7 @@ fn push_surfaces_a_hook_rejection() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("hook rejects");
     let message = err.to_string();
@@ -648,7 +654,7 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
         remoted.clone.path(),
         &Policy::default(),
         RemoteAuth::default(),
-        &AtomicBool::new(true),
+        &cancelled(),
     )
     .expect_err("cancelled");
     assert!(
@@ -721,7 +727,7 @@ fn ssh_fetch_updates_the_tracking_ref() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("ssh fetch");
     assert_eq!(outcome.remote, "origin");
@@ -745,7 +751,7 @@ fn ssh_push_uploads_commits_and_updates_the_tracking_ref() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("ssh push");
     assert_eq!(outcome.pushed_commits, 1);
@@ -766,7 +772,7 @@ fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("unknown host refused");
     let ActionError::UnknownHostKey {
@@ -788,7 +794,7 @@ fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
             accepted_hostkey: Some(&accepted),
             ..remoted.auth()
         },
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("accepted fingerprint fetch");
 }
@@ -804,7 +810,7 @@ fn ssh_host_key_mismatch_is_fatal() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("mismatch refused");
     assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
@@ -823,7 +829,7 @@ fn ssh_wrong_key_reports_auth_required() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("wrong key refused");
     assert!(matches!(&err, ActionError::AuthRequired { .. }), "{err}");
@@ -841,7 +847,7 @@ fn ssh_encrypted_key_requires_a_passphrase_and_opens_with_it() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect_err("encrypted key without passphrase");
     assert!(
@@ -860,7 +866,7 @@ fn ssh_encrypted_key_requires_a_passphrase_and_opens_with_it() {
             creds: Some(&creds),
             ..remoted.auth()
         },
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("passphrase fetch");
 }
@@ -907,7 +913,7 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .expect("alias fetch");
     assert_eq!(outcome.updated_refs.len(), 1);

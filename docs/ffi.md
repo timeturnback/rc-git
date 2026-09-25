@@ -16,11 +16,16 @@ in Swift value types.
 - Object ids cross as `RcGitOid`: 32 bytes plus a length, 20 for SHA-1.
 - An `RcGitRepo` may be used from any thread, including several at once.
 - Statuses: `RCGIT_OK` (0) and `RCGIT_ERROR` (-1) for functions that fill an out parameter.
-  Remote functions add `RCGIT_AUTH_REQUIRED` (-2), `RCGIT_DIVERGED` (-3), and
+  Remote functions add `RCGIT_AUTH_REQUIRED` (-2), `RCGIT_DIVERGED` (-3),
   `RCGIT_HOSTKEY_UNKNOWN` (-4, ssh only: the `hostkey` out parameter holds
   `"<key type> <SHA256 fingerprint>"` to show the user, released with
-  `rcgit_string_free`). Their inputs travel in one `RcGitRemoteAuth` struct whose fields
-  may all be `NULL`.
+  `rcgit_string_free`), and `RCGIT_CANCELLED` (-5). Their inputs travel in one
+  `RcGitRemoteAuth` struct whose fields may all be `NULL`.
+- `RcGitCancel` is the one handle meant to be touched from a second thread: the thread
+  inside a transfer cannot ask itself to stop. `rcgit_cancel_new` before the call,
+  `rcgit_cancel_signal` from the UI thread while it runs, `rcgit_cancel_free` after it
+  returns — never before, since the call borrows it for its whole life. `NULL` is
+  accepted and means the caller has no way to cancel.
 
 ## Memory
 
