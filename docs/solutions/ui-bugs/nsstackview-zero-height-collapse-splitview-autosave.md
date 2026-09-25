@@ -1,7 +1,7 @@
 ---
 title: "A split pane driven to zero height, and the NSSplitView autosave that makes it permanent"
 date: 2026-09-07
-last_updated: 2026-09-21
+last_updated: 2026-09-25
 category: ui-bugs
 module: RcGitApp
 problem_type: ui_bug
@@ -9,7 +9,8 @@ component: frontend
 symptoms:
   - "A pane of a split renders at zero height; the feature in it reads as deleted, with no divider left to drag it back open"
   - "History tab shows only the search bar and the 'Select a commit' placeholder, no commit rows (2026-09-07 instance)"
-  - "Clicking a changed file in the commit-detail drawer flashes 'Loading <path>…' and then renders nothing (2026-09-21 instance)"
+  - "Clicking a changed file in the commit-detail drawer flashes 'Loading <path>…' and then renders nothing (2026-09-21 and 2026-09-25 instances)"
+  - "A min/max coordinate clamp is in place and the pane is still at zero: those delegate methods bound a divider drag, nothing else"
   - "The CLI returns the same data the view is asking for, so the core, FFI, and model layers are fine"
   - "A build with the layout fix still shows the broken pane: autosaveName restores the position the buggy build saved"
 root_cause: logic_error
@@ -32,10 +33,12 @@ tags:
 
 # A split pane driven to zero height, and the NSSplitView autosave that makes it permanent
 
-This has happened twice, in the same file, two weeks apart. The second time it happened
-*while following the prevention rules written after the first time*. Both instances are kept
-here because the pair is the argument: the remedy those rules prescribe is real but partial,
-and the durable one is in the Solution's step 3.
+This has happened three times, in the same file, over eighteen days. Instance 2 happened *while
+following the prevention rules written after instance 1*; instance 3 happened *while following
+the rules written after instance 2*, on a build that carried every one of them. All three are
+kept because the sequence is the argument: each remedy was real and none was sufficient, and
+the one that finally makes the bad state unreachable is in the Solution's step 3 — owning the
+split's resize.
 
 ## Problem
 
@@ -52,6 +55,14 @@ the detail pane; the commit table sat crushed above it. Upstream cause: an unsat
 **Instance 2 (2026-09-21, commit-detail drawer).** The drawer's changed-files list rendered
 fine and the diff pane below it was zero points tall. No broken constraint at all this time —
 just one pane with a min-height floor and one without.
+
+**Instance 3 (2026-09-25, commit-detail drawer again).** The same drawer, the same zero-height
+diff pane, on the `.v4` build that had just fixed instance 2 — both panes floored, both
+coordinate clamps implemented, both autosave names bumped. The dev domain had already recorded
+`rc-git.history-detail.v4` as `763 / 0`. The clamps never ran: `constrainMinCoordinate` and
+`constrainMaxCoordinate` are consulted for a user's divider drag, not for `adjustSubviews` and
+not for the autosave restore. The per-pane Auto Layout floors never ran either, because a bare
+`NSSplitView` hands its panes frames and those frames win.
 
 ## Symptoms
 
@@ -70,6 +81,19 @@ just one pane with a min-height floor and one without.
   (
       "0.000000, 0.000000, 349.000000, 864.000000, NO, NO",
       "0.000000, 101.000000, 349.000000, 0.000000, YES, NO"
+  )
+  ```
+
+  Instance 3 read the same way one key later, and the shape is the tell that the clamps were
+  never asked: the divider sits at the full height of the split, far past the max coordinate
+  they compute.
+
+  ```
+  $ defaults read com.timeturnback.rcgit.dev \
+      "NSSplitView Subview Frames rc-git.history-detail.v4"
+  (
+      "0.000000, 0.000000, 396.000000, 763.000000, NO, NO",
+      "0.000000, 764.000000, 396.000000, 0.000000, NO, NO"
   )
   ```
 
@@ -106,6 +130,19 @@ just one pane with a min-height floor and one without.
   `diffScroll.heightAnchor >= 150` is the whole fix. It is not, on a machine whose defaults are
   already poisoned: the restored position arrives as a *frame*, and a floor added afterwards
   does not push a divider back out of a position the split has already been told to take.
+- **Trusting an Auto Layout floor at all, on a pane of a bare `NSSplitView` (instance 3).**
+  Stronger than the point above: the floor does not govern the *computed* layout either. The
+  split assigns each pane a frame, the pane's `translatesAutoresizingMaskIntoConstraints`
+  turns that frame into required constraints, and `heightAnchor >= 150` is then the constraint
+  the engine breaks — silently, with nothing in the log. Two panes were floored after instance
+  2 and the diff pane still reached zero. The floor now sits on the split itself, where it
+  asks the enclosing layout for room instead of arguing with a frame.
+- **Clamping the divider with `constrainMinCoordinate`/`constrainMaxCoordinate` (instance 3).**
+  This was instance 2's "durable part". It is not durable: AppKit asks those methods where a
+  divider the user is *dragging* may go. Automatic resizing runs through `adjustSubviews`, and
+  the autosave restores a position by setting frames; neither path consults them. They were in
+  place, correct, and irrelevant while `.v4` recorded a diff pane at zero height. Keep them for
+  drags; do not count them as the guard.
 - **Suspecting the diff pipeline in instance 2.** A load that never lands points at core, FFI
   or `BrowserModel` — the drawer loads one blob diff per click, so a dropped generation or a
   swallowed error looks identical from outside. One CLI command moved the diagnosis to layout.
@@ -113,8 +150,9 @@ just one pane with a min-height floor and one without.
 ## Solution
 
 All changes are in `mac/Sources/RcGitApp/HistoryViewController.swift`, across commits
-`96284d1`, `9885da1` (instance 1) and `dd3c551` (instance 2, local on `master` and unpushed as
-of this writing, so that hash may be rewritten).
+`96284d1`, `9885da1` (instance 1) and `dd3c551` (instance 2), plus instance 3's change, which
+also adds the pane arithmetic to `LayoutPolicy` (RcGitKit) with tests. Steps 1 and 4 stand as
+written; steps 2 and 3 are what instance 3 rewrote.
 
 **1. Hide a view by detaching it, never by collapsing its height.** Before — a stored
 zero-height constraint toggled on a bar whose subviews stayed visible:
@@ -137,54 +175,76 @@ scopeBar.isHidden = true
 scopeBar.isHidden = path == nil
 ```
 
-**2. Give every pane of the split its own floor, with `.fill` distribution.** Each pane is a
-vertical stack with `distribution = .fill` and `detachesHiddenViews`, and the stretchy member
-takes the lowest vertical hugging (`rawValue: 1`) so it soaks up remaining height while the bars
-hug at `.defaultHigh`. That member is the scroll view in the commits pane but the split itself
-in the drawer, where `changesScroll` is deliberately at `.defaultHigh` — port the gradient, not
-the literal view type. Both floors of the detail drawer are named constants
-(`HistoryViewController.swift:28-29`), applied in `buildDetailPane()` (`:255-257`):
+**2. Floor the split, not its panes, and keep the floors in `LayoutPolicy`.** The two heights
+are thresholds, so they live where the repo's invariant says thresholds live — `LayoutPolicy`
+(RcGitKit), where a test can reach them — and `HistoryViewController` aliases them. What the
+constraint system is asked for is one floor on the split itself, which propagates a real
+minimum up through the drawer's stack instead of contradicting a pane's assigned frame:
 
 ```swift
-/// The height neither pane of the detail drawer may drop below. A pane at zero reads as a
-/// missing feature, and `NSSplitView` autosave records the zero and re-imposes it.
-private static let changesPaneFloor: CGFloat = 100
-private static let diffPaneFloor: CGFloat = 150
+// LayoutPolicy:
+public static let historyChangesFloor: CGFloat = 100
+public static let historyDiffFloor: CGFloat = 150
 
 // ... in buildDetailPane():
-changesScroll.heightAnchor.constraint(
-    greaterThanOrEqualToConstant: Self.changesPaneFloor),
-diffScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.diffPaneFloor),
+detailSplit.heightAnchor.constraint(
+    greaterThanOrEqualToConstant: Self.changesPaneFloor + Self.diffPaneFloor
+        + detailSplit.dividerThickness),
 ```
 
-The commits pane's own floor changed axis at the drawer rewrite: it was
-`scroll.heightAnchor >= 150` while the detail sat *below* it, and `08d943c` replaced that with
-`scroll.widthAnchor >= 320` when the pane became the left side of a horizontal split, where
-height comes from the split and width is the dimension that can be crushed. **Floor the axis the
-split can actually take from you** — a vertical split takes height, a horizontal one takes
-width. The 150 matches the Changes tab's own diff scroll view
-(`ChangesViewController.swift:382`), though note that tab's panes are plain `addSubview`
-children rather than split panes, so it is precedent for the value, not for the split-pane rule.
+The per-pane `heightAnchor >= …` constraints from instance 2 are gone, along with
+`setHoldingPriority` and the `changesScroll` hugging that biased the split's own distribution:
+step 3 does that job now, and leaving either in place would mean two mechanisms disagreeing
+about the same divider.
 
-**3. Clamp the divider through `NSSplitViewDelegate`.** This is the durable part, and the one
-thing the 2026-09-07 fix lacked. The controller conforms, the detail split takes it as its
-delegate (`HistoryViewController.swift:224`), and the two coordinate methods make the bad
-position unreachable (`:675-696`):
+Elsewhere the "floor the axis the split can crush" rule still holds for what constraints *can*
+govern: the commits pane keeps `scroll.widthAnchor >= 320`, its width being what the outer
+horizontal split takes from it. The 150 matches the Changes tab's own diff scroll view
+(`ChangesViewController.swift:382`), and that tab has no `NSSplitView` at all, so its panes are
+ordinary subviews whose floors work as floors.
+
+**3. Lay the panes out yourself, in `splitView(_:resizeSubviewsWithOldSize:)`, and re-clamp in
+`viewDidLayout`.** This is the durable part, and what instances 1 and 2 both lacked. The
+arithmetic is pure and tested (`LayoutPolicy.splitPane`, `LayoutPolicyTests`); the controller
+only applies it to frames:
 
 ```swift
-// MARK: NSSplitViewDelegate
-
-/// Keeps the drawer's divider inside the two floors. Auto Layout alone cannot do this: a
-/// restored autosave position is applied as a frame, and a pane parked at zero height
-/// looks to the user like the diff feature is missing.
-func splitView(
-    _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
-    ofSubviewAt dividerIndex: Int
+public static func splitPane(
+    available: CGFloat, preferred: CGFloat, firstFloor: CGFloat, secondFloor: CGFloat
 ) -> CGFloat {
-    guard splitView === detailSplit else { return proposedMinimumPosition }
-    return max(proposedMinimumPosition, Self.changesPaneFloor)
+    guard available > 0 else { return 0 }
+    guard available >= firstFloor + secondFloor else {
+        return available * firstFloor / (firstFloor + secondFloor)
+    }
+    return min(max(preferred, firstFloor), available - secondFloor)
+}
+```
+
+```swift
+func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+    guard splitView === detailSplit else {
+        splitView.adjustSubviews()
+        return
+    }
+    layoutDetailPanes()
 }
 
+override func viewDidLayout() {
+    super.viewDidLayout()
+    layoutDetailPanes()
+}
+```
+
+`layoutDetailPanes` reads the current top-pane height as `preferred`, so a user's divider
+survives every resize, and writes a frame only when it differs, so the pass converges instead
+of looping. `viewDidLayout` is the half that repairs a poisoned autosave: the restore arrives
+as frames during the first layout, and the clamp rewrites them on the way out. A drawer too
+short for both floors splits what there is in proportion rather than zeroing a pane, which
+keeps the divider reachable at any window size.
+
+The two coordinate clamps stay, now correctly scoped to what they actually do — bound a drag:
+
+```swift
 func splitView(
     _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
     ofSubviewAt dividerIndex: Int
@@ -196,28 +256,32 @@ func splitView(
 }
 ```
 
-The identity `guard` keeps the floors the drawer's own: the controller owns a second,
-outer split (the commit list beside the drawer) that takes no delegate today, and the guard is
-what stops these clamps leaking onto it if it ever does. The max clamp keeps `changesPaneFloor`
-as a lower bound on `lastOpen`, so a drawer too short to hold both floors still yields a sane
-coordinate instead of a negative one.
+The identity `guard` keeps the floors the drawer's own: the controller owns a second, outer
+split (the commit list beside the drawer) that takes no delegate for its coordinates, and the
+guard is what stops these clamps — and the manual layout — leaking onto it. That guard is also
+why `resizeSubviewsWithOldSize` calls `adjustSubviews()` for any other split: implementing the
+method opts *every* split with this delegate out of automatic resizing.
 
-**4. Version the split autosave names, to discard the poison already stored.** The names are at
-`.v4` today (`HistoryViewController.swift:173`, `:223`), having passed through `.v2` after
-instance 1 and `.v3` at the drawer rewrite:
+**4. Version the split autosave names, to discard the poison already stored.** The outer split
+is at `.v4` (its stored geometry was healthy at instance 3, so it was left alone); the drawer
+is at `.v5`, having passed through `.v2` after instance 1, `.v3` at the drawer rewrite and
+`.v4` at instance 2:
 
 ```swift
-// v4: v3 autosaved the drawer at the height of its own minimum, which is what starved
-// the detail split underneath it.
-split.autosaveName = "rc-git.history.v4"
-// ...
-// v4: v3 autosaved a divider parked at the bottom, leaving the diff pane at zero
-// height on every launch. The delegate below keeps that position unreachable now.
-detailSplit.autosaveName = "rc-git.history-detail.v4"
+// v5: v4 parked the divider at the bottom again, leaving the diff pane at zero height.
+// The delegate below now lays the panes out itself, so no position reaches that state.
+detailSplit.autosaveName = "rc-git.history-detail.v5"
 ```
 
-**Verification:** `scripts/check.sh`, the repo's full gate — cargo clippy, cargo test,
-swift-format lint, 155 Swift tests — passed.
+Step 3 repairs a poisoned key on its own, so the bump is only about the first launch after the
+fix: without it the repaired position is the old one clamped — a 613pt file list above a 150pt
+diff — instead of the 100pt list and full-height diff a fresh key gives.
+
+**Verification:** `swift build`, `xcrun swift-format lint --strict`, and the RcGitKit suite —
+170 tests, including six new `LayoutPolicy.splitPane` cases, one of them the `763 / 0` geometry
+read out of the poisoned defaults. The data layer was cleared first with
+`cargo run -q -p rc-git-cli -- diff <repo> 9b51d13^ 9b51d13 <path>`, which printed the hunks
+the drawer had no pixels to show.
 
 ## Why This Works
 
@@ -243,18 +307,27 @@ defaults under its `autosaveName`. **Autosave is a recorder, not a validator.** 
 whatever geometry exists, sane or not, and re-imposes it on the next launch — which is why the
 constraint fix alone changed nothing on the user's machine.
 
-Why the delegate, and not just the floor: an Auto Layout floor constrains what layout the
-system may *compute*. A restored autosave position is not computed — it is applied as a frame,
-from user defaults, on the way up. `constrainMinCoordinate`/`constrainMaxCoordinate` are the
-hook `NSSplitView` consults about where a divider is *allowed* to be, so they bound the restored
-position as well as every drag afterwards. That is what makes the bad state unreachable rather
-than merely un-recreatable: it holds regardless of what a user's defaults already contain.
+Instance 3 is what happens when the fix addresses neither stage. A bare `NSSplitView` does not
+ask Auto Layout where to put its panes; it assigns each one a frame, and with
+`translatesAutoresizingMaskIntoConstraints` left on — the default for a split's subviews —
+that frame becomes required constraints. A `heightAnchor >= 150` added alongside is simply the
+weaker half of a contradiction, and AppKit breaks it without a word. So the pane floors never
+governed the computed layout. And the coordinate clamps never saw the restore: AppKit asks
+those methods where a divider *being dragged* may go. `adjustSubviews` does not consult them,
+and neither does the autosave, which restores by setting frames. Both mechanisms were present
+and correct in the `.v4` build, and neither was ever on the path that produced `763 / 0`.
 
-And the version bump is the weakest of the four. Renaming `autosaveName` orphans a poisoned
-key; it never repairs one, and it only buys one clean launch. `.v2` was set by the 2026-09-07
-fix and replaced by `.v3` at the drawer rewrite — and `.v3` was poisoned in turn, within days,
-because the rewrite re-opened a way to reach the collapse. A name bump is a reset button. The
-delegate is the guard.
+Owning `splitView(_:resizeSubviewsWithOldSize:)` puts the policy on the one path every resize
+takes, and `viewDidLayout` covers the restore, which reaches the screen through a layout pass
+rather than a resize. Between them there is no way for the split to display a geometry the
+policy did not produce — which is the property the earlier fixes only appeared to have.
+
+The version bump is the weakest of the four. Renaming `autosaveName` orphans a poisoned key; it
+never repairs one, and it only buys one clean launch. `.v2` was set by the 2026-09-07 fix and
+replaced by `.v3` at the drawer rewrite; `.v3` was poisoned within days, and `.v4` — the fix for
+that — was poisoned the same way. A name bump is a reset button. The layout the app owns is the
+guard, and it is the first version of this fix that also *repairs* a key instead of abandoning
+it.
 
 In instance 2 the "Loading…" flash was visible only by accident of where the placeholder lives:
 `diffPlaceholder` is centered in the drawer's container, not inside the diff scroll view, so it
@@ -268,21 +341,29 @@ no pixels. The user saw the loading state and never the result.
   arbitrarily — often far from the offending view. Put the view in an `NSStackView` with
   `detachesHiddenViews = true` and set `isHidden`; a detached view costs no height and fights
   nothing.
-- **Floor every pane of a split, on the axis that split can crush, and re-audit the floors
-  whenever a pane is added or the split is restructured.** A split is only as safe as its
-  least-floored pane. This rule in its singular form ("give scroll content in a split a floor")
-  is what `08d943c` satisfied by flooring one of two panes. A vertical split takes height, a
-  horizontal one takes width, and a **restructure flips which axis is at risk** — which is the
-  whole story of that commit: it flipped both splits' orientation at once, correctly swapping the
-  commits pane's height floor for a width one, and leaving the diff pane with no floor on the
-  height axis it had just started bearing. Neither pane was new; the geometry was.
-- **An Auto Layout floor is not sufficient against autosave; pair it with `NSSplitViewDelegate`
-  min/max coordinate clamping.** The floor governs computed layout; the delegate governs the
-  divider position, including the one restored from user defaults, which arrives as a frame and
-  is not re-derived from constraints. Only the delegate makes a bad divider position unreachable
-  regardless of what a user's defaults hold. An `NSSplitViewController` whose items set
-  `minimumThickness` is already covered by that mechanism and needs no delegate —
-  `MainWindowController` sets it on both items of `outerSplit`.
+- **Own the layout of a bare `NSSplitView`: implement
+  `splitView(_:resizeSubviewsWithOldSize:)`, place both panes from one pure function, and call
+  the same function from `viewDidLayout`.** That pair covers every path a geometry can reach
+  the screen by — automatic resizing and the autosave restore — and it is the only arrangement
+  of the three attempts here that ever held. Keep the function pure and in `LayoutPolicy` so a
+  test pins the floors; the controller should do nothing but turn its number into frames.
+- **A constraint on a pane of a bare split is not a floor.** The split assigns pane frames and
+  `translatesAutoresizingMaskIntoConstraints` makes them required, so `heightAnchor >= n` is the
+  side of the contradiction AppKit silently breaks. Put the minimum on the split itself, where
+  it propagates outward and contradicts nothing. Panes of an `NSStackView`, or plain subviews,
+  are a different story — the Changes tab's `>= 150` floors work because nothing hands those
+  views frames.
+- **`constrainMinCoordinate`/`constrainMaxCoordinate` bound a drag and nothing else.** Not
+  `adjustSubviews`, not the autosave restore. They are worth implementing for what they cover,
+  and they are never the guard. An `NSSplitViewController` whose items set `minimumThickness`
+  *is* covered without any of this — `MainWindowController` sets it on both items of
+  `outerSplit`, and that is the cheapest way out of this whole class of bug when a split can be
+  one.
+- **Re-audit whenever a pane is added or a split is restructured.** A restructure flips which
+  axis is at risk, which is the whole story of `08d943c`: it flipped both splits' orientation at
+  once, correctly swapping the commits pane's height floor for a width one, and leaving the diff
+  pane unprotected on the height axis it had just started bearing. Neither pane was new; the
+  geometry was.
 - **Diagnose a suspected autosave poisoning with one command, before touching layout code:**
   `defaults read <bundle-id> "NSSplitView Subview Frames <autosaveName>"`. A height of 0 or
   `isCollapsed YES` separates "code bug" from "poisoned user defaults" instantly, with no app
@@ -307,12 +388,12 @@ no pixels. The user saw the loading state and never the result.
   flash-then-nothing symptom *with* a visible loading state is evidence the load worked and the
   render target is the problem.
 - **Know every autosaving split in the app, and fix them as a set.** There are exactly three
-  `autosaveName` sites: `HistoryViewController:173` and `:223` (both fixed here) and
-  `MainWindowController:346` (`rc-git.main.v2`, an `NSSplitViewController` covered by
-  `minimumThickness`). The Changes tab is *not* one of them despite being modeled on
-  `HistoryViewController` — it has no `NSSplitView` at all, so its `>= 150` floors are ordinary
-  constraints on plain subviews and need no delegate. A fix applied to only one site is the shape
-  of this recurrence.
+  `autosaveName` sites: the two in `HistoryViewController` (`rc-git.history.v4` and
+  `rc-git.history-detail.v5`, both fixed here) and `MainWindowController` (`rc-git.main.v2`, an
+  `NSSplitViewController` covered by `minimumThickness`). The Changes tab is *not* one of them
+  despite being modeled on `HistoryViewController` — it has no `NSSplitView` at all, so its
+  `>= 150` floors are ordinary constraints on plain subviews. A fix applied to only one site is
+  the shape of this recurrence.
 
 ## Related Issues
 

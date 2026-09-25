@@ -78,16 +78,16 @@ paths: mac/**
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
 - Never collapse a view with a height-0 constraint while it has visible subviews — hide it
   inside an `NSStackView` with `detachesHiddenViews`.
-- Floor **every** pane of a bare `NSSplitView`, on the axis that split can crush (vertical takes
-  height, horizontal takes width), and re-audit when a pane is added or the split is
-  restructured — a split is only as safe as its least-floored pane.
-- A floor is not enough on its own: `autosaveName` restores a divider position as a *frame*, so
-  an Auto Layout floor never undoes it. Clamp the divider with `NSSplitViewDelegate`
-  `constrainMinCoordinate`/`constrainMaxCoordinate`; that is the only thing that binds a
-  restored position. Version `autosaveName` to discard poison already stored, never as the fix —
-  a bump alone just resets the clock, which is how `.v3` was poisoned days after `.v2`.
-  `NSSplitViewController` items are exempt: their `minimumThickness` already does this
-  (`MainWindowController` sets it on both items of `outerSplit`).
+- A bare `NSSplitView` sizes its panes by frame, so an Auto Layout floor on a pane only fights
+  the frame it is handed and loses silently. Own `splitView(_:resizeSubviewsWithOldSize:)` and
+  place both panes through `LayoutPolicy.splitPane`, put the minimum on the split itself (both
+  floors plus the divider), and re-clamp in `viewDidLayout` — that is where a restored divider
+  position first reaches the screen, and a clamp that keeps a legal position converges in one
+  pass. `constrainMinCoordinate`/`constrainMaxCoordinate` bound a *drag* only: not
+  `adjustSubviews`, not the autosave restore, which is why `.v4` was poisoned like `.v3`.
+- Version `autosaveName` to discard poison already stored, never as the fix — a bump alone just
+  resets the clock. `NSSplitViewController` items are exempt: their `minimumThickness` already
+  does this (`MainWindowController` sets it on both items of `outerSplit`).
 - Diagnose a pane stuck at zero with
   `defaults read <bundle-id> "NSSplitView Subview Frames <autosaveName>"` before touching layout
   code — entries are `x, y, w, h, isCollapsed, isHidden`, and it separates a live layout bug from
