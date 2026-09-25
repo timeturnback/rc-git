@@ -38,7 +38,11 @@ The working pipeline (`crates/rc-git-guard/src/actions/remote/push.rs:47`,
 
 1. **One HTTP connection, two phases.** `gix_transport::client::blocking_io::connect::connect`
    (reached via the `gix::protocol::transport::client::blocking_io` re-export — the
-   shorter `client::Transport` path does not exist) builds the transport; then
+   shorter `client::Transport` path does not exist) builds the transport; **then set the
+   HTTP timeouts on it**, because `connect::Options` has no field for them:
+   `http_timeouts(&mut options)` + `transport.configure(&options)` with a
+   `blocking_io::http::Options`. Skip that step and curl waits forever on a peer that
+   goes quiet — an isolated open supplies no `http.lowSpeedLimit`. Then
    `gix::protocol::handshake(transport, Service::ReceivePack, authenticate, …)` performs
    the `GET /info/refs` advertisement, and a later `transport.request(...)` on the *same*
    transport performs the `POST /git-receive-pack`.
@@ -92,11 +96,11 @@ Traps that each cost a debug cycle:
 
 - **Basic auth over plain http is refused** ("Will not send credentials in clear text
   over http") unless gix-transport's `http-client-insecure-credentials` feature is on.
-  Enable it as a **dev-dependency only** (`crates/rc-git-guard/Cargo.toml:24`,
-  `crates/rc-git-cli/Cargo.toml:25`) — dev-dep feature unification covers test builds,
+  Enable it as a **dev-dependency only** (`crates/rc-git-guard/Cargo.toml:26`,
+  `crates/rc-git-cli/Cargo.toml:24`) — dev-dep feature unification covers test builds,
   while release builds keep the refusal. Production code additionally rejects non-HTTPS
   URLs before connecting, loopback hosts excepted for the test server
-  (`require_https`, `actions/remote.rs:238`).
+  (`vet_remote_url`, `actions/remote.rs:317`, which also routes the ssh scheme).
 
 - **Zero-dependency test server.** `HttpGitServer` (`crates/rc-git-testkit/src/http.rs:16`)
   is a `std::net::TcpListener` CGI shim exec-ing `git http-backend` from
