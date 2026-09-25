@@ -52,6 +52,12 @@ spawned, and are never force: a push the remote would have to discard history to
 accept is refused before anything is sent. Credentials are per-host, supplied by the
 caller per call, and never stored by the core.
 
+Every one of them ends. The app carries a cancel flag into the call that the user can
+raise from the other side while the transfer holds the thread, and each transport keeps
+an idle budget — the gap it tolerates between bytes, not the length of the transfer, so
+a slow link is never punished and a dead one does not wait forever. A cancelled
+operation stops between steps and leaves nothing half-applied.
+
 ## Host-key trust
 
 How an SSH server proves its identity to rc-git. The user's `known_hosts` is consulted

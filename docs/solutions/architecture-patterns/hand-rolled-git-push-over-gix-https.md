@@ -128,3 +128,10 @@ End-to-end test shape (`crates/rc-git-guard/tests/remote.rs`): standard fixture 
 tree gets swept up by the fixture's `git add -A`) → `HttpGitServer::serve` →
 `git clone` from the URL → drive `fetch_upstream`/`pull_fast_forward`/`push_upstream`
 against it, asserting with `git rev-parse` on both sides.
+
+## Related
+
+- [Sync spins forever: a cancel flag nobody could set and a transport with no idle budget](../runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md)
+  — what this transport needed afterwards to be stoppable: `connect::Options` carries no
+  HTTP settings, so the connect and low-speed timeouts go on through
+  `transport.configure(&http::Options { .. })` once it is built.
