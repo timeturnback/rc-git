@@ -26,3 +26,10 @@ paths: crates/rc-git-core/**
   match-skip re-does the filtering work. Cap every call so it cannot hold a pool handle
   through a long scan. A time floor maps to `Sorting::ByCommitTimeCutoff`, which terminates
   the walk instead of filtering; gix 0.87 has no topo order in `rev_walk`.
+- The working-tree status walk reads the index as a stat cache (`StatCache` in `worktree.rs`)
+  so an unchanged file costs one `lstat` instead of a full hash. It may only ever *decline*:
+  a conflicted, assume-valid, skip-worktree, intent-to-add or racy entry, an id that is not
+  the tree's, or any read that fails falls through to hashing. Never let it answer
+  `Unchanged` from anything but a full stat match — that hides a real edit.
+- Compare a directory against its tree through `index_by_name`, not a scan per file. A wide
+  directory otherwise costs a pass over the whole tree listing for every file in it.

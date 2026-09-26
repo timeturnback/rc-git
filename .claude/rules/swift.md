@@ -93,3 +93,14 @@ paths: mac/**
   code — entries are `x, y, w, h, isCollapsed, isHidden`, and it separates a live layout bug from
   restored state without launching the app
   (`docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md`).
+- A model whose load is driven by a watcher coalesces; it never queues. `ChangesModel` keeps a
+  `scanning`/`pending` pair per load: a request made while one runs sets `pending` and returns,
+  and the running loop re-reads once when it lands. Both flags are only touched between
+  suspension points on the main actor, so no request is lost. Spawning a `Task` per FSEvents
+  callback built a backlog of 190 000 suspended tasks and 638 MB of task stacks, because the
+  generation counter drops a stale *result* and never stops the work that produces it
+  (`docs/solutions/runtime-errors/task-per-watch-event-backlog.md`).
+- `cancelScans()` is the most a cancel can do here: the repository call is synchronous FFI and
+  runs to completion. It drops the queued re-run, bumps the generation so the in-flight result
+  never lands, and resets `.loading` to `.idle` so the next switch back to the tab reloads
+  rather than showing a spinner nothing will ever fill.

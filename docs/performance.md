@@ -17,8 +17,8 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | log page | under 2 ms per 100 commits | walk plus commit decode; commit-graph speeds ancestry |
 | tree diff | scales with the difference | unchanged subtrees share an id and are skipped whole |
 | blob diff | two blob reads plus the diff | sizes checked against the limit before decoding |
-| working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match |
-| working-tree status | under 50 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, content hashed only when sizes match; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
+| working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match and the index cannot vouch for the file |
+| working-tree status | under 150 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, one `lstat` per tracked file through the index's stat cache and a hash only for what it cannot settle; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
 | blame | grows with commits touching the file | on demand for the open file, never in bulk |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
 
@@ -37,6 +37,16 @@ refs. Everything else is on demand.
   fragments from line starts precomputed with the document; syntax colors apply per visible
   chunk as the user scrolls. Do not build per-line views, and do not walk the whole document
   on the main actor.
+- **Let the index answer for the working tree.** A status walk hashes a file only when the
+  blob header's size matches *and* the index cannot vouch for it: an entry whose recorded
+  `lstat` still matches disk, whose id is the tree's, and that is not racy means the file was
+  not touched. Every other case reads the file, so the cache can drop a hash but never a
+  change. Hashing every size-matched file instead costs an order of magnitude on a large
+  checkout.
+- **Coalesce repeated requests, never queue them.** `ChangesModel` keeps one scan in flight
+  and at most one queued re-run, because a working tree can change faster than it can be
+  walked. Spawning a task per filesystem event builds a backlog that never drains — it cost
+  190 000 suspended tasks and 638 MB once.
 - **Do not shell out.** A `git` process costs more than any operation above.
 - **Do not build a parallel index.** Packs, `commit-graph`, and the multi-pack index are the
   index. A repository missing `objects/info/commit-graph` walks history slower; suggest
@@ -54,6 +64,7 @@ target/release/rc-git --time ls   <repo>            # open + root tree
 target/release/rc-git --time refs <repo>
 target/release/rc-git --time cat  <repo> HEAD path/to/file
 target/release/rc-git --time log  <repo> -n 100
+target/release/rc-git --time changes <repo>         # the full working-tree status walk
 ```
 
 `--time` reports the open and the command separately on stderr, so the two can be tracked
