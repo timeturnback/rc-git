@@ -357,6 +357,61 @@ fn worktree_status_reports_a_file_replacing_a_tracked_directory() {
     assert!(report.entries[0].oid.is_none());
 }
 
+/// The index is consulted as a stat cache to skip hashing unchanged files. It may only ever
+/// save that hash, never answer in place of one, so every way an entry can stop describing
+/// what is on disk has to fall back to reading the file.
+#[test]
+fn the_index_stat_cache_never_vouches_for_a_changed_file() {
+    let fx = Fixture::standard();
+    // `git status` rewrites the index with a fresh stat for every file, which is exactly the
+    // state the cache is built to exploit: without it every case below reads the file anyway
+    // and the test cannot tell a working cache from a broken one.
+    // A second must pass before the edits, so that the index written after them carries a
+    // later timestamp than the stat of every file left alone. Without that gap every entry
+    // is racy, the cache declines them all, and the test cannot tell it from a broken one.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // Same size as the blob, so only content can decide.
+    fx.write("alpha.txt", b"omega\n");
+    // Rewritten with what it already held: the stat moves, the content does not.
+    let readme = std::fs::read(fx.path().join("README.md")).unwrap();
+    fx.write("README.md", &readme);
+    // Staged, so the index now holds the new blob and its id no longer matches the tree's.
+    fx.write("Zeta.txt", b"omega\n");
+    fx.git(&["add", "Zeta.txt"]);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let rows: std::collections::HashMap<String, WorktreeStatus> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status))
+        .collect();
+    assert_eq!(rows.get("alpha.txt"), Some(&WorktreeStatus::Modified));
+    assert_eq!(rows.get("Zeta.txt"), Some(&WorktreeStatus::Modified));
+    assert_eq!(
+        rows.get("README.md"),
+        None,
+        "a moved mtime alone is no edit"
+    );
+    assert_eq!(rows.get("src/main.rs"), None, "an untouched file is clean");
+}
+
+/// A file edited in the same second the index was written is indistinguishable from one
+/// edited just after it, so the entry proves nothing and the file must be read.
+#[test]
+fn a_racy_index_entry_still_reports_the_edit() {
+    let fx = Fixture::standard();
+    fx.write("alpha.txt", b"omega\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(report.entries.len(), 1, "{:?}", report.entries);
+    assert_eq!(report.entries[0].path, "alpha.txt");
+    assert_eq!(report.entries[0].status, WorktreeStatus::Modified);
+}
+
 #[test]
 fn worktree_status_on_a_bare_repository_is_an_error() {
     let fx = Fixture::standard();

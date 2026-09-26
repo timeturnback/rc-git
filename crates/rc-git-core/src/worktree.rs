@@ -1,10 +1,12 @@
 //! The working directory as a read-only view: files on disk with a status overlay against
 //! `HEAD`. Nothing here writes; hashing a file to compare it with a blob reads it once.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use gix::bstr::{BString, ByteSlice};
+use gix::index::entry::{Flags, Stage};
 use gix::worktree::stack::state::ignore::Source;
 
 use crate::blob::{BlobContent, is_binary, line_starts};
@@ -111,19 +113,24 @@ impl Repository {
             on_disk.push((name, disk_kind(&meta), meta.len(), entry.path()));
         }
 
+        let by_name = index_by_name(&tree_entries);
         self.with(|repo| {
-            let mut excludes = ExcludeCheck::new(repo);
+            let mut context = WorktreeContext::new(repo);
             for (name, kind, size, path) in on_disk {
-                let in_tree = tree_entries.iter().find(|entry| entry.name == name);
+                let rela = relative_path(dir, &name);
+                let in_tree = by_name.get(&name).copied();
                 let status = if let Some(tree_entry) = in_tree {
-                    compare(repo, tree_entry, kind, size, &path, dir)?
+                    let disk = DiskFacts {
+                        kind,
+                        size,
+                        path: &path,
+                        rela: &rela,
+                    };
+                    context.compare(tree_entry, &disk, dir)?
+                } else if context.excludes.is_ignored(&rela, kind == EntryKind::Tree) {
+                    WorktreeStatus::Ignored
                 } else {
-                    let rela = relative_path(dir, &name);
-                    if excludes.is_ignored(&rela, kind == EntryKind::Tree) {
-                        WorktreeStatus::Ignored
-                    } else {
-                        WorktreeStatus::Untracked
-                    }
+                    WorktreeStatus::Untracked
                 };
                 listing.entries.push(WorktreeEntry {
                     name,
@@ -137,12 +144,10 @@ impl Repository {
             Ok(())
         })?;
 
+        let on_disk_names: HashSet<&BString> =
+            listing.entries.iter().map(|entry| &entry.name).collect();
         for tree_entry in &tree_entries {
-            if !listing
-                .entries
-                .iter()
-                .any(|entry| entry.name == tree_entry.name)
-            {
+            if !on_disk_names.contains(&tree_entry.name) {
                 listing.missing.push(tree_entry.clone());
             }
         }
@@ -165,8 +170,7 @@ impl Repository {
         let work_dir = self.require_work_dir("scan working tree", "")?;
         self.with(|repo| {
             let mut walk = StatusWalk {
-                repo,
-                excludes: ExcludeCheck::new(repo),
+                context: WorktreeContext::new(repo),
                 report: StatusReport::default(),
                 max_scan,
             };
@@ -247,63 +251,217 @@ impl Repository {
     }
 }
 
-/// Whether a disk file differs from its tree entry. Sizes decide first; only equal sizes
-/// hash the file, streaming, so memory stays constant.
-fn compare(
-    repo: &gix::Repository,
-    tree_entry: &TreeEntry,
-    disk_kind: EntryKind,
-    disk_size: u64,
-    disk_path: &std::path::Path,
-    dir: &str,
-) -> Result<WorktreeStatus> {
+/// What `symlink_metadata` said about the file being compared, and where to find it.
+struct DiskFacts<'a> {
+    kind: EntryKind,
+    size: u64,
+    /// The file's path on disk.
+    path: &'a Path,
+    /// The repository-relative path with `/` separators, for the index lookup.
+    rela: &'a BString,
+}
+
+/// The lookups a working-tree comparison needs, each built on first use: the ignore stack and
+/// the index read as a stat cache. One context serves a whole walk, so an ignored directory
+/// costs one stack build and the index is read once however many files are compared.
+struct WorktreeContext<'repo> {
+    repo: &'repo gix::Repository,
+    excludes: ExcludeCheck<'repo>,
+    stats: StatCache<'repo>,
+}
+
+impl<'repo> WorktreeContext<'repo> {
+    fn new(repo: &'repo gix::Repository) -> Self {
+        Self {
+            repo,
+            excludes: ExcludeCheck::new(repo),
+            stats: StatCache::new(repo),
+        }
+    }
+
+    /// Whether a disk file differs from its tree entry. Kind decides first, then the blob
+    /// header's size, then the index's stat cache; only a file none of those settle is read.
+    fn compare(
+        &mut self,
+        tree_entry: &TreeEntry,
+        disk: &DiskFacts<'_>,
+        dir: &str,
+    ) -> Result<WorktreeStatus> {
+        if let Some(status) = kind_verdict(tree_entry, disk.kind) {
+            return Ok(status);
+        }
+        if disk.kind == EntryKind::Symlink {
+            return self.compare_symlink(tree_entry, disk.path, dir);
+        }
+        self.compare_content(tree_entry, disk, dir)
+    }
+
+    /// A symlink is its target; the blob holding that target is small enough to read whole.
+    fn compare_symlink(
+        &self,
+        tree_entry: &TreeEntry,
+        disk_path: &Path,
+        dir: &str,
+    ) -> Result<WorktreeStatus> {
+        let target = std::fs::read_link(disk_path)
+            .map_err(|source| worktree_error("read symlink", dir, Box::new(source)))?;
+        let blob = self
+            .repo
+            .find_blob(*tree_entry.oid.as_gix())
+            .map_err(object("read blob", tree_entry.oid))?;
+        Ok(if blob.data == target.as_os_str().as_encoded_bytes() {
+            WorktreeStatus::Unchanged
+        } else {
+            WorktreeStatus::Modified
+        })
+    }
+
+    /// A regular file. A size that differs from the blob header settles it without reading the
+    /// file; an equal size then asks the index's stat cache, and only a file the cache cannot
+    /// vouch for is hashed, streaming, so memory stays constant.
+    fn compare_content(
+        &mut self,
+        tree_entry: &TreeEntry,
+        disk: &DiskFacts<'_>,
+        dir: &str,
+    ) -> Result<WorktreeStatus> {
+        let header = self
+            .repo
+            .find_header(*tree_entry.oid.as_gix())
+            .map_err(object("read blob header", tree_entry.oid))?;
+        if header.size() != disk.size {
+            return Ok(WorktreeStatus::Modified);
+        }
+        if self
+            .stats
+            .proves_unchanged(disk.rela, tree_entry.oid, disk.path)
+        {
+            return Ok(WorktreeStatus::Unchanged);
+        }
+        let mut file = std::fs::File::open(disk.path)
+            .map_err(|source| worktree_error("hash working tree file", dir, Box::new(source)))?;
+        let hashed = gix::objs::compute_stream_hash(
+            self.repo.object_hash(),
+            gix::objs::Kind::Blob,
+            &mut file,
+            disk.size,
+            &mut gix::progress::Discard,
+            &AtomicBool::new(false),
+        )
+        .map_err(git("hash working tree file"))?;
+        Ok(if Oid::from_gix(hashed) == tree_entry.oid {
+            WorktreeStatus::Unchanged
+        } else {
+            WorktreeStatus::Modified
+        })
+    }
+}
+
+/// The verdict kind alone settles: a directory on either side, a submodule, or a kind change.
+/// `None` when both sides are the same kind of file and the content decides.
+fn kind_verdict(tree_entry: &TreeEntry, disk_kind: EntryKind) -> Option<WorktreeStatus> {
     if tree_entry.kind == EntryKind::Tree || disk_kind == EntryKind::Tree {
-        return Ok(if tree_entry.kind == disk_kind {
+        return Some(if tree_entry.kind == disk_kind {
             WorktreeStatus::Unchanged
         } else {
             WorktreeStatus::Modified
         });
     }
     if tree_entry.kind == EntryKind::Submodule {
-        return Ok(WorktreeStatus::Unchanged);
+        return Some(WorktreeStatus::Unchanged);
     }
     if tree_entry.kind != disk_kind {
-        return Ok(WorktreeStatus::Modified);
+        return Some(WorktreeStatus::Modified);
     }
-    if disk_kind == EntryKind::Symlink {
-        let target = std::fs::read_link(disk_path)
-            .map_err(|source| worktree_error("read symlink", dir, Box::new(source)))?;
-        let blob = repo
-            .find_blob(*tree_entry.oid.as_gix())
-            .map_err(object("read blob", tree_entry.oid))?;
-        return Ok(if blob.data == target.as_os_str().as_encoded_bytes() {
-            WorktreeStatus::Unchanged
-        } else {
-            WorktreeStatus::Modified
-        });
+    None
+}
+
+/// The index read as a stat cache. Git records the `lstat` of every file it hashed when it
+/// last wrote the index, so a file whose stat still matches has not been touched since and the
+/// entry's object id still describes it — which turns a whole-file hash into one `lstat`.
+///
+/// Read-only in both directions: the index is never refreshed or written, and every case the
+/// cache cannot settle answers "not known unchanged", so it can save a hash but never hide a
+/// change.
+struct StatCache<'repo> {
+    repo: &'repo gix::Repository,
+    state: StatCacheState,
+}
+
+enum StatCacheState {
+    Unbuilt,
+    Unavailable,
+    Ready(LoadedIndex),
+}
+
+/// The index, with the stat fields the repository's config says to compare.
+struct LoadedIndex {
+    index: gix::worktree::Index,
+    options: gix::index::entry::stat::Options,
+}
+
+impl LoadedIndex {
+    /// Whether this index proves the file at `rela_path` is still `oid`.
+    fn proves_unchanged(&self, rela_path: &BString, oid: Oid, disk_path: &Path) -> bool {
+        let Some(entry) = self.index.entry_by_path(rela_path.as_bstr()) else {
+            return false;
+        };
+        if entry.stage() != Stage::Unconflicted || entry.id != *oid.as_gix() {
+            return false;
+        }
+        // These three say the recorded stat is not evidence: two ask git to skip the file, and
+        // an intent-to-add entry holds the empty blob rather than the file's content.
+        if entry
+            .flags
+            .intersects(Flags::ASSUME_VALID | Flags::SKIP_WORKTREE | Flags::INTENT_TO_ADD)
+        {
+            return false;
+        }
+        // A file written in the same second the index was is indistinguishable from one
+        // written just after it, so its stat proves nothing.
+        if entry.stat.is_racy(self.index.timestamp(), self.options) {
+            return false;
+        }
+        // `gix_index`'s own metadata, not `std::fs`: it fills `ctime` the way git does.
+        let Ok(meta) = gix::index::fs::Metadata::from_path_no_follow(disk_path) else {
+            return false;
+        };
+        let Ok(disk) = gix::index::entry::Stat::from_fs(&meta) else {
+            return false;
+        };
+        entry.stat.matches(&disk, self.options)
     }
-    let header = repo
-        .find_header(*tree_entry.oid.as_gix())
-        .map_err(object("read blob header", tree_entry.oid))?;
-    if header.size() != disk_size {
-        return Ok(WorktreeStatus::Modified);
+}
+
+impl<'repo> StatCache<'repo> {
+    fn new(repo: &'repo gix::Repository) -> Self {
+        Self {
+            repo,
+            state: StatCacheState::Unbuilt,
+        }
     }
-    let mut file = std::fs::File::open(disk_path)
-        .map_err(|source| worktree_error("hash working tree file", dir, Box::new(source)))?;
-    let hashed = gix::objs::compute_stream_hash(
-        repo.object_hash(),
-        gix::objs::Kind::Blob,
-        &mut file,
-        disk_size,
-        &mut gix::progress::Discard,
-        &AtomicBool::new(false),
-    )
-    .map_err(git("hash working tree file"))?;
-    Ok(if Oid::from_gix(hashed) == tree_entry.oid {
-        WorktreeStatus::Unchanged
-    } else {
-        WorktreeStatus::Modified
-    })
+
+    /// Whether the index proves the file at `rela_path` is still `oid`. A repository with no
+    /// readable index answers `false` for every path, which only costs the hash it would have
+    /// cost anyway.
+    fn proves_unchanged(&mut self, rela_path: &BString, oid: Oid, disk_path: &Path) -> bool {
+        if let StatCacheState::Unbuilt = self.state {
+            self.state = match Self::build(self.repo) {
+                Some(loaded) => StatCacheState::Ready(loaded),
+                None => StatCacheState::Unavailable,
+            };
+        }
+        match &self.state {
+            StatCacheState::Ready(loaded) => loaded.proves_unchanged(rela_path, oid, disk_path),
+            StatCacheState::Unbuilt | StatCacheState::Unavailable => false,
+        }
+    }
+
+    fn build(repo: &'repo gix::Repository) -> Option<LoadedIndex> {
+        let index = repo.index().ok()?;
+        let options = repo.stat_options().ok()?;
+        Some(LoadedIndex { index, options })
+    }
 }
 
 /// Ignore-rule lookup, built lazily because most listings have no untracked entries.
@@ -359,8 +517,7 @@ impl<'repo> ExcludeCheck<'repo> {
 /// Recursive full-tree status walk. Holds the borrowed handle for its whole run; the
 /// caller's `max_scan` cap bounds that.
 struct StatusWalk<'repo> {
-    repo: &'repo gix::Repository,
-    excludes: ExcludeCheck<'repo>,
+    context: WorktreeContext<'repo>,
     report: StatusReport,
     max_scan: usize,
 }
@@ -382,13 +539,14 @@ impl StatusWalk<'_> {
         disk_dir: &std::path::Path,
     ) -> Result<()> {
         let tree_entries = match tree {
-            Some(oid) => tree_children(self.repo, oid)?,
+            Some(oid) => tree_children(self.context.repo, oid)?,
             None => Vec::new(),
         };
+        let by_name = index_by_name(&tree_entries);
         let dir_str = dir.to_str_lossy().into_owned();
         let read = std::fs::read_dir(disk_dir)
             .map_err(|source| worktree_error("scan working tree", &dir_str, Box::new(source)))?;
-        let mut on_disk: Vec<BString> = Vec::new();
+        let mut on_disk: HashSet<BString> = HashSet::new();
         for entry in read {
             if self.report.truncated {
                 return Ok(());
@@ -408,25 +566,22 @@ impl StatusWalk<'_> {
             })?;
             let kind = disk_kind(&meta);
             let path = child_path(dir, &name);
-            on_disk.push(name.clone());
-            match tree_entries
-                .iter()
-                .find(|tree_entry| tree_entry.name == name)
-            {
+            on_disk.insert(name.clone());
+            match by_name.get(&name).copied() {
                 Some(tree_entry)
                     if tree_entry.kind == EntryKind::Tree && kind == EntryKind::Tree =>
                 {
                     self.walk_dir(Some(tree_entry.oid), &path, &entry.path())?;
                 }
                 Some(tree_entry) => {
-                    let status = compare(
-                        self.repo,
-                        tree_entry,
+                    let disk_path = entry.path();
+                    let disk = DiskFacts {
                         kind,
-                        meta.len(),
-                        &entry.path(),
-                        &dir_str,
-                    )?;
+                        size: meta.len(),
+                        path: &disk_path,
+                        rela: &path,
+                    };
+                    let status = self.context.compare(tree_entry, &disk, &dir_str)?;
                     if status == WorktreeStatus::Modified {
                         self.report.entries.push(StatusEntry {
                             path: path.clone(),
@@ -443,7 +598,11 @@ impl StatusWalk<'_> {
                     }
                 }
                 None => {
-                    if self.excludes.is_ignored(&path, kind == EntryKind::Tree) {
+                    if self
+                        .context
+                        .excludes
+                        .is_ignored(&path, kind == EntryKind::Tree)
+                    {
                         continue;
                     }
                     if kind == EntryKind::Tree {
@@ -464,7 +623,7 @@ impl StatusWalk<'_> {
             if self.report.truncated {
                 return Ok(());
             }
-            if on_disk.iter().any(|name| name == &tree_entry.name) {
+            if on_disk.contains(&tree_entry.name) {
                 continue;
             }
             let path = child_path(dir, &tree_entry.name);
@@ -485,7 +644,7 @@ impl StatusWalk<'_> {
     /// Everything below a tree with no counterpart on disk is deleted; walking it reads
     /// tree objects only, never the disk.
     fn walk_deleted(&mut self, tree: Oid, dir: &BString) -> Result<()> {
-        for tree_entry in tree_children(self.repo, tree)? {
+        for tree_entry in tree_children(self.context.repo, tree)? {
             let path = child_path(dir, &tree_entry.name);
             match tree_entry.kind {
                 EntryKind::Tree => self.walk_deleted(tree_entry.oid, &path)?,
@@ -532,6 +691,12 @@ fn disk_kind(meta: &std::fs::Metadata) -> EntryKind {
     } else {
         EntryKind::Blob
     }
+}
+
+/// Tree entries keyed by name, so matching a directory's files against the tree costs one
+/// lookup each rather than a scan of the whole tree listing per file.
+fn index_by_name(entries: &[TreeEntry]) -> HashMap<&BString, &TreeEntry> {
+    entries.iter().map(|entry| (&entry.name, entry)).collect()
 }
 
 /// `dir/name` with `/` separators; just `name` at the root.
