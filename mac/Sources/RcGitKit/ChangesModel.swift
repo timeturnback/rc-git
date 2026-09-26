@@ -41,6 +41,16 @@ public final class ChangesModel {
     private var diffGeneration = 0
     private var stashGeneration = 0
 
+    /// Whether a scan is running, and whether another was asked for while it ran. A scan is
+    /// never started beside one already in flight: the request is merged into a single re-run
+    /// that happens once the current scan lands. Both are only ever touched from the main
+    /// actor between suspension points, so the flag a finishing scan reads is the flag every
+    /// request that arrived during it has already set.
+    private var statusScanning = false
+    private var statusPending = false
+    private var stashScanning = false
+    private var stashPending = false
+
     public var onStatusChanged: (() -> Void)?
     public var onDiffChanged: (() -> Void)?
     public var onStashChanged: (() -> Void)?
@@ -58,7 +68,42 @@ public final class ChangesModel {
     }
 
     /// Reloads only the change list, capturing the `HEAD` it was built against.
+    ///
+    /// Scans are coalesced. A call made while one is running does not start a second: it marks
+    /// the running scan's result stale and returns, and the running scan re-reads the working
+    /// tree once when it lands. A watcher firing faster than the tree can be walked therefore
+    /// costs one scan in flight plus one queued, never one per event — queuing per event is
+    /// what let a busy tree accumulate a backlog that never drained.
+    ///
+    /// Because the request is merged rather than queued, returning does not mean the scan it
+    /// asked for has finished; it means the model knows to do it.
     public func loadStatus() async {
+        statusPending = true
+        guard !statusScanning else { return }
+        statusScanning = true
+        while statusPending {
+            statusPending = false
+            await runStatusScan()
+        }
+        statusScanning = false
+    }
+
+    /// Cancels the queued re-scan and drops whatever is in flight, leaving the list idle so
+    /// the next switch back to the Changes tab reloads it. The repository call already handed
+    /// to the walk runs to completion — it is a synchronous FFI call and cannot be
+    /// interrupted — but its result is dropped by the generation check.
+    public func cancelScans() {
+        statusPending = false
+        stashPending = false
+        statusGeneration += 1
+        stashGeneration += 1
+        if case .loading = statusState {
+            statusState = .idle
+            onStatusChanged?()
+        }
+    }
+
+    private func runStatusScan() async {
         statusGeneration += 1
         let generation = statusGeneration
         statusState = .loading
@@ -95,8 +140,20 @@ public final class ChangesModel {
         onStatusChanged?()
     }
 
-    /// Reloads the stash list.
+    /// Reloads the stash list. Coalesced the same way as `loadStatus()`, and with the same
+    /// caveat: returning means the reload is accounted for, not that it has happened.
     public func loadStashes() async {
+        stashPending = true
+        guard !stashScanning else { return }
+        stashScanning = true
+        while stashPending {
+            stashPending = false
+            await runStashScan()
+        }
+        stashScanning = false
+    }
+
+    private func runStashScan() async {
         stashGeneration += 1
         let generation = stashGeneration
         let repository = repository

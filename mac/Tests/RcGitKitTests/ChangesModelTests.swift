@@ -47,15 +47,34 @@ import Testing
         #expect(message.contains("scan working tree"))
     }
 
-    @Test func aStaleStatusLoadIsDropped() async {
+    @Test func aBurstOfRequestsCostsOneRescan() async {
         repo.statusDelay = 1.0
-        async let slow: Void = model.loadStatus()
-        try? await Task.sleep(for: .milliseconds(50))
+        async let inFlight: Void = model.loadStatus()
+        try? await Task.sleep(for: .milliseconds(100))
         repo.lock.withLock { repo.statusDelay = 0 }
-        await model.loadStatus()
-        let fastState = model.statusState
-        await slow
-        #expect(model.statusState == fastState, "the slow result never lands")
+        for _ in 0..<20 {
+            await model.loadStatus()
+        }
+        await inFlight
+        #expect(
+            repo.lock.withLock { repo.statusCalls } == 2,
+            "the scan in flight plus one re-run, however many requests arrived")
+        guard case .loaded = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+    }
+
+    @Test func aCancelledScanIsDroppedAndLeavesTheListIdle() async {
+        repo.statusDelay = 1.0
+        async let inFlight: Void = model.loadStatus()
+        try? await Task.sleep(for: .milliseconds(100))
+        model.cancelScans()
+        #expect(model.statusState == .idle, "the tab reloads on the next switch back")
+        await inFlight
+        #expect(model.statusState == .idle, "the cancelled scan's result never lands")
+        #expect(
+            repo.lock.withLock { repo.statusCalls } == 1, "a cancel drops the queued re-run")
     }
 
     @Test func filesAreTickedByDefaultAndUnticksSurviveRefresh() async {

@@ -167,6 +167,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
             // The sync row shows commit counts; re-read them on every switch to the tab.
             Task { await syncModel?.refreshStatus() }
+        } else {
+            // Nothing is watching the change list any more, and the watcher will mark the tab
+            // dirty for the next switch back, so a scan still running is work for no one.
+            changesModel?.cancelScans()
         }
     }
 
@@ -272,6 +276,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         refWatcher = nil
         worktreeWatcher?.stop()
         worktreeWatcher = nil
+        changesModel?.cancelScans()
         syncModel = nil
         goToFileController.close()
         blamePanel.close()
