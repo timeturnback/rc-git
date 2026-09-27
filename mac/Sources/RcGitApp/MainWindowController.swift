@@ -31,6 +31,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var syncButton: NSButton?
     private var syncSpinner: NSProgressIndicator?
     private var syncToolbarItem: NSToolbarItem?
+    private var backToDefaultButton: NSButton?
+    private var backToDefaultToolbarItem: NSToolbarItem?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
     private var refWatcher: RefWatcher?
@@ -244,6 +246,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         ]
         if menuItem.action == #selector(cancelSync(_:)) {
             return syncModel?.isCancellable ?? false
+        }
+        if menuItem.action == #selector(backToDefaultBranch(_:)) {
+            menuItem.title = SyncTitles.backToDefault(syncModel?.defaultBranch)
+            guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
+            // No upstream check: the switch is local, and the branch switched to is the one
+            // whose upstream decides whether the fetch can run.
+            return hasWorkingTree
         }
         if let action = menuItem.action, syncSelectors.contains(action) {
             guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
@@ -786,6 +795,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Task { await syncModel?.sync() }
     }
 
+    /// Switch to the mainline branch and bring it up to date, in one go.
+    @objc func backToDefaultBranch(_ sender: Any?) {
+        Task { await syncModel?.backToDefaultBranch() }
+    }
+
     /// Stops the running fetch, pull, or push. The flag reaches the transfer itself,
     /// so this is not a "stop waiting and pretend" — the step ends and the workflow
     /// unwinds without touching anything further.
@@ -808,6 +822,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func renderSyncState() {
         guard let sync = syncModel else { return }
         changesController.renderSync(status: sync.remoteStatus, busy: sync.isBusy)
+        // A bare repository has no working tree to switch, exactly as the menu item decides.
+        backToDefaultButton?.isEnabled = !sync.isBusy && hasWorkingTree
+        backToDefaultToolbarItem?.toolTip = backToDefaultTooltip()
         switch sync.state {
         case .idle:
             showSyncSpinner(false)
@@ -824,6 +841,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             if summary.pulledFiles > 0 {
                 worktreeDidChange()
             }
+            if let branch = summary.switchedTo {
+                follow(branch: branch)
+            }
             sync.reset()
         case let .diverged(message):
             showSyncSpinner(false)
@@ -836,9 +856,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// Points the browser at the branch that was just checked out. The ref watcher reloads
+    /// the listing on its own, but it keeps whatever ref was selected — and after a switch
+    /// the user wants the branch they switched to.
+    private func follow(branch: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            await model.refreshRefs()
+            guard
+                let entry = model.refs.refs.first(where: { $0.fullName == "refs/heads/\(branch)" })
+            else { return }
+            await model.select(entry)
+        }
+    }
+
     /// What the running step is doing, for the tooltip.
     private func runningVerb(_ step: SyncStep) -> String {
         switch step {
+        case .checkout: "Switching branch"
         case .fetch: "Fetching"
         case .pull: "Pulling"
         case .push: "Pushing"
@@ -861,6 +896,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         } else {
             syncSpinner?.stopAnimation(nil)
         }
+    }
+
+    /// "Back to master — switch, fetch, and fast-forward", named once the mainline is known.
+    private func backToDefaultTooltip() -> String {
+        let title = SyncTitles.backToDefault(syncModel?.defaultBranch)
+        return "\(title) — switch, fetch, and fast-forward"
     }
 
     /// "Sync — 2 to push, 3 to pull" while idle, from the last preflight.
@@ -1077,6 +1118,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: NSToolbarDelegate
 
     private static let viewModeItem = NSToolbarItem.Identifier("rc-git.viewMode")
+    private static let backToDefaultItem = NSToolbarItem.Identifier("rc-git.backToDefault")
     private static let syncItem = NSToolbarItem.Identifier("rc-git.sync")
 
     /// No `.sidebarTrackingSeparator`: it is vended by `NSSplitViewController` for the split
@@ -1085,7 +1127,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// separator sat off the divider while the sidebar was open and threw the items it
     /// carries across the titlebar when the sidebar collapsed.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, Self.viewModeItem, .flexibleSpace, Self.syncItem]
+        [.toggleSidebar, Self.viewModeItem, .flexibleSpace, Self.backToDefaultItem, Self.syncItem]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -1106,6 +1148,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = control
             item.label = "View"
+            return item
+        case Self.backToDefaultItem:
+            let button = NSButton(
+                image: NSImage(
+                    systemSymbolName: "arrow.uturn.backward",
+                    accessibilityDescription: "Back to the default branch")!,
+                target: self, action: #selector(backToDefaultBranch(_:)))
+            button.bezelStyle = .texturedRounded
+            backToDefaultButton = button
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Back to Default"
+            item.toolTip = backToDefaultTooltip()
+            backToDefaultToolbarItem = item
             return item
         case Self.syncItem:
             let button = NSButton(

@@ -34,6 +34,7 @@ usage: rc-git [--time] <command> <repo> [args]
   changes <repo> [--max-scan N]           every changed working-tree path against HEAD
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
+  default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
 
   commit      <repo> -m <msg> [--author \"Name <email>\"] <path>...  commit files to the branch
   stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] <path>... stash files, restore to HEAD
@@ -41,6 +42,7 @@ usage: rc-git [--time] <command> <repo> [args]
   stash-pop   <repo> [n]                  apply stash@{n}, then drop it
   stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
   discard     <repo> <path>...            restore files to HEAD, delete untracked
+  checkout    <repo> <branch>             switch the working tree and HEAD to a local branch
 
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
   pull  <repo> [remote options]           fetch, then fast-forward the current branch
@@ -78,12 +80,14 @@ enum Verb {
     Changes,
     Stash,
     Resolve,
+    DefaultBranch,
     Commit,
     StashPush,
     StashApply,
     StashPop,
     StashDrop,
     Discard,
+    Checkout,
     Fetch,
     Pull,
     Push,
@@ -107,12 +111,14 @@ impl Verb {
             "changes" => Some(Self::Changes),
             "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
+            "default-branch" => Some(Self::DefaultBranch),
             "commit" => Some(Self::Commit),
             "stash-push" => Some(Self::StashPush),
             "stash-apply" => Some(Self::StashApply),
             "stash-pop" => Some(Self::StashPop),
             "stash-drop" => Some(Self::StashDrop),
             "discard" => Some(Self::Discard),
+            "checkout" => Some(Self::Checkout),
             "fetch" => Some(Self::Fetch),
             "pull" => Some(Self::Pull),
             "push" => Some(Self::Push),
@@ -137,12 +143,14 @@ impl Verb {
             Self::Changes => "changes",
             Self::Stash => "stash",
             Self::Resolve => "resolve",
+            Self::DefaultBranch => "default-branch",
             Self::Commit => "commit",
             Self::StashPush => "stash-push",
             Self::StashApply => "stash-apply",
             Self::StashPop => "stash-pop",
             Self::StashDrop => "stash-drop",
             Self::Discard => "discard",
+            Self::Checkout => "checkout",
             Self::Fetch => "fetch",
             Self::Pull => "pull",
             Self::Push => "push",
@@ -230,6 +238,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
         Verb::Stash => stash(&repo, &mut out)?,
         Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
+        Verb::DefaultBranch => default_branch(&repo, &mut out)?,
         Verb::Commit => commit_verb(&repo, &invocation.repo, &invocation.args, &mut out)?,
         Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::StashApply => stash_index_verb(
@@ -248,6 +257,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
             &mut out,
         )?,
         Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Fetch => fetch_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Pull => pull_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Push => push_verb(&invocation.repo, &invocation.args, &mut out)?,
@@ -279,6 +289,14 @@ fn head(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
         .target
         .map_or_else(|| "unborn".to_owned(), |oid| oid.to_hex());
     writeln!(out, "{name}\t{target}")?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn default_branch(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+    match repo.default_branch()? {
+        Some(branch) => writeln!(out, "{branch}")?,
+        None => writeln!(out, "none")?,
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1000,6 +1018,31 @@ fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
     write_fetch(out, &fetch)?;
     let outcome = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
     write_pull(out, &outcome)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn checkout_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let [branch] = args else {
+        bail!("checkout takes exactly one branch name");
+    };
+    let outcome = rc_git_guard::actions::checkout_branch(
+        repo_path,
+        &rc_git_guard::Policy::default(),
+        branch,
+    )?;
+    if outcome.already_on_branch {
+        writeln!(out, "checkout\t{}\talready checked out", outcome.branch)?;
+    } else {
+        writeln!(
+            out,
+            "checkout\t{}\t{}\t{} file(s)",
+            outcome.branch, outcome.new_head, outcome.files_changed
+        )?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 

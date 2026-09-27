@@ -7,8 +7,10 @@ import Testing
 private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     struct Script {
         var preflights: [RemoteStatus]
+        var defaultBranch: String? = "main"
         var fetches: [Result<FetchOutcome, SyncError>] = []
         var pulls: [Result<PullOutcome, SyncError>] = []
+        var checkouts: [Result<CheckoutOutcome, SyncError>] = []
         var pushes: [Result<PushOutcome, SyncError>] = []
     }
 
@@ -17,6 +19,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private(set) var fetchCredentials: [Credentials?] = []
     private(set) var fetchHostKeys: [String?] = []
     private(set) var pushCredentials: [Credentials?] = []
+    private(set) var checkoutBranches: [String] = []
     private(set) var pullCalls = 0
     private(set) var pushCalls = 0
     /// Called on the step's own thread, with that step's token, before the step
@@ -51,6 +54,22 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
             throw SyncError.failure(message: "no preflight scripted")
         }
         return status
+    }
+
+    func defaultBranch(repoPath: String) throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return script.defaultBranch
+    }
+
+    func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        checkoutBranches.append(branch)
+        guard !script.checkouts.isEmpty else {
+            throw SyncError.failure(message: "unexpected checkout")
+        }
+        return try script.checkouts.removeFirst().get()
     }
 
     func fetch(
@@ -163,6 +182,12 @@ private let cleanFetch = FetchOutcome(updatedRefs: 1, ahead: 0, behind: 0)
 private let cleanPull = PullOutcome(
     newHead: nil, commitsAdvanced: false, filesChanged: 2, alreadyUpToDate: false)
 private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
+private let switchedToMain = CheckoutOutcome(
+    branch: "main", newHead: Oid(bytes: Array(repeating: 0, count: 20)), filesChanged: 4,
+    alreadyOnBranch: false)
+private let alreadyOnMain = CheckoutOutcome(
+    branch: "main", newHead: Oid(bytes: Array(repeating: 0, count: 20)), filesChanged: 0,
+    alreadyOnBranch: true)
 
 @MainActor
 @Suite struct SyncModelTests {
@@ -532,6 +557,121 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
         #expect(model.state == .idle)
         #expect(performer.fetchCredentials.count == 1, "no retry after a cancel")
     }
+
+    @Test func backToDefaultSwitchesThenFetchesAndFastForwards() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                checkouts: [.success(switchedToMain)]
+            ))
+        var states: [SyncState] = []
+        model.onStateChanged = { states.append(model.state) }
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        #expect(performer.checkoutBranches == ["main"])
+        let steps = states.compactMap { state -> SyncStep? in
+            if case let .running(step) = state { return step }
+            return nil
+        }
+        #expect(
+            steps.filter { $0 != .checkout } == [.fetch, .pull],
+            "the switch runs first, then the network steps: \(steps)")
+        #expect(steps.first == .checkout)
+        #expect(performer.pullCalls == 1)
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 1, pulledFiles: 6, pushedCommits: 0, switchedTo: "main")),
+            "the files the switch wrote and the ones the pull wrote both count"
+        )
+    }
+
+    @Test func backToDefaultOnTheBranchAlreadyStillFetchesButReportsNoSwitch() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                checkouts: [.success(alreadyOnMain)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        #expect(performer.pullCalls == 1)
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 0)),
+            "nothing was switched, so nothing to follow in the UI"
+        )
+    }
+
+    @Test func aRefusedSwitchStopsBeforeAnyNetworkStep() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                checkouts: [
+                    .failure(
+                        .failure(
+                            message:
+                                "cannot apply the stash: 'alpha.txt' has uncommitted changes"))
+                ]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .checkout)
+            #expect(message.contains("alpha.txt"))
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.isEmpty, "a refused switch may not reach the network")
+        #expect(performer.pullCalls == 0)
+    }
+
+    @Test func noMainlineBranchFailsBeforeTheSwitch() async {
+        let (model, performer, _) = model(
+            .init(preflights: [StubSyncPerformer.upstream()], defaultBranch: nil))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .checkout)
+            #expect(message.contains("mainline"))
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.checkoutBranches.isEmpty)
+    }
+
+    @Test func theBranchSwitchedToWithoutAnUpstreamStopsBeforeTheFetch() async {
+        let noUpstream = RemoteStatus(
+            remote: "", url: "", host: "", branch: "main",
+            ahead: 0, behind: 0, hasUpstream: false)
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(), noUpstream],
+                fetches: [.success(cleanFetch)],
+                checkouts: [.success(switchedToMain)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        #expect(performer.checkoutBranches == ["main"], "the switch is local and still runs")
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message.contains("no upstream"))
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.isEmpty, "no network step may run")
+    }
 }
 
 @Suite struct SyncTitlesTests {
@@ -550,5 +690,10 @@ private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
         let status = StubSyncPerformer.upstream(ahead: 3, behind: 1)
         #expect(SyncTitles.push(status) == "Push 3 Commits")
         #expect(SyncTitles.pull(status) == "Pull 1 Commit")
+    }
+
+    @Test func backToDefaultNamesTheBranchOnceItIsKnown() {
+        #expect(SyncTitles.backToDefault(nil) == "Back to the Default Branch")
+        #expect(SyncTitles.backToDefault("master") == "Back to master")
     }
 }

@@ -24,6 +24,15 @@ performs one. Branch and tag management go through here; so does everything that
   anywhere else.
 - Two hard rules live in the write path itself: never delete the checked-out branch, never
   create over an existing ref (`PreviousValue::MustNotExist`).
+- Anything that moves the working tree to another commit goes through `actions/treeapply.rs`:
+  `plan` the tree diff, `verify_clean` every touched path (a dirty one refuses the whole
+  operation by name, before a byte is written), `apply`, then move the ref *last*. The
+  fast-forward pull and the branch switch are both that sequence; a new one reuses it rather
+  than walking a tree itself.
+- A gix ref transaction writes no reflog for a symbolic update — it has no object id to log —
+  so `checkout.rs` appends the `checkout:` line to `logs/HEAD` itself, serialized by
+  `gix::refs::log::Line` and only when the log already exists. Without it `git checkout -` and
+  `HEAD@{1}` would silently point at the wrong commit.
 - Protected patterns default to `main`, `master`, `release/*`. Users may add patterns, never
   remove the defaults through the UI.
 - Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.

@@ -87,6 +87,30 @@ import Testing
         try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
+
+    @Test func checkoutSwitchesBranchesAndRefusesADirtyPath() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+
+        let outcome = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
+        #expect(outcome.branch == "feature")
+        #expect(!outcome.alreadyOnBranch)
+        #expect(outcome.filesChanged > 0)
+        #expect(outcome.newHead.hex == fixture.revParse("feature"))
+        #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
+        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+
+        let again = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
+        #expect(again.alreadyOnBranch)
+        #expect(again.filesChanged == 0)
+
+        // feature.txt exists only on `feature`, so switching away must delete it.
+        try fixture.write("feature.txt", "work in progress\n")
+        #expect(throws: SyncError.self) {
+            try RepositoryGuard.checkout(repoPath: fixture.path, branch: "main")
+        }
+        #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
+    }
 }
 
 /// The remote preflight, driven through the C ABI against a real fixture.

@@ -657,3 +657,57 @@ fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
     ]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn default_branch_names_the_mainline_or_none() {
+    let fx = Fixture::standard();
+    let out = rc_git(&["default-branch", fx.path().to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "main\n");
+
+    let bare = Fixture::empty_dir();
+    bare.git(&["init", "-q", "-b", "work"]);
+    let out = rc_git(&["default-branch", bare.path().to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "none\n");
+}
+
+#[test]
+fn checkout_switches_branches_and_reports_a_dirty_path() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["checkout", path, "feature"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("checkout\tfeature\t"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature"
+    );
+
+    let out = rc_git(&["checkout", path, "feature"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "checkout\tfeature\talready checked out\n");
+
+    // feature.txt only exists on `feature`, so switching away must delete it — and it is dirty.
+    fx.write("feature.txt", b"work in progress\n");
+    let out = rc_git(&["checkout", path, "main"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("feature.txt"), "{}", stderr(&out));
+    assert_eq!(
+        fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature"
+    );
+
+    let out = rc_git(&["checkout", path]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("exactly one branch name"),
+        "{}",
+        stderr(&out)
+    );
+}

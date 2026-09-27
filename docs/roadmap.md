@@ -102,6 +102,18 @@ constraints are clear.
   run against a real `git http-backend` and a russh loopback SSH server in the test
   kit.
 
+- **Back to the default branch.** One toolbar button and one Repository-menu item
+  (⇧⌘M) switch `HEAD` to the repository's mainline branch, then fetch and fast-forward
+  it: the "give me the latest master to work on" move. The mainline comes from
+  `Repository::default_branch` — a remote's `HEAD`, else a local `master` or `main`. The
+  switch is `rc-git-guard`'s `checkout_branch`, which reuses the pull's tree-apply path
+  (`actions/treeapply.rs`): exactly the paths that differ are written, a dirty overlap
+  refuses the whole switch by name, `HEAD` moves last, and its `checkout:` reflog line is
+  appended by hand because a gix transaction writes none for a symbolic update.
+  `SyncModel.backToDefaultBranch` composes the three steps and re-reads the upstream
+  after the switch, since it is the new branch's remote the fetch must authenticate
+  against. CLI: `rc-git checkout <repo> <branch>` and `rc-git default-branch <repo>`.
+
 - **Two bundles and self-update.** `scripts/build-app.sh` assembles the release bundle
   (`/Applications/RCGit.app`, blue icon) or, with `--dev`, `RCGit-dev.app` in the checkout
   (orange icon, debug build). Different bundle identifiers keep their tabs, recents, window

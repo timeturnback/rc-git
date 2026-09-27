@@ -51,6 +51,21 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return Head(refName: refName, target: target)
     }
 
+    /// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names,
+    /// else whichever of `master` and `main` exists locally. `nil` when nothing names one.
+    /// The branch may not exist locally; checking it out reports that by name.
+    public func defaultBranch() throws -> String? {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let branch = rcgit_default_branch(handle, &error) else {
+            if let error {
+                throw Repository.take(error, fallback: "cannot read the default branch")
+            }
+            return nil
+        }
+        defer { rcgit_string_free(branch) }
+        return String(cString: branch)
+    }
+
     public func refs() throws -> RefListing {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let list = rcgit_refs(handle, &error) else {

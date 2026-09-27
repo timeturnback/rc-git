@@ -525,6 +525,16 @@ typedef struct RcGitGuardDecision {
   bool merged;
 } RcGitGuardDecision;
 
+// What a branch switch did. Plain data, no free function.
+typedef struct RcGitCheckoutOutcome {
+  // The commit `HEAD` resolves to afterwards.
+  struct RcGitOid new_head;
+  // Files the working tree changed.
+  size_t files_changed;
+  // Whether `HEAD` was already on this branch, so nothing was written.
+  bool already_on_branch;
+} RcGitCheckoutOutcome;
+
 // What a completed commit produced.
 typedef struct RcGitCommitResult {
   // Hex id of the new commit.
@@ -660,6 +670,14 @@ char *rcgit_repo_work_dir(const struct RcGitRepo *repo);
 // # Safety
 // `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
 struct RcGitHead *rcgit_head(const struct RcGitRepo *repo, char **error);
+
+// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
+// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
+// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+char *rcgit_default_branch(const struct RcGitRepo *repo, char **error);
 
 // Releases a value from `rcgit_head`.
 //
@@ -1014,6 +1032,18 @@ int32_t rcgit_guard_branch_create(const char *repo_path,
                                   const char *name,
                                   const char *revspec,
                                   char **error);
+
+// Checks out the existing local branch `branch`: the working tree, the index, and then
+// `HEAD`. Refuses the whole switch when a path it touches has uncommitted work, and creates
+// nothing. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+//
+// # Safety
+// `repo_path` and `branch` are NUL-terminated strings; `out` is NULL or valid for writing;
+// `error` is NULL or valid for writing a `char *`.
+int32_t rcgit_guard_checkout(const char *repo_path,
+                             const char *branch,
+                             struct RcGitCheckoutOutcome *out,
+                             char **error);
 
 // Creates a lightweight tag named `name` at `revspec`, never overwriting an existing one.
 // Returns `RCGIT_OK` or `RCGIT_ERROR`.

@@ -35,6 +35,10 @@ import Testing
         #expect(head.refName == "refs/heads/main")
         #expect(head.target?.hex == fixture.revParse("HEAD"))
 
+        #expect(
+            try repo.defaultBranch() == "main",
+            "the fixture has no remote HEAD, so the local mainline answers")
+
         let listing = try repo.refs()
         #expect(listing.broken.isEmpty)
         let names = Set(listing.refs.map(\.shortName))

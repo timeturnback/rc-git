@@ -176,6 +176,10 @@ impl SshGitServer {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test kit builds the fixture's ssh directory; the library never writes one"
+)]
 fn append_known_hosts_line(dir: &Path, port: u16, public: &ssh_key::PublicKey) {
     let public = public.to_openssh().expect("encode the host key");
     let line = format!("[127.0.0.1]:{port} {public}\n");

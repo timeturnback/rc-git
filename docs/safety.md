@@ -56,14 +56,16 @@ Opening a repository someone else produced must be harmless.
 `rc-git-guard` decides what a user must do before any action that changes a repository, and
 its `actions` module is the only code in rc-git that performs one. Today that means branch
 and tag creation and deletion from the sidebar; from the Changes tab, committing selected
-files or hunks, the stash lifecycle, and discarding uncommitted changes; and the remote
-operations — fetch, fast-forward pull, plain push, and their sync composition — all driven
-through the `rcgit_guard_*` FFI functions. Every other row of the table is settled policy
+files or hunks, the stash lifecycle, and discarding uncommitted changes; switching `HEAD` to
+another local branch, which the Back-to-default control composes with a fetch and a
+fast-forward; and the remote operations — fetch, fast-forward pull, plain push, and their sync
+composition — all driven through the `rcgit_guard_*` FFI functions. Every other row of the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 | Action | Protected branch | Elsewhere |
 |---|---|---|
-| fetch, checkout, plain push | allow | allow |
+| fetch, plain push | allow | allow |
+| checkout | allow (the write path refuses dirty files) | same |
 | pull (fast-forward) | allow (the write path refuses dirty files) | same |
 | create branch, create tag | allow (never overwrites) | allow (never overwrites) |
 | force push | **deny** | type the branch name |

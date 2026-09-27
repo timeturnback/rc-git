@@ -703,3 +703,154 @@ mod stash {
         assert!(!fx.path().join("Zeta.txt").exists());
     }
 }
+
+mod checkout {
+    use rc_git_guard::Policy;
+    use rc_git_guard::actions::{ActionError, checkout_branch};
+    use rc_git_testkit::Fixture;
+
+    fn head_branch(fx: &Fixture) -> String {
+        fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
+    }
+
+    #[test]
+    fn switching_branches_rewrites_the_tree_the_index_and_head() {
+        let fx = Fixture::standard();
+        let feature_tip = fx.rev_parse("feature");
+
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert_eq!(outcome.branch, "feature");
+        assert_eq!(outcome.new_head.to_string(), feature_tip);
+        assert!(!outcome.already_on_branch);
+        assert!(outcome.files_changed > 0);
+
+        assert_eq!(head_branch(&fx), "feature");
+        assert_eq!(fx.rev_parse("HEAD"), feature_tip);
+        assert_eq!(
+            std::fs::read(fx.path().join("feature.txt")).unwrap(),
+            b"feature\n",
+            "a file only the target branch has must appear"
+        );
+        assert!(
+            !fx.path().join("alpha.txt").exists(),
+            "a file only the old branch has must be gone"
+        );
+        assert_eq!(
+            fx.git_output(&["status", "--porcelain"]),
+            "",
+            "the index must agree with the new tree"
+        );
+        assert_eq!(
+            fx.git_output(&["reflog", "show", "--format=%gs", "-1", "HEAD"]),
+            "checkout: moving from main to feature",
+            "HEAD's reflog carries the switch, so `git checkout -` works afterwards"
+        );
+    }
+
+    #[test]
+    fn switching_back_restores_the_first_branch() {
+        let fx = Fixture::standard();
+        let main_tip = fx.rev_parse("main");
+        checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+
+        assert_eq!(head_branch(&fx), "main");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip);
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n"
+        );
+        assert!(!fx.path().join("feature.txt").exists());
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn checking_out_the_current_branch_writes_nothing() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"local work\n");
+
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+        assert!(outcome.already_on_branch);
+        assert_eq!(outcome.files_changed, 0);
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"local work\n",
+            "an uncommitted edit on the current branch is untouched"
+        );
+    }
+
+    #[test]
+    fn a_dirty_path_the_switch_touches_refuses_the_whole_switch() {
+        let fx = Fixture::standard();
+        // `feature` has no alpha.txt, so the switch must delete it — and it is dirty.
+        fx.write("alpha.txt", b"work in progress\n");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert!(
+            matches!(&err, ActionError::DirtyPath { path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(head_branch(&fx), "main", "HEAD stayed put");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"work in progress\n",
+            "the local edit must survive"
+        );
+        assert!(
+            !fx.path().join("feature.txt").exists(),
+            "nothing was written"
+        );
+    }
+
+    #[test]
+    fn an_untracked_file_the_target_branch_adds_refuses_the_switch() {
+        let fx = Fixture::standard();
+        fx.write("feature.txt", b"mine, not the branch's\n");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert!(
+            matches!(&err, ActionError::DirtyPath { path } if path == "feature.txt"),
+            "{err}"
+        );
+        assert_eq!(head_branch(&fx), "main");
+        assert_eq!(
+            std::fs::read(fx.path().join("feature.txt")).unwrap(),
+            b"mine, not the branch's\n"
+        );
+    }
+
+    #[test]
+    fn an_edit_outside_the_switch_carries_over() {
+        let fx = Fixture::standard();
+        // README.md is identical on both branches, so the switch does not touch it.
+        fx.write("README.md", b"# fixture\n\nkeep me\n");
+
+        checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert_eq!(head_branch(&fx), "feature");
+        assert_eq!(
+            std::fs::read(fx.path().join("README.md")).unwrap(),
+            b"# fixture\n\nkeep me\n",
+            "an edit the switch does not touch carries over, as git leaves it"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_can_switch_onto_a_branch() {
+        let fx = Fixture::standard();
+        fx.git(&["checkout", "-q", "--detach", "HEAD"]);
+
+        checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert_eq!(head_branch(&fx), "feature");
+        assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("feature"));
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn a_branch_that_does_not_exist_locally_is_reported_by_name() {
+        let fx = Fixture::standard();
+        let err = checkout_branch(fx.path(), &Policy::default(), "master").unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(err.to_string().contains("refs/heads/master"), "{err}");
+        assert_eq!(head_branch(&fx), "main");
+    }
+}

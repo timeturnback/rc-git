@@ -71,6 +71,50 @@ fn head_unborn() {
 }
 
 #[test]
+fn the_default_branch_falls_back_to_a_local_master_or_main() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("main"),
+        "no remote HEAD, so the local mainline answers"
+    );
+
+    fx.git(&["branch", "master", "main"]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("master"),
+        "master wins over main when both exist locally"
+    );
+}
+
+#[test]
+fn a_remote_head_names_the_default_branch() {
+    let fx = Fixture::standard();
+    fx.git(&["update-ref", "refs/remotes/origin/trunk", "main"]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("trunk"),
+        "the remote's HEAD wins over the local fallback, even with no such local branch"
+    );
+}
+
+#[test]
+fn a_repository_with_no_branches_has_no_default_branch() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "work"]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(repo.default_branch().unwrap(), None);
+}
+
+#[test]
 fn refs_are_classified_and_peeled() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();

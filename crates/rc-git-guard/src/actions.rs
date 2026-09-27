@@ -13,13 +13,16 @@ use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
 use crate::{Action, Challenge, Confirmation, Decision, Policy, Risk};
 
+mod checkout;
 mod commit;
 mod discard;
 mod remote;
 mod stash;
+mod treeapply;
 mod treebuild;
 mod workfile;
 
+pub use checkout::{CheckoutOutcome, checkout_branch};
 pub use commit::{Committed, commit};
 pub use discard::{discard_files, discard_hunks};
 pub use remote::{

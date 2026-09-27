@@ -20,6 +20,7 @@ disallowed-methods = [
     { path = "std::fs::remove_dir_all", reason = "core never deletes; see docs/safety.md" },
     { path = "std::fs::write", reason = "core never writes files; see docs/safety.md" },
     { path = "std::fs::File::create", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::OpenOptions::open", reason = "core never writes files, and these options may open one for writing; reads use std::fs::read or File::open. See docs/safety.md" },
     { path = "std::fs::rename", reason = "core never moves files; see docs/safety.md" },
     { path = "std::fs::create_dir", reason = "core never writes files; see docs/safety.md" },
     { path = "std::fs::create_dir_all", reason = "core never writes files; see docs/safety.md" },

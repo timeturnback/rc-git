@@ -22,10 +22,10 @@ use rc_git_core::{
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth, commit,
-    create_branch, create_tag, delete_branch, delete_tag, discard_files, discard_hunks,
-    fetch_upstream, plan_branch_delete, plan_tag_delete, pull_fast_forward, push_upstream,
-    stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
+    ActionError, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth,
+    checkout_branch, commit, create_branch, create_tag, delete_branch, delete_tag, discard_files,
+    discard_hunks, fetch_upstream, plan_branch_delete, plan_tag_delete, pull_fast_forward,
+    push_upstream, stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
 };
 use rc_git_guard::{Action, Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
@@ -1291,6 +1291,33 @@ pub unsafe extern "C" fn rcgit_head(
     }
 }
 
+/// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
+/// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
+/// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_default_branch(
+    repo: *const RcGitRepo,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
+    let Some(repo) = repo else {
+        error.report("repo is NULL");
+        return ptr::null_mut();
+    };
+    match repo.default_branch() {
+        Ok(Some(branch)) => export_string(branch),
+        Ok(None) => ptr::null_mut(),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Releases a value from `rcgit_head`.
 ///
 /// # Safety
@@ -2393,6 +2420,71 @@ pub unsafe extern "C" fn rcgit_guard_branch_create(
         ),
         &error,
     )
+}
+
+/// What a branch switch did. Plain data, no free function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitCheckoutOutcome {
+    /// The commit `HEAD` resolves to afterwards.
+    pub new_head: RcGitOid,
+    /// Files the working tree changed.
+    pub files_changed: usize,
+    /// Whether `HEAD` was already on this branch, so nothing was written.
+    pub already_on_branch: bool,
+}
+
+/// Checks out the existing local branch `branch`: the working tree, the index, and then
+/// `HEAD`. Refuses the whole switch when a path it touches has uncommitted work, and creates
+/// nothing. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` and `branch` are NUL-terminated strings; `out` is NULL or valid for writing;
+/// `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_checkout(
+    repo_path: *const c_char,
+    branch: *const c_char,
+    out: *mut RcGitCheckoutOutcome,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, branch, out, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            bytes_arg(branch),
+            Out::new(out),
+            Out::new(error),
+        )
+    };
+    let (Some(repo_path), Some(branch)) = (repo_path, branch) else {
+        error.report("repo_path or branch is NULL");
+        return RCGIT_ERROR;
+    };
+    match checkout_branch(
+        Path::new(OsStr::from_bytes(repo_path)),
+        &Policy::default(),
+        &String::from_utf8_lossy(branch),
+    ) {
+        Ok(outcome) => {
+            out.set(RcGitCheckoutOutcome {
+                new_head: Oid::from_bytes(outcome.new_head.as_slice()).map_or(
+                    RcGitOid {
+                        bytes: [0; 32],
+                        len: 0,
+                    },
+                    RcGitOid::from,
+                ),
+                files_changed: outcome.files_changed,
+                already_on_branch: outcome.already_on_branch,
+            });
+            RCGIT_OK
+        }
+        Err(err) => {
+            error.report(&err);
+            RCGIT_ERROR
+        }
+    }
 }
 
 /// Creates a lightweight tag named `name` at `revspec`, never overwriting an existing one.
@@ -4850,6 +4942,82 @@ mod tests {
 
         let status = unsafe {
             rcgit_guard_branch_create(ptr::null(), name.as_ptr(), rev.as_ptr(), &raw mut error)
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    #[test]
+    fn the_default_branch_crosses_as_a_string_or_null() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let branch = unsafe { rcgit_default_branch(repo, &raw mut error) };
+        assert!(error.is_null(), "success must leave error untouched");
+        assert_eq!(take_string(branch), "main");
+        unsafe { rcgit_repo_free(repo) };
+
+        let bare = Fixture::empty_dir();
+        bare.git(&["init", "-q", "-b", "work"]);
+        let repo = open(&bare);
+        let branch = unsafe { rcgit_default_branch(repo, &raw mut error) };
+        assert!(branch.is_null(), "nothing names a default branch");
+        assert!(error.is_null(), "and that is not a failure");
+        unsafe { rcgit_repo_free(repo) };
+
+        assert!(unsafe { rcgit_default_branch(ptr::null(), &raw mut error) }.is_null());
+        assert_eq!(take_error(&mut error), "repo is NULL");
+    }
+
+    #[test]
+    fn checkout_switches_the_branch_and_reports_null_input() {
+        let fx = Fixture::standard();
+        let path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let branch = CString::new("feature").unwrap();
+        let mut out = RcGitCheckoutOutcome {
+            new_head: RcGitOid {
+                bytes: [0; 32],
+                len: 0,
+            },
+            files_changed: 0,
+            already_on_branch: false,
+        };
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_checkout(path.as_ptr(), branch.as_ptr(), &raw mut out, &raw mut error)
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert!(error.is_null(), "success must leave error untouched");
+        assert!(!out.already_on_branch);
+        assert!(out.files_changed > 0);
+        assert_eq!(hex(&out.new_head), fx.rev_parse("feature"));
+        assert_eq!(
+            fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            "feature"
+        );
+
+        // Already there: nothing is written and the outcome says so.
+        let status = unsafe {
+            rcgit_guard_checkout(path.as_ptr(), branch.as_ptr(), &raw mut out, &raw mut error)
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert!(out.already_on_branch);
+        assert_eq!(out.files_changed, 0);
+
+        let missing = CString::new("no-such-branch").unwrap();
+        let status = unsafe {
+            rcgit_guard_checkout(
+                path.as_ptr(),
+                missing.as_ptr(),
+                &raw mut out,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("no-such-branch"));
+
+        let status = unsafe {
+            rcgit_guard_checkout(ptr::null(), branch.as_ptr(), &raw mut out, &raw mut error)
         };
         assert_eq!(status, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("NULL"));

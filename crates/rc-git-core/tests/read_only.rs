@@ -40,6 +40,7 @@ fn every_operation_leaves_git_dir_untouched() {
     repo.head().unwrap();
     let listing = repo.refs().unwrap();
     assert!(!listing.refs.is_empty());
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
     let tip = repo.resolve("main").unwrap();
     let root = repo.resolve_tree("v1.0").unwrap();
     assert_eq!(repo.tree_of(tip).unwrap(), root);

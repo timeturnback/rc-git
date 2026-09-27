@@ -5,11 +5,14 @@ import Foundation
 /// thread already blocked inside a transfer.
 public protocol SyncPerforming: Sendable {
     func preflight(repoPath: String) throws -> RemoteStatus
+    /// The repository's mainline branch, or `nil` when nothing names one. Local and cheap.
+    func defaultBranch(repoPath: String) throws -> String?
     func fetch(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws -> FetchOutcome
     func pullFastForward(repoPath: String) throws -> PullOutcome
+    func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome
     func push(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
@@ -24,6 +27,10 @@ public struct GuardSyncPerformer: SyncPerforming {
         try RepositoryGuard.remotePreflight(repoPath: repoPath)
     }
 
+    public func defaultBranch(repoPath: String) throws -> String? {
+        try Repository(path: repoPath).defaultBranch()
+    }
+
     public func fetch(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
@@ -35,6 +42,10 @@ public struct GuardSyncPerformer: SyncPerforming {
 
     public func pullFastForward(repoPath: String) throws -> PullOutcome {
         try RepositoryGuard.pullFastForward(repoPath: repoPath)
+    }
+
+    public func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome {
+        try RepositoryGuard.checkout(repoPath: repoPath, branch: branch)
     }
 
     public func push(
@@ -58,6 +69,11 @@ public enum SyncTitles {
         title("Push", count: status?.ahead ?? 0)
     }
 
+    /// Title for the control that switches to the mainline branch and brings it up to date.
+    public static func backToDefault(_ branch: String?) -> String {
+        branch.map { "Back to \($0)" } ?? "Back to the Default Branch"
+    }
+
     private static func title(_ verb: String, count: Int) -> String {
         count > 0 ? "\(verb) \(count) Commit\(count == 1 ? "" : "s")" : verb
     }
@@ -65,6 +81,7 @@ public enum SyncTitles {
 
 /// One step of the sync workflow.
 public enum SyncStep: Sendable, Hashable {
+    case checkout
     case fetch
     case pull
     case push
@@ -75,6 +92,17 @@ public struct SyncSummary: Sendable, Hashable {
     public let fetchedRefs: Int
     public let pulledFiles: Int
     public let pushedCommits: Int
+    /// The branch a workflow switched to, `nil` when it switched nothing.
+    public let switchedTo: String?
+
+    public init(
+        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, switchedTo: String? = nil
+    ) {
+        self.fetchedRefs = fetchedRefs
+        self.pulledFiles = pulledFiles
+        self.pushedCommits = pushedCommits
+        self.switchedTo = switchedTo
+    }
 }
 
 /// Where the sync workflow stands.
@@ -100,6 +128,9 @@ public final class SyncModel {
     public private(set) var state: SyncState = .idle
     /// The last successful preflight; feeds menu titles and tooltips.
     public private(set) var remoteStatus: RemoteStatus?
+    /// The repository's mainline branch, read once with the first status refresh. Names the
+    /// Back-to-default control and is what it switches to.
+    public private(set) var defaultBranch: String?
 
     public var isBusy: Bool {
         switch state {
@@ -145,17 +176,20 @@ public final class SyncModel {
         self.hostKeys = hostKeys
     }
 
-    /// Re-reads the upstream status. Cheap and local; a no-op while a workflow runs.
+    /// Re-reads the upstream status. Cheap and local; a no-op while a workflow runs. The
+    /// mainline branch comes along the first time, and does not move afterwards.
     public func refreshStatus() async {
         guard !isBusy else { return }
-        let repoPath = repoPath
-        let performer = performer
-        let status = await Task.detached(priority: .utility) {
-            try? performer.preflight(repoPath: repoPath)
-        }.value
+        let status = await readStatus()
+        let branch = defaultBranch == nil ? await readDefaultBranch() : nil
         guard !isBusy else { return }
+        if let branch {
+            defaultBranch = branch
+        }
         if let status {
             remoteStatus = status
+            onStateChanged?()
+        } else if branch != nil {
             onStateChanged?()
         }
     }
@@ -199,6 +233,25 @@ public final class SyncModel {
         }
     }
 
+    /// Switch to the repository's mainline branch, then fetch and fast-forward it: one
+    /// control for "give me the latest master to work on". The upstream is checked after the
+    /// switch, because it is the branch being switched to whose upstream matters.
+    public func backToDefaultBranch() async {
+        await workflow(checkUpstream: false) { model -> SyncSummary? in
+            let branch = try await model.resolveDefaultBranch()
+            let switched = try await model.runCheckout(branch)
+            try await model.adoptUpstreamOfCurrentBranch()
+            let fetched = try await model.runFetch()
+            let pulled = try await model.runPull()
+            return SyncSummary(
+                fetchedRefs: fetched.updatedRefs,
+                pulledFiles: pulled.filesChanged + switched.filesChanged,
+                pushedCommits: 0,
+                switchedTo: switched.alreadyOnBranch ? nil : switched.branch
+            )
+        }
+    }
+
     public func push() async {
         await workflow { model -> SyncSummary? in
             let pushed = try await model.runPush()
@@ -230,8 +283,10 @@ public final class SyncModel {
         let diverged: Bool
     }
 
-    private func workflow(_ body: (SyncModel) async throws -> SyncSummary?) async {
-        guard !isBusy, preflightAllows() else { return }
+    private func workflow(
+        checkUpstream: Bool = true, _ body: (SyncModel) async throws -> SyncSummary?
+    ) async {
+        guard !isBusy, !checkUpstream || preflightAllows() else { return }
         generation += 1
         let generation = generation
         cancel = CancelToken()
@@ -274,6 +329,86 @@ public final class SyncModel {
         }
         _ = repoPath
         return true
+    }
+
+    /// One preflight on a detached task. `nil` when it failed; the caller decides whether
+    /// that is fatal.
+    private func readStatus() async -> RemoteStatus? {
+        let repoPath = repoPath
+        let performer = performer
+        return await Task.detached(priority: .utility) {
+            try? performer.preflight(repoPath: repoPath)
+        }.value
+    }
+
+    private func readDefaultBranch() async -> String? {
+        let repoPath = repoPath
+        let performer = performer
+        return await Task.detached(priority: .utility) {
+            try? performer.defaultBranch(repoPath: repoPath)
+        }.value
+    }
+
+    /// The branch the Back-to-default workflow targets. Fails the workflow when nothing names
+    /// one, because there is then no sensible branch to switch to.
+    private func resolveDefaultBranch() async throws -> String {
+        enter(.checkout)
+        if let branch = defaultBranch {
+            return branch
+        }
+        guard let branch = await readDefaultBranch() else {
+            throw StepFailure(
+                step: .checkout,
+                message:
+                    "cannot tell which branch is the mainline: no remote HEAD, and no local "
+                    + "'master' or 'main'",
+                diverged: false
+            )
+        }
+        defaultBranch = branch
+        return branch
+    }
+
+    /// Re-reads the upstream after a switch, so the fetch that follows authenticates against
+    /// the new branch's remote. A branch with no upstream stops the workflow here rather than
+    /// opening a connection it cannot name.
+    private func adoptUpstreamOfCurrentBranch() async throws {
+        guard let status = await readStatus() else {
+            throw StepFailure(
+                step: .fetch, message: "cannot read the upstream status", diverged: false)
+        }
+        remoteStatus = status
+        onStateChanged?()
+        guard status.hasUpstream else {
+            throw StepFailure(
+                step: .fetch,
+                message:
+                    "branch '\(status.branch)' has no upstream; configure one with git first",
+                diverged: false
+            )
+        }
+    }
+
+    private func runCheckout(_ branch: String) async throws -> CheckoutOutcome {
+        enter(.checkout)
+        let performer = performer
+        let repoPath = repoPath
+        let result = await Task.detached(priority: .userInitiated) {
+            () -> Result<CheckoutOutcome, SyncError> in
+            do {
+                return .success(try performer.checkout(repoPath: repoPath, branch: branch))
+            } catch let error as SyncError {
+                return .failure(error)
+            } catch {
+                return .failure(.failure(message: "\(error)"))
+            }
+        }.value
+        switch result {
+        case let .success(outcome):
+            return outcome
+        case let .failure(error):
+            throw StepFailure(step: .checkout, message: error.message, diverged: false)
+        }
     }
 
     private func runFetch() async throws -> FetchOutcome {

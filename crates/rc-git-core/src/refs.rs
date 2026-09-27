@@ -121,6 +121,70 @@ impl Repository {
             Ok(Head { ref_name, target })
         })
     }
+
+    /// The repository's mainline branch, without `refs/heads/`: the branch a remote's `HEAD`
+    /// names when the clone recorded one, else whichever of `master` and `main` exists
+    /// locally. `None` when nothing names one. The branch itself may not exist locally — the
+    /// remote's `HEAD` is what the clone was told, so the caller reports a missing branch by
+    /// name.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the reference store cannot be read.
+    pub fn default_branch(&self) -> Result<Option<String>> {
+        self.with(|repo| {
+            let platform = repo.references().map_err(git("open reference store"))?;
+            let mut from_remote = None;
+            for reference in platform
+                .prefixed("refs/remotes/")
+                .map_err(git("list remote branches"))?
+            {
+                let reference = reference.map_err(|source| Error::Git {
+                    op: "iterate remote branches",
+                    source,
+                })?;
+                let Some(branch) = remote_head_branch(&reference) else {
+                    continue;
+                };
+                // `origin` wins when several remotes record a HEAD; any other remote answers
+                // only when no origin does.
+                let is_origin = reference
+                    .name()
+                    .as_bstr()
+                    .starts_with(b"refs/remotes/origin/");
+                if is_origin {
+                    from_remote = Some(branch);
+                    break;
+                }
+                from_remote = from_remote.or(Some(branch));
+            }
+            drop(platform);
+            if let Some(branch) = from_remote {
+                return Ok(Some(branch));
+            }
+            for candidate in ["master", "main"] {
+                if repo
+                    .find_reference(&format!("refs/heads/{candidate}"))
+                    .is_ok()
+                {
+                    return Ok(Some(candidate.to_owned()));
+                }
+            }
+            Ok(None)
+        })
+    }
+}
+
+/// The branch `refs/remotes/<remote>/HEAD` points at, without its namespace. `None` for any
+/// other reference, and for a remote `HEAD` that is not symbolic.
+fn remote_head_branch(reference: &gix::Reference<'_>) -> Option<String> {
+    let full_name = reference.name().as_bstr();
+    let remote_prefix = full_name.strip_suffix(b"/HEAD")?;
+    let gix::refs::TargetRef::Symbolic(target) = reference.target() else {
+        return None;
+    };
+    let target = target.as_bstr();
+    let branch = target.strip_prefix(remote_prefix)?.strip_prefix(b"/")?;
+    (!branch.is_empty()).then(|| lossy(branch.as_bstr()))
 }
 
 fn classify(name: &FullNameRef) -> (RefKind, String) {

@@ -155,6 +155,12 @@ enum MainMenu {
             item(
                 "Sync", #selector(MainWindowController.syncRepository(_:)), "r",
                 [.command, .shift]))
+        // The title is rewritten with the branch name in `validateMenuItem`.
+        menu.addItem(
+            item(
+                SyncTitles.backToDefault(nil),
+                #selector(MainWindowController.backToDefaultBranch(_:)), "m",
+                [.command, .shift]))
         menu.addItem(
             item(
                 "Cancel Sync", #selector(MainWindowController.cancelSync(_:)), ".",

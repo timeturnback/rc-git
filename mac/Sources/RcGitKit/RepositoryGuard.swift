@@ -486,6 +486,18 @@ public struct PushOutcome: Sendable, Hashable {
     public let alreadyUpToDate: Bool
 }
 
+/// What a branch switch did.
+public struct CheckoutOutcome: Sendable, Hashable {
+    /// Short name of the branch now checked out.
+    public let branch: String
+    /// The commit `HEAD` resolves to afterwards.
+    public let newHead: Oid
+    /// Files the working tree changed.
+    public let filesChanged: Int
+    /// Whether `HEAD` was already on this branch, so nothing was written.
+    public let alreadyOnBranch: Bool
+}
+
 extension RepositoryGuard {
     /// The checked-out branch's upstream and ahead/behind counts. Local, no network.
     public static func remotePreflight(repoPath: String) throws -> RemoteStatus {
@@ -545,6 +557,26 @@ extension RepositoryGuard {
             commitsAdvanced: !out.already_up_to_date,
             filesChanged: out.files_changed,
             alreadyUpToDate: out.already_up_to_date
+        )
+    }
+
+    /// Checks out an existing local branch: working tree, index, then `HEAD`. Refuses the
+    /// whole switch when a path it touches has uncommitted work. No network.
+    public static func checkout(repoPath: String, branch: String) throws(SyncError)
+        -> CheckoutOutcome
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        var out = RcGitCheckoutOutcome(
+            new_head: RcGitOid(), files_changed: 0, already_on_branch: false)
+        let status = rcgit_guard_checkout(repoPath, branch, &out, &error)
+        guard status == RCGIT_OK else {
+            throw syncError(status, error, fallback: "cannot switch to '\(branch)'")
+        }
+        return CheckoutOutcome(
+            branch: branch,
+            newHead: Oid(c: out.new_head),
+            filesChanged: out.files_changed,
+            alreadyOnBranch: out.already_on_branch
         )
     }
 
