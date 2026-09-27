@@ -49,6 +49,18 @@ the innermost one — because the view applies exactly one color per range. A pr
 combines several grammar layers, as markdown does for its inline prose and fenced code,
 must re-impose this contract before the spans leave the highlighter.
 
+## Block and run
+
+The markdown preview's document model. A *run* is one stretch of inline text that shares a
+single appearance — a style set, and at most one link — and concatenating a block's runs
+reproduces exactly what the reader sees. A *block* is one paragraph, heading, code block,
+table, or list item, carrying its runs plus the depth it sits at.
+
+Blocks are flat, never a tree: nesting is two integers, a quote depth and a list depth, so a
+renderer indents from them rather than recursing, and a whole file is one array. Parsing
+produces blocks and runs and nothing else; deciding how either looks is the renderer's, and
+the renderer never re-reads the source.
+
 ## Isolated open
 
 How every repository is opened: only the repository's own configuration is read — no
