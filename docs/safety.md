@@ -9,7 +9,10 @@ Four layers enforce it, and each catches what the others miss.
 1. **Lint.** `clippy.toml` lists every gix write method (`edit_reference`, `write_object`,
    `commit`, `tag`, ...), every `std::fs` mutation, and `Command::new`. Clippy rejects a call
    to any of them in any crate. The test kit opts out per function with a written reason, and
-   `rc-git-guard` — the one sanctioned write path — opts out at each ref edit the same way.
+   `rc-git-guard` — the one sanctioned write path — opts out the same way at each write it
+   performs: every ref edit, and the working-tree and reflog writes that go with them. A write
+   primitive the workspace has not used before joins the list in the change that first uses it;
+   an unlisted one passes the lint and leaves the guarantee unenforced for that path.
 2. **Test.** `crates/rc-git-core/tests/read_only.rs` snapshots every file under `.git`, runs
    every core operation — working-tree listings and file reads included — and compares the
    snapshot byte for byte.
@@ -112,6 +115,15 @@ The Changes tab's write paths add their own guarantees:
 - **Discard** and stash restores write through one helper that removes the old file first,
   so a write never follows a stale symlink, and deleting an already-gone file is not an
   error — a retried action lands in the state it retries from.
+
+- **A branch switch** applies the tree diff between the two commits to exactly the changed
+  paths, through the same planner the fast-forward pull uses: any dirty or staged overlap
+  refuses the whole switch, named by path, before a byte is written, and paths the switch does
+  not touch keep their changes. `HEAD` moves last, expecting the branch or detached commit the
+  switch was planned against. Its `checkout:` reflog line is appended explicitly, because a
+  gix transaction writes none for a symbolic update — without it `git checkout -` and `HEAD@{n}`
+  would name the wrong commit
+  (`docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md`).
 
 The remote operations add their own guarantees:
 
