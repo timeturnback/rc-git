@@ -66,6 +66,8 @@ header drifts.
   `ffi.md`, `testing.md`, `development.md`, `roadmap.md`.
 - `docs/solutions/` holds documented solutions to past problems (YAML frontmatter: `module`,
   `tags`, `problem_type`), organized by category — relevant when debugging in a documented area.
+- `CONCEPTS.md` defines the words that mean something specific here (guard, challenge, dirty
+  overlap, isolated open) — read it before naming a new concept, and use its terms in prose.
 - Every public Rust fn documents `# Errors`; every error names the operation and the object.
 
 ## Invariants

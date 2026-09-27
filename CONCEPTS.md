@@ -27,6 +27,20 @@ at whatever is about to be deleted, so the previous state can be restored by han
 Backups are numbered rather than overwritten, so repeating an action never destroys an
 earlier backup.
 
+## Dirty overlap
+
+The paths an action is about to write that the working tree or the index has already
+changed. Any dirty overlap refuses the whole action before a single byte is written, and
+the refusal names the first such path, so uncommitted work is never overwritten and never
+partially applied. Paths the action does not touch are left alone, changes and all.
+
+An action that moves the working tree to another commit — a fast-forward pull, a branch
+switch — decides this in a fixed order: plan the per-path changes, check them all for
+overlap, write the files, and move the ref last. The ordering is what keeps an interruption
+legible: it leaves visibly modified files on the commit the user started from, never
+something that reads as lost work. A stash restore refuses on overlap the same way, by its
+own route, and moves no ref.
+
 ## Highlight span
 
 One colored region of a file: a half-open byte range plus a class naming what the region
