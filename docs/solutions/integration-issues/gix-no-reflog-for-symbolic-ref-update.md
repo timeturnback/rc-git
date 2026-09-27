@@ -58,10 +58,10 @@ returned `Ok` while writing nothing to `.git/logs/HEAD`. Every switch therefore 
 
 **The ref edit alone, which looks right.** `point_head_at`
 (`crates/rc-git-guard/src/actions/checkout.rs:113`) builds the edit the way every other
-rc-git ref write does, through the same `apply_edit` funnel: `RefLog::AndReference`,
-`force_create_reflog: false`, a message, and an expectation that `HEAD` still holds what the
-switch was planned against (`checkout.rs:119-123`). It returns `Ok`, writes `.git/HEAD`, and
-logs nothing. There is no error, no warning, and no field on `LogChange` left unset.
+rc-git ref write does, through the same `apply_edit` funnel: an expectation that `HEAD` still
+holds what the switch was planned against (`checkout.rs:119-123`), then `RefLog::AndReference`,
+`force_create_reflog: false`, and a message (`checkout.rs:127-129`). It returns `Ok`, writes
+`.git/HEAD`, and logs nothing. There is no error, no warning, and no field on `LogChange` left unset.
 
 **Calling gix's own reflog writer.** `file::Store::reflog_create_or_append` is `pub(crate)`
 (`gix-ref-0.67.1/src/store/file/loose/reflog.rs:100`), so the function the transaction itself
