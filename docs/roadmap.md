@@ -20,10 +20,16 @@ constraints are clear.
   its inline prose and fenced code blocks in their own language (injections resolved by hand;
   `tree_sitter_highlight`'s own layer merge mis-orders events). Files that are not valid
   UTF-8 or exceed 2 MiB stay plain.
-- **Markdown view.** `.md` files open as a rendered preview (Foundation's markdown parser
-  styled via presentation intents, built off the main actor, no web view) with a
-  Preview/Source toggle in the file pane header; source mode keeps line numbers and syntax
-  color. Markdown over 4 MiB opens in source mode only.
+- **Markdown view.** `.md` files open as a rendered preview with a Preview/Source toggle in
+  the file pane header; source mode keeps line numbers and syntax color. The parser is our
+  own (`MarkdownDocument` in RcGitKit, pure and tested): headings both ways, lists including
+  nesting and task items, fenced and indented code, blockquotes, GFM tables, front matter,
+  footnotes, reference links, images, autolinks, raw HTML blocks, and the inline set. Fenced
+  blocks are colored by the same tree-sitter highlighter source mode uses, and tables lay out
+  as real `NSTextTable` cells. Links are live: a repository-relative one opens that file in
+  the pane, `#fragment` scrolls to the heading, a URL goes to the browser, and the context
+  menu copies either. Building the preview runs off the main actor. Markdown over 8 MiB opens
+  in source mode only.
 - **Path search.** ⇧⌘O flattens the selected root once in the background — the one
   feature that walks a whole tree — keyed by root tree id, cancellable, capped at 200 000
   entries, and offers fuzzy jump-to-file. Every directory read lands in the shared tree

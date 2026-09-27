@@ -979,9 +979,10 @@ struct RcGitStashList *rcgit_stash_list(const struct RcGitRepo *repo, char **err
 // `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
 void rcgit_stash_list_free(struct RcGitStashList *list);
 
-// Highlights `len` bytes of `data` as the language `name`'s extension implies. Returns NULL
-// with `*error` untouched when the extension maps to no known language, so plain text costs
-// nothing; NULL with `*error` set when parsing fails. Needs no repository. Release with
+// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
+// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
+// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
+// with `*error` set when parsing fails. Needs no repository. Release with
 // `rcgit_highlight_list_free`.
 //
 // # Safety

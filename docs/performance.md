@@ -20,6 +20,7 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match and the index cannot vouch for the file |
 | working-tree status | under 150 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, one `lstat` per tracked file through the index's stat cache and a hash only for what it cannot settle; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
 | blame | grows with commits touching the file | on demand for the open file, never in bulk |
+| markdown preview | about 20 ms per MiB, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; capped at 8 MiB, above which the file opens in source mode |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
 
 First paint after choosing a repository should land under 30 ms: open, `HEAD`, root tree,

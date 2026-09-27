@@ -56,8 +56,12 @@ carrying UTF-16 line starts. The file pane builds the attributed string in the b
 too, sets it on a TextKit 1 text storage with non-contiguous layout, and draws line numbers
 for visible fragments from the precomputed starts. Syntax colors arrive later as temporary
 attributes for the visible chunk only; scrolling colors further chunks. Markdown files can
-render as a styled preview instead (Foundation's markdown parser, wrapped text, ruler
-hidden), toggled from the file pane header.
+render as a styled preview instead, toggled from the file pane header: `MarkdownDocument`
+(RcGitKit) parses the source into flat blocks and styled runs, and `MarkdownRenderer`
+(RcGitApp) turns those into the attributed string, wrapped, with the ruler hidden. Both
+halves are pure, so the preview is built off the main actor like the plain paint is.
+`MarkdownLinkTarget` resolves what a link means — a URL, a repository path, or a heading —
+and is what the pane, its context menu, and `BrowserModel.openPath` all agree on.
 
 ## Threading
 

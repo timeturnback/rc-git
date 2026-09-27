@@ -523,6 +523,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onFileChanged = { [weak self] in
             guard let self else { return }
+            fileController.repositoryPath = model.openedFilePath
             fileController.render(model.fileState)
         }
         model.onError = { [weak self] message in
@@ -560,6 +561,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         fileController.highlightProvider = { [weak self] entry, document in
             guard let self else { return nil }
             return await model.highlights(for: entry, document: document)
+        }
+        fileController.onOpenRepositoryPath = { [weak self] path in
+            guard let self else { return }
+            setMode(.files)
+            Task {
+                guard await self.model.openPath(path) else {
+                    self.presentError("\(path) is not in this tree.")
+                    return
+                }
+            }
         }
     }
 

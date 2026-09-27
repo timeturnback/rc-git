@@ -5,6 +5,7 @@ import RcGitKit
 /// is safe to construct off-main and read on-main once no one else mutates it.
 private struct BuiltText: @unchecked Sendable {
     let value: NSAttributedString
+    let anchors: [String: Int]
 }
 
 /// Shows one file: a header with path and size, then read-only monospaced text with line
@@ -17,11 +18,18 @@ final class FileViewController: NSViewController {
     var onLoadAnyway: ((TreeEntry, UInt64) -> Void)?
     /// Asked for syntax spans after a text file painted; `nil` means stay plain.
     var highlightProvider: ((TreeEntry, TextDocument) async -> [HighlightSpan]?)?
+    /// A markdown link that pointed inside the repository was clicked; the argument is the
+    /// repository-relative path it resolved to.
+    var onOpenRepositoryPath: ((String) -> Void)?
+    /// The repository-relative path of the file on screen, which is what a relative markdown
+    /// link is resolved against. `nil` when the opener did not know it.
+    var repositoryPath: String?
 
     /// Files above this size are never offered for display, even with "Load anyway".
     static let hardLimit: UInt64 = 512 * 1024 * 1024
-    /// Markdown above this size opens in source mode; parsing a preview would not be quick.
-    static let previewLimit = 4 * 1024 * 1024
+    /// Markdown above this size opens in source mode. The parser reads about 50 MB/s, so the
+    /// limit is what keeps TextKit's layout of the rendered result quick, not the parse.
+    static let previewLimit = 8 * 1024 * 1024
     /// Syntax colors are applied per chunk of this many UTF-16 units as chunks scroll in.
     static let highlightChunk = 4096
 
@@ -46,6 +54,10 @@ final class FileViewController: NSViewController {
     private var highlightRanges: [(range: NSRange, class: HighlightClass)] = []
     /// Chunks of `Self.highlightChunk` UTF-16 units already colored.
     private var appliedChunks = IndexSet()
+    /// Heading anchors of the preview on screen, for `#fragment` links.
+    private var anchors: [String: Int] = [:]
+    /// A heading a link asked for in a file that was still loading, applied once it paints.
+    private var pendingAnchor: String?
 
     override func loadView() {
         pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
@@ -93,6 +105,10 @@ final class FileViewController: NSViewController {
         textView.backgroundColor = .textBackgroundColor
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticLinkDetectionEnabled = false
+        textView.delegate = self
+        // The string already carries the link color and underline; leaving these empty stops
+        // NSTextView painting its own over them, and keeps the pointing-hand cursor.
+        textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
 
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
@@ -229,20 +245,23 @@ final class FileViewController: NSViewController {
         Task { [weak self] in
             let built = await Task.detached(priority: .userInitiated) { () -> BuiltText in
                 if preview {
-                    return BuiltText(value: MarkdownRenderer.render(text))
+                    let rendered = MarkdownRenderer.render(text)
+                    return BuiltText(value: rendered.text, anchors: rendered.anchors)
                 }
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: FileViewController.font,
                     .foregroundColor: NSColor.textColor,
                 ]
                 return BuiltText(
-                    value: NSAttributedString(string: text, attributes: attributes))
+                    value: NSAttributedString(string: text, attributes: attributes), anchors: [:])
             }.value
             guard let self, generation == self.contentGeneration else { return }
+            self.anchors = built.anchors
             self.show(built.value, asPreview: preview, lineStarts: document.utf16LineStarts)
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
             }
+            self.applyPendingAnchor()
         }
     }
 
@@ -291,6 +310,8 @@ final class FileViewController: NSViewController {
 
     private func showPlaceholder(_ message: String) {
         contentGeneration += 1
+        anchors = [:]
+        pendingAnchor = nil
         clearHighlights()
         placeholder.stringValue = message
         placeholder.isHidden = false
@@ -379,31 +400,116 @@ final class FileViewController: NSViewController {
             if range.location >= chunkEnd { break }
             if NSMaxRange(range) <= textStorage.length {
                 layoutManager.addTemporaryAttribute(
-                    .foregroundColor, value: Self.color(for: highlightClass),
+                    .foregroundColor, value: HighlightPalette.color(for: highlightClass),
                     forCharacterRange: range)
             }
             index += 1
         }
     }
+}
 
-    private static func color(for highlightClass: HighlightClass) -> NSColor {
-        switch highlightClass {
-        case .attribute: return .systemBrown
-        case .comment: return .secondaryLabelColor
-        case .constant: return .systemOrange
-        case .emphasis: return .systemPurple
-        case .function: return .systemTeal
-        case .heading: return .systemBlue
-        case .keyword: return .systemPurple
-        case .link: return .linkColor
-        case .number: return .systemOrange
-        case .operator: return .labelColor
-        case .property: return .systemIndigo
-        case .punctuation: return .labelColor
-        case .string: return .systemRed
-        case .strong: return .systemPurple
-        case .type: return .systemBlue
-        case .variable: return .labelColor
+// MARK: - Markdown links
+
+extension FileViewController: NSTextViewDelegate {
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        open(destination: Self.destination(of: link))
+        return true
+    }
+
+    /// Adds the link commands above the text view's own menu when the click landed on a link,
+    /// so a destination can be opened, followed in a browser, or copied without leaving the
+    /// pane.
+    func textView(
+        _ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int
+    ) -> NSMenu? {
+        guard charIndex < textStorage.length,
+            let attribute = textStorage.attribute(.link, at: charIndex, effectiveRange: nil)
+        else { return menu }
+        let destination = Self.destination(of: attribute)
+        guard let target = MarkdownLinkTarget.resolve(destination, from: repositoryPath) else {
+            return menu
         }
+        var items: [NSMenuItem] = []
+        switch target {
+        case .repositoryPath:
+            items.append(item("Open File", #selector(openLink(_:)), destination))
+        case .fragment:
+            items.append(item("Go to Section", #selector(openLink(_:)), destination))
+        case .external:
+            items.append(item("Open in Browser", #selector(openLink(_:)), destination))
+        }
+        items.append(item("Copy Link", #selector(copyLink(_:)), Self.copyText(for: target)))
+        items.append(.separator())
+        for (offset, entry) in items.enumerated() { menu.insertItem(entry, at: offset) }
+        return menu
+    }
+
+    private func item(_ title: String, _ action: Selector, _ payload: String) -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        entry.target = self
+        entry.representedObject = payload
+        return entry
+    }
+
+    @objc private func openLink(_ sender: NSMenuItem) {
+        open(destination: sender.representedObject as? String ?? "")
+    }
+
+    @objc private func copyLink(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    /// Follows one markdown destination: a URL goes to the browser, a repository path is
+    /// handed up so the pane can show that file, and a bare fragment scrolls this one.
+    private func open(destination: String) {
+        guard let target = MarkdownLinkTarget.resolve(destination, from: repositoryPath) else {
+            NSSound.beep()
+            return
+        }
+        switch target {
+        case let .external(url):
+            NSWorkspace.shared.open(url)
+        case let .repositoryPath(path, fragment):
+            pendingAnchor = fragment
+            onOpenRepositoryPath?(path)
+        case let .fragment(name):
+            pendingAnchor = name
+            applyPendingAnchor()
+        }
+    }
+
+    /// What "Copy Link" puts on the pasteboard: the absolute URL for the web, and the
+    /// repository-relative path for anything inside the repository.
+    private static func copyText(for target: MarkdownLinkTarget) -> String {
+        switch target {
+        case let .external(url): return url.absoluteString
+        case let .repositoryPath(path, fragment):
+            return fragment.map { "\(path)#\($0)" } ?? path
+        case let .fragment(name): return "#\(name)"
+        }
+    }
+
+    private static func destination(of link: Any) -> String {
+        if let text = link as? String { return text }
+        if let url = link as? URL { return url.absoluteString }
+        return ""
+    }
+
+    /// Scrolls to the heading a `#fragment` asked for, once the file that has it is on screen.
+    /// The request survives the load, so a link into another file lands on its section.
+    private func applyPendingAnchor() {
+        guard let name = pendingAnchor else { return }
+        pendingAnchor = nil
+        guard let location = anchors[MarkdownDocument.anchor(for: name)] else { return }
+        guard let layoutManager = textView.layoutManager, let container = textView.textContainer,
+            location < textStorage.length
+        else { return }
+        let glyphs = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: location, length: 1), actualCharacterRange: nil)
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+        textView.setSelectedRange(NSRange(location: location, length: 0))
+        textView.scroll(NSPoint(x: 0, y: max(rect.minY - 8, 0)))
     }
 }

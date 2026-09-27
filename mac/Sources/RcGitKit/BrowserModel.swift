@@ -414,6 +414,46 @@ public final class BrowserModel {
         onFileChanged?()
     }
 
+    /// Opens the file at a repository-relative path, the way a markdown link in the file pane
+    /// asks for one. Returns `false` when the path names nothing openable, so the caller can
+    /// say the link is dead instead of leaving the pane on the previous file.
+    ///
+    /// Resolution reads one tree object per path component, so a deep link costs its depth and
+    /// not the size of the tree; every directory it reads lands in the shared cache.
+    @discardableResult
+    public func openPath(_ path: String) async -> Bool {
+        guard repository != nil, !path.isEmpty else { return false }
+        if browsingWorkingTree {
+            let name = path.split(separator: "/").last.map(String.init) ?? path
+            await openWorktreeFile(name: name, path: path)
+            if case .failed = fileState { return false }
+            return true
+        }
+        guard let root = rootTree, let entry = try? await blob(at: path, in: root) else {
+            return false
+        }
+        await openFile(entry, path: path)
+        return true
+    }
+
+    /// The blob at `path` below `tree`, walking one directory at a time. `nil` when a
+    /// component is missing or the path names a directory.
+    private func blob(at path: String, in tree: Oid) async throws -> TreeEntry? {
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return nil }
+        var current = tree
+        for (offset, component) in components.enumerated() {
+            let entries = try await children(of: current)
+            guard let match = entries.first(where: { $0.name == component }) else { return nil }
+            if offset == components.count - 1 {
+                return match.kind.isDirectory ? nil : match
+            }
+            guard match.kind.isDirectory else { return nil }
+            current = match.oid
+        }
+        return nil
+    }
+
     // MARK: History
 
     /// Fetches the next page of commits for the history pane. Does nothing while a page is

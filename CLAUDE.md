@@ -41,13 +41,13 @@ and Xcode 16 or newer. `docs/development.md` has the rest.
 | `crates/rc-git-ffi` | C ABI over core, guard, and highlight. The only crate allowed `unsafe`. | yes |
 | `crates/rc-git-cli` | `rc-git` binary: scriptable access plus `--time`. | yes |
 | `crates/rc-git-testkit` | fixture repositories built with the git CLI. The only crate that shells out. | — |
-| `mac/Sources/RcGitKit` | Swift wrapper, `BrowserModel`, layout policy. **No AppKit.** | yes |
+| `mac/Sources/RcGitKit` | Swift wrapper, `BrowserModel`, layout policy, the markdown parser and link resolution. **No AppKit.** | yes |
 | `mac/Sources/RcGitApp` | AppKit windows and views. Marshals events to the model, nothing else. | no |
 
-New logic goes in `rc-git-core` when it reads git data and in `RcGitKit` when it is app state.
-`RcGitApp` only wires views to the model. The FFI layer only marshals; `docs/ffi.md` has the
-checklist for adding a function, and `scripts/gen-header.sh --verify` fails when the committed
-header drifts.
+New logic goes in `rc-git-core` when it reads git data and in `RcGitKit` when it is app state
+or pure text logic the views need decided once. `RcGitApp` only wires views to the model. The
+FFI layer only marshals; `docs/ffi.md` has the checklist for adding a function, and
+`scripts/gen-header.sh --verify` fails when the committed header drifts.
 
 ## Working agreement
 

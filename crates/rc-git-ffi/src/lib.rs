@@ -2263,9 +2263,10 @@ pub unsafe extern "C" fn rcgit_stash_list_free(list: *mut RcGitStashList) {
     unsafe { release(list) };
 }
 
-/// Highlights `len` bytes of `data` as the language `name`'s extension implies. Returns NULL
-/// with `*error` untouched when the extension maps to no known language, so plain text costs
-/// nothing; NULL with `*error` set when parsing fails. Needs no repository. Release with
+/// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
+/// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
+/// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
+/// with `*error` set when parsing fails. Needs no repository. Release with
 /// `rcgit_highlight_list_free`.
 ///
 /// # Safety
@@ -2290,7 +2291,9 @@ pub unsafe extern "C" fn rcgit_highlight(
         // SAFETY: forwarded from this function's contract.
         unsafe { std::slice::from_raw_parts(data, len) }
     };
-    let Some(language) = Language::from_file_name(&String::from_utf8_lossy(name)) else {
+    let name = String::from_utf8_lossy(name);
+    let Some(language) = Language::from_file_name(&name).or_else(|| Language::from_fence(&name))
+    else {
         return ptr::null_mut();
     };
     match rc_git_highlight::highlight(data, language) {
@@ -4844,6 +4847,13 @@ mod tests {
                 .any(|span| span.kind == RcGitHighlightClass::Keyword)
         );
         assert!(spans.iter().all(|span| span.start < span.end));
+        unsafe { rcgit_highlight_list_free(list) };
+
+        let fence = CString::new("rust").unwrap();
+        let list =
+            unsafe { rcgit_highlight(fence.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        assert!(!list.is_null(), "a fence info string names a language too");
+        assert!(error.is_null());
         unsafe { rcgit_highlight_list_free(list) };
 
         let unknown = CString::new("photo.png").unwrap();

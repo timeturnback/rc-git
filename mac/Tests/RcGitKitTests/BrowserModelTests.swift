@@ -98,6 +98,21 @@ import Testing
         #expect(model.trees.cached(srcTree) == nil, "a failed load is not cached")
     }
 
+    @Test func openPathWalksTheTreeAndReportsDeadLinks() async {
+        await model.attach(repo)
+        #expect(await model.openPath("src/main.rs"))
+        #expect(model.openedFilePath == "src/main.rs")
+        guard case let .text(entry, _) = model.fileState else {
+            Issue.record("expected text state")
+            return
+        }
+        #expect(entry.name == "main.rs")
+        #expect(!(await model.openPath("src/missing.rs")))
+        #expect(!(await model.openPath("src")))
+        #expect(!(await model.openPath("src/main.rs/deeper")))
+        #expect(model.openedFilePath == "src/main.rs")
+    }
+
     @Test func openFileProducesTextBinaryAndTooLargeStates() async {
         await model.attach(repo)
         let readmeEntry = TreeEntry(name: "README.md", oid: readme, kind: .blob)

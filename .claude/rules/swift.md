@@ -42,6 +42,18 @@ paths: mac/**
   `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
   Syntax colors are temporary attributes applied per visible chunk; never add a layout-
   affecting attribute (font, paragraph style) through that path.
+- The markdown preview is two halves: `MarkdownDocument.parse` (RcGitKit, pure, byte-level,
+  tested) turns source into flat blocks and styled runs, and `MarkdownRenderer` (RcGitApp)
+  decides how each block looks. A new syntax goes in the parser with a test; the renderer
+  never re-reads the source. Both run off the main actor, like the plain paint.
+- Tables are `NSTextTable` cells and blockquotes and code panels are `NSTextBlock`s carried in
+  the paragraph style. Layout-affecting attributes are fine on that build path and never on
+  the source-mode temporary-attribute path.
+- Every markdown link resolves through `MarkdownLinkTarget.resolve` against the pane's
+  `repositoryPath`. Do not read a destination anywhere else: telling a repository path, a URL
+  and a `#fragment` apart in one place is what keeps clicking, the context menu and
+  "Copy Link" from disagreeing. A repository link opens through `BrowserModel.openPath`, which
+  walks one tree object per component.
 - In `MainWindowController.init`, views are built before `setFrameAutosaveName`: the frame
   restore resizes the window and fires `windowDidResize` -> `applyLayout()` synchronously, and an
   exception there is swallowed by launch Apple Event handling, leaving the app windowless

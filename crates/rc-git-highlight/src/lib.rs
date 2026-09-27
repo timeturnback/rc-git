@@ -71,9 +71,12 @@ impl Language {
         }
     }
 
-    /// Picks a language from an injection name, as written after a markdown code fence.
-    /// Accepts the common aliases fences use, case-insensitively.
-    fn from_injection(name: &str) -> Option<Self> {
+    /// Picks a language from a fence's info string, as written after a markdown code fence.
+    /// Accepts the common aliases fences use, case-insensitively. This is also how the
+    /// rendered markdown preview asks for a fenced block's language, which it has as a name
+    /// like `rust` rather than as a file name.
+    #[must_use]
+    pub fn from_fence(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "bash" | "sh" | "shell" | "zsh" => Some(Self::Bash),
             "c" => Some(Self::C),
@@ -408,7 +411,7 @@ fn append_fence(overlays: &mut Vec<Span>, data: &[u8], node: tree_sitter::Node, 
                     if part.kind() == "language" {
                         language = std::str::from_utf8(&data[part.byte_range()])
                             .ok()
-                            .and_then(Language::from_injection);
+                            .and_then(Language::from_fence);
                     }
                 }
             }
@@ -599,6 +602,9 @@ mod tests {
             Language::from_file_name("notes.MARKDOWN"),
             Some(Language::Markdown)
         );
+        assert_eq!(Language::from_fence("rust"), Some(Language::Rust));
+        assert_eq!(Language::from_fence("SH"), Some(Language::Bash));
+        assert_eq!(Language::from_fence("mermaid"), None);
         assert_eq!(Language::from_file_name("noext"), None);
         assert_eq!(Language::from_file_name("photo.png"), None);
         assert_eq!(Language::from_file_name(""), None);
