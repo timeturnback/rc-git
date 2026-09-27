@@ -33,7 +33,7 @@ recipe and the traps, because none of it is discoverable from gix's docs.
 
 ## Guidance
 
-The working pipeline (`crates/rc-git-guard/src/actions/remote/push.rs:47`,
+The working pipeline (`crates/rc-git-guard/src/actions/remote/push.rs:48`,
 `pack.rs`, `report.rs`):
 
 1. **One HTTP connection, two phases.** `gix_transport::client::blocking_io::connect::connect`
@@ -78,10 +78,14 @@ Traps that each cost a debug cycle:
   db.prevent_pack_unload();
   ```
 
-- **Reflog needs a committer under `isolated()` opens.** Any ref write (fetch's
-  tracking-ref updates included) fails with `MissingCommitter` unless an in-memory
-  `user.name`/`user.email` is set first via `config_snapshot_mut()` + `commit()`
-  (`set_reflog_identity` in `actions/remote.rs`). The on-disk config is never touched.
+- **Reflog needs a committer under `isolated()` opens — and a committer is not what makes a
+  ref write log.** Any ref write gix performs itself (fetch's tracking-ref updates included)
+  fails with `MissingCommitter` unless an in-memory `user.name`/`user.email` is set first via
+  `config_snapshot_mut()` + `commit()` (`set_reflog_identity` in `actions/remote.rs:454`). The
+  on-disk config is never touched. Identity is only the precondition: a **symbolic** update
+  (`HEAD` -> `refs/heads/<branch>`) carries no object id, so gix skips its reflog by design
+  whatever identity is configured, and the line has to be appended by hand
+  (`../integration-issues/gix-no-reflog-for-symbolic-ref-update.md`).
 
 - **Empty packs are valid.** Pushing a new branch that points at an existing commit
   uploads zero objects; a `PACK` header + trailing hash with 0 entries is accepted by
@@ -102,7 +106,7 @@ Traps that each cost a debug cycle:
   URLs before connecting, loopback hosts excepted for the test server
   (`vet_remote_url`, `actions/remote.rs:317`, which also routes the ssh scheme).
 
-- **Zero-dependency test server.** `HttpGitServer` (`crates/rc-git-testkit/src/http.rs:16`)
+- **Zero-dependency test server.** `HttpGitServer` (`crates/rc-git-testkit/src/http.rs:17`)
   is a `std::net::TcpListener` CGI shim exec-ing `git http-backend` from
   `git --exec-path` (not on `PATH`), handling `Expect: 100-continue` and chunked
   request bodies. The served repo needs `http.receivepack=true` or pushes 403. The
@@ -139,3 +143,7 @@ against it, asserting with `git rev-parse` on both sides.
   — what this transport needed afterwards to be stoppable: `connect::Options` carries no
   HTTP settings, so the connect and low-speed timeouts go on through
   `transport.configure(&http::Options { .. })` once it is built.
+- [A gix ref transaction writes no reflog for a symbolic update: HEAD switches git cannot follow](../integration-issues/gix-no-reflog-for-symbolic-ref-update.md)
+  — the same omission one layer down, in the local write path: the identity this doc sets is
+  necessary but not sufficient, and the missing `checkout:` line is serialized with
+  `gix::refs::log::Line::write_to` because the transaction writes none.
