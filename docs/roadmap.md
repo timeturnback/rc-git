@@ -46,6 +46,12 @@ constraints are clear.
   (⇧⌘.) reveals them app-wide and is remembered across launches. The tree filters rows it
   already read, so the toggle reads nothing; path search and the change list, which leaves
   out untracked hidden files so they never ride along in a commit, follow the same setting.
+- **Branch banner.** Files and Changes show a banner at the top of the sidebar in place of
+  the ref list, so the tree and the change list get its height. In Files it names what the
+  tree browses (the working tree and its branch, a commit, or a ref) and opens the ref list
+  as a sheet on a click or ⌘B; arrows move, Return picks, Escape closes. In Changes it names
+  the checked-out branch and is read-only, since the change list always compares the working
+  tree with `HEAD`. `BranchBanner` (RcGitKit, pure, tested) decides what either one says.
 - **Drag a folder onto the window** to open it.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).

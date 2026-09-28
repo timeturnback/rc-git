@@ -26,10 +26,13 @@ without disturbing the installed app.
 ## Use
 
 Open a repository with ⌘O, from the Open Recent menu, by dragging its folder onto the window,
-by passing a path on the command line, or with `open -a RCGit <path>`. The sidebar lists the
+by passing a path on the command line, or with `open -a RCGit <path>`. The ref list holds the
 working tree, branches, remote branches, and tags; selecting one shows its tree, and the app
-follows along when refs change on disk. Folders load when expanded, files open with syntax
-highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by fuzzy name.
+follows along when refs change on disk. History shows the list in the sidebar. Files puts a
+banner there instead, naming what you browse: click it or press ⌘B to pick from the list in a
+sheet. In Changes the banner names the checked-out branch. Folders load when expanded, files
+open with syntax highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by
+fuzzy name.
 
 The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as you scroll, and
 selecting a commit shows the files it changed with a line diff; double-click to browse the

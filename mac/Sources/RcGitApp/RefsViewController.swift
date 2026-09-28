@@ -1,8 +1,8 @@
 import AppKit
 import RcGitKit
 
-/// The top of the sidebar: the working tree, branches, remote branches, and tags, with a
-/// filter field.
+/// The working tree, branches, remote branches, and tags, with a filter field. History shows
+/// it in the sidebar; the other modes show it in the ref picker sheet.
 @MainActor
 final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSSearchFieldDelegate, NSMenuDelegate
@@ -16,11 +16,19 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         case deleteTag
     }
 
+    /// How a row gets picked. The sidebar picks as the selection moves. The picker only
+    /// highlights as it moves — arrowing down from the filter must not close the sheet — and
+    /// picks on a click or Return.
+    enum Behavior {
+        case sidebar
+        case picker
+    }
+
     var onSelect: ((RefEntry) -> Void)?
     var onSelectWorkingTree: (() -> Void)?
     var onRefAction: ((RefMenuAction, RefEntry) -> Void)?
-    /// Fires after the rows change, so the sidebar can re-fit the list to whole rows.
-    var onRowsChanged: (() -> Void)?
+    /// The picker is done with nothing to change: Escape, or a pick of the row already browsed.
+    var onClose: (() -> Void)?
 
     private final class Section {
         let title: String
@@ -34,6 +42,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// The one pseudo-row above the sections: the files on disk.
     private final class WorkingTreeRow {}
 
+    private let behavior: Behavior
     private let outline = NSOutlineView()
     private let search = NSSearchField()
     private var sections: [Section] = []
@@ -41,11 +50,17 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private var head: Head?
     private var selected: RefEntry?
     private let workingTreeRow = WorkingTreeRow()
-    private static let stackSpacing: CGFloat = 6
-    private static let topInset: CGFloat = 8
     private var showsWorkingTree = false
     private var workingTreeSelected = false
     private var isReloading = false
+
+    init(behavior: Behavior = .sidebar) {
+        self.behavior = behavior
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
 
     override func loadView() {
         search.placeholderString = "Filter refs"
@@ -68,6 +83,12 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         let menu = NSMenu()
         menu.delegate = self
         outline.menu = menu
+        if behavior == .picker {
+            outline.target = self
+            outline.action = #selector(rowClicked(_:))
+            // Typing stays in the filter; the arrow keys reach the list through it.
+            outline.refusesFirstResponder = true
+        }
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -77,29 +98,17 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
         let stack = NSStackView(views: [search, scroll])
         stack.orientation = .vertical
-        stack.spacing = Self.stackSpacing
-        stack.edgeInsets = NSEdgeInsets(top: Self.topInset, left: 8, bottom: 0, right: 8)
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 0, right: 8)
         stack.setHuggingPriority(.defaultLow, for: .vertical)
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.setVisibilityPriority(.mustHold, for: scroll)
         view = stack
     }
 
-    /// The tallest height up to `limit` that ends the list on a row boundary, so the section
-    /// under the refs never starts across half a branch. Group headers and branch rows are
-    /// different heights, so the boundaries come from the rows themselves; the walk stops at
-    /// the first row past the limit, and so reads only the rows that fit on screen.
-    func heightEndingOnARow(atMost limit: CGFloat) -> CGFloat {
-        let chrome = Self.topInset + search.intrinsicContentSize.height + Self.stackSpacing
-        let available = limit - chrome
-        guard available > 0, outline.numberOfRows > 0 else { return limit }
-        var fitted: CGFloat = 0
-        for row in 0..<outline.numberOfRows {
-            let bottom = outline.rect(ofRow: row).maxY
-            guard bottom <= available else { break }
-            fitted = bottom
-        }
-        return fitted > 0 ? chrome + fitted : limit
+    /// Puts the cursor in the filter, for the picker as it opens.
+    func focusFilter() {
+        view.window?.makeFirstResponder(search)
     }
 
     func reload(
@@ -134,7 +143,10 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         isReloading = true
         outline.reloadData()
         outline.expandItem(nil, expandChildren: true)
-        if workingTreeSelected, showsWorkingTree {
+        if behavior == .picker, !filter.isEmpty {
+            // Typing narrows the list; Return takes the best match, not the row browsed now.
+            highlight(row: firstRow(where: { $0 is RefEntry }))
+        } else if workingTreeSelected, showsWorkingTree {
             let row = outline.row(forItem: workingTreeRow)
             if row >= 0 {
                 outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -145,7 +157,55 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             outline.deselectAll(nil)
         }
         isReloading = false
-        onRowsChanged?()
+    }
+
+    private func firstRow(where matches: (Any?) -> Bool) -> Int? {
+        (0..<outline.numberOfRows).first { matches(outline.item(atRow: $0)) }
+    }
+
+    private func highlight(row: Int?) {
+        guard let row else {
+            outline.deselectAll(nil)
+            return
+        }
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outline.scrollRowToVisible(row)
+    }
+
+    private func isPickable(_ item: Any?) -> Bool {
+        item is RefEntry || item is WorkingTreeRow
+    }
+
+    /// Whether `ref` is what the window browses now, so picking it changes nothing.
+    private func isCurrent(_ ref: RefEntry) -> Bool {
+        !workingTreeSelected && ref.fullName == selected?.fullName
+    }
+
+    // MARK: Picker
+
+    /// Moves the picker's highlight to the next pickable row, stepping over group headers.
+    private func moveHighlight(by step: Int) {
+        var row = outline.selectedRow + step
+        while outline.item(atRow: row) != nil, !isPickable(outline.item(atRow: row)) {
+            row += step
+        }
+        guard isPickable(outline.item(atRow: row)) else { return }
+        highlight(row: row)
+    }
+
+    /// Picks a row for the picker. The row already browsed closes it with nothing to reload,
+    /// so the tree keeps its expanded folders.
+    private func pick(row: Int) {
+        let item = outline.item(atRow: row)
+        if item is WorkingTreeRow {
+            if workingTreeSelected { onClose?() } else { onSelectWorkingTree?() }
+        } else if let ref = item as? RefEntry {
+            if isCurrent(ref) { onClose?() } else { onSelect?(ref) }
+        }
+    }
+
+    @objc private func rowClicked(_ sender: Any?) {
+        pick(row: outline.clickedRow)
     }
 
     private func rowOf(_ ref: RefEntry) -> Int? {
@@ -190,6 +250,30 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     func controlTextDidChange(_ notification: Notification) {
         rebuild()
+    }
+
+    /// The picker's keys, typed in the filter: the arrows move the highlight, Return picks
+    /// it — or the first row when nothing is highlighted — and Escape closes.
+    func control(
+        _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
+    ) -> Bool {
+        guard behavior == .picker else { return false }
+        switch selector {
+        case #selector(NSResponder.moveDown(_:)):
+            moveHighlight(by: 1)
+        case #selector(NSResponder.moveUp(_:)):
+            moveHighlight(by: -1)
+        case #selector(NSResponder.insertNewline(_:)):
+            let highlighted = outline.selectedRow >= 0 ? outline.selectedRow : nil
+            if let row = highlighted ?? firstRow(where: isPickable) {
+                pick(row: row)
+            }
+        case #selector(NSResponder.cancelOperation(_:)):
+            onClose?()
+        default:
+            return false
+        }
+        return true
     }
 
     // MARK: NSMenuDelegate
@@ -244,7 +328,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-        item is RefEntry || item is WorkingTreeRow
+        isPickable(item)
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any)
@@ -278,7 +362,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        guard !isReloading else { return }
+        // The picker's selection is only a highlight; a click or Return picks.
+        guard !isReloading, behavior == .sidebar else { return }
         if outline.item(atRow: outline.selectedRow) is WorkingTreeRow {
             guard !workingTreeSelected else { return }
             workingTreeSelected = true
@@ -286,8 +371,9 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             onSelectWorkingTree?()
             return
         }
-        guard let ref = outline.item(atRow: outline.selectedRow) as? RefEntry else { return }
-        guard ref.fullName != selected?.fullName || workingTreeSelected else { return }
+        guard let ref = outline.item(atRow: outline.selectedRow) as? RefEntry,
+            !isCurrent(ref)
+        else { return }
         workingTreeSelected = false
         selected = ref
         onSelect?(ref)

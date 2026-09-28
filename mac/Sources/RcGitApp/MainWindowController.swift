@@ -35,6 +35,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var backToDefaultToolbarItem: NSToolbarItem?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
+    /// The sheet the branch banner opens, while it is open.
+    private var refPicker: RefPickerController?
     private var refWatcher: RefWatcher?
     private var worktreeWatcher: WorktreeWatcher?
     /// Set when the working tree changed while another tab was frontmost; the switch to
@@ -51,8 +53,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The Changes view's list and commit box, hosted in the sidebar.
     private var changesSection: NSView?
 
-    /// The ref list inside the sidebar; the sidebar stacks a mode's section under it.
+    /// The ref list inside the sidebar, which only History shows.
     private var refsController: RefsViewController { sidebarController.refs }
+
+    private var mode: ContentMode {
+        ContentMode(rawValue: contentTabs.selectedTabViewItemIndex) ?? .files
+    }
 
     init() {
         let window = NSWindow(
@@ -78,6 +84,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         buildToolbar()
         buildVersionBadge()
         wireModel()
+        renderBanner()
         model.setShowsHiddenFiles(UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey))
         window.center()
         window.setFrameAutosaveName("rc-git.window")
@@ -100,6 +107,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window?.representedURL = URL(fileURLWithPath: path)
         repositoryPath = path
         hasWorkingTree = repository.workingDirectory != nil
+        renderBanner()
         showWindow(nil)
         refWatcher?.stop()
         let watcher = RefWatcher(gitDir: repository.gitDirectory) { [weak self] in
@@ -160,6 +168,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case .history: sidebarController.show(section: nil)
         case .changes: sidebarController.show(section: changesSection)
         }
+        renderBanner()
         if mode == .history, model.history.isEmpty {
             Task { await model.loadMoreHistory() }
         }
@@ -188,6 +197,46 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showChanges(_ sender: Any?) {
         setMode(.changes)
+    }
+
+    /// Opens the ref picker, which stands in for the ref list outside History. Changes has
+    /// none: its banner names the checked-out branch, which picking a ref would not change.
+    @objc func chooseRef(_ sender: Any?) {
+        guard !isEmpty, mode != .changes, refPicker == nil else { return }
+        let picker = RefPickerController()
+        picker.onClose = { [weak self] in self?.closeRefPicker() }
+        picker.refs.onSelect = { [weak self] ref in
+            self?.closeRefPicker()
+            self?.browse(ref)
+        }
+        picker.refs.onSelectWorkingTree = { [weak self] in
+            self?.closeRefPicker()
+            self?.browseWorkingTree()
+        }
+        // The action asks with a sheet of its own, which waits for this one to end.
+        picker.refs.onRefAction = { [weak self] action, ref in
+            self?.closeRefPicker()
+            self?.performRefAction(action, on: ref)
+        }
+        refPicker = picker
+        sidebarController.presentAsSheet(picker)
+        reloadRefs(in: picker.refs)
+    }
+
+    private func closeRefPicker() {
+        guard let picker = refPicker else { return }
+        refPicker = nil
+        sidebarController.dismiss(picker)
+    }
+
+    private func browse(_ ref: RefEntry) {
+        Task { await model.select(ref) }
+    }
+
+    /// The working tree is files on disk, so it opens in Files whichever mode picked it.
+    private func browseWorkingTree() {
+        setMode(.files)
+        Task { await model.selectWorkingTree() }
     }
 
     @objc func goToFile(_ sender: Any?) {
@@ -252,6 +301,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if menuItem.action == #selector(goToFile(_:)) {
             return !isEmpty
         }
+        if menuItem.action == #selector(chooseRef(_:)) {
+            return !isEmpty && mode != .changes && refPicker == nil
+        }
         let syncSelectors = [
             #selector(fetchRemote(_:)), #selector(pullRemote(_:)),
             #selector(pushRemote(_:)), #selector(syncRepository(_:)),
@@ -301,6 +353,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         syncModel = nil
         goToFileController.close()
         blamePanel.close()
+        closeRefPicker()
         onClose?()
     }
 
@@ -420,22 +473,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func wireModel() {
         model.onRefsChanged = { [weak self] in
             guard let self else { return }
-            refsController.reload(
-                model.refs, selected: model.selectedRef, head: model.head,
-                showsWorkingTree: hasWorkingTree,
-                workingTreeSelected: model.browsingWorkingTree)
-            if model.browsingWorkingTree {
-                window?.subtitle = "Working Tree"
-            } else if let browsed = model.browsedCommit {
-                window?.subtitle = "\(browsed.oid.short) — \(browsed.title)"
-            } else {
-                window?.subtitle = model.selectedRef?.shortName ?? ""
-            }
+            reloadRefs(in: refsController)
+            if let refPicker { reloadRefs(in: refPicker.refs) }
+            renderBanner()
+            window?.subtitle = browsingBanner().summary
         }
         refsController.onSelectWorkingTree = { [weak self] in
-            guard let self else { return }
-            setMode(.files)
-            Task { await self.model.selectWorkingTree() }
+            self?.browseWorkingTree()
+        }
+        sidebarController.banner.onClick = { [weak self] in
+            self?.chooseRef(nil)
         }
         refsController.onRefAction = { [weak self] action, ref in
             self?.performRefAction(action, on: ref)
@@ -541,8 +588,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.presentError(message)
         }
         refsController.onSelect = { [weak self] ref in
-            guard let self else { return }
-            Task { await self.model.select(ref) }
+            self?.browse(ref)
         }
         treeController.childrenProvider = { [weak self] tree, path in
             guard let self else { return [] }
@@ -585,6 +631,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     return
                 }
             }
+        }
+    }
+
+    private func reloadRefs(in refs: RefsViewController) {
+        refs.reload(
+            model.refs, selected: model.selectedRef, head: model.head,
+            showsWorkingTree: hasWorkingTree, workingTreeSelected: model.browsingWorkingTree)
+    }
+
+    private func browsingBanner() -> BranchBanner {
+        BranchBanner.browsing(
+            selectedRef: model.selectedRef, browsedCommit: model.browsedCommit,
+            browsingWorkingTree: model.browsingWorkingTree, head: model.head)
+    }
+
+    /// Names what Files browses and opens the picker on a click. Changes names the branch
+    /// `HEAD` is on and stays read-only: its list always compares the working tree with
+    /// `HEAD`. History shows the ref list itself, so its banner is off screen.
+    private func renderBanner() {
+        let banner = sidebarController.banner
+        if isEmpty {
+            banner.render(BranchBanner(symbol: .nothing, title: "No repository"), clickable: false)
+            banner.toolTip = nil
+        } else if mode == .changes {
+            banner.render(BranchBanner.checkedOut(head: model.head), clickable: false)
+            banner.toolTip = "The checked-out branch. Changes compare the working tree with it."
+        } else {
+            banner.render(browsingBanner(), clickable: true)
+            banner.toolTip = "Choose the branch, tag, or working tree to browse (⌘B)"
         }
     }
 

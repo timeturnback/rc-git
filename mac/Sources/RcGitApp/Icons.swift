@@ -37,4 +37,16 @@ enum Icons {
         }
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)
     }
+
+    /// The branch banner's icon. The working tree matches its row in the ref list.
+    static func symbol(for symbol: BranchBanner.Symbol) -> NSImage? {
+        let name: String
+        switch symbol {
+        case let .ref(kind): return self.symbol(for: kind)
+        case .commit, .detached: name = "smallcircle.filled.circle"
+        case .workingTree: name = "internaldrive"
+        case .nothing: return nil
+        }
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)
+    }
 }

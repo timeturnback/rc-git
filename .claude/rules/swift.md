@@ -15,15 +15,20 @@ paths: mac/**
 - Window size decisions go through `LayoutPolicy.layout(for:)` and its tests. The window
   controller applies the result and remembers whether it collapsed the sidebar itself, so a
   user's manual collapse is respected.
-- The sidebar is the navigation for every mode: `SidebarViewController` keeps the refs on top
-  and swaps the mode's section under them (tree, or the Changes list and commit box). A
-  section is hidden through `detachesHiddenViews`, and AppKit drops an ancestor's constraints
-  for a detached view for good, so a section carries no constraint to anything outside itself
-  — size it with hugging and with a toggled low-priority height on the refs, which never leave.
+- The sidebar is the navigation for every mode: History shows the ref list alone; Files and
+  Changes show `RefBannerView` over the mode's section (tree, or the Changes list and commit
+  box). What the banner says comes from `BranchBanner` (RcGitKit) and nowhere else. Views are
+  hidden through `detachesHiddenViews`, and AppKit drops an ancestor's constraints for a
+  detached view for good, so a section carries no constraint to anything outside itself —
+  size it with hugging.
 - A view the stack has never laid out while attached gets no alignment constraint either, and
-  unhiding does not backfill one: anything added hidden (a section, the truncation note) sizes
-  to its content until `show` re-makes its width constraint by hand
+  unhiding does not backfill one: anything added or hidden before the first layout (a section,
+  the ref list on a window that opens on Files, the truncation note) sizes to its content, so
+  `show` re-makes the width of every view showing by hand
   (`docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md`).
+- Outside History the ref list lives in `RefPickerController`, a sheet over the same
+  `RefsViewController` in its `.picker` behavior: selection only highlights, a click or Return
+  picks. Actions that ask with a sheet close the picker first; AppKit queues the second sheet.
 - The sidebar collapses with `.preferResizingSiblingsWithFixedSplitView`, so the window keeps
   its size; `.preferResizingSplitViewWithFixedSiblings` shrinks the window instead. The
   toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
