@@ -28,6 +28,11 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Per path, the worktree-vs-blob diff.
     var worktreeDiffs: [String: BlobDiff] = [:]
     var stashes: [StashEntry] = []
+    /// Set to make the fake a checkout rather than a bare repository.
+    var workDir: String?
+    /// The full working-tree file walk result.
+    var worktreeFileList = WorktreeFileList(files: [], scanned: 0, truncated: false)
+    var worktreeFilesCalls = 0
     /// Slept inside `worktreeStatus`, for racing loads.
     var statusDelay: TimeInterval = 0
     var listing = RefListing(refs: [])
@@ -37,6 +42,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var treeEntryCalls = 0
     var failNextTree = false
     var failNextRefs = false
+
+    var workingDirectory: String? { lock.withLock { workDir } }
 
     func head() throws -> Head { lock.withLock { headValue } }
 
@@ -237,6 +244,13 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if fail { throw RepositoryError("scan working tree: transient failure") }
         return report
+    }
+
+    func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList {
+        lock.withLock {
+            worktreeFilesCalls += 1
+            return worktreeFileList
+        }
     }
 
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws

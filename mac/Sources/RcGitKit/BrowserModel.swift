@@ -47,6 +47,9 @@ public final class BrowserModel {
     /// Repository-relative path of the file in the file pane, when the opener knew it.
     public private(set) var openedFilePath: String?
     public private(set) var lastError: String?
+    /// Whether the file lists show entries `HiddenFiles` names. The window applies the
+    /// app-wide preference; the model decides what that hides.
+    public private(set) var showsHiddenFiles = false
     public let trees = TreeStore()
 
     /// The commit whose changed files the history detail shows.
@@ -127,6 +130,11 @@ public final class BrowserModel {
     /// Flattened file lists, per root tree. Content-addressed like every other cache.
     private var pathIndices: [Oid: PathIndex] = [:]
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
+    /// Files on disk for path search in the working tree. Disk is not content-addressed, so
+    /// this is dropped every time the search opens rather than cached by id.
+    private var worktreeIndex: PathIndex?
+    private var worktreeIndexBuild: (generation: Int, task: Task<PathIndex, any Error>)?
+    private var worktreeIndexGeneration = 0
     /// Syntax spans, per blob. Content-addressed like every other cache, but bounded: span
     /// arrays for large files run to megabytes, so the least recently used entries are
     /// evicted past `Self.highlightCacheLimit` files or `Self.highlightCacheSpanLimit` spans.
@@ -151,6 +159,7 @@ public final class BrowserModel {
         highlightCacheSpanCount = 0
         indexBuild?.task.cancel()
         indexBuild = nil
+        forgetWorktreePaths()
         browsedCommit = nil
         browsingWorkingTree = false
         resetHistory(anchor: nil)
@@ -170,7 +179,9 @@ public final class BrowserModel {
             self.head = head
             lastError = nil
             onRefsChanged?()
-            if let current = initialRef(listing: listing, head: head) {
+            if repository.workingDirectory != nil, head.target != nil {
+                await selectWorkingTree()
+            } else if let current = initialRef(listing: listing, head: head) {
                 await select(current)
             }
         case let .failure(error):
@@ -277,6 +288,18 @@ public final class BrowserModel {
         await loadRoot(of: target)
     }
 
+    /// Shows or hides the entries `HiddenFiles` names in the tree and path search. Nothing
+    /// reloads: the tree keeps every row it read and asks `isVisible` again.
+    public func setShowsHiddenFiles(_ shows: Bool) {
+        showsHiddenFiles = shows
+    }
+
+    /// Whether a tree row is on screen under the current hidden-files setting. A row's name
+    /// is enough: a hidden folder's children are never shown, because the folder is not.
+    public func isVisible(_ row: BrowseRow) -> Bool {
+        showsHiddenFiles || !HiddenFiles.isHidden(name: row.entry.name)
+    }
+
     /// One working-tree directory as display rows: disk entries with their status, then the
     /// files the compared tree has but disk lost, in one display order. Not cached: disk is
     /// the one thing content addressing cannot cover.
@@ -351,6 +374,7 @@ public final class BrowserModel {
         let generation = rootGeneration
         indexBuild?.task.cancel()
         indexBuild = nil
+        forgetWorktreePaths()
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<Oid, RepositoryError> in
             do { return .success(try repository.treeOf(target)) } catch {
@@ -916,14 +940,60 @@ public final class BrowserModel {
         return index
     }
 
-    /// The best matches for `query` among every file below the current root. Builds the
+    /// The best matches for `query` among every file below the current root — on disk while
+    /// browsing the working tree, so gitignored files such as `.env` are found too. Builds the
     /// index on first use; a query while a build for another root is running cancels it.
+    /// Hidden files match only while `showsHiddenFiles` is on.
     public func searchPaths(_ query: String, limit: Int = 100) async throws -> [PathIndexEntry] {
         guard let root = rootTree else { return [] }
-        let index = try await pathIndex(for: root)
+        let index =
+            browsingWorkingTree
+            ? try await worktreePathIndex(comparedTo: root) : try await pathIndex(for: root)
+        let includeHidden = showsHiddenFiles
         return await Task.detached(priority: .userInitiated) {
-            index.search(query, limit: limit)
+            index.search(query, limit: limit, includeHidden: includeHidden)
         }.value
+    }
+
+    /// Drops the working tree's path index so the next search walks the disk again. Called
+    /// each time path search opens: files appear and vanish without any ref moving.
+    public func forgetWorktreePaths() {
+        worktreeIndexGeneration += 1
+        worktreeIndex = nil
+        worktreeIndexBuild = nil
+    }
+
+    /// Every file on disk, walked once per path-search session. Queries during a walk share
+    /// it; a walk that `forgetWorktreePaths` outdated still answers the query that started it
+    /// but is not kept, and a failed walk is not kept either, so the next query retries.
+    private func worktreePathIndex(comparedTo root: Oid) async throws -> PathIndex {
+        if let worktreeIndex { return worktreeIndex }
+        let generation = worktreeIndexGeneration
+        if let build = worktreeIndexBuild, build.generation == generation {
+            return try await build.task.value
+        }
+        guard let repository else { throw RepositoryError("no repository is open") }
+        let task = Task.detached(priority: .userInitiated) {
+            let list = try repository.worktreeFiles(tree: root, maxScan: PathIndex.maxEntries)
+            return PathIndex(root: root, worktreeFiles: list)
+        }
+        worktreeIndexBuild = (generation, task)
+        defer {
+            if worktreeIndexBuild?.generation == generation { worktreeIndexBuild = nil }
+        }
+        let index = try await task.value
+        if generation == worktreeIndexGeneration { worktreeIndex = index }
+        return index
+    }
+
+    /// Opens a path-search pick: from disk while browsing the working tree, else the blob.
+    public func openSearchResult(_ entry: PathIndexEntry) async {
+        if browsingWorkingTree {
+            await openWorktreeFile(name: entry.name, path: entry.path)
+        } else {
+            let treeEntry = TreeEntry(name: entry.name, oid: entry.oid, kind: entry.kind)
+            await openFile(treeEntry, path: entry.path)
+        }
     }
 
     // MARK: Helpers

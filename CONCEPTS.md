@@ -61,6 +61,18 @@ renderer indents from them rather than recursing, and a whole file is one array.
 produces blocks and runs and nothing else; deciding how either looks is the renderer's, and
 the renderer never re-reads the source.
 
+## Hidden file
+
+An entry the file lists leave out until the user asks to see hidden files: version-control
+metadata and operating-system clutter such as `.git` or `.DS_Store`, named in one fixed list
+and matched by name at any depth, so everything inside a hidden folder is hidden with it.
+
+Hidden is not ignored. A gitignored file like `.env` is one the user may well want to read,
+so it stays visible, marked as ignored; and a hidden file is hidden whether git tracks it or
+not. The one exception is a change the user made: a tracked hidden file that changed stays in
+the change list, since hiding it would hide an edit. An untracked hidden file does not, so it
+can never ride along in a commit the user did not see.
+
 ## Isolated open
 
 How every repository is opened: only the repository's own configuration is read — no

@@ -814,6 +814,42 @@ impl Drop for RcGitStatusList {
     }
 }
 
+/// One file on disk from a full working-tree listing.
+#[repr(C)]
+pub struct RcGitWorktreeFile {
+    /// Repository-relative path with `/` separators; may be non-UTF-8.
+    pub path: *mut c_char,
+    /// What the file is on disk: a blob, an executable blob, or a symlink.
+    pub kind: RcGitEntryKind,
+}
+
+impl Drop for RcGitWorktreeFile {
+    fn drop(&mut self) {
+        // SAFETY: `path` was produced by `export_string` and is released once here.
+        unsafe { release_string(self.path) };
+    }
+}
+
+/// Every file on disk, with the walk's own cost accounting.
+#[repr(C)]
+pub struct RcGitWorktreeFileList {
+    /// `len` files, sorted by path.
+    pub files: *mut RcGitWorktreeFile,
+    /// Number of files.
+    pub len: usize,
+    /// Entries visited before the walk finished or hit its cap.
+    pub scanned: usize,
+    /// True when the walk stopped at the cap before covering the whole tree.
+    pub truncated: bool,
+}
+
+impl Drop for RcGitWorktreeFileList {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.files, self.len) };
+    }
+}
+
 /// One stashed change set, as `git stash list` shows it.
 #[repr(C)]
 pub struct RcGitStashEntry {
@@ -2175,6 +2211,61 @@ pub unsafe extern "C" fn rcgit_worktree_status(
 /// `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_status_list_free(list: *mut RcGitStatusList) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(list) };
+}
+
+/// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
+/// untracked, and ignored files alike. An ignored directory that `tree` does not track is
+/// pruned without reading it. The walk stops after visiting `max_scan` entries and reports
+/// the truncation. Release with `rcgit_worktree_file_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
+/// NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_worktree_files(
+    repo: *const RcGitRepo,
+    tree: *const RcGitOid,
+    max_scan: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitWorktreeFileList {
+    // SAFETY: forwarded from this function's contract.
+    let (repo, tree, error) = unsafe { (repo_arg(repo), oid_arg(tree), Out::new(error)) };
+    let (Some(repo), Some(tree)) = (repo, tree) else {
+        error.report("repo or tree is NULL or malformed");
+        return ptr::null_mut();
+    };
+    match repo.worktree_files(tree, max_scan) {
+        Ok(list) => {
+            let mut files = Vec::with_capacity(list.files.len());
+            for file in list.files {
+                files.push(RcGitWorktreeFile {
+                    path: export_string(Vec::from(file.path)),
+                    kind: file.kind.into(),
+                });
+            }
+            let (files, len) = export_vec(files);
+            export(RcGitWorktreeFileList {
+                files,
+                len,
+                scanned: list.scanned,
+                truncated: list.truncated,
+            })
+        }
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_worktree_files`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_worktree_files` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_worktree_file_list_free(list: *mut RcGitWorktreeFileList) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(list) };
 }
@@ -4189,6 +4280,7 @@ mod tests {
             rcgit_blob_diff_free(ptr::null_mut());
             rcgit_blame_list_free(ptr::null_mut());
             rcgit_worktree_list_free(ptr::null_mut());
+            rcgit_worktree_file_list_free(ptr::null_mut());
             rcgit_highlight_list_free(ptr::null_mut());
             rcgit_guard_decision_free(ptr::null_mut());
         }
@@ -4432,6 +4524,36 @@ mod tests {
         assert!(take_error(&mut error).contains("NULL"));
         let stashes = unsafe { rcgit_stash_list(ptr::null(), &raw mut error) };
         assert!(stashes.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn worktree_files_cross_the_boundary() {
+        let fx = Fixture::standard();
+        fx.write(".gitignore", b".env\n");
+        fx.write(".env", b"SECRET=1\n");
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tree = resolve(repo, "HEAD^{tree}");
+
+        let list = unsafe { rcgit_worktree_files(repo, &raw const tree, 100_000, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        assert!(!list_ref.truncated);
+        assert!(list_ref.scanned >= list_ref.len);
+        let files = unsafe { std::slice::from_raw_parts(list_ref.files, list_ref.len) };
+        let rows: Vec<(String, RcGitEntryKind)> = files
+            .iter()
+            .map(|file| (text(file.path), file.kind))
+            .collect();
+        assert_eq!(rows[0], (".env".to_owned(), RcGitEntryKind::Blob));
+        assert!(rows.contains(&("link".to_owned(), RcGitEntryKind::Symlink)));
+        assert!(rows.contains(&("src/main.rs".to_owned(), RcGitEntryKind::Blob)));
+        unsafe { rcgit_worktree_file_list_free(list) };
+
+        let list = unsafe { rcgit_worktree_files(repo, ptr::null(), 100_000, &raw mut error) };
+        assert!(list.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         unsafe { rcgit_repo_free(repo) };
     }

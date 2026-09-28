@@ -57,6 +57,35 @@ public struct StatusReport: Sendable, Hashable {
     }
 }
 
+/// One file on disk from a full working-tree listing.
+public struct WorktreeFile: Sendable, Hashable {
+    /// Repository-relative path with `/` separators.
+    public let path: String
+    /// What the file is on disk: a blob, an executable blob, or a symlink.
+    public let kind: EntryKind
+
+    public init(path: String, kind: EntryKind) {
+        self.path = path
+        self.kind = kind
+    }
+}
+
+/// Every file on disk, tracked, untracked, and ignored alike, with the walk's cost accounting.
+public struct WorktreeFileList: Sendable, Hashable {
+    /// Files sorted by path.
+    public let files: [WorktreeFile]
+    /// Entries visited before the walk finished or hit its cap.
+    public let scanned: Int
+    /// Whether the walk stopped at the cap before covering the whole tree.
+    public let truncated: Bool
+
+    public init(files: [WorktreeFile], scanned: Int, truncated: Bool) {
+        self.files = files
+        self.scanned = scanned
+        self.truncated = truncated
+    }
+}
+
 /// One stashed change set, as `git stash list` shows it.
 public struct StashEntry: Sendable, Hashable {
     /// Position in the stash, so 0 is `stash@{0}`, the newest.

@@ -37,6 +37,33 @@ import Testing
         #expect(statusCallbacks == 2, "one for loading, one for loaded")
     }
 
+    @Test func untrackedHiddenFilesStayOutOfTheListAndTheSelection() async {
+        repo.statusReport = StatusReport(
+            entries: [
+                StatusEntry(path: ".DS_Store", kind: .blob, status: .untracked, oid: nil, size: 6),
+                StatusEntry(
+                    path: "assets/.DS_Store", kind: .blob, status: .modified, oid: oid(0x03),
+                    size: 6),
+                StatusEntry(path: "b.txt", kind: .blob, status: .untracked, oid: nil, size: 2),
+                StatusEntry(
+                    path: "sub/._b.txt", kind: .blob, status: .untracked, oid: nil, size: 2),
+            ], scanned: 9, truncated: true)
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        #expect(
+            report.entries.map(\.path) == ["assets/.DS_Store", "b.txt"],
+            "a tracked hidden file that changed stays listed")
+        #expect((report.scanned, report.truncated) == (9, true))
+        #expect(model.tickedPaths == ["assets/.DS_Store", "b.txt"])
+
+        model.showsHiddenFiles = true
+        await model.loadStatus()
+        #expect(model.tickedPaths == [".DS_Store", "assets/.DS_Store", "b.txt", "sub/._b.txt"])
+    }
+
     @Test func aFailedScanShowsTheError() async {
         repo.failNextStatus = true
         await model.loadStatus()

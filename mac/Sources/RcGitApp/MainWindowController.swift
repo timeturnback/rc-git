@@ -78,6 +78,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         buildToolbar()
         buildVersionBadge()
         wireModel()
+        model.setShowsHiddenFiles(UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey))
         window.center()
         window.setFrameAutosaveName("rc-git.window")
         // A frame saved on a display that is now detached restores fully off-screen.
@@ -105,14 +106,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             Task { @MainActor [weak self] in
                 await self?.model.refreshRefs()
                 // A commit or stash from the terminal moves refs and the change list both.
-                self?.worktreeDidChange()
+                self?.changeListIsStale()
                 await self?.syncModel?.refreshStatus()
             }
         }
         watcher.start()
         refWatcher = watcher
 
-        let changes = ChangesModel(repository: repository)
+        let changes = ChangesModel(
+            repository: repository, showsHiddenFiles: model.showsHiddenFiles)
         changesModel = changes
         wireChanges(changes)
         let sync = SyncModel(
@@ -128,7 +130,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 workDir: workDir, gitDir: repository.gitDirectory
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.worktreeDidChange()
+                    self?.changeListIsStale()
                 }
             }
             treeWatcher.start()
@@ -137,9 +139,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Task { await model.attach(repository) }
     }
 
-    /// The working tree moved: rescan now when the Changes tab is frontmost, otherwise
-    /// remember to rescan on the next switch to it.
-    private func worktreeDidChange() {
+    /// The change list no longer matches disk or the hidden-files setting: rescan now when
+    /// the Changes tab is frontmost, otherwise remember to rescan on the next switch to it.
+    private func changeListIsStale() {
         guard let changesModel else { return }
         if contentTabs.selectedTabViewItemIndex == ContentMode.changes.rawValue {
             Task { await changesModel.refresh() }
@@ -190,7 +192,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func goToFile(_ sender: Any?) {
         guard !isEmpty else { return }
+        model.forgetWorktreePaths()
         goToFileController.show(over: window)
+    }
+
+    /// Applies the app-wide hidden-files setting: the tree re-filters the rows it already
+    /// read, path search filters its next query, and the change list rescans.
+    func setShowsHiddenFiles(_ shows: Bool) {
+        model.setShowsHiddenFiles(shows)
+        treeController.refilter()
+        changesModel?.showsHiddenFiles = shows
+        changeListIsStale()
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
@@ -514,8 +526,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         goToFileController.onOpen = { [weak self] entry in
             guard let self else { return }
             setMode(.files)
-            let treeEntry = TreeEntry(name: entry.name, oid: entry.oid, kind: entry.kind)
-            Task { await self.model.openFile(treeEntry, path: entry.path) }
+            Task { await self.model.openSearchResult(entry) }
         }
         model.onRootChanged = { [weak self] in
             guard let self else { return }
@@ -547,6 +558,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             } else {
                 Task { await self.model.openFile(row.entry, path: path) }
             }
+        }
+        treeController.isRowVisible = { [weak self] row in
+            self?.model.isVisible(row) ?? true
         }
         treeController.onError = { [weak self] message in
             self?.presentError(message)
@@ -850,7 +864,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             showSyncSpinner(false)
             syncToolbarItem?.toolTip = idleSyncTooltip()
             if summary.pulledFiles > 0 {
-                worktreeDidChange()
+                changeListIsStale()
             }
             if let branch = summary.switchedTo {
                 follow(branch: branch)

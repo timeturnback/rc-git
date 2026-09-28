@@ -469,6 +469,26 @@ typedef struct RcGitStatusList {
   bool truncated;
 } RcGitStatusList;
 
+// One file on disk from a full working-tree listing.
+typedef struct RcGitWorktreeFile {
+  // Repository-relative path with `/` separators; may be non-UTF-8.
+  char *path;
+  // What the file is on disk: a blob, an executable blob, or a symlink.
+  enum RcGitEntryKind kind;
+} RcGitWorktreeFile;
+
+// Every file on disk, with the walk's own cost accounting.
+typedef struct RcGitWorktreeFileList {
+  // `len` files, sorted by path.
+  struct RcGitWorktreeFile *files;
+  // Number of files.
+  size_t len;
+  // Entries visited before the walk finished or hit its cap.
+  size_t scanned;
+  // True when the walk stopped at the cap before covering the whole tree.
+  bool truncated;
+} RcGitWorktreeFileList;
+
 // One stashed change set, as `git stash list` shows it.
 typedef struct RcGitStashEntry {
   // Position in the stash, so 0 is `stash@{0}`, the newest.
@@ -951,6 +971,25 @@ struct RcGitStatusList *rcgit_worktree_status(const struct RcGitRepo *repo,
 // # Safety
 // `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
 void rcgit_status_list_free(struct RcGitStatusList *list);
+
+// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
+// untracked, and ignored files alike. An ignored directory that `tree` does not track is
+// pruned without reading it. The walk stops after visiting `max_scan` entries and reports
+// the truncation. Release with `rcgit_worktree_file_list_free`.
+//
+// # Safety
+// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
+// NULL or valid for writing a `char *`.
+struct RcGitWorktreeFileList *rcgit_worktree_files(const struct RcGitRepo *repo,
+                                                   const struct RcGitOid *tree,
+                                                   size_t max_scan,
+                                                   char **error);
+
+// Releases a value from `rcgit_worktree_files`.
+//
+// # Safety
+// `list` is NULL or came from `rcgit_worktree_files` and is not freed twice.
+void rcgit_worktree_file_list_free(struct RcGitWorktreeFileList *list);
 
 // Line diff between the blob at `old` and the working-tree file at `path`, both as raw
 // bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Release

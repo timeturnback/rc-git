@@ -237,6 +237,27 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.worktreeFile(path: "nope.txt") }
     }
 
+    @Test func listsEveryFileOnDiskIncludingIgnoredOnes() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", ".env\nbuild/\n")
+        try fixture.write(".env", "SECRET=1\n")
+        try fixture.write("build/out.o", "x\n")
+        let repo = try Repository(path: fixture.path)
+        let tree = try repo.resolveTree("HEAD")
+
+        let list = try repo.worktreeFiles(tree: tree)
+        #expect(!list.truncated)
+        let paths = list.files.map(\.path)
+        #expect(paths.first == ".env")
+        #expect(paths.contains("src/main.rs"))
+        #expect(!paths.contains("build/out.o"))
+        #expect(list.files.first { $0.path == "link" }?.kind == .symlink)
+
+        let capped = try repo.worktreeFiles(tree: tree, maxScan: 1)
+        #expect(capped.truncated)
+    }
+
     @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

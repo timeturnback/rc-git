@@ -2,7 +2,7 @@ import AppKit
 import RcGitKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
     private let openTabs = OpenTabs()
@@ -75,6 +75,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Shows or hides the entries `HiddenFiles` names in every tab, and remembers the choice
+    /// for the next launch.
+    @objc func toggleHiddenFiles(_ sender: Any?) {
+        let shows = !UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey)
+        UserDefaults.standard.set(shows, forKey: HiddenFiles.preferenceKey)
+        for controller in controllers {
+            controller.setShowsHiddenFiles(shows)
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleHiddenFiles(_:)) {
+            menuItem.state =
+                UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey) ? .on : .off
+        }
+        if menuItem.action == #selector(clearRecents(_:)) {
+            return !recents.paths.isEmpty
+        }
+        return true
     }
 
     /// Adds an empty tab; also gives the tab bar its "+" button (AppKit shows it when

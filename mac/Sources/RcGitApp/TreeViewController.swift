@@ -12,11 +12,16 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     var onError: ((String) -> Void)?
     /// Fires with `contentWidth` whenever the visible rows change, so the pane can hug them.
     var onContentWidthChanged: ((CGFloat) -> Void)?
+    /// Whether a row is on screen; the model decides, from the hidden-files setting.
+    var isRowVisible: ((BrowseRow) -> Bool)?
 
     final class Node {
         let row: BrowseRow
         let path: String
+        /// Every child read from the repository, hidden ones included.
         var children: [Node]?
+        /// The children on screen, kept beside `children` so showing hidden files needs no read.
+        var visibleChildren: [Node]?
         var isLoading = false
 
         var entry: TreeEntry { row.entry }
@@ -29,8 +34,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     private let outline = NSOutlineView()
     private let placeholder = NSTextField(labelWithString: "Open a repository (⌘O)")
+    private var allRoots: [Node] = []
     private var roots: [Node] = []
     private var generation = 0
+    /// Set while `refilter` puts the selection back, so re-selecting the open file does not
+    /// open it again.
+    private var restoringSelection = false
 
     override func loadView() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
@@ -78,6 +87,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// Replaces the whole tree with the root of another ref or commit.
     func reload(root: Oid?) {
         generation += 1
+        allRoots = []
         roots = []
         outline.reloadData()
         guard let root else {
@@ -117,10 +127,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 let nodes = rows.map { Node(row: $0, parentPath: parent?.path ?? "") }
                 if let parent {
                     parent.children = nodes
+                    parent.visibleChildren = visible(nodes)
                     parent.isLoading = false
                     outline.reloadItem(parent, reloadChildren: true)
                 } else {
-                    roots = nodes
+                    allRoots = nodes
+                    roots = visible(nodes)
                     outline.reloadData()
                 }
                 reportContentWidth()
@@ -130,6 +142,43 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 onError?(String(describing: error))
             }
         }
+    }
+
+    private func visible(_ nodes: [Node]) -> [Node] {
+        guard let isRowVisible else { return nodes }
+        return nodes.filter { isRowVisible($0.row) }
+    }
+
+    /// Re-applies `isRowVisible` to every row already read, after the hidden-files setting
+    /// changed. Reads nothing; expanded folders stay expanded and the selection stays put
+    /// when its row is still on screen.
+    func refilter() {
+        let expanded = (0..<outline.numberOfRows).compactMap { row -> Node? in
+            guard let node = outline.item(atRow: row) as? Node, outline.isItemExpanded(node)
+            else { return nil }
+            return node
+        }
+        let selected = outline.item(atRow: outline.selectedRow) as? Node
+        roots = visible(allRoots)
+        var pending = allRoots
+        while let node = pending.popLast() {
+            guard let children = node.children else { continue }
+            node.visibleChildren = visible(children)
+            pending += children
+        }
+        outline.reloadData()
+        for node in expanded where outline.row(forItem: node) >= 0 {
+            outline.expandItem(node)
+        }
+        let selectedRow = selected.map { outline.row(forItem: $0) } ?? -1
+        restoringSelection = true
+        if selectedRow >= 0 {
+            outline.selectRowIndexes(IndexSet(integer: selectedRow), byExtendingSelection: false)
+        } else {
+            outline.deselectAll(nil)
+        }
+        restoringSelection = false
+        reportContentWidth()
     }
 
     private func buildMenu() -> NSMenu {
@@ -179,12 +228,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         guard let node = item as? Node else { return roots.count }
-        return node.children?.count ?? 0
+        return node.visibleChildren?.count ?? 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         guard let node = item as? Node else { return roots[index] }
-        return node.children?[index] as Any
+        return node.visibleChildren?[index] as Any
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -285,7 +334,8 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        guard let node = outline.item(atRow: outline.selectedRow) as? Node,
+        guard !restoringSelection,
+            let node = outline.item(atRow: outline.selectedRow) as? Node,
             !node.entry.kind.isDirectory
         else { return }
         onOpenFile?(node.row, node.path)

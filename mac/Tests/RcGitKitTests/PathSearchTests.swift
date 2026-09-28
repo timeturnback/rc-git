@@ -74,6 +74,46 @@ import Testing
         #expect(index.search("", limit: 2).count == 2)
     }
 
+    @Test func hiddenFilesAreMarkedAndLeftOutOnRequest() throws {
+        var fixed = trees()
+        let meta = oid(0x70)
+        fixed[root]! += [
+            TreeEntry(name: ".DS_Store", oid: oid(0x71), kind: .blob),
+            TreeEntry(name: ".git", oid: meta, kind: .tree),
+            TreeEntry(name: ".env", oid: oid(0x72), kind: .blob),
+        ]
+        fixed[meta] = [TreeEntry(name: "HEAD", oid: oid(0x73), kind: .blob)]
+        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let hidden = index.entries.filter(\.hidden).map(\.path).sorted()
+        #expect(hidden == [".DS_Store", ".git/HEAD"], "a hidden folder hides what is inside it")
+
+        let all = index.search("", limit: 100).map(\.path)
+        #expect(all.contains(".DS_Store"))
+        let visible = index.search("", limit: 100, includeHidden: false).map(\.path)
+        #expect(
+            visible.sorted() == [
+                ".env", "README.md", "src/main.rs", "src/nested/link", "src/run.sh",
+            ])
+        #expect(index.search("head", includeHidden: false).isEmpty)
+        #expect(index.search("head").map(\.path) == [".git/HEAD"])
+    }
+
+    @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() {
+        let list = WorktreeFileList(
+            files: [
+                WorktreeFile(path: ".env", kind: .blob),
+                WorktreeFile(path: "sub/.DS_Store", kind: .blob),
+                WorktreeFile(path: "run.sh", kind: .executableBlob),
+            ], scanned: 5, truncated: true)
+        let index = PathIndex(root: root, worktreeFiles: list)
+        #expect(index.root == root)
+        #expect(index.truncated)
+        #expect(index.entries.map(\.path) == [".env", "sub/.DS_Store", "run.sh"])
+        #expect(index.entries.map(\.hidden) == [false, true, false])
+        #expect(index.entries.allSatisfy { $0.oid.bytes.isEmpty })
+        #expect(index.entries[2].kind == .executableBlob)
+    }
+
     @Test func buildReadsEachDirectoryOnce() throws {
         var wide: [Oid: [TreeEntry]] = [:]
         wide[root] = (0..<50).map {

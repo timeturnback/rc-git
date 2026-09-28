@@ -86,6 +86,8 @@ fn every_operation_leaves_git_dir_untouched() {
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
     let status = repo.worktree_status(root, 100_000).unwrap();
     assert!(!status.truncated);
+    let files = repo.worktree_files(root, 100_000).unwrap();
+    assert!(!files.truncated);
     repo.diff_worktree_file(None, "README.md", DEFAULT_BLOB_LIMIT, 3)
         .unwrap();
     assert_eq!(repo.stash_list().unwrap().len(), 1);

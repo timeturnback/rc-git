@@ -383,6 +383,31 @@ fn changes_lists_every_changed_path_flat() {
 }
 
 #[test]
+fn files_lists_every_file_on_disk_including_ignored_ones() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write(".gitignore", b".env\ntarget/\n");
+    fx.write(".env", b"SECRET=1\n");
+    fx.write("target/debug/out.bin", b"x\n");
+
+    let out = rc_git(&["files", path]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout(&out),
+        ".env\n.gitignore\nREADME.md\nZeta.txt\nalpha.txt\nbin.dat\ndocs/guide.md\nlink\n\
+         src/lib.rs\nsrc/main.rs\n"
+    );
+
+    let out = rc_git(&["files", path, "--max-scan", "1"]);
+    assert!(out.status.success());
+    assert!(stderr(&out).contains("truncated after scanning 2 entries"));
+
+    let out = rc_git(&["files", path, "--bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("--bogus"));
+}
+
+#[test]
 fn stash_lists_entries_newest_first() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

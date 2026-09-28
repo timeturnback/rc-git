@@ -22,9 +22,14 @@ public enum WorktreeDiffState: Sendable, Hashable {
 ///
 /// Files are ticked by default; unticks and partial hunk ticks survive a refresh by path.
 /// Working-tree data is never cached: disk is the one thing content addressing cannot cover.
+///
+/// Untracked files `HiddenFiles` names are left out of the list while hidden files are hidden,
+/// so they are never part of a commit or stash selection the user cannot see.
 @MainActor
 public final class ChangesModel {
     private let repository: RepositoryReading
+    /// Whether untracked hidden files are listed. Takes effect on the next scan.
+    public var showsHiddenFiles: Bool
 
     public private(set) var statusState: ChangesState = .idle
     public private(set) var diffState: WorktreeDiffState = .idle
@@ -56,8 +61,9 @@ public final class ChangesModel {
     public var onStashChanged: (() -> Void)?
     public var onError: ((String) -> Void)?
 
-    public init(repository: RepositoryReading) {
+    public init(repository: RepositoryReading, showsHiddenFiles: Bool = false) {
         self.repository = repository
+        self.showsHiddenFiles = showsHiddenFiles
     }
 
     /// Reloads the change list, the stash list, and the captured `HEAD`.
@@ -109,6 +115,7 @@ public final class ChangesModel {
         statusState = .loading
         onStatusChanged?()
         let repository = repository
+        let showsHidden = showsHiddenFiles
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<(StatusReport, String?), RepositoryError> in
             do {
@@ -116,7 +123,7 @@ public final class ChangesModel {
                 let tree = try repository.resolveTree("HEAD")
                 let report = try repository.worktreeStatus(
                     tree: tree, maxScan: Repository.defaultStatusScanCap)
-                return .success((report, head))
+                return .success((Self.listed(report, showsHidden: showsHidden), head))
             } catch {
                 return .failure(Self.wrap(error))
             }
@@ -287,6 +294,16 @@ public final class ChangesModel {
             }
         }
         return selections
+    }
+
+    /// The report as the list shows it: without untracked hidden files unless `showsHidden`.
+    /// A tracked hidden file that changed stays, since hiding it would hide a real edit.
+    nonisolated static func listed(_ report: StatusReport, showsHidden: Bool) -> StatusReport {
+        guard !showsHidden else { return report }
+        let entries = report.entries.filter {
+            $0.status != .untracked || !HiddenFiles.isHidden(path: $0.path)
+        }
+        return StatusReport(entries: entries, scanned: report.scanned, truncated: report.truncated)
     }
 
     private nonisolated static func wrap(_ error: any Error) -> RepositoryError {

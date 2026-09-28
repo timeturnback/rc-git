@@ -2,13 +2,17 @@
 /// separators, exactly as the tree stores it.
 public struct PathIndexEntry: Sendable, Hashable {
     public let path: String
+    /// The blob id; empty for a file listed from disk, which has no id until it is hashed.
     public let oid: Oid
     public let kind: EntryKind
+    /// Whether the path is under `HiddenFiles`, so search can leave it out.
+    public let hidden: Bool
 
-    public init(path: String, oid: Oid, kind: EntryKind) {
+    public init(path: String, oid: Oid, kind: EntryKind, hidden: Bool) {
         self.path = path
         self.oid = oid
         self.kind = kind
+        self.hidden = hidden
     }
 
     /// The file name after the last `/`.
@@ -18,7 +22,8 @@ public struct PathIndexEntry: Sendable, Hashable {
 }
 
 /// Every file below one root tree, in depth-first display order. Keyed by the root tree id,
-/// so the index for a ref stays valid until the ref moves to a different tree.
+/// so the index for a ref stays valid until the ref moves to a different tree. The working
+/// tree's index is built from disk instead and keyed by the `HEAD` tree it was walked against.
 public struct PathIndex: Sendable {
     public let root: Oid
     public let entries: [PathIndexEntry]
@@ -41,16 +46,19 @@ public struct PathIndex: Sendable {
         root: Oid, children: (Oid) throws -> [TreeEntry]
     ) throws -> PathIndex {
         var entries: [PathIndexEntry] = []
-        var pending: [(tree: Oid, prefix: String)] = [(root, "")]
-        while let (tree, prefix) = pending.popLast() {
+        var pending: [(tree: Oid, prefix: String, hidden: Bool)] = [(root, "", false)]
+        while let (tree, prefix, parentHidden) = pending.popLast() {
             try Task.checkCancellation()
             for entry in try children(tree) {
                 let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
+                let hidden = parentHidden || HiddenFiles.isHidden(name: entry.name)
                 switch entry.kind {
                 case .tree:
-                    pending.append((entry.oid, path))
+                    pending.append((entry.oid, path, hidden))
                 case .blob, .executableBlob, .symlink:
-                    entries.append(PathIndexEntry(path: path, oid: entry.oid, kind: entry.kind))
+                    entries.append(
+                        PathIndexEntry(path: path, oid: entry.oid, kind: entry.kind, hidden: hidden)
+                    )
                     if entries.count >= maxEntries {
                         return PathIndex(root: root, entries: entries, truncated: true)
                     }
@@ -62,13 +70,32 @@ public struct PathIndex: Sendable {
         return PathIndex(root: root, entries: entries, truncated: false)
     }
 
+    /// Every file a working-tree walk found, compared against the tree `root`. Disk files
+    /// carry no blob id, so their entries hold an empty one.
+    public init(root: Oid, worktreeFiles list: WorktreeFileList) {
+        let noOid = Oid(bytes: [])
+        self.init(
+            root: root,
+            entries: list.files.map {
+                PathIndexEntry(
+                    path: $0.path, oid: noOid, kind: $0.kind,
+                    hidden: HiddenFiles.isHidden(path: $0.path))
+            },
+            truncated: list.truncated)
+    }
+
     /// The best `limit` matches for `query`, highest score first, ties by shorter then
     /// lexicographic path so the order is stable. An empty query returns the first entries.
-    public func search(_ query: String, limit: Int = 100) -> [PathIndexEntry] {
+    /// Entries under `HiddenFiles` are left out unless `includeHidden`.
+    public func search(_ query: String, limit: Int = 100, includeHidden: Bool = true)
+        -> [PathIndexEntry]
+    {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty { return Array(entries.prefix(limit)) }
+        if trimmed.isEmpty {
+            return Array(entries.lazy.filter { includeHidden || !$0.hidden }.prefix(limit))
+        }
         var scored: [(score: Int, entry: PathIndexEntry)] = []
-        for entry in entries {
+        for entry in entries where includeHidden || !entry.hidden {
             if let score = FuzzyMatch.score(entry.path, query: trimmed) {
                 scored.append((score, entry))
             }

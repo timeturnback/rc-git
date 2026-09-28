@@ -34,6 +34,77 @@ import Testing
         repo.worktreeFiles["new.txt"] = textBlob("new\n")
     }
 
+    @Test func aCheckoutOpensOnTheWorkingTree() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        #expect(model.browsingWorkingTree)
+        #expect(model.selectedRef == nil)
+        #expect(model.rootTree == mainTree)
+    }
+
+    @Test func anUnbornHeadOpensOnABranchInstead() async {
+        repo.workDir = "/checkout"
+        repo.headValue = Head(refName: "refs/heads/main", target: nil)
+        await model.attach(repo)
+        #expect(!model.browsingWorkingTree)
+        #expect(model.selectedRef?.shortName == "main")
+    }
+
+    @Test func treeRowsHideClutterUntilAsked() {
+        let store = BrowseRow(entry: TreeEntry(name: ".DS_Store", oid: oid(1), kind: .blob))
+        let env = BrowseRow(
+            entry: TreeEntry(name: ".env", oid: oid(2), kind: .blob), status: .ignored)
+        #expect(!model.isVisible(store))
+        #expect(model.isVisible(env), "a gitignored dotfile stays visible")
+        model.setShowsHiddenFiles(true)
+        #expect(model.isVisible(store))
+    }
+
+    @Test func pathSearchInTheWorkingTreeWalksDiskOncePerSession() async throws {
+        repo.workDir = "/checkout"
+        repo.worktreeFileList = WorktreeFileList(
+            files: [
+                WorktreeFile(path: ".DS_Store", kind: .blob),
+                WorktreeFile(path: ".env", kind: .blob),
+                WorktreeFile(path: "README.md", kind: .blob),
+            ], scanned: 3, truncated: false)
+        await model.attach(repo)
+
+        let visible = try await model.searchPaths("")
+        #expect(visible.map(\.path) == [".env", "README.md"], "gitignored .env is found")
+        model.setShowsHiddenFiles(true)
+        let all = try await model.searchPaths("")
+        #expect(all.map(\.path) == [".DS_Store", ".env", "README.md"])
+        #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 1, "keystrokes reuse the walk")
+
+        model.forgetWorktreePaths()
+        _ = try await model.searchPaths("env")
+        #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 2)
+    }
+
+    @Test func pathSearchOnABranchSearchesItsTree() async throws {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        await model.select(model.refs.refs[0])
+        let matches = try await model.searchPaths("")
+        #expect(matches.map(\.path) == ["README.md"])
+        #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 0)
+    }
+
+    @Test func aSearchPickOpensFromDiskInTheWorkingTree() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        let pick = PathIndexEntry(path: "new.txt", oid: Oid(bytes: []), kind: .blob, hidden: false)
+        await model.openSearchResult(pick)
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry.name == "new.txt")
+        #expect(document.text == "new\n")
+        #expect(model.openedFilePath == "new.txt")
+    }
+
     @Test func selectingTheWorkingTreeRootsAtHead() async {
         await model.attach(repo)
         await model.selectWorkingTree()

@@ -19,6 +19,7 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | blob diff | two blob reads plus the diff | sizes checked against the limit before decoding |
 | working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match and the index cannot vouch for the file |
 | working-tree status | under 150 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, one `lstat` per tracked file through the index's stat cache and a hash only for what it cannot settle; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
+| working-tree file list | under 60 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` and one `lstat` per entry, one tree object per tracked directory, ignored directories the tree does not track pruned unopened, nothing hashed; runs once per opening of path search in the working tree |
 | blame | grows with commits touching the file | on demand for the open file, never in bulk |
 | markdown preview | about 20 ms per MiB, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; capped at 8 MiB, above which the file opens in source mode |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
@@ -53,7 +54,9 @@ refs. Everything else is on demand.
   index. A repository missing `objects/info/commit-graph` walks history slower; suggest
   `git commit-graph write --reachable` to the user rather than writing it. The one sanctioned
   exception is path search: it flattens the selected root once, in the background, keyed by
-  the root tree id, cancellable, and capped at 200 000 entries.
+  the root tree id, cancellable, and capped at 200 000 entries. In the working tree it walks
+  disk instead, once per opening of the panel, capped the same way, with ignored folders the
+  tree does not track pruned unopened.
 - **Decorate after painting.** Syntax highlighting and blame load after the content is on
   screen and never block it; a stale result is dropped by generation, like every other load.
 
@@ -66,6 +69,7 @@ target/release/rc-git --time refs <repo>
 target/release/rc-git --time cat  <repo> HEAD path/to/file
 target/release/rc-git --time log  <repo> -n 100
 target/release/rc-git --time changes <repo>         # the full working-tree status walk
+target/release/rc-git --time files <repo>           # the working-tree walk path search uses
 ```
 
 `--time` reports the open and the command separately on stderr, so the two can be tracked

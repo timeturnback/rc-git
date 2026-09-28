@@ -409,6 +409,28 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             entries: entries, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
     }
 
+    /// Every file on disk, sorted by path: tracked, untracked, and ignored alike. An ignored
+    /// folder `tree` does not track is skipped unread. The walk stops at `maxScan` visited
+    /// entries and reports the truncation.
+    public func worktreeFiles(tree: Oid, maxScan: Int = PathIndex.maxEntries) throws
+        -> WorktreeFileList
+    {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let list = tree.withC { rcgit_worktree_files(handle, $0, maxScan, &error) }
+        guard let list else {
+            throw Repository.take(error, fallback: "cannot list the working tree's files")
+        }
+        defer { rcgit_worktree_file_list_free(list) }
+        var files: [WorktreeFile] = []
+        files.reserveCapacity(list.pointee.len)
+        for index in 0..<list.pointee.len {
+            let c = list.pointee.files[index]
+            files.append(WorktreeFile(path: String(cString: c.path), kind: EntryKind(c: c.kind)))
+        }
+        return WorktreeFileList(
+            files: files, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
+    }
+
     /// Every stash entry, newest first; empty when the repository has no stash.
     public func stashList() throws -> [StashEntry] {
         var error: UnsafeMutablePointer<CChar>? = nil

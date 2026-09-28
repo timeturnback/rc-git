@@ -30,10 +30,12 @@ on demand.
 
 ## Selecting a ref
 
-`BrowserModel.attach` loads `refs()` and `head()` off the main actor, picks the branch `HEAD`
-is on, and calls `select`. `select` resolves the ref's target to a tree id with `treeOf` and
-publishes `rootTree`. That is the whole cost of switching branches: one object read. Cached
-subtrees stay valid because they are keyed by tree id, not by branch.
+`BrowserModel.attach` loads `refs()` and `head()` off the main actor. A repository with a
+working directory and a born `HEAD` opens on the working tree through `selectWorkingTree`;
+otherwise `attach` picks the branch `HEAD` is on and calls `select`. `select` resolves the
+ref's target to a tree id with `treeOf` and publishes `rootTree`. That is the whole cost of
+switching branches: one object read. Cached subtrees stay valid because they are keyed by
+tree id, not by branch.
 
 ## Expanding a folder
 

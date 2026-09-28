@@ -1,6 +1,8 @@
 /// The read operations the view models depend on. `Repository` is the real implementation;
 /// tests inject a fake. Every method may be called from any thread.
 public protocol RepositoryReading: Sendable {
+    /// The working directory, or `nil` for a bare repository.
+    var workingDirectory: String? { get }
     func head() throws -> Head
     func refs() throws -> RefListing
     func resolve(_ spec: String) throws -> Oid
@@ -21,6 +23,7 @@ public protocol RepositoryReading: Sendable {
     func worktreeEntries(tree: Oid, dir: String) throws -> WorktreeListing
     func worktreeFile(path: String, limit: UInt64) throws -> BlobContent
     func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport
+    func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff
     func stashList() throws -> [StashEntry]

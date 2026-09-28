@@ -208,6 +208,7 @@ import Testing
 }
 
 private final class FailingRepository: RepositoryReading, @unchecked Sendable {
+    var workingDirectory: String? { nil }
     func head() throws -> Head { throw RepositoryError("head unavailable") }
     func refs() throws -> RefListing { throw RepositoryError("refs unavailable") }
     func resolveTree(_ spec: String) throws -> Oid { throw RepositoryError("no") }
@@ -238,6 +239,9 @@ private final class FailingRepository: RepositoryReading, @unchecked Sendable {
         throw RepositoryError("no")
     }
     func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport {
+        throw RepositoryError("no")
+    }
+    func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList {
         throw RepositoryError("no")
     }
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws

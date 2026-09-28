@@ -32,6 +32,7 @@ usage: rc-git [--time] <command> <repo> [args]
   blame   <repo> <rev> <path>             which commit introduced each line
   status  <repo> [dir]                    one working-tree directory against HEAD
   changes <repo> [--max-scan N]           every changed working-tree path against HEAD
+  files   <repo> [--max-scan N]           every file on disk, ignored folders skipped
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
@@ -78,6 +79,7 @@ enum Verb {
     Blame,
     Status,
     Changes,
+    Files,
     Stash,
     Resolve,
     DefaultBranch,
@@ -109,6 +111,7 @@ impl Verb {
             "blame" => Some(Self::Blame),
             "status" => Some(Self::Status),
             "changes" => Some(Self::Changes),
+            "files" => Some(Self::Files),
             "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
             "default-branch" => Some(Self::DefaultBranch),
@@ -141,6 +144,7 @@ impl Verb {
             Self::Blame => "blame",
             Self::Status => "status",
             Self::Changes => "changes",
+            Self::Files => "files",
             Self::Stash => "stash",
             Self::Resolve => "resolve",
             Self::DefaultBranch => "default-branch",
@@ -236,6 +240,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
         Verb::Status => status(&repo, &invocation.args, &mut out)?,
         Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
+        Verb::Files => files(&repo, &invocation.args, &mut out)?,
         Verb::Stash => stash(&repo, &mut out)?,
         Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
         Verb::DefaultBranch => default_branch(&repo, &mut out)?,
@@ -661,6 +666,31 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
             io::stderr().lock(),
             "truncated after scanning {} entries",
             report.scanned
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let mut max_scan = 200_000;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--max-scan" {
+            max_scan = number(iter.next(), "--max-scan")?;
+        } else {
+            bail!("files does not take '{arg}'\n\n{USAGE}");
+        }
+    }
+    let tree = repo.resolve_tree("HEAD")?;
+    let list = repo.worktree_files(tree, max_scan)?;
+    for file in &list.files {
+        writeln!(out, "{}", String::from_utf8_lossy(&file.path))?;
+    }
+    if list.truncated {
+        writeln!(
+            io::stderr().lock(),
+            "truncated after scanning {} entries",
+            list.scanned
         )?;
     }
     Ok(ExitCode::SUCCESS)

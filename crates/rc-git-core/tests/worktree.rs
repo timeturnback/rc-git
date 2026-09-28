@@ -428,3 +428,112 @@ fn worktree_status_on_a_bare_repository_is_an_error() {
     let err = repo.worktree_status(tree, 10_000).unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
 }
+
+fn file_paths(list: &rc_git_core::WorktreeFileList) -> Vec<String> {
+    list.files
+        .iter()
+        .map(|file| file.path.to_string())
+        .collect()
+}
+
+#[test]
+fn worktree_files_lists_tracked_untracked_and_ignored_files_sorted() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b".env\njunk/\n");
+    fx.write(".env", b"SECRET=1\n");
+    fx.write(".DS_Store", b"\0");
+    fx.write("notes/todo.txt", b"x\n");
+    for i in 0..50 {
+        fx.write(&format!("junk/file{i}.tmp"), b"x\n");
+    }
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let list = repo.worktree_files(tree, 10_000).unwrap();
+    assert!(!list.truncated);
+    assert_eq!(
+        file_paths(&list),
+        [
+            ".DS_Store",
+            ".env",
+            ".gitignore",
+            "README.md",
+            "Zeta.txt",
+            "alpha.txt",
+            "bin.dat",
+            "docs/guide.md",
+            "link",
+            "notes/todo.txt",
+            "src/lib.rs",
+            "src/main.rs",
+        ]
+    );
+    let link = list.files.iter().find(|file| file.path == "link").unwrap();
+    assert_eq!(link.kind, EntryKind::Symlink);
+    // The ignored directory costs one visited entry, never its 50 files.
+    assert!(list.scanned < 25, "scanned {}", list.scanned);
+}
+
+#[test]
+fn worktree_files_enters_an_ignored_directory_that_holds_tracked_files() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"vendor/\n");
+    fx.write("vendor/kept.txt", b"kept\n");
+    fx.git(&["add", "-f", ".gitignore", "vendor/kept.txt"]);
+    fx.commit("Vendor one file", "2024-01-04T00:00:00+0000");
+    fx.write("vendor/extra.txt", b"extra\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let list = repo.worktree_files(tree, 10_000).unwrap();
+    let vendored: Vec<String> = file_paths(&list)
+        .into_iter()
+        .filter(|path| path.starts_with("vendor/"))
+        .collect();
+    assert_eq!(vendored, ["vendor/extra.txt", "vendor/kept.txt"]);
+}
+
+#[test]
+fn worktree_files_truncates_at_the_scan_cap() {
+    let fx = Fixture::standard();
+    for i in 0..20 {
+        fx.write(&format!("many/file{i}.txt"), b"x\n");
+    }
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let list = repo.worktree_files(tree, 5).unwrap();
+    assert!(list.truncated);
+    assert_eq!(list.scanned, 6);
+
+    let full = repo.worktree_files(tree, 100_000).unwrap();
+    assert!(!full.truncated);
+    assert_eq!(full.files.len(), 28);
+}
+
+#[test]
+fn worktree_files_on_a_bare_repository_is_an_error() {
+    let fx = Fixture::standard();
+    let bare = Fixture::empty_dir();
+    fx.git(&[
+        "clone",
+        "--bare",
+        "-q",
+        fx.path().to_str().unwrap(),
+        bare.path().join("bare.git").to_str().unwrap(),
+    ]);
+    let repo = Repository::open(bare.path().join("bare.git")).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let err = repo.worktree_files(tree, 10_000).unwrap_err();
+    assert!(err.to_string().contains("bare"), "{err}");
+}
+
+#[test]
+fn worktree_files_reports_an_unreadable_directory() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    std::fs::remove_dir_all(fx.path()).unwrap();
+    let err = repo.worktree_files(tree, 10_000).unwrap_err();
+    assert!(err.to_string().contains("list working tree files"), "{err}");
+}

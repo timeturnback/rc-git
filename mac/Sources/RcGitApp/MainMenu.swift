@@ -112,6 +112,12 @@ enum MainMenu {
         menu.addItem(item("History", #selector(MainWindowController.showHistory(_:)), "2"))
         menu.addItem(item("Changes", #selector(MainWindowController.showChanges(_:)), "3"))
         menu.addItem(.separator())
+        // Finder's shortcut for the same toggle.
+        menu.addItem(
+            item(
+                "Show Hidden Files", #selector(AppDelegate.toggleHiddenFiles(_:)), ".",
+                [.command, .shift]))
+        menu.addItem(.separator())
         menu.addItem(
             item(
                 "Show Blame", #selector(MainWindowController.showBlame(_:)), "b",

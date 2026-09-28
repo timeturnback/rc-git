@@ -33,10 +33,19 @@ constraints are clear.
 - **Path search.** ⇧⌘O flattens the selected root once in the background — the one
   feature that walks a whole tree — keyed by root tree id, cancellable, capped at 200 000
   entries, and offers fuzzy jump-to-file. Every directory read lands in the shared tree
-  cache.
+  cache. In the working tree it walks disk instead (`worktree_files`), once per opening of
+  the panel, so gitignored files such as `.env` are found; ignored folders the tree does not
+  track are skipped unread.
 - **Working tree as a pseudo-ref.** The sidebar's "Working Tree" row shows files on disk
   with a status overlay against `HEAD`: modified, untracked, ignored, deleted. Reads only;
-  one directory and one tree object per expand, content hashed only when sizes match.
+  one directory and one tree object per expand, content hashed only when sizes match. A
+  repository with a checkout opens on it; a bare one or an unborn `HEAD` opens on a branch.
+- **Hidden files.** `HiddenFiles` (RcGitKit) names what the file lists hide by default: VS
+  Code's `files.exclude` defaults plus macOS metadata (`.git`, `.DS_Store`, `._*`, …).
+  Gitignored entries are not hidden; they stay visible and dimmed. View ▸ Show Hidden Files
+  (⇧⌘.) reveals them app-wide and is remembered across launches. The tree filters rows it
+  already read, so the toggle reads nothing; path search and the change list, which leaves
+  out untracked hidden files so they never ride along in a commit, follow the same setting.
 - **Drag a folder onto the window** to open it.
 - **Blame and diff views.** Both read-only. Tree and blob diffs use `gix-diff`
   (`diff_trees`, `diff_blobs`); blame uses `gix-blame` on demand for the open file (⌥⌘B).
