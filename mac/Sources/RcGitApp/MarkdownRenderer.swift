@@ -47,7 +47,7 @@ enum MarkdownRenderer {
 
         /// The bar drawn down the left of a quoted block, one per nesting level.
         static func quoteBlock() -> NSTextBlock {
-            let block = NSTextBlock()
+            let block = fullWidthBlock()
             block.setWidth(3, type: .absoluteValueType, for: .border, edge: .minX)
             block.setBorderColor(.tertiaryLabelColor, for: .minX)
             block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
@@ -57,9 +57,19 @@ enum MarkdownRenderer {
         }
 
         static func panel(background: NSColor) -> NSTextBlock {
-            let block = NSTextBlock()
+            let block = fullWidthBlock()
             block.backgroundColor = background
             block.setWidth(8, type: .absoluteValueType, for: .padding)
+            return block
+        }
+
+        /// A block that fills the pane. Without an explicit content width TextKit lays a
+        /// standalone `NSTextBlock` out at its minimum — one glyph per line — so every block
+        /// the preview uses outside a table is built here
+        /// (`docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md`).
+        static func fullWidthBlock() -> NSTextBlock {
+            let block = NSTextBlock()
+            block.setContentWidth(100, type: .percentageValueType)
             return block
         }
 
@@ -160,7 +170,7 @@ private struct MarkdownBuilder {
     /// A rule is an empty line whose block carries a top border, so it spans the pane whatever
     /// the window width is.
     private mutating func appendRule(_ block: MarkdownBlock) {
-        let rule = NSTextBlock()
+        let rule = MarkdownRenderer.Theme.fullWidthBlock()
         rule.setWidth(1, type: .absoluteValueType, for: .border, edge: .minY)
         rule.setBorderColor(.separatorColor, for: .minY)
         rule.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minY)

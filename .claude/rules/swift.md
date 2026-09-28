@@ -49,6 +49,13 @@ paths: mac/**
 - Tables are `NSTextTable` cells and blockquotes and code panels are `NSTextBlock`s carried in
   the paragraph style. Layout-affecting attributes are fine on that build path and never on
   the source-mode temporary-attribute path.
+- An `NSTextBlock` that is not an `NSTextTableBlock` has no intrinsic width and lays out one
+  glyph per line without one. Build every standalone block through `Theme.fullWidthBlock()`,
+  which sets `setContentWidth(100, type: .percentageValueType)`
+  (`docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md`).
+- Check preview layout by measuring, not by launching: `NSTextStorage` + `NSLayoutManager` +
+  a fixed-width `NSTextContainer`, then walk `lineFragmentUsedRect`. A fragment far narrower
+  than the container is a collapsed block.
 - Every markdown link resolves through `MarkdownLinkTarget.resolve` against the pane's
   `repositoryPath`. Do not read a destination anywhere else: telling a repository path, a URL
   and a `#fragment` apart in one place is what keeps clicking, the context menu and
