@@ -89,11 +89,6 @@ enum Shell {
             Darwin.kill(pid, SIGKILL)
         }
     }
-
-    /// Single-quotes a path for the shell, so a directory with a space still runs.
-    static func quote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 }
 
 /// A one-shot flag, set from whichever thread gets there first.
@@ -276,6 +271,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
 
     func sync() async -> String? {
         let model = await MainActor.run { makeSyncModel() }
+        let reconcile = ReconcileCommand.rebase(workDir: sourceRoot)
         await model.refreshStatus()
         await model.pull()
         return await MainActor.run {
@@ -283,7 +279,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
             case .done:
                 return nil
             case let .diverged(message):
-                return "\(message); reconcile the checkout in git, then update again"
+                return "\(message); run `\(reconcile)` in a terminal, then update again"
             case let .failed(_, message):
                 return message
             default:
@@ -302,7 +298,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
 
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
         let script = buildScript
-        let command = "exec \(Shell.quote("\(sourceRoot)/\(script.path)"))\(script.arguments)"
+        let command = "exec \(ShellWord.quote("\(sourceRoot)/\(script.path)"))\(script.arguments)"
         let outcome = await Shell.run(command, in: sourceRoot, onOutput: onOutput)
         guard outcome.status != 0 else { return nil }
         let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"

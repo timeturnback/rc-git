@@ -79,6 +79,15 @@ public enum SyncTitles {
     }
 }
 
+/// The shell command that reconciles a diverged branch. rc-git only fast-forwards, so the
+/// rebase runs in git; the `cd` lets the command paste into any shell and leaves that shell
+/// in the checkout when the rebase stops on a conflict.
+public enum ReconcileCommand {
+    public static func rebase(workDir: String) -> String {
+        "cd \(ShellWord.quote(workDir)) && git pull --rebase"
+    }
+}
+
 /// One step of the sync workflow.
 public enum SyncStep: Sendable, Hashable {
     case checkout

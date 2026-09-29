@@ -49,7 +49,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned"
     private var repositoryName = ""
     private(set) var repositoryPath: String?
-    private var hasWorkingTree = false
+    /// The checkout's root, `nil` for a bare repository.
+    private var workingDirectory: String?
+    private var hasWorkingTree: Bool { workingDirectory != nil }
     /// The Changes view's list and commit box, hosted in the sidebar.
     private var changesSection: NSView?
 
@@ -106,7 +108,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window?.title = repositoryName
         window?.representedURL = URL(fileURLWithPath: path)
         repositoryPath = path
-        hasWorkingTree = repository.workingDirectory != nil
+        workingDirectory = repository.workingDirectory
         renderBanner()
         showWindow(nil)
         refWatcher?.stop()
@@ -1016,14 +1018,67 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return "Sync — " + parts.joined(separator: ", ")
     }
 
+    /// rc-git only fast-forwards, so a diverged branch is reconciled in git. The sheet names
+    /// the command and hands it over, on the clipboard or with Terminal opened in the
+    /// checkout. A bare repository has no checkout to pull into, so it gets the message alone.
     private func presentDiverged(_ message: String) {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = "Branch and upstream have diverged"
-        alert.informativeText =
-            message + "\n\nReconcile in git (merge or rebase), then sync again."
         alert.alertStyle = .informational
-        alert.beginSheetModal(for: window)
+        guard let workDir = workingDirectory else {
+            alert.informativeText =
+                message + "\n\nReconcile in git (merge or rebase), then sync again."
+            alert.beginSheetModal(for: window)
+            return
+        }
+        let command = ReconcileCommand.rebase(workDir: workDir)
+        alert.informativeText =
+            message + "\n\nrc-git only fast-forwards. Rebase in a terminal, then sync again:\n\n"
+            + command
+        alert.addButton(withTitle: "Copy Command")
+        alert.addButton(withTitle: "Open in Terminal").toolTip =
+            "Opens Terminal in the checkout with the command on the clipboard"
+        alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                Self.copyToPasteboard(command)
+            case .alertSecondButtonReturn:
+                Self.copyToPasteboard(command)
+                self?.openTerminal(at: workDir)
+            default:
+                break
+            }
+        }
+    }
+
+    private static func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Opens a Terminal window whose shell starts in `workDir`.
+    private func openTerminal(at workDir: String) {
+        guard
+            let terminal = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.Terminal")
+        else {
+            presentError("Terminal is not installed.", title: "rc-git could not open Terminal")
+            return
+        }
+        let folder = URL(fileURLWithPath: workDir, isDirectory: true)
+        Task { [weak self] in
+            do {
+                _ = try await NSWorkspace.shared.open(
+                    [folder], withApplicationAt: terminal,
+                    configuration: NSWorkspace.OpenConfiguration())
+            } catch {
+                self?.presentError(
+                    "Cannot open \(workDir) in Terminal: \(error.localizedDescription)",
+                    title: "rc-git could not open Terminal")
+            }
+        }
     }
 
     private func promptForCredentials(

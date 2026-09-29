@@ -107,7 +107,8 @@ constraints are clear.
   none) — handshake via `gix-protocol`, a client-side fast-forward check, a
   self-contained pack from `gix-pack`, `report-status` parsed by hand. Pull is
   fast-forward only and refuses dirty overlap; divergence reports ahead/behind and
-  points at git. All four go through `rc-git-guard` (`actions/remote/`, ssh in
+  hands over `git pull --rebase` for the checkout (`ReconcileCommand`), copied or with
+  Terminal opened there. All four go through `rc-git-guard` (`actions/remote/`, ssh in
   `actions/remote/ssh/`), are exposed over the FFI with typed
   auth/diverged/host-key status codes, and reach the app as a Repository menu plus a
   toolbar Sync button driven by `SyncModel` (RcGitKit). HTTPS credentials are per-host

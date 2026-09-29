@@ -697,3 +697,17 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(SyncTitles.backToDefault("master") == "Back to master")
     }
 }
+
+@Suite struct ReconcileCommandTests {
+    @Test func aPlainPathStaysBare() {
+        #expect(
+            ReconcileCommand.rebase(workDir: "/Users/me/WorkSpace/rc-git")
+                == "cd /Users/me/WorkSpace/rc-git && git pull --rebase")
+    }
+
+    @Test func aPathWithASpaceIsQuoted() {
+        #expect(
+            ReconcileCommand.rebase(workDir: "/Users/me/My Repos/app")
+                == "cd '/Users/me/My Repos/app' && git pull --rebase")
+    }
+}
