@@ -10,7 +10,6 @@ final class SidebarViewController: NSViewController {
 
     private let stack = NSStackView()
     private let bannerRow = NSView()
-    private let separator = NSBox()
     private var sections: [NSView] = []
     /// The widths `show(section:)` gave the views showing.
     private var widths: [NSLayoutConstraint] = []
@@ -42,7 +41,6 @@ final class SidebarViewController: NSViewController {
         let besideASection = section != nil
         refs.view.isHidden = besideASection
         bannerRow.isHidden = !besideASection
-        separator.isHidden = !besideASection
         // Any of these views can be hidden before the stack first lays out — the window opens
         // on Files, which hides the ref list — and a view the stack never laid out while
         // attached never receives the `.width` alignment constraint; unhiding does not make
@@ -55,14 +53,18 @@ final class SidebarViewController: NSViewController {
     }
 
     override func loadView() {
-        separator.boxType = .separator
+        // The banner keeps the source list's margin, so its edges line up with the rows'
+        // selection under it. No separator: the list below starts with its own inset.
         banner.translatesAutoresizingMaskIntoConstraints = false
         bannerRow.addSubview(banner)
         NSLayoutConstraint.activate([
-            banner.topAnchor.constraint(equalTo: bannerRow.topAnchor, constant: 8),
-            banner.bottomAnchor.constraint(equalTo: bannerRow.bottomAnchor, constant: -8),
-            banner.leadingAnchor.constraint(equalTo: bannerRow.leadingAnchor, constant: 8),
-            banner.trailingAnchor.constraint(equalTo: bannerRow.trailingAnchor, constant: -8),
+            banner.topAnchor.constraint(equalTo: bannerRow.topAnchor, constant: Style.barPadding),
+            banner.bottomAnchor.constraint(
+                equalTo: bannerRow.bottomAnchor, constant: -Style.barPadding / 2),
+            banner.leadingAnchor.constraint(
+                equalTo: bannerRow.leadingAnchor, constant: Style.margin),
+            banner.trailingAnchor.constraint(
+                equalTo: bannerRow.trailingAnchor, constant: -Style.margin),
         ])
 
         addChild(refs)
@@ -73,7 +75,6 @@ final class SidebarViewController: NSViewController {
         stack.detachesHiddenViews = true
         stack.addArrangedSubview(bannerRow)
         stack.addArrangedSubview(refs.view)
-        stack.addArrangedSubview(separator)
         refs.view.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
         view = stack
     }

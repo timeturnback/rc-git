@@ -6,7 +6,7 @@ import RcGitKit
 /// and applies `LayoutPolicy` as the window changes size.
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate,
-    NSMenuItemValidation
+    NSMenuItemValidation, NSPopoverDelegate
 {
     let model = BrowserModel()
     var onClose: (() -> Void)?
@@ -35,8 +35,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var backToDefaultToolbarItem: NSToolbarItem?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
-    /// The sheet the branch banner opens, while it is open.
+    /// The ref picker the branch banner opens, and the popover showing it, while it is open.
     private var refPicker: RefPickerController?
+    private var refPopover: NSPopover?
+    /// When the event that closed the picker from outside happened. A click on the banner
+    /// closes the open popover on its way in, and must not then open it again.
+    private var refPickerCloseTimestamp: TimeInterval?
     private var refWatcher: RefWatcher?
     private var worktreeWatcher: WorktreeWatcher?
     /// Set when the working tree changed while another tab was frontmost; the switch to
@@ -163,6 +167,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Shows the file pane, the commit history, or the working-tree changes, and puts the
     /// section that belongs to the mode in the sidebar.
     func setMode(_ mode: ContentMode) {
+        // The picker hangs off the banner, which History hides and Changes makes read-only.
+        closeRefPicker()
         contentTabs.selectedTabViewItemIndex = mode.rawValue
         modeControl?.selectedSegment = mode.rawValue
         switch mode {
@@ -201,10 +207,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         setMode(.changes)
     }
 
-    /// Opens the ref picker, which stands in for the ref list outside History. Changes has
-    /// none: its banner names the checked-out branch, which picking a ref would not change.
+    /// Opens the ref picker, which stands in for the ref list outside History; History has the
+    /// list in the sidebar already, so its filter takes the keyboard instead. Changes has none:
+    /// its banner names the checked-out branch, which picking a ref would not change.
     @objc func chooseRef(_ sender: Any?) {
         guard !isEmpty, mode != .changes, refPicker == nil else { return }
+        if mode == .history {
+            refsController.focusFilter()
+            return
+        }
+        if let event = NSApp.currentEvent, event.timestamp == refPickerCloseTimestamp {
+            return
+        }
         let picker = RefPickerController()
         picker.onClose = { [weak self] in self?.closeRefPicker() }
         picker.refs.onSelect = { [weak self] ref in
@@ -215,20 +229,57 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.closeRefPicker()
             self?.browseWorkingTree()
         }
-        // The action asks with a sheet of its own, which waits for this one to end.
+        // The action asks with a sheet of its own, over the window the popover left.
         picker.refs.onRefAction = { [weak self] action, ref in
             self?.closeRefPicker()
             self?.performRefAction(action, on: ref)
         }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = picker
+        popover.delegate = self
         refPicker = picker
-        sidebarController.presentAsSheet(picker)
+        refPopover = popover
         reloadRefs(in: picker.refs)
+        let banner = sidebarController.banner
+        if banner.window != nil, !banner.isHiddenOrHasHiddenAncestor, !banner.visibleRect.isEmpty {
+            popover.show(relativeTo: banner.bounds, of: banner, preferredEdge: .minY)
+        } else {
+            // A collapsed sidebar takes the banner with it; hang the picker off the top of
+            // the detail pane, where the sidebar would open.
+            // Popover edges are in the view's own coordinates, so "below" flips with it.
+            let anchor = contentTabs.view
+            let top = anchor.isFlipped ? anchor.bounds.minY : anchor.bounds.maxY - 1
+            let corner = NSRect(x: anchor.bounds.minX + Style.margin, y: top, width: 1, height: 1)
+            popover.show(
+                relativeTo: corner, of: anchor, preferredEdge: anchor.isFlipped ? .maxY : .minY)
+        }
     }
 
     private func closeRefPicker() {
-        guard let picker = refPicker else { return }
+        guard let popover = refPopover else { return }
         refPicker = nil
-        sidebarController.dismiss(picker)
+        refPopover = nil
+        popover.close()
+    }
+
+    // MARK: NSPopoverDelegate
+
+    /// Only a close the window controller did not ask for reaches here with the picker still
+    /// set: a click outside it, which may be the click on the banner that opened it.
+    func popoverWillClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === refPopover else {
+            return
+        }
+        refPickerCloseTimestamp = NSApp.currentEvent?.timestamp
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === refPopover else {
+            return
+        }
+        refPicker = nil
+        refPopover = nil
     }
 
     private func browse(_ ref: RefEntry) {

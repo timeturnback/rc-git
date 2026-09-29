@@ -26,9 +26,11 @@ paths: mac/**
   the ref list on a window that opens on Files, the truncation note) sizes to its content, so
   `show` re-makes the width of every view showing by hand
   (`docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md`).
-- Outside History the ref list lives in `RefPickerController`, a sheet over the same
-  `RefsViewController` in its `.picker` behavior: selection only highlights, a click or Return
-  picks. Actions that ask with a sheet close the picker first; AppKit queues the second sheet.
+- Outside History the ref list lives in `RefPickerController`, a transient popover under the
+  banner over the same `RefsViewController` in its `.picker` behavior: selection only
+  highlights, a click or Return picks. Actions that ask with a sheet close the popover first.
+  The banner opens it on mouse-down, and a transient popover closes on that same mouse-down
+  when it is already open, so `chooseRef` ignores the event whose timestamp closed it.
 - The sidebar collapses with `.preferResizingSiblingsWithFixedSplitView`, so the window keeps
   its size; `.preferResizingSplitViewWithFixedSiblings` shrinks the window instead. The
   toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
@@ -71,7 +73,14 @@ paths: mac/**
   exception there is swallowed by launch Apple Event handling, leaving the app windowless
   (`docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md`). Keep
   delegate callbacks safe during construction: `.first`, not `[0]`.
-- Icons come from `Icons` (cached per extension). Do not call `NSWorkspace` from cell code.
+- Every sidebar list goes through `Style.sidebarList` (a source list whose rows follow the
+  system sidebar size) and every icon-and-label row is a `SidebarCellView`; anything above a
+  list keeps `Style.margin` so it lines up with the selection. `SidebarCellView`'s label is not
+  the cell's `textField`: AppKit re-applies a plain font to that outlet on every layout, so a
+  weight set once is lost — tables showing it answer type-select through their delegate.
+- Icons are SF Symbols from `Icons`, tinted by the source list through `Icons.tint(for:)`.
+  Never use `NSWorkspace` document icons: their colors come from whichever app claims the
+  extension, and they clash with the tinted symbols beside them.
 - Decide what counts as hidden only through `HiddenFiles` (RcGitKit). The tree keeps every row
   it read and asks `BrowserModel.isVisible` at display time, so the ⇧⌘. toggle re-filters
   without a read; never drop hidden rows at load time.

@@ -300,10 +300,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         searchProgress.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         searchProgress.textColor = .secondaryLabelColor
 
+        // Every control in the bar is regular size, so the field, the scope, and the toggle
+        // share one height — and the sidebar's ref filter beside them has it too.
         datesToggle.title = "Dates"
         datesToggle.setButtonType(.pushOnPushOff)
-        datesToggle.bezelStyle = .accessoryBarAction
-        datesToggle.controlSize = .small
+        datesToggle.bezelStyle = .accessoryBar
         datesToggle.target = self
         datesToggle.action = #selector(datesToggled(_:))
 
@@ -317,14 +318,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         for (check, title) in [(sinceCheck, "Since"), (untilCheck, "Until")] {
             check.title = title
             check.setButtonType(.switch)
-            check.controlSize = .small
             check.target = self
             check.action = #selector(searchOptionsChanged(_:))
         }
         for picker in [sincePicker, untilPicker] {
             picker.datePickerStyle = .textFieldAndStepper
             picker.datePickerElements = [.yearMonthDay]
-            picker.controlSize = .small
             picker.target = self
             picker.action = #selector(searchOptionsChanged(_:))
         }
@@ -340,13 +339,16 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
         searchArea.orientation = .vertical
         searchArea.alignment = .leading
-        searchArea.spacing = 4
-        searchArea.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        searchArea.spacing = 6
+        searchArea.edgeInsets = NSEdgeInsets(
+            top: Style.barPadding, left: Style.margin, bottom: Style.barPadding,
+            right: Style.margin)
         searchArea.detachesHiddenViews = true
         searchArea.addArrangedSubview(fieldRow)
         searchArea.addArrangedSubview(datesRow)
         NSLayoutConstraint.activate([
-            fieldRow.widthAnchor.constraint(equalTo: searchArea.widthAnchor, constant: -20),
+            fieldRow.widthAnchor.constraint(
+                equalTo: searchArea.widthAnchor, constant: -2 * Style.margin),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
         ])
     }

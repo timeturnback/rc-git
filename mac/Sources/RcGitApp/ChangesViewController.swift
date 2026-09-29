@@ -112,8 +112,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private var stashWidth: NSLayoutConstraint?
     private weak var sectionStack: NSStackView?
 
-    /// The gutter the sidebar section keeps on both sides.
-    private static let sectionInset: CGFloat = 8
+    /// The gutter the sidebar section keeps on both sides, the sidebar's own margin.
+    private static let sectionInset = Style.margin
 
     // MARK: Layout
 
@@ -139,7 +139,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         filesOutline.addTableColumn(file)
         filesOutline.outlineTableColumn = file
         filesOutline.headerView = nil
-        filesOutline.rowSizeStyle = .small
+        // Dense rows: every one carries a tick box, and the list shares the sidebar with the
+        // commit box.
+        Style.sidebarList(filesOutline, rowSize: .small)
         filesOutline.indentationPerLevel = 12
         // The list has no horizontal scroller: the column stays the pane's width and the
         // labels truncate inside it.
@@ -202,7 +204,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         column.resizingMask = .autoresizingMask
         stashTable.addTableColumn(column)
         stashTable.headerView = nil
-        stashTable.rowSizeStyle = .small
+        Style.sidebarList(stashTable, rowSize: .small)
         stashTable.dataSource = self
         stashTable.delegate = self
     }

@@ -2,7 +2,7 @@ import AppKit
 import RcGitKit
 
 /// The working tree, branches, remote branches, and tags, with a filter field. History shows
-/// it in the sidebar; the other modes show it in the ref picker sheet.
+/// it in the sidebar; Files shows it in the ref picker popover.
 @MainActor
 final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSSearchFieldDelegate, NSMenuDelegate
@@ -42,6 +42,15 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// The one pseudo-row above the sections: the files on disk.
     private final class WorkingTreeRow {}
 
+    /// The picker's highlight marks where Return goes, so it draws in the accent color the
+    /// way a menu's does, although keyboard focus stays in the filter field.
+    private final class PickerRowView: NSTableRowView {
+        override var isEmphasized: Bool {
+            get { true }
+            set {}
+        }
+    }
+
     private let behavior: Behavior
     private let outline = NSOutlineView()
     private let search = NSSearchField()
@@ -65,8 +74,6 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     override func loadView() {
         search.placeholderString = "Filter refs"
         search.delegate = self
-        search.controlSize = .small
-        search.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("ref"))
         column.resizingMask = .autoresizingMask
@@ -75,9 +82,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.headerView = nil
         outline.dataSource = self
         outline.delegate = self
-        outline.style = .sourceList
+        Style.sidebarList(outline)
         outline.floatsGroupRows = false
-        outline.rowSizeStyle = .default
         outline.autoresizesOutlineColumn = true
         outline.indentationPerLevel = 8
         let menu = NSMenu()
@@ -88,6 +94,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             outline.action = #selector(rowClicked(_:))
             // Typing stays in the filter; the arrow keys reach the list through it.
             outline.refusesFirstResponder = true
+            // The popover draws its own material; a sidebar's would show as a box inside it.
+            outline.backgroundColor = .clear
         }
 
         let scroll = NSScrollView()
@@ -96,13 +104,20 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         scroll.drawsBackground = false
         scroll.autohidesScrollers = true
 
+        // The list runs edge to edge: the source list insets its rows by `Style.margin`
+        // itself, and the filter above keeps the same margin so the two line up.
         let stack = NSStackView(views: [search, scroll])
         stack.orientation = .vertical
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 0, right: 8)
+        stack.alignment = .centerX
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: Style.barPadding, left: 0, bottom: 0, right: 0)
         stack.setHuggingPriority(.defaultLow, for: .vertical)
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.setVisibilityPriority(.mustHold, for: scroll)
+        NSLayoutConstraint.activate([
+            search.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * Style.margin),
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
         view = stack
     }
 
@@ -335,30 +350,36 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         -> NSView?
     {
         if let section = item as? Section {
-            let cell = reusableCell(identifier: "header", image: false)
+            let cell = headerCell()
             cell.textField?.stringValue = section.title
             return cell
         }
         if item is WorkingTreeRow {
-            let cell = reusableCell(identifier: "ref", image: true)
-            cell.imageView?.image = NSImage(
-                systemSymbolName: "internaldrive", accessibilityDescription: nil)
-            cell.textField?.stringValue = "Working Tree"
-            cell.textField?.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            let cell = refCell()
+            cell.imageView?.image = Icons.workingTree
+            cell.label.stringValue = "Working Tree"
+            cell.isEmphasized = false
             cell.toolTip = "Files on disk, compared with HEAD"
             return cell
         }
         guard let ref = item as? RefEntry else { return nil }
-        let cell = reusableCell(identifier: "ref", image: true)
+        let cell = refCell()
         cell.imageView?.image = Icons.symbol(for: ref.kind)
-        cell.textField?.stringValue = ref.shortName
-        let isHead = head?.refName == ref.fullName
-        cell.textField?.font =
-            isHead
-            ? NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
-            : NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        cell.label.stringValue = ref.shortName
+        cell.isEmphasized = head?.refName == ref.fullName
         cell.toolTip = ref.fullName + "\n" + ref.target.hex
         return cell
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        behavior == .picker ? PickerRowView() : nil
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any
+    ) -> String? {
+        if item is WorkingTreeRow { return "Working Tree" }
+        return (item as? RefEntry)?.shortName
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -379,38 +400,27 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         onSelect?(ref)
     }
 
-    private func reusableCell(identifier: String, image: Bool) -> NSTableCellView {
-        let id = NSUserInterfaceItemIdentifier(identifier)
+    private func refCell() -> SidebarCellView {
+        let id = NSUserInterfaceItemIdentifier("ref")
+        return outline.makeView(withIdentifier: id, owner: self) as? SidebarCellView
+            ?? SidebarCellView(identifier: id)
+    }
+
+    /// A section title. The source list styles a group row's `textField` itself.
+    private func headerCell() -> NSTableCellView {
+        let id = NSUserInterfaceItemIdentifier("header")
         if let cell = outline.makeView(withIdentifier: id, owner: self) as? NSTableCellView {
             return cell
         }
         let cell = NSTableCellView()
         cell.identifier = id
         let label = NSTextField(labelWithString: "")
-        label.lineBreakMode = .byTruncatingMiddle
         label.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(label)
         cell.textField = label
-        var leading: NSLayoutXAxisAnchor = cell.leadingAnchor
-        var inset: CGFloat = 4
-        if image {
-            let imageView = NSImageView()
-            imageView.translatesAutoresizingMaskIntoConstraints = false
-            imageView.symbolConfiguration = NSImage.SymbolConfiguration(
-                pointSize: 13, weight: .regular)
-            cell.addSubview(imageView)
-            cell.imageView = imageView
-            NSLayoutConstraint.activate([
-                imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-                imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                imageView.widthAnchor.constraint(equalToConstant: 18),
-            ])
-            leading = imageView.trailingAnchor
-            inset = 5
-        }
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leading, constant: inset),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor),
             label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell

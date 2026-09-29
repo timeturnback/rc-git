@@ -79,7 +79,7 @@ and is what the pane, its context menu, and `BrowserModel.openPath` all agree on
 | decoded objects | object id | gix, per pooled handle | never (LRU eviction only) |
 | pack delta bases | object id | gix, per pooled handle | never |
 | directory listings | tree id | `TreeStore` in RcGitKit | on `attach` |
-| file icons | extension | `Icons` in RcGitApp | never |
+| row symbols | symbol name | `Icons` in RcGitApp | never |
 
 Refs are not cached across calls; `refs()` re-reads `packed-refs` and loose refs each time and
 is cheap enough to call on every change. Watching `.git` for ref changes is on the roadmap.

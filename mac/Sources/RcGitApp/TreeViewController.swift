@@ -33,6 +33,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     private let outline = NSOutlineView()
+    private let scroll = NSScrollView()
     private let placeholder = NSTextField(labelWithString: "Open a repository (⌘O)")
     private var allRoots: [Node] = []
     private var roots: [Node] = []
@@ -49,7 +50,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.headerView = nil
         outline.dataSource = self
         outline.delegate = self
-        outline.rowSizeStyle = .small
+        Style.sidebarList(outline)
         outline.indentationPerLevel = 14
         outline.autoresizesOutlineColumn = true
         outline.allowsEmptySelection = true
@@ -57,7 +58,6 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.doubleAction = #selector(toggleSelected(_:))
         outline.menu = buildMenu()
 
-        let scroll = NSScrollView()
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -99,21 +99,31 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         load(root, path: "", into: nil)
     }
 
-    /// Row chrome outside the label: disclosure triangle, icon, cell insets, and room for
-    /// the vertical scroller.
-    private static let rowChromeWidth: CGFloat = 46
+    /// Between a cell's trailing edge and the list's, once the column fills the list: the
+    /// source list's `Style.margin` row inset plus the padding it keeps inside the selection.
+    /// Measured with `frameOfCell(atColumn:row:)`; AppKit does not publish it.
+    private static let cellTrailingInset: CGFloat = 16
 
-    /// The width that shows every row currently on the outline in full. Only expanded rows
-    /// are measured, so the cost follows what is on screen, not repository size.
+    /// The width that shows every row currently on the outline in full: where each row's cell
+    /// starts — past the source list's inset, the indentation, and the disclosure triangle —
+    /// plus what the cell draws, the list's trailing inset, and a scroller that takes space.
+    /// Only expanded rows are measured, so the cost follows what is on screen, not repository
+    /// size.
     private func reportContentWidth() {
         guard let onContentWidthChanged else { return }
+        let rowSize = outline.effectiveRowSizeStyle
         var widest: CGFloat = 0
         for row in 0..<outline.numberOfRows {
             guard let node = outline.item(atRow: row) as? Node else { continue }
-            let indent = CGFloat(outline.level(forRow: row)) * outline.indentationPerLevel
-            widest = max(widest, indent + Self.label(for: node.row).size().width)
+            let content = SidebarCellView.contentWidth(
+                label: node.entry.name, badge: Self.badge(for: node.row)?.letter,
+                rowSize: rowSize)
+            widest = max(widest, outline.frameOfCell(atColumn: 0, row: row).minX + content)
         }
-        onContentWidthChanged(widest + Self.rowChromeWidth)
+        let scroller =
+            scroll.scrollerStyle == .legacy
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+        onContentWidthChanged(widest + Self.cellTrailingInset + scroller)
     }
 
     private func load(_ tree: Oid, path: String, into parent: Node?) {
@@ -263,74 +273,42 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     {
         guard let node = item as? Node else { return nil }
         let id = NSUserInterfaceItemIdentifier("entry")
-        let cell: NSTableCellView
-        if let reused = outline.makeView(withIdentifier: id, owner: self) as? NSTableCellView {
-            cell = reused
-        } else {
-            cell = NSTableCellView()
-            cell.identifier = id
-            let imageView = NSImageView()
-            imageView.translatesAutoresizingMaskIntoConstraints = false
-            let label = NSTextField(labelWithString: "")
-            label.lineBreakMode = .byTruncatingMiddle
-            label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(imageView)
-            cell.addSubview(label)
-            cell.imageView = imageView
-            cell.textField = label
-            NSLayoutConstraint.activate([
-                imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                imageView.widthAnchor.constraint(equalToConstant: 16),
-                imageView.heightAnchor.constraint(equalToConstant: 16),
-                label.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 4),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-        }
+        let cell =
+            outline.makeView(withIdentifier: id, owner: self) as? SidebarCellView
+            ?? SidebarCellView(identifier: id)
         cell.imageView?.image = Icons.image(for: node.entry)
-        cell.textField?.attributedStringValue = Self.label(for: node.row)
+        cell.label.stringValue = node.entry.name
+        // Ignored files and paths deleted from disk are listed, but read as not really there.
+        let dimmed = node.row.missing || node.row.status == .ignored
+        cell.label.textColor = dimmed ? .secondaryLabelColor : .labelColor
+        let badge = Self.badge(for: node.row)
+        cell.setBadge(badge?.letter, color: badge?.color ?? .secondaryLabelColor)
         cell.toolTip = node.path
         return cell
     }
 
-    /// The row label: the name, plus a colored status letter for working-tree rows.
-    static func label(for row: BrowseRow) -> NSAttributedString {
-        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        let name = NSMutableAttributedString(
-            string: row.entry.name,
-            attributes: [
-                .font: font,
-                .foregroundColor: row.missing ? NSColor.secondaryLabelColor : NSColor.labelColor,
-            ])
-        let badge: (String, NSColor)? =
-            if row.missing {
-                ("D", .systemRed)
-            } else {
-                switch row.status {
-                case .modified: ("M", .systemOrange)
-                case .untracked: ("U", .systemGreen)
-                case .ignored: ("I", .tertiaryLabelColor)
-                case .deleted: ("D", .systemRed)
-                case .unchanged, nil: nil
-                }
-            }
-        if row.status == .ignored || row.missing {
-            name.addAttribute(
-                .foregroundColor, value: NSColor.secondaryLabelColor,
-                range: NSRange(location: 0, length: name.length))
+    func outlineView(_ outlineView: NSOutlineView, tintConfigurationForItem item: Any)
+        -> NSTintConfiguration?
+    {
+        (item as? Node).map { Icons.tint(for: $0.entry) }
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any
+    ) -> String? {
+        (item as? Node)?.entry.name
+    }
+
+    /// The status letter a working-tree row carries at its trailing edge, if any.
+    static func badge(for row: BrowseRow) -> (letter: String, color: NSColor)? {
+        if row.missing { return ("D", .systemRed) }
+        return switch row.status {
+        case .modified: ("M", .systemOrange)
+        case .untracked: ("U", .systemGreen)
+        case .ignored: ("I", .tertiaryLabelColor)
+        case .deleted: ("D", .systemRed)
+        case .unchanged, nil: nil
         }
-        if let (letter, color) = badge {
-            name.append(
-                NSAttributedString(
-                    string: "  " + letter,
-                    attributes: [
-                        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .bold),
-                        .foregroundColor: color,
-                    ]))
-        }
-        return name
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

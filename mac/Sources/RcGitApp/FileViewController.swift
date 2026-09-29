@@ -33,6 +33,8 @@ final class FileViewController: NSViewController {
     /// Syntax colors are applied per chunk of this many UTF-16 units as chunks scroll in.
     static let highlightChunk = 4096
 
+    private let header = NSStackView()
+    private let headerSeparator = NSBox()
     private let pathLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let modePicker = NSSegmentedControl(
@@ -63,6 +65,9 @@ final class FileViewController: NSViewController {
         pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
         pathLabel.lineBreakMode = .byTruncatingHead
         pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The name takes the bar's spare width, so the size and the mode picker sit at the
+        // trailing edge.
+        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         detailLabel.font = NSFont.monospacedDigitSystemFont(
             ofSize: NSFont.smallSystemFontSize, weight: .regular)
         detailLabel.textColor = .secondaryLabelColor
@@ -75,9 +80,14 @@ final class FileViewController: NSViewController {
         modePicker.isHidden = true
         modePicker.setContentHuggingPriority(.required, for: .horizontal)
 
-        let header = NSStackView(views: [pathLabel, detailLabel, modePicker])
+        for view in [pathLabel, detailLabel, modePicker] {
+            header.addArrangedSubview(view)
+        }
         header.orientation = .horizontal
-        header.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        header.distribution = .fill
+        header.alignment = .centerY
+        header.spacing = 8
+        header.edgeInsets = NSEdgeInsets(top: 6, left: Style.margin, bottom: 6, right: Style.margin)
         header.setHuggingPriority(.required, for: .vertical)
 
         let layoutManager = NSLayoutManager()
@@ -131,23 +141,28 @@ final class FileViewController: NSViewController {
         loadAnyway.translatesAutoresizingMaskIntoConstraints = false
         loadAnyway.isHidden = true
 
-        let separator = NSBox()
-        separator.boxType = .separator
+        headerSeparator.boxType = .separator
 
-        let stack = NSStackView(views: [header, separator, scroll])
-        stack.orientation = .vertical
-        stack.spacing = 0
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
+        // Pinned rather than stacked: the header hides while no file is open, and a view a
+        // stack detaches before its first layout never gets its width back.
         let root = NSView()
-        root.addSubview(stack)
+        for view in [header, headerSeparator, scroll] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
         root.addSubview(placeholder)
         root.addSubview(loadAnyway)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: root.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            header.topAnchor.constraint(equalTo: root.topAnchor),
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor),
+            headerSeparator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            headerSeparator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             placeholder.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             placeholder.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor, constant: -40),
@@ -167,6 +182,9 @@ final class FileViewController: NSViewController {
     func render(_ state: FileState) {
         tooLargeEntry = nil
         loadAnyway.isHidden = true
+        // No file, no bar: an empty strip over "Select a file" reads as a missing title.
+        header.isHidden = state == .empty
+        headerSeparator.isHidden = state == .empty
         switch state {
         case .empty:
             current = nil
