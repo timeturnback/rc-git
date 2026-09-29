@@ -94,6 +94,12 @@ and its upstream have both moved (diverged), it is refused with the counts on ea
 side, and reconciling — rebase or merge — is left to git. Credentials are per-host,
 supplied by the caller per call, and never stored by the core.
 
+A branch's upstream is the remote and branch its own config names. When the config names
+none — a branch pushed without setting one — rc-git takes the same-named branch on
+`origin`, and the ahead/behind counts and pull compare against it. Push always uploads to
+the same-named branch on the upstream's remote, so on such a branch what push uploads to
+is what the counts and pull compare against.
+
 Every one of them ends. The app carries a cancel flag into the call that the user can
 raise from the other side while the transfer holds the thread, and each transport keeps
 an idle budget — the gap it tolerates between bytes, not the length of the transfer, so

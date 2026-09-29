@@ -62,3 +62,8 @@ performs one. Branch and tag management go through here; so does everything that
   `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).
+- Resolve a branch's remote and tracking ref only through `configured_remote_name` and
+  `tracking_ref_name` in `actions/remote.rs`, never gix's `branch_remote*` helpers directly:
+  those return `None` for a branch with no `[branch]` config and skip the `origin` fallback,
+  so status reads 0/0 while push still works. Test a new remote action on an `untrack`ed
+  clone (`docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md`).
