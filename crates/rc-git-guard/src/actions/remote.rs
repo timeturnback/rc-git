@@ -262,13 +262,19 @@ fn remote_fetch_url(
 }
 
 /// Full name of the branch's remote-tracking ref, e.g. `refs/remotes/origin/main`.
+/// Without `branch.<name>.merge` — a branch made with `git init` and pushed without
+/// `-u` — it is `refs/remotes/<remote>/<branch>` on the remote `configured_remote_name`
+/// picks: the ref push uploads to and moves, so ahead/behind and pull agree with push.
 fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
     let full = format!("refs/heads/{branch}");
     let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
-    let tracking = repo
-        .branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch)?
-        .ok()?;
-    Some(tracking.as_bstr().to_string())
+    let Some(tracking) =
+        repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch)
+    else {
+        let remote = configured_remote_name(repo, branch)?;
+        return Some(format!("refs/remotes/{remote}/{branch}"));
+    };
+    Some(tracking.ok()?.as_bstr().to_string())
 }
 
 /// Peels `name` to a commit id, `None` when the ref does not exist.

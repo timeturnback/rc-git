@@ -122,6 +122,36 @@ fn upstream_status_reads_the_clone_configuration_and_counts() {
     assert_eq!((status.ahead, status.behind), (1, 0));
 }
 
+/// Drops `branch.main.remote` and `branch.main.merge`, the state of a branch made with
+/// `git init` and pushed without `-u`: `origin` exists, but nothing names it the upstream.
+fn untrack(remoted: &Remoted) {
+    remoted.clone.git(&["branch", "--unset-upstream", "main"]);
+}
+
+#[test]
+fn upstream_status_counts_against_origin_when_the_branch_names_no_upstream() {
+    let remoted = remoted();
+    untrack(&remoted);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    advance_origin(&remoted);
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch");
+
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(status.remote, "origin");
+    assert_eq!(status.upstream_ref, "refs/remotes/origin/main");
+    assert_eq!((status.ahead, status.behind), (1, 1));
+}
+
 #[test]
 fn fetch_updates_the_tracking_ref_and_reports_it() {
     let remoted = remoted();
@@ -341,6 +371,18 @@ fn pull_fast_forwards_files_index_and_ref() {
         "",
         "index must agree with the new tree"
     );
+}
+
+#[test]
+fn pull_fast_forwards_from_origin_when_the_branch_names_no_upstream() {
+    let remoted = remoted();
+    untrack(&remoted);
+    advance_origin(&remoted);
+    fetch_clone(&remoted);
+
+    let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
+    assert_eq!(outcome.files_changed, 1);
+    assert_eq!(remoted.clone.rev_parse("main"), bare_tip(&remoted));
 }
 
 #[test]
