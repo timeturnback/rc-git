@@ -80,6 +80,9 @@ paths: mac/**
   identifier by hand. Work the updater does outside the process — toolchain probe, checkout
   read, pull, build, relaunch — goes behind `UpdateEnvironment` so `UpdateModel` stays
   testable.
+- A command the user pastes or the updater runs quotes every variable word with
+  `ShellWord.quote` (RcGitKit, round-trip tested through `/bin/sh`); never interpolate a path
+  raw or hand-roll another quoter.
 - Every step the updater runs outside the process is bounded and is logged *before* it runs,
   never after: the probe carries a timeout and a kill, the result type has a failure case that
   says it could not answer, and the log's last line is the step that stalled. Nothing may have

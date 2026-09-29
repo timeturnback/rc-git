@@ -29,6 +29,11 @@ performs one. Branch and tag management go through here; so does everything that
   operation by name, before a byte is written), `apply`, then move the ref *last*. The
   fast-forward pull and the branch switch are both that sequence; a new one reuses it rather
   than walking a tree itself.
+- Pull stays fast-forward only: a divergence returns `ActionError::Diverged` and the app hands
+  the user a quoted `git pull --rebase` for the checkout. Settle signing before adding anything
+  that rewrites commits (rebase or merge pull, amend, squash): guard commits carry no signature
+  and the user's signing config sits outside the isolated open
+  (`docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md`).
 - A gix ref transaction writes no reflog for a symbolic update — it has no object id to log —
   so `checkout.rs` appends the `checkout:` line to `logs/HEAD` itself, serialized by
   `gix::refs::log::Line` and only when the log already exists. Without it `git checkout -` and

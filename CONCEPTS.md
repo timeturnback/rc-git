@@ -80,15 +80,19 @@ global or system git config, no environment variables, no include directives. A
 repository someone else produced therefore cannot point rc-git at files outside itself.
 A side effect: anything the repository's own config does not provide (an identity for
 reflog lines, credentials for a remote) must be supplied by rc-git itself per
-operation.
+operation. What only the user's own config holds — a preferred pull strategy, a commit
+identity, a signing setup — is invisible to rc-git: it asks for an identity where one is
+needed, writes its commits unsigned, and never picks rebase or merge for a pull.
 
 ## Remote operations
 
 The guard's network actions: fetch, fast-forward pull, plain push, and their sync
 composition. They speak HTTPS and SSH, both in-process so no child process is ever
 spawned, and are never force: a push the remote would have to discard history to
-accept is refused before anything is sent. Credentials are per-host, supplied by the
-caller per call, and never stored by the core.
+accept is refused before anything is sent. A pull is the mirror case: when the branch
+and its upstream have both moved (diverged), it is refused with the counts on each
+side, and reconciling — rebase or merge — is left to git. Credentials are per-host,
+supplied by the caller per call, and never stored by the core.
 
 Every one of them ends. The app carries a cancel flag into the call that the user can
 raise from the other side while the transfer holds the thread, and each transport keeps
