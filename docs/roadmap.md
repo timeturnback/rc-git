@@ -113,9 +113,10 @@ constraints are clear.
   auth/diverged/host-key status codes, and reach the app as a Repository menu plus a
   toolbar Sync button driven by `SyncModel` (RcGitKit). HTTPS credentials are per-host
   PATs in the login keychain, prompted on 401 and stored only once the server accepts
-  them. SSH authenticates via the ssh-agent, then `IdentityFile` and default keys; an
-  encrypted key prompts for its passphrase (stored per host under the ssh keychain
-  protocol). `known_hosts` is read, never written: an unknown host shows its
+  them. SSH offers keys in OpenSSH's order — agent keys matching an `IdentityFile`, the
+  other agent keys unless `IdentitiesOnly yes`, then the remaining `IdentityFile` keys
+  (default keys only when none is configured); an encrypted key prompts for its
+  passphrase (stored per host under the ssh keychain protocol). `known_hosts` is read, never written: an unknown host shows its
   fingerprint for trust-on-first-use (approvals persist app-side), a contradicting key
   is fatal with no in-app override. `git://` and `file://` remotes are refused with a
   message naming the scheme. The CLI's `fetch`, `pull`, `push`, `sync` take

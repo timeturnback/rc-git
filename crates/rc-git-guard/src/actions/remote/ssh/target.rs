@@ -18,9 +18,12 @@ pub(in crate::actions::remote) struct SshTarget {
     pub port: u16,
     /// URL user, else ssh-config `User`, else `$USER`.
     pub user: String,
-    /// Candidate private keys: ssh-config `IdentityFile` entries first, then the
-    /// OpenSSH defaults. Existence is checked at use.
+    /// Candidate private keys: the ssh-config `IdentityFile` entries, or the OpenSSH
+    /// defaults when the config names none. Existence is checked at use.
     pub identities: Vec<PathBuf>,
+    /// ssh-config `IdentitiesOnly yes`: offer only `identities`, never an agent key
+    /// that matches none of them.
+    pub identities_only: bool,
     /// The directory holding `config`, `known_hosts`, and the default keys.
     pub ssh_dir: PathBuf,
 }
@@ -51,9 +54,10 @@ pub(in crate::actions::remote) fn resolve(
         Some(dir) => dir.to_path_buf(),
         None => default_ssh_dir(op)?,
     };
-    // Only `host_config` carries what the config file said: `russh_config::parse`
-    // leaves `Config::host_name` as the queried alias and `user`/`port` as `None`.
-    let config = load_config(&ssh_dir, &host, op, url)?.map(|config| config.host_config);
+    let (config, identities_only) = match load_config(&ssh_dir, &host, op, url)? {
+        Some(settings) => (Some(settings.config), settings.identities_only),
+        None => (None, false),
+    };
     let user = url
         .user()
         .map(str::to_owned)
@@ -75,21 +79,24 @@ pub(in crate::actions::remote) fn resolve(
         .as_ref()
         .and_then(|config| config.hostname.clone())
         .unwrap_or_else(|| host.clone());
-    let mut identities = config
+    // OpenSSH falls back to the default keys only when no `IdentityFile` applies; a
+    // default key tried after the configured one can log in as another account.
+    let identities = config
         .and_then(|config| config.identity_file)
-        .unwrap_or_default();
-    for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
-        let default = ssh_dir.join(name);
-        if !identities.contains(&default) {
-            identities.push(default);
-        }
-    }
+        .filter(|files| !files.is_empty())
+        .unwrap_or_else(|| {
+            ["id_ed25519", "id_ecdsa", "id_rsa"]
+                .into_iter()
+                .map(|name| ssh_dir.join(name))
+                .collect()
+        });
     Ok(SshTarget {
         host,
         host_name,
         port,
         user,
         identities,
+        identities_only,
         ssh_dir,
     })
 }
@@ -134,6 +141,12 @@ fn default_ssh_dir(op: &'static str) -> ActionResult<PathBuf> {
         })
 }
 
+/// What the ssh config says about one host.
+struct HostSettings {
+    config: russh_config::HostConfig,
+    identities_only: bool,
+}
+
 /// Parses `<ssh_dir>/config` for `host`. `None` when the file does not exist; an
 /// unreadable or unparseable file is an error rather than a silently wrong connection.
 ///
@@ -148,7 +161,7 @@ fn load_config(
     host: &str,
     op: &'static str,
     url: &gix::Url,
-) -> ActionResult<Option<russh_config::Config>> {
+) -> ActionResult<Option<HostSettings>> {
     let path = ssh_dir.join("config");
     if !path.exists() {
         return Ok(None);
@@ -161,15 +174,52 @@ fn load_config(
     let contents = std::fs::read_to_string(&path).map_err(|source| parse_err(&source))?;
     let contents = normalize_config(&contents);
     let host = host.to_lowercase();
-    match russh_config::parse(&contents, &host) {
-        Ok(config) => Ok(Some(config)),
-        Err(russh_config::Error::HostNotFound) => {
-            russh_config::parse(&format!("Host *\n{contents}"), &host)
-                .map(Some)
-                .map_err(|source| parse_err(&source))
-        }
-        Err(source) => Err(parse_err(&source)),
+    // Only `host_config` carries what the config file said: `russh_config::parse`
+    // leaves `Config::host_name` as the queried alias and `user`/`port` as `None`.
+    let config = parse_for_host(&contents, &host)
+        .map_err(|source| parse_err(&source))?
+        .host_config;
+    let identities_only = parse_for_host(&identities_only_as_user(&contents), &host)
+        .map_err(|source| parse_err(&source))?
+        .host_config
+        .user
+        .is_some_and(|value| value.eq_ignore_ascii_case("yes"));
+    Ok(Some(HostSettings {
+        config,
+        identities_only,
+    }))
+}
+
+/// `russh_config::parse`, retried once under a synthetic `Host *` when options precede
+/// the first `Host` block.
+fn parse_for_host(contents: &str, host: &str) -> Result<russh_config::Config, russh_config::Error> {
+    let parsed = russh_config::parse(contents, host);
+    if let Err(russh_config::Error::HostNotFound) = parsed {
+        return russh_config::parse(&format!("Host *\n{contents}"), host);
     }
+    parsed
+}
+
+/// russh-config drops `IdentitiesOnly`. This view keeps only the `Host` lines and
+/// rewrites each `IdentitiesOnly` line as `User`, so the same parser resolves it with
+/// the same block matching and first-value-wins rule as every other directive; the
+/// resulting `user` field holds the `IdentitiesOnly` value.
+fn identities_only_as_user(normalized: &str) -> String {
+    let mut view = String::new();
+    for line in normalized.lines() {
+        let line = line.trim_start();
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        if key.eq_ignore_ascii_case("host") {
+            view.push_str(line);
+        } else if key.eq_ignore_ascii_case("identitiesonly") {
+            view.push_str("User ");
+            view.push_str(value);
+        } else {
+            continue;
+        }
+        view.push('\n');
+    }
+    view
 }
 
 /// Tabs become spaces; `Host` pattern lines are lowercased in full (patterns are host
@@ -233,7 +283,60 @@ mod tests {
         assert_eq!(target.host_name, "bitbucket.org");
         assert_eq!(target.user, "worker");
         assert_eq!(target.port, 2222);
-        assert_eq!(target.identities[0], PathBuf::from("./work_key"));
+        assert_eq!(
+            target.identities,
+            [PathBuf::from("./work_key")],
+            "a configured IdentityFile replaces the default keys, as in OpenSSH"
+        );
+        assert!(!target.identities_only);
+    }
+
+    /// The multi-account pattern that broke in the field: the alias names its key and
+    /// sets `IdentitiesOnly`, and the agent holds other accounts' keys.
+    #[test]
+    fn identities_only_is_read_from_the_matching_block() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host github.com-Work\n\
+              \tHostName github.com\n\
+              \tIdentityFile ./work_key\n\
+              \tIdentitiesOnly yes\n\
+              Host other.example.com\n\
+              \tIdentitiesOnly no\n",
+        );
+        let target = resolve(
+            &url("git@github.com-work:team/repo.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert!(target.identities_only);
+        let other = resolve(
+            &url("git@other.example.com:team/repo.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert!(!other.identities_only);
+    }
+
+    /// OpenSSH keeps the first value obtained, so a global line above every `Host`
+    /// block wins over a later block's.
+    #[test]
+    fn identities_only_takes_the_first_value_in_file_order() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"identitiesonly YES\n\nHost example.com\n  IdentitiesOnly no\n",
+        );
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert!(target.identities_only);
     }
 
     /// The URL always wins over the config for user and port.
@@ -327,5 +430,6 @@ HostName	real.example.com
         assert_eq!(target.host_name, "example.com");
         assert_eq!(target.port, 22);
         assert_eq!(target.identities.len(), 3);
+        assert!(!target.identities_only);
     }
 }
