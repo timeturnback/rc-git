@@ -75,9 +75,12 @@ paths: mac/**
   delegate callbacks safe during construction: `.first`, not `[0]`.
 - Every sidebar list goes through `Style.sidebarList` (a source list whose rows follow the
   system sidebar size) and every icon-and-label row is a `SidebarCellView`; anything above a
-  list keeps `Style.margin` so it lines up with the selection. `SidebarCellView`'s label is not
-  the cell's `textField`: AppKit re-applies a plain font to that outlet on every layout, so a
-  weight set once is lost — tables showing it answer type-select through their delegate.
+  list keeps `Style.margin` so it lines up with the selection.
+- Never set a per-row font on a plain-string `textField` outlet: in any table whose
+  `rowSizeStyle` is not `.custom`, AppKit re-applies a plain system font to that outlet at every
+  layout. Use an attributed string, `.custom` row size, or a label that is not the outlet — as
+  `SidebarCellView` does, whose tables answer type-select through their delegate
+  (`docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md`).
 - Icons are SF Symbols from `Icons`, tinted by the source list through `Icons.tint(for:)`.
   Never use `NSWorkspace` document icons: their colors come from whichever app claims the
   extension, and they clash with the tinted symbols beside them.
