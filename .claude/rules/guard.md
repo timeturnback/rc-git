@@ -54,8 +54,11 @@ performs one. Branch and tag management go through here; so does everything that
   run end to end. The ssh transport (`actions/remote/ssh/`) is in-process russh:
   `known_hosts` is never written (approvals arrive as `RemoteAuth::accepted_hostkey`),
   channel streams must drop inside the transport's runtime, and the passphrase rides
-  `Credentials::token`. On the HTTPS side always install the credential closure; never
-  let gix's helper cascade run (it spawns).
+  `Credentials::token`. The key ladder in `ssh/auth.rs` keeps OpenSSH's offer order and
+  honors `IdentitiesOnly`: on GitHub the first accepted key picks the account
+  (`docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md`).
+  On the HTTPS side always install the credential closure; never let gix's helper
+  cascade run (it spawns).
   `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).
