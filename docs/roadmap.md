@@ -49,7 +49,8 @@ constraints are clear.
 - **Branch banner.** Files and Changes show a banner at the top of the sidebar in place of
   the ref list, so the tree and the change list get its height. In Files it names what the
   tree browses (the working tree and its branch, a commit, or a ref) and opens the ref list
-  as a sheet on a click or ⌘B; arrows move, Return picks, Escape closes. In Changes it names
+  in a popover under it on a click or ⌘B; arrows move, Return picks, Escape or a click outside
+  closes. In History, ⌘B focuses the sidebar's ref filter instead. In Changes it names
   the checked-out branch and is read-only, since the change list always compares the working
   tree with `HEAD`. `BranchBanner` (RcGitKit, pure, tested) decides what either one says.
 - **Drag a folder onto the window** to open it.
