@@ -33,6 +33,9 @@ banner there instead, naming what you browse: click it or press ⌘B to pick fro
 sheet. In Changes the banner names the checked-out branch. Folders load when expanded, files
 open with syntax highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by
 fuzzy name. In JavaScript and TypeScript, click an import or a component to open its file.
+⌘[ and ⌘] step back and forward through the files, commits, panes, and tabs you went
+through, across repositories; the toolbar arrows, a two-finger swipe, and a mouse's side
+buttons do the same.
 
 The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as you scroll, and
 selecting a commit shows the files it changed with a line diff; double-click to browse the

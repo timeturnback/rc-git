@@ -10,14 +10,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 {
     let model = BrowserModel()
     var onClose: (() -> Void)?
+    /// Fires with where this tab is after each move, for the app-wide back/forward list.
+    var onStop: ((NavigationStop) -> Void)?
+    /// Asks the app to step through that list: the toolbar arrows, a swipe, the commit
+    /// detail's back arrow.
+    var onNavigate: ((BackForwardList.Direction) -> Void)?
+    /// Fires when this tab's window becomes the main one.
+    var onBecomeMain: (() -> Void)?
     private(set) var isEmpty = true
-
-    /// Which pane fills the content area beside the sidebar.
-    enum ContentMode: Int {
-        case files = 0
-        case history = 1
-        case changes = 2
-    }
 
     private let outerSplit = NSSplitViewController()
     private let contentTabs = NSTabViewController()
@@ -47,6 +47,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the Changes tab pays the rescan then.
     private var changesDirty = false
     private var modeControl: NSSegmentedControl?
+    private var navigationControl: NSSegmentedControl?
+    /// The back/forward list as the app delegate last rendered it here.
+    private var backForward = BackForwardList()
+    /// Set from the first scroll event of a swipe until its animation ends.
+    private var trackingSwipe = false
     private var currentLayout: Layout?
     private var sidebarCollapsedByPolicy = false
     /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
@@ -195,16 +200,112 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// A pane the user asked for by itself, which is a stop of its own. An action that
+    /// changes the pane on the way somewhere else calls `setMode` and records where it ends.
+    private func switchMode(_ mode: ContentMode) {
+        setMode(mode)
+        recordStop()
+    }
+
     @objc func showFiles(_ sender: Any?) {
-        setMode(.files)
+        switchMode(.files)
     }
 
     @objc func showHistory(_ sender: Any?) {
-        setMode(.history)
+        switchMode(.history)
     }
 
     @objc func showChanges(_ sender: Any?) {
-        setMode(.changes)
+        switchMode(.changes)
+    }
+
+    // MARK: Back and forward
+
+    /// Where this tab is, or `nil` while it browses nothing: no repository yet, or one that
+    /// is still attaching. Such a stop would have nothing to return to.
+    var currentStop: NavigationStop? {
+        let location = model.location
+        guard let repositoryPath, location.tree != .nothing else { return nil }
+        return NavigationStop(repositoryPath: repositoryPath, mode: mode, browser: location)
+    }
+
+    private func recordStop() {
+        guard let stop = currentStop else { return }
+        onStop?(stop)
+    }
+
+    /// Shows a stop of the back/forward list: its pane, then what its browser was on.
+    func restore(_ stop: NavigationStop) async {
+        if mode != stop.mode {
+            setMode(stop.mode)
+        }
+        await model.restore(stop.browser)
+    }
+
+    /// Shows what the back/forward list allows: the toolbar arrows, and the commit detail's
+    /// own arrow, which is there while stepping back shows another commit.
+    func renderNavigation(_ list: BackForwardList) {
+        backForward = list
+        navigationControl?.setEnabled(list.canGo(.back), forSegment: 0)
+        navigationControl?.setEnabled(list.canGo(.forward), forSegment: 1)
+        if model.diffCommit != nil {
+            historyController.renderCommitDetail(
+                model.commitDetail, canGoBack: detailCanGoBack)
+        }
+    }
+
+    private var detailCanGoBack: Bool {
+        repositoryPath.map { backForward.backReturnsToCommit(inRepository: $0) } ?? false
+    }
+
+    @objc private func navigationClicked(_ sender: NSSegmentedControl) {
+        onNavigate?(sender.selectedSegment == 0 ? .back : .forward)
+    }
+
+    func windowDidBecomeMain(_ notification: Notification) {
+        onBecomeMain?()
+    }
+
+    /// Lets a scroll view that is already at its edge hand a sideways scroll up the responder
+    /// chain, where `scrollWheel` turns it into a step back or forward.
+    override func wantsScrollEventsForSwipeTracking(on axis: NSEvent.GestureAxis) -> Bool {
+        axis == .horizontal
+    }
+
+    /// A two-finger swipe, which arrives as scroll events when the system setting routes page
+    /// swipes that way. The amount is clamped to the directions the list can go, so a swipe
+    /// with nowhere to go rubber-bands and ends without a step.
+    override func scrollWheel(with event: NSEvent) {
+        let canGoBack = backForward.canGo(.back)
+        let canGoForward = backForward.canGo(.forward)
+        guard !event.phase.isEmpty, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
+            NSEvent.isSwipeTrackingFromScrollEventsEnabled, !trackingSwipe,
+            canGoBack || canGoForward
+        else {
+            super.scrollWheel(with: event)
+            return
+        }
+        trackingSwipe = true
+        event.trackSwipeEvent(
+            options: .lockDirection, dampenAmountThresholdMin: canGoForward ? -1 : 0,
+            max: canGoBack ? 1 : 0
+        ) { [weak self] amount, phase, isComplete, _ in
+            if phase == .ended, let direction = BackForwardList.Direction(swipeAmount: amount) {
+                self?.onNavigate?(direction)
+            }
+            if isComplete {
+                self?.trackingSwipe = false
+            }
+        }
+    }
+
+    /// A three-finger swipe, for the system setting that sends page swipes as their own event.
+    override func swipe(with event: NSEvent) {
+        guard let direction = BackForwardList.Direction(swipeAmount: event.deltaX) else {
+            super.swipe(with: event)
+            return
+        }
+        onNavigate?(direction)
     }
 
     /// Opens the ref picker, which stands in for the ref list outside History; History has the
@@ -289,7 +390,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The working tree is files on disk, so it opens in Files whichever mode picked it.
     private func browseWorkingTree() {
         setMode(.files)
-        Task { await model.selectWorkingTree() }
+        Task {
+            await model.selectWorkingTree()
+            recordStop()
+        }
     }
 
     @objc func goToFile(_ sender: Any?) {
@@ -308,7 +412,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        setMode(ContentMode(rawValue: sender.selectedSegment) ?? .files)
+        switchMode(ContentMode(rawValue: sender.selectedSegment) ?? .files)
     }
 
     @objc func showBlame(_ sender: Any?) {
@@ -329,15 +433,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func searchCommits(_ sender: Any?) {
         guard !isEmpty else { return }
-        setMode(.history)
+        switchMode(.history)
         historyController.focusSearch()
     }
 
     @objc func showFileHistory(_ sender: Any?) {
         guard let path = model.openedFilePath else { return }
+        showHistory(ofPath: path)
+    }
+
+    /// Scopes History to one path and shows it. The scope is reported as soon as it is set;
+    /// the record after the page covers a path that was already the scope.
+    private func showHistory(ofPath path: String) {
         setMode(.history)
         Task { [weak self] in
             await self?.model.showPathHistory(path)
+            self?.recordStop()
         }
     }
 
@@ -553,19 +664,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         model.onDiffChanged = { [weak self] in
             guard let self else { return }
             historyController.renderDetail(changes: model.commitChanges, state: model.fileDiff)
-            historyController.renderCommitDetail(
-                model.commitDetail, canGoBack: !model.detailBackStack.isEmpty)
+            historyController.renderCommitDetail(model.commitDetail, canGoBack: detailCanGoBack)
             if let commit = model.diffCommit {
                 historyController.selectCommitRow(commit.oid)
+            } else {
+                historyController.deselectCommitRow()
             }
+        }
+        model.onLocationChanged = { [weak self] in
+            self?.recordStop()
         }
         historyController.onJumpToCommit = { [weak self] oid in
             guard let self else { return }
             Task { await self.model.jumpToCommit(oid) }
         }
         historyController.onDetailBack = { [weak self] in
-            guard let self else { return }
-            Task { await self.model.goBackInDetail() }
+            self?.onNavigate?(.back)
         }
         historyController.onCloseDetail = { [weak self] in
             self?.model.closeCommitDetail()
@@ -574,9 +688,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.model.clearHistoryScope()
         }
         treeController.onShowHistory = { [weak self] path in
-            guard let self else { return }
-            setMode(.history)
-            Task { await self.model.showPathHistory(path) }
+            self?.showHistory(ofPath: path)
         }
         model.onSearchChanged = { [weak self] in
             guard let self else { return }
@@ -617,7 +729,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         historyController.onBrowseCommit = { [weak self] commit in
             guard let self else { return }
             setMode(.files)
-            Task { await self.model.browseCommit(commit) }
+            Task {
+                await self.model.browseCommit(commit)
+                self.recordStop()
+            }
         }
         goToFileController.provider = { [weak self] query in
             guard let self else { return [] }
@@ -626,7 +741,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         goToFileController.onOpen = { [weak self] entry in
             guard let self else { return }
             setMode(.files)
-            Task { await self.model.openSearchResult(entry) }
+            Task {
+                await self.model.openSearchResult(entry)
+                self.recordStop()
+            }
         }
         model.onRootChanged = { [weak self] in
             guard let self else { return }
@@ -636,6 +754,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             fileController.repositoryPath = model.openedFilePath
             fileController.render(model.fileState)
+            treeController.showOpenFile(model.openedFilePath)
         }
         model.onError = { [weak self] message in
             self?.presentError(message)
@@ -697,6 +816,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self.presentError("\(path) is not in this tree.")
                     return
                 }
+                self.recordStop()
             }
         }
     }
@@ -1337,6 +1457,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: NSToolbarDelegate
 
+    private static let navigationItem = NSToolbarItem.Identifier("rc-git.navigation")
     private static let viewModeItem = NSToolbarItem.Identifier("rc-git.viewMode")
     private static let backToDefaultItem = NSToolbarItem.Identifier("rc-git.backToDefault")
     private static let syncItem = NSToolbarItem.Identifier("rc-git.sync")
@@ -1347,7 +1468,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// separator sat off the divider while the sidebar was open and threw the items it
     /// carries across the titlebar when the sidebar collapsed.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, Self.viewModeItem, .flexibleSpace, Self.backToDefaultItem, Self.syncItem]
+        [
+            .toggleSidebar, Self.navigationItem, Self.viewModeItem, .flexibleSpace,
+            Self.backToDefaultItem, Self.syncItem,
+        ]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -1359,6 +1483,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
         switch itemIdentifier {
+        case Self.navigationItem:
+            let control = NSSegmentedControl(
+                images: [
+                    NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")!,
+                    NSImage(
+                        systemSymbolName: "chevron.right", accessibilityDescription: "Forward")!,
+                ],
+                trackingMode: .momentary, target: self, action: #selector(navigationClicked(_:)))
+            control.setToolTip("Back (⌘[)", forSegment: 0)
+            control.setToolTip("Forward (⌘])", forSegment: 1)
+            navigationControl = control
+            renderNavigation(backForward)
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = control
+            item.label = "Back/Forward"
+            return item
         case Self.viewModeItem:
             let control = NSSegmentedControl(
                 labels: ["Files", "History", "Changes"], trackingMode: .selectOne, target: self,

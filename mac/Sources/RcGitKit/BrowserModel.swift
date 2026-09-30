@@ -60,8 +60,6 @@ public final class BrowserModel {
     public private(set) var fileDiff: FileDiffState = .empty
     /// Full message, committer, and refs of `diffCommit`.
     public private(set) var commitDetail: CommitDetailState = .empty
-    /// Commits left behind by `jumpToCommit`, most recent last.
-    public private(set) var detailBackStack: [CommitSummary] = []
 
     /// Commits of the selected ref loaded so far, newest first.
     public private(set) var history: [CommitSummary] = []
@@ -101,6 +99,9 @@ public final class BrowserModel {
     public var onDiffChanged: (() -> Void)?
     /// Fired when a background operation failed with a message worth showing.
     public var onError: ((String) -> Void)?
+    /// Fired after `location` changed, once per move: a ref switch that also closes the open
+    /// file reports where it ended up, never the step in between.
+    public var onLocationChanged: (() -> Void)?
 
     private var rootGeneration = 0
     private var fileGeneration = 0
@@ -108,6 +109,14 @@ public final class BrowserModel {
     private var historyGeneration = 0
     private var diffGeneration = 0
     private var searchGeneration = 0
+    /// A restore is running, and the location the next one goes to. A restore asked for
+    /// meanwhile replaces `pendingRestore` and returns; the running one picks it up.
+    private var isRestoring = false
+    private var pendingRestore: BrowserLocation?
+    /// How many moves are under way. `location` is half changed while one is.
+    private var moveDepth = 0
+    /// The location `onLocationChanged` last fired for.
+    private var reportedLocation = BrowserLocation()
     /// The tip whose history the history pane shows. Kept while browsing one of its commits.
     private var historyAnchor: Oid?
     /// The unfiltered pages of one tip plus the lane graph built alongside them.
@@ -152,6 +161,8 @@ public final class BrowserModel {
 
     /// Attaches a repository and loads refs and HEAD, then selects the branch HEAD is on.
     public func attach(_ repository: any RepositoryReading) async {
+        beginMove()
+        defer { endMove() }
         self.repository = repository
         trees.removeAll()
         historyCache.removeAll()
@@ -200,6 +211,8 @@ public final class BrowserModel {
     /// not alert: the watcher fires during ref updates, when transient lock errors are normal.
     public func refreshRefs() async {
         guard let repository else { return }
+        beginMove()
+        defer { endMove() }
         refreshGeneration += 1
         let generation = refreshGeneration
         let loaded = await Task.detached(priority: .userInitiated) {
@@ -260,6 +273,8 @@ public final class BrowserModel {
     /// Switches the browsed ref. Only the root tree id changes; cached subtrees stay valid.
     public func select(_ ref: RefEntry) async {
         guard repository != nil else { return }
+        beginMove()
+        defer { endMove() }
         selectedRef = ref
         browsedCommit = nil
         browsingWorkingTree = false
@@ -273,6 +288,8 @@ public final class BrowserModel {
     /// stays one click.
     public func browseCommit(_ commit: CommitSummary) async {
         guard repository != nil else { return }
+        beginMove()
+        defer { endMove() }
         selectedRef = nil
         browsedCommit = commit
         browsingWorkingTree = false
@@ -284,6 +301,8 @@ public final class BrowserModel {
     /// rc-git ever writes to the working tree.
     public func selectWorkingTree() async {
         guard repository != nil, let target = head?.target else { return }
+        beginMove()
+        defer { endMove() }
         selectedRef = nil
         browsedCommit = nil
         browsingWorkingTree = true
@@ -353,6 +372,7 @@ public final class BrowserModel {
         openedFilePath = path
         fileState = .loading(entry)
         onFileChanged?()
+        noteLocation()
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<FileState, RepositoryError> in
             do {
@@ -421,6 +441,7 @@ public final class BrowserModel {
         if let path { openedFilePath = path }
         fileState = .loading(entry)
         onFileChanged?()
+        noteLocation()
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<FileState, RepositoryError> in
             do {
@@ -578,7 +599,14 @@ public final class BrowserModel {
     /// Scopes the history pane to the commits that changed `path`, keeping the current
     /// anchor. Cached pages for the same tip and path come back without a walk.
     public func showPathHistory(_ path: String) async {
-        guard repository != nil, let tip = historyAnchor else { return }
+        guard scopeHistory(to: path), !historyComplete else { return }
+        await loadMoreHistory()
+    }
+
+    /// The half of `showPathHistory` that reads nothing: the scope changes and the cached
+    /// pages show. Answers `false` when there is no history to scope.
+    private func scopeHistory(to path: String) -> Bool {
+        guard repository != nil, let tip = historyAnchor else { return false }
         historyGeneration += 1
         isLoadingHistory = false
         historyScope = .path(path)
@@ -592,15 +620,15 @@ public final class BrowserModel {
             historyComplete = false
         }
         onHistoryChanged?()
-        if !historyComplete {
-            await loadMoreHistory()
-        }
+        noteLocation()
+        return true
     }
 
     /// Returns the history pane to the unfiltered list of the current anchor.
     public func clearHistoryScope() {
         guard historyScope != .all else { return }
         resetHistory(anchor: historyAnchor)
+        noteLocation()
     }
 
     // MARK: Search
@@ -720,15 +748,15 @@ public final class BrowserModel {
         onHistoryChanged?()
     }
 
-    /// Closes the commit detail: drops the back stack and returns the detail state to
-    /// `.empty`, so the view can dismiss its drawer.
+    /// Closes the commit detail: returns the detail state to `.empty`, so the view can
+    /// dismiss its drawer.
     public func closeCommitDetail() {
         clearCommitDetail()
+        noteLocation()
     }
 
     private func clearCommitDetail() {
         diffGeneration += 1
-        detailBackStack = []
         if diffCommit != nil {
             diffCommit = nil
             commitChanges = []
@@ -751,6 +779,7 @@ public final class BrowserModel {
         fileDiff = .empty
         commitDetail = .loading(commit)
         onDiffChanged?()
+        noteLocation()
         let parent = commit.parents.first
         let target = commit.oid
         let result = await Task.detached(priority: .userInitiated) {
@@ -784,10 +813,17 @@ public final class BrowserModel {
         refs.refs.filter { $0.target == oid }
     }
 
-    /// Shows the detail of a commit reached by id — a parent link or a revision jump. The
-    /// current detail commit is pushed for `goBackInDetail`.
+    /// Shows the detail of a commit reached by id — a parent link, a revision jump, or a
+    /// stop of the back/forward list.
     public func jumpToCommit(_ oid: Oid) async {
-        guard let repository else { return }
+        guard let summary = await readCommit(oid) else { return }
+        await loadCommitChanges(summary)
+    }
+
+    /// One commit's summary, read off the main actor. A commit that cannot be read is
+    /// reported and answers `nil`.
+    private func readCommit(_ oid: Oid) async -> CommitSummary? {
+        guard let repository else { return nil }
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<CommitSummary, RepositoryError> in
             do { return .success(try repository.commit(oid)) } catch {
@@ -796,19 +832,11 @@ public final class BrowserModel {
         }.value
         switch result {
         case let .success(summary):
-            if let current = diffCommit, current.oid != oid {
-                detailBackStack.append(current)
-            }
-            await loadCommitChanges(summary)
+            return summary
         case let .failure(error):
             fail(error.message)
+            return nil
         }
-    }
-
-    /// Returns to the commit left behind by the last `jumpToCommit`.
-    public func goBackInDetail() async {
-        guard let previous = detailBackStack.popLast() else { return }
-        await loadCommitChanges(previous)
     }
 
     /// Loads the line diff of one changed file from `commitChanges`.
@@ -868,6 +896,136 @@ public final class BrowserModel {
             }
             return spans
         }.value
+    }
+
+    // MARK: Location
+
+    /// Where the browser is, as a value the back/forward list can return to.
+    public var location: BrowserLocation {
+        let tree: BrowsedTree
+        if browsingWorkingTree {
+            tree = .workingTree
+        } else if let selectedRef {
+            tree = .ref(selectedRef.fullName)
+        } else if let browsedCommit {
+            tree = .commit(browsedCommit.oid, historyTip: historyAnchor)
+        } else {
+            tree = .nothing
+        }
+        return BrowserLocation(
+            tree: tree, filePath: openedFilePath, historyScope: historyScope,
+            detailCommit: diffCommit?.oid)
+    }
+
+    /// Returns the browser to a location it was at, changing only what differs: a step
+    /// between two files of one tree reads one blob and nothing else. The history pane's page
+    /// is left to the pane, which asks for one when it is on screen.
+    ///
+    /// What the location names is read as it is now, so a ref that moved shows its new tip and
+    /// a file that is gone leaves the pane empty. A tree that cannot be shown any more — a
+    /// deleted ref, a pruned commit — is reported and ends the restore with nothing else
+    /// changed, and so does a ref picked on the way.
+    ///
+    /// Restores never overlap. One asked for while another runs returns at once; the running
+    /// one stops at its next step and goes on to the newest location asked for, so two quick
+    /// steps back end on the second whichever load finishes first.
+    public func restore(_ target: BrowserLocation) async {
+        guard repository != nil else { return }
+        pendingRestore = target
+        guard !isRestoring else { return }
+        isRestoring = true
+        beginMove()
+        defer {
+            isRestoring = false
+            endMove()
+        }
+        while let next = pendingRestore {
+            pendingRestore = nil
+            await move(to: next)
+        }
+    }
+
+    private func move(to target: BrowserLocation) async {
+        if location.tree != target.tree {
+            await restoreTree(target.tree)
+            guard pendingRestore == nil, location.tree == target.tree else { return }
+        }
+        if openedFilePath != target.filePath {
+            if let path = target.filePath {
+                await openPath(path)
+            } else {
+                closeFile()
+            }
+            guard pendingRestore == nil else { return }
+        }
+        if historyScope != target.historyScope {
+            switch target.historyScope {
+            case .all:
+                clearHistoryScope()
+            case let .path(path):
+                _ = scopeHistory(to: path)
+            }
+        }
+        if diffCommit?.oid != target.detailCommit {
+            if let commit = target.detailCommit {
+                await jumpToCommit(commit)
+            } else {
+                closeCommitDetail()
+            }
+        }
+    }
+
+    private func restoreTree(_ tree: BrowsedTree) async {
+        switch tree {
+        case .nothing:
+            break
+        case .workingTree:
+            await selectWorkingTree()
+        case let .ref(name):
+            guard let ref = refs.refs.first(where: { $0.fullName == name }) else {
+                fail("cannot return to \(name): the ref no longer exists")
+                return
+            }
+            await select(ref)
+        case let .commit(oid, historyTip):
+            let rootToken = rootGeneration
+            guard let summary = await readCommit(oid),
+                // Another tree was picked during the read.
+                rootToken == rootGeneration
+            else { return }
+            await browseCommit(summary)
+            if historyAnchor != historyTip {
+                resetHistory(anchor: historyTip)
+            }
+        }
+    }
+
+    /// Empties the file pane, for a location that had no file open.
+    private func closeFile() {
+        fileGeneration += 1
+        fileState = .empty
+        openedFilePath = nil
+        onFileChanged?()
+        noteLocation()
+    }
+
+    private func beginMove() {
+        moveDepth += 1
+    }
+
+    private func endMove() {
+        moveDepth -= 1
+        noteLocation()
+    }
+
+    /// Fires `onLocationChanged` when the location differs from the last one reported and
+    /// no move is under way.
+    private func noteLocation() {
+        guard moveDepth == 0 else { return }
+        let current = location
+        guard current != reportedLocation else { return }
+        reportedLocation = current
+        onLocationChanged?()
     }
 
     // MARK: Highlighting

@@ -121,6 +121,20 @@ paths: mac/**
 - `UpdateModel` runs one of two modes. `.update` (release) fetches and refuses a dirty
   checkout; `.rebuild` (dev) builds the working tree as it stands and has no up-to-date
   shortcut, because the tree moves without the commit. Do not make `.rebuild` fetch.
+- A `BrowserModel` method that changes `location` — the tree browsed, the open file, the
+  history scope, the detail commit — calls `noteLocation()` after the change, or brackets
+  itself in `beginMove()`/`endMove()` when the change spans an await. That feeds the app-wide
+  back/forward list: a move that skips it is a stop Back cannot return to, and a report from
+  the middle of a move is a stop nobody was ever at.
+- An action that changes the pane on its way somewhere calls `setMode`, then the model, then
+  `recordStop()` once the call returns. `switchMode` is for a pane picked by itself. Two
+  records for one click leave a Back press that changes nothing.
+- `AppDelegate` owns the one `BackForwardList`. Only the front tab records, and nothing
+  records while `restoresInFlight` is non-zero. A stop names its tab by repository path, so
+  closing a tab calls `removeStops`; never keep a stop for a tab that is gone.
+- `BrowserModel.restore` coalesces like `ChangesModel`: a restore asked for while one runs
+  sets `pendingRestore` and returns. Do not let two run at once — the second would resolve
+  its file against a root the first is still loading.
 - Tests use `FakeRepository` for behavior and `GitFixture` for the real bridge; both build the
   same standard repository as `rc-git-testkit`, keep them in step.
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.

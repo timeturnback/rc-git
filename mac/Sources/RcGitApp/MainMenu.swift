@@ -113,6 +113,10 @@ enum MainMenu {
         menu.addItem(item("History", #selector(MainWindowController.showHistory(_:)), "2"))
         menu.addItem(item("Changes", #selector(MainWindowController.showChanges(_:)), "3"))
         menu.addItem(.separator())
+        // Finder's and Safari's shortcuts. The tab switch in the Window menu adds Shift.
+        menu.addItem(item("Back", #selector(AppDelegate.goBack(_:)), "["))
+        menu.addItem(item("Forward", #selector(AppDelegate.goForward(_:)), "]"))
+        menu.addItem(.separator())
         // Finder's shortcut for the same toggle.
         menu.addItem(
             item(

@@ -590,6 +590,15 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         isReloading = false
     }
 
+    /// Drops the row highlight when the detail closed without a click here — a step back to
+    /// before any commit was picked — so the same row can be picked again.
+    func deselectCommitRow() {
+        guard table.selectedRow >= 0 else { return }
+        isReloading = true
+        table.deselectAll(nil)
+        isReloading = false
+    }
+
     /// Updates the graph column alongside `reload`. Empty rows hide the column: a filtered
     /// list has no meaningful topology.
     func renderGraph(_ rows: [GraphRow], maxLanes: Int) {

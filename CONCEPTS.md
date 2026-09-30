@@ -154,3 +154,15 @@ are alive at once — the new build reads the state while the old one is still r
 the write is flushed before the launch and the old process stops writing afterwards. The
 state is scoped by bundle identifier, which is why the identifier never depends on a
 version or a build number.
+
+## Stop
+
+One place the back/forward list can return to: a tab, the pane it shows, and where its
+browser is — the tree it browses, the open file, what the history lists, and the commit in
+the detail. A stop names those things and holds none of them, so returning to one reads the
+repository as it is then: a ref that moved shows its new tip, and a file that is gone leaves
+the pane empty.
+
+The list is one for the whole app, so a step back can cross from one repository to another.
+A move to where the list already is records nothing, and a move somewhere new drops the
+stops ahead. Stops live in memory only, and closing a tab drops the ones that name it.

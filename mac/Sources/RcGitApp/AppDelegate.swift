@@ -11,11 +11,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var updateController: UpdateWindowController?
     /// Set once the tabs were handed to a relaunching build; see `handOffTabs`.
     private var tabsHandedOff = false
+    /// The stops the user went through, across every tab. In memory only: a stop names a
+    /// tab, and closing the tab drops its stops.
+    private var backForward = BackForwardList()
+    /// The tab whose moves are the user's: the one in the main window.
+    private weak var frontController: MainWindowController?
+    /// How many stops are being restored. What a tab reports meanwhile is the restore itself.
+    private var restoresInFlight = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(
             recentMenu: recentMenu, appName: build.name, updateMode: build.updateMode)
         rebuildRecentMenu()
+        watchNavigationButtons()
         NSApp.activate(ignoringOtherApps: true)
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if paths.isEmpty {
@@ -95,6 +103,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(clearRecents(_:)) {
             return !recents.paths.isEmpty
         }
+        if menuItem.action == #selector(goBack(_:)) {
+            return backForward.canGo(.back)
+        }
+        if menuItem.action == #selector(goForward(_:)) {
+            return backForward.canGo(.forward)
+        }
         return true
     }
 
@@ -147,8 +161,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
             self?.saveTabs()
+            self?.forgetStops(of: controller)
         }
+        controller.onStop = { [weak self, weak controller] stop in
+            self?.record(stop, from: controller)
+        }
+        controller.onBecomeMain = { [weak self, weak controller] in
+            self?.cameToFront(controller)
+        }
+        controller.onNavigate = { [weak self] direction in
+            self?.go(direction)
+        }
+        controller.renderNavigation(backForward)
         return controller
+    }
+
+    // MARK: Back and forward
+
+    @objc func goBack(_ sender: Any?) {
+        go(.back)
+    }
+
+    @objc func goForward(_ sender: Any?) {
+        go(.forward)
+    }
+
+    /// Steps to the stop before or after the current one: brings its tab to the front and
+    /// has it show the stop.
+    private func go(_ direction: BackForwardList.Direction) {
+        guard let stop = backForward.go(direction) else { return }
+        renderNavigation()
+        guard
+            let controller = controllers.first(where: {
+                $0.repositoryPath == stop.repositoryPath
+            })
+        else { return }
+        frontController = controller
+        controller.showWindow(nil)
+        restoresInFlight += 1
+        Task {
+            await controller.restore(stop)
+            restoresInFlight -= 1
+        }
+    }
+
+    /// Records where the front tab is. A background tab's moves are not the user going
+    /// anywhere — a repository attaching at launch, a ref refresh — and neither is a stop
+    /// being restored.
+    private func record(_ stop: NavigationStop, from controller: MainWindowController?) {
+        guard restoresInFlight == 0, let controller, controller === frontController else {
+            return
+        }
+        backForward.visit(stop)
+        renderNavigation()
+    }
+
+    /// A switch to another tab is a move to where that tab is. The same window becoming
+    /// main again, when the app is reactivated, is not.
+    private func cameToFront(_ controller: MainWindowController?) {
+        guard let controller, controller !== frontController else { return }
+        frontController = controller
+        if let stop = controller.currentStop {
+            record(stop, from: controller)
+        }
+    }
+
+    private func forgetStops(of controller: MainWindowController?) {
+        guard let path = controller?.repositoryPath else { return }
+        backForward.removeStops(inRepository: path)
+        renderNavigation()
+    }
+
+    private func renderNavigation() {
+        for controller in controllers {
+            controller.renderNavigation(backForward)
+        }
+    }
+
+    /// The fourth and fifth buttons of a mouse step back and forward, as they do in a
+    /// browser. No view takes those buttons, so one monitor covers every browser window.
+    private func watchNavigationButtons() {
+        NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [weak self] event in
+            guard let self,
+                let direction = BackForwardList.Direction(mouseButton: event.buttonNumber),
+                controllers.contains(where: { $0.window === event.window })
+            else { return event }
+            go(direction)
+            return nil
+        }
     }
 
     // MARK: Tab persistence

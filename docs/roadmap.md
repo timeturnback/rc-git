@@ -86,7 +86,8 @@ constraints are clear.
 - **Commit detail.** Selecting a commit loads `commit_details` alongside the tree diff: full
   message body, committer when it differs from the author, refs pointing at the commit
   (computed from the ref listing, no extra walk), and parent links. Parent links and revision
-  jumps go through `BrowserModel.jumpToCommit` with a back stack. The CLI gained `show`.
+  jumps go through `BrowserModel.jumpToCommit`; the way back from one is the back/forward
+  list. The CLI gained `show`.
 - **Branch and tag management.** The first mutating actions. Create branch, create tag,
   delete branch, delete tag — each through `rc-git-guard`: the policy decides, destructive
   deletions demand the typed name, and a backup ref under `refs/rc-git/backup/` is written
@@ -109,6 +110,16 @@ constraints are clear.
   relaunch reopens them. Closing never drops a repository from that list, so ⌘W, ⇧⌘W and ⌘Q
   all come back with the same tabs; the restore is the one write that shrinks it, dropping
   the repositories that no longer open.
+- **Back and forward.** ⌘[ and ⌘], the toolbar arrows, a two-finger swipe, and a mouse's
+  fourth and fifth buttons step through the places you went: files opened, commits picked,
+  History scoped to a path, the Files/History/Changes pane, the ref browsed, and the tab in
+  front. One list covers every tab, so a step back from one repository can land in another.
+  `BackForwardList` (RcGitKit, pure, tested) holds the stops; `BrowserModel.location` names
+  where a tab is and `restore` returns to one, redoing only what differs. A stop names what
+  it showed and reads it again on return: a ref that moved shows its new tip, a file that is
+  gone leaves the pane empty. The list lives in memory, keeps 200 stops, and drops a tab's
+  stops when the tab closes. The commit detail's back arrow is the same step, shown while
+  it lands on another commit. No core or FFI change.
 
 - **Fetch, pull, push, sync.** HTTPS and SSH, both in-process, no child ever spawned:
   HTTPS through gix's curl backend, SSH through russh running `git-upload-pack` /

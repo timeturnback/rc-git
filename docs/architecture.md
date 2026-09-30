@@ -72,6 +72,22 @@ is on, and `LinkTextView` underlines it without touching the text storage. A cli
 specifier to `BrowserModel.openImport`, where `ImportResolver` reads the directories and
 config files it needs off the main actor and `openPath` opens what it found.
 
+## Going back
+
+For every move a tab makes, `BrowserModel` fires `onLocationChanged` once. `location`
+names the tree browsed (the working tree, a ref by name, or one commit), the open file's
+path, the history scope, and the commit in the detail. A move that changes several of those
+reports after the last one — a ref switch also closes the open file — so the step in between
+is never recorded. The window controller adds the repository path and the pane to make a
+stop, and the app delegate records it in one `BackForwardList` for every tab, from the tab
+in front only.
+
+Stepping back selects the stop's tab and calls `BrowserModel.restore`, which compares the
+stop with where the browser is and redoes only what differs: between two files of one tree
+that is one blob read. Restores coalesce the way the change list's scans do. One asked for
+while another runs replaces the pending location and returns; the running one stops at its
+next step and goes on to it. What a tab reports during a restore is not recorded.
+
 ## Threading
 
 - `BrowserModel` is `@MainActor`. All state changes and callbacks happen there.

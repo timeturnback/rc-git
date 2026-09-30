@@ -38,9 +38,11 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private var allRoots: [Node] = []
     private var roots: [Node] = []
     private var generation = 0
-    /// Set while `refilter` puts the selection back, so re-selecting the open file does not
-    /// open it again.
+    /// Set while the selection is moved from here rather than by a click, so re-selecting
+    /// the open file does not open it again.
     private var restoringSelection = false
+    /// The path `showOpenFile` last matched the selection to.
+    private var shownFilePath: String?
 
     override func loadView() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
@@ -145,6 +147,10 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                     roots = visible(nodes)
                     outline.reloadData()
                 }
+                // Rows that just arrived may hold the open file: a reload drops the selection.
+                if outline.selectedRow < 0 {
+                    matchSelectionToShownFile()
+                }
                 reportContentWidth()
             } catch {
                 guard generation == self.generation else { return }
@@ -189,6 +195,32 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         }
         restoringSelection = false
         reportContentWidth()
+    }
+
+    /// Keeps the selection from naming a file the pane has left — a link followed, a step
+    /// back — because a row that is still selected cannot be clicked to open it again.
+    func showOpenFile(_ path: String?) {
+        guard path != shownFilePath else { return }
+        shownFilePath = path
+        matchSelectionToShownFile()
+    }
+
+    /// Selects the open file's row when it is on the outline, and deselects a file row that
+    /// is not the open file. Reads nothing and expands nothing; a selected folder stays
+    /// unless the open file has a row to move to.
+    private func matchSelectionToShownFile() {
+        let selected = outline.item(atRow: outline.selectedRow) as? Node
+        guard selected?.path != shownFilePath else { return }
+        let row = shownFilePath.flatMap { path in
+            (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? Node)?.path == path }
+        }
+        restoringSelection = true
+        if let row {
+            outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        } else if selected?.entry.kind.isDirectory == false {
+            outline.deselectAll(nil)
+        }
+        restoringSelection = false
     }
 
     private func buildMenu() -> NSMenu {
