@@ -14,7 +14,8 @@ rc-git-core   gix wrapper. Repository pool, refs, trees, blobs, log, revision pa
 to scripts. `rc-git-guard` holds the mutation policy and, in its `actions` module, the one
 write path: branch and tag management, commits built from working-tree selections, the stash
 lifecycle, and discards; `safety.md` has the rules. `rc-git-highlight` is a pure tree-sitter
-wrapper the FFI exposes for the file pane.
+wrapper the FFI exposes for the file pane: highlight spans, and the import links of a
+JavaScript or TypeScript file.
 
 ## Opening a repository
 
@@ -64,6 +65,12 @@ render as a styled preview instead, toggled from the file pane header: `Markdown
 halves are pure, so the preview is built off the main actor like the plain paint is.
 `MarkdownLinkTarget` resolves what a link means — a URL, a repository path, or a heading —
 and is what the pane, its context menu, and `BrowserModel.openPath` all agree on.
+
+Source mode has links of its own in JavaScript and TypeScript. The first pointer move over a
+file asks `BrowserModel.importLinks` for them; `ImportLinkMap` answers which one the pointer
+is on, and `LinkTextView` underlines it without touching the text storage. A click hands the
+specifier to `BrowserModel.openImport`, where `ImportResolver` reads the directories and
+config files it needs off the main actor and `openPath` opens what it found.
 
 ## Threading
 

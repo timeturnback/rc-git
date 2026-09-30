@@ -16,6 +16,15 @@ public final class TreeStore: @unchecked Sendable {
         lock.withLock { entries[tree] = children }
     }
 
+    /// The listing of `tree`, from the cache or through `read`, which is then remembered. The
+    /// lock is not held across `read`, so two callers may both read the same tree once.
+    public func entries(of tree: Oid, read: (Oid) throws -> [TreeEntry]) rethrows -> [TreeEntry] {
+        if let cached = cached(tree) { return cached }
+        let children = try read(tree)
+        store(children, for: tree)
+        return children
+    }
+
     public var count: Int {
         lock.withLock { entries.count }
     }

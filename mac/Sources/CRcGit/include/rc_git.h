@@ -525,6 +525,28 @@ typedef struct RcGitHighlightList {
   size_t len;
 } RcGitHighlightList;
 
+// One clickable region of a source file and the module it leads to: byte offsets into the
+// data that was read, half-open. The specifier is a range of that same data, so no string
+// crosses the boundary.
+typedef struct RcGitImportLink {
+  // First byte of the clickable region.
+  uint32_t start;
+  // One past its last byte.
+  uint32_t end;
+  // First byte of the module specifier, as written between the quotes.
+  uint32_t specifier_start;
+  // One past the specifier's last byte.
+  uint32_t specifier_end;
+} RcGitImportLink;
+
+// Every import link of one file, ordered by start and never overlapping.
+typedef struct RcGitImportLinkList {
+  // `len` links.
+  struct RcGitImportLink *links;
+  // Number of links.
+  size_t len;
+} RcGitImportLinkList;
+
 // What the front end must collect before an action may run. Fields beyond `kind` are
 // meaningful only for the kinds their comments name.
 typedef struct RcGitGuardDecision {
@@ -1037,6 +1059,27 @@ struct RcGitHighlightList *rcgit_highlight(const char *name,
 // # Safety
 // `list` is NULL or came from `rcgit_highlight` and is not freed twice.
 void rcgit_highlight_list_free(struct RcGitHighlightList *list);
+
+// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
+// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
+// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
+// `name` maps to no known language; an empty list when the language has no links or the
+// file has none; NULL with `*error` set when parsing fails. Needs no repository. Release
+// with `rcgit_import_link_list_free`.
+//
+// # Safety
+// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+// `error` is NULL or valid for writing a `char *`.
+struct RcGitImportLinkList *rcgit_import_links(const char *name,
+                                               const uint8_t *data,
+                                               size_t len,
+                                               char **error);
+
+// Releases a value from `rcgit_import_links`.
+//
+// # Safety
+// `list` is NULL or came from `rcgit_import_links` and is not freed twice.
+void rcgit_import_link_list_free(struct RcGitImportLinkList *list);
 
 // What deleting the branch `name` would need: the policy's decision plus whether the branch
 // is merged. `repo_path` is the repository's path, as given to `rcgit_repo_open`. Release

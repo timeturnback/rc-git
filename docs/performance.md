@@ -23,6 +23,8 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | blame | grows with commits touching the file | on demand for the open file, never in bulk |
 | markdown preview | about 20 ms per MiB, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; capped at 8 MiB, above which the file opens in source mode |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
+| import links | about 100 ms per MiB, on the first pointer move over a file, off the main actor | one parse of its own, skipped when the bytes hold no `import`, `require` or `from`; 16 bytes a link, cached with the blob's highlight spans; hover is a binary search and one temporary attribute |
+| follow an import | one tree object per directory on the way, plus the config files above the importing file when the specifier is not relative | resolved on click, through the shared tree cache; nothing is indexed and nothing is kept |
 
 First paint after choosing a repository should land under 30 ms: open, `HEAD`, root tree,
 refs. Everything else is on demand.
@@ -59,6 +61,9 @@ refs. Everything else is on demand.
   tree does not track pruned unopened.
 - **Decorate after painting.** Syntax highlighting and blame load after the content is on
   screen and never block it; a stale result is dropped by generation, like every other load.
+- **Parse for a feature when the user reaches for it.** Import links need a second parse of
+  the file, which costs about as much as highlighting it, so it runs on the first pointer
+  move over the text. A file opened from the sidebar and read costs nothing extra.
 
 ## Measuring
 

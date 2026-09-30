@@ -13,6 +13,7 @@ private struct BuiltText: @unchecked Sendable {
 /// layout so multi-megabyte files open without laying out every line first. The attributed
 /// string is built off the main actor, and syntax colors are applied as temporary attributes
 /// for the visible range only, so no pass over the whole document ever runs on the main actor.
+/// Import links in source mode are found the first time the pointer moves over the text.
 @MainActor
 final class FileViewController: NSViewController {
     var onLoadAnyway: ((TreeEntry, UInt64) -> Void)?
@@ -21,8 +22,13 @@ final class FileViewController: NSViewController {
     /// A markdown link that pointed inside the repository was clicked; the argument is the
     /// repository-relative path it resolved to.
     var onOpenRepositoryPath: ((String) -> Void)?
+    /// Asked for the import links of a source file; `nil` means it has none to follow.
+    var importLinkProvider: ((TreeEntry, TextDocument) async -> [ImportLink]?)?
+    /// An import link was clicked; the arguments are the module specifier as written and the
+    /// repository-relative path of the file it is written in.
+    var onOpenImport: ((String, String) -> Void)?
     /// The repository-relative path of the file on screen, which is what a relative markdown
-    /// link is resolved against. `nil` when the opener did not know it.
+    /// link or import is resolved against. `nil` when the opener did not know it.
     var repositoryPath: String?
 
     /// Files above this size are never offered for display, even with "Load anyway".
@@ -43,7 +49,7 @@ final class FileViewController: NSViewController {
     private let loadAnyway = NSButton(title: "Load anyway", target: nil, action: nil)
     private let scroll = NSScrollView()
     private let textStorage = NSTextStorage()
-    private var textView: NSTextView!
+    private var textView: LinkTextView!
     private var ruler: LineNumberRulerView!
     private var tooLargeEntry: (TreeEntry, UInt64)?
 
@@ -60,6 +66,12 @@ final class FileViewController: NSViewController {
     private var anchors: [String: Int] = [:]
     /// A heading a link asked for in a file that was still loading, applied once it paints.
     private var pendingAnchor: String?
+    /// True while the text on screen is the source of `current`, which is when the pointer
+    /// may ask about import links.
+    private var showsSource = false
+    /// Whether the links of the source on screen were asked for yet.
+    private var importLinksRequested = false
+    private var importLinks: ImportLinkMap?
 
     override func loadView() {
         pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
@@ -99,7 +111,9 @@ final class FileViewController: NSViewController {
         container.lineFragmentPadding = 8
         layoutManager.addTextContainer(container)
         textStorage.addLayoutManager(layoutManager)
-        textView = NSTextView(frame: .zero, textContainer: container)
+        textView = LinkTextView(frame: .zero, textContainer: container)
+        textView.linkRange = { [weak self] index in self?.importLink(at: index)?.range }
+        textView.onFollowLink = { [weak self] index in self?.followImport(at: index) }
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -254,6 +268,7 @@ final class FileViewController: NSViewController {
         contentGeneration += 1
         let generation = contentGeneration
         clearHighlights()
+        clearImportLinks()
         let previewable =
             Self.isMarkdown(entry.name) && document.byteCount <= Self.previewLimit
         modePicker.isHidden = !previewable
@@ -292,6 +307,7 @@ final class FileViewController: NSViewController {
             configureForSource()
         }
         textStorage.setAttributedString(text)
+        showsSource = !asPreview
         ruler.setLineStarts(asPreview ? [] : lineStarts)
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         textView.scroll(.zero)
@@ -331,6 +347,7 @@ final class FileViewController: NSViewController {
         anchors = [:]
         pendingAnchor = nil
         clearHighlights()
+        clearImportLinks()
         placeholder.stringValue = message
         placeholder.isHidden = false
         scroll.isHidden = true
@@ -372,6 +389,7 @@ final class FileViewController: NSViewController {
     }
 
     @objc private func visibleRegionChanged(_ notification: Notification) {
+        textView.clearLinkHover()
         applyVisibleHighlights()
     }
 
@@ -423,6 +441,52 @@ final class FileViewController: NSViewController {
             }
             index += 1
         }
+    }
+}
+
+// MARK: - Import links
+
+extension FileViewController {
+    /// The import link under one character of the source on screen. The first question about
+    /// a file starts the search for its links, so a file that is only read is never parsed
+    /// for them; until they land the answer is `nil`.
+    fileprivate func importLink(at index: Int) -> ImportLinkMap.Hit? {
+        guard showsSource, repositoryPath != nil else { return nil }
+        if !importLinksRequested {
+            importLinksRequested = true
+            fetchImportLinks()
+        }
+        return importLinks?.hit(at: index)
+    }
+
+    /// Finds the links in the background and maps them to UTF-16 off the main actor. A
+    /// result for a file the pane has moved on from is dropped by generation.
+    private func fetchImportLinks() {
+        guard let importLinkProvider, let (entry, document) = current else { return }
+        let generation = contentGeneration
+        Task { [weak self] in
+            guard let links = await importLinkProvider(entry, document), !links.isEmpty else {
+                return
+            }
+            let text = document.text
+            let map = await Task.detached(priority: .utility) {
+                ImportLinkMap(links: links, text: text)
+            }.value
+            guard let self, generation == self.contentGeneration else { return }
+            self.importLinks = map
+        }
+    }
+
+    fileprivate func followImport(at index: Int) {
+        guard let hit = importLinks?.hit(at: index), let path = repositoryPath else { return }
+        onOpenImport?(hit.specifier, path)
+    }
+
+    fileprivate func clearImportLinks() {
+        showsSource = false
+        importLinksRequested = false
+        importLinks = nil
+        textView?.clearLinkHover()
     }
 }
 

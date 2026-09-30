@@ -32,7 +32,7 @@ follows along when refs change on disk. History shows the list in the sidebar. F
 banner there instead, naming what you browse: click it or press ⌘B to pick from the list in a
 sheet. In Changes the banner names the checked-out branch. Folders load when expanded, files
 open with syntax highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by
-fuzzy name.
+fuzzy name. In JavaScript and TypeScript, click an import or a component to open its file.
 
 The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as you scroll, and
 selecting a commit shows the files it changed with a line diff; double-click to browse the
@@ -72,7 +72,7 @@ writes a backup ref before deleting. `docs/safety.md` has the full table.
 ```
 crates/rc-git-core       read-only gix wrapper, keyed by object id
 crates/rc-git-guard      policy for destructive actions, and the one write path
-crates/rc-git-highlight  tree-sitter syntax highlighting
+crates/rc-git-highlight  tree-sitter syntax highlighting and import links
 crates/rc-git-ffi        C ABI for the Swift app
 crates/rc-git-cli        rc-git binary
 crates/rc-git-testkit    fixture repositories for tests

@@ -142,6 +142,9 @@ public final class BrowserModel {
     /// Least recently used first.
     private var highlightCacheOrder: [Oid] = []
     private var highlightCacheSpanCount = 0
+    /// Import links, per blob. They live and die with the blob's highlight spans, so the
+    /// bounds above cover them too and they need no bookkeeping of their own.
+    private var importLinkCache: [Oid: [ImportLink]] = [:]
     static let highlightCacheLimit = 16
     static let highlightCacheSpanLimit = 1_500_000
 
@@ -157,6 +160,7 @@ public final class BrowserModel {
         highlightCache.removeAll()
         highlightCacheOrder.removeAll()
         highlightCacheSpanCount = 0
+        importLinkCache.removeAll()
         indexBuild?.task.cancel()
         indexBuild = nil
         forgetWorktreePaths()
@@ -401,9 +405,7 @@ public final class BrowserModel {
         guard let repository else { throw RepositoryError("no repository is open") }
         let store = trees
         return try await Task.detached(priority: .userInitiated) {
-            let entries = try repository.treeEntries(tree)
-            store.store(entries, for: tree)
-            return entries
+            try store.entries(of: tree, read: repository.treeEntries)
         }.value
     }
 
@@ -909,8 +911,110 @@ public final class BrowserModel {
             guard highlightCacheOrder.count > 1 else { break }
             let evicted = highlightCacheOrder.removeFirst()
             highlightCacheSpanCount -= highlightCache.removeValue(forKey: evicted)?.count ?? 0
+            importLinkCache.removeValue(forKey: evicted)
         }
     }
+
+    // MARK: Import links
+
+    /// The import links of a text file, found in the background. Cached by blob id for as
+    /// long as the blob's highlight spans are, so going back and forth between two files
+    /// parses neither again. `nil` under the same conditions as `highlights`.
+    public func importLinks(for entry: TreeEntry, document: TextDocument) async -> [ImportLink]? {
+        guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
+        let cacheable = !entry.oid.bytes.isEmpty
+        if cacheable, let cached = importLinkCache[entry.oid] { return cached }
+        let name = entry.name
+        let text = document.text
+        let links = await Task.detached(priority: .utility) {
+            ImportLinks.find(name: name, text: text)
+        }.value
+        if cacheable, let links, highlightCache[entry.oid] != nil {
+            importLinkCache[entry.oid] = links
+        }
+        return links
+    }
+
+    /// Opens the file a module specifier names, the way an import link in the file pane asks
+    /// for one. `sourcePath` is the repository-relative path of the file the specifier is
+    /// written in. Returns `false` when the specifier names nothing in this tree, which is
+    /// what a package from a registry does.
+    ///
+    /// Resolution reads the directories on the way to each candidate, through the shared tree
+    /// cache, and the config files above `sourcePath` when the specifier is not relative. It
+    /// keeps nothing: a click is rare, and a config differs from one tree to the next.
+    @discardableResult
+    public func openImport(_ specifier: String, from sourcePath: String) async -> Bool {
+        guard let repository, let root = rootTree else { return false }
+        let fileToken = fileGeneration
+        let rootToken = rootGeneration
+        let onDisk = browsingWorkingTree
+        let store = trees
+        let path = await Task.detached(priority: .userInitiated) { () -> String? in
+            let resolver =
+                onDisk
+                ? Self.worktreeResolver(repository: repository, root: root)
+                : Self.treeResolver(repository: repository, root: root, store: store)
+            return resolver.resolve(specifier, from: sourcePath)
+        }.value
+        // The user opened something else, or switched ref, while this resolved.
+        guard fileToken == fileGeneration, rootToken == rootGeneration else { return true }
+        guard let path else { return false }
+        return await openPath(path)
+    }
+
+    /// A resolver over a committed tree: one tree object per directory on the way to a path,
+    /// each landing in the shared cache.
+    nonisolated private static func treeResolver(
+        repository: any RepositoryReading, root: Oid, store: TreeStore
+    ) -> ImportResolver {
+        let list: (String) -> [TreeEntry]? = { path in
+            var current = root
+            for component in path.split(separator: "/") {
+                let entries = try? store.entries(of: current, read: repository.treeEntries)
+                guard let match = entries?.first(where: { $0.name == component }),
+                    match.kind.isDirectory
+                else { return nil }
+                current = match.oid
+            }
+            return try? store.entries(of: current, read: repository.treeEntries)
+        }
+        return ImportResolver(list: list) { path in
+            let parent = path.split(separator: "/").dropLast().joined(separator: "/")
+            let name = path.split(separator: "/").last.map(String.init)
+            guard let entry = list(parent)?.first(where: { $0.name == name }),
+                let content = try? repository.readBlob(entry.oid, limit: importConfigLimit),
+                case let .text(data, _, _) = content
+            else { return nil }
+            return data
+        }
+    }
+
+    /// A resolver over the files on disk, for the working tree.
+    nonisolated private static func worktreeResolver(
+        repository: any RepositoryReading, root: Oid
+    ) -> ImportResolver {
+        ImportResolver(
+            list: { path in
+                guard let listing = try? repository.worktreeEntries(tree: root, dir: path) else {
+                    return nil
+                }
+                return listing.entries.map {
+                    TreeEntry(name: $0.name, oid: $0.oid ?? Oid(bytes: []), kind: $0.kind)
+                }
+            },
+            read: { path in
+                guard
+                    let content = try? repository.worktreeFile(
+                        path: path, limit: importConfigLimit),
+                    case let .text(data, _, _) = content
+                else { return nil }
+                return data
+            })
+    }
+
+    /// The most a `tsconfig.json` may weigh and still be read for its module paths.
+    nonisolated static let importConfigLimit: UInt64 = 256 * 1024
 
     // MARK: Path search
 
@@ -925,10 +1029,7 @@ public final class BrowserModel {
         let store = trees
         let task = Task.detached(priority: .utility) {
             try PathIndex.build(root: root) { tree in
-                if let cached = store.cached(tree) { return cached }
-                let entries = try repository.treeEntries(tree)
-                store.store(entries, for: tree)
-                return entries
+                try store.entries(of: tree, read: repository.treeEntries)
             }
         }
         indexBuild = (root, task)

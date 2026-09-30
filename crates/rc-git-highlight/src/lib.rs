@@ -3,8 +3,16 @@
 //! Pure: bytes in, spans out. The app applies spans after first paint, so plain text never
 //! waits on a parse, and caches them by blob id, so a file is parsed once. Languages are
 //! detected from the file name only; unknown names simply produce no spans.
+//!
+//! [`import_links`] reads the same bytes for the regions that name another module, which is
+//! what lets the file pane follow an import.
 
+mod imports;
+
+use std::borrow::Cow;
 use std::sync::OnceLock;
+
+pub use imports::{ImportLink, import_links};
 
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
@@ -30,6 +38,11 @@ pub enum Language {
     Swift,
     /// TOML: `.toml`.
     Toml,
+    /// TypeScript with JSX: `.tsx`. A grammar of its own, because JSX makes `<T>expr` casts
+    /// and some generic arrow functions mean something else.
+    Tsx,
+    /// TypeScript: `.ts`, `.mts`, `.cts`.
+    TypeScript,
     /// YAML: `.yml`, `.yaml`.
     Yaml,
 }
@@ -49,6 +62,8 @@ impl Language {
             "rs" => Some(Self::Rust),
             "swift" => Some(Self::Swift),
             "toml" => Some(Self::Toml),
+            "tsx" => Some(Self::Tsx),
+            "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "yml" | "yaml" => Some(Self::Yaml),
             _ => None,
         }
@@ -67,6 +82,8 @@ impl Language {
             Self::Rust => "rust",
             Self::Swift => "swift",
             Self::Toml => "toml",
+            Self::Tsx => "tsx",
+            Self::TypeScript => "typescript",
             Self::Yaml => "yaml",
         }
     }
@@ -87,6 +104,8 @@ impl Language {
             "rust" | "rs" => Some(Self::Rust),
             "swift" => Some(Self::Swift),
             "toml" => Some(Self::Toml),
+            "tsx" => Some(Self::Tsx),
+            "typescript" | "ts" => Some(Self::TypeScript),
             "yaml" | "yml" => Some(Self::Yaml),
             _ => None,
         }
@@ -102,7 +121,7 @@ impl Language {
     }
 }
 
-const LANGUAGE_COUNT: usize = 10;
+const LANGUAGE_COUNT: usize = 12;
 
 /// The markdown inline grammar, reachable only through markdown's injections. Configured with
 /// the same capture names as every other grammar, so classes mean the same thing everywhere.
@@ -243,6 +262,12 @@ pub enum Error {
         /// The underlying cause.
         source: tree_sitter_highlight::Error,
     },
+    /// The parser returned no tree while looking for import links.
+    #[error("finding imports in {}: the parser returned no tree", language.name())]
+    Imports {
+        /// The language being read.
+        language: Language,
+    },
 }
 
 /// Highlights `data`, returning non-overlapping spans ordered by start. Nested captures
@@ -265,6 +290,8 @@ pub fn highlight(data: &[u8], language: Language) -> Result<Vec<Span>, Error> {
         | Language::Rust
         | Language::Swift
         | Language::Toml
+        | Language::Tsx
+        | Language::TypeScript
         | Language::Yaml => single_layer(language.configuration()?, data, language),
     }
 }
@@ -524,51 +551,71 @@ fn merge_overlays(base: Vec<Span>, overlays: Vec<Span>) -> Vec<Span> {
 fn build_configuration(
     language: Language,
 ) -> Result<HighlightConfiguration, Box<dyn std::error::Error>> {
-    let (grammar, query): (tree_sitter::Language, &str) = match language {
+    let (grammar, query): (tree_sitter::Language, Cow<'static, str>) = match language {
         Language::Bash => (
             tree_sitter_bash::LANGUAGE.into(),
-            tree_sitter_bash::HIGHLIGHT_QUERY,
+            tree_sitter_bash::HIGHLIGHT_QUERY.into(),
         ),
         Language::C => (
             tree_sitter_c::LANGUAGE.into(),
-            tree_sitter_c::HIGHLIGHT_QUERY,
+            tree_sitter_c::HIGHLIGHT_QUERY.into(),
         ),
         Language::JavaScript => (
             tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_javascript::HIGHLIGHT_QUERY.into(),
         ),
         Language::Json => (
             tree_sitter_json::LANGUAGE.into(),
-            tree_sitter_json::HIGHLIGHTS_QUERY,
+            tree_sitter_json::HIGHLIGHTS_QUERY.into(),
         ),
         Language::Markdown => (
             tree_sitter_md::LANGUAGE.into(),
-            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.into(),
         ),
         Language::Python => (
             tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::HIGHLIGHTS_QUERY,
+            tree_sitter_python::HIGHLIGHTS_QUERY.into(),
         ),
         Language::Rust => (
             tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::HIGHLIGHTS_QUERY,
+            tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
         ),
         Language::Swift => (
             tree_sitter_swift::LANGUAGE.into(),
-            tree_sitter_swift::HIGHLIGHTS_QUERY,
+            tree_sitter_swift::HIGHLIGHTS_QUERY.into(),
         ),
         Language::Toml => (
             tree_sitter_toml_ng::LANGUAGE.into(),
-            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+            tree_sitter_toml_ng::HIGHLIGHTS_QUERY.into(),
+        ),
+        Language::Tsx => (
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            typescript_query().into(),
+        ),
+        Language::TypeScript => (
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            typescript_query().into(),
         ),
         Language::Yaml => (
             tree_sitter_yaml::LANGUAGE.into(),
-            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            tree_sitter_yaml::HIGHLIGHTS_QUERY.into(),
         ),
     };
-    let mut config = HighlightConfiguration::new(grammar, language.name(), query, "", "")?;
+    let mut config = HighlightConfiguration::new(grammar, language.name(), &query, "", "")?;
     config.configure(&CAPTURE_NAMES);
     Ok(config)
+}
+
+/// The TypeScript grammars extend JavaScript's, and their highlight query only covers what
+/// they add, so it is read together with JavaScript's. Later patterns win on a node both
+/// capture, which is why the TypeScript half goes first: JavaScript's `@constant` for
+/// `MAX_SIZE` must beat TypeScript's broader "capitalized identifier is a type".
+fn typescript_query() -> String {
+    [
+        tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+    ]
+    .join("\n")
 }
 
 #[cfg(test)]
@@ -602,6 +649,21 @@ mod tests {
             Language::from_file_name("notes.MARKDOWN"),
             Some(Language::Markdown)
         );
+        assert_eq!(
+            Language::from_file_name("api.ts"),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(
+            Language::from_file_name("types.d.ts"),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(
+            Language::from_file_name("vite.config.mts"),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(Language::from_file_name("App.tsx"), Some(Language::Tsx));
+        assert_eq!(Language::from_fence("ts"), Some(Language::TypeScript));
+        assert_eq!(Language::from_fence("TSX"), Some(Language::Tsx));
         assert_eq!(Language::from_fence("rust"), Some(Language::Rust));
         assert_eq!(Language::from_fence("SH"), Some(Language::Bash));
         assert_eq!(Language::from_fence("mermaid"), None);
@@ -626,7 +688,7 @@ mod tests {
 
     #[test]
     fn every_language_grammar_loads_and_highlights() {
-        let samples: [(Language, &[u8]); 10] = [
+        let samples: [(Language, &[u8]); LANGUAGE_COUNT] = [
             (Language::Bash, b"echo \"hi\" # done\n"),
             (Language::C, b"int main(void) { return 0; }\n"),
             (Language::JavaScript, b"const x = 1; // c\n"),
@@ -636,6 +698,8 @@ mod tests {
             (Language::Rust, b"pub fn f() -> u32 { 1 }\n"),
             (Language::Swift, b"func f() -> Int { return 1 }\n"),
             (Language::Toml, b"[table]\nkey = \"value\"\n"),
+            (Language::Tsx, b"const a = <Tag prop={1} />;\n"),
+            (Language::TypeScript, b"const x: number = 1; // c\n"),
             (Language::Yaml, b"key: value\nlist:\n  - 1\n"),
         ];
         for (language, data) in samples {
@@ -643,6 +707,54 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             assert!(!spans.is_empty(), "{} produced no spans", language.name());
         }
+    }
+
+    #[test]
+    fn typescript_types_keywords_and_constants_are_classified() {
+        let data = b"interface Shape { readonly side: number }\nconst MAX_SIZE = 4;\nexport function area(shape: Shape): number { return shape.side ** 2; }\n";
+        let spans = highlight(data, Language::TypeScript).unwrap();
+        assert!(classes_at(&spans, data, "interface").contains(&Class::Keyword));
+        assert!(classes_at(&spans, data, "readonly").contains(&Class::Keyword));
+        assert!(classes_at(&spans, data, "Shape {").contains(&Class::Type));
+        assert!(classes_at(&spans, data, "number }").contains(&Class::Type));
+        assert!(classes_at(&spans, data, "area").contains(&Class::Function));
+        assert_eq!(
+            classes_at(&spans, data, "MAX_SIZE"),
+            vec![Class::Constant],
+            "an all-caps name is a constant, not a type"
+        );
+    }
+
+    #[test]
+    fn typescript_casts_parse_in_ts_and_jsx_parses_in_tsx() {
+        let cast = b"const n = <number>value;\nconst f = <T>(x: T) => x;\n";
+        let spans = highlight(cast, Language::TypeScript).unwrap();
+        assert!(classes_at(&spans, cast, "number").contains(&Class::Type));
+
+        let jsx = b"const view = <Panel title=\"a\">{count}</Panel>;\n";
+        let spans = highlight(jsx, Language::Tsx).unwrap();
+        assert!(classes_at(&spans, jsx, "Panel title").contains(&Class::Type));
+        assert!(classes_at(&spans, jsx, "\"a\"").contains(&Class::String));
+        assert!(classes_at(&spans, jsx, "title").contains(&Class::Property));
+    }
+
+    #[test]
+    fn markdown_fences_highlight_typescript() {
+        let data = b"```ts\nconst x: number = 1;\n```\n";
+        let spans = highlight(data, Language::Markdown).unwrap();
+        assert!(classes_at(&spans, data, "const").contains(&Class::Keyword));
+        assert!(classes_at(&spans, data, "number").contains(&Class::Type));
+    }
+
+    #[test]
+    fn the_imports_error_names_the_operation_and_the_language() {
+        let error = Error::Imports {
+            language: Language::Tsx,
+        };
+        assert_eq!(
+            error.to_string(),
+            "finding imports in tsx: the parser returned no tree"
+        );
     }
 
     #[test]

@@ -68,6 +68,12 @@ paths: mac/**
   and a `#fragment` apart in one place is what keeps clicking, the context menu and
   "Copy Link" from disagreeing. A repository link opens through `BrowserModel.openPath`, which
   walks one tree object per component.
+- Import links in source mode never enter the text storage: `LinkTextView` asks its owner
+  which range a character falls in and draws the hover underline as a temporary attribute. A
+  `.link` attribute would be a storage edit, which invalidates layout for every range it
+  touches. Links load on the first pointer move (`FileViewController.importLink(at:)`), and a
+  click resolves through `BrowserModel.openImport` and `ImportResolver` — never resolve a
+  specifier in a view, and never keep a resolved path: the tree on screen decides.
 - In `MainWindowController.init`, views are built before `setFrameAutosaveName`: the frame
   restore resizes the window and fires `windowDidResize` -> `applyLayout()` synchronously, and an
   exception there is swallowed by launch Apple Event handling, leaving the app windowless

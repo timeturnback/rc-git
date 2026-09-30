@@ -675,6 +675,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return nil }
             return await model.highlights(for: entry, document: document)
         }
+        fileController.importLinkProvider = { [weak self] entry, document in
+            guard let self else { return nil }
+            return await model.importLinks(for: entry, document: document)
+        }
+        fileController.onOpenImport = { [weak self] specifier, source in
+            guard let self else { return }
+            Task {
+                // Most misses are packages from a registry; a sheet for each would be noise.
+                guard await self.model.openImport(specifier, from: source) else {
+                    NSSound.beep()
+                    return
+                }
+            }
+        }
         fileController.onOpenRepositoryPath = { [weak self] path in
             guard let self else { return }
             setMode(.files)

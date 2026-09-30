@@ -37,11 +37,11 @@ and Xcode 16 or newer. `docs/development.md` has the rest.
 |---|---|---|
 | `crates/rc-git-core` | gix wrapper: open, refs, trees, blobs, log, diff, blame, worktree. Keyed by `Oid`. No gix types in the public API. | yes |
 | `crates/rc-git-guard` | policy for every mutating action, and the one write path (branch/tag management, backup refs). | yes |
-| `crates/rc-git-highlight` | tree-sitter highlighting: bytes in, spans out. Pure. | yes |
+| `crates/rc-git-highlight` | tree-sitter highlighting and import links: bytes in, spans out. Pure. | yes |
 | `crates/rc-git-ffi` | C ABI over core, guard, and highlight. The only crate allowed `unsafe`. | yes |
 | `crates/rc-git-cli` | `rc-git` binary: scriptable access plus `--time`. | yes |
 | `crates/rc-git-testkit` | fixture repositories built with the git CLI. The only crate that shells out. | — |
-| `mac/Sources/RcGitKit` | Swift wrapper, `BrowserModel`, layout policy, the markdown parser and link resolution. **No AppKit.** | yes |
+| `mac/Sources/RcGitKit` | Swift wrapper, `BrowserModel`, layout policy, the markdown parser, link and import resolution. **No AppKit.** | yes |
 | `mac/Sources/RcGitApp` | AppKit windows and views. Marshals events to the model, nothing else. | no |
 
 New logic goes in `rc-git-core` when it reads git data and in `RcGitKit` when it is app state

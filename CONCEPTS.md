@@ -49,6 +49,17 @@ the innermost one — because the view applies exactly one color per range. A pr
 combines several grammar layers, as markdown does for its inline prose and fenced code,
 must re-impose this contract before the spans leave the highlighter.
 
+## Import link
+
+A region of a source file that leads to another module: the specifier of an import, a name
+the import binds, or a JSX element named after one. A link carries two byte ranges of the
+file and nothing else — the region to click and the specifier as written — so it never
+holds a path, and what it leads to is decided when it is followed, against the tree on
+screen at that moment.
+
+Links match names by spelling. A local that shadows an import is linked like the import;
+telling them apart needs scope analysis the viewer does not do.
+
 ## Block and run
 
 The markdown preview's document model. A *run* is one stretch of inline text that shares a

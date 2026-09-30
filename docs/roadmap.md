@@ -16,10 +16,19 @@ constraints are clear.
   `rcgit_highlight`, cached by blob id in `BrowserModel` (LRU-bounded), applied after first
   paint so plain text never waits on a parse — and only for the visible chunk, as temporary
   attributes, so a large file never pays a whole-document pass on the main actor. Languages:
-  bash, C, JavaScript, JSON, markdown, Python, Rust, Swift, TOML, YAML. Markdown highlights
+  bash, C, JavaScript, JSON, markdown, Python, Rust, Swift, TOML, TypeScript, TSX, YAML.
+  Markdown highlights
   its inline prose and fenced code blocks in their own language (injections resolved by hand;
   `tree_sitter_highlight`'s own layer merge mis-orders events). Files that are not valid
   UTF-8 or exceed 2 MiB stay plain.
+- **Import links.** In a JavaScript or TypeScript file, an import's specifier, the names it
+  binds, and every JSX element named after one are links: the pointer underlines one and a
+  click opens the file it names. `import_links` in `rc-git-highlight` finds them
+  (`rcgit_import_links`), sixteen bytes each and no strings; `ImportResolver` (RcGitKit)
+  turns a specifier into a path on click — relative paths, extensions and index files, and
+  the `paths` and `baseUrl` of the `tsconfig.json` above the file, through `extends` and
+  `references`. The parse waits for the first pointer move over the file. A package from a
+  registry resolves to nothing, and so does a workspace package with no `paths` entry.
 - **Markdown view.** `.md` files open as a rendered preview with a Preview/Source toggle in
   the file pane header; source mode keeps line numbers and syntax color. The parser is our
   own (`MarkdownDocument` in RcGitKit, pure and tested): headings both ways, lists including

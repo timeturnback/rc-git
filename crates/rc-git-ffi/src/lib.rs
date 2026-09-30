@@ -973,6 +973,38 @@ impl Drop for RcGitHighlightList {
     }
 }
 
+/// One clickable region of a source file and the module it leads to: byte offsets into the
+/// data that was read, half-open. The specifier is a range of that same data, so no string
+/// crosses the boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RcGitImportLink {
+    /// First byte of the clickable region.
+    pub start: u32,
+    /// One past its last byte.
+    pub end: u32,
+    /// First byte of the module specifier, as written between the quotes.
+    pub specifier_start: u32,
+    /// One past the specifier's last byte.
+    pub specifier_end: u32,
+}
+
+/// Every import link of one file, ordered by start and never overlapping.
+#[repr(C)]
+pub struct RcGitImportLinkList {
+    /// `len` links.
+    pub links: *mut RcGitImportLink,
+    /// Number of links.
+    pub len: usize,
+}
+
+impl Drop for RcGitImportLinkList {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.links, self.len) };
+    }
+}
+
 /// The policy's answer for a proposed action.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2413,6 +2445,70 @@ pub unsafe extern "C" fn rcgit_highlight(
 /// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_highlight_list_free(list: *mut RcGitHighlightList) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(list) };
+}
+
+/// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
+/// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
+/// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
+/// `name` maps to no known language; an empty list when the language has no links or the
+/// file has none; NULL with `*error` set when parsing fails. Needs no repository. Release
+/// with `rcgit_import_link_list_free`.
+///
+/// # Safety
+/// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+/// `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_import_links(
+    name: *const c_char,
+    data: *const u8,
+    len: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitImportLinkList {
+    // SAFETY: forwarded from this function's contract.
+    let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
+    let Some(name) = name else {
+        error.report("name is NULL");
+        return ptr::null_mut();
+    };
+    let data: &[u8] = if data.is_null() || len == 0 {
+        &[]
+    } else {
+        // SAFETY: forwarded from this function's contract.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    let name = String::from_utf8_lossy(name);
+    let Some(language) = Language::from_file_name(&name) else {
+        return ptr::null_mut();
+    };
+    match rc_git_highlight::import_links(data, language) {
+        Ok(links) => {
+            let mut exported = Vec::with_capacity(links.len());
+            for link in links {
+                exported.push(RcGitImportLink {
+                    start: link.start,
+                    end: link.end,
+                    specifier_start: link.specifier_start,
+                    specifier_end: link.specifier_end,
+                });
+            }
+            let (links, len) = export_vec(exported);
+            export(RcGitImportLinkList { links, len })
+        }
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_import_links`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_import_links` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_import_link_list_free(list: *mut RcGitImportLinkList) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(list) };
 }
@@ -4282,6 +4378,7 @@ mod tests {
             rcgit_worktree_list_free(ptr::null_mut());
             rcgit_worktree_file_list_free(ptr::null_mut());
             rcgit_highlight_list_free(ptr::null_mut());
+            rcgit_import_link_list_free(ptr::null_mut());
             rcgit_guard_decision_free(ptr::null_mut());
         }
         assert!(unsafe { rcgit_oid_hex(ptr::null()) }.is_null());
@@ -4985,6 +5082,53 @@ mod tests {
         assert!(error.is_null(), "an unknown language is not an error");
 
         let list = unsafe { rcgit_highlight(ptr::null(), data.as_ptr(), 0, &raw mut error) };
+        assert!(list.is_null());
+        assert_eq!(take_error(&mut error), "name is NULL");
+    }
+
+    #[test]
+    fn import_links_cross_the_boundary() {
+        let mut error = ptr::null_mut();
+        let name = CString::new("App.tsx").unwrap();
+        let data = b"import Panel from './Panel';\nconst view = <Panel />;\n";
+        let list =
+            unsafe { rcgit_import_links(name.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        assert!(!list.is_null());
+        assert!(error.is_null());
+        let list_ref = unsafe { &*list };
+        let links = unsafe { std::slice::from_raw_parts(list_ref.links, list_ref.len) };
+        let clicked: Vec<&[u8]> = links
+            .iter()
+            .map(|link| &data[link.start as usize..link.end as usize])
+            .collect();
+        assert_eq!(clicked, [&b"Panel"[..], b"./Panel", b"Panel"]);
+        for link in links {
+            let specifier = &data[link.specifier_start as usize..link.specifier_end as usize];
+            assert_eq!(specifier, b"./Panel");
+        }
+        unsafe { rcgit_import_link_list_free(list) };
+
+        let rust = CString::new("main.rs").unwrap();
+        let list =
+            unsafe { rcgit_import_links(rust.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        assert!(!list.is_null(), "a language without links is not an error");
+        assert_eq!(unsafe { &*list }.len, 0);
+        assert!(error.is_null());
+        unsafe { rcgit_import_link_list_free(list) };
+
+        let list = unsafe { rcgit_import_links(name.as_ptr(), ptr::null(), 0, &raw mut error) };
+        assert!(!list.is_null(), "no bytes means no links");
+        assert_eq!(unsafe { &*list }.len, 0);
+        unsafe { rcgit_import_link_list_free(list) };
+
+        let unknown = CString::new("photo.png").unwrap();
+        let list = unsafe {
+            rcgit_import_links(unknown.as_ptr(), data.as_ptr(), data.len(), &raw mut error)
+        };
+        assert!(list.is_null());
+        assert!(error.is_null(), "an unknown language is not an error");
+
+        let list = unsafe { rcgit_import_links(ptr::null(), data.as_ptr(), 0, &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "name is NULL");
     }
