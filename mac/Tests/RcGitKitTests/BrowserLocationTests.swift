@@ -224,6 +224,24 @@ import Testing
         #expect(model.fileState == .empty)
     }
 
+    @Test func restoreOfAFileGoneFromTheSameTreeClosesTheOneOpen() async {
+        await model.attach(repo)
+        await model.openPath("README.md")
+        await model.restore(BrowserLocation(tree: .ref(main), filePath: "gone.txt"))
+        #expect(model.openedFilePath == nil, "not README.md, which the stop never named")
+        #expect(model.fileState == .empty)
+    }
+
+    @Test func restoreOfAFileGoneFromDiskClosesTheOneOpen() async {
+        repo.workDir = "/work"
+        repo.worktreeFiles["README.md"] = textBlob("# on disk\n")
+        await model.attach(repo)
+        await model.openPath("README.md")
+        await model.restore(BrowserLocation(tree: .workingTree, filePath: "gone.txt"))
+        #expect(model.openedFilePath == nil)
+        #expect(model.fileState == .empty, "not the failed read of a file nobody asked for")
+    }
+
     @Test func restoreReportsWhereItEndedOnce() async {
         await model.attach(repo)
         await model.openPath("README.md")

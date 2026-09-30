@@ -951,9 +951,13 @@ public final class BrowserModel {
             guard pendingRestore == nil, location.tree == target.tree else { return }
         }
         if openedFilePath != target.filePath {
+            var opened = false
             if let path = target.filePath {
-                await openPath(path)
-            } else {
+                opened = await openPath(path)
+            }
+            // A file that is gone empties the pane: the file of the stop left behind, still
+            // open, would read as the one this stop named.
+            if !opened {
                 closeFile()
             }
             guard pendingRestore == nil else { return }
