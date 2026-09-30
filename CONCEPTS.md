@@ -165,4 +165,6 @@ the pane empty.
 
 The list is one for the whole app, so a step back can cross from one repository to another.
 A move to where the list already is records nothing, and a move somewhere new drops the
-stops ahead. Stops live in memory only, and closing a tab drops the ones that name it.
+stops ahead. Only a change records a stop: when returning to one falls short, because what
+it names is gone, the list keeps its place and the screen is not recorded in its stead.
+Stops live in memory only, and closing a tab drops the ones that name it.
