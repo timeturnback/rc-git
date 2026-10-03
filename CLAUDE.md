@@ -61,6 +61,10 @@ FFI layer only marshals; `docs/ffi.md` has the checklist for adding a function, 
   dev bundle is the process running the script.
 - Ask before adding a dependency on either side. Rust versions are pinned exactly and pass
   `cargo deny`; the Swift package has none.
+- rc-note is the sister app: same shape, with a Swift core instead of Rust. Read it with
+  `xref`, never its working tree. The file map, the parity table of what each app has, and how
+  to port live in `~/.claude/docs/native-app.md`, "Sister apps". A port ends its commit with a
+  `Ported-from: rc-note@<sha>` trailer.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.
 - `docs/` is the long-form reference: `architecture.md`, `performance.md`, `safety.md`,
   `ffi.md`, `testing.md`, `development.md`, `roadmap.md`.
