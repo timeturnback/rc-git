@@ -23,11 +23,14 @@ public enum LayoutPolicy {
     /// The widest the sidebar goes, however long its rows are. Past this the detail pane
     /// matters more than a path read in full.
     public static let sidebarMaximumWidth: CGFloat = 460
-    /// The height neither pane of the History commit drawer may drop below. A pane at zero
+    /// The height neither pane of History's left column may drop below: the commit list on
+    /// top, the open commit's detail — header and changed files — under it. A pane at zero
     /// reads as a missing feature, and `NSSplitView` autosave records the zero and re-imposes
     /// it on the next launch.
-    public static let historyChangesFloor: CGFloat = 100
-    public static let historyDiffFloor: CGFloat = 150
+    public static let historyCommitsFloor: CGFloat = 120
+    public static let historyDetailFloor: CGFloat = 200
+    /// The share of the left column a commit detail opens at when it has no height of its own.
+    public static let historyDetailShare: CGFloat = 0.45
 
     public static func layout(for size: CGSize) -> Layout {
         Layout(showsSidebar: size.width >= sidebarWindowWidth)
@@ -53,5 +56,21 @@ public enum LayoutPolicy {
             return available * firstFloor / (firstFloor + secondFloor)
         }
         return min(max(preferred, firstFloor), available - secondFloor)
+    }
+
+    /// The commit list's height in History's left column, out of the `available` height it
+    /// shares with the commit detail under it.
+    ///
+    /// `detailHeight` is the detail's height now, kept whenever both floors allow it. A detail
+    /// below its floor has never been sized — it was hidden until a commit opened — so it
+    /// opens at `historyDetailShare` of the column instead of squeezed onto the floor.
+    public static func historyCommitsHeight(available: CGFloat, detailHeight: CGFloat)
+        -> CGFloat
+    {
+        let detail =
+            detailHeight >= historyDetailFloor ? detailHeight : available * historyDetailShare
+        return splitPane(
+            available: available, preferred: available - detail,
+            firstFloor: historyCommitsFloor, secondFloor: historyDetailFloor)
     }
 }

@@ -77,12 +77,34 @@ import Testing
                 available: -10, preferred: 400, firstFloor: 100, secondFloor: 150) == 0)
     }
 
-    @Test func theHistoryDrawerFloorsLeaveBothPanesUsable() {
-        let available = LayoutPolicy.historyChangesFloor + LayoutPolicy.historyDiffFloor
-        let changes = LayoutPolicy.splitPane(
-            available: available, preferred: 0, firstFloor: LayoutPolicy.historyChangesFloor,
-            secondFloor: LayoutPolicy.historyDiffFloor)
-        #expect(changes == LayoutPolicy.historyChangesFloor)
-        #expect(available - changes == LayoutPolicy.historyDiffFloor)
+    @Test func theHistoryColumnFloorsLeaveBothPanesUsable() {
+        let available = LayoutPolicy.historyCommitsFloor + LayoutPolicy.historyDetailFloor
+        let commits = LayoutPolicy.historyCommitsHeight(available: available, detailHeight: 0)
+        #expect(commits == LayoutPolicy.historyCommitsFloor)
+        #expect(available - commits == LayoutPolicy.historyDetailFloor)
+    }
+
+    @Test func historyKeepsADetailHeightBothFloorsAllow() {
+        #expect(LayoutPolicy.historyCommitsHeight(available: 800, detailHeight: 300) == 500)
+        #expect(
+            LayoutPolicy.historyCommitsHeight(
+                available: 800, detailHeight: LayoutPolicy.historyDetailFloor)
+                == 800 - LayoutPolicy.historyDetailFloor)
+    }
+
+    @Test func historyOpensAnUnsizedDetailAtItsShare() {
+        // Hidden until a commit opened: the detail arrives at zero, or just under its floor.
+        let expected = 1000 - 1000 * LayoutPolicy.historyDetailShare
+        #expect(LayoutPolicy.historyCommitsHeight(available: 1000, detailHeight: 0) == expected)
+        #expect(
+            LayoutPolicy.historyCommitsHeight(
+                available: 1000, detailHeight: LayoutPolicy.historyDetailFloor - 1) == expected)
+    }
+
+    @Test func historyKeepsTheCommitListOffItsFloor() {
+        // A detail dragged or restored taller than the column leaves the list its floor.
+        #expect(
+            LayoutPolicy.historyCommitsHeight(available: 600, detailHeight: 900)
+                == LayoutPolicy.historyCommitsFloor)
     }
 }

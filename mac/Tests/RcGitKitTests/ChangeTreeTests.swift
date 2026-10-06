@@ -23,7 +23,7 @@ import Testing
         ]
         let rows = ChangeTree.nodes(entries, grouping: .folders)
         #expect(rows.map(\.name) == ["mac", "README.md"])
-        let mac = try? #require(rows.first)
+        let mac = rows.first
         #expect(mac?.isFolder == true)
         #expect(mac?.path == "mac")
         #expect(mac?.children.map(\.name) == ["tests", "App.swift", "Kit.swift"])
@@ -54,8 +54,17 @@ import Testing
     }
 
     @Test func emptyReportHasNoRows() {
-        #expect(ChangeTree.nodes([], grouping: .flat).isEmpty)
-        #expect(ChangeTree.nodes([], grouping: .folders).isEmpty)
+        #expect(ChangeTree.nodes([StatusEntry](), grouping: .flat).isEmpty)
+        #expect(ChangeTree.nodes([StatusEntry](), grouping: .folders).isEmpty)
+    }
+
+    @Test func treeChangesGroupByTheirPath() {
+        let change = TreeChange(
+            kind: .renamed, path: "mac/New.swift", sourcePath: "mac/Old.swift", old: nil,
+            new: nil, entry: .blob)
+        let rows = ChangeTree.nodes([change], grouping: .folders)
+        #expect(rows.map(\.name) == ["mac"])
+        #expect(rows.first?.children.first?.entry == change)
     }
 
     @Test func groupingPersistsThroughDefaults() {
@@ -65,9 +74,35 @@ import Testing
             return
         }
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = ChangeGroupingStore(defaults: defaults)
+        let store = ChangeGroupingStore.worktree(defaults: defaults)
         #expect(store.grouping == .flat)
         store.grouping = .folders
-        #expect(ChangeGroupingStore(defaults: defaults).grouping == .folders)
+        #expect(ChangeGroupingStore.worktree(defaults: defaults).grouping == .folders)
+    }
+
+    @Test func eachListKeepsItsOwnGroupingAndDefault() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            Issue.record("no test defaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let commit = ChangeGroupingStore.commit(defaults: defaults)
+        #expect(commit.grouping == .folders)
+        commit.grouping = .flat
+        #expect(ChangeGroupingStore.worktree(defaults: defaults).grouping == .flat)
+        ChangeGroupingStore.worktree(defaults: defaults).grouping = .folders
+        #expect(ChangeGroupingStore.commit(defaults: defaults).grouping == .flat)
+    }
+
+    @Test func anUnknownStoredGroupingFallsBackToTheListDefault() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            Issue.record("no test defaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("sideways", forKey: ChangeGroupingStore.commitKey)
+        #expect(ChangeGroupingStore.commit(defaults: defaults).grouping == .folders)
     }
 }

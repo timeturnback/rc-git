@@ -95,13 +95,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let diffScroll = NSScrollView()
     private let diffPlaceholder = NSTextField(labelWithString: "Select a file")
 
+    private typealias StatusNode = ChangeNode<StatusEntry>
+
     private var entries: [StatusEntry] = []
     /// The change list's rows under the current grouping, rebuilt on every status render.
-    private var fileNodes: [ChangeNode] = []
+    private var fileNodes: [StatusNode] = []
     /// Folder rows are expanded unless the user closed them; reload rebuilds the nodes, so
     /// the state has to live by path rather than by row.
     private var collapsedFolders: Set<String> = []
-    private let groupingStore = ChangeGroupingStore()
+    private let groupingStore = ChangeGroupingStore.worktree()
     private var stashes: [StashEntry] = []
     private var diffRows: [DiffRow] = []
     private var diffPath: String?
@@ -168,36 +170,12 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Flat list or folder tree, remembered between launches.
     private func buildGroupingControl() {
-        groupingControl.segmentStyle = .texturedRounded
-        groupingControl.controlSize = .small
-        groupingControl.trackingMode = .selectOne
-        groupingControl.segmentCount = ChangeGrouping.allCases.count
-        for (index, grouping) in ChangeGrouping.allCases.enumerated() {
-            let (symbol, help): (String, String) =
-                switch grouping {
-                case .flat: ("list.bullet", "List every path")
-                case .folders: ("folder", "Group paths by folder")
-                }
-            groupingControl.setImage(
-                NSImage(systemSymbolName: symbol, accessibilityDescription: help), forSegment: index
-            )
-            groupingControl.setToolTip(help, forSegment: index)
-            groupingControl.setWidth(28, forSegment: index)
-        }
-        groupingControl.selectedSegment = index(of: groupingStore.grouping)
+        Style.groupingControl(groupingControl, showing: groupingStore.grouping)
         groupingControl.target = self
         groupingControl.action = #selector(groupingChanged(_:))
     }
 
-    private func index(of grouping: ChangeGrouping) -> Int {
-        ChangeGrouping.allCases.firstIndex(of: grouping) ?? 0
-    }
-
-    private var grouping: ChangeGrouping {
-        let all = ChangeGrouping.allCases
-        let selected = groupingControl.selectedSegment
-        return all.indices.contains(selected) ? all[selected] : .flat
-    }
+    private var grouping: ChangeGrouping { Style.grouping(of: groupingControl) }
 
     private func buildStashTable() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("stash"))
@@ -520,7 +498,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private var selectedPaths: Set<String> {
         var paths: Set<String> = []
         for row in filesOutline.selectedRowIndexes {
-            guard let node = filesOutline.item(atRow: row) as? ChangeNode else { continue }
+            guard let node = filesOutline.item(atRow: row) as? StatusNode else { continue }
             paths.insert(node.path)
         }
         return paths
@@ -530,7 +508,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         guard !paths.isEmpty else { return }
         var rows = IndexSet()
         for row in 0..<filesOutline.numberOfRows {
-            guard let node = filesOutline.item(atRow: row) as? ChangeNode,
+            guard let node = filesOutline.item(atRow: row) as? StatusNode,
                 paths.contains(node.path)
             else { continue }
             rows.insert(row)
@@ -659,7 +637,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         // A folder row discards everything under it, which is what its tick box covers too.
         var paths: [String] = []
         for row in rows {
-            guard let node = filesOutline.item(atRow: row) as? ChangeNode else { continue }
+            guard let node = filesOutline.item(atRow: row) as? StatusNode else { continue }
             paths.append(contentsOf: node.filePaths)
         }
         let unique = Array(Set(paths)).sorted()
@@ -674,7 +652,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func toggleClickedRow(_ sender: Any?) {
-        guard let node = filesOutline.item(atRow: filesOutline.clickedRow) as? ChangeNode,
+        guard let node = filesOutline.item(atRow: filesOutline.clickedRow) as? StatusNode,
             node.isFolder
         else { return }
         if filesOutline.isItemExpanded(node) {
@@ -695,13 +673,13 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The box's own next state is ignored: a folder row with some files ticked has three
     /// states to cycle through and only one sensible answer — tick what is not ticked yet.
     @objc private func fileTickToggled(_ sender: NSButton) {
-        guard let node = filesOutline.item(atRow: filesOutline.row(for: sender)) as? ChangeNode
+        guard let node = filesOutline.item(atRow: filesOutline.row(for: sender)) as? StatusNode
         else { return }
         onTogglePaths?(node.filePaths, tickState(of: node) != .on)
     }
 
     /// A folder row is ticked when every file under it is, mixed when only some are.
-    private func tickState(of node: ChangeNode) -> NSControl.StateValue {
+    private func tickState(of node: StatusNode) -> NSControl.StateValue {
         let ticked = node.filePaths.filter { isTicked?($0) ?? true }.count
         if ticked == 0 { return .off }
         return ticked == node.filePaths.count ? .on : .mixed
@@ -747,23 +725,23 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: Change list
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let node = item as? ChangeNode else { return fileNodes.count }
+        guard let node = item as? StatusNode else { return fileNodes.count }
         return node.children.count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let node = item as? ChangeNode else { return fileNodes[index] }
+        guard let node = item as? StatusNode else { return fileNodes[index] }
         return node.children[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? ChangeNode)?.children.isEmpty == false
+        (item as? StatusNode)?.children.isEmpty == false
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any)
         -> NSView?
     {
-        guard let node = item as? ChangeNode else { return nil }
+        guard let node = item as? StatusNode else { return nil }
         let id = NSUserInterfaceItemIdentifier("change")
         let cell =
             outlineView.makeView(withIdentifier: id, owner: self) as? ChangeCellView
@@ -780,18 +758,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard let node = notification.userInfo?["NSObject"] as? ChangeNode else { return }
+        guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
         collapsedFolders.remove(node.path)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard let node = notification.userInfo?["NSObject"] as? ChangeNode else { return }
+        guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
         collapsedFolders.insert(node.path)
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isReloading,
-            let node = filesOutline.item(atRow: filesOutline.selectedRow) as? ChangeNode,
+            let node = filesOutline.item(atRow: filesOutline.selectedRow) as? StatusNode,
             let entry = node.entry
         else { return }
         onSelectEntry?(entry)
@@ -800,7 +778,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// A change row's label: the status letter, then the path in `.flat` or the name in
     /// `.folders`. The truncation lives in the string's paragraph style — a label showing an
     /// attributed string ignores the one set on the cell, and clips with no ellipsis.
-    private static func label(for node: ChangeNode) -> NSAttributedString {
+    private static func label(for node: StatusNode) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         // A whole path reads from its tail, a bare name from its head.
         paragraph.lineBreakMode = node.name.contains("/") ? .byTruncatingHead : .byTruncatingTail

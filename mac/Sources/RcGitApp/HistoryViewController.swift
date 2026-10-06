@@ -1,12 +1,13 @@
 import AppKit
 import RcGitKit
 
-/// The commit list of the selected ref, with a detail pane: the files one commit changed and
-/// the line diff of the picked file. Commits load a page at a time when scrolled near the
+/// The commit list of the selected ref. An open commit adds its detail under the list —
+/// message, identities, and the files it changed, as a folder tree or a flat list — and the
+/// picked file's line diff on the right. Commits load a page at a time when scrolled near the
 /// end; the detail loads on selection, one tree diff and one blob diff at a time.
 @MainActor
 final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
-    NSSearchFieldDelegate, NSSplitViewDelegate
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate, NSSplitViewDelegate
 {
     var onNeedsMore: (() -> Void)?
     var onBrowseCommit: ((CommitSummary) -> Void)?
@@ -23,19 +24,30 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
 
-    /// The height neither pane of the detail drawer may drop below, from `LayoutPolicy`.
-    private static let changesPaneFloor = LayoutPolicy.historyChangesFloor
-    private static let diffPaneFloor = LayoutPolicy.historyDiffFloor
+    /// The height neither pane of the left column may drop below, from `LayoutPolicy`.
+    private static let commitsPaneFloor = LayoutPolicy.historyCommitsFloor
+    private static let detailPaneFloor = LayoutPolicy.historyDetailFloor
 
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let placeholder = NSTextField(labelWithString: "No commits")
-    private let changesTable = NSTableView()
+    private typealias ChangeRow = ChangeNode<TreeChange>
+
+    private let changesOutline = NSOutlineView()
+    private let changesCount = NSTextField(labelWithString: "")
+    private let groupingControl = NSSegmentedControl()
+    private let groupingStore = ChangeGroupingStore.commit()
     private let diffText = NSTextView()
-    private let diffPlaceholder = NSTextField(labelWithString: "Select a commit")
+    private let diffPath = NSTextField(labelWithString: "")
+    private let diffPlaceholder = NSTextField(labelWithString: "Select a file")
     private var commits: [CommitSummary] = []
     private var complete = false
     private var changes: [TreeChange] = []
+    /// The changed files under the current grouping, rebuilt when the commit or the grouping
+    /// changes.
+    private var changeRows: [ChangeRow] = []
+    /// The file whose diff the right pane shows, re-selected after a regrouping.
+    private var shownChange: TreeChange?
     private var graphRows: [GraphRow] = []
     private var isReloading = false
 
@@ -71,7 +83,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let backButton = NSButton()
     private let closeButton = NSButton()
     private var detailPane: NSView?
-    private var detailSplit: NSSplitView?
+    private var diffPane: NSView?
+    private var columnSplit: NSSplitView?
     private var parentOids: [Oid] = []
 
     private static let dateFormatter: DateFormatter = {
@@ -158,38 +171,106 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             placeholder.centerYAnchor.constraint(equalTo: commitsPane.centerYAnchor),
         ])
 
-        // The commit list fills the tab; the detail is a drawer on the right that only
-        // exists while a commit is open. Hidden arranged subviews collapse with their
-        // divider, so the closed drawer costs no width.
+        // The commit list fills the tab until a commit opens. Then the left column holds the
+        // list over the commit's detail, and the diff of the picked file takes the right.
+        // Hidden arranged subviews collapse with their divider, so a closed commit costs no
+        // room in either split.
         let detail = buildDetailPane()
         detail.isHidden = true
         detailPane = detail
+        let column = NSSplitView()
+        column.isVertical = false
+        column.dividerStyle = .thin
+        column.autosaveName = "rc-git.history-column.v1"
+        column.delegate = self
+        column.addArrangedSubview(commitsPane)
+        column.addArrangedSubview(detail)
+        columnSplit = column
+        NSLayoutConstraint.activate([
+            // The floor belongs to the split, not to its panes: the split positions its panes
+            // by frame, so a per-pane height constraint only fights the frame it is given and
+            // loses silently.
+            column.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: Self.commitsPaneFloor + Self.detailPaneFloor
+                    + column.dividerThickness)
+        ])
+
+        let diff = buildDiffPane()
+        diff.isHidden = true
+        diffPane = diff
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
-        // v4: v3 autosaved the drawer at the height of its own minimum, which is what starved
-        // the detail split underneath it.
-        split.autosaveName = "rc-git.history.v4"
-        split.addArrangedSubview(commitsPane)
-        split.addArrangedSubview(detail)
+        // v5: the right pane used to be the whole commit drawer; it is now the diff alone.
+        split.autosaveName = "rc-git.history.v5"
+        split.addArrangedSubview(column)
+        split.addArrangedSubview(diff)
         split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 1)
         view = split
     }
 
+    /// The open commit's header over the files it changed, for the bottom of the left column.
     private func buildDetailPane() -> NSView {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("change"))
         column.resizingMask = .autoresizingMask
-        changesTable.addTableColumn(column)
-        changesTable.headerView = nil
-        changesTable.rowSizeStyle = .small
-        changesTable.dataSource = self
-        changesTable.delegate = self
+        changesOutline.addTableColumn(column)
+        changesOutline.outlineTableColumn = column
+        changesOutline.headerView = nil
+        changesOutline.rowSizeStyle = .small
+        changesOutline.indentationPerLevel = 12
+        // No horizontal scroller: the column stays the pane's width and labels truncate.
+        changesOutline.autoresizesOutlineColumn = false
+        changesOutline.dataSource = self
+        changesOutline.delegate = self
+        changesOutline.target = self
+        changesOutline.doubleAction = #selector(toggleClickedFolder(_:))
 
         let changesScroll = NSScrollView()
-        changesScroll.documentView = changesTable
+        changesScroll.documentView = changesOutline
         changesScroll.hasVerticalScroller = true
         changesScroll.autohidesScrollers = true
 
+        buildDetailHeader()
+
+        changesCount.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        changesCount.textColor = .secondaryLabelColor
+        Style.groupingControl(groupingControl, showing: groupingStore.grouping)
+        groupingControl.target = self
+        groupingControl.action = #selector(groupingChanged(_:))
+        let filesBar = NSStackView(views: [changesCount, NSView(), groupingControl])
+        filesBar.orientation = .horizontal
+        filesBar.alignment = .centerY
+        filesBar.spacing = Style.rowGap
+        filesBar.edgeInsets = NSEdgeInsets(
+            top: 0, left: Style.margin, bottom: Style.barPadding / 2, right: Style.margin)
+
+        let stacked = NSStackView(views: [detailHeader, filesBar, changesScroll])
+        stacked.orientation = .vertical
+        stacked.alignment = .leading
+        stacked.distribution = .fill
+        stacked.spacing = 0
+        stacked.detachesHiddenViews = true
+        detailHeader.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        filesBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        changesScroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
+
+        let container = NSView()
+        stacked.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stacked)
+        NSLayoutConstraint.activate([
+            stacked.topAnchor.constraint(equalTo: container.topAnchor),
+            stacked.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stacked.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stacked.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailHeader.widthAnchor.constraint(equalTo: stacked.widthAnchor),
+            filesBar.widthAnchor.constraint(equalTo: stacked.widthAnchor),
+            changesScroll.widthAnchor.constraint(equalTo: stacked.widthAnchor),
+        ])
+        return container
+    }
+
+    /// The picked file's path over its line diff, for the right of the tab.
+    private func buildDiffPane() -> NSView {
         diffText.isEditable = false
         diffText.isRichText = false
         diffText.usesFindBar = true
@@ -209,52 +290,30 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         diffScroll.hasHorizontalScroller = true
         diffScroll.autohidesScrollers = true
 
+        diffPath.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        diffPath.lineBreakMode = .byTruncatingHead
+        diffPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         diffPlaceholder.textColor = .secondaryLabelColor
-        diffPlaceholder.translatesAutoresizingMaskIntoConstraints = false
-
-        // Inside the drawer the changed files sit above the diff: the drawer is tall and
-        // narrow, so side-by-side panes would leave no room for diff lines.
-        let detailSplit = NSSplitView()
-        detailSplit.isVertical = false
-        detailSplit.dividerStyle = .thin
-        // v5: v4 parked the divider at the bottom again, leaving the diff pane at zero height.
-        // The delegate below now lays the panes out itself, so no position reaches that state.
-        detailSplit.autosaveName = "rc-git.history-detail.v5"
-        detailSplit.delegate = self
-        self.detailSplit = detailSplit
-        detailSplit.addArrangedSubview(changesScroll)
-        detailSplit.addArrangedSubview(diffScroll)
-
-        buildDetailHeader()
-
-        let stacked = NSStackView(views: [detailHeader, detailSplit])
-        stacked.orientation = .vertical
-        stacked.alignment = .leading
-        stacked.distribution = .fill
-        stacked.spacing = 0
-        stacked.detachesHiddenViews = true
-        detailHeader.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        detailSplit.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
 
         let container = NSView()
-        stacked.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stacked)
-        container.addSubview(diffPlaceholder)
+        for view in [diffPath, diffScroll, diffPlaceholder] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
         NSLayoutConstraint.activate([
-            stacked.topAnchor.constraint(equalTo: container.topAnchor),
-            stacked.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stacked.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stacked.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            detailHeader.widthAnchor.constraint(equalTo: stacked.widthAnchor),
-            detailSplit.widthAnchor.constraint(equalTo: stacked.widthAnchor),
-            diffPlaceholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            diffPlaceholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            // The floor belongs to the split, not to its panes: the split positions its panes
-            // by frame, so a per-pane height constraint only fights the frame it is given and
-            // loses silently. Here it asks the drawer for room for both panes and the divider.
-            detailSplit.heightAnchor.constraint(
-                greaterThanOrEqualToConstant: Self.changesPaneFloor + Self.diffPaneFloor
-                    + detailSplit.dividerThickness),
+            diffPath.topAnchor.constraint(equalTo: container.topAnchor, constant: Style.barPadding),
+            diffPath.leadingAnchor.constraint(
+                equalTo: container.leadingAnchor, constant: Style.margin),
+            diffPath.trailingAnchor.constraint(
+                equalTo: container.trailingAnchor, constant: -Style.margin),
+            diffScroll.topAnchor.constraint(
+                equalTo: diffPath.bottomAnchor, constant: Style.barPadding),
+            diffScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            diffScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            diffScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            diffPlaceholder.centerXAnchor.constraint(equalTo: diffScroll.centerXAnchor),
+            diffPlaceholder.centerYAnchor.constraint(equalTo: diffScroll.centerYAnchor),
             container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
         return container
@@ -443,7 +502,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             label.lineBreakMode = .byTruncatingTail
         }
         detailBody.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        detailBody.maximumNumberOfLines = 12
+        // The body shares the column with the file list under it.
+        detailBody.maximumNumberOfLines = 6
         detailBody.isSelectable = true
 
         backButton.title = "‹ Back"
@@ -484,23 +544,45 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Renders the detail header: message, refs, identities, and parent navigation. Any
-    /// state but `.empty` opens the drawer; `.empty` closes it.
+    /// state but `.empty` opens the detail and the diff pane; `.empty` closes both.
     func renderCommitDetail(_ state: CommitDetailState, canGoBack: Bool) {
-        detailPane?.isHidden = state == .empty
+        setCommitPanesOpen(state != .empty)
         switch state {
         case .empty:
             detailHeader.isHidden = true
+            changesCount.stringValue = ""
         case let .loading(summary):
             detailHeader.isHidden = false
             fillHeader(summary: summary, detail: nil, refs: [], canGoBack: canGoBack)
+            changesCount.stringValue = "Loading changes…"
         case let .loaded(detail, refs):
             detailHeader.isHidden = false
             fillHeader(summary: detail.summary, detail: detail, refs: refs, canGoBack: canGoBack)
+            changesCount.stringValue = Self.countLine(changes.count)
         case let .failed(summary, message):
             detailHeader.isHidden = false
             fillHeader(summary: summary, detail: nil, refs: [], canGoBack: canGoBack)
             detailAuthor.stringValue = message
+            changesCount.stringValue = ""
         }
+    }
+
+    private static func countLine(_ count: Int) -> String {
+        switch count {
+        case 0: "No files changed"
+        case 1: "1 file changed"
+        default: "\(count) files changed"
+        }
+    }
+
+    /// Shows or hides the detail under the list and the diff beside it, then lays the column
+    /// out at once: a split does not ask its delegate when an arranged subview unhides.
+    private func setCommitPanesOpen(_ open: Bool) {
+        guard detailPane?.isHidden == open else { return }
+        detailPane?.isHidden = !open
+        diffPane?.isHidden = !open
+        layoutColumnPanes()
+        view.needsLayout = true
     }
 
     private func fillHeader(
@@ -630,40 +712,93 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Renders the commit detail: the changed-file list and the picked file's diff.
     func renderDetail(changes: [TreeChange], state: FileDiffState) {
-        self.changes = changes
         isReloading = true
-        changesTable.reloadData()
+        if changes != self.changes {
+            self.changes = changes
+            reloadChanges()
+        }
         switch state {
         case .empty:
-            showDiffPlaceholder(commits.isEmpty ? "No commits" : "Select a commit")
+            shownChange = nil
+            changesOutline.deselectAll(nil)
+            showDiffPath(nil)
+            showDiffPlaceholder(changes.isEmpty ? "No files changed" : "Select a file")
         case let .loading(change):
-            selectChangeRow(change)
-            showDiffPlaceholder("Loading \(change.path)…")
+            showChange(change)
+            showDiffPlaceholder("Loading…")
         case let .loaded(change, diff):
-            selectChangeRow(change)
+            showChange(change)
             renderDiff(change: change, diff: diff)
-        case let .failed(_, message):
+        case let .failed(change, message):
+            showChange(change)
             showDiffPlaceholder(message)
         }
         isReloading = false
     }
 
+    /// Rebuilds the file rows for the current grouping with every folder open.
+    private func reloadChanges() {
+        changeRows = ChangeTree.nodes(changes, grouping: Style.grouping(of: groupingControl))
+        changesOutline.reloadData()
+        changesOutline.expandItem(nil, expandChildren: true)
+    }
+
+    private func showChange(_ change: TreeChange) {
+        shownChange = change
+        selectChangeRow(change)
+        showDiffPath(change)
+    }
+
     private func selectChangeRow(_ change: TreeChange) {
-        if let row = changes.firstIndex(of: change) {
-            changesTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        for row in 0..<changesOutline.numberOfRows {
+            guard (changesOutline.item(atRow: row) as? ChangeRow)?.entry == change else {
+                continue
+            }
+            changesOutline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            changesOutline.scrollRowToVisible(row)
+            return
         }
+    }
+
+    private func showDiffPath(_ change: TreeChange?) {
+        guard let change else {
+            diffPath.stringValue = ""
+            diffPath.toolTip = nil
+            return
+        }
+        diffPath.stringValue = change.sourcePath.map { "\($0) → \(change.path)" } ?? change.path
+        diffPath.toolTip = diffPath.stringValue
     }
 
     private func showDiffPlaceholder(_ message: String) {
         diffPlaceholder.stringValue = message
         diffPlaceholder.isHidden = false
-        diffText.enclosingScrollView?.isHidden = changes.isEmpty
         diffText.textStorage?.setAttributedString(NSAttributedString(string: ""))
+    }
+
+    @objc private func groupingChanged(_ sender: Any?) {
+        groupingStore.grouping = Style.grouping(of: groupingControl)
+        isReloading = true
+        reloadChanges()
+        if let shownChange {
+            selectChangeRow(shownChange)
+        }
+        isReloading = false
+    }
+
+    @objc private func toggleClickedFolder(_ sender: Any?) {
+        guard let row = changesOutline.item(atRow: changesOutline.clickedRow) as? ChangeRow,
+            row.isFolder
+        else { return }
+        if changesOutline.isItemExpanded(row) {
+            changesOutline.collapseItem(row)
+        } else {
+            changesOutline.expandItem(row)
+        }
     }
 
     private func renderDiff(change: TreeChange, diff: BlobDiff) {
         diffPlaceholder.isHidden = true
-        diffText.enclosingScrollView?.isHidden = false
         switch diff {
         case let .text(hunks):
             if hunks.isEmpty {
@@ -683,42 +818,47 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    /// Re-clamps the drawer after every layout pass, which is where a divider position
-    /// restored from the autosave first reaches the screen. `layoutDetailPanes` keeps a legal
+    /// Re-clamps the left column after every layout pass, which is where a divider position
+    /// restored from the autosave first reaches the screen. `layoutColumnPanes` keeps a legal
     /// position untouched, so this converges on the first pass.
     override func viewDidLayout() {
         super.viewDidLayout()
-        layoutDetailPanes()
+        layoutColumnPanes()
     }
 
     // MARK: NSSplitViewDelegate
 
-    /// Lays the drawer's two panes out. `NSSplitView` sizes arranged subviews by frame and
-    /// asks the coordinate clamps below only while the user drags the divider — never from
+    /// Lays the left column's two panes out. `NSSplitView` sizes arranged subviews by frame
+    /// and asks the coordinate clamps below only while the user drags the divider — never from
     /// `adjustSubviews`, and never for the position the autosave restores. Owning the resize
     /// is what puts a zero-height pane out of reach; the clamps alone did not.
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-        guard splitView === detailSplit else {
+        guard splitView === columnSplit else {
             splitView.adjustSubviews()
             return
         }
-        layoutDetailPanes()
+        layoutColumnPanes()
     }
 
-    private func layoutDetailPanes() {
-        guard let split = detailSplit, split.arrangedSubviews.count == 2 else { return }
+    private func layoutColumnPanes() {
+        guard let split = columnSplit, let commits = split.arrangedSubviews.first,
+            let detail = detailPane, split.bounds.width > 0
+        else { return }
+        guard !detail.isHidden else {
+            place(commits, y: 0, height: split.bounds.height, in: split)
+            return
+        }
         let divider = split.dividerThickness
         let available = split.bounds.height - divider
-        guard available > 0, split.bounds.width > 0 else { return }
-        let changesHeight = LayoutPolicy.splitPane(
-            available: available, preferred: split.arrangedSubviews[0].frame.height,
-            firstFloor: Self.changesPaneFloor, secondFloor: Self.diffPaneFloor)
-        let diffHeight = available - changesHeight
-        // A split with horizontal dividers is flipped, so the changes pane starts at the top.
-        let changesY = split.isFlipped ? 0 : diffHeight + divider
-        let diffY = split.isFlipped ? changesHeight + divider : 0
-        place(split.arrangedSubviews[0], y: changesY, height: changesHeight, in: split)
-        place(split.arrangedSubviews[1], y: diffY, height: diffHeight, in: split)
+        guard available > 0 else { return }
+        let commitsHeight = LayoutPolicy.historyCommitsHeight(
+            available: available, detailHeight: detail.frame.height)
+        let detailHeight = available - commitsHeight
+        // A split with horizontal dividers is flipped, so the commit list starts at the top.
+        let commitsY = split.isFlipped ? 0 : detailHeight + divider
+        let detailY = split.isFlipped ? commitsHeight + divider : 0
+        place(commits, y: commitsY, height: commitsHeight, in: split)
+        place(detail, y: detailY, height: detailHeight, in: split)
     }
 
     private func place(_ view: NSView, y: CGFloat, height: CGFloat, in split: NSSplitView) {
@@ -728,24 +868,24 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Keeps a divider drag inside the two floors, so a drag cannot end where
-    /// `layoutDetailPanes` would have to pull it back from. Drags are all these two methods
+    /// `layoutColumnPanes` would have to pull it back from. Drags are all these two methods
     /// govern: AppKit asks them nothing about a resize or about the position it restores.
     func splitView(
         _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        guard splitView === detailSplit else { return proposedMinimumPosition }
-        return max(proposedMinimumPosition, Self.changesPaneFloor)
+        guard splitView === columnSplit else { return proposedMinimumPosition }
+        return max(proposedMinimumPosition, Self.commitsPaneFloor)
     }
 
     func splitView(
         _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        guard splitView === detailSplit else { return proposedMaximumPosition }
+        guard splitView === columnSplit else { return proposedMaximumPosition }
         let lastOpen =
-            splitView.bounds.height - splitView.dividerThickness - Self.diffPaneFloor
-        return min(proposedMaximumPosition, max(Self.changesPaneFloor, lastOpen))
+            splitView.bounds.height - splitView.dividerThickness - Self.detailPaneFloor
+        return min(proposedMaximumPosition, max(Self.commitsPaneFloor, lastOpen))
     }
 
     @objc private func boundsChanged(_ notification: Notification) {
@@ -798,36 +938,22 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: NSTableViewDataSource
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === table ? displayed.count : changes.count
+        displayed.count
     }
 
     // MARK: NSTableViewDelegate
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isReloading, let tableView = notification.object as? NSTableView else { return }
-        if tableView === table {
-            guard displayed.indices.contains(table.selectedRow) else { return }
-            onSelectCommit?(displayed[table.selectedRow])
-        } else {
-            guard changes.indices.contains(changesTable.selectedRow) else { return }
-            onSelectChange?(changes[changesTable.selectedRow])
-        }
+        guard !isReloading, notification.object as? NSTableView === table,
+            displayed.indices.contains(table.selectedRow)
+        else { return }
+        onSelectCommit?(displayed[table.selectedRow])
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int)
         -> NSView?
     {
         guard let tableColumn else { return nil }
-        if tableView === changesTable {
-            guard changes.indices.contains(row) else { return nil }
-            let change = changes[row]
-            let cell = reusableCell(in: changesTable, for: tableColumn.identifier)
-            let label = "\(change.kind.letter)  \(change.path)"
-            cell.textField?.stringValue = label
-            cell.textField?.font = Self.monoFont
-            cell.toolTip = change.sourcePath.map { "\(change.path) ← \($0)" } ?? change.path
-            return cell
-        }
         if tableColumn.identifier.rawValue == "graph" {
             guard !searchActive, graphRows.indices.contains(row) else { return nil }
             let id = NSUserInterfaceItemIdentifier("graphCell")
@@ -860,6 +986,85 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.textField?.stringValue = Self.dateFormatter.string(from: date)
         }
         return cell
+    }
+
+    // MARK: Changed files
+
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        guard let row = item as? ChangeRow else { return changeRows.count }
+        return row.children.count
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        guard let row = item as? ChangeRow else { return changeRows[index] }
+        return row.children[index]
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        (item as? ChangeRow)?.children.isEmpty == false
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any)
+        -> NSView?
+    {
+        guard let row = item as? ChangeRow, let tableColumn else { return nil }
+        let cell = reusableCell(in: outlineView, for: tableColumn.identifier)
+        cell.textField?.attributedStringValue = Self.label(for: row)
+        cell.toolTip = row.entry?.sourcePath.map { "\($0) → \(row.path)" } ?? row.path
+        return cell
+    }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !isReloading,
+            let row = changesOutline.item(atRow: changesOutline.selectedRow) as? ChangeRow,
+            let change = row.entry
+        else { return }
+        onSelectChange?(change)
+    }
+
+    /// A changed file's label: the change letter in its color, then the whole path when flat
+    /// or the name in a folder tree. Folder rows are the name alone. The truncation lives in
+    /// the string's paragraph style — a label showing an attributed string ignores the one
+    /// set on the field.
+    private static func label(for row: ChangeRow) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        // A whole path reads from its tail, a bare name from its head.
+        paragraph.lineBreakMode = row.name.contains("/") ? .byTruncatingHead : .byTruncatingTail
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        guard let change = row.entry else {
+            return NSAttributedString(
+                string: row.name,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: paragraph,
+                ])
+        }
+        let text = NSMutableAttributedString(
+            string: change.kind.letter + "  ",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(
+                    ofSize: NSFont.smallSystemFontSize, weight: .bold),
+                .foregroundColor: color(for: change.kind),
+                .paragraphStyle: paragraph,
+            ])
+        text.append(
+            NSAttributedString(
+                string: row.name,
+                attributes: [
+                    .font: font, .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph,
+                ]))
+        return text
+    }
+
+    private static func color(for kind: ChangeKind) -> NSColor {
+        switch kind {
+        case .added: .systemGreen
+        case .deleted: .systemRed
+        case .modified: .systemOrange
+        case .renamed, .copied: .systemBlue
+        }
     }
 
     private func reusableCell(

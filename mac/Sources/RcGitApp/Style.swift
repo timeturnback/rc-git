@@ -1,4 +1,5 @@
 import AppKit
+import RcGitKit
 
 /// Spacing and list styling the panes share, so the sidebar and the detail pane line up with
 /// each other and every list in the sidebar reads as one panel.
@@ -34,6 +35,34 @@ enum Style {
     /// start at the same x on every row.
     static func iconWidth(for rowSize: NSTableView.RowSizeStyle) -> CGFloat {
         fontSize(for: rowSize) + 7
+    }
+
+    /// Makes `control` a change list's flat-or-folders switch, showing `grouping`. Read the
+    /// pick back with `grouping(of:)`.
+    static func groupingControl(_ control: NSSegmentedControl, showing grouping: ChangeGrouping) {
+        control.segmentStyle = .texturedRounded
+        control.controlSize = .small
+        control.trackingMode = .selectOne
+        control.segmentCount = ChangeGrouping.allCases.count
+        for (index, each) in ChangeGrouping.allCases.enumerated() {
+            let (symbol, help): (String, String) =
+                switch each {
+                case .flat: ("list.bullet", "List every path")
+                case .folders: ("folder", "Group paths by folder")
+                }
+            control.setImage(
+                NSImage(systemSymbolName: symbol, accessibilityDescription: help),
+                forSegment: index)
+            control.setToolTip(help, forSegment: index)
+            control.setWidth(28, forSegment: index)
+        }
+        control.selectedSegment = ChangeGrouping.allCases.firstIndex(of: grouping) ?? 0
+    }
+
+    /// The grouping a control built by `groupingControl(_:showing:)` has picked.
+    static func grouping(of control: NSSegmentedControl) -> ChangeGrouping {
+        let all = ChangeGrouping.allCases
+        return all.indices.contains(control.selectedSegment) ? all[control.selectedSegment] : .flat
     }
 }
 
