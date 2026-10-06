@@ -110,10 +110,10 @@ paths: mac/**
   `readDataToEndOfFile()` reads one descriptor from two places, and the second blocks until
   EOF — which a grandchild that inherited the write end never delivers, long after
   `terminationHandler` has fired. Drain on a thread that stops at EOF, and bound that wait too.
-- Closing a tab is not a decision about the next launch. `OpenTabs.record` merges the live
-  tabs into the saved list and never drops one, so ⌘W, ⇧⌘W and ⌘Q all relaunch with the same
-  tabs; `OpenTabs.save` replaces the list and only `restoreTabs` calls it, to drop a
-  repository that no longer opens.
+- Only ⌘W on a single tab drops it from the next launch. `OpenTabs.record` merges the live
+  tabs into the saved list and drops only its `dropping` path; ⇧⌘W (`keepingClosedTabs`) and
+  ⌘Q relaunch with the same tabs. `OpenTabs.save` replaces the list and only `restoreTabs`
+  calls it, to drop a repository that no longer opens.
 - State the relaunched build reads — the open tabs — is handed over, not just saved:
   `OpenTabs.handOff` flushes the write because both processes are alive at the launch, and
   `AppDelegate.tabsHandedOff` stops the old process writing afterwards

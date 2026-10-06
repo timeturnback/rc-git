@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private weak var frontController: MainWindowController?
     /// How many stops are being restored. What a tab reports meanwhile is the restore itself.
     private var restoresInFlight = 0
+    /// Set while ⇧⌘W closes a window group and once the app is quitting: tabs closed then
+    /// stay in the saved list. A tab closed on its own leaves it.
+    private var keepingClosedTabs = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(
@@ -32,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         } else {
             for path in paths { open(path: path) }
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        keepingClosedTabs = true
+        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -94,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         updateController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        return controller
     }
 
     /// Shows or hides the entries `HiddenFiles` names in every tab, and remembers the choice
@@ -132,10 +141,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         newWindow().showWindow(nil)
     }
 
-    /// Closes every tab of the front window group; ⌘W closes only the tab on screen. Neither
-    /// drops a repository from the saved tab list — see `saveTabs`.
+    /// Closes every tab of the front window group and keeps their repositories in the saved
+    /// tab list; ⌘W closes only the tab on screen and drops it — see `saveTabs`.
     @objc func closeWindowGroup(_ sender: Any?) {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        keepingClosedTabs = true
+        defer { keepingClosedTabs = false }
         for tab in window.tabGroup?.windows ?? [window] { tab.performClose(nil) }
     }
 
@@ -183,10 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         controllers.append(controller)
         controller.onClose = { [weak self, weak controller] in
-            if let path = controller?.repositoryPath { self?.closedTabs.push(path) }
-            self?.controllers.removeAll { $0 === controller }
-            self?.saveTabs()
-            self?.forgetStops(of: controller)
+            guard let self else { return }
+            let path = controller?.repositoryPath
+            if let path { closedTabs.push(path) }
+            controllers.removeAll { $0 === controller }
+            saveTabs(dropping: keepingClosedTabs ? nil : path)
+            forgetStops(of: controller)
         }
         controller.onStop = { [weak self, weak controller] stop in
             self?.record(stop, from: controller)
@@ -281,8 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Reopens the tabs of the previous run, silently skipping repositories that no longer
     /// open, and selects the tab that was selected then. Falls back to one empty tab.
     ///
-    /// This is the only place the list shrinks: a path that no longer opens is dropped here,
-    /// so it is not retried on every launch. Closing a tab never drops one — see `saveTabs`.
+    /// A path that no longer opens is dropped here, so it is not retried on every launch.
     private func restoreTabs() {
         var opened: [MainWindowController] = []
         for path in openTabs.paths {
@@ -305,14 +317,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// every open and close, once more at quit, and once before a self-update relaunches,
     /// which also captures drag reordering.
     ///
-    /// Adding only: a tab closed with ⌘W, a whole window closed with ⇧⌘W, and quitting with
-    /// ⌘Q all leave the saved repositories in the list, so the next launch reopens them.
-    func saveTabs() {
+    /// `dropping` names the repository of a tab closed with ⌘W, the one close that removes it
+    /// from the list. A whole window closed with ⇧⌘W and quitting with ⌘Q leave the saved
+    /// repositories in the list, so the next launch reopens them.
+    func saveTabs(dropping: String? = nil) {
         // This process outlives the launch of its replacement. A write after the handover
         // would land on top of whatever the new process has already recorded.
         guard !tabsHandedOff else { return }
         let state = tabState()
-        openTabs.record(live: state.paths, selectedIndex: state.selectedIndex)
+        openTabs.record(
+            live: state.paths, selectedIndex: state.selectedIndex, dropping: dropping)
     }
 
     /// Hands the tabs to the build that is about to replace this one, flushed so the new

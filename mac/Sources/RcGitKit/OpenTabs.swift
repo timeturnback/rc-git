@@ -21,18 +21,19 @@ public struct OpenTabs {
     }
 
     /// Replaces the list. Only the restore at launch writes this way, to drop a repository
-    /// that no longer opens; everything else records through `record`, which never drops one.
+    /// that no longer opens; everything else records through `record`.
     public func save(paths: [String], selectedIndex: Int) {
         defaults.set(paths, forKey: Self.pathsKey)
         defaults.set(
             Self.clampedSelection(selectedIndex, count: paths.count), forKey: Self.selectedKey)
     }
 
-    /// Records the tabs that are open now without dropping the ones that are not. Closing a
-    /// tab is not a decision about the next launch: ⌘W, ⇧⌘W on a whole window, and ⌘Q all
-    /// leave the list intact, so a relaunch reopens every repository that was in it.
-    public func record(live: [String], selectedIndex: Int) {
-        save(paths: Self.merged(live: live, saved: paths), selectedIndex: selectedIndex)
+    /// Records the tabs that are open now without dropping the ones that are not, except
+    /// `dropping`: the repository of a tab closed on its own with ⌘W. ⇧⌘W on a whole window
+    /// and ⌘Q drop nothing, so a relaunch reopens every repository they closed.
+    public func record(live: [String], selectedIndex: Int, dropping: String? = nil) {
+        let saved = paths.filter { $0 != dropping }
+        save(paths: Self.merged(live: live, saved: saved), selectedIndex: selectedIndex)
     }
 
     /// Records for a build that is about to replace this one, and forces the write out.

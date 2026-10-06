@@ -49,9 +49,9 @@ import Testing
         #expect(OpenTabs.merged(live: ["/one", "/one"], saved: ["/one"]) == ["/one"])
     }
 
-    /// Closing a tab must not decide the next launch: what is recorded is the live order
-    /// plus everything that was saved before it.
-    @Test func recordAddsAndNeverDrops() {
+    /// Without `dropping` — ⇧⌘W and ⌘Q — what is recorded is the live order plus everything
+    /// that was saved before it.
+    @Test func recordWithoutDroppingKeepsClosedTabs() {
         let suite = "rc-git.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -70,7 +70,24 @@ import Testing
         #expect(tabs.paths == ["/three", "/one", "/two"])
     }
 
-    /// The restore at launch is the one write that shrinks the list, so a repository that
+    /// ⌘W on its own drops that tab's repository; the rest of the saved list stays.
+    @Test func recordDropsTheTabClosedOnItsOwn() {
+        let suite = "rc-git.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tabs = OpenTabs(defaults: defaults)
+        tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 0)
+        tabs.record(live: ["/one"], selectedIndex: 0, dropping: "/two")
+        #expect(tabs.paths == ["/one", "/three"])
+
+        tabs.record(live: [], selectedIndex: 0, dropping: "/one")
+        #expect(tabs.paths == ["/three"])
+
+        tabs.record(live: ["/three"], selectedIndex: 0, dropping: "/gone")
+        #expect(tabs.paths == ["/three"])
+    }
+
+    /// The restore at launch replaces the list, so a repository that
     /// no longer opens is not retried on every launch.
     @Test func saveReplacesTheListSoRestoreCanPrune() {
         let suite = "rc-git.tests.\(UUID().uuidString)"

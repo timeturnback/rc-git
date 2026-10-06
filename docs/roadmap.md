@@ -107,9 +107,9 @@ constraints are clear.
   Opening a repository that is already open selects its existing tab. ⌘W closes the tab on
   screen, ⇧⌘W the whole window group. `OpenTabs` (RcGitKit) persists the tab list and
   selection through `UserDefaults` — recorded on every open, close, and at quit — and a
-  relaunch reopens them. Closing never drops a repository from that list, so ⌘W, ⇧⌘W and ⌘Q
-  all come back with the same tabs; the restore is the one write that shrinks it, dropping
-  the repositories that no longer open.
+  relaunch reopens them. ⌘W drops the tab's repository from that list; ⇧⌘W and ⌘Q keep
+  theirs, so the next launch comes back with them. The restore also drops the repositories
+  that no longer open.
 - **Back and forward.** ⌘[ and ⌘], the toolbar arrows, a two-finger swipe, and a mouse's
   fourth and fifth buttons step through the places you went: files opened, commits picked,
   History scoped to a path, the Files/History/Changes pane, the ref browsed, and the tab in
