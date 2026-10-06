@@ -63,6 +63,13 @@ final class UpdateWindowController: NSWindowController {
 
     // MARK: Actions
 
+    /// Starts the update as the button would. Does nothing while one is running or when
+    /// this bundle cannot rebuild itself.
+    func start() {
+        guard actionButton.isEnabled else { return }
+        runUpdate(nil)
+    }
+
     @objc private func runUpdate(_ sender: Any?) {
         let force = model.state == .upToDate
         if case .failed = model.state { model.reset() }

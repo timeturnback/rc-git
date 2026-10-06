@@ -77,6 +77,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// from and relaunches into it: from upstream for the release app, from the working
     /// tree as it stands for the dev bundle. An unstamped build has no menu item.
     @objc func showUpdate(_ sender: Any?) {
+        _ = updateWindow()
+    }
+
+    /// Opens the update window and starts the rebuild without waiting for its button: the
+    /// dev bundle's edit-run loop. The window still shows the log, and a failure stops there.
+    @objc func rebuildNow(_ sender: Any?) {
+        updateWindow().start()
+    }
+
+    private func updateWindow() -> UpdateWindowController {
         let controller =
             updateController
             ?? UpdateWindowController(

@@ -43,14 +43,19 @@ enum MainMenu {
                 ""))
         if let updateMode {
             menu.addItem(.separator())
-            // The dev bundle earns a key equivalent: rebuilding is the edit-run loop, not
-            // an occasional errand. Cmd-R is free; the Repository menu's Sync is Cmd-Shift-R.
+            // The dev bundle earns key equivalents: rebuilding is the edit-run loop, not
+            // an occasional errand. Cmd-R opens the window, Cmd-Option-R starts the rebuild
+            // without asking; the Repository menu's Sync is Cmd-Shift-R.
             switch updateMode {
             case .update:
                 menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:)), ""))
             case .rebuild:
                 menu.addItem(
                     item("Rebuild and Relaunch…", #selector(AppDelegate.showUpdate(_:)), "r"))
+                menu.addItem(
+                    item(
+                        "Rebuild and Relaunch Now", #selector(AppDelegate.rebuildNow(_:)), "r",
+                        [.command, .option]))
             }
         }
         menu.addItem(.separator())
