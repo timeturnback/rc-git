@@ -68,6 +68,10 @@ enum MainMenu {
     private static func fileMenu(recentMenu: NSMenu) -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.addItem(item("New Tab", #selector(AppDelegate.newWindowForTab(_:)), "t"))
+        menu.addItem(
+            item(
+                "Reopen Closed Tab", #selector(AppDelegate.reopenClosedTab(_:)), "t",
+                [.command, .shift]))
         menu.addItem(item("Open Repository…", #selector(AppDelegate.openDocument(_:)), "o"))
         let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recent.submenu = recentMenu

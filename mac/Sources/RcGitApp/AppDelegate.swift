@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
     private let openTabs = OpenTabs()
+    private var closedTabs = ClosedTabs()
     private let recentMenu = NSMenu(title: "Open Recent")
     private let build = AppBuild.current
     private var updateController: UpdateWindowController?
@@ -103,6 +104,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(clearRecents(_:)) {
             return !recents.paths.isEmpty
         }
+        if menuItem.action == #selector(reopenClosedTab(_:)) {
+            return closedTabs.canReopen(skipping: openPaths)
+        }
         if menuItem.action == #selector(goBack(_:)) {
             return backForward.canGo(.back)
         }
@@ -123,6 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func closeWindowGroup(_ sender: Any?) {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
         for tab in window.tabGroup?.windows ?? [window] { tab.performClose(nil) }
+    }
+
+    /// Reopens the repository of the most recently closed tab, as a browser's ⇧⌘T does.
+    @objc func reopenClosedTab(_ sender: Any?) {
+        guard let path = closedTabs.pop(skipping: openPaths) else { return }
+        open(path: path)
+    }
+
+    private var openPaths: Set<String> {
+        Set(controllers.compactMap(\.repositoryPath))
     }
 
     /// Opens a repository in an empty tab, or a new one when every tab is in use. A
@@ -159,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         controllers.append(controller)
         controller.onClose = { [weak self, weak controller] in
+            if let path = controller?.repositoryPath { self?.closedTabs.push(path) }
             self?.controllers.removeAll { $0 === controller }
             self?.saveTabs()
             self?.forgetStops(of: controller)
