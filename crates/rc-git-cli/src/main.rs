@@ -1484,7 +1484,7 @@ fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
     write_pull(out, &outcome.pull)?;
     match &outcome.push {
         Some(push) => write_push(out, push)?,
-        None => writeln!(out, "push\tup to date")?,
+        None => writeln!(out, "push\t{}\tup to date", outcome.pull.branch)?,
     }
     Ok(ExitCode::SUCCESS)
 }

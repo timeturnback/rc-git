@@ -1031,7 +1031,7 @@ fn sync_fetches_pulls_and_pushes() {
     let text = stdout(&out);
     assert!(text.contains("fetch\trefs/remotes/origin/main"), "{text}");
     assert!(text.contains("pull\tmain\t"), "{text}");
-    assert!(text.contains("push\tup to date"), "{text}");
+    assert!(text.contains("push\tmain\tup to date"), "{text}");
 
     clone.write("local.txt", b"local\n");
     clone.commit("Local work", "2024-03-02T00:00:00+0000");
