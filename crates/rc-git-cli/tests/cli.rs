@@ -952,6 +952,102 @@ fn the_stash_verbs_round_trip() {
 }
 
 #[test]
+fn commit_rejects_a_malformed_author_and_missing_message() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"keep this edit\n");
+    let head = fx.rev_parse("HEAD");
+
+    for (args, message) in [
+        (
+            [
+                "commit",
+                path,
+                "-m",
+                "x",
+                "--author",
+                "No Email",
+                "alpha.txt",
+            ]
+            .as_slice(),
+            "--author needs \"Name <email>\", got 'No Email'",
+        ),
+        (
+            ["commit", path, "-m", "x", "--author", "A <a@b", "alpha.txt"].as_slice(),
+            "--author needs \"Name <email>\", got 'A <a@b'",
+        ),
+        (
+            ["commit", path, "alpha.txt"].as_slice(),
+            "commit needs -m <msg>",
+        ),
+        (
+            ["commit", path, "-m", "x"].as_slice(),
+            "commit needs at least one <path>",
+        ),
+        (
+            ["stash-push", path, "--yes"].as_slice(),
+            "stash-push needs at least one <path>",
+        ),
+        (
+            ["stash-apply", path, "first"].as_slice(),
+            "'first' is not a stash index",
+        ),
+        (
+            ["stash-pop", path, "--yes", "-1"].as_slice(),
+            "does not take '-1'",
+        ),
+        (
+            ["stash-drop", path, "one", "--confirm", "drop"].as_slice(),
+            "'one' is not a stash index",
+        ),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains(message), "{args:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out), "", "{args:?}");
+    }
+    assert_eq!(
+        fx.rev_parse("HEAD"),
+        head,
+        "a rejected commit writes nothing"
+    );
+    assert_eq!(
+        std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+        b"keep this edit\n"
+    );
+}
+
+#[test]
+fn stash_pop_restores_and_prints_the_backup_ref() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"pop me\n");
+
+    let out = rc_git(&[
+        "stash-push",
+        path,
+        "--yes",
+        "--author",
+        "CLI User <cli@example.com>",
+        "alpha.txt",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_ne!(
+        std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+        b"pop me\n"
+    );
+
+    let out = rc_git(&["stash-pop", path, "0", "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "refs/rc-git/backup/stash/0\n");
+    assert_eq!(
+        std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+        b"pop me\n"
+    );
+    assert_eq!(fx.git_output(&["stash", "list"]), "");
+}
+
+#[test]
 fn stash_push_and_pop_need_an_explicit_yes() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();
@@ -1046,6 +1142,92 @@ fn sync_fetches_pulls_and_pushes() {
         bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]),
         clone.rev_parse("HEAD")
     );
+}
+
+#[test]
+fn push_uploads_a_local_commit() {
+    let (_origin, bare, _server, clone) = served_clone();
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["push", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "push\tmain\torigin/main\t1 commit(s)\n");
+    assert_eq!(
+        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]),
+        clone.rev_parse("HEAD")
+    );
+
+    let out = rc_git(&["push", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "push\tmain\tup to date\n");
+}
+
+#[test]
+fn pull_fast_forwards_and_reports_the_file_count() {
+    let (origin, bare, _server, clone) = served_clone();
+    let old = clone.rev_parse("HEAD");
+    advance_origin(&origin, &bare);
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["pull", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let new = origin.rev_parse("HEAD");
+    assert_eq!(
+        stdout(&out),
+        format!("fetch\trefs/remotes/origin/main\t{new}\npull\tmain\t{old}\t{new}\t1 file(s)\n")
+    );
+    assert_eq!(clone.rev_parse("HEAD"), new);
+    assert_eq!(
+        std::fs::read(clone.path().join("news.txt")).unwrap(),
+        b"news\n"
+    );
+
+    let out = rc_git(&["pull", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "fetch\torigin\tup to date\npull\tmain\tup to date\n"
+    );
+}
+
+#[test]
+fn remote_flags_reject_half_credentials_and_unknown_flags() {
+    let (_origin, _bare, _server, clone) = served_clone();
+    let path = clone.path().to_str().unwrap();
+
+    for (args, message) in [
+        (
+            ["fetch", path, "--username"].as_slice(),
+            "--username needs a value",
+        ),
+        (
+            ["pull", path, "--token"].as_slice(),
+            "--token needs a value",
+        ),
+        (
+            ["push", path, "--ssh-dir"].as_slice(),
+            "--ssh-dir needs a value",
+        ),
+        (
+            ["fetch", path, "--bogus"].as_slice(),
+            "fetch does not take '--bogus'",
+        ),
+        (
+            ["fetch", path, "--username", "u"].as_slice(),
+            "--username was given without --token (or RC_GIT_TOKEN)",
+        ),
+        (
+            ["push", path, "--token", "t"].as_slice(),
+            "a token was given without --username",
+        ),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains(message), "{args:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out), "", "{args:?}");
+    }
 }
 
 #[test]
@@ -1209,7 +1391,7 @@ fn checkout_switches_branches_and_reports_a_dirty_path() {
     // feature.txt only exists on `feature`, so switching away must delete it — and it is dirty.
     fx.write("feature.txt", b"work in progress\n");
     let out = rc_git(&["checkout", path, "main"]);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("feature.txt"), "{}", stderr(&out));
     assert_eq!(
         fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
