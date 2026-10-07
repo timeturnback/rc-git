@@ -870,6 +870,27 @@ fn diff_worktree_shows_hunks_against_head() {
 }
 
 #[test]
+fn diff_worktree_of_a_file_deleted_from_disk_prints_its_removal() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.remove("alpha.txt");
+
+    let out = rc_git(&["diff", path, "--worktree", "alpha.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("@@ "), "{text}");
+    assert!(text.contains("-alpha\n"), "{text}");
+
+    let out = rc_git(&["diff", path, "--worktree", "never-tracked.txt"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("'never-tracked.txt'"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn commit_and_discard_drive_the_guard_from_the_command_line() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

@@ -907,7 +907,11 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
             Some(tree) => file_oid(repo.entry_at_path(tree, path)?, path)?,
             None => None,
         };
-        let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
+        let diff = if old.is_some() && is_missing_from_disk(repo, path) {
+            repo.diff_blobs(old, None, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?
+        } else {
+            repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?
+        };
         return render_blob_diff(diff, path, out);
     }
     args.expect(1, 3, "<rev>, or <old> <new> [path]")?;
@@ -939,6 +943,15 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     }
     let diff = repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
     render_blob_diff(diff, path, out)
+}
+
+/// Whether the working-tree file at `path` is gone, so its diff against HEAD is a deletion.
+/// Any other stat failure is left for `diff_worktree_file` to report.
+fn is_missing_from_disk(repo: &Repository, path: &str) -> bool {
+    repo.work_dir().is_some_and(|work_dir| {
+        std::fs::symlink_metadata(work_dir.join(path))
+            .is_err_and(|err| err.kind() == io::ErrorKind::NotFound)
+    })
 }
 
 /// Whether every side present is a gitlink, whose id names a commit in another repository
