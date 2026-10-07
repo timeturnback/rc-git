@@ -176,6 +176,27 @@ fn origin_head_wins_over_other_remotes() {
         Some("trunk"),
         "origin answers even though aaa sorts first"
     );
+
+    fx.git(&["update-ref", "refs/remotes/upstream/y", "main"]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/upstream/HEAD",
+        "refs/remotes/upstream/y",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("trunk"),
+        "origin answers even though upstream sorts last"
+    );
+
+    fx.git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("dev"),
+        "without origin, the first remote in sort order answers"
+    );
 }
 
 #[test]
@@ -243,6 +264,94 @@ fn refs_are_classified_and_peeled() {
         annotated.target,
         oid(&fx.rev_parse("v1.0")),
         "not the tag object itself"
+    );
+}
+
+#[test]
+fn packed_refs_list_and_peel_like_loose_ones() {
+    let fx = Fixture::standard();
+    fx.git(&["pack-refs", "--all"]);
+    assert!(
+        !fx.git_dir().join("refs/tags/v1.0").exists(),
+        "the tag lives only in packed-refs"
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    assert_eq!(listing.broken.len(), 0);
+    assert_eq!(listing.refs.len(), 5);
+
+    let find = |name: &str| listing.refs.iter().find(|r| r.full_name == name).unwrap();
+    let expected = [
+        ("refs/heads/main", RefKind::LocalBranch, "main", "main"),
+        (
+            "refs/heads/feature",
+            RefKind::LocalBranch,
+            "feature",
+            "feature",
+        ),
+        (
+            "refs/remotes/origin/main",
+            RefKind::RemoteBranch,
+            "origin/main",
+            "origin/main",
+        ),
+        ("refs/tags/v0.9", RefKind::Tag, "v0.9", "v0.9"),
+        ("refs/tags/v1.0", RefKind::Tag, "v1.0", "v1.0^{commit}"),
+    ];
+    for (full_name, kind, short_name, target) in expected {
+        let r = find(full_name);
+        assert_eq!(
+            (r.kind, r.short_name.as_str(), r.target),
+            (kind, short_name, oid(&fx.rev_parse(target))),
+            "{full_name}"
+        );
+    }
+    assert_ne!(
+        find("refs/tags/v1.0").target,
+        oid(&fx.rev_parse("v1.0")),
+        "peeled through the packed tag, not the tag object itself"
+    );
+}
+
+#[test]
+fn refs_list_stash_and_notes_as_other_and_follow_remote_head() {
+    let fx = Fixture::standard();
+    fx.write("README.md", b"changed\n");
+    fx.git(&["stash", "-q"]);
+    fx.git(&["notes", "add", "-m", "n", "HEAD"]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    assert_eq!(listing.broken.len(), 0);
+
+    let find = |name: &str| listing.refs.iter().find(|r| r.full_name == name).unwrap();
+    let stash = find("refs/stash");
+    assert_eq!(
+        (stash.kind, stash.short_name.as_str(), stash.target),
+        (RefKind::Other, "stash", oid(&fx.rev_parse("refs/stash")))
+    );
+    let notes = find("refs/notes/commits");
+    assert_eq!(
+        (notes.kind, notes.short_name.as_str(), notes.target),
+        (
+            RefKind::Other,
+            "notes/commits",
+            oid(&fx.rev_parse("refs/notes/commits"))
+        )
+    );
+    let remote_head = find("refs/remotes/origin/HEAD");
+    assert_eq!(
+        (remote_head.kind, remote_head.short_name.as_str()),
+        (RefKind::RemoteBranch, "origin/HEAD")
+    );
+    assert_eq!(
+        remote_head.target,
+        find("refs/remotes/origin/main").target,
+        "followed to the branch it names"
     );
 }
 
