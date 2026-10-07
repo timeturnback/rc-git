@@ -196,7 +196,7 @@ import Testing
 
 /// Import links end to end through the model: the cache, and opening what a link names.
 @MainActor
-@Suite struct ModelImportTests {
+@Suite(.timeLimit(.minutes(1))) struct ModelImportTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 

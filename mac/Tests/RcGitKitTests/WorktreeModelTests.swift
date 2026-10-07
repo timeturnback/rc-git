@@ -5,7 +5,7 @@ import Testing
 
 /// Browsing the working directory as a pseudo-ref.
 @MainActor
-@Suite struct WorktreeModelTests {
+@Suite(.timeLimit(.minutes(1))) struct WorktreeModelTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 

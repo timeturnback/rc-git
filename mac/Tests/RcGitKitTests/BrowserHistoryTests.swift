@@ -5,7 +5,7 @@ import Testing
 
 /// History paging, commit browsing, and the refs refresh driven by the file watcher.
 @MainActor
-@Suite struct BrowserHistoryTests {
+@Suite(.timeLimit(.minutes(1))) struct BrowserHistoryTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 
@@ -275,7 +275,7 @@ import Testing
 
 /// Commit detail: changed files, one file's diff, and blame for the open file.
 @MainActor
-@Suite struct BrowserDiffTests {
+@Suite(.timeLimit(.minutes(1))) struct BrowserDiffTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 

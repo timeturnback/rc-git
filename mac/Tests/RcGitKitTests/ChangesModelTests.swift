@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 @MainActor
-@Suite struct ChangesModelTests {
+@Suite(.timeLimit(.minutes(1))) struct ChangesModelTests {
     let repo = FakeRepository()
     let model: ChangesModel
     let head = oid(0xAA)

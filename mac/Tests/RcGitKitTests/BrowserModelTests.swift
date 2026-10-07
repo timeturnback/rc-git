@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 @MainActor
-@Suite struct BrowserModelTests {
+@Suite(.timeLimit(.minutes(1))) struct BrowserModelTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 

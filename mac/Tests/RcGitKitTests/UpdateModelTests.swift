@@ -55,7 +55,7 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
 }
 
 @MainActor
-@Suite struct UpdateModelTests {
+@Suite(.timeLimit(.minutes(1))) struct UpdateModelTests {
     private static let head = "a3f91c2d4e5f60718293a4b5c6d7e8f901234567"
     private static let upstream = "b7d21ff0112233445566778899aabbccddeeff00"
 

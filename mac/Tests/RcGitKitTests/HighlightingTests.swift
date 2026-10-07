@@ -67,7 +67,7 @@ import Testing
 
 /// The model-level cache: one parse per blob id.
 @MainActor
-@Suite struct ModelHighlightTests {
+@Suite(.timeLimit(.minutes(1))) struct ModelHighlightTests {
     @Test func highlightsAreCachedByBlobAndSkipLossyText() async {
         let model = BrowserModel()
         let repo = FakeRepository()

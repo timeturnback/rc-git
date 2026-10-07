@@ -5,7 +5,7 @@ import Testing
 
 /// What `BrowserModel` reports as its location, and how it returns to one.
 @MainActor
-@Suite struct BrowserLocationTests {
+@Suite(.timeLimit(.minutes(1))) struct BrowserLocationTests {
     let repo = FakeRepository()
     let model = BrowserModel()
 

@@ -190,7 +190,7 @@ private let alreadyOnMain = CheckoutOutcome(
     alreadyOnBranch: true)
 
 @MainActor
-@Suite struct SyncModelTests {
+@Suite(.timeLimit(.minutes(1))) struct SyncModelTests {
     private func model(
         _ script: StubSyncPerformer.Script,
         store: InMemoryCredentialStore = InMemoryCredentialStore(),
