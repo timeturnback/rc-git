@@ -18,6 +18,7 @@ use super::commit::{
     blob_data, checked_out_branch, refuse_case_variant_path, tree_of, whole_file_edit, work_dir,
     write_object,
 };
+use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
 use super::workfile;
 use super::{
@@ -263,7 +264,7 @@ fn apply_inner(
     for change in &changes {
         let path = change.path.to_string();
         let source_path = change.source_path.as_ref().map(ToString::to_string);
-        let symlink = entry_kind(change.entry) == gix::objs::tree::EntryKind::Link;
+        let symlink = entry_kind(&path, change.entry, op)? == gix::objs::tree::EntryKind::Link;
         workfile::validate_path(op, &path, symlink)?;
         if let Some(source) = &source_path {
             workfile::validate_path(op, source, symlink)?;
@@ -321,17 +322,8 @@ fn restore_change(
         .ok_or_else(|| ActionError::git(op, "refs/stash", "a written change carries no blob"))?;
     let oid = gix_oid(new, op)?;
     let data = blob_data(repo, op, path, oid)?;
-    workfile::restore_file(op, work_dir, path, &data, entry_kind(change.entry))
-}
-
-fn entry_kind(kind: rc_git_core::EntryKind) -> gix::objs::tree::EntryKind {
-    match kind {
-        rc_git_core::EntryKind::Symlink => gix::objs::tree::EntryKind::Link,
-        rc_git_core::EntryKind::ExecutableBlob => gix::objs::tree::EntryKind::BlobExecutable,
-        rc_git_core::EntryKind::Blob
-        | rc_git_core::EntryKind::Tree
-        | rc_git_core::EntryKind::Submodule => gix::objs::tree::EntryKind::Blob,
-    }
+    let kind = entry_kind(path, change.entry, op)?;
+    workfile::restore_file(op, work_dir, path, &data, kind)
 }
 
 /// The path must not exist on disk at all.
@@ -572,11 +564,6 @@ fn commit_subject(repo: &gix::Repository, id: ObjectId) -> ActionResult<String> 
         .next()
         .unwrap_or_default();
     Ok(String::from_utf8_lossy(first).into_owned())
-}
-
-fn core_oid(id: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
-    rc_git_core::Oid::from_bytes(id.as_slice())
-        .ok_or_else(|| ActionError::git(op, "refs/stash", "an oid did not convert"))
 }
 
 fn gix_oid(id: rc_git_core::Oid, op: &'static str) -> ActionResult<ObjectId> {

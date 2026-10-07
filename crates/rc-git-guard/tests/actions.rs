@@ -1043,6 +1043,41 @@ mod stash {
     }
 
     #[test]
+    fn apply_refuses_a_stashed_gitlink_before_writing_anything() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stashed edit\n");
+        fx.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,sub",
+        ]);
+        fx.git(&["stash", "push", "-q", "-m", "with gitlink"]);
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n"
+        );
+
+        let err = stash_apply(fx.path(), &policy, 0, None).unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(
+            err.to_string().contains("'sub'") && err.to_string().contains("submodule"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "the file sorted before the gitlink was not written"
+        );
+        assert_eq!(
+            stash_list(&fx),
+            "On main: with gitlink",
+            "the stash survives"
+        );
+    }
+
+    #[test]
     fn apply_refuses_a_dirty_path_and_touches_nothing() {
         let fx = Fixture::standard();
         let policy = Policy::default();

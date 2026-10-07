@@ -237,13 +237,16 @@ pub(super) fn apply(
     update_index(repo, op, work_dir, &index_changes)
 }
 
-fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
+pub(super) fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
     rc_git_core::Oid::from_bytes(oid.as_slice())
         .ok_or_else(|| ActionError::git(op, oid.to_string(), "not a valid object id"))
 }
 
 /// Maps the core's entry kind back to gix's, refusing what these writes cannot produce.
-fn entry_kind(
+///
+/// # Errors
+/// [`ActionError::Git`] naming `path` for a submodule or a directory entry.
+pub(super) fn entry_kind(
     path: &str,
     kind: rc_git_core::EntryKind,
     op: &'static str,
