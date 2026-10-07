@@ -644,6 +644,59 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
 }
 
 #[test]
+fn commit_expect_head_refuses_when_head_moved() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let seen = fx.rev_parse("HEAD");
+    fx.commit_with_body(
+        "Made elsewhere",
+        "Another process.",
+        "2024-03-01T00:00:00+0000",
+    );
+    let moved = fx.rev_parse("HEAD");
+    fx.write("alpha.txt", b"agent edit\n");
+
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "stale",
+        "--expect-head",
+        &seen,
+        "alpha.txt",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("changed since"), "{}", stderr(&out));
+    assert_eq!(fx.rev_parse("HEAD"), moved, "a stale commit writes nothing");
+
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "x",
+        "--expect-head",
+        "abc123",
+        "alpha.txt",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("'abc123'"), "{}", stderr(&out));
+
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "fresh",
+        "--author",
+        "CLI User <cli@example.com>",
+        "--expect-head",
+        &moved,
+        "alpha.txt",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.rev_parse("HEAD~1"), moved);
+}
+
+#[test]
 fn discard_needs_an_explicit_yes_and_rejects_unknown_flags() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

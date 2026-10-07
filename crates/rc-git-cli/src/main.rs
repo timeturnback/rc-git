@@ -38,8 +38,10 @@ usage: rc-git [--time] <command> <repo> [args]
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
 
-  commit      <repo> -m <msg> [--author \"Name <email>\"] [--confirm <phrase>] <path>...
-                                          commit files to the branch
+  commit      <repo> -m <msg> [--author \"Name <email>\"] [--confirm <phrase>]
+              [--expect-head <oid>] <path>...
+                                          commit files to the branch; with --expect-head,
+                                          refuse if HEAD is no longer that full commit id
   stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] [--confirm <phrase>] <path>...
                                           stash files, restore them to HEAD
   stash-apply <repo> [n] [--confirm <phrase>]  write stash@{n} back to the working tree
@@ -1049,6 +1051,23 @@ fn author(args: &VerbArgs<'_>) -> Result<Option<rc_git_guard::actions::Identity>
 }
 
 const MESSAGE_FLAGS: [&str; 4] = ["-m", "--message", "--author", "--confirm"];
+const COMMIT_FLAGS: [&str; 5] = ["-m", "--message", "--author", "--confirm", "--expect-head"];
+
+/// The HEAD commit the guard checks the commit against: the caller's `--expect-head`, so a
+/// commit made elsewhere since they looked is refused, or else HEAD as read now (`None` when
+/// the branch is unborn).
+fn expected_head(repo: &Repository, flag: Option<&str>) -> Result<Option<String>> {
+    if let Some(hex) = flag {
+        let oid = rc_git_core::Oid::from_hex(hex).map_err(|_| {
+            usage_error(format!(
+                "commit --expect-head takes a full commit id, not '{hex}'\n\n{USAGE}"
+            ))
+        })?;
+        return Ok(Some(oid.to_hex()));
+    }
+    let head = repo.head().context("commit: read HEAD")?;
+    Ok(head.target.map(|oid| oid.to_hex()))
+}
 
 fn commit_verb(
     repo: &Repository,
@@ -1056,12 +1075,12 @@ fn commit_verb(
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let args = split_args("commit", args, &MESSAGE_FLAGS, &[])?;
+    let args = split_args("commit", args, &COMMIT_FLAGS, &[])?;
     args.expect(1, usize::MAX, "at least one <path>")?;
     let message = args
         .value(&["-m", "--message"])
         .ok_or_else(|| usage_error(format!("commit needs -m <msg>\n\n{USAGE}")))?;
-    let expected = repo.resolve("HEAD").ok().map(|oid| oid.to_hex());
+    let expected = expected_head(repo, args.value(&["--expect-head"]))?;
     let selections: Vec<rc_git_guard::actions::FileSelection> = canonical_paths(&args.positionals)?
         .into_iter()
         .map(|path| rc_git_guard::actions::FileSelection::Whole { path })
