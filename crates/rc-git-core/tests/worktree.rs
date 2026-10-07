@@ -789,6 +789,48 @@ fn worktree_status_reports_an_unreadable_root() {
     assert!(err.to_string().contains("scan working tree"), "{err}");
 }
 
+/// A same-size edit, so the walk must open the file to hash it, then made unreadable.
+fn with_unreadable_main_rs() -> Fixture {
+    let fx = Fixture::standard();
+    fx.write("src/main.rs", b"fn main() {\n    println!(\"HI\");\n}\n");
+    fx.set_mode("src/main.rs", 0o000);
+    fx
+}
+
+#[test]
+fn worktree_status_names_an_unreadable_file() {
+    let fx = with_unreadable_main_rs();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000);
+    fx.set_mode("src/main.rs", 0o644);
+
+    let report = report.unwrap();
+    assert_eq!(report.entries, []);
+    assert_eq!(report.unreadable.len(), 1, "{:?}", report.unreadable);
+    assert_eq!(report.unreadable[0].path, "src/main.rs");
+    assert!(
+        report.unreadable[0]
+            .error
+            .starts_with("open working tree file: "),
+        "{}",
+        report.unreadable[0].error
+    );
+}
+
+#[test]
+fn a_listing_error_names_the_unreadable_file() {
+    let fx = with_unreadable_main_rs();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let err = repo.worktree_entries(tree, "src");
+    fx.set_mode("src/main.rs", 0o644);
+
+    let err = err.unwrap_err().to_string();
+    assert!(err.contains("open working tree file"), "{err}");
+    assert!(err.contains("'src/main.rs'"), "{err}");
+}
+
 /// The standard fixture with a checked-out submodule committed at `vendor/sub`, plus the
 /// repository the submodule was cloned from, which must outlive the test.
 fn with_submodule() -> (Fixture, Fixture) {

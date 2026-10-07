@@ -116,6 +116,28 @@ fn tree_diff_peels_and_rejects_non_trees() {
 }
 
 #[test]
+fn a_failed_tree_diff_names_the_compared_tree() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("d/a.txt", b"a\n");
+    fx.commit("one", "2024-01-01T00:00:00+0000");
+    fx.write("d/b.txt", b"b\n");
+    fx.commit("two", "2024-01-02T00:00:00+0000");
+    let subtree = fx.rev_parse("main:d");
+    fx.remove(&format!(".git/objects/{}/{}", &subtree[..2], &subtree[2..]));
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let to = oid(&fx.rev_parse("main^{tree}"));
+    let err = repo
+        .diff_trees(Some(repo.resolve("main~1").unwrap()), to)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Object { op: "diff trees", oid, .. } if oid == to),
+        "{err}"
+    );
+}
+
+#[test]
 fn blob_diff_produces_unified_hunks() {
     let fx = diff_fixture();
     let repo = Repository::open(fx.path()).unwrap();

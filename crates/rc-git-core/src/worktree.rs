@@ -542,15 +542,26 @@ impl<'repo> WorktreeContext<'repo> {
             Ok(file) => file,
             Err(source) => return Ok(Err(DiskError::new("open working tree file", source))),
         };
-        let hashed = gix::objs::compute_stream_hash(
+        let hashed = match gix::objs::compute_stream_hash(
             self.repo.object_hash(),
             gix::objs::Kind::Blob,
             &mut file,
             disk.size,
             &mut gix::progress::Discard,
             &AtomicBool::new(false),
-        )
-        .map_err(git("hash working tree file"))?;
+        ) {
+            Ok(hashed) => hashed,
+            Err(gix::hash::io::Error::Io(source)) => {
+                return Ok(Err(DiskError::new("hash working tree file", source)));
+            }
+            Err(source @ gix::hash::io::Error::Hasher(_)) => {
+                return Err(worktree_error(
+                    "hash working tree file",
+                    &disk.rela.to_str_lossy(),
+                    Box::new(source),
+                ));
+            }
+        };
         Ok(Ok(if Oid::from_gix(hashed) == tree_entry.oid {
             WorktreeStatus::Unchanged
         } else {

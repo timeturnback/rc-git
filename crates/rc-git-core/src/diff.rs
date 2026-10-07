@@ -115,7 +115,7 @@ impl Repository {
     ///
     /// # Errors
     /// [`Error::Object`](crate::Error::Object) when either id is missing or does not peel to
-    /// a tree, [`Error::Git`](crate::Error::Git) when the diff itself fails.
+    /// a tree, or when a tree below them cannot be read during the diff (then naming `to`).
     pub fn diff_trees(&self, from: Option<Oid>, to: Oid) -> Result<Vec<TreeChange>> {
         let from = from.map(|id| self.tree_of(id)).transpose()?;
         let to = self.tree_of(to)?;
@@ -132,7 +132,7 @@ impl Repository {
             let mut changes: Vec<TreeChange> = Vec::new();
             from_tree
                 .changes()
-                .map_err(git("prepare tree diff"))?
+                .map_err(object("prepare tree diff", to))?
                 .options(|options| {
                     options.track_path();
                 })
@@ -142,7 +142,7 @@ impl Repository {
                     }
                     Ok::<_, std::convert::Infallible>(Action::Continue(()))
                 })
-                .map_err(git("diff trees"))?;
+                .map_err(object("diff trees", to))?;
             changes.sort_by(|a, b| a.path.cmp(&b.path));
             Ok(changes)
         })
