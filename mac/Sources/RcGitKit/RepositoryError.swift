@@ -25,3 +25,24 @@ extension RepositoryError {
         return String(cString: pointer)
     }
 }
+
+extension RepositoryError {
+    /// `error` itself when it already is a `RepositoryError`, else its description.
+    init(wrapping error: any Error) {
+        self = (error as? RepositoryError) ?? RepositoryError(String(describing: error))
+    }
+
+    /// Runs a blocking repository call off the main actor and returns its outcome, mapping any
+    /// error through `init(wrapping:)`. `body` must capture only Sendable locals, never a model.
+    static func run<T: Sendable>(
+        priority: TaskPriority = .userInitiated, _ body: @escaping @Sendable () throws -> T
+    ) async -> Result<T, RepositoryError> {
+        await Task.detached(priority: priority) { () -> Result<T, RepositoryError> in
+            do {
+                return .success(try body())
+            } catch {
+                return .failure(RepositoryError(wrapping: error))
+            }
+        }.value
+    }
+}

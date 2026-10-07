@@ -116,18 +116,13 @@ public final class ChangesModel {
         onStatusChanged?()
         let repository = repository
         let showsHidden = showsHiddenFiles
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<(StatusReport, String?), RepositoryError> in
-            do {
-                let head = try? repository.resolve("HEAD").hex
-                let tree = try repository.resolveTree("HEAD")
-                let report = try repository.worktreeStatus(
-                    tree: tree, maxScan: Repository.defaultStatusScanCap)
-                return .success((Self.listed(report, showsHidden: showsHidden), head))
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            let head = try? repository.resolve("HEAD").hex
+            let tree = try repository.resolveTree("HEAD")
+            let report = try repository.worktreeStatus(
+                tree: tree, maxScan: Repository.defaultStatusScanCap)
+            return (Self.listed(report, showsHidden: showsHidden), head)
+        }
         guard generation == statusGeneration else { return }
         switch result {
         case let .success((report, head)):
@@ -164,14 +159,9 @@ public final class ChangesModel {
         stashGeneration += 1
         let generation = stashGeneration
         let repository = repository
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<[StashEntry], RepositoryError> in
-            do {
-                return .success(try repository.stashList())
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.stashList()
+        }
         guard generation == stashGeneration else { return }
         switch result {
         case let .success(entries):
@@ -190,23 +180,16 @@ public final class ChangesModel {
         diffState = .loading(entry.path)
         onDiffChanged?()
         let repository = repository
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<BlobDiff, RepositoryError> in
-            do {
-                if entry.status == .deleted {
-                    return .success(
-                        try repository.diffBlobs(
-                            old: entry.oid, new: nil,
-                            limit: Repository.defaultBlobLimit, context: 3))
-                }
-                return .success(
-                    try repository.diffWorktreeFile(
-                        path: entry.path, old: entry.oid,
-                        limit: Repository.defaultBlobLimit, context: 3))
-            } catch {
-                return .failure(Self.wrap(error))
+        let result = await RepositoryError.run {
+            if entry.status == .deleted {
+                return try repository.diffBlobs(
+                    old: entry.oid, new: nil,
+                    limit: Repository.defaultBlobLimit, context: 3)
             }
-        }.value
+            return try repository.diffWorktreeFile(
+                path: entry.path, old: entry.oid,
+                limit: Repository.defaultBlobLimit, context: 3)
+        }
         guard generation == diffGeneration, selectedPath == entry.path else { return }
         switch result {
         case let .success(diff):
@@ -304,9 +287,5 @@ public final class ChangesModel {
             $0.status != .untracked || !HiddenFiles.isHidden(path: $0.path)
         }
         return StatusReport(entries: entries, scanned: report.scanned, truncated: report.truncated)
-    }
-
-    private nonisolated static func wrap(_ error: any Error) -> RepositoryError {
-        error as? RepositoryError ?? RepositoryError(String(describing: error))
     }
 }

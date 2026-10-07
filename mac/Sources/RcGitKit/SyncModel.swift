@@ -10,13 +10,13 @@ public protocol SyncPerforming: Sendable {
     func fetch(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> FetchOutcome
-    func pullFastForward(repoPath: String) throws -> PullOutcome
-    func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome
+    ) throws(SyncError) -> FetchOutcome
+    func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome
+    func checkout(repoPath: String, branch: String) throws(SyncError) -> CheckoutOutcome
     func push(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> PushOutcome
+    ) throws(SyncError) -> PushOutcome
 }
 
 /// Production performer: forwards to `RepositoryGuard`.
@@ -34,24 +34,24 @@ public struct GuardSyncPerformer: SyncPerforming {
     public func fetch(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> FetchOutcome {
+    ) throws(SyncError) -> FetchOutcome {
         try RepositoryGuard.fetch(
             repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
             cancel: cancel)
     }
 
-    public func pullFastForward(repoPath: String) throws -> PullOutcome {
+    public func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome {
         try RepositoryGuard.pullFastForward(repoPath: repoPath)
     }
 
-    public func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome {
+    public func checkout(repoPath: String, branch: String) throws(SyncError) -> CheckoutOutcome {
         try RepositoryGuard.checkout(repoPath: repoPath, branch: branch)
     }
 
     public func push(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> PushOutcome {
+    ) throws(SyncError) -> PushOutcome {
         try RepositoryGuard.push(
             repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
             cancel: cancel)
@@ -402,16 +402,9 @@ public final class SyncModel {
         enter(.checkout)
         let performer = performer
         let repoPath = repoPath
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<CheckoutOutcome, SyncError> in
-            do {
-                return .success(try performer.checkout(repoPath: repoPath, branch: branch))
-            } catch let error as SyncError {
-                return .failure(error)
-            } catch {
-                return .failure(.failure(message: "\(error)"))
-            }
-        }.value
+        let result = await detached { () throws(SyncError) -> CheckoutOutcome in
+            try performer.checkout(repoPath: repoPath, branch: branch)
+        }
         switch result {
         case let .success(outcome):
             return outcome
@@ -420,8 +413,19 @@ public final class SyncModel {
         }
     }
 
+    /// Runs one transfer step off the main actor and returns its outcome. The closure type is
+    /// spelled at each call site because a closure literal infers `throws(any Error)`.
+    private func detached<T: Sendable>(
+        _ body: @escaping @Sendable () throws(SyncError) -> T
+    ) async -> Result<T, SyncError> {
+        await Task.detached(priority: .userInitiated) {
+            Result { () throws(SyncError) -> T in try body() }
+        }.value
+    }
+
     private func runFetch() async throws -> FetchOutcome {
-        try await networkStep(.fetch) { performer, repoPath, credentials, hostKey, cancel in
+        try await networkStep(.fetch) {
+            (performer, repoPath, credentials, hostKey, cancel) throws(SyncError) -> FetchOutcome in
             try performer.fetch(
                 repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
                 cancel: cancel)
@@ -432,16 +436,9 @@ public final class SyncModel {
         enter(.pull)
         let performer = performer
         let repoPath = repoPath
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<PullOutcome, SyncError> in
-            do {
-                return .success(try performer.pullFastForward(repoPath: repoPath))
-            } catch let error as SyncError {
-                return .failure(error)
-            } catch {
-                return .failure(.failure(message: "\(error)"))
-            }
-        }.value
+        let result = await detached { () throws(SyncError) -> PullOutcome in
+            try performer.pullFastForward(repoPath: repoPath)
+        }
         switch result {
         case let .success(outcome):
             return outcome
@@ -455,7 +452,8 @@ public final class SyncModel {
     }
 
     private func runPush() async throws -> PushOutcome {
-        try await networkStep(.push) { performer, repoPath, credentials, hostKey, cancel in
+        try await networkStep(.push) {
+            (performer, repoPath, credentials, hostKey, cancel) throws(SyncError) -> PushOutcome in
             try performer.push(
                 repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
                 cancel: cancel)
@@ -470,7 +468,7 @@ public final class SyncModel {
         _ step: SyncStep,
         _ operation:
             @escaping @Sendable (SyncPerforming, String, Credentials?, String?, CancelToken)
-            throws -> Outcome
+            throws(SyncError) -> Outcome
     ) async throws -> Outcome {
         enter(step)
         let host = remoteStatus?.host ?? ""
@@ -490,18 +488,9 @@ public final class SyncModel {
             let attemptCredentials = credentials
             let attemptHostKey = acceptedHostKey
             let cancel = cancel
-            let result = await Task.detached(priority: .userInitiated) {
-                () -> Result<Outcome, SyncError> in
-                do {
-                    return .success(
-                        try operation(
-                            performer, repoPath, attemptCredentials, attemptHostKey, cancel))
-                } catch let error as SyncError {
-                    return .failure(error)
-                } catch {
-                    return .failure(.failure(message: "\(error)"))
-                }
-            }.value
+            let result = await detached { () throws(SyncError) -> Outcome in
+                try operation(performer, repoPath, attemptCredentials, attemptHostKey, cancel)
+            }
             switch result {
             case let .success(outcome):
                 if fromPrompt, let credentials {

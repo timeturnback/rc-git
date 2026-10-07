@@ -62,7 +62,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return script.defaultBranch
     }
 
-    func checkout(repoPath: String, branch: String) throws -> CheckoutOutcome {
+    func checkout(repoPath: String, branch: String) throws(SyncError) -> CheckoutOutcome {
         lock.lock()
         defer { lock.unlock() }
         checkoutBranches.append(branch)
@@ -75,7 +75,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     func fetch(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> FetchOutcome {
+    ) throws(SyncError) -> FetchOutcome {
         duringStep?(cancel)
         lock.lock()
         defer { lock.unlock() }
@@ -87,7 +87,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return try script.fetches.removeFirst().get()
     }
 
-    func pullFastForward(repoPath: String) throws -> PullOutcome {
+    func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome {
         lock.lock()
         defer { lock.unlock() }
         pullCalls += 1
@@ -100,7 +100,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     func push(
         repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
-    ) throws -> PushOutcome {
+    ) throws(SyncError) -> PushOutcome {
         duringStep?(cancel)
         lock.lock()
         defer { lock.unlock() }

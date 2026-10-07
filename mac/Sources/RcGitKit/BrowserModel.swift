@@ -376,15 +376,10 @@ public final class BrowserModel {
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<FileState, RepositoryError> in
-            do {
-                let content = try repository.worktreeFile(path: path, limit: limit)
-                return .success(Self.state(for: entry, content: content))
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            let content = try repository.worktreeFile(path: path, limit: limit)
+            return Self.state(for: entry, content: content)
+        }
         guard generation == fileGeneration else { return }
         switch result {
         case let .success(state):
@@ -402,12 +397,9 @@ public final class BrowserModel {
         indexBuild?.task.cancel()
         indexBuild = nil
         forgetWorktreePaths()
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<Oid, RepositoryError> in
-            do { return .success(try repository.treeOf(target)) } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.treeOf(target)
+        }
         guard generation == rootGeneration else { return }
         switch result {
         case let .success(tree):
@@ -445,15 +437,10 @@ public final class BrowserModel {
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<FileState, RepositoryError> in
-            do {
-                let content = try repository.readBlob(entry.oid, limit: limit)
-                return .success(Self.state(for: entry, content: content))
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            let content = try repository.readBlob(entry.oid, limit: limit)
+            return Self.state(for: entry, content: content)
+        }
         guard generation == fileGeneration else { return }
         switch result {
         case let .success(state):
@@ -526,13 +513,9 @@ public final class BrowserModel {
         let generation = historyGeneration
         let skip = history.count
         let pageSize = Self.historyPageSize
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<[CommitSummary], RepositoryError> in
-            do { return .success(try repository.log(tip: tip, skip: skip, limit: pageSize)) } catch
-            {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.log(tip: tip, skip: skip, limit: pageSize)
+        }
         guard generation == historyGeneration else { return }
         isLoadingHistory = false
         switch result {
@@ -572,17 +555,11 @@ public final class BrowserModel {
         while history.count < target, !historyComplete {
             let skip = pathHistoryCache[key]?.scanned ?? 0
             let remaining = target - history.count
-            let result = await Task.detached(priority: .userInitiated) {
-                () -> Result<CommitPage, RepositoryError> in
-                do {
-                    return .success(
-                        try repository.pathHistory(
-                            tip: tip, path: path, scanSkip: skip, limit: remaining,
-                            maxScan: chunk))
-                } catch {
-                    return .failure(Self.wrap(error))
-                }
-            }.value
+            let result = await RepositoryError.run {
+                try repository.pathHistory(
+                    tip: tip, path: path, scanSkip: skip, limit: remaining,
+                    maxScan: chunk)
+            }
             guard generation == historyGeneration else { return }
             switch result {
             case let .success(page):
@@ -681,12 +658,9 @@ public final class BrowserModel {
     /// and shows that commit's detail.
     public func jumpToRevision(_ spec: String) async {
         guard let repository else { return }
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<Oid, RepositoryError> in
-            do { return .success(try repository.resolve(spec)) } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.resolve(spec)
+        }
         switch result {
         case let .success(oid):
             await jumpToCommit(oid)
@@ -705,17 +679,11 @@ public final class BrowserModel {
         while searchResults.count < target, !searchComplete {
             let skip = searchScanned
             let remaining = target - searchResults.count
-            let result = await Task.detached(priority: .userInitiated) {
-                () -> Result<CommitPage, RepositoryError> in
-                do {
-                    return .success(
-                        try repository.searchCommits(
-                            tip: tip, filter: filter, scanSkip: skip, limit: remaining,
-                            maxScan: chunk))
-                } catch {
-                    return .failure(Self.wrap(error))
-                }
-            }.value
+            let result = await RepositoryError.run {
+                try repository.searchCommits(
+                    tip: tip, filter: filter, scanSkip: skip, limit: remaining,
+                    maxScan: chunk)
+            }
             guard generation == searchGeneration else { return }
             switch result {
             case let .success(page):
@@ -788,16 +756,11 @@ public final class BrowserModel {
         noteLocation()
         let parent = commit.parents.first
         let target = commit.oid
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<([TreeChange], CommitDetail), RepositoryError> in
-            do {
-                let changes = try repository.diffTrees(from: parent, to: target)
-                let detail = try repository.commitDetails(target)
-                return .success((changes, detail))
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            let changes = try repository.diffTrees(from: parent, to: target)
+            let detail = try repository.commitDetails(target)
+            return (changes, detail)
+        }
         guard generation == diffGeneration else { return }
         switch result {
         case let .success((changes, detail)):
@@ -830,12 +793,9 @@ public final class BrowserModel {
     /// reported and answers `nil`.
     private func readCommit(_ oid: Oid) async -> CommitSummary? {
         guard let repository else { return nil }
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<CommitSummary, RepositoryError> in
-            do { return .success(try repository.commit(oid)) } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.commit(oid)
+        }
         switch result {
         case let .success(summary):
             return summary
@@ -852,17 +812,11 @@ public final class BrowserModel {
         let generation = diffGeneration
         fileDiff = .loading(change)
         onDiffChanged?()
-        let result = await Task.detached(priority: .userInitiated) {
-            () -> Result<BlobDiff, RepositoryError> in
-            do {
-                return .success(
-                    try repository.diffBlobs(
-                        old: change.old, new: change.new,
-                        limit: Repository.defaultBlobLimit, context: 3))
-            } catch {
-                return .failure(Self.wrap(error))
-            }
-        }.value
+        let result = await RepositoryError.run {
+            try repository.diffBlobs(
+                old: change.old, new: change.new,
+                limit: Repository.defaultBlobLimit, context: 3)
+        }
         guard generation == diffGeneration else { return }
         switch result {
         case let .success(diff):
@@ -1287,16 +1241,12 @@ public final class BrowserModel {
         do {
             return .success((try repository.refs(), try repository.head()))
         } catch {
-            return .failure(Self.wrap(error))
+            return .failure(RepositoryError(wrapping: error))
         }
     }
 
     private func fail(_ message: String) {
         lastError = message
         onError?(message)
-    }
-
-    nonisolated private static func wrap(_ error: any Error) -> RepositoryError {
-        (error as? RepositoryError) ?? RepositoryError(String(describing: error))
     }
 }
