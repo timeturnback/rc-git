@@ -8,7 +8,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APPS="/Applications"
+# RCGIT_APPS_DIR is a test seam only (scripts/tests/install-app.test.sh); the app installs to
+# /Applications.
+APPS="${RCGIT_APPS_DIR:-/Applications}"
 TARGET="$APPS/RCGit.app"
 APP="$ROOT/RCGit.app"
 

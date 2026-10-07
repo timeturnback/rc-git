@@ -104,8 +104,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
-      - run: shellcheck scripts/*.sh
-      - run: shfmt -d scripts/*.sh
+      - run: shellcheck scripts/*.sh scripts/tests/*.sh
+      - run: shfmt -d scripts/*.sh scripts/tests/*.sh
       - run: actionlint
       - run: zizmor --offline .github
       - name: RcGitKit imports no UI framework   # same check as check.sh's "kit layering"

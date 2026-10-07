@@ -70,8 +70,10 @@ diff <(lint_table Cargo.toml workspace.lints.clippy | grep -Ev "$panic_lints") \
 diff <(lint_table Cargo.toml workspace.lints.rust) <(lint_table "$testkit" lints.rust) ||
   lint_drift "$testkit [lints.rust]"
 step "shell scripts"
-shellcheck scripts/*.sh
-shfmt -d scripts/*.sh
+shellcheck scripts/*.sh scripts/tests/*.sh
+shfmt -d scripts/*.sh scripts/tests/*.sh
+step "install-app rollback"
+scripts/tests/install-app.test.sh
 step "github actions"
 actionlint
 zizmor --offline .github
