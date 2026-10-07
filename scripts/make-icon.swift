@@ -156,6 +156,14 @@ func render(size: Int) -> Data {
     return png
 }
 
+let outputURL = URL(fileURLWithPath: output)
+let outputDirectory = outputURL.deletingLastPathComponent()
+do {
+    try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+} catch {
+    fail("could not create \(outputDirectory.path): \(error)")
+}
+
 let iconset = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("rc-git-icon-\(variant)-\(getpid()).iconset")
 try? FileManager.default.removeItem(at: iconset)
@@ -175,10 +183,6 @@ for base in [16, 32, 128, 256, 512] {
         }
     }
 }
-
-let outputURL = URL(fileURLWithPath: output)
-try? FileManager.default.createDirectory(
-    at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
 let iconutil = Process()
 iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
