@@ -15,9 +15,7 @@ import Testing
 
     init() {
         repo.listing = RefListing(refs: [
-            RefEntry(
-                fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                target: mainCommit)
+            branch("main", at: mainCommit)
         ])
         repo.headValue = Head(refName: "refs/heads/main", target: mainCommit)
         repo.treeOfMap = [mainCommit: mainTree]
@@ -165,9 +163,7 @@ import Testing
             repo.treeOfMap[movedCommit] = movedTree
             repo.trees[movedTree] = []
             repo.listing = RefListing(refs: [
-                RefEntry(
-                    fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                    target: movedCommit)
+                branch("main", at: movedCommit)
             ])
         }
         await model.refreshRefs()

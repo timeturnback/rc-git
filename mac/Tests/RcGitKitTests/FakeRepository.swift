@@ -274,6 +274,10 @@ func commitSummary(_ id: Oid, parents: [Oid] = [], title: String = "change") -> 
         authorTime: 1_704_067_200, authorOffset: 0, title: title)
 }
 
+func branch(_ name: String, at target: Oid, kind: RefKind = .localBranch) -> RefEntry {
+    RefEntry(fullName: "refs/heads/\(name)", shortName: name, kind: kind, target: target)
+}
+
 func oid(_ seed: UInt8) -> Oid {
     Oid(bytes: [UInt8](repeating: seed, count: 20))
 }

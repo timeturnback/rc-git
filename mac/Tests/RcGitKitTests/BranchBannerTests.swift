@@ -6,10 +6,6 @@ import Testing
     private let tip = Oid(hex: "1a2b3c4d5e6f708192a3b4c5d6e7f80910a1b2c3")!
     private let other = Oid(hex: "ffeeddccbbaa99887766554433221100ffeeddcc")!
 
-    private func ref(_ name: String, _ kind: RefKind = .localBranch) -> RefEntry {
-        RefEntry(fullName: "refs/heads/\(name)", shortName: name, kind: kind, target: tip)
-    }
-
     private func commit(_ title: String) -> CommitSummary {
         CommitSummary(
             oid: other, parents: [], authorName: "A", authorEmail: "a@example.com",
@@ -37,7 +33,8 @@ import Testing
 
     @Test func theWorkingTreeWinsOverAStaleSelection() {
         let banner = BranchBanner.browsing(
-            selectedRef: ref("main"), browsedCommit: commit("Old"), browsingWorkingTree: true,
+            selectedRef: branch("main", at: tip), browsedCommit: commit("Old"),
+            browsingWorkingTree: true,
             head: nil)
         #expect(banner.symbol == .workingTree)
         #expect(banner.detail == nil)

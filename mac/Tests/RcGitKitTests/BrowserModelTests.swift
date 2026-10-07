@@ -18,12 +18,8 @@ import Testing
 
     init() {
         repo.listing = RefListing(refs: [
-            RefEntry(
-                fullName: "refs/heads/feature", shortName: "feature", kind: .localBranch,
-                target: featureCommit),
-            RefEntry(
-                fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                target: mainCommit),
+            branch("feature", at: featureCommit),
+            branch("main", at: mainCommit),
             RefEntry(fullName: "refs/tags/v1", shortName: "v1", kind: .tag, target: mainCommit),
         ])
         repo.headValue = Head(refName: "refs/heads/main", target: mainCommit)
@@ -179,8 +175,7 @@ import Testing
         let slowTree = oid(0x61)
         repo.treeOfMap[slowCommit] = slowTree
         repo.trees[slowTree] = []
-        let slowRef = RefEntry(
-            fullName: "refs/heads/slow", shortName: "slow", kind: .localBranch, target: slowCommit)
+        let slowRef = branch("slow", at: slowCommit)
         repo.delays[slowCommit] = 0.2
         async let slowSelect: Void = model.select(slowRef)
         try? await Task.sleep(for: .milliseconds(20))
@@ -192,60 +187,15 @@ import Testing
 
     @Test func attachFailureReportsAnError() async {
         let broken = FakeRepository()
-        broken.listing = RefListing(refs: [])
-        broken.headValue = Head(refName: nil, target: nil)
         var reported: String?
         model.onError = { reported = $0 }
         await model.attach(broken)
         #expect(model.selectedRef == nil)
         #expect(reported == nil, "an empty repository is not an error")
 
-        let failing = FailingRepository()
-        await model.attach(failing)
-        #expect(reported == "refs unavailable")
-        #expect(model.lastError == "refs unavailable")
+        broken.failNextRefs = true
+        await model.attach(broken)
+        #expect(reported == "cannot list refs: transient lock")
+        #expect(model.lastError == "cannot list refs: transient lock")
     }
-}
-
-private final class FailingRepository: RepositoryReading, @unchecked Sendable {
-    var workingDirectory: String? { nil }
-    func head() throws -> Head { throw RepositoryError("head unavailable") }
-    func refs() throws -> RefListing { throw RepositoryError("refs unavailable") }
-    func resolveTree(_ spec: String) throws -> Oid { throw RepositoryError("no") }
-    func treeOf(_ oid: Oid) throws -> Oid { throw RepositoryError("no") }
-    func treeEntries(_ tree: Oid) throws -> [TreeEntry] { throw RepositoryError("no") }
-    func readBlob(_ oid: Oid, limit: UInt64) throws -> BlobContent { throw RepositoryError("no") }
-    func log(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary] {
-        throw RepositoryError("no")
-    }
-    func commit(_ oid: Oid) throws -> CommitSummary { throw RepositoryError("no") }
-    func commitDetails(_ oid: Oid) throws -> CommitDetail { throw RepositoryError("no") }
-    func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
-        -> CommitPage
-    { throw RepositoryError("no") }
-    func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
-        throws -> CommitPage
-    { throw RepositoryError("no") }
-    func resolve(_ spec: String) throws -> Oid { throw RepositoryError("no") }
-    func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] { throw RepositoryError("no") }
-    func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff {
-        throw RepositoryError("no")
-    }
-    func blame(tip: Oid, path: String) throws -> [BlameRange] { throw RepositoryError("no") }
-    func worktreeEntries(tree: Oid, dir: String) throws -> WorktreeListing {
-        throw RepositoryError("no")
-    }
-    func worktreeFile(path: String, limit: UInt64) throws -> BlobContent {
-        throw RepositoryError("no")
-    }
-    func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport {
-        throw RepositoryError("no")
-    }
-    func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList {
-        throw RepositoryError("no")
-    }
-    func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
-        -> BlobDiff
-    { throw RepositoryError("no") }
-    func stashList() throws -> [StashEntry] { throw RepositoryError("no") }
 }

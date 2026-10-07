@@ -23,10 +23,8 @@ import Testing
 
     init() {
         repo.listing = RefListing(refs: [
-            RefEntry(
-                fullName: feature, shortName: "feature", kind: .localBranch,
-                target: featureCommit),
-            RefEntry(fullName: main, shortName: "main", kind: .localBranch, target: mainCommit),
+            branch("feature", at: featureCommit),
+            branch("main", at: mainCommit),
         ])
         repo.headValue = Head(refName: main, target: mainCommit)
         repo.treeOfMap = [

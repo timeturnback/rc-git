@@ -16,12 +16,8 @@ import Testing
 
     init() {
         repo.listing = RefListing(refs: [
-            RefEntry(
-                fullName: "refs/heads/feature", shortName: "feature", kind: .localBranch,
-                target: featureCommit),
-            RefEntry(
-                fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                target: mainCommit),
+            branch("feature", at: featureCommit),
+            branch("main", at: mainCommit),
         ])
         repo.headValue = Head(refName: "refs/heads/main", target: mainCommit)
         repo.treeOfMap = [mainCommit: mainTree, featureCommit: featureTree]
@@ -232,9 +228,7 @@ import Testing
         await model.attach(repo)
         let movedTree = oid(0x33)
         repo.lock.withLock {
-            repo.listing.refs[1] = RefEntry(
-                fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                target: featureCommit)
+            repo.listing.refs[1] = branch("main", at: featureCommit)
             repo.treeOfMap[featureCommit] = movedTree
             repo.trees[movedTree] = []
             repo.commits[featureCommit] = [commitSummary(featureCommit, title: "feature 0")]
@@ -287,9 +281,7 @@ import Testing
 
     init() {
         repo.listing = RefListing(refs: [
-            RefEntry(
-                fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
-                target: mainCommit)
+            branch("main", at: mainCommit)
         ])
         repo.headValue = Head(refName: "refs/heads/main", target: mainCommit)
         repo.treeOfMap = [mainCommit: mainTree]

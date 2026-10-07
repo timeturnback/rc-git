@@ -71,8 +71,6 @@ import Testing
     @Test func highlightsAreCachedByBlobAndSkipLossyText() async {
         let model = BrowserModel()
         let repo = FakeRepository()
-        repo.listing = RefListing(refs: [])
-        repo.headValue = Head(refName: nil, target: nil)
         await model.attach(repo)
 
         let entry = TreeEntry(name: "main.rs", oid: oid(0x42), kind: .blob)
@@ -100,8 +98,6 @@ import Testing
     @Test func spanCacheEvictsLeastRecentlyUsedPastTheEntryCap() async {
         let model = BrowserModel()
         let repo = FakeRepository()
-        repo.listing = RefListing(refs: [])
-        repo.headValue = Head(refName: nil, target: nil)
         await model.attach(repo)
 
         let document = TextDocument(
