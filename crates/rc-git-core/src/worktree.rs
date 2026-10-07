@@ -242,10 +242,12 @@ impl Repository {
             let mut walk = StatusWalk {
                 context: WorktreeContext::new(repo, "scan working tree")?,
                 report: StatusReport::default(),
-                max_scan,
+                budget: ScanBudget::new(max_scan),
             };
             walk.walk_dir(tree, &BString::from(""), &work_dir)?;
             let mut report = walk.report;
+            report.scanned = walk.budget.scanned;
+            report.truncated = walk.budget.truncated;
             report.entries.sort_by(|a, b| a.path.cmp(&b.path));
             report.warnings = walk.context.into_warnings();
             Ok(report)
@@ -274,10 +276,12 @@ impl Repository {
                 fs: FsRules::new(repo, "list working tree files")?,
                 excludes: ExcludeCheck::new(repo),
                 list: WorktreeFileList::default(),
-                max_scan,
+                budget: ScanBudget::new(max_scan),
             };
             walk.walk_dir(tree, &BString::from(""), &work_dir)?;
             let mut list = walk.list;
+            list.scanned = walk.budget.scanned;
+            list.truncated = walk.budget.truncated;
             list.files.sort_by(|a, b| a.path.cmp(&b.path));
             list.warnings = walk.excludes.warnings;
             Ok(list)
@@ -896,58 +900,111 @@ enum Presence {
     Gone,
 }
 
+/// How many entries a walk may visit, and how many it has. One budget serves a whole walk, so
+/// the cap bounds both the disk work and how long the borrowed pool handle is held.
+struct ScanBudget {
+    scanned: usize,
+    max_scan: usize,
+    /// Whether the walk hit `max_scan` and stopped.
+    truncated: bool,
+}
+
+impl ScanBudget {
+    fn new(max_scan: usize) -> Self {
+        Self {
+            scanned: 0,
+            max_scan,
+            truncated: false,
+        }
+    }
+
+    /// Counts one visited entry; `false` when the cap is hit and the walk must stop.
+    fn visit(&mut self) -> bool {
+        if self.scanned >= self.max_scan {
+            self.truncated = true;
+            return false;
+        }
+        self.scanned += 1;
+        true
+    }
+}
+
+/// One directory's entries for a walk: each name spelled as git records it, with the entry's
+/// path on disk. `.git` is never yielded, at any depth. A failed read of the next entry is the
+/// item's `Err`, so the walk decides whether that fails it or skips the directory.
+struct WalkEntries {
+    read: std::fs::ReadDir,
+    fs: FsRules,
+}
+
+impl WalkEntries {
+    /// Opens `disk_dir`; `Ok(None)` when a directory below the root vanished since its parent
+    /// was read.
+    fn open(disk_dir: &Path, dir: &BString, fs: FsRules) -> std::io::Result<Option<Self>> {
+        match std::fs::read_dir(disk_dir) {
+            Ok(read) => Ok(Some(Self { read, fs })),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound && !dir.is_empty() => {
+                Ok(None)
+            }
+            Err(source) => Err(source),
+        }
+    }
+}
+
+impl Iterator for WalkEntries {
+    type Item = std::io::Result<(BString, PathBuf)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for entry in self.read.by_ref() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) => return Some(Err(source)),
+            };
+            let name = self.fs.disk_name(&entry.file_name());
+            if name != ".git" {
+                return Some(Ok((name, entry.path())));
+            }
+        }
+        None
+    }
+}
+
 /// Recursive full-tree status walk. Holds the borrowed handle for its whole run; the
 /// caller's `max_scan` cap bounds that.
 struct StatusWalk<'repo> {
     context: WorktreeContext<'repo>,
     report: StatusReport,
-    max_scan: usize,
+    budget: ScanBudget,
 }
 
 impl StatusWalk<'_> {
-    /// Counts one visited entry; `false` when the cap is hit and the walk must stop.
-    fn visit(&mut self) -> bool {
-        if self.report.scanned >= self.max_scan {
-            self.report.truncated = true;
-            return false;
-        }
-        self.report.scanned += 1;
-        true
-    }
-
     fn walk_dir(&mut self, tree: Option<Oid>, dir: &BString, disk_dir: &Path) -> Result<()> {
         let tree_entries = match tree {
             Some(oid) => tree_children(self.context.repo, oid)?,
             None => Vec::new(),
         };
         let by_name = self.context.fs.index(&tree_entries);
-        let read = match std::fs::read_dir(disk_dir) {
-            Ok(read) => read,
+        let entries = match WalkEntries::open(disk_dir, dir, self.context.fs) {
+            Ok(Some(entries)) => entries,
             // Gone since its parent was read: everything the tree has there is deleted.
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound && !dir.is_empty() => {
-                return self.walk_missing(&tree_entries, &HashSet::new(), dir);
-            }
+            Ok(None) => return self.walk_missing(&tree_entries, &HashSet::new(), dir),
             Err(source) => return self.skip_unreadable_dir(dir, source),
         };
         let mut on_disk: HashSet<BString> = HashSet::new();
-        for entry in read {
-            if self.report.truncated {
+        for entry in entries {
+            if self.budget.truncated {
                 return Ok(());
             }
-            let entry = match entry {
+            let (name, disk_path) = match entry {
                 Ok(entry) => entry,
                 Err(source) => return self.skip_unreadable_dir(dir, source),
             };
-            let name = self.context.fs.disk_name(&entry.file_name());
-            if name == ".git" {
-                continue;
-            }
-            if !self.visit() {
+            if !self.budget.visit() {
                 return Ok(());
             }
             let (name, tracked) = by_name.resolve(name);
             let path = child_path(dir, &name);
-            if self.walk_entry(tracked, path, &entry.path())? == Presence::OnDisk {
+            if self.walk_entry(tracked, path, &disk_path)? == Presence::OnDisk {
                 on_disk.insert(name);
             }
         }
@@ -1077,7 +1134,7 @@ impl StatusWalk<'_> {
         dir: &BString,
     ) -> Result<()> {
         for tree_entry in tree_entries {
-            if self.report.truncated {
+            if self.budget.truncated {
                 return Ok(());
             }
             if on_disk.contains(&tree_entry.name) {
@@ -1088,7 +1145,7 @@ impl StatusWalk<'_> {
                 EntryKind::Tree => self.walk_deleted(tree_entry.oid, &path)?,
                 EntryKind::Submodule => {}
                 EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink => {
-                    if !self.visit() {
+                    if !self.budget.visit() {
                         return Ok(());
                     }
                     self.emit_deleted(tree_entry, path);
@@ -1130,7 +1187,7 @@ impl StatusWalk<'_> {
     /// tree objects only, never the disk.
     fn walk_deleted(&mut self, tree: Oid, dir: &BString) -> Result<()> {
         for tree_entry in tree_children(self.context.repo, tree)? {
-            if self.report.truncated {
+            if self.budget.truncated {
                 return Ok(());
             }
             let path = child_path(dir, &tree_entry.name);
@@ -1138,7 +1195,7 @@ impl StatusWalk<'_> {
                 EntryKind::Tree => self.walk_deleted(tree_entry.oid, &path)?,
                 EntryKind::Submodule => {}
                 EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink => {
-                    if !self.visit() {
+                    if !self.budget.visit() {
                         return Ok(());
                     }
                     self.emit_deleted(&tree_entry, path);
@@ -1166,51 +1223,35 @@ struct FileWalk<'repo> {
     fs: FsRules,
     excludes: ExcludeCheck<'repo>,
     list: WorktreeFileList,
-    max_scan: usize,
+    budget: ScanBudget,
 }
 
 impl FileWalk<'_> {
-    /// Counts one visited entry; `false` when the cap is hit and the walk must stop.
-    fn visit(&mut self) -> bool {
-        if self.list.scanned >= self.max_scan {
-            self.list.truncated = true;
-            return false;
-        }
-        self.list.scanned += 1;
-        true
-    }
-
     fn walk_dir(&mut self, tree: Option<Oid>, dir: &BString, disk_dir: &Path) -> Result<()> {
         let tree_entries = match tree {
             Some(oid) => tree_children(self.repo, oid)?,
             None => Vec::new(),
         };
         let by_name = self.fs.index(&tree_entries);
-        let read = match std::fs::read_dir(disk_dir) {
-            Ok(read) => read,
+        let entries = match WalkEntries::open(disk_dir, dir, self.fs) {
+            Ok(Some(entries)) => entries,
             // Gone since its parent was read: there is nothing on disk to list.
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound && !dir.is_empty() => {
-                return Ok(());
-            }
+            Ok(None) => return Ok(()),
             Err(source) => return self.skip_unreadable_dir(dir, source),
         };
-        for entry in read {
-            if self.list.truncated {
+        for entry in entries {
+            if self.budget.truncated {
                 return Ok(());
             }
-            let entry = match entry {
+            let (name, disk_path) = match entry {
                 Ok(entry) => entry,
                 Err(source) => return self.skip_unreadable_dir(dir, source),
             };
-            let name = self.fs.disk_name(&entry.file_name());
-            if name == ".git" {
-                continue;
-            }
-            if !self.visit() {
+            if !self.budget.visit() {
                 return Ok(());
             }
             let (name, tracked) = by_name.resolve(name);
-            self.walk_entry(tracked, child_path(dir, &name), &entry.path())?;
+            self.walk_entry(tracked, child_path(dir, &name), &disk_path)?;
         }
         Ok(())
     }
@@ -1503,7 +1544,7 @@ mod tests {
             let mut walk = StatusWalk {
                 context: WorktreeContext::new(repo, "scan working tree").unwrap(),
                 report: StatusReport::default(),
-                max_scan: 10_000,
+                budget: ScanBudget::new(10_000),
             };
             let entries = tree_children(repo, tree).unwrap();
             f(&mut walk, &entries, fx.path());
@@ -1631,7 +1672,7 @@ mod tests {
                 fs: FsRules::new(repo, "list working tree files").unwrap(),
                 excludes: ExcludeCheck::new(repo),
                 list: WorktreeFileList::default(),
-                max_scan: 10_000,
+                budget: ScanBudget::new(10_000),
             };
             walk.walk_dir(None, &"gone".into(), &fx.path().join("gone"))
                 .unwrap();
