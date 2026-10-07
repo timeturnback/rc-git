@@ -513,6 +513,33 @@ fn a_racy_index_entry_still_reports_the_edit() {
     assert_eq!(report.entries[0].status, WorktreeStatus::Modified);
 }
 
+/// Under an eol conversion the checked-out file never has the blob's size, so only the index,
+/// which recorded the size git wrote, can say it is clean. A size check ahead of the stat cache
+/// reported every such file as modified.
+#[test]
+fn a_converted_file_the_index_vouches_for_is_clean() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write(".gitattributes", b"* text eol=crlf\n");
+    fx.write("a.txt", b"a\nb\n");
+    fx.commit("one", "2024-01-01T00:00:00Z");
+    fx.remove("a.txt");
+    fx.git(&["checkout", "-q", "--", "a.txt"]);
+    assert_eq!(
+        std::fs::read(fx.path().join("a.txt")).unwrap(),
+        b"a\r\nb\r\n"
+    );
+    // A second must pass so the index `git status` rewrites is later than the file's stat;
+    // otherwise the entry is racy and the cache rightly declines it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert!(report.entries.is_empty(), "{:?}", report.entries);
+}
+
 fn file_paths(list: &rc_git_core::WorktreeFileList) -> Vec<String> {
     list.files
         .iter()

@@ -376,27 +376,29 @@ impl<'repo> WorktreeContext<'repo> {
         })
     }
 
-    /// A regular file. A size that differs from the blob header settles it without reading the
-    /// file; an equal size then asks the index's stat cache, and only a file the cache cannot
-    /// vouch for is hashed, streaming, so memory stays constant.
+    /// A regular file. The index's stat cache is asked first: git records the size it checked
+    /// out, which differs from the blob's under an eol or LFS conversion, so a file the index
+    /// vouches for is clean whatever its size. Otherwise a size that differs from the blob
+    /// header settles it without reading the file, and an equal size is hashed, streaming, so
+    /// memory stays constant.
     fn compare_content(
         &mut self,
         tree_entry: &TreeEntry,
         disk: &DiskFacts<'_>,
         dir: &str,
     ) -> Result<WorktreeStatus> {
+        if self
+            .stats
+            .proves_unchanged(disk.rela, tree_entry.oid, disk.path)
+        {
+            return Ok(WorktreeStatus::Unchanged);
+        }
         let header = self
             .repo
             .find_header(*tree_entry.oid.as_gix())
             .map_err(object("read blob header", tree_entry.oid))?;
         if header.size() != disk.size {
             return Ok(WorktreeStatus::Modified);
-        }
-        if self
-            .stats
-            .proves_unchanged(disk.rela, tree_entry.oid, disk.path)
-        {
-            return Ok(WorktreeStatus::Unchanged);
         }
         let mut file = std::fs::File::open(disk.path)
             .map_err(|source| worktree_error("hash working tree file", dir, Box::new(source)))?;

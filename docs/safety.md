@@ -114,7 +114,9 @@ The Changes tab's write paths add their own guarantees:
 
 - **Raw bytes throughout.** Status, diffs, commits, and restores all work on the file's raw
   bytes: gitattributes filters and `core.autocrlf` are not honored (matching the Files
-  view), so what the diff shows is exactly what a commit records and a restore writes.
+  view), so what the diff shows is exactly what a commit records and a restore writes. One
+  exception keeps a converted file (eol, LFS) from reading changed: status first asks the
+  index, and a file whose stat still matches an entry holding the tree's id reads clean.
 - **Commit** builds blobs from disk, rewrites only the touched directories, and advances the
   branch through the same single ref-edit funnel — only if `HEAD` still is the commit the
   change list was built against. Hunk selections are re-validated against a fresh diff and
