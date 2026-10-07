@@ -26,14 +26,6 @@ require zizmor "brew install zizmor"
 
 step "cargo fmt"
 cargo fmt --all -- --check
-step "cargo clippy"
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-step "cargo test"
-cargo test --locked --workspace
-step "cargo doc"
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --quiet
-step "cargo deny"
-cargo deny --locked check
 step "ffi header"
 scripts/gen-header.sh --verify
 step "shell scripts"
@@ -55,6 +47,14 @@ if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
   echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
   exit 1
 fi
+step "cargo clippy"
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+step "cargo test"
+cargo test --locked --workspace
+step "cargo doc"
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --quiet
+step "cargo deny"
+cargo deny --locked check
 
 if ((fast == 0)); then
   step "macOS platform floor"
@@ -68,11 +68,11 @@ if ((fast == 0)); then
       "mac/Package.swift '$package_floor', mac/Info.plist '$plist_floor'; set all three alike" >&2
     exit 1
   fi
-  step "rust release library"
-  cargo build --locked --release -p rc-git-ffi
   step "swift-format"
   xcrun swift-format lint --strict --recursive \
     mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
+  step "rust release library"
+  cargo build --locked --release -p rc-git-ffi
   # Same flags on both, so swift test reuses the build; kept out of Package.swift and build.sh.
   step "swift build"
   swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
