@@ -100,8 +100,10 @@ Traps that each cost a debug cycle:
 
 - **Basic auth over plain http is refused** ("Will not send credentials in clear text
   over http") unless gix-transport's `http-client-insecure-credentials` feature is on.
-  Enable it as a **dev-dependency only** (`crates/rc-git-guard/Cargo.toml:26`,
-  `crates/rc-git-cli/Cargo.toml:24`) — dev-dep feature unification covers test builds,
+  Enable it as a **dev-dependency only** (the feature-less `gix-transport` entry in the
+  workspace `Cargo.toml` `[workspace.dependencies]`, plus the `[dev-dependencies]` lines in
+  `crates/rc-git-guard/Cargo.toml` and `crates/rc-git-cli/Cargo.toml` that add the feature;
+  `deny.toml` fails on a second copy) — dev-dep feature unification covers test builds,
   while release builds keep the refusal. Production code additionally rejects non-HTTPS
   URLs before connecting, loopback hosts excepted for the test server
   (`vet_remote_url`, `actions/remote.rs:317`, which also routes the ssh scheme).

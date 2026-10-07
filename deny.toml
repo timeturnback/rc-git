@@ -34,6 +34,8 @@ allow = [
 [bans]
 # Duplicate versions come from gix's transitive tree and are not actionable here.
 multiple-versions = "allow"
+# A second gix-transport means a dev-only pin drifted from the one gix resolves.
+deny = [{ crate = "gix-transport", deny-multiple-versions = true }]
 wildcards = "deny"
 allow-wildcard-paths = true
 
