@@ -1,6 +1,8 @@
 //! Opening a repository and sharing it across threads.
 
+use std::ffi::OsString;
 use std::num::NonZero;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -23,21 +25,57 @@ pub struct Repository {
     work_dir: Option<PathBuf>,
 }
 
+/// The isolated open, plus the user's global ignore file as an API override of
+/// `core.excludesFile`: it outranks the repository's own config, so a repository cannot point
+/// the ignore rules elsewhere, and gix ranks it below `.git/info/exclude` and `.gitignore`.
+fn open_options() -> gix::open::Options {
+    let options = gix::open::Options::isolated();
+    match global_excludes_file() {
+        Some(file) => {
+            let mut value = b"core.excludesFile=".to_vec();
+            value.extend_from_slice(file.as_os_str().as_bytes());
+            options.config_overrides([value])
+        }
+        None => options,
+    }
+}
+
+/// Where git looks for the global ignore file when no config names one:
+/// `$XDG_CONFIG_HOME/git/ignore` when that variable is set, else `$HOME/.config/git/ignore`.
+/// Only an absolute path is used, so gix never has to expand `~` or `%(prefix)` in it.
+fn global_excludes_file() -> Option<PathBuf> {
+    let non_empty = |value: OsString| (!value.is_empty()).then(|| PathBuf::from(value));
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .and_then(non_empty)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .and_then(non_empty)
+                .map(|home| home.join(".config"))
+        })?;
+    let file = config_home.join("git").join("ignore");
+    file.is_absolute().then_some(file)
+}
+
 impl Repository {
     /// Opens the repository at `path`, either a working directory or a `.git` directory.
     ///
     /// Only the repository's own `config` is read. Global, system, and environment configuration
     /// are ignored and `include` directives are not followed, so opening an untrusted repository
-    /// cannot pull in configuration from anywhere else. See `docs/safety.md`.
+    /// cannot pull in configuration from anywhere else. The one exception is the user's global
+    /// ignore file at git's default location, `$XDG_CONFIG_HOME/git/ignore` or else
+    /// `$HOME/.config/git/ignore`, read with git's lowest ignore precedence. See
+    /// `docs/safety.md`.
     ///
     /// # Errors
     /// [`Error::Open`] when `path` is not a git repository or cannot be read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let shared = gix::ThreadSafeRepository::open_opts(path, gix::open::Options::isolated())
-            .map_err(|source| Error::Open {
-                path: path.to_path_buf(),
-                source: Box::new(source),
+        let shared =
+            gix::ThreadSafeRepository::open_opts(path, open_options()).map_err(|source| {
+                Error::Open {
+                    path: path.to_path_buf(),
+                    source: Box::new(source),
+                }
             })?;
         let probe = shared.to_thread_local();
         let git_dir = probe.git_dir().to_path_buf();

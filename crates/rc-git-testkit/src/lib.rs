@@ -527,3 +527,36 @@ fn copy_tree(from: &Path, to: &Path) {
         }
     }
 }
+
+/// Runs the test named `test` from the calling test binary again, in a child process whose
+/// environment holds only `PATH` and `env`, for code that reads the process environment: a test
+/// cannot set a variable in its own process without `unsafe`, and the change would leak into
+/// every test running beside it. The child tells itself apart by a variable in `env`.
+///
+/// # Panics
+/// When the test binary cannot be started, or the test fails in the child.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "tests re-run their own binary to give one test its own environment"
+)]
+pub fn run_test_with_env(test: &str, env: &[(&str, &std::ffi::OsStr)]) {
+    let binary = std::env::current_exe().expect("locate the running test binary");
+    let output = Command::new(&binary)
+        .args([test, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .envs(env.iter().copied())
+        .output()
+        .unwrap_or_else(|e| panic!("run {}: {e}", binary.display()));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{test} failed in a child process ({}):\nstdout: {stdout}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("1 passed"),
+        "{test} did not run in the child process:\n{stdout}"
+    );
+}

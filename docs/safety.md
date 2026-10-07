@@ -44,7 +44,11 @@ Opening a repository someone else produced must be harmless.
 
 - `Options::isolated()`: only `.git/config` is read. No `~/.gitconfig`, no system config, no
   environment variables, and `include`/`includeIf` directives are ignored, so a repository
-  cannot point rc-git at files outside itself.
+  cannot point rc-git at files outside itself. One exception: the user's global ignore file
+  at git's default location, `$XDG_CONFIG_HOME/git/ignore` or else `$HOME/.config/git/ignore`,
+  is passed in as an API override of `core.excludesFile`. It ranks below the repository's
+  `.gitignore` files and `.git/info/exclude`, as in git, and outranks the repository's own
+  `core.excludesFile`. A `core.excludesFile` set in `~/.gitconfig` is not read.
 - File names are bytes, not strings. Non-UTF-8 names display with replacement characters; the
   UI navigates by object id, so a hostile name cannot redirect a lookup.
 - Blob reads are capped. The header is checked before decoding; the default cap is 8 MiB, the

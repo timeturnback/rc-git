@@ -1268,3 +1268,66 @@ fn a_case_only_rename_is_clean_under_ignore_case() {
     assert!(has_file(&files, "README.md"));
     assert!(!has_file(&files, "readme.md"));
 }
+
+/// Set only in the child process [`the_global_ignore_file_ranks_below_the_repository_rules`]
+/// spawns: the repository to scan.
+const GLOBAL_IGNORE_REPO: &str = "RC_GIT_TEST_GLOBAL_IGNORE_REPO";
+/// The untracked paths the child must find, comma-separated.
+const GLOBAL_IGNORE_EXPECT: &str = "RC_GIT_TEST_GLOBAL_IGNORE_EXPECT";
+
+/// Untracked paths in `repo`, in status order.
+fn untracked_paths(repo: &std::ffi::OsStr) -> Result<Vec<String>, Error> {
+    let repo = Repository::open(repo)?;
+    let tree = repo.resolve_tree("HEAD")?;
+    let report = repo.worktree_status(Some(tree), 10_000)?;
+    Ok(report
+        .entries
+        .iter()
+        .filter(|entry| entry.status == WorktreeStatus::Untracked)
+        .map(|entry| entry.path.to_string())
+        .collect())
+}
+
+#[test]
+fn the_global_ignore_file_ranks_below_the_repository_rules() {
+    if let Some(repo) = std::env::var_os(GLOBAL_IGNORE_REPO) {
+        let expected = std::env::var(GLOBAL_IGNORE_EXPECT).unwrap();
+        let expected: Vec<&str> = expected.split(',').filter(|p| !p.is_empty()).collect();
+        assert_eq!(untracked_paths(&repo).unwrap(), expected);
+        return;
+    }
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"!keep.log\n");
+    fx.git(&["add", ".gitignore"]);
+    fx.git(&["commit", "-q", "-m", "keep logs named keep"]);
+    fx.write("debug.log", b"l\n");
+    fx.write("keep.log", b"k\n");
+    // Outside the walk: nothing under `.git` is ever listed.
+    fx.write(".git/test-home/.config/git/ignore", b"*.log\n");
+    fx.write(".git/test-xdg/git/ignore", b"*.nothing\n");
+    let home = fx.path().join(".git/test-home");
+    let xdg = fx.path().join(".git/test-xdg");
+    let repo = fx.path().as_os_str();
+    let run = |expect: &str, env: &[(&str, &std::ffi::OsStr)]| {
+        let mut env = env.to_vec();
+        env.push((GLOBAL_IGNORE_REPO, repo));
+        env.push((GLOBAL_IGNORE_EXPECT, std::ffi::OsStr::new(expect)));
+        rc_git_testkit::run_test_with_env(
+            "the_global_ignore_file_ranks_below_the_repository_rules",
+            &env,
+        );
+    };
+
+    // `$HOME/.config/git/ignore` hides `debug.log`; the repository's `!keep.log` still wins.
+    run("keep.log", &[("HOME", home.as_os_str())]);
+    // `$XDG_CONFIG_HOME/git/ignore` replaces the `$HOME` one, as in git.
+    run(
+        "debug.log,keep.log",
+        &[
+            ("HOME", home.as_os_str()),
+            ("XDG_CONFIG_HOME", xdg.as_os_str()),
+        ],
+    );
+    // No home at all: only the repository's own rules apply.
+    run("debug.log,keep.log", &[]);
+}

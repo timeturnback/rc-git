@@ -96,7 +96,10 @@ A side effect: anything the repository's own config does not provide (an identit
 reflog lines, credentials for a remote) must be supplied by rc-git itself per
 operation. What only the user's own config holds — a preferred pull strategy, a commit
 identity, a signing setup — is invisible to rc-git: it asks for an identity where one is
-needed, writes its commits unsigned, and never picks rebase or merge for a pull.
+needed, writes its commits unsigned, and never picks rebase or merge for a pull. The one
+thing read from outside the repository is the global ignore file at git's default location
+(`$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`), so a file the user ignores
+globally does not show as untracked; a `core.excludesFile` set in `~/.gitconfig` is not read.
 
 ## Remote operations
 
