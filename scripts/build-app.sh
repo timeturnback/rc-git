@@ -142,8 +142,9 @@ stamp RCGitBuildDate "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 verify_stamps
 
 # Ad-hoc signature: enough for local use, no developer account needed.
-codesign --force --sign - "$STAGE" >/dev/null 2>&1 || {
-  echo "warning: ad-hoc codesign failed; the app may not launch" >&2
+codesign --force --sign - "$STAGE" || {
+  echo "error: ad-hoc codesign of $STAGE failed; kept the existing $APP" >&2
+  exit 1
 }
 
 # The swap. A rename on the same filesystem, so the window where the bundle is missing is
