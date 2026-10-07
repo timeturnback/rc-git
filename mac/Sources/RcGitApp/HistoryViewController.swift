@@ -94,9 +94,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         return formatter
     }()
 
-    private static let monoFont = NSFont.monospacedSystemFont(
-        ofSize: NSFont.smallSystemFontSize, weight: .regular)
-
     override func loadView() {
         let graphColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("graph"))
         graphColumn.title = ""
@@ -274,7 +271,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         diffText.isEditable = false
         diffText.isRichText = false
         diffText.usesFindBar = true
-        diffText.font = Self.monoFont
+        diffText.font = DiffRendering.monoFont
         diffText.isHorizontallyResizable = true
         diffText.isVerticallyResizable = true
         diffText.maxSize = NSSize(
@@ -640,7 +637,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                     title: parent.short, target: self, action: #selector(parentClicked(_:)))
                 button.bezelStyle = .accessoryBarAction
                 button.controlSize = .small
-                button.font = Self.monoFont
+                button.font = DiffRendering.monoFont
                 button.tag = index
                 parentsRow.addArrangedSubview(button)
             }
@@ -962,7 +959,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         switch tableColumn.identifier.rawValue {
         case "hash":
             cell.textField?.stringValue = commit.oid.short
-            cell.textField?.font = Self.monoFont
+            cell.textField?.font = DiffRendering.monoFont
             cell.textField?.textColor = .secondaryLabelColor
         case "title":
             cell.textField?.stringValue = commit.title

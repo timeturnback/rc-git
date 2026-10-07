@@ -1,13 +1,6 @@
 import AppKit
 import RcGitKit
 
-/// An immutable object handed from a background build to the main actor. `NSAttributedString`
-/// is safe to construct off-main and read on-main once no one else mutates it.
-private struct BuiltText: @unchecked Sendable {
-    let value: NSAttributedString
-    let anchors: [String: Int]
-}
-
 /// Shows one file: a header with path and size, then read-only monospaced text with line
 /// numbers, or a rendered preview for markdown. Uses a TextKit 1 stack with non-contiguous
 /// layout so multi-megabyte files open without laying out every line first. The attributed
@@ -125,7 +118,7 @@ final class FileViewController: NSViewController {
             width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = []
         textView.textContainerInset = NSSize(width: 0, height: 6)
-        textView.font = FileViewController.font
+        textView.font = MarkdownRenderer.Theme.code
         textView.backgroundColor = .textBackgroundColor
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticLinkDetectionEnabled = false
@@ -185,12 +178,6 @@ final class FileViewController: NSViewController {
         ])
         view = root
         render(.empty)
-    }
-
-    // Computed and nonisolated: the source build runs off the main actor, and NSFont itself
-    // caches instances.
-    private nonisolated static var font: NSFont {
-        NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     }
 
     func render(_ state: FileState) {
@@ -276,21 +263,19 @@ final class FileViewController: NSViewController {
         modePicker.selectedSegment = preview ? 0 : 1
         let text = document.text
         Task { [weak self] in
-            let built = await Task.detached(priority: .userInitiated) { () -> BuiltText in
-                if preview {
-                    let rendered = MarkdownRenderer.render(text)
-                    return BuiltText(value: rendered.text, anchors: rendered.anchors)
-                }
+            let built = await Task.detached(priority: .userInitiated) {
+                () -> MarkdownRenderer.Rendered in
+                if preview { return MarkdownRenderer.render(text) }
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: FileViewController.font,
+                    .font: MarkdownRenderer.Theme.code,
                     .foregroundColor: NSColor.textColor,
                 ]
-                return BuiltText(
-                    value: NSAttributedString(string: text, attributes: attributes), anchors: [:])
+                return MarkdownRenderer.Rendered(
+                    text: NSAttributedString(string: text, attributes: attributes), anchors: [:])
             }.value
             guard let self, generation == self.contentGeneration else { return }
             self.anchors = built.anchors
-            self.show(built.value, asPreview: preview, lineStarts: document.utf16LineStarts)
+            self.show(built.text, asPreview: preview, lineStarts: document.utf16LineStarts)
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
             }
