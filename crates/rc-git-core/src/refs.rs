@@ -229,14 +229,22 @@ fn remote_head_branch(reference: &gix::Reference<'_>) -> Option<String> {
     (!branch.is_empty()).then(|| lossy(branch.as_bstr()))
 }
 
+/// The kind of a reference and its display name. Branches, remote branches and tags drop their
+/// namespace; every other reference drops only a leading `refs/`, whether or not gix knows its
+/// category, so `refs/stash` and `refs/notes/commits` read as `stash` and `notes/commits`.
 fn classify(name: &FullNameRef) -> (RefKind, String) {
-    let Some((category, short)) = name.category_and_short_name() else {
-        return (RefKind::Other, lossy(name.as_bstr()));
+    let full = name.as_bstr();
+    let other = || {
+        let short = full.strip_prefix(b"refs/").unwrap_or(full);
+        (RefKind::Other, lossy(short.as_bstr()))
     };
-    let kind = match category {
-        Category::LocalBranch => RefKind::LocalBranch,
-        Category::RemoteBranch => RefKind::RemoteBranch,
-        Category::Tag => RefKind::Tag,
+    let Some((category, short)) = name.category_and_short_name() else {
+        return other();
+    };
+    match category {
+        Category::LocalBranch => (RefKind::LocalBranch, lossy(short)),
+        Category::RemoteBranch => (RefKind::RemoteBranch, lossy(short)),
+        Category::Tag => (RefKind::Tag, lossy(short)),
         Category::Note
         | Category::PseudoRef
         | Category::MainPseudoRef
@@ -245,9 +253,8 @@ fn classify(name: &FullNameRef) -> (RefKind, String) {
         | Category::LinkedRef { .. }
         | Category::Bisect
         | Category::Rewritten
-        | Category::WorktreePrivate => RefKind::Other,
-    };
-    (kind, lossy(short))
+        | Category::WorktreePrivate => other(),
+    }
 }
 
 fn lossy(name: &BStr) -> String {

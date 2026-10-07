@@ -170,6 +170,37 @@ fn refs_are_classified_and_peeled() {
 }
 
 #[test]
+fn other_ref_short_names_drop_only_the_refs_prefix() {
+    let fx = Fixture::standard();
+    for name in [
+        "refs/stash",
+        "refs/pull/1/head",
+        "refs/notes/commits",
+        "refs/bisect/bad",
+    ] {
+        fx.git(&["update-ref", name, "HEAD"]);
+    }
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    let mut other: Vec<(&str, &str)> = listing
+        .refs
+        .iter()
+        .filter(|r| r.kind == RefKind::Other)
+        .map(|r| (r.full_name.as_str(), r.short_name.as_str()))
+        .collect();
+    other.sort_unstable();
+    assert_eq!(
+        other,
+        [
+            ("refs/bisect/bad", "bisect/bad"),
+            ("refs/notes/commits", "notes/commits"),
+            ("refs/pull/1/head", "pull/1/head"),
+            ("refs/stash", "stash"),
+        ]
+    );
+}
+
+#[test]
 fn a_broken_ref_is_reported_without_hiding_the_rest() {
     let fx = Fixture::standard();
     fx.write(
