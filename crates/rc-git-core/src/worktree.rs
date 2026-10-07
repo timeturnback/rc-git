@@ -542,15 +542,30 @@ impl<'repo> WorktreeContext<'repo> {
             Ok(file) => file,
             Err(source) => return Ok(Err(DiskError::new("open working tree file", source))),
         };
+        // The walk's lstat is stale by now: a file rewritten in place since then is measured
+        // again through the open handle, and one whose length moved is modified unhashed.
+        let opened_size = match file.metadata() {
+            Ok(meta) => meta.len(),
+            Err(source) => return Ok(Err(DiskError::new("stat working tree file", source))),
+        };
+        if opened_size != header.size() {
+            return Ok(Ok(WorktreeStatus::Modified));
+        }
         let hashed = match gix::objs::compute_stream_hash(
             self.repo.object_hash(),
             gix::objs::Kind::Blob,
             &mut file,
-            disk.size,
+            opened_size,
             &mut gix::progress::Discard,
             &AtomicBool::new(false),
         ) {
             Ok(hashed) => hashed,
+            // Truncated while being read: it no longer holds the blob's bytes.
+            Err(gix::hash::io::Error::Io(source))
+                if source.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                return Ok(Ok(WorktreeStatus::Modified));
+            }
             Err(gix::hash::io::Error::Io(source)) => {
                 return Ok(Err(DiskError::new("hash working tree file", source)));
             }
@@ -1398,7 +1413,10 @@ mod tests {
 
     /// Runs `f` on a status walk over the standard fixture, with `HEAD`'s root tree entries.
     fn with_status_walk(f: impl FnOnce(&mut StatusWalk<'_>, &[TreeEntry], &Path)) {
-        let fx = Fixture::standard();
+        with_status_walk_in(&Fixture::standard(), f);
+    }
+
+    fn with_status_walk_in(fx: &Fixture, f: impl FnOnce(&mut StatusWalk<'_>, &[TreeEntry], &Path)) {
         let repo = Repository::open(fx.path()).unwrap();
         let tree = repo.resolve_tree("HEAD").unwrap();
         repo.with(|repo| {
@@ -1446,6 +1464,58 @@ mod tests {
             assert_eq!(walk.report.entries, []);
             assert_eq!(walk.report.unreadable, []);
         });
+    }
+
+    /// Walks `alpha.txt` (blob `alpha\n`, 6 bytes) as a file whose lstat said 6 bytes but which
+    /// holds `contents` by the time it is opened: rewritten in place after the stat.
+    fn walk_alpha_rewritten_to(contents: &[u8]) -> (Presence, StatusReport) {
+        let fx = Fixture::standard();
+        fx.write("rewritten.txt", contents);
+        let mut outcome = None;
+        with_status_walk_in(&fx, |walk, entries, root| {
+            let alpha = named(entries, "alpha.txt");
+            let disk_path = root.join("rewritten.txt");
+            let rela = BString::from("alpha.txt");
+            let disk = DiskFacts {
+                kind: EntryKind::Blob,
+                size: 6,
+                path: &disk_path,
+                rela: &rela,
+            };
+            let presence = walk.walk_tracked_file(alpha, &disk).unwrap();
+            outcome = Some((presence, std::mem::take(&mut walk.report)));
+        });
+        outcome.unwrap()
+    }
+
+    fn modified_paths(report: &StatusReport) -> Vec<(String, WorktreeStatus)> {
+        report
+            .entries
+            .iter()
+            .map(|entry| (entry.path.to_string(), entry.status))
+            .collect()
+    }
+
+    #[test]
+    fn a_file_truncated_after_its_stat_is_modified_not_an_error() {
+        let (presence, report) = walk_alpha_rewritten_to(b"al");
+        assert_eq!(presence, Presence::OnDisk);
+        assert_eq!(
+            modified_paths(&report),
+            [("alpha.txt".to_owned(), WorktreeStatus::Modified)]
+        );
+        assert_eq!(report.unreadable, []);
+    }
+
+    #[test]
+    fn a_file_appended_to_after_its_stat_is_modified_not_its_prefix() {
+        let (presence, report) = walk_alpha_rewritten_to(b"alpha\nmore\n");
+        assert_eq!(presence, Presence::OnDisk);
+        assert_eq!(
+            modified_paths(&report),
+            [("alpha.txt".to_owned(), WorktreeStatus::Modified)]
+        );
+        assert_eq!(report.unreadable, []);
     }
 
     #[test]
