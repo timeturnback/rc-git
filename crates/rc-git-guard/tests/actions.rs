@@ -345,6 +345,32 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_path_under_a_submodule_reads_as_absent_from_head() {
+        let fx = Fixture::standard();
+        let gitlink = "160000,1111111111111111111111111111111111111111,sub";
+        fx.git(&["update-index", "--add", "--cacheinfo", gitlink]);
+        fx.git(&["commit", "-q", "-m", "add submodule"]);
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "under a gitlink",
+            Some(identity()),
+            Some(&head),
+            &[whole("sub/x.c")],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not exist on disk or in HEAD"),
+            "the submodule's commit is never looked up here: {err}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head);
+    }
+
+    #[test]
     fn a_mis_cased_selection_is_refused_and_head_is_unchanged() {
         let fx = Fixture::standard();
         fx.git(&["config", "core.ignorecase", "true"]);

@@ -72,29 +72,61 @@ impl Repository {
     }
 
     /// Finds the entry at a `/`-separated `path` below `root`. Empty and `.` segments are
-    /// ignored, so `a//b`, `./a/b` and `a/b/` all name `a/b`. `None` when any segment is missing.
+    /// ignored, so `a//b`, `./a/b` and `a/b/` all name `a/b`. `None` when any segment is missing
+    /// or a segment before the last is a file or a submodule.
     ///
     /// # Errors
     /// [`Error::Object`](crate::Error::Object) when a tree on the path cannot be read.
     pub fn entry_at_path(&self, root: Oid, path: &str) -> Result<Option<TreeEntry>> {
         self.with(|repo| {
-            let tree_obj = repo
-                .find_tree(*root.as_gix())
-                .map_err(object("read tree", root))?;
             let segments = path
                 .split('/')
                 .filter(|segment| !segment.is_empty() && *segment != ".")
                 .map(str::as_bytes);
-            let found = tree_obj
-                .lookup_entry(segments)
-                .map_err(object("look up path", root))?;
+            let found = lookup_path(repo, root, segments)?;
             Ok(found.map(|entry| TreeEntry {
-                name: entry.filename().to_owned(),
-                oid: Oid::from_gix(entry.object_id()),
-                kind: EntryKind::from_gix(entry.mode().kind()),
+                name: entry.filename,
+                oid: Oid::from_gix(entry.oid),
+                kind: EntryKind::from_gix(entry.mode.kind()),
             }))
         })
     }
+}
+
+/// The entry at `segments` below the tree `root`, one tree read per segment. `None` when a
+/// segment is missing or an earlier segment is not a directory, so a path through a file or
+/// a submodule reads as absent, as it does in git. A gitlink's oid names a commit in another
+/// repository, so it is never looked up here. No segments at all also yields `None`.
+pub(crate) fn lookup_path<'a>(
+    repo: &gix::Repository,
+    root: Oid,
+    segments: impl IntoIterator<Item = &'a [u8]>,
+) -> Result<Option<gix::objs::tree::Entry>> {
+    let mut tree = repo
+        .find_tree(*root.as_gix())
+        .map_err(object("read tree", root))?;
+    let mut segments = segments.into_iter().peekable();
+    while let Some(segment) = segments.next() {
+        let Some(entry) = tree.find_entry(segment) else {
+            return Ok(None);
+        };
+        let (mode, oid) = (entry.mode(), entry.object_id());
+        if segments.peek().is_none() {
+            let filename = entry.filename().to_owned();
+            return Ok(Some(gix::objs::tree::Entry {
+                mode,
+                filename,
+                oid,
+            }));
+        }
+        if !mode.is_tree() {
+            return Ok(None);
+        }
+        tree = repo
+            .find_tree(oid)
+            .map_err(object("read tree", Oid::from_gix(oid)))?;
+    }
+    Ok(None)
 }
 
 /// The direct children of `tree` in git's own order, read on an already-borrowed handle so

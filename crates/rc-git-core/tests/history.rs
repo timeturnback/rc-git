@@ -321,3 +321,33 @@ fn path_history_still_fails_on_a_missing_parent_outside_a_shallow_clone() {
     let tip = repo.resolve("main").unwrap();
     assert!(repo.path_history(tip, "file.txt", 0, 100, 1000).is_err());
 }
+
+#[test]
+fn path_history_reads_a_path_under_a_submodule_as_absent() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("lib/x.c", b"x\n");
+    fx.commit("add lib", "2024-01-01T00:00:00+0000");
+    fx.git(&["rm", "-r", "-q", "lib"]);
+    let gitlink = "160000,1111111111111111111111111111111111111111,lib";
+    fx.git(&["update-index", "--add", "--cacheinfo", gitlink]);
+    let date = "2024-01-02T00:00:00+0000";
+    fx.git_with_env(
+        &["commit", "-q", "-m", "lib becomes a submodule"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let page = repo.path_history(tip, "lib/x.c", 0, 100, 1000).unwrap();
+    let expected = fx.git_output(&["log", "--format=%s", "--", "lib/x.c"]);
+    assert_eq!(titles(&page), expected.lines().collect::<Vec<_>>());
+    assert_eq!(titles(&page), ["lib becomes a submodule", "add lib"]);
+
+    let root = repo.resolve_tree("main").unwrap();
+    assert_eq!(
+        repo.entry_at_path(root, "lib/x.c").unwrap(),
+        None,
+        "a path through a gitlink is absent, not an unreadable object"
+    );
+}

@@ -483,19 +483,34 @@ pub(super) fn tree_entry_at(
     let Some(base_tree) = base_tree else {
         return Ok(None);
     };
-    let tree = repo
+    let mut tree = repo
         .find_tree(base_tree)
         .map_err(|source| ActionError::git(op, base_tree.to_string(), source))?;
-    let segments = path
+    let mut segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())
-        .map(str::as_bytes);
-    let found = tree.lookup_entry(segments).map_err(git_err(op, path))?;
-    Ok(found.map(|entry| gix::objs::tree::Entry {
-        mode: entry.mode(),
-        filename: entry.filename().to_owned(),
-        oid: entry.object_id(),
-    }))
+        .peekable();
+    // Walked by hand: a gitlink's oid names a commit in another repository, so a path through
+    // a submodule (or a file) reads as absent instead of failing to find that commit.
+    while let Some(segment) = segments.next() {
+        let Some(entry) = tree.find_entry(segment.as_bytes()) else {
+            return Ok(None);
+        };
+        let (mode, oid) = (entry.mode(), entry.object_id());
+        if segments.peek().is_none() {
+            let filename = entry.filename().to_owned();
+            return Ok(Some(gix::objs::tree::Entry {
+                mode,
+                filename,
+                oid,
+            }));
+        }
+        if !mode.is_tree() {
+            return Ok(None);
+        }
+        tree = repo.find_tree(oid).map_err(git_err(op, path))?;
+    }
+    Ok(None)
 }
 
 pub(super) fn blob_data(

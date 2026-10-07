@@ -11,6 +11,7 @@ use crate::error::{Result, git, object};
 use crate::log::{CommitSummary, summarize};
 use crate::oid::Oid;
 use crate::repo::Repository;
+use crate::tree::lookup_path;
 
 /// One page of a filtered history walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,12 +282,12 @@ impl Lookup {
         if let Some(found) = self.entries.get(&tree) {
             return Ok(*found);
         }
-        let oid = Oid::from_gix(tree);
-        let tree_obj = repo.find_tree(tree).map_err(object("read tree", oid))?;
-        let found = tree_obj
-            .lookup_entry(segments.iter().map(Vec::as_slice))
-            .map_err(object("look up path", oid))?
-            .map(|entry| (entry.object_id(), entry.mode()));
+        let found = lookup_path(
+            repo,
+            Oid::from_gix(tree),
+            segments.iter().map(Vec::as_slice),
+        )?
+        .map(|entry| (entry.oid, entry.mode));
         self.entries.insert(tree, found);
         Ok(found)
     }
