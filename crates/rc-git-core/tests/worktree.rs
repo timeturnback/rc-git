@@ -725,6 +725,70 @@ fn worktree_files_reports_an_unreadable_directory() {
     assert!(err.to_string().contains("list working tree files"), "{err}");
 }
 
+#[test]
+fn an_unreadable_untracked_directory_is_skipped_and_the_rest_listed() {
+    let fx = Fixture::standard();
+    fx.write("locked/secret.txt", b"s\n");
+    fx.write("new.txt", b"n\n");
+    fx.set_mode("locked", 0o000);
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000);
+    let list = repo.worktree_files(tree, 10_000);
+    fx.set_mode("locked", 0o755);
+
+    let report = report.unwrap();
+    let changed: Vec<String> = report.entries.iter().map(|e| e.path.to_string()).collect();
+    assert_eq!(changed, ["new.txt"]);
+    assert_eq!(report.unreadable.len(), 1, "{:?}", report.unreadable);
+    assert_eq!(report.unreadable[0].path, "locked");
+    assert!(
+        report.unreadable[0].error.starts_with("read directory: "),
+        "{}",
+        report.unreadable[0].error
+    );
+
+    let list = list.unwrap();
+    assert!(list.files.iter().any(|file| file.path == "new.txt"));
+    assert!(
+        !list
+            .files
+            .iter()
+            .any(|file| file.path.starts_with(b"locked"))
+    );
+    assert_eq!(list.unreadable.len(), 1, "{:?}", list.unreadable);
+    assert_eq!(list.unreadable[0].path, "locked");
+}
+
+#[test]
+fn an_unreadable_tracked_directory_is_not_reported_deleted() {
+    let fx = Fixture::standard();
+    fx.set_mode("src", 0o000);
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000);
+    fx.set_mode("src", 0o755);
+
+    let report = report.unwrap();
+    assert_eq!(report.entries, []);
+    let skipped: Vec<String> = report
+        .unreadable
+        .iter()
+        .map(|e| e.path.to_string())
+        .collect();
+    assert_eq!(skipped, ["src"]);
+}
+
+#[test]
+fn worktree_status_reports_an_unreadable_root() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    fx.remove("");
+    let err = repo.worktree_status(tree, 10_000).unwrap_err();
+    assert!(err.to_string().contains("scan working tree"), "{err}");
+}
+
 /// The standard fixture with a checked-out submodule committed at `vendor/sub`, plus the
 /// repository the submodule was cloned from, which must outlive the test.
 fn with_submodule() -> (Fixture, Fixture) {

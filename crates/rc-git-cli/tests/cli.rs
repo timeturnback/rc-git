@@ -600,6 +600,33 @@ fn changes_lists_every_changed_path_flat() {
 }
 
 #[test]
+fn an_unreadable_directory_is_a_warning_and_the_rest_is_listed() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("locked/secret.txt", b"s\n");
+    fx.write("new.txt", b"n\n");
+    fx.set_mode("locked", 0o000);
+    let changes = rc_git(&["changes", path]);
+    let files = rc_git(&["files", path]);
+    fx.set_mode("locked", 0o755);
+
+    assert!(changes.status.success(), "{}", stderr(&changes));
+    assert_eq!(stdout(&changes), "?\tnew.txt\n");
+    assert!(
+        stderr(&changes).starts_with("warning: skipped 'locked': read directory: "),
+        "{}",
+        stderr(&changes)
+    );
+    assert!(files.status.success(), "{}", stderr(&files));
+    assert!(stdout(&files).contains("new.txt\n"));
+    assert!(
+        stderr(&files).starts_with("warning: skipped 'locked': read directory: "),
+        "{}",
+        stderr(&files)
+    );
+}
+
+#[test]
 fn files_lists_every_file_on_disk_including_ignored_ones() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

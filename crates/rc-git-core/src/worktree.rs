@@ -82,6 +82,16 @@ pub struct WorktreeFile {
     pub kind: EntryKind,
 }
 
+/// A working-tree entry a walk skipped because it could not be read, such as a directory
+/// without read permission. An entry that vanished mid-walk is not one: it is simply absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableEntry {
+    /// Repository-relative path with `/` separators.
+    pub path: BString,
+    /// Which read failed and why, such as `read directory: Permission denied (os error 13)`.
+    pub error: String,
+}
+
 /// Every file on disk, with the walk's own cost accounting.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorktreeFileList {
@@ -93,6 +103,8 @@ pub struct WorktreeFileList {
     pub truncated: bool,
     /// Lookups that failed without failing the walk, as in [`WorktreeListing::warnings`].
     pub warnings: Vec<String>,
+    /// Entries below the root that could not be read and were skipped, with their contents.
+    pub unreadable: Vec<UnreadableEntry>,
 }
 
 /// Every changed path in the working tree, with the walk's own cost accounting.
@@ -107,6 +119,9 @@ pub struct StatusReport {
     /// Lookups that failed without failing the walk, as in [`WorktreeListing::warnings`]: an
     /// unreadable index also means every tracked file was hashed.
     pub warnings: Vec<String>,
+    /// Entries below the root that could not be read and were skipped, with their contents;
+    /// none of them is listed as changed or deleted.
+    pub unreadable: Vec<UnreadableEntry>,
 }
 
 impl Repository {
@@ -134,28 +149,19 @@ impl Repository {
                 Ok(disk_dir)
             })
             .map_err(|source| worktree_error("list working tree", dir, source))?;
-        let read = std::fs::read_dir(&disk_dir)
-            .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
+        let on_disk = list_disk_dir(&disk_dir, dir)?;
 
         let mut listing = WorktreeListing::default();
-        let mut on_disk: Vec<(BString, Option<EntryKind>, u64, PathBuf)> = Vec::new();
-        for entry in read {
-            let entry = entry
-                .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
-            let name = BString::from(entry.file_name().as_encoded_bytes());
-            if name == ".git" {
-                continue;
-            }
-            let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
-                worktree_error("stat working tree entry", dir, Box::new(source))
-            })?;
-            on_disk.push((name, disk_kind(&meta), meta.len(), entry.path()));
-        }
-
         let by_name = index_by_name(&tree_entries);
         self.with(|repo| {
             let mut context = WorktreeContext::new(repo, "list working tree")?;
-            for (name, disk, size, path) in on_disk {
+            for DiskEntry {
+                name,
+                kind: disk,
+                size,
+                path,
+            } in on_disk
+            {
                 let rela = relative_path(dir, &name);
                 let in_tree = by_name.get(&name).copied();
                 let Some(disk) = disk else {
@@ -172,7 +178,12 @@ impl Repository {
                         path: &path,
                         rela: &rela,
                     };
-                    context.compare(tree_entry, &disk, dir)?
+                    match context.compare(tree_entry, &disk)? {
+                        Ok(status) => status,
+                        // Gone since the directory was read: the tree entry lists as missing.
+                        Err(error) if error.is_vanished() => continue,
+                        Err(error) => return Err(error.into_error(&rela)),
+                    }
                 } else if context.excludes.is_ignored(&rela, kind == EntryKind::Tree) {
                     WorktreeStatus::Ignored
                 } else {
@@ -209,10 +220,12 @@ impl Repository {
     /// `read_dir`. `.git` is never entered at any depth, and an untracked directory that
     /// holds its own repository is skipped whole: its files belong to that repository. The
     /// walk stops after visiting `max_scan` entries and reports the truncation, which bounds
-    /// both the disk work and how long the borrowed pool handle is held.
+    /// both the disk work and how long the borrowed pool handle is held. An entry that vanishes
+    /// mid-walk is absent, as git would see it; one below the root that cannot be read is
+    /// skipped and listed in [`StatusReport::unreadable`].
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository or an unreadable directory,
+    /// [`Error::Worktree`] for a bare repository or an unreadable working-tree root,
     /// [`Error::Object`] when a tree object on the walk cannot be read.
     pub fn worktree_status(&self, tree: Oid, max_scan: usize) -> Result<StatusReport> {
         let work_dir = self.require_work_dir("scan working tree", "")?;
@@ -236,10 +249,12 @@ impl Repository {
     /// submodule, `.git`, nor an untracked directory holding its own repository is entered.
     /// The walk stops after visiting `max_scan` entries and reports the
     /// truncation, which bounds both the disk work and how long the borrowed pool handle is
-    /// held. Nothing is hashed: this lists names, it does not compare content.
+    /// held. Nothing is hashed: this lists names, it does not compare content. An entry that
+    /// vanishes mid-walk is absent; one below the root that cannot be read is skipped and
+    /// listed in [`WorktreeFileList::unreadable`].
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository or an unreadable directory,
+    /// [`Error::Worktree`] for a bare repository or an unreadable working-tree root,
     /// [`Error::Object`] when a tree object on the walk cannot be read.
     pub fn worktree_files(&self, tree: Oid, max_scan: usize) -> Result<WorktreeFileList> {
         let work_dir = self.require_work_dir("list working tree files", "")?;
@@ -354,6 +369,47 @@ impl Repository {
     }
 }
 
+/// One directory entry as `symlink_metadata` saw it.
+struct DiskEntry {
+    name: BString,
+    /// `None` for a FIFO, socket or device file.
+    kind: Option<EntryKind>,
+    size: u64,
+    path: PathBuf,
+}
+
+/// One directory's entries with their `symlink_metadata`. An entry that vanished between the
+/// listing and its stat is left out, as git would never have seen it.
+fn list_disk_dir(disk_dir: &Path, dir: &str) -> Result<Vec<DiskEntry>> {
+    let read = std::fs::read_dir(disk_dir)
+        .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
+    let mut on_disk = Vec::new();
+    for entry in read {
+        let entry =
+            entry.map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
+        let name = BString::from(entry.file_name().as_encoded_bytes());
+        if name == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                let rela = relative_path(dir, &name);
+                return Err(DiskError::new("stat working tree entry", source).into_error(&rela));
+            }
+        };
+        on_disk.push(DiskEntry {
+            name,
+            kind: disk_kind(&meta),
+            size: meta.len(),
+            path,
+        });
+    }
+    Ok(on_disk)
+}
+
 /// What the compared tree holds at a listed directory.
 enum TreeAt {
     /// The directory's entries; empty when the tree has no directory there.
@@ -412,19 +468,20 @@ impl<'repo> WorktreeContext<'repo> {
 
     /// Whether a disk file differs from its tree entry. Kind decides first, then the blob
     /// header's size, then the index's stat cache; only a file none of those settle is read.
+    /// A failed read of the disk file is the inner `Err`, so the walk can tell a file that
+    /// vanished from one it may not read; the outer `Err` is the repository failing.
     fn compare(
         &mut self,
         tree_entry: &TreeEntry,
         disk: &DiskFacts<'_>,
-        dir: &str,
-    ) -> Result<WorktreeStatus> {
+    ) -> Result<std::result::Result<WorktreeStatus, DiskError>> {
         if let Some(status) = kind_verdict(tree_entry, disk.kind) {
-            return Ok(status);
+            return Ok(Ok(status));
         }
         if disk.kind == EntryKind::Symlink {
-            return self.compare_symlink(tree_entry, disk.path, dir);
+            return self.compare_symlink(tree_entry, disk.path);
         }
-        self.compare_content(tree_entry, disk, dir)
+        self.compare_content(tree_entry, disk)
     }
 
     /// A symlink is its target. The blob header must name a blob of the target's length before
@@ -433,10 +490,11 @@ impl<'repo> WorktreeContext<'repo> {
         &self,
         tree_entry: &TreeEntry,
         disk_path: &Path,
-        dir: &str,
-    ) -> Result<WorktreeStatus> {
-        let target = std::fs::read_link(disk_path)
-            .map_err(|source| worktree_error("read symlink", dir, Box::new(source)))?;
+    ) -> Result<std::result::Result<WorktreeStatus, DiskError>> {
+        let target = match std::fs::read_link(disk_path) {
+            Ok(target) => target,
+            Err(source) => return Ok(Err(DiskError::new("read symlink", source))),
+        };
         let target = target.as_os_str().as_encoded_bytes();
         let header = self
             .repo
@@ -444,17 +502,17 @@ impl<'repo> WorktreeContext<'repo> {
             .map_err(object("read blob header", tree_entry.oid))?;
         let same_length = u64::try_from(target.len()).is_ok_and(|len| len == header.size());
         if header.kind() != gix::objs::Kind::Blob || !same_length {
-            return Ok(WorktreeStatus::Modified);
+            return Ok(Ok(WorktreeStatus::Modified));
         }
         let blob = self
             .repo
             .find_blob(*tree_entry.oid.as_gix())
             .map_err(object("read blob", tree_entry.oid))?;
-        Ok(if blob.data == target {
+        Ok(Ok(if blob.data == target {
             WorktreeStatus::Unchanged
         } else {
             WorktreeStatus::Modified
-        })
+        }))
     }
 
     /// A regular file. The index's stat cache is asked first: git records the size it checked
@@ -466,23 +524,24 @@ impl<'repo> WorktreeContext<'repo> {
         &mut self,
         tree_entry: &TreeEntry,
         disk: &DiskFacts<'_>,
-        dir: &str,
-    ) -> Result<WorktreeStatus> {
+    ) -> Result<std::result::Result<WorktreeStatus, DiskError>> {
         if self
             .stats
             .proves_unchanged(disk.rela, tree_entry.oid, disk.path)
         {
-            return Ok(WorktreeStatus::Unchanged);
+            return Ok(Ok(WorktreeStatus::Unchanged));
         }
         let header = self
             .repo
             .find_header(*tree_entry.oid.as_gix())
             .map_err(object("read blob header", tree_entry.oid))?;
         if header.size() != disk.size {
-            return Ok(WorktreeStatus::Modified);
+            return Ok(Ok(WorktreeStatus::Modified));
         }
-        let mut file = std::fs::File::open(disk.path)
-            .map_err(|source| worktree_error("hash working tree file", dir, Box::new(source)))?;
+        let mut file = match std::fs::File::open(disk.path) {
+            Ok(file) => file,
+            Err(source) => return Ok(Err(DiskError::new("open working tree file", source))),
+        };
         let hashed = gix::objs::compute_stream_hash(
             self.repo.object_hash(),
             gix::objs::Kind::Blob,
@@ -492,12 +551,55 @@ impl<'repo> WorktreeContext<'repo> {
             &AtomicBool::new(false),
         )
         .map_err(git("hash working tree file"))?;
-        Ok(if Oid::from_gix(hashed) == tree_entry.oid {
+        Ok(Ok(if Oid::from_gix(hashed) == tree_entry.oid {
             WorktreeStatus::Unchanged
         } else {
             WorktreeStatus::Modified
-        })
+        }))
     }
+}
+
+/// A read of the working tree that failed below the walk's root: which read, and why.
+struct DiskError {
+    op: &'static str,
+    source: std::io::Error,
+}
+
+impl DiskError {
+    fn new(op: &'static str, source: std::io::Error) -> Self {
+        Self { op, source }
+    }
+
+    /// The entry is gone: deleted or renamed away between being listed and being read.
+    fn is_vanished(&self) -> bool {
+        self.source.kind() == std::io::ErrorKind::NotFound
+    }
+
+    fn into_unreadable(self, path: BString) -> UnreadableEntry {
+        UnreadableEntry {
+            path,
+            error: format!("{}: {}", self.op, self.source),
+        }
+    }
+
+    fn into_error(self, path: &BString) -> Error {
+        worktree_error(self.op, &path.to_str_lossy(), Box::new(self.source))
+    }
+}
+
+/// A directory below the root that could not be read is recorded and skipped; the root
+/// itself failing fails the walk named by `walk_op`, since then there is nothing to show.
+fn skip_unreadable_dir(
+    walk_op: &'static str,
+    dir: &BString,
+    source: std::io::Error,
+    unreadable: &mut Vec<UnreadableEntry>,
+) -> Result<()> {
+    if dir.is_empty() {
+        return Err(worktree_error(walk_op, "", Box::new(source)));
+    }
+    unreadable.push(DiskError::new("read directory", source).into_unreadable(dir.clone()));
+    Ok(())
 }
 
 /// How a listing shows a FIFO, socket or device file, judged without opening it: like git,
@@ -747,6 +849,14 @@ fn index_unparseable(repo: &gix::Repository) -> bool {
     !meta.is_file() || meta.len() < HEADER_LEN.saturating_add(hash_len)
 }
 
+/// Whether a listed entry was still on disk when the walk read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    OnDisk,
+    /// Deleted or renamed away after its directory was read.
+    Gone,
+}
+
 /// Recursive full-tree status walk. Holds the borrowed handle for its whole run; the
 /// caller's `max_scan` cap bounds that.
 struct StatusWalk<'repo> {
@@ -765,28 +875,29 @@ impl StatusWalk<'_> {
         !self.report.truncated
     }
 
-    fn walk_dir(
-        &mut self,
-        tree: Option<Oid>,
-        dir: &BString,
-        disk_dir: &std::path::Path,
-    ) -> Result<()> {
+    fn walk_dir(&mut self, tree: Option<Oid>, dir: &BString, disk_dir: &Path) -> Result<()> {
         let tree_entries = match tree {
             Some(oid) => tree_children(self.context.repo, oid)?,
             None => Vec::new(),
         };
         let by_name = index_by_name(&tree_entries);
-        let dir_str = dir.to_str_lossy().into_owned();
-        let read = std::fs::read_dir(disk_dir)
-            .map_err(|source| worktree_error("scan working tree", &dir_str, Box::new(source)))?;
+        let read = match std::fs::read_dir(disk_dir) {
+            Ok(read) => read,
+            // Gone since its parent was read: everything the tree has there is deleted.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound && !dir.is_empty() => {
+                return self.walk_missing(&tree_entries, &HashSet::new(), dir);
+            }
+            Err(source) => return self.skip_unreadable_dir(dir, source),
+        };
         let mut on_disk: HashSet<BString> = HashSet::new();
         for entry in read {
             if self.report.truncated {
                 return Ok(());
             }
-            let entry = entry.map_err(|source| {
-                worktree_error("scan working tree", &dir_str, Box::new(source))
-            })?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) => return self.skip_unreadable_dir(dir, source),
+            };
             let name = BString::from(entry.file_name().as_encoded_bytes());
             if name == ".git" {
                 continue;
@@ -794,71 +905,119 @@ impl StatusWalk<'_> {
             if !self.visit() {
                 return Ok(());
             }
-            let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
-                worktree_error("stat working tree entry", &dir_str, Box::new(source))
-            })?;
             let tracked = by_name.get(&name).copied();
             let path = child_path(dir, &name);
-            on_disk.insert(name.clone());
-            let Some(disk) = disk_kind(&meta) else {
-                self.special_file(tracked, path, meta.len())?;
-                continue;
-            };
-            let kind = self.context.kind_of(disk, tracked);
-            match tracked {
-                Some(tree_entry)
-                    if tree_entry.kind == EntryKind::Tree && kind == EntryKind::Tree =>
-                {
-                    self.walk_dir(Some(tree_entry.oid), &path, &entry.path())?;
-                }
-                Some(tree_entry)
-                    if kind == EntryKind::Tree && tree_entry.kind != EntryKind::Submodule =>
-                {
-                    // A directory now sits where a tracked file was: the file is deleted and
-                    // everything in the directory is untracked, as git lists it.
-                    self.emit_deleted(tree_entry, path.clone());
-                    self.walk_untracked_dir(&path, &entry.path())?;
-                }
-                Some(tree_entry) => {
-                    let disk_path = entry.path();
-                    let disk = DiskFacts {
-                        kind,
-                        size: meta.len(),
-                        path: &disk_path,
-                        rela: &path,
-                    };
-                    let status = self.context.compare(tree_entry, &disk, &dir_str)?;
-                    if status == WorktreeStatus::Modified {
-                        self.report.entries.push(StatusEntry {
-                            path: path.clone(),
-                            kind,
-                            status,
-                            oid: (tree_entry.kind != EntryKind::Tree).then_some(tree_entry.oid),
-                            size: meta.len(),
-                        });
-                    }
-                    if tree_entry.kind == EntryKind::Tree {
-                        // A file now sits where a tracked directory was: everything below
-                        // the old directory is deleted.
-                        self.walk_deleted(tree_entry.oid, &path)?;
-                    }
-                }
-                None => {
-                    if kind == EntryKind::Tree {
-                        self.walk_untracked_dir(&path, &entry.path())?;
-                    } else if !self.context.excludes.is_ignored(&path, false) {
-                        self.report.entries.push(StatusEntry {
-                            path,
-                            kind,
-                            status: WorktreeStatus::Untracked,
-                            oid: None,
-                            size: meta.len(),
-                        });
-                    }
-                }
+            if self.walk_entry(tracked, path, &entry.path())? == Presence::OnDisk {
+                on_disk.insert(name);
             }
         }
         self.walk_missing(&tree_entries, &on_disk, dir)
+    }
+
+    /// Records an unreadable directory below the root and skips it; the root fails the walk.
+    fn skip_unreadable_dir(&mut self, dir: &BString, source: std::io::Error) -> Result<()> {
+        skip_unreadable_dir(
+            "scan working tree",
+            dir,
+            source,
+            &mut self.report.unreadable,
+        )
+    }
+
+    /// Reports one disk entry against its tree entry, descending into a directory. An entry
+    /// that vanished since its directory was read is [`Presence::Gone`], so a tracked one is
+    /// reported deleted; one that cannot be read is recorded and counts as present, so it is
+    /// never reported deleted.
+    fn walk_entry(
+        &mut self,
+        tracked: Option<&TreeEntry>,
+        path: BString,
+        disk_path: &Path,
+    ) -> Result<Presence> {
+        let meta = match std::fs::symlink_metadata(disk_path) {
+            Ok(meta) => meta,
+            Err(source) => return Ok(self.skip_entry(path, "stat working tree entry", source)),
+        };
+        let Some(disk) = disk_kind(&meta) else {
+            self.special_file(tracked, path, meta.len())?;
+            return Ok(Presence::OnDisk);
+        };
+        let kind = self.context.kind_of(disk, tracked);
+        match tracked {
+            Some(tree_entry) if tree_entry.kind == EntryKind::Tree && kind == EntryKind::Tree => {
+                self.walk_dir(Some(tree_entry.oid), &path, disk_path)?;
+            }
+            Some(tree_entry)
+                if kind == EntryKind::Tree && tree_entry.kind != EntryKind::Submodule =>
+            {
+                // A directory now sits where a tracked file was: the file is deleted and
+                // everything in the directory is untracked, as git lists it.
+                self.emit_deleted(tree_entry, path.clone());
+                self.walk_untracked_dir(&path, disk_path)?;
+            }
+            Some(tree_entry) => {
+                let disk = DiskFacts {
+                    kind,
+                    size: meta.len(),
+                    path: disk_path,
+                    rela: &path,
+                };
+                return self.walk_tracked_file(tree_entry, &disk);
+            }
+            None if kind == EntryKind::Tree => self.walk_untracked_dir(&path, disk_path)?,
+            None => {
+                if !self.context.excludes.is_ignored(&path, false) {
+                    self.report.entries.push(StatusEntry {
+                        path,
+                        kind,
+                        status: WorktreeStatus::Untracked,
+                        oid: None,
+                        size: meta.len(),
+                    });
+                }
+            }
+        }
+        Ok(Presence::OnDisk)
+    }
+
+    /// A tracked path whose disk kind is not a directory over a tracked directory.
+    fn walk_tracked_file(
+        &mut self,
+        tree_entry: &TreeEntry,
+        disk: &DiskFacts<'_>,
+    ) -> Result<Presence> {
+        let status = match self.context.compare(tree_entry, disk)? {
+            Ok(status) => status,
+            Err(error) => return Ok(self.skip_disk_error(disk.rela.clone(), error)),
+        };
+        if status == WorktreeStatus::Modified {
+            self.report.entries.push(StatusEntry {
+                path: disk.rela.clone(),
+                kind: disk.kind,
+                status,
+                oid: (tree_entry.kind != EntryKind::Tree).then_some(tree_entry.oid),
+                size: disk.size,
+            });
+        }
+        if tree_entry.kind == EntryKind::Tree {
+            // A file now sits where a tracked directory was: everything below the old
+            // directory is deleted.
+            self.walk_deleted(tree_entry.oid, disk.rela)?;
+        }
+        Ok(Presence::OnDisk)
+    }
+
+    fn skip_entry(&mut self, path: BString, op: &'static str, source: std::io::Error) -> Presence {
+        self.skip_disk_error(path, DiskError::new(op, source))
+    }
+
+    /// A vanished entry is gone; any other failed read is recorded and the entry kept.
+    fn skip_disk_error(&mut self, path: BString, error: DiskError) -> Presence {
+        if error.is_vanished() {
+            return Presence::Gone;
+        }
+        self.report.unreadable.push(error.into_unreadable(path));
+        Presence::OnDisk
     }
 
     /// A directory the tree does not track: its files are untracked unless an ignore rule
@@ -984,17 +1143,22 @@ impl FileWalk<'_> {
             None => Vec::new(),
         };
         let by_name = index_by_name(&tree_entries);
-        let dir_str = dir.to_str_lossy().into_owned();
-        let read = std::fs::read_dir(disk_dir).map_err(|source| {
-            worktree_error("list working tree files", &dir_str, Box::new(source))
-        })?;
+        let read = match std::fs::read_dir(disk_dir) {
+            Ok(read) => read,
+            // Gone since its parent was read: there is nothing on disk to list.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound && !dir.is_empty() => {
+                return Ok(());
+            }
+            Err(source) => return self.skip_unreadable_dir(dir, source),
+        };
         for entry in read {
             if self.list.truncated {
                 return Ok(());
             }
-            let entry = entry.map_err(|source| {
-                worktree_error("list working tree files", &dir_str, Box::new(source))
-            })?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) => return self.skip_unreadable_dir(dir, source),
+            };
             let name = BString::from(entry.file_name().as_encoded_bytes());
             if name == ".git" {
                 continue;
@@ -1002,34 +1166,57 @@ impl FileWalk<'_> {
             if !self.visit() {
                 return Ok(());
             }
-            let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
-                worktree_error("stat working tree entry", &dir_str, Box::new(source))
-            })?;
-            let Some(disk) = disk_kind(&meta) else {
-                continue;
-            };
             let tracked = by_name.get(&name).copied();
-            let kind = git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit);
-            let path = child_path(dir, &name);
-            if kind != EntryKind::Tree {
-                self.list.files.push(WorktreeFile { path, kind });
-                continue;
-            }
-            match tracked.map(|tree_entry| (tree_entry.kind, tree_entry.oid)) {
-                Some((EntryKind::Tree, oid)) => self.walk_dir(Some(oid), &path, &entry.path())?,
-                Some((EntryKind::Submodule, _)) => {}
-                Some((EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink, _))
-                | None => {
-                    let disk_path = entry.path();
-                    if !self.excludes.is_ignored(&path, true)
-                        && !holds_nested_repository(&disk_path)
-                    {
-                        self.walk_dir(None, &path, &disk_path)?;
-                    }
-                }
-            }
+            self.walk_entry(tracked, child_path(dir, &name), &entry.path())?;
         }
         Ok(())
+    }
+
+    /// Records an unreadable directory below the root and skips it; the root fails the walk.
+    fn skip_unreadable_dir(&mut self, dir: &BString, source: std::io::Error) -> Result<()> {
+        skip_unreadable_dir(
+            "list working tree files",
+            dir,
+            source,
+            &mut self.list.unreadable,
+        )
+    }
+
+    /// Lists one disk entry, descending into a directory. An entry that vanished since its
+    /// directory was read is left out; one that cannot be stat'ed is recorded and skipped.
+    fn walk_entry(
+        &mut self,
+        tracked: Option<&TreeEntry>,
+        path: BString,
+        disk_path: &Path,
+    ) -> Result<()> {
+        let meta = match std::fs::symlink_metadata(disk_path) {
+            Ok(meta) => meta,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                let error = DiskError::new("stat working tree entry", source);
+                self.list.unreadable.push(error.into_unreadable(path));
+                return Ok(());
+            }
+        };
+        let Some(disk) = disk_kind(&meta) else {
+            return Ok(());
+        };
+        let kind = git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit);
+        if kind != EntryKind::Tree {
+            self.list.files.push(WorktreeFile { path, kind });
+            return Ok(());
+        }
+        match tracked.map(|tree_entry| (tree_entry.kind, tree_entry.oid)) {
+            Some((EntryKind::Tree, oid)) => self.walk_dir(Some(oid), &path, disk_path),
+            Some((EntryKind::Submodule, _)) => Ok(()),
+            Some((EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink, _)) | None => {
+                if self.excludes.is_ignored(&path, true) || holds_nested_repository(disk_path) {
+                    return Ok(());
+                }
+                self.walk_dir(None, &path, disk_path)
+            }
+        }
     }
 }
 
@@ -1191,4 +1378,106 @@ fn sort_worktree(entries: &mut [WorktreeEntry]) {
             entry.name.to_ascii_lowercase(),
         )
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rc_git_testkit::Fixture;
+
+    /// Runs `f` on a status walk over the standard fixture, with `HEAD`'s root tree entries.
+    fn with_status_walk(f: impl FnOnce(&mut StatusWalk<'_>, &[TreeEntry], &Path)) {
+        let fx = Fixture::standard();
+        let repo = Repository::open(fx.path()).unwrap();
+        let tree = repo.resolve_tree("HEAD").unwrap();
+        repo.with(|repo| {
+            let mut walk = StatusWalk {
+                context: WorktreeContext::new(repo, "scan working tree").unwrap(),
+                report: StatusReport::default(),
+                max_scan: 10_000,
+            };
+            let entries = tree_children(repo, tree).unwrap();
+            f(&mut walk, &entries, fx.path());
+        });
+    }
+
+    fn named<'a>(entries: &'a [TreeEntry], name: &str) -> &'a TreeEntry {
+        entries.iter().find(|entry| entry.name == name).unwrap()
+    }
+
+    #[test]
+    fn a_file_gone_before_its_stat_is_absent_not_an_error() {
+        with_status_walk(|walk, entries, root| {
+            let alpha = named(entries, "alpha.txt");
+            let presence = walk
+                .walk_entry(Some(alpha), "alpha.txt".into(), &root.join("vanished"))
+                .unwrap();
+            assert_eq!(presence, Presence::Gone);
+            assert_eq!(walk.report.unreadable, []);
+        });
+    }
+
+    #[test]
+    fn a_file_gone_before_it_is_hashed_is_absent_not_an_error() {
+        with_status_walk(|walk, entries, root| {
+            let alpha = named(entries, "alpha.txt");
+            let disk_path = root.join("vanished");
+            let rela = BString::from("alpha.txt");
+            let disk = DiskFacts {
+                kind: EntryKind::Blob,
+                // The blob's size, so only hashing the file can settle it.
+                size: 6,
+                path: &disk_path,
+                rela: &rela,
+            };
+            let presence = walk.walk_tracked_file(alpha, &disk).unwrap();
+            assert_eq!(presence, Presence::Gone);
+            assert_eq!(walk.report.entries, []);
+            assert_eq!(walk.report.unreadable, []);
+        });
+    }
+
+    #[test]
+    fn a_tracked_directory_gone_before_it_is_read_lists_its_files_deleted() {
+        with_status_walk(|walk, entries, root| {
+            let src = named(entries, "src");
+            walk.walk_dir(Some(src.oid), &"src".into(), &root.join("vanished"))
+                .unwrap();
+            let deleted: Vec<(String, WorktreeStatus)> = walk
+                .report
+                .entries
+                .iter()
+                .map(|entry| (entry.path.to_string(), entry.status))
+                .collect();
+            assert_eq!(
+                deleted,
+                [
+                    ("src/lib.rs".to_owned(), WorktreeStatus::Deleted),
+                    ("src/main.rs".to_owned(), WorktreeStatus::Deleted),
+                ]
+            );
+            assert_eq!(walk.report.unreadable, []);
+        });
+    }
+
+    #[test]
+    fn a_directory_gone_before_it_is_listed_adds_no_files() {
+        let fx = Fixture::standard();
+        let repo = Repository::open(fx.path()).unwrap();
+        repo.with(|repo| {
+            let mut walk = FileWalk {
+                repo,
+                executable_bit: true,
+                excludes: ExcludeCheck::new(repo),
+                list: WorktreeFileList::default(),
+                max_scan: 10_000,
+            };
+            walk.walk_dir(None, &"gone".into(), &fx.path().join("gone"))
+                .unwrap();
+            walk.walk_entry(None, "gone2".into(), &fx.path().join("gone2"))
+                .unwrap();
+            assert_eq!(walk.list.files, []);
+            assert_eq!(walk.list.unreadable, []);
+        });
+    }
 }

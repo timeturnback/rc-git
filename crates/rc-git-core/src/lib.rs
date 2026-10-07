@@ -34,6 +34,6 @@ pub use repo::Repository;
 pub use stash::StashEntry;
 pub use tree::{EntryKind, TreeEntry, sort_for_display};
 pub use worktree::{
-    StatusEntry, StatusReport, WorktreeEntry, WorktreeFile, WorktreeFileList, WorktreeListing,
-    WorktreeStatus,
+    StatusEntry, StatusReport, UnreadableEntry, WorktreeEntry, WorktreeFile, WorktreeFileList,
+    WorktreeListing, WorktreeStatus,
 };

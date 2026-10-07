@@ -13,7 +13,8 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
-    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, WorktreeStatus,
+    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, UnreadableEntry,
+    WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -1008,6 +1009,7 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
         records.end_with_path(out, &entry.path);
     }
     print_warnings(&report.warnings)?;
+    print_unreadable(&report.unreadable)?;
     if report.truncated {
         writeln!(
             io::stderr().lock(),
@@ -1029,6 +1031,7 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
         records.end_with_path(out, &file.path);
     }
     print_warnings(&list.warnings)?;
+    print_unreadable(&list.unreadable)?;
     if list.truncated {
         writeln!(
             io::stderr().lock(),
@@ -1082,6 +1085,16 @@ fn print_warnings(warnings: &[String]) -> Result<()> {
     let mut stderr = io::stderr().lock();
     for warning in warnings {
         writeln!(stderr, "warning: {warning}")?;
+    }
+    Ok(())
+}
+
+/// Working-tree entries a walk skipped because they could not be read, one `warning:` line
+/// each on stderr.
+fn print_unreadable(unreadable: &[UnreadableEntry]) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    for entry in unreadable {
+        writeln!(stderr, "warning: skipped '{}': {}", entry.path, entry.error)?;
     }
     Ok(())
 }
