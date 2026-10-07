@@ -114,7 +114,7 @@ fn cat_streams_text_and_signals_binary_and_oversize() {
 
     let binary = rc_git(&["cat", path, "main", "bin.dat"]);
     assert_eq!(binary.status.code(), Some(3));
-    assert!(binary.stdout.is_empty());
+    assert_eq!(binary.stdout.len(), 0);
     assert!(stderr(&binary).contains("is binary"));
 
     let large = rc_git(&["cat", path, "main", "README.md", "2"]);
@@ -171,7 +171,7 @@ fn filelog_lists_commits_that_changed_a_path() {
     assert_eq!(chunked, readme, "chunked scanning changes nothing");
 
     let none = stdout(&rc_git(&["filelog", path, "nope.txt"]));
-    assert!(none.is_empty());
+    assert_eq!(none.len(), 0);
 
     let missing = rc_git(&["filelog", path]);
     assert_eq!(missing.status.code(), Some(1));

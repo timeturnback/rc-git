@@ -676,7 +676,7 @@ mod tests {
     fn rust_keywords_strings_and_comments_are_classified() {
         let data = b"// note\nfn main() {\n    let x = \"hi\";\n}\n";
         let spans = highlight(data, Language::Rust).unwrap();
-        assert!(!spans.is_empty());
+        assert_ne!(spans.len(), 0);
         assert!(classes_at(&spans, data, "// note").contains(&Class::Comment));
         assert!(classes_at(&spans, data, "fn").contains(&Class::Keyword));
         assert!(classes_at(&spans, data, "main").contains(&Class::Function));
@@ -705,7 +705,7 @@ mod tests {
         for (language, data) in samples {
             let spans = highlight(data, language)
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
-            assert!(!spans.is_empty(), "{} produced no spans", language.name());
+            assert_ne!(spans.len(), 0, "{} produced no spans", language.name());
         }
     }
 
@@ -784,7 +784,7 @@ mod tests {
     fn markdown_merged_spans_stay_ordered_and_disjoint() {
         let data = b"# A *bold* title\n\n---\nkey: value\n---\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
         let spans = highlight(data, Language::Markdown).unwrap();
-        assert!(!spans.is_empty());
+        assert_ne!(spans.len(), 0);
         for window in spans.windows(2) {
             assert!(
                 window[0].end <= window[1].start,

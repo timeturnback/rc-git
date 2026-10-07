@@ -3,7 +3,7 @@
 ## Setup
 
 ```sh
-rustup toolchain install stable
+rustup toolchain install   # the version pinned in rust-toolchain.toml
 brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor
 xcode-select --install     # or Xcode 16+; swift-format ships with it
 scripts/build.sh           # Rust lib, header, Swift package
@@ -21,6 +21,10 @@ swift test --package-path mac               # after Swift changes
 scripts/check.sh --fast                     # everything except the Swift half
 scripts/check.sh                            # the whole gate, same as CI
 ```
+
+`rust-toolchain.toml` pins Rust (with clippy and rustfmt) and CI pins cbindgen 0.29.4, so a new
+release cannot change the gate's verdict on its own. Bump either on purpose, in its own commit,
+and fix what the new lints or header formatting report in the same change.
 
 `swift build` and `swift test` link `target/release/librc_git_ffi.a`; rebuild it with
 `cargo build --release -p rc-git-ffi` whenever the Rust side changes.

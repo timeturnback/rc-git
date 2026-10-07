@@ -191,11 +191,7 @@ fn fetch_with_nothing_new_reports_no_updates() {
         &Cancel::new(),
     )
     .expect("fetch");
-    assert!(
-        outcome.updated_refs.is_empty(),
-        "{:?}",
-        outcome.updated_refs
-    );
+    assert_eq!(outcome.updated_refs.len(), 0, "{:?}", outcome.updated_refs);
 }
 
 #[test]
@@ -260,7 +256,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
         &Cancel::new(),
     )
     .expect("authenticated fetch");
-    assert!(!outcome.updated_refs.is_empty());
+    assert_ne!(outcome.updated_refs.len(), 0);
 }
 
 #[test]

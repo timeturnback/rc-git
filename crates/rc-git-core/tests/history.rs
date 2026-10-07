@@ -96,7 +96,7 @@ fn path_history_covers_folders_roots_and_missing_paths() {
     );
 
     let missing = repo.path_history(tip, "nope.txt", 0, 100, 1000).unwrap();
-    assert!(missing.commits.is_empty());
+    assert_eq!(missing.commits.len(), 0);
     assert!(missing.complete);
     assert_eq!(missing.scanned, 6);
 }
@@ -182,7 +182,7 @@ fn search_matches_author_name_and_email() {
         ..CommitFilter::default()
     };
     let page = repo.search_commits(tip, &nobody, 0, 100, 1000).unwrap();
-    assert!(page.commits.is_empty());
+    assert_eq!(page.commits.len(), 0);
     assert!(page.complete);
 
     let empty = CommitFilter::default();
@@ -231,7 +231,7 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
     };
 
     let page = repo.search_commits(tip, &nothing, 0, 100, 2).unwrap();
-    assert!(page.commits.is_empty());
+    assert_eq!(page.commits.len(), 0);
     assert_eq!(page.scanned, 2);
     assert!(
         !page.complete,
@@ -239,7 +239,7 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
     );
 
     let rest = repo.search_commits(tip, &nothing, 2, 100, 1000).unwrap();
-    assert!(rest.commits.is_empty());
+    assert_eq!(rest.commits.len(), 0);
     assert_eq!(rest.scanned, 4);
     assert!(rest.complete);
 }

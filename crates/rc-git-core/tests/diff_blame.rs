@@ -58,7 +58,7 @@ fn tree_diff_reports_additions_between_fixture_commits() {
     assert!(reversed.iter().all(|c| c.kind == ChangeKind::Deleted));
     assert!(reversed.iter().all(|c| c.old.is_some() && c.new.is_none()));
 
-    assert!(repo.diff_trees(Some(new), new).unwrap().is_empty());
+    assert_eq!(repo.diff_trees(Some(new), new).unwrap().len(), 0);
 
     let root = repo.resolve("v0.9").unwrap();
     let from_nothing = repo.diff_trees(None, root).unwrap();
@@ -106,7 +106,7 @@ fn tree_diff_peels_and_rejects_non_trees() {
             repo.resolve("v1.0").unwrap(),
         )
         .unwrap();
-    assert!(!by_tag.is_empty(), "tags peel to their trees");
+    assert_ne!(by_tag.len(), 0, "tags peel to their trees");
 
     let blob = repo.resolve("main:README.md").unwrap();
     let err = repo

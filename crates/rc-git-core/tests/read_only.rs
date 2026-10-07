@@ -39,7 +39,7 @@ fn every_operation_leaves_git_dir_untouched() {
     let repo = Repository::open(fx.path()).unwrap();
     repo.head().unwrap();
     let listing = repo.refs().unwrap();
-    assert!(!listing.refs.is_empty());
+    assert_ne!(listing.refs.len(), 0);
     assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
     let tip = repo.resolve("main").unwrap();
     let root = repo.resolve_tree("v1.0").unwrap();
@@ -81,7 +81,7 @@ fn every_operation_leaves_git_dir_untouched() {
     }
     repo.blame(tip, "README.md").unwrap();
     let listing = repo.worktree_entries(root, "").unwrap();
-    assert!(!listing.entries.is_empty());
+    assert_ne!(listing.entries.len(), 0);
     repo.worktree_entries(root, "src").unwrap();
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
     let status = repo.worktree_status(root, 100_000).unwrap();

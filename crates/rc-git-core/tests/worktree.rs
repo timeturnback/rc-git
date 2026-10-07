@@ -21,7 +21,7 @@ fn a_clean_checkout_is_all_unchanged() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     let listing = repo.worktree_entries(tree, "").unwrap();
-    assert!(listing.missing.is_empty());
+    assert_eq!(listing.missing.len(), 0);
     assert_eq!(
         statuses(&listing),
         [
@@ -120,7 +120,7 @@ fn a_directory_not_in_the_tree_is_untracked() {
         statuses(&inside),
         [("file.txt".to_owned(), WorktreeStatus::Untracked)]
     );
-    assert!(inside.missing.is_empty());
+    assert_eq!(inside.missing.len(), 0);
 }
 
 #[test]

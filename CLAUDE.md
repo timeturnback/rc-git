@@ -28,8 +28,9 @@ scripts/install-app.sh            # build the release bundle into /Applications
 cargo run -p rc-git-cli -- --time ls <repo> [rev] [path]   # CLI and benchmark tool
 ```
 
-Needs `rustup` stable, `brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor`,
-and Xcode 16 or newer. `docs/development.md` has the rest.
+Needs `rustup` (Rust is pinned in `rust-toolchain.toml`),
+`brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor`, and Xcode 16 or newer.
+`docs/development.md` has the rest.
 
 ## Layers
 

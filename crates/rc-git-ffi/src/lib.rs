@@ -4308,7 +4308,7 @@ mod tests {
 
         let null = unsafe { rcgit_commit_details(ptr::null(), &raw const tip, &raw mut error) };
         assert!(null.is_null());
-        assert!(!take_error(&mut error).is_empty());
+        assert_ne!(take_error(&mut error).len(), 0);
         unsafe { rcgit_commit_detail_free(ptr::null_mut()) };
         unsafe { rcgit_repo_free(repo) };
     }

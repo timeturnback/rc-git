@@ -119,7 +119,7 @@ fn refs_are_classified_and_peeled() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     let listing = repo.refs().unwrap();
-    assert!(listing.broken.is_empty());
+    assert_eq!(listing.broken.len(), 0);
     assert_eq!(listing.refs.len(), 5);
 
     let find = |name: &str| listing.refs.iter().find(|r| r.full_name == name).unwrap();
@@ -172,7 +172,7 @@ fn a_broken_ref_is_reported_without_hiding_the_rest() {
     let listing = repo.refs().unwrap();
     assert_eq!(listing.broken.len(), 1);
     assert_eq!(listing.broken[0].full_name, "refs/heads/broken");
-    assert!(!listing.broken[0].error.is_empty());
+    assert_ne!(listing.broken[0].error.len(), 0);
     assert!(
         listing
             .refs
@@ -357,7 +357,7 @@ fn log_is_newest_first_and_pages() {
     let all = repo.log(main, 0, 10).unwrap();
     assert_eq!(titles(&all), [COMMIT_2_TITLE, COMMIT_1_TITLE]);
     assert_eq!(all[0].parents, [all[1].oid]);
-    assert!(all[1].parents.is_empty());
+    assert_eq!(all[1].parents.len(), 0);
     assert_eq!(all[1].author_name, "Test Author");
     assert_eq!(all[1].author_email, "author@example.com");
     assert_eq!(all[1].author_time, 1_704_067_200, "2024-01-01T00:00:00Z");
@@ -369,7 +369,7 @@ fn log_is_newest_first_and_pages() {
     );
     assert_eq!(titles(&repo.log(main, 1, 10).unwrap()), [COMMIT_1_TITLE]);
     assert_eq!(titles(&repo.log(main, 0, 1).unwrap()), [COMMIT_2_TITLE]);
-    assert!(repo.log(main, 5, 10).unwrap().is_empty());
+    assert_eq!(repo.log(main, 5, 10).unwrap().len(), 0);
 
     assert_eq!(repo.commit(all[0].oid).unwrap(), all[0]);
     let tree = repo.resolve_tree("main").unwrap();
@@ -417,7 +417,7 @@ fn commit_details_reports_body_committer_and_tree() {
     assert_eq!(detail.tree, repo.tree_of(tip).unwrap());
 
     let titled_only = repo.resolve("main~1").unwrap();
-    assert!(repo.commit_details(titled_only).unwrap().body.is_empty());
+    assert_eq!(repo.commit_details(titled_only).unwrap().body.len(), 0);
 
     let tree = repo.resolve_tree("main").unwrap();
     assert!(matches!(
