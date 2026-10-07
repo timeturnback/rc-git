@@ -10,10 +10,26 @@ use std::process::{Command, Output, Stdio};
 
 use rc_git_testkit::{COMMIT_1_TITLE, COMMIT_2_TITLE, Fixture, MAIN_RS};
 
+/// The built binary with a scrubbed environment: only `PATH` survives, so a caller's
+/// `RC_GIT_TOKEN`, `RC_GIT_KEY_PASSPHRASE`, proxy variables or `HOME` never reach it.
 #[expect(clippy::disallowed_methods, reason = "tests run the built binary")]
+fn rc_git_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rc-git"));
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command
+}
+
 fn rc_git(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rc-git"))
+    rc_git_with_env(args, &[])
+}
+
+/// [`rc_git`] with extra environment variables, to exercise the env fallbacks on purpose.
+fn rc_git_with_env(args: &[&str], env: &[(&str, &str)]) -> Output {
+    rc_git_command()
         .args(args)
+        .envs(env.iter().copied())
         .output()
         .unwrap()
 }
@@ -326,12 +342,8 @@ fn usage_and_open_errors_have_distinct_exit_codes() {
     assert!(stderr(&not_repo).contains("cannot open git repository at"));
 }
 
-#[expect(clippy::disallowed_methods, reason = "tests run the built binary")]
 fn rc_git_os(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rc-git"))
-        .args(args)
-        .output()
-        .unwrap()
+    rc_git_command().args(args).output().unwrap()
 }
 
 #[test]
@@ -986,6 +998,39 @@ fn network_verbs_report_auth_with_exit_code_5() {
 }
 
 #[test]
+fn key_passphrase_env_never_answers_an_http_challenge() {
+    let origin = Fixture::standard();
+    let (_bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "", "pp");
+    let clone = Fixture::basic_auth_clone(&server, "", "pp");
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git_with_env(&["fetch", path], &[("RC_GIT_KEY_PASSPHRASE", "pp")]);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+}
+
+#[test]
+fn rc_git_token_env_supplies_the_token() {
+    let origin = Fixture::standard();
+    let (_bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
+    let path = clone.path().to_str().unwrap();
+    let env = [("RC_GIT_TOKEN", "sekret")];
+
+    let out = rc_git_with_env(&["fetch", path, "--username", "user"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let out = rc_git_with_env(&["fetch", path], &env);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("a token was given without --username"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn pull_and_push_report_divergence_with_exit_7() {
     let (origin, bare, _server, clone) = served_clone();
     advance_origin(&origin, &bare);
@@ -1023,14 +1068,19 @@ fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
         stderr(&out)
     );
 
-    let out = rc_git(&[
+    let accepted = [
         "fetch",
         path,
         "--ssh-dir",
         ssh_dir,
         "--accept-hostkey",
         &server.host_fingerprint(),
-    ]);
+    ];
+    let out = rc_git(&accepted);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // An HTTPS token in the environment is not an ssh credential and must not fail the fetch.
+    let out = rc_git_with_env(&accepted, &[("RC_GIT_TOKEN", "for-https-only")]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
 

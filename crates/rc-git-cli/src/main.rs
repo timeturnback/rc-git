@@ -56,9 +56,10 @@ usage: rc-git [--time] <command> <repo> [args]
   push  <repo> [remote options]           upload the current branch to its upstream
   sync  <repo> [remote options]           fetch, fast-forward, then push
   Remote options: --username U, --token T (HTTPS; the token may also come from
-  RC_GIT_TOKEN, which keeps it out of process lists), --accept-hostkey SHA256:...
-  (trust this ssh host-key fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh,
-  an encrypted key's passphrase comes from RC_GIT_KEY_PASSPHRASE.
+  RC_GIT_TOKEN, which keeps it out of process lists and is read only with --username
+  or an HTTPS upstream), --accept-hostkey SHA256:... (trust this ssh host-key
+  fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh, an encrypted key's
+  passphrase comes from RC_GIT_KEY_PASSPHRASE, which no other transport reads.
 
   Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
@@ -1246,10 +1247,16 @@ impl RemoteArgs {
     }
 }
 
-/// `--username U` / `--token T` (the token falling back to `RC_GIT_TOKEN`),
-/// `--accept-hostkey F`, and `--ssh-dir D`. With no token, `RC_GIT_KEY_PASSPHRASE`
-/// supplies an ssh key passphrase.
-fn parse_remote_args(label: &'static str, args: &[String]) -> Result<RemoteArgs> {
+/// `--username U` / `--token T`, `--accept-hostkey F`, and `--ssh-dir D`. The environment
+/// fills in only what the upstream's transport reads: `RC_GIT_TOKEN` stands in for
+/// `--token` when `--username` was given or the upstream is HTTPS, and
+/// `RC_GIT_KEY_PASSPHRASE` supplies the key passphrase only when the upstream is ssh, so
+/// the passphrase never answers an HTTP challenge.
+fn parse_remote_args(
+    label: &'static str,
+    repo_path: &std::path::Path,
+    args: &[String],
+) -> Result<RemoteArgs> {
     let args = split_args(
         label,
         args,
@@ -1261,39 +1268,76 @@ fn parse_remote_args(label: &'static str, args: &[String]) -> Result<RemoteArgs>
     let mut token = args.value(&["--token"]).map(str::to_owned);
     let accepted_hostkey = args.value(&["--accept-hostkey"]).map(str::to_owned);
     let ssh_dir = args.value(&["--ssh-dir"]).map(std::path::PathBuf::from);
-    if token.is_none()
-        && let Ok(env_token) = std::env::var("RC_GIT_TOKEN")
-        && !env_token.is_empty()
-    {
-        token = Some(env_token);
-    }
-    let creds = match (username, token) {
-        (Some(username), Some(token)) => {
-            Some(rc_git_guard::actions::Credentials { username, token })
-        }
-        (None, None) => match std::env::var("RC_GIT_KEY_PASSPHRASE") {
-            Ok(passphrase) if !passphrase.is_empty() => Some(rc_git_guard::actions::Credentials {
-                username: String::new(),
-                token: passphrase,
-            }),
-            Ok(_) | Err(_) => None,
-        },
-        (Some(_), None) => {
-            return Err(usage_error(
-                "--username was given without --token (or RC_GIT_TOKEN)".to_owned(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(usage_error(
-                "a token was given without --username".to_owned(),
-            ));
-        }
+    let transport = if token.is_none() {
+        upstream_transport(repo_path)?
+    } else {
+        Transport::Other
     };
+    if token.is_none() && (username.is_some() || transport == Transport::Https) {
+        token = non_empty_env("RC_GIT_TOKEN");
+    }
+    let creds =
+        match (username, token) {
+            (Some(username), Some(token)) => {
+                Some(rc_git_guard::actions::Credentials { username, token })
+            }
+            (None, None) if transport == Transport::Ssh => non_empty_env("RC_GIT_KEY_PASSPHRASE")
+                .map(|passphrase| rc_git_guard::actions::Credentials {
+                    username: String::new(),
+                    token: passphrase,
+                }),
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(usage_error(
+                    "--username was given without --token (or RC_GIT_TOKEN)".to_owned(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(usage_error(
+                    "a token was given without --username".to_owned(),
+                ));
+            }
+        };
     Ok(RemoteArgs {
         creds,
         accepted_hostkey,
         ssh_dir,
     })
+}
+
+/// Which credential the upstream's transport reads: a token over HTTPS, a key
+/// passphrase over ssh, nothing for anything else (the guard refuses those remotes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    Https,
+    Ssh,
+    Other,
+}
+
+/// The transport of the checked-out branch's upstream, read from the repository's own
+/// configuration without any network I/O.
+fn upstream_transport(repo_path: &std::path::Path) -> Result<Transport> {
+    let status = rc_git_guard::actions::upstream_status(repo_path)?;
+    if !status.has_upstream {
+        return Ok(Transport::Other);
+    }
+    let url = status.url.as_str();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return Ok(Transport::Https);
+    }
+    let scp_like = !url.contains("://")
+        && url
+            .split_once(':')
+            .is_some_and(|(host, _)| !host.is_empty() && !host.contains('/'));
+    if url.starts_with("ssh://") || scp_like {
+        return Ok(Transport::Ssh);
+    }
+    Ok(Transport::Other)
+}
+
+/// The variable's value, `None` when it is unset, empty, or not UTF-8.
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 fn write_fetch(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::FetchOutcome) -> Result<()> {
@@ -1333,7 +1377,7 @@ fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -
 }
 
 fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args("fetch", args)?;
+    let remote = parse_remote_args("fetch", repo_path, args)?;
     let outcome = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1345,7 +1389,7 @@ fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -
 }
 
 fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args("pull", args)?;
+    let remote = parse_remote_args("pull", repo_path, args)?;
     let policy = rc_git_guard::Policy::default();
     let fetch = rc_git_guard::actions::fetch_upstream(
         repo_path,
@@ -1387,7 +1431,7 @@ fn checkout_verb(
 }
 
 fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args("push", args)?;
+    let remote = parse_remote_args("push", repo_path, args)?;
     let outcome = rc_git_guard::actions::push_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1399,7 +1443,7 @@ fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
 }
 
 fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args("sync", args)?;
+    let remote = parse_remote_args("sync", repo_path, args)?;
     let outcome = rc_git_guard::actions::sync(
         repo_path,
         &rc_git_guard::Policy::default(),
