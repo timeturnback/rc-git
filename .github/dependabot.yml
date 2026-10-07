@@ -7,8 +7,14 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      rust:
+      gix:
+        patterns: ["gix", "gix-*"]
+      tree-sitter:
+        patterns: ["tree-sitter", "tree-sitter-highlight"]
+      rust-patch:
         patterns: ["*"]
+        exclude-patterns: ["gix", "gix-*", "tree-sitter", "tree-sitter-highlight"]
+        update-types: ["patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
