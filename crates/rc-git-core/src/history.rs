@@ -8,7 +8,7 @@ use gix::revision::walk::Sorting;
 use gix::traverse::commit::simple::CommitTimeOrder;
 
 use crate::error::{Result, git, object};
-use crate::log::{CommitSummary, summarize};
+use crate::log::{CommitSummary, peel_to_commit, summarize};
 use crate::oid::Oid;
 use crate::repo::Repository;
 use crate::tree::lookup_path;
@@ -56,6 +56,8 @@ impl Repository {
     /// 1, so every incomplete page advances the cursor.
     ///
     /// # Errors
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
+    /// annotated tag is followed to its commit.
     /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or the shallow
     /// file is unreadable, [`Error::Object`](crate::Error::Object) when a commit or tree on the
     /// way is unreadable.
@@ -74,8 +76,9 @@ impl Repository {
             .map(|segment| segment.as_bytes().to_vec())
             .collect();
         self.with(|repo| {
+            let tip = peel_to_commit(repo, tip)?.id;
             let walk = repo
-                .rev_walk([*tip.as_gix()])
+                .rev_walk([tip])
                 .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
                 .all()
                 .map_err(git("start commit walk"))?;
@@ -128,6 +131,8 @@ impl Repository {
     /// decode.
     ///
     /// # Errors
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
+    /// annotated tag is followed to its commit.
     /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance,
     /// [`Error::Object`](crate::Error::Object) when a commit on the way is unreadable.
     pub fn search_commits(
@@ -147,8 +152,9 @@ impl Repository {
                 },
                 None => Sorting::ByCommitTime(CommitTimeOrder::NewestFirst),
             };
+            let tip = peel_to_commit(repo, tip)?.id;
             let walk = repo
-                .rev_walk([*tip.as_gix()])
+                .rev_walk([tip])
                 .sorting(sorting)
                 .all()
                 .map_err(git("start commit walk"))?;

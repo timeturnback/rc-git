@@ -4304,9 +4304,9 @@ mod tests {
         assert_eq!(detail_ref.tree, tree);
         unsafe { rcgit_commit_detail_free(detail) };
 
-        let missing = unsafe { rcgit_commit_details(repo, &raw const tree, &raw mut error) };
-        assert!(missing.is_null());
-        assert!(take_error(&mut error).contains("read commit"));
+        let wrong = unsafe { rcgit_commit_details(repo, &raw const tree, &raw mut error) };
+        assert!(wrong.is_null());
+        assert!(take_error(&mut error).contains("is a tree, expected a commit"));
 
         let null = unsafe { rcgit_commit_details(ptr::null(), &raw const tip, &raw mut error) };
         assert!(null.is_null());

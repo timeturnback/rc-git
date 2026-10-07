@@ -6,6 +6,7 @@ use gix::ObjectId;
 use gix::objs::{Find, FindHeader};
 
 use crate::error::{Result, git, object};
+use crate::log::peel_to_commit;
 use crate::oid::Oid;
 use crate::repo::Repository;
 
@@ -30,13 +31,17 @@ impl Repository {
     /// In a shallow clone the walk stops at the boundary, like `git blame`: a boundary commit
     /// is judged like a root and keeps every line still unattributed when the walk reaches it.
     ///
+    /// An annotated tag `tip` is followed to its commit.
+    ///
     /// # Errors
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob.
     /// [`Error::Git`](crate::Error::Git) when the shallow file, diff settings or commit-graph
-    /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is not a commit, the
+    /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing, the
     /// path does not exist in it, or the walk fails; it names the object the walk could not
     /// find when there was one, `tip` otherwise.
     pub fn blame(&self, tip: Oid, path: &str) -> Result<Vec<BlameRange>> {
         self.with(|repo| {
+            let tip = Oid::from_gix(peel_to_commit(repo, tip)?.id);
             let odb = ShallowCut {
                 inner: &repo.objects,
                 boundary: repo.shallow_commits().map_err(git("read shallow file"))?,

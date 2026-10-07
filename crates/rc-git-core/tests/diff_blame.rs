@@ -3,7 +3,7 @@
 
 use rc_git_core::{
     BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Error,
-    Oid, Repository,
+    ObjectKind, Oid, Repository,
 };
 use rc_git_testkit::Fixture;
 
@@ -307,8 +307,27 @@ fn blame_reports_missing_paths_and_bad_tips() {
     let err = repo.blame(tip, "no/such/file").unwrap_err();
     assert!(matches!(err, Error::Object { .. }), "{err}");
 
+    let tag = repo.resolve("v1.0").unwrap();
+    assert_ne!(tag, tip, "v1.0 is an annotated tag");
+    assert_eq!(
+        repo.blame(tag, "README.md").unwrap(),
+        repo.blame(repo.resolve("v1.0^{commit}").unwrap(), "README.md")
+            .unwrap()
+    );
+
     let blob = repo.resolve("main:README.md").unwrap();
-    assert!(repo.blame(blob, "README.md").is_err());
+    let err = repo.blame(blob, "README.md").unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                expected: ObjectKind::Commit,
+                actual: ObjectKind::Blob,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 /// Three commits, each appending one line to `a.txt`: `one`, `two`, `three`.

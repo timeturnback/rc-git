@@ -248,6 +248,29 @@ fn resolve_tree_peels_tags_and_commits() {
 }
 
 #[test]
+fn resolve_tree_rejects_tags_that_end_at_a_blob() {
+    let fx = Fixture::standard();
+    let blob = fx.rev_parse("main:README.md");
+    fx.git(&["tag", "-a", "-m", "blob", "blobtag", &blob]);
+    fx.git(&["tag", "-a", "-m", "nested", "nestedtag", "blobtag"]);
+    let repo = Repository::open(fx.path()).unwrap();
+    for spec in ["blobtag", "nestedtag"] {
+        let err = repo.resolve_tree(spec).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::WrongKind {
+                    expected: ObjectKind::Tree,
+                    actual: ObjectKind::Blob,
+                    ..
+                }
+            ),
+            "{spec}: {err}"
+        );
+    }
+}
+
+#[test]
 fn tree_entries_list_one_level_sorted_for_display() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
@@ -395,7 +418,38 @@ fn log_is_newest_first_and_pages() {
     let tree = repo.resolve_tree("main").unwrap();
     assert!(matches!(
         repo.commit(tree).unwrap_err(),
-        Error::Object { .. }
+        Error::WrongKind {
+            expected: ObjectKind::Commit,
+            actual: ObjectKind::Tree,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn log_follows_an_annotated_tag_tip() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tag = repo.resolve("v1.0").unwrap();
+    let commit = repo.resolve("v1.0^{commit}").unwrap();
+    assert_ne!(tag, commit, "v1.0 is an annotated tag");
+    let expected = repo.log(commit, 0, 10).unwrap();
+    assert!(!expected.is_empty());
+    assert_eq!(repo.log(tag, 0, 10).unwrap(), expected);
+    assert_eq!(repo.commit(tag).unwrap(), expected[0]);
+    assert_eq!(
+        repo.commit_details(tag).unwrap(),
+        repo.commit_details(commit).unwrap()
+    );
+
+    let blob = repo.resolve("main:README.md").unwrap();
+    assert!(matches!(
+        repo.log(blob, 0, 10).unwrap_err(),
+        Error::WrongKind {
+            expected: ObjectKind::Commit,
+            actual: ObjectKind::Blob,
+            ..
+        }
     ));
 }
 
@@ -454,7 +508,11 @@ fn commit_details_reports_body_committer_and_tree() {
     let tree = repo.resolve_tree("main").unwrap();
     assert!(matches!(
         repo.commit_details(tree).unwrap_err(),
-        Error::Object { .. }
+        Error::WrongKind {
+            expected: ObjectKind::Commit,
+            actual: ObjectKind::Tree,
+            ..
+        }
     ));
 }
 

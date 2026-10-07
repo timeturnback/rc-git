@@ -989,6 +989,9 @@ fn worktree_status_reports_an_unreadable_root() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
+    // Removing the root takes `.git` with it; reading the tree first leaves it in the handle's
+    // object cache, so the walk reaches the root listing instead of failing on the tree read.
+    repo.tree_entries(tree).unwrap();
     fx.remove("");
     let err = repo.worktree_status(Some(tree), 10_000).unwrap_err();
     assert!(err.to_string().contains("scan working tree"), "{err}");

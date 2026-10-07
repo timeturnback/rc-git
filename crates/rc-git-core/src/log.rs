@@ -4,9 +4,9 @@ use gix::bstr::ByteSlice;
 use gix::revision::walk::Sorting;
 use gix::traverse::commit::simple::CommitTimeOrder;
 
-use crate::error::{Result, git, object};
+use crate::error::{Error, ObjectKind, Result, git, object};
 use crate::oid::Oid;
-use crate::repo::Repository;
+use crate::repo::{Repository, peel_tags};
 
 /// The parts of a commit a list view shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,15 +49,18 @@ pub struct CommitDetail {
 impl Repository {
     /// Commits reachable from `tip`, newest commit time first, skipping the first `skip` and
     /// returning at most `limit`. The walk restarts from `tip` on every call, so a page deep in
-    /// a long history costs the pages before it; keep `skip` small or cache pages.
+    /// a long history costs the pages before it; keep `skip` small or cache pages. An
+    /// annotated tag `tip` is followed to its commit.
     ///
     /// # Errors
-    /// [`Error::Git`](crate::Error::Git) when the walk cannot start,
-    /// [`Error::Object`](crate::Error::Object) when a commit on the way is unreadable.
+    /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob,
+    /// [`Error::Git`] when the walk cannot start,
+    /// [`Error::Object`] when a commit on the way is unreadable.
     pub fn log(&self, tip: Oid, skip: usize, limit: usize) -> Result<Vec<CommitSummary>> {
         self.with(|repo| {
+            let tip = peel_to_commit(repo, tip)?.id;
             let walk = repo
-                .rev_walk([*tip.as_gix()])
+                .rev_walk([tip])
                 .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
                 .all()
                 .map_err(git("start commit walk"))?;
@@ -72,28 +75,27 @@ impl Repository {
         })
     }
 
-    /// One commit by id.
+    /// One commit by id. An annotated tag is followed to its commit.
     ///
     /// # Errors
-    /// [`Error::Object`](crate::Error::Object) when missing or not a commit.
+    /// [`Error::Object`] when missing, [`Error::WrongKind`] when it is, or tags, a tree or blob.
     pub fn commit(&self, oid: Oid) -> Result<CommitSummary> {
         self.with(|repo| {
-            let commit = repo
-                .find_commit(*oid.as_gix())
-                .map_err(object("read commit", oid))?;
+            let commit = peel_to_commit(repo, oid)?;
             summarize(&commit)
         })
     }
 
-    /// One commit by id with its full message, committer, and root tree.
+    /// One commit by id with its full message, committer, and root tree. An annotated tag is
+    /// followed to its commit.
     ///
     /// # Errors
-    /// [`Error::Object`](crate::Error::Object) when missing, not a commit, or undecodable.
+    /// [`Error::Object`] when missing or undecodable, [`Error::WrongKind`] when it is, or
+    /// tags, a tree or blob.
     pub fn commit_details(&self, oid: Oid) -> Result<CommitDetail> {
         self.with(|repo| {
-            let commit = repo
-                .find_commit(*oid.as_gix())
-                .map_err(object("read commit", oid))?;
+            let commit = peel_to_commit(repo, oid)?;
+            let oid = Oid::from_gix(commit.id);
             let summary = summarize(&commit)?;
             let decoded = commit.decode().map_err(object("decode commit", oid))?;
             let committer = decoded
@@ -118,6 +120,21 @@ impl Repository {
             })
         })
     }
+}
+
+/// Follows annotated tags from `oid` to a commit, reading headers so a tree or blob is
+/// rejected without inflating it.
+pub(crate) fn peel_to_commit(repo: &gix::Repository, oid: Oid) -> Result<gix::Commit<'_>> {
+    let (id, kind) = peel_tags(repo, oid)?;
+    if kind != gix::objs::Kind::Commit {
+        return Err(Error::WrongKind {
+            oid: id,
+            expected: ObjectKind::Commit,
+            actual: ObjectKind::from_gix(kind),
+        });
+    }
+    repo.find_commit(*id.as_gix())
+        .map_err(object("read commit", id))
 }
 
 pub(crate) fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {

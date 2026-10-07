@@ -132,24 +132,30 @@ impl Repository {
         self.tree_of(id)
     }
 
-    /// Peels any object to a tree: a tag to its commit, a commit to its tree, a tree to itself.
+    /// Peels any object to a tree: a tag to its target, a commit to its tree, a tree to itself.
+    /// Reads object headers first, so a blob is rejected without inflating it.
     ///
     /// # Errors
-    /// [`Error::WrongKind`] for a blob, [`Error::Object`] when the object is missing.
+    /// [`Error::WrongKind`] for a blob or a tag that ends at one, [`Error::Object`] when an
+    /// object on the way is missing or unreadable.
     pub fn tree_of(&self, id: Oid) -> Result<Oid> {
         self.with(|repo| {
-            let obj = repo
-                .find_object(*id.as_gix())
-                .map_err(object("read object", id))?;
-            if obj.kind == gix::objs::Kind::Blob {
-                return Err(Error::WrongKind {
+            let (id, kind) = peel_tags(repo, id)?;
+            match kind {
+                gix::objs::Kind::Tree => Ok(id),
+                gix::objs::Kind::Commit => {
+                    let commit = repo
+                        .find_commit(*id.as_gix())
+                        .map_err(object("read commit", id))?;
+                    let tree = commit.tree_id().map_err(object("decode commit", id))?;
+                    Ok(Oid::from_gix(tree.detach()))
+                }
+                actual => Err(Error::WrongKind {
                     oid: id,
                     expected: ObjectKind::Tree,
-                    actual: ObjectKind::Blob,
-                });
+                    actual: ObjectKind::from_gix(actual),
+                }),
             }
-            let tree = obj.peel_to_tree().map_err(object("peel to tree", id))?;
-            Ok(Oid::from_gix(tree.id))
         })
     }
 
@@ -176,6 +182,25 @@ impl std::fmt::Debug for Repository {
             .field("work_dir", &self.work_dir)
             .field("pool_slots", &self.pool.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// Follows annotated tags from `id` to the first object that is not a tag, reading headers so
+/// only tags are decoded. Returns that object and its kind. Tags cannot form cycles: a tag's
+/// id hashes its target's id, so the loop ends.
+pub(crate) fn peel_tags(repo: &gix::Repository, mut id: Oid) -> Result<(Oid, gix::objs::Kind)> {
+    loop {
+        let header = repo
+            .find_header(*id.as_gix())
+            .map_err(object("read object header", id))?;
+        if header.kind() != gix::objs::Kind::Tag {
+            return Ok((id, header.kind()));
+        }
+        let tag = repo
+            .find_tag(*id.as_gix())
+            .map_err(object("read tag", id))?;
+        let target = tag.target_id().map_err(object("decode tag", id))?;
+        id = Oid::from_gix(target.detach());
     }
 }
 
