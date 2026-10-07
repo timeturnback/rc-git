@@ -579,7 +579,7 @@ mod stash {
         assert_eq!(stash_list(&fx), "", "the entry is gone");
         assert_eq!(
             porcelain(&fx),
-            "M alpha.txt".to_owned(),
+            " M alpha.txt".to_owned(),
             "the restored change is an ordinary unstaged edit"
         );
     }

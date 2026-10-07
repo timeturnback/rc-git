@@ -132,7 +132,8 @@ impl Fixture {
         self.run(args, &[]);
     }
 
-    /// Runs `git` in the fixture with a hermetic environment and returns trimmed stdout.
+    /// Runs `git` in the fixture with a hermetic environment and returns stdout with trailing
+    /// whitespace trimmed.
     ///
     /// # Panics
     /// When git cannot be started or exits non-zero.
@@ -184,7 +185,9 @@ impl Fixture {
             String::from_utf8_lossy(&output.stderr),
             String::from_utf8_lossy(&output.stdout)
         );
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
     }
 
     /// A `git` command in the fixture with only the variables listed here: no global or system
