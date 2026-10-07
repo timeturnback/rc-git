@@ -43,7 +43,7 @@ fn open_options() -> gix::open::Options {
 /// Where git looks for the global ignore file when no config names one:
 /// `$XDG_CONFIG_HOME/git/ignore` when that variable is set, else `$HOME/.config/git/ignore`.
 /// Only an absolute path is used, so gix never has to expand `~` or `%(prefix)` in it.
-fn global_excludes_file() -> Option<PathBuf> {
+pub(crate) fn global_excludes_file() -> Option<PathBuf> {
     let non_empty = |value: OsString| (!value.is_empty()).then(|| PathBuf::from(value));
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .and_then(non_empty)
@@ -79,6 +79,57 @@ pub fn require_files_ref_storage(path: &Path, ref_storage: Option<&[u8]>) -> Res
     }
 }
 
+/// Refuses a repository whose working tree is not the directory that was opened.
+///
+/// `opened` is the path handed to the open; `git_dir` and `work_dir` are what gix resolved from
+/// it, and `configured` is the repository's own `core.worktree` value, `None` when unset. The
+/// working tree must be `opened` itself, or its parent when `opened` is the git directory, so a
+/// repository's config cannot aim reads and guard writes at a directory outside it. A submodule
+/// whose `core.worktree` leads back to its own checkout still opens. Call this right after
+/// opening, with the values read under the isolated open.
+///
+/// # Errors
+/// [`Error::Open`] for `opened` when `work_dir` resolves anywhere else, naming `core.worktree`
+/// and its value.
+pub fn require_work_tree_at(
+    opened: &Path,
+    git_dir: &Path,
+    work_dir: Option<&Path>,
+    configured: Option<&[u8]>,
+) -> Result<()> {
+    let Some(work_dir) = work_dir else {
+        return Ok(());
+    };
+    // A path that cannot be resolved compares unequal, so the failure refuses the open.
+    let real = |path: &Path| std::fs::canonicalize(path).ok();
+    let opened_real = real(opened);
+    let expected = if opened_real.is_some() && opened_real == real(git_dir) {
+        opened_real
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    } else {
+        opened_real
+    };
+    let actual = real(work_dir);
+    if expected.is_some() && actual == expected {
+        return Ok(());
+    }
+    let setting = configured.map_or_else(
+        || "the resolved working tree".to_owned(),
+        |value| format!("core.worktree = {}", gix::bstr::BStr::new(value)),
+    );
+    Err(Error::Open {
+        path: opened.to_path_buf(),
+        source: format!(
+            "{setting} puts the working tree at {}, outside the opened repository; \
+             unset core.worktree to open it",
+            actual.as_deref().unwrap_or(work_dir).display()
+        )
+        .into(),
+    })
+}
+
 impl Repository {
     /// Opens the repository at `path`, either a working directory or a `.git` directory.
     ///
@@ -86,12 +137,15 @@ impl Repository {
     /// are ignored and `include` directives are not followed, so opening an untrusted repository
     /// cannot pull in configuration from anywhere else. The one exception is the user's global
     /// ignore file at git's default location, `$XDG_CONFIG_HOME/git/ignore` or else
-    /// `$HOME/.config/git/ignore`, read with git's lowest ignore precedence. See
+    /// `$HOME/.config/git/ignore`, read with git's lowest ignore precedence. The repository's
+    /// own config cannot move the working tree elsewhere either (see [`require_work_tree_at`]);
+    /// only `objects/info/alternates` may lend objects from another repository. See
     /// `docs/safety.md`.
     ///
     /// # Errors
-    /// [`Error::Open`] when `path` is not a git repository, cannot be read, or stores its refs
-    /// in a format other than files (see [`require_files_ref_storage`]).
+    /// [`Error::Open`] when `path` is not a git repository, cannot be read, stores its refs
+    /// in a format other than files (see [`require_files_ref_storage`]), or sets a
+    /// `core.worktree` outside itself (see [`require_work_tree_at`]).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let shared =
@@ -102,16 +156,22 @@ impl Repository {
                 }
             })?;
         let probe = shared.to_thread_local();
+        let config = probe.config_snapshot();
         require_files_ref_storage(
             path,
-            probe
-                .config_snapshot()
+            config
                 .string("extensions.refStorage")
                 .as_deref()
                 .map(Vec::as_slice),
         )?;
         let git_dir = probe.git_dir().to_path_buf();
         let work_dir = probe.workdir().map(Path::to_path_buf);
+        require_work_tree_at(
+            path,
+            &git_dir,
+            work_dir.as_deref(),
+            config.string("core.worktree").as_deref().map(Vec::as_slice),
+        )?;
         let slots = std::thread::available_parallelism()
             .map_or(1, NonZero::get)
             .min(MAX_POOL_SLOTS);

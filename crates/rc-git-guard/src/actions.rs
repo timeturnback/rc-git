@@ -559,6 +559,16 @@ fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Rep
             .map(Vec::as_slice),
     )
     .map_err(git_err(op, name))?;
+    rc_git_core::require_work_tree_at(
+        repo_path,
+        repo.git_dir(),
+        repo.workdir(),
+        repo.config_snapshot()
+            .string("core.worktree")
+            .as_deref()
+            .map(Vec::as_slice),
+    )
+    .map_err(git_err(op, name))?;
     Ok(repo)
 }
 

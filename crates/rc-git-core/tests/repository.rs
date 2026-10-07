@@ -59,6 +59,32 @@ fn open_refuses_a_reftable_repository_by_name() {
     assert!(msg.contains(&fx.path().display().to_string()), "{msg}");
 }
 
+#[test]
+fn open_refuses_a_core_worktree_outside_the_repository() {
+    let fx = Fixture::standard();
+    let outside = Fixture::empty_dir();
+    let outside_path = outside.path().to_str().unwrap();
+    fx.git(&["config", "core.worktree", outside_path]);
+    for opened in [fx.path().to_path_buf(), fx.git_dir()] {
+        let err = Repository::open(&opened).unwrap_err();
+        assert!(matches!(err, Error::Open { .. }), "{err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("core.worktree = {outside_path}")),
+            "{msg}"
+        );
+        assert!(msg.contains(&opened.display().to_string()), "{msg}");
+    }
+
+    fx.git(&["config", "core.worktree", fx.path().to_str().unwrap()]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert!(
+        repo.work_dir().is_some(),
+        "a core.worktree naming itself opens"
+    );
+    Repository::open(fx.git_dir()).unwrap();
+}
+
 fn assert_no_source_location(msg: &str) {
     assert!(!msg.contains(".rs:"), "{msg}");
     assert!(!msg.contains(", at /"), "{msg}");

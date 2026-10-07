@@ -90,8 +90,12 @@ can never ride along in a commit the user did not see.
 ## Isolated open
 
 How every repository is opened: only the repository's own configuration is read — no
-global or system git config, no environment variables, no include directives. A
-repository someone else produced therefore cannot point rc-git at files outside itself.
+global or system git config, no environment variables, no include directives. Nor can
+that config aim rc-git at files outside the repository: a `core.worktree` that resolves
+anywhere but the opened directory is refused at open, and the repository's own
+`core.excludesFile` is never read. The one outside pointer followed is
+`objects/info/alternates`, which lends objects from another repository read-only, as
+`git clone --shared` relies on.
 A side effect: anything the repository's own config does not provide (an identity for
 reflog lines, credentials for a remote) must be supplied by rc-git itself per
 operation. What only the user's own config holds — a preferred pull strategy, a commit

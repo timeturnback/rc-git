@@ -786,14 +786,26 @@ impl<'repo> StatCache<'repo> {
     }
 }
 
+/// The largest ignore file read. git has no cap; this keeps a hostile or runaway file (a
+/// symlink to `/dev/zero` reads as a character device and is refused before this) from
+/// growing memory without bound.
+const MAX_IGNORE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Ignore-rule lookup, built lazily because most listings have no untracked entries. Every
 /// failure lands in `warnings`, so a caller can say that ignore rules may be incomplete.
+///
+/// gix reads every ignore file by following symlinks with no file-type check or size cap, so a
+/// FIFO would block the walk and a device would grow memory without bound. The global sources
+/// (the user's global ignore file and `info/exclude`) are therefore read here, and each
+/// directory's `.gitignore` is checked before gix reads it; a refused source counts as absent.
 struct ExcludeCheck<'repo> {
     repo: &'repo gix::Repository,
     state: ExcludeState<'repo>,
     warnings: Vec<String>,
     /// Whether a failed query is already in `warnings`.
     query_failed: bool,
+    /// Directories whose `.gitignore` was checked, and whether gix may read it.
+    readable_dirs: HashMap<BString, bool>,
 }
 
 enum ExcludeState<'repo> {
@@ -809,6 +821,7 @@ impl<'repo> ExcludeCheck<'repo> {
             state: ExcludeState::Unbuilt,
             warnings: Vec::new(),
             query_failed: false,
+            readable_dirs: HashMap::new(),
         }
     }
 
@@ -822,6 +835,11 @@ impl<'repo> ExcludeCheck<'repo> {
                 Some(attributes) => ExcludeState::Ready(Box::new(attributes)),
                 None => ExcludeState::Unavailable,
             };
+        }
+        if let ExcludeState::Ready(_) = self.state
+            && !self.ignore_files_readable(rela_path)
+        {
+            return false;
         }
         let attributes = match &mut self.state {
             ExcludeState::Ready(attributes) => attributes,
@@ -859,10 +877,147 @@ impl<'repo> ExcludeCheck<'repo> {
                 &empty
             }
         };
-        repo.excludes(index, None, Source::WorktreeThenIdMappingIfNotSkipped)
-            .map_err(|error| self.warnings.push(format!("build ignore rules: {error}")))
-            .ok()
+        let case = match repo.filesystem_options() {
+            Ok(options) if options.ignore_case => gix::glob::pattern::Case::Fold,
+            Ok(_) => gix::glob::pattern::Case::Sensitive,
+            Err(error) => {
+                self.warnings.push(format!("build ignore rules: {error}"));
+                return None;
+            }
+        };
+        let parse = gix::ignore::search::Ignore {
+            support_precious: repo
+                .config_snapshot()
+                .boolean("gitoxide.parsePrecious")
+                .unwrap_or(false),
+        };
+        let mut globals = gix::ignore::Search::default();
+        let info_exclude = repo.common_dir().join("info").join("exclude");
+        for source in crate::repo::global_excludes_file()
+            .into_iter()
+            .chain([info_exclude])
+        {
+            if let Some(bytes) = self.read_global_source(&source) {
+                globals.add_patterns_buffer(&bytes, source, None, parse);
+            }
+        }
+        let ignore = gix::worktree::stack::state::Ignore::new(
+            gix::ignore::Search::default(),
+            globals,
+            None,
+            Source::WorktreeThenIdMappingIfNotSkipped,
+            parse,
+        );
+        let state = gix::worktree::stack::State::IgnoreStack(ignore);
+        let id_mappings = state.id_mappings_from_index(index, index.path_backing(), case);
+        let root = repo.workdir().unwrap_or(repo.git_dir());
+        let stack = gix::worktree::Stack::new(root, state, case, Vec::new(), id_mappings);
+        Some(gix::AttributeStack::new(stack, repo))
     }
+
+    /// The bytes of a global ignore file, or `None` when it is absent or refused. A refusal or
+    /// a failed read is recorded in `warnings`.
+    fn read_global_source(&mut self, path: &Path) -> Option<Vec<u8>> {
+        match read_ignore_file(path) {
+            Ok(bytes) => bytes,
+            Err(reason) => {
+                self.warnings
+                    .push(format!("skip ignore file '{}': {reason}", path.display()));
+                None
+            }
+        }
+    }
+
+    /// Whether gix may read the `.gitignore` of every directory above `rela_path`, checking
+    /// each directory once. A refused file makes every path below it "not ignored".
+    fn ignore_files_readable(&mut self, rela_path: &BString) -> bool {
+        let Some(work_dir) = self.repo.workdir() else {
+            return true;
+        };
+        let mut dir = BString::from("");
+        let mut components = rela_path.split_str("/").peekable();
+        while let Some(component) = components.next() {
+            if !self.dir_ignore_file_readable(work_dir, &dir) {
+                return false;
+            }
+            if components.peek().is_none() {
+                break;
+            }
+            if !dir.is_empty() {
+                dir.push(b'/');
+            }
+            dir.extend_from_slice(component);
+        }
+        true
+    }
+
+    /// Whether gix may read `dir`'s `.gitignore`, checked once per directory; a refusal is
+    /// recorded in `warnings`.
+    fn dir_ignore_file_readable(&mut self, work_dir: &Path, dir: &BString) -> bool {
+        if let Some(readable) = self.readable_dirs.get(dir) {
+            return *readable;
+        }
+        let file = work_dir
+            .join(gix::path::from_bstr(dir.as_bstr()))
+            .join(".gitignore");
+        let readable = match check_ignore_file(&file) {
+            Ok(()) => true,
+            Err(reason) => {
+                self.warnings
+                    .push(format!("skip ignore file '{}': {reason}", file.display()));
+                false
+            }
+        };
+        self.readable_dirs.insert(dir.clone(), readable);
+        readable
+    }
+}
+
+/// Whether the ignore file at `path` may be read: absent, or a regular file (through any
+/// symlinks) of at most [`MAX_IGNORE_FILE_BYTES`]. `Err` names why it is refused.
+fn check_ignore_file(path: &Path) -> std::result::Result<(), String> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if is_absent(&error) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !meta.is_file() {
+        return Err("not a regular file".to_owned());
+    }
+    if meta.len() > MAX_IGNORE_FILE_BYTES {
+        return Err(format!("larger than {MAX_IGNORE_FILE_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+/// The bytes of the ignore file at `path`, `None` when it is absent, or `Err` naming why it is
+/// refused or unreadable. The read stops past the cap, so a file that grew after the check
+/// cannot grow memory either.
+fn read_ignore_file(path: &Path) -> std::result::Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    check_ignore_file(path)?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if is_absent(&error) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_IGNORE_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IGNORE_FILE_BYTES {
+        return Err(format!("larger than {MAX_IGNORE_FILE_BYTES} bytes"));
+    }
+    Ok(Some(bytes))
+}
+
+/// Whether an open or stat failed only because the file, or a directory on its path, is not
+/// there, which git treats as no ignore file.
+fn is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 /// The on-disk index, empty when there is none, or a warning naming the index and why it

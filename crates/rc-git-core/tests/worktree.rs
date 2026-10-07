@@ -1467,3 +1467,99 @@ fn the_global_ignore_file_ranks_below_the_repository_rules() {
     // No home at all: only the repository's own rules apply.
     run("debug.log,keep.log", &[]);
 }
+
+/// `worktree_status` against `HEAD`, run on another thread so a blocking ignore-file read fails
+/// the test after five seconds instead of hanging it.
+fn status_within_five_seconds(path: &std::path::Path) -> Result<rc_git_core::StatusReport, String> {
+    let path = path.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let report = Repository::open(&path).and_then(|repo| {
+            let tree = repo.resolve_tree("HEAD")?;
+            repo.worktree_status(Some(tree), 10_000)
+        });
+        sender.send(report)
+    });
+    match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(report) => report.map_err(|error| error.to_string()),
+        Err(error) => Err(format!(
+            "worktree_status did not return within 5 s: {error}"
+        )),
+    }
+}
+
+#[test]
+fn a_core_excludes_file_outside_the_repository_is_not_applied() {
+    let fx = Fixture::standard();
+    let outside = Fixture::empty_dir();
+    outside.write("patterns", b"secret*.txt\n");
+    let patterns = outside.path().join("patterns");
+    fx.git(&["config", "core.excludesFile", patterns.to_str().unwrap()]);
+    fx.write("secret1.txt", b"s\n");
+
+    let report = status_within_five_seconds(fx.path()).unwrap();
+    assert_eq!(
+        status_paths(&report),
+        [("secret1.txt".to_owned(), WorktreeStatus::Untracked)]
+    );
+}
+
+#[test]
+fn ignore_files_that_are_not_regular_files_are_skipped_without_blocking() {
+    let fx = Fixture::standard();
+    let outside = Fixture::empty_dir();
+    outside.mkfifo("fifo");
+    let fifo = outside.path().join("fifo");
+    fx.git(&["config", "core.excludesFile", fifo.to_str().unwrap()]);
+    fx.remove(".git/info/exclude");
+    fx.mkfifo(".git/info/exclude");
+    fx.write("piped/kept.txt", b"k\n");
+    fx.mkfifo("piped/.gitignore");
+    fx.write("zero/kept.txt", b"k\n");
+    fx.symlink("/dev/zero", "zero/.gitignore");
+
+    let report = status_within_five_seconds(fx.path()).unwrap();
+    let untracked: Vec<String> = status_paths(&report)
+        .into_iter()
+        .filter(|(_, status)| *status == WorktreeStatus::Untracked)
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        untracked.contains(&"piped/kept.txt".to_owned()),
+        "{untracked:?}"
+    );
+    assert!(
+        untracked.contains(&"zero/kept.txt".to_owned()),
+        "{untracked:?}"
+    );
+    for skipped in [".git/info/exclude", "piped/.gitignore", "zero/.gitignore"] {
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains(skipped) && warning.contains("not a regular file")),
+            "{skipped}: {:?}",
+            report.warnings
+        );
+    }
+}
+
+#[test]
+fn a_core_excludes_file_under_tilde_keeps_the_gitignore_rules() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"build/\n");
+    fx.git(&["add", ".gitignore"]);
+    fx.git(&["commit", "-q", "-m", "ignore build"]);
+    fx.write("build/out.o", b"o\n");
+    fx.git(&["config", "core.excludesFile", "~/no-such-file"]);
+
+    let report = status_within_five_seconds(fx.path()).unwrap();
+    assert!(
+        status_paths(&report)
+            .iter()
+            .all(|(path, status)| !path.starts_with("build") || *status == WorktreeStatus::Ignored),
+        "{:?}",
+        status_paths(&report)
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}

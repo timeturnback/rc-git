@@ -43,12 +43,27 @@ Four layers enforce it, and each catches what the others miss.
 Opening a repository someone else produced must be harmless.
 
 - `Options::isolated()`: only `.git/config` is read. No `~/.gitconfig`, no system config, no
-  environment variables, and `include`/`includeIf` directives are ignored, so a repository
-  cannot point rc-git at files outside itself. One exception: the user's global ignore file
-  at git's default location, `$XDG_CONFIG_HOME/git/ignore` or else `$HOME/.config/git/ignore`,
-  is passed in as an API override of `core.excludesFile`. It ranks below the repository's
-  `.gitignore` files and `.git/info/exclude`, as in git, and outranks the repository's own
-  `core.excludesFile`. A `core.excludesFile` set in `~/.gitconfig` is not read.
+  environment variables, and `include`/`includeIf` directives are ignored. One exception:
+  the user's global ignore file at git's default location, `$XDG_CONFIG_HOME/git/ignore` or
+  else `$HOME/.config/git/ignore`, is passed in as an API override of `core.excludesFile`.
+  It ranks below the repository's `.gitignore` files and `.git/info/exclude`, as in git, and
+  outranks the repository's own `core.excludesFile`. A `core.excludesFile` set in
+  `~/.gitconfig` is not read.
+- What `.git/config` itself can name outside the repository:
+  - `core.worktree`: refused. Core and guard both open through `require_work_tree_at`, which
+    fails unless the working tree resolves to the opened directory (or the parent of an
+    opened `.git` directory), naming the key and its value. A submodule's `core.worktree`
+    leads back to its own checkout and opens. Every guard write derives its target from the
+    working tree, so a refusal at open is what keeps discard, checkout, pull and commit
+    inside the repository.
+  - `core.excludesFile`: never read; the ignore stack is built from the global file above and
+    `.git/info/exclude` only.
+  - `objects/info/alternates`: followed. Objects may be read from another repository on disk
+    (`git clone --shared` and `--reference` depend on it); nothing is written there.
+- Ignore files are read only when they are regular files (through any symlink) of at most
+  4 MiB: the global file and `info/exclude` by rc-git itself, each directory's `.gitignore`
+  checked before gix reads it. A FIFO, device or oversized file is skipped with a warning and
+  its rules do not apply, so it can neither block a scan nor grow memory.
 - File names are bytes, not strings. Non-UTF-8 names display with replacement characters; the
   UI navigates by object id, so a hostile name cannot redirect a lookup.
 - Blob reads are capped. The header is checked before decoding; the default cap is 8 MiB, the

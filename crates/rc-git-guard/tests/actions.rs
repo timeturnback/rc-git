@@ -39,6 +39,47 @@ fn a_reftable_repository_is_refused_before_any_write() {
 }
 
 #[test]
+fn discard_and_checkout_refuse_a_core_worktree_outside_the_repository() {
+    let fx = Fixture::standard();
+    let outside = Fixture::empty_dir();
+    let victim = outside.path().join("victim.txt");
+    outside.write("victim.txt", b"keep\n");
+    let outside_path = outside.path().to_str().unwrap();
+    fx.git(&["config", "core.worktree", outside_path]);
+    let head = fx.rev_parse("HEAD");
+    let policy = Policy::default();
+
+    let err =
+        rc_git_guard::actions::discard_files(fx.path(), &policy, &["victim.txt".to_owned()], None)
+            .unwrap_err();
+    assert!(
+        matches!(err, ActionError::Git { op: "discard", .. }),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains(&format!("core.worktree = {outside_path}")),
+        "{err}"
+    );
+
+    let err = rc_git_guard::actions::checkout_branch(fx.path(), &policy, "feature").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(err.to_string().contains("core.worktree"), "{err}");
+
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"keep\n",
+        "the outside file is untouched"
+    );
+    let names: Vec<_> = std::fs::read_dir(outside.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["victim.txt"], "nothing was checked out outside");
+    assert_eq!(fx.rev_parse("HEAD"), head, "HEAD did not move");
+}
+
+#[test]
 fn branches_and_tags_are_created_at_the_named_revision_and_never_overwritten() {
     let fx = Fixture::standard();
     let policy = Policy::default();
