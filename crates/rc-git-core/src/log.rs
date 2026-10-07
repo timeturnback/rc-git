@@ -54,8 +54,8 @@ impl Repository {
     ///
     /// # Errors
     /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob,
-    /// [`Error::Git`] when the walk cannot start,
-    /// [`Error::Object`] when a commit on the way is unreadable.
+    /// [`Error::Git`] when the walk cannot start or advance (a commit it needs is missing),
+    /// [`Error::Object`] when a walked commit cannot be decoded.
     pub fn log(&self, tip: Oid, skip: usize, limit: usize) -> Result<Vec<CommitSummary>> {
         self.with(|repo| {
             let tip = peel_to_commit(repo, tip)?.id;

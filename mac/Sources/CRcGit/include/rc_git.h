@@ -931,8 +931,10 @@ struct RcGitBlobDiff *rcgit_diff_blobs(const struct RcGitRepo *repo,
 void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 
 // Attributes every line of the file at `path` in commit `tip` to the commit that introduced
-// it. This walks history, so its cost grows with the commits that touched the file; call it
-// for the file on screen, never in bulk. Release with `rcgit_blame_list_free`.
+// it. This walks history, so its cost grows with the history between `tip` and the commit
+// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
+// from the first commit; call it for the file on screen, never in bulk. Release with
+// `rcgit_blame_list_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a

@@ -26,8 +26,10 @@ impl Repository {
     /// Attributes every line of the file at `path` in the commit `tip` to the commit that
     /// introduced it, as consecutive ranges ordered by line number.
     ///
-    /// This is the one read that walks history: its cost grows with the number of commits
-    /// that touched the file, so call it on demand for the file on screen, never in bulk.
+    /// This is the one read that walks history: its cost grows with the history between `tip`
+    /// and the commit that introduced the oldest surviving line — up to the whole ancestry for
+    /// a file with a line from the first commit — so call it on demand for the file on screen,
+    /// never in bulk.
     ///
     /// In a shallow clone the walk stops at the boundary, like `git blame`: a boundary commit
     /// is judged like a root and keeps every line still unattributed when the walk reaches it.

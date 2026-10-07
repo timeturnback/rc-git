@@ -495,6 +495,28 @@ fn log_follows_an_annotated_tag_tip() {
 }
 
 #[test]
+fn log_reports_a_missing_commit_as_a_walk_error() {
+    let fx = Fixture::standard();
+    let first = fx.rev_parse("main~1");
+    let loose = format!(".git/objects/{}/{}", &first[..2], &first[2..]);
+    assert!(fx.path().join(&loose).exists(), "fixture commits are loose");
+    fx.remove(&loose);
+    let repo = Repository::open(fx.path()).unwrap();
+    let main = repo.resolve("main").unwrap();
+    let err = repo.log(main, 0, 10).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Git {
+                op: "walk commits",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn log_reads_through_a_commit_graph() {
     let fx = Fixture::standard();
     fx.git(&["commit-graph", "write", "--reachable"]);
