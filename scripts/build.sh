@@ -26,7 +26,8 @@ release | debug) ;;
 esac
 cd "$ROOT"
 
-cargo build --release -p rc-git-ffi
+# Package.swift links ../target/release, so pin cargo there over any CARGO_TARGET_DIR or config.
+CARGO_TARGET_DIR="$ROOT/target" cargo build --release -p rc-git-ffi
 scripts/gen-header.sh
 swift build --package-path mac -c "$CONFIG"
 echo "built $(swift build --package-path mac -c "$CONFIG" --show-bin-path)/RcGitApp"
