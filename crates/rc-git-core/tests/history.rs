@@ -43,20 +43,9 @@ fn build_merge_fixture() -> Fixture {
     fx.commit("hack change", "2024-01-05T00:00:00+0000");
 
     fx.git(&["checkout", "-q", "main"]);
-    fx.git_with_env(&["merge", "-q", "--no-ff", "--no-commit", "hack"], &[]);
+    fx.git(&["merge", "-q", "--no-ff", "--no-commit", "hack"]);
     fx.write("file.txt", b"evil\n");
-    fx.git(&["add", "-A"]);
-    fx.git_with_env(
-        &[
-            "commit",
-            "-q",
-            "-m",
-            "evil merge",
-            "--date",
-            "2024-01-06T00:00:00+0000",
-        ],
-        &[("GIT_COMMITTER_DATE", "2024-01-06T00:00:00+0000")],
-    );
+    fx.commit("evil merge", "2024-01-06T00:00:00+0000");
     fx
 }
 
