@@ -50,8 +50,8 @@ if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI
 fi
 step "swift line length"
 # swift-format's lineLength skips unbreakable string literals; C.UTF-8 counts characters, not bytes.
-if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' mac/Sources mac/Tests mac/Package.swift \
-  scripts; then
+if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
+  mac/Sources mac/Tests mac/Package.swift scripts; then
   echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
   exit 1
 fi
