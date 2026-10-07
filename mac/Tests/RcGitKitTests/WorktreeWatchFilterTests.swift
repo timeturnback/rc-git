@@ -38,4 +38,18 @@ import Testing
                 "/repo/file", workDir: workDir + "/", gitDir: gitDir),
             "a trailing slash on the configured root is normalized")
     }
+
+    @Test func aSiblingSharingTheWorkDirPrefixIsDropped() {
+        #expect(!WorktreeWatchFilter.isRelevant("/repo2/x", workDir: workDir, gitDir: gitDir))
+    }
+
+    @Test func realpathEventsMatchACanonicalRoot() {
+        let root = "/private/tmp/r"
+        #expect(
+            WorktreeWatchFilter.isRelevant(
+                "/private/tmp/r/a.txt", workDir: root, gitDir: root + "/.git"))
+        #expect(
+            !WorktreeWatchFilter.isRelevant(
+                "/private/tmp/r/.git/index", workDir: root, gitDir: root + "/.git"))
+    }
 }

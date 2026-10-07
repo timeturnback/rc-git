@@ -9,7 +9,7 @@ public enum WorktreeWatchFilter {
     /// Whether an event at `path` can change the outcome of `worktreeStatus`.
     public static func isRelevant(_ path: String, workDir: String, gitDir: String) -> Bool {
         let root = normalized(workDir)
-        guard path.hasPrefix(root) else { return false }
+        guard path == root || path.hasPrefix(root + "/") else { return false }
         let git = normalized(gitDir)
         if path == git || path.hasPrefix(git + "/") { return false }
         return true
@@ -24,6 +24,10 @@ public enum WorktreeWatchFilter {
 /// may be stale. Events are coalesced by FSEvents' latency window and filtered through
 /// `WorktreeWatchFilter`, so one `git checkout` or editor save produces one callback.
 ///
+/// FSEvents reports canonical realpaths, so both directories are resolved with `realpath(3)`
+/// once at init; resolving only the working directory would let every `.git` write past the
+/// exclusion.
+///
 /// `onChange` fires on a private queue; hop to the main actor before touching models.
 public final class WorktreeWatcher: @unchecked Sendable {
     private let workDir: String
@@ -37,19 +41,29 @@ public final class WorktreeWatcher: @unchecked Sendable {
         workDir: String, gitDir: String, latency: TimeInterval = 0.5,
         onChange: @escaping @Sendable () -> Void
     ) {
-        self.workDir = workDir
-        self.gitDir = gitDir
+        self.workDir = Self.canonical(workDir)
+        self.gitDir = Self.canonical(gitDir)
         self.latency = latency
         self.onChange = onChange
+    }
+
+    /// The realpath of `path`, or `path` itself when it cannot be resolved (it does not exist).
+    static func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     deinit {
         stop()
     }
 
-    /// Starts delivering events. Safe to call once; later calls do nothing.
-    public func start() {
-        queue.sync {
+    /// Starts delivering events. Later calls do nothing while a stream is running; after a
+    /// failure, `start()` may be called again.
+    ///
+    /// - Throws: `WatcherStartError` naming the FSEvents call that failed and the watched path.
+    public func start() throws {
+        try queue.sync {
             guard stream == nil else { return }
             var context = FSEventStreamContext(
                 version: 0,
@@ -64,9 +78,13 @@ public final class WorktreeWatcher: @unchecked Sendable {
                     kCFAllocatorDefault, worktreeEventCallback, &context,
                     [workDir] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                     latency, flags)
-            else { return }
+            else { throw WatcherStartError(call: "FSEventStreamCreate", path: workDir) }
             FSEventStreamSetDispatchQueue(created, queue)
-            FSEventStreamStart(created)
+            guard FSEventStreamStart(created) else {
+                FSEventStreamInvalidate(created)
+                FSEventStreamRelease(created)
+                throw WatcherStartError(call: "FSEventStreamStart", path: workDir)
+            }
             stream = created
         }
     }

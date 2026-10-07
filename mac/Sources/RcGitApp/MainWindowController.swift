@@ -129,8 +129,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 await self?.syncModel?.refreshStatus()
             }
         }
-        watcher.start()
         refWatcher = watcher
+        startWatching(watcher.start)
 
         let changes = ChangesModel(
             repository: repository, showsHiddenFiles: model.showsHiddenFiles)
@@ -152,10 +152,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self?.changeListIsStale()
                 }
             }
-            treeWatcher.start()
             worktreeWatcher = treeWatcher
+            startWatching(treeWatcher.start)
         }
         Task { await model.attach(repository) }
+    }
+
+    private func startWatching(_ start: () throws -> Void) {
+        do {
+            try start()
+        } catch {
+            presentError(
+                String(describing: error), title: "rc-git could not watch the repository")
+        }
     }
 
     /// The change list no longer matches disk or the hidden-files setting: rescan now when

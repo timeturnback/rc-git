@@ -11,7 +11,7 @@ public enum RefWatchFilter {
     /// Whether an event at `path` can change the outcome of `refs()` or `head()`.
     public static func isRelevant(_ path: String, gitDir: String) -> Bool {
         let root = gitDir.hasSuffix("/") ? String(gitDir.dropLast()) : gitDir
-        guard path.hasPrefix(root) else { return false }
+        guard path == root || path.hasPrefix(root + "/") else { return false }
         var relative = String(path.dropFirst(root.count))
         if relative.hasPrefix("/") { relative.removeFirst() }
         while relative.hasSuffix("/") { relative.removeLast() }
@@ -23,9 +23,25 @@ public enum RefWatchFilter {
     }
 }
 
+/// A watcher's FSEvents stream could not be created or started, so no change will be reported.
+public struct WatcherStartError: Error, CustomStringConvertible {
+    /// The FSEvents call that failed.
+    public let call: String
+    /// The directory the watcher was asked to observe.
+    public let path: String
+
+    public var description: String {
+        "\(call) failed for \(path): changes on disk will not refresh this window"
+    }
+}
+
 /// Watches a repository's `.git` directory with FSEvents and reports when its refs may have
 /// changed. Events are coalesced by FSEvents' own latency window and filtered through
 /// `RefWatchFilter`, so one `git commit` or `git fetch` produces one callback, not a storm.
+///
+/// FSEvents reports canonical realpaths (`/private/tmp/...`, symlinks resolved), so the watched
+/// directory is resolved with `realpath(3)` once at init and that spelling is both watched and
+/// filtered against.
 ///
 /// `onChange` fires on a private queue; hop to the main actor before touching models.
 public final class RefWatcher: @unchecked Sendable {
@@ -38,18 +54,28 @@ public final class RefWatcher: @unchecked Sendable {
     public init(
         gitDir: String, latency: TimeInterval = 0.2, onChange: @escaping @Sendable () -> Void
     ) {
-        self.gitDir = gitDir
+        self.gitDir = Self.canonical(gitDir)
         self.latency = latency
         self.onChange = onChange
+    }
+
+    /// The realpath of `path`, or `path` itself when it cannot be resolved (it does not exist).
+    static func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     deinit {
         stop()
     }
 
-    /// Starts delivering events. Safe to call once; later calls do nothing.
-    public func start() {
-        queue.sync {
+    /// Starts delivering events. Later calls do nothing while a stream is running; after a
+    /// failure, `start()` may be called again.
+    ///
+    /// - Throws: `WatcherStartError` naming the FSEvents call that failed and the watched path.
+    public func start() throws {
+        try queue.sync {
             guard stream == nil else { return }
             var context = FSEventStreamContext(
                 version: 0,
@@ -64,9 +90,13 @@ public final class RefWatcher: @unchecked Sendable {
                     kCFAllocatorDefault, eventCallback, &context,
                     [gitDir] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                     latency, flags)
-            else { return }
+            else { throw WatcherStartError(call: "FSEventStreamCreate", path: gitDir) }
             FSEventStreamSetDispatchQueue(created, queue)
-            FSEventStreamStart(created)
+            guard FSEventStreamStart(created) else {
+                FSEventStreamInvalidate(created)
+                FSEventStreamRelease(created)
+                throw WatcherStartError(call: "FSEventStreamStart", path: gitDir)
+            }
             stream = created
         }
     }

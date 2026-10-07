@@ -30,4 +30,16 @@ import Testing
     @Test func trailingSlashOnGitDirIsTolerated() {
         #expect(RefWatchFilter.isRelevant("/tmp/repo/.git/HEAD", gitDir: gitDir + "/"))
     }
+
+    @Test func aSiblingSharingTheGitDirPrefixIsDropped() {
+        #expect(!RefWatchFilter.isRelevant("/tmp/repo/.gitrefs/heads/x", gitDir: gitDir))
+        #expect(!RefWatchFilter.isRelevant("/tmp/repo/.git2/HEAD", gitDir: gitDir))
+    }
+
+    @Test func realpathEventsMatchACanonicalRoot() {
+        let canonical = "/private/tmp/repo/.git"
+        #expect(
+            RefWatchFilter.isRelevant("/private/tmp/repo/.git/refs/heads/main", gitDir: canonical))
+        #expect(!RefWatchFilter.isRelevant("/private/tmp/repo/.git/index", gitDir: canonical))
+    }
 }

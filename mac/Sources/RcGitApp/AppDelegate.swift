@@ -163,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Opens a repository in an empty tab, or a new one when every tab is in use. A
     /// repository that is already open gets its existing tab selected instead.
     func open(path: String) {
-        let path = (path as NSString).standardizingPath
+        let path = canonicalPath(path)
         if let existing = controllers.first(where: { $0.repositoryPath == path }) {
             existing.showWindow(nil)
             return
@@ -182,6 +182,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             alert.alertStyle = .warning
             alert.runModal()
         }
+    }
+
+    /// The realpath of `path`, so tabs, recents and the sync sheet's `cd` hold neither a
+    /// relative path nor a `/private`-stripped one; `path` itself when it does not resolve.
+    private func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     @discardableResult
