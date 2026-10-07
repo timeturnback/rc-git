@@ -16,9 +16,12 @@ through.
 ## Challenge
 
 What the user must do before a risky action runs: at minimum press a confirm button,
-and for destructive actions type an exact phrase (usually the name of the thing being
-destroyed). Verifying a challenge is the only way to obtain the proof the write path
-demands, so an unconfirmed destructive action cannot be expressed.
+and for most destructive actions also type an exact phrase (usually the name of the thing
+being destroyed). Some confirm-only actions are destructive too: discarding working changes
+asks for the button alone, though nothing keeps the bytes it removes. In the CLI the button is
+an explicit `--yes`, and a confirm-only action refuses to run without it. Verifying a
+challenge is the only way to obtain the proof the write path demands, so an unconfirmed
+action cannot be expressed.
 
 ## Backup ref
 

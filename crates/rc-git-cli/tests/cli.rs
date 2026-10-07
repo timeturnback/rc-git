@@ -837,6 +837,7 @@ fn the_stash_verbs_round_trip() {
     let out = rc_git(&[
         "stash-push",
         path,
+        "--yes",
         "-m",
         "cli stash",
         "--author",
@@ -864,6 +865,55 @@ fn the_stash_verbs_round_trip() {
     let out = rc_git(&["stash-drop", path, "0", "--confirm", "drop"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "refs/rc-git/backup/stash/0\n");
+    assert_eq!(fx.git_output(&["stash", "list"]), "");
+}
+
+#[test]
+fn stash_push_and_pop_need_an_explicit_yes() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"keep this edit\n");
+    fx.write("untracked.txt", b"untracked\n");
+    let read = |name: &str| std::fs::read(fx.path().join(name)).unwrap();
+
+    for args in [
+        ["stash-push", path, "alpha.txt", "untracked.txt"].as_slice(),
+        ["stash-push", path, "--confirm", "anything", "alpha.txt"].as_slice(),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains("--yes"), "{args:?}: {}", stderr(&out));
+        assert_eq!(read("alpha.txt"), b"keep this edit\n", "{args:?}");
+        assert_eq!(read("untracked.txt"), b"untracked\n", "{args:?}");
+        assert_eq!(fx.git_output(&["stash", "list"]), "", "{args:?}");
+    }
+
+    let out = rc_git(&[
+        "stash-push",
+        path,
+        "--yes",
+        "--author",
+        "CLI User <cli@example.com>",
+        "alpha.txt",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stashed = fx.rev_parse("refs/stash");
+    let before = std::fs::read(fx.path().join("alpha.txt")).unwrap();
+
+    for args in [
+        ["stash-pop", path].as_slice(),
+        ["stash-pop", path, "0"].as_slice(),
+        ["stash-apply", path, "--yes"].as_slice(),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert_eq!(read("alpha.txt"), before, "{args:?}");
+        assert_eq!(fx.rev_parse("refs/stash"), stashed, "{args:?}");
+    }
+
+    let out = rc_git(&["stash-pop", path, "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(read("alpha.txt"), b"keep this edit\n");
     assert_eq!(fx.git_output(&["stash", "list"]), "");
 }
 

@@ -42,10 +42,10 @@ usage: rc-git [--time] <command> <repo> [args]
               [--expect-head <oid>] <path>...
                                           commit files to the branch; with --expect-head,
                                           refuse if HEAD is no longer that full commit id
-  stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] [--confirm <phrase>] <path>...
+  stash-push  <repo> --yes [-m <msg>] [--author \"Name <email>\"] [--confirm <phrase>] <path>...
                                           stash files, restore them to HEAD
   stash-apply <repo> [n] [--confirm <phrase>]  write stash@{n} back to the working tree
-  stash-pop   <repo> [n] [--confirm <phrase>]  apply stash@{n}, then drop it
+  stash-pop   <repo> --yes [n] [--confirm <phrase>]  apply stash@{n}, then drop it
   stash-drop  <repo> [n] --confirm drop   delete stash@{n} without applying
   discard     <repo> --yes <path>...      restore files to HEAD, delete untracked; no undo
                                           (--confirm discard works in place of --yes)
@@ -1103,8 +1103,12 @@ fn stash_push_verb(
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let args = split_args("stash-push", args, &MESSAGE_FLAGS, &[])?;
+    let args = split_args("stash-push", args, &MESSAGE_FLAGS, &["--yes"])?;
     args.expect(1, usize::MAX, "at least one <path>")?;
+    let action = rc_git_guard::Action::StashPush {
+        files: args.positionals.len(),
+    };
+    require_yes(&args, &action)?;
     let saved = rc_git_guard::actions::stash_push(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1115,6 +1119,24 @@ fn stash_push_verb(
     )?;
     writeln!(out, "{}\t{}", saved.oid, saved.message)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The CLI's form of the confirm button. When the policy asks only for a confirm, with no typed
+/// phrase, the guard accepts any input, so the explicit `--yes` is what stops a mistyped command
+/// from running; an action with a typed phrase is gated by `--confirm` inside the guard instead.
+fn require_yes(args: &VerbArgs<'_>, action: &rc_git_guard::Action) -> Result<()> {
+    let rc_git_guard::Decision::Confirm(challenge) =
+        rc_git_guard::Policy::default().evaluate(action)
+    else {
+        return Ok(());
+    };
+    if challenge.typed_phrase.is_some() || args.has("--yes") {
+        return Ok(());
+    }
+    Err(usage_error(format!(
+        "{} needs --yes to confirm: {}\n\n{USAGE}",
+        args.label, challenge.summary
+    )))
 }
 
 #[derive(Clone, Copy)]
@@ -1135,8 +1157,15 @@ fn stash_index_verb(
         StashVerb::Pop => "stash-pop",
         StashVerb::Drop => "stash-drop",
     };
-    let args = split_args(label, args, &["--confirm"], &[])?;
+    let switches: &[&'static str] = match verb {
+        StashVerb::Pop => &["--yes"],
+        StashVerb::Apply | StashVerb::Drop => &[],
+    };
+    let args = split_args(label, args, &["--confirm"], switches)?;
     args.expect(0, 1, "[n]")?;
+    if let StashVerb::Pop = verb {
+        require_yes(&args, &rc_git_guard::Action::StashPop)?;
+    }
     let index = match args.positional(0) {
         Some(raw) => raw
             .parse()
