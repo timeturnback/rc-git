@@ -66,10 +66,11 @@ if ((fast == 0)); then
   step "swift-format"
   xcrun swift-format lint --strict --recursive \
     mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
+  # Same flags on both, so swift test reuses the build; kept out of Package.swift and build.sh.
   step "swift build"
-  swift build --package-path mac
+  swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
   step "swift test"
-  swift test --package-path mac
+  swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
 fi
 
 printf '\nall checks passed\n'
