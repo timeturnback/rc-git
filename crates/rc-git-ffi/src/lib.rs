@@ -1785,7 +1785,8 @@ pub unsafe extern "C" fn rcgit_commit_detail_free(detail: *mut RcGitCommitDetail
 
 /// Commits reachable from `tip` that changed `path`, newest first. Examines at most
 /// `max_scan` commits past `scan_skip` and reports how many it examined, so the caller loops
-/// pages until `complete`. Release with `rcgit_commit_page_free`.
+/// pages until `complete`. A `max_scan` of 0 counts as 1, so every incomplete page advances.
+/// Release with `rcgit_commit_page_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a

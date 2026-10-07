@@ -120,6 +120,10 @@ fn path_history_pages_with_a_scan_cursor() {
             .path_history(tip, "file.txt", scan_skip, 100, 2)
             .unwrap();
         assert!(page.scanned <= 2);
+        assert!(
+            page.scanned > 0 || page.complete,
+            "every incomplete page advances the cursor"
+        );
         collected.extend(page.commits);
         scan_skip += page.scanned;
         if page.complete {
@@ -136,6 +140,25 @@ fn path_history_pages_with_a_scan_cursor() {
     let limited = repo.path_history(tip, "file.txt", 0, 1, 1000).unwrap();
     assert_eq!(titles(&limited), ["evil merge"]);
     assert!(!limited.complete, "the limit stopped the walk early");
+}
+
+#[test]
+fn a_zero_scan_cap_still_makes_progress() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let history = repo.path_history(tip, "file.txt", 0, 100, 0).unwrap();
+    assert_eq!(history.scanned, 1, "a zero cap examines one commit");
+    assert_eq!(titles(&history), ["evil merge"]);
+    assert!(!history.complete);
+
+    let search = repo
+        .search_commits(tip, &CommitFilter::default(), 0, 100, 0)
+        .unwrap();
+    assert_eq!(search.scanned, 1, "a zero cap examines one commit");
+    assert_eq!(titles(&search), ["evil merge"]);
+    assert!(!search.complete);
 }
 
 #[test]

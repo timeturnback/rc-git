@@ -50,7 +50,8 @@ impl Repository {
     /// contiguous and cache them. At most `max_scan` commits are examined per call, whatever
     /// they match: this walk reads two tree entries per commit, and the cap keeps one call
     /// from holding a repository handle while it scans a long history. Loop on
-    /// [`CommitPage::scanned`] until [`CommitPage::complete`].
+    /// [`CommitPage::scanned`] until [`CommitPage::complete`]. A `max_scan` of 0 counts as
+    /// 1, so every incomplete page advances the cursor.
     ///
     /// # Errors
     /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance,
@@ -63,6 +64,7 @@ impl Repository {
         limit: usize,
         max_scan: usize,
     ) -> Result<CommitPage> {
+        let max_scan = max_scan.max(1);
         let segments: Vec<Vec<u8>> = path
             .split('/')
             .filter(|segment| !segment.is_empty() && *segment != ".")
@@ -110,7 +112,8 @@ impl Repository {
     ///
     /// Pages like [`path_history`](Self::path_history): at most `max_scan` commits are
     /// examined past `scan_skip`, and the page reports how many, so the caller loops until
-    /// [`CommitPage::complete`]. Message and author matching decode each examined commit —
+    /// [`CommitPage::complete`]; a `max_scan` of 0 counts as 1, so every incomplete page
+    /// advances. Message and author matching decode each examined commit —
     /// the same cost class as `log` — and a time ceiling (`before`) is checked before any
     /// decode.
     ///
@@ -125,6 +128,7 @@ impl Repository {
         limit: usize,
         max_scan: usize,
     ) -> Result<CommitPage> {
+        let max_scan = max_scan.max(1);
         self.with(|repo| {
             let sorting = match filter.after {
                 Some(seconds) => Sorting::ByCommitTimeCutoff {
