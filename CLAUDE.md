@@ -29,7 +29,7 @@ cargo run -p rc-git-cli -- --time ls <repo> [rev] [path]   # CLI and benchmark t
 ```
 
 Needs `rustup` (Rust is pinned in `rust-toolchain.toml`),
-`brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor`, and Xcode 16 or newer.
+`brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor`, and Xcode 27 or newer.
 `docs/development.md` has the rest.
 
 ## Layers

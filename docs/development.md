@@ -5,7 +5,7 @@
 ```sh
 rustup toolchain install   # the version pinned in rust-toolchain.toml
 brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor
-xcode-select --install     # or Xcode 16+; swift-format ships with it
+xcode-select --install     # or Xcode 27+; swift-format ships with it
 scripts/build.sh           # Rust lib, header, Swift package
 ```
 

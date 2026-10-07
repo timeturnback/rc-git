@@ -46,11 +46,12 @@ jobs:
 
   mac:
     name: macOS app
-    runs-on: macos-15
+    runs-on: xcode-27   # the only GitHub-hosted image that ships Xcode 27, the documented floor
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - run: sudo xcode-select -s /Applications/Xcode_27.0.app
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release -p rc-git-ffi

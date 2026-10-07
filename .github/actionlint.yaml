@@ -1,0 +1,4 @@
+# GitHub's preview images are missing from actionlint's built-in label list.
+self-hosted-runner:
+  labels:
+    - xcode-27   # macOS with Xcode 27, the Xcode floor; see the mac job in ci.yml
