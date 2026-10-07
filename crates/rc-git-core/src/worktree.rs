@@ -106,6 +106,8 @@ impl Repository {
     /// same path below `tree`. `dir` is repository-relative with `/` separators; empty, `/`
     /// or `.` for the root, and `./` or doubled slashes name the same directory. Reads one directory and one tree object, plus one content read per file
     /// whose size matches its blob, so the cost stays proportional to the listing.
+    /// A directory at or below a submodule lists every entry as unchanged with no tree
+    /// entry: its files belong to another repository. `.git` is never listed.
     ///
     /// # Errors
     /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, a symlink at `dir`
@@ -114,7 +116,10 @@ impl Repository {
         let work_dir = self.require_work_dir("list working tree", dir)?;
         let dir = &normalize_dir(dir)
             .map_err(|source| worktree_error("list working tree", dir, source))?;
-        let tree_entries = self.tree_entries_at(tree, dir)?;
+        let (tree_entries, in_submodule) = match self.tree_at(tree, dir)? {
+            TreeAt::Entries(entries) => (entries, false),
+            TreeAt::Submodule => (Vec::new(), true),
+        };
         let disk_dir = join_under(&work_dir, dir)
             .and_then(|disk_dir| {
                 refuse_symlink(&disk_dir, &[dir.as_str()])?;
@@ -130,7 +135,7 @@ impl Repository {
             let entry = entry
                 .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
             let name = BString::from(entry.file_name().as_encoded_bytes());
-            if dir.is_empty() && name == ".git" {
+            if name == ".git" {
                 continue;
             }
             let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
@@ -146,7 +151,9 @@ impl Repository {
                 let rela = relative_path(dir, &name);
                 let in_tree = by_name.get(&name).copied();
                 let kind = context.kind_of(kind, in_tree);
-                let status = if let Some(tree_entry) = in_tree {
+                let status = if in_submodule {
+                    WorktreeStatus::Unchanged
+                } else if let Some(tree_entry) = in_tree {
                     let disk = DiskFacts {
                         kind,
                         size,
@@ -290,17 +297,36 @@ impl Repository {
         })
     }
 
-    /// The tree entries at `dir` below `tree`; empty when the directory is not in the tree.
-    /// `dir` is already normalized, so the root is the empty string.
-    fn tree_entries_at(&self, tree: Oid, dir: &str) -> Result<Vec<TreeEntry>> {
-        if dir.is_empty() {
-            return self.tree_entries(tree);
-        }
-        match self.entry_at_path(tree, dir)? {
-            Some(entry) if entry.kind == EntryKind::Tree => self.tree_entries(entry.oid),
-            Some(_) | None => Ok(Vec::new()),
-        }
+    /// What `tree` holds at `dir`, resolved one segment at a time so the walk stops at a
+    /// submodule instead of descending through its commit id, which lives in the submodule's
+    /// own object store. `dir` is already normalized, so the root is the empty string.
+    fn tree_at(&self, tree: Oid, dir: &str) -> Result<TreeAt> {
+        self.with(|repo| {
+            let mut entries = tree_children(repo, tree)?;
+            for segment in dir.split('/').filter(|segment| !segment.is_empty()) {
+                let Some(entry) = entries.iter().find(|entry| entry.name == segment) else {
+                    return Ok(TreeAt::Entries(Vec::new()));
+                };
+                match entry.kind {
+                    EntryKind::Tree => entries = tree_children(repo, entry.oid)?,
+                    EntryKind::Submodule => return Ok(TreeAt::Submodule),
+                    EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink => {
+                        return Ok(TreeAt::Entries(Vec::new()));
+                    }
+                }
+            }
+            Ok(TreeAt::Entries(entries))
+        })
     }
+}
+
+/// What the compared tree holds at a listed directory.
+enum TreeAt {
+    /// The directory's entries; empty when the tree has no directory there.
+    Entries(Vec<TreeEntry>),
+    /// The directory is a submodule or lies inside one: another repository's files, which
+    /// list as unchanged with no tree entry.
+    Submodule,
 }
 
 /// What `symlink_metadata` said about the file being compared, and where to find it.
@@ -432,15 +458,17 @@ impl<'repo> WorktreeContext<'repo> {
 /// The verdict kind alone settles: a directory on either side, a submodule, or a kind change.
 /// `None` when both sides are the same kind of file and the content decides.
 fn kind_verdict(tree_entry: &TreeEntry, disk_kind: EntryKind) -> Option<WorktreeStatus> {
+    // A submodule is a directory on disk and a commit id in the tree; its contents belong to
+    // another repository, so the kinds differing says nothing.
+    if tree_entry.kind == EntryKind::Submodule {
+        return Some(WorktreeStatus::Unchanged);
+    }
     if tree_entry.kind == EntryKind::Tree || disk_kind == EntryKind::Tree {
         return Some(if tree_entry.kind == disk_kind {
             WorktreeStatus::Unchanged
         } else {
             WorktreeStatus::Modified
         });
-    }
-    if tree_entry.kind == EntryKind::Submodule {
-        return Some(WorktreeStatus::Unchanged);
     }
     if tree_entry.kind != disk_kind {
         return Some(WorktreeStatus::Modified);
@@ -627,7 +655,7 @@ impl StatusWalk<'_> {
                 worktree_error("scan working tree", &dir_str, Box::new(source))
             })?;
             let name = BString::from(entry.file_name().as_encoded_bytes());
-            if dir.is_empty() && name == ".git" {
+            if name == ".git" {
                 continue;
             }
             if !self.visit() {
@@ -783,7 +811,7 @@ impl FileWalk<'_> {
                 worktree_error("list working tree files", &dir_str, Box::new(source))
             })?;
             let name = BString::from(entry.file_name().as_encoded_bytes());
-            if dir.is_empty() && name == ".git" {
+            if name == ".git" {
                 continue;
             }
             if !self.visit() {

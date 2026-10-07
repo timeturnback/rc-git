@@ -696,3 +696,69 @@ fn worktree_files_reports_an_unreadable_directory() {
     let err = repo.worktree_files(tree, 10_000).unwrap_err();
     assert!(err.to_string().contains("list working tree files"), "{err}");
 }
+
+/// The standard fixture with a checked-out submodule committed at `vendor/sub`, plus the
+/// repository the submodule was cloned from, which must outlive the test.
+fn with_submodule() -> (Fixture, Fixture) {
+    let sub = Fixture::empty_dir();
+    sub.git(&["init", "-q", "-b", "main"]);
+    sub.write("x", b"x\n");
+    sub.commit("sub", "2024-01-04T00:00:00+0000");
+    let top = Fixture::standard();
+    let sub_path = sub.path().to_string_lossy();
+    top.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        &sub_path,
+        "vendor/sub",
+    ]);
+    top.commit("add submodule", "2024-01-05T00:00:00+0000");
+    (top, sub)
+}
+
+#[test]
+fn a_checked_out_submodule_is_unchanged() {
+    let (fx, _sub) = with_submodule();
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(report.entries, []);
+
+    let listing = repo.worktree_entries(tree, "vendor").unwrap();
+    assert_eq!(
+        statuses(&listing),
+        [("sub".to_owned(), WorktreeStatus::Unchanged)]
+    );
+    assert_eq!(listing.missing, []);
+}
+
+#[test]
+fn listing_inside_a_submodule_reads_its_files_as_another_repository() {
+    let (fx, _sub) = with_submodule();
+    fx.write("vendor/sub/inner/q", b"q\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let at = repo.worktree_entries(tree, "vendor/sub").unwrap();
+    assert_eq!(
+        statuses(&at),
+        [
+            ("inner".to_owned(), WorktreeStatus::Unchanged),
+            ("x".to_owned(), WorktreeStatus::Unchanged),
+        ]
+    );
+    assert!(at.entries.iter().all(|entry| entry.oid.is_none()));
+    assert_eq!(at.missing, []);
+
+    let below = repo.worktree_entries(tree, "vendor/sub/inner").unwrap();
+    assert_eq!(
+        statuses(&below),
+        [("q".to_owned(), WorktreeStatus::Unchanged)]
+    );
+    assert_eq!(below.entries[0].oid, None);
+}
