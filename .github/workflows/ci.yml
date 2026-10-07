@@ -94,7 +94,7 @@ jobs:
       - run: shellcheck scripts/*.sh
       - run: shfmt -d scripts/*.sh
       - run: actionlint
-      - run: zizmor .github/workflows
+      - run: zizmor --offline .github/workflows
       - name: RcGitKit imports no UI framework   # same check as check.sh's "kit layering"
         run: |
           if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI)\b' \
