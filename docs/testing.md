@@ -25,7 +25,8 @@ commit 3 (main)     "Add docs and library"   + docs/guide.md, src/lib.rs, alpha.
                                              tag v1.0 (annotated), refs/remotes/origin/main
 ```
 
-Dates are fixed (2024-01-01, -02, -03 UTC) so ordering is deterministic. `bin.dat` carries a
+Dates are fixed (2024-01-01, -02, -03 UTC) so ordering is deterministic; the `v1.0` tagger
+date is 2024-01-03 as well, so the tag object id is stable too. `bin.dat` carries a
 NUL so git and rc-git call it binary. Assertions compare against `git rev-parse`, never a
 hard-coded hash.
 

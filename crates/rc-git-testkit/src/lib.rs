@@ -87,7 +87,10 @@ impl Fixture {
         fixture.write("Zeta.txt", b"zeta\n");
         fixture.symlink("README.md", "link");
         fixture.commit(COMMIT_2_TITLE, "2024-01-03T00:00:00+0000");
-        fixture.git(&["tag", "-a", "v1.0", "-m", "Release 1.0"]);
+        fixture.git_with_env(
+            &["tag", "-a", "v1.0", "-m", "Release 1.0"],
+            &[("GIT_COMMITTER_DATE", "2024-01-03T00:00:00+0000")],
+        );
         fixture.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         fixture
     }

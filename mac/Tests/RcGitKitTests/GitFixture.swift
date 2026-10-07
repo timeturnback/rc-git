@@ -32,7 +32,9 @@ struct GitFixture {
         try FileManager.default.createSymbolicLink(
             atPath: fixture.path + "/link", withDestinationPath: "README.md")
         try fixture.commit("Add docs and library", date: "2024-01-03T00:00:00+0000")
-        try fixture.git(["tag", "-a", "v1.0", "-m", "Release 1.0"])
+        try fixture.git(
+            ["tag", "-a", "v1.0", "-m", "Release 1.0"],
+            extraEnvironment: ["GIT_COMMITTER_DATE": "2024-01-03T00:00:00+0000"])
         try fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
         return fixture
     }
