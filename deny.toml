@@ -16,23 +16,25 @@ ignore = [
 [licenses]
 version = 2
 # Only licenses that actually occur in the tree; an unused entry is a warning. MPL-2.0 is
-# file-level copyleft (uluru, gix's LRU cache) and imposes nothing on the app. BSD-3-Clause
-# rides in with encoding_rs (gix-blame's text decoding); permissive, attribution only.
+# file-level copyleft (uluru, gix's LRU cache) and imposes nothing on the app. BSD-3-Clause is
+# required by encoding_rs (`(Apache-2.0 OR MIT) AND BSD-3-Clause`, via gix-filter through gix
+# and gix-diff) and is the only license of russh's curve25519-dalek, ed25519-dalek and subtle;
+# permissive, attribution only.
 # ISC rides in with ring/untrusted (russh's crypto backend); permissive, attribution only.
 allow = [
   "MIT",
   "Apache-2.0",
   "BSD-3-Clause",
-  "Apache-2.0 WITH LLVM-exception",
   "MPL-2.0",
   "Zlib",
   "Unicode-3.0",
-  "CC0-1.0",
   "ISC",
 ]
 
 [bans]
-# Duplicate versions come from gix's transitive tree and are not actionable here.
+# Duplicate versions come from gix's tree (sha1/digest 0.10) and from russh's pre-release
+# RustCrypto stack (digest/sha1 0.11, getrandom 0.2 via ring). Neither set is actionable until
+# upstream aligns.
 multiple-versions = "allow"
 # A second gix-transport means a dev-only pin drifted from the one gix resolves.
 deny = [{ crate = "gix-transport", deny-multiple-versions = true }]
