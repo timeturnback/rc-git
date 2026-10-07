@@ -37,6 +37,8 @@ jobs:
               'fix it or mark it allow-invalid with a reason' >&2
             exit 1
           fi
+      - name: core standalone   # same check as check.sh: no guard transport features unified in
+        run: cargo check --locked -p rc-git-core --all-targets
       - run: cargo test --locked --workspace
       - run: cargo doc --locked --workspace --no-deps
         env:

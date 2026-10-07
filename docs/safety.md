@@ -20,8 +20,10 @@ Four layers enforce it, and each catches what the others miss.
 2. **Test.** `crates/rc-git-core/tests/read_only.rs` snapshots every file under `.git`, runs
    every core operation — working-tree listings and file reads included — and compares the
    snapshot byte for byte.
-3. **Features.** The read-only crates compile `gix` without checkout or credential
-   features. `rc-git-guard` alone enables the transports — HTTPS
+3. **Features.** A standalone build of `rc-git-core` compiles `gix` without checkout,
+   transport or credential features; the `core standalone` step in `scripts/check.sh` and CI
+   builds it alone, because Cargo unifies features across a workspace build and the linked
+   library carries the guard's. `rc-git-guard` alone enables the transports — HTTPS
    (`blocking-http-transport-curl`, system libcurl) and SSH (russh, in-process; no `ssh`
    child) — and clippy bans the network entry points it lists — gix's `remote_at`,
    `find_remote`, `connect`, `handshake`, plus `russh::client::connect` and the std and

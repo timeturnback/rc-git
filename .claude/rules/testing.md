@@ -26,6 +26,7 @@ paths: crates/**/tests/**, crates/rc-git-testkit/**, mac/Tests/**
   next `git add -A` commit and poisons the diff. Set `http.receivepack=true` on the served
   repo or pushes 403. Basic-auth-over-http needs the dev-only
   `http-client-insecure-credentials` gix-transport feature in the testing crate's
-  dev-dependencies. Ssh tests clone from the local bare path, re-point `origin` at
+  dev-dependencies. rc-git-ffi tests never send credentials over http: `cargo test --workspace`
+  turns that feature on for them and `cargo test -p rc-git-ffi` does not. Ssh tests clone from the local bare path, re-point `origin` at
   `SshGitServer::url()`, and pass a fixture directory via `RemoteAuth::ssh_dir`
   (CLI: `--ssh-dir`) — never the developer's real `~/.ssh`.

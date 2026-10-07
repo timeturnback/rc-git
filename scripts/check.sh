@@ -85,12 +85,25 @@ if grep -q 'does not refer to a reachable' <<<"$clippy_out"; then
     'fix it or mark it allow-invalid with a reason' >&2
   exit 1
 fi
+step "core standalone"
+# Workspace builds unify the guard's transport features into gix; this builds core without them.
+cargo check --locked -p rc-git-core --all-targets
 step "cargo test"
 cargo test --locked --workspace
 step "cargo doc"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --quiet
 step "cargo deny"
 cargo deny --locked check
+step "dev-only features"
+# Captured first: grep -q closing the pipe early would fail cargo tree under pipefail.
+for pkg in rc-git-ffi rc-git-cli; do
+  features="$(cargo tree --locked -e features,normal -i gix-transport -p "$pkg")"
+  if [[ $features == *http-client-insecure-credentials* ]]; then
+    echo "error: dev-only gix-transport/http-client-insecure-credentials reached the $pkg" \
+      "build; keep it in [dev-dependencies]" >&2
+    exit 1
+  fi
+done
 
 if ((fast == 0)); then
   step "macOS platform floor"
