@@ -122,6 +122,42 @@ for pkg in rc-git-ffi rc-git-cli; do
     exit 1
   fi
 done
+step "bundle paths"
+# AppBuild relaunches these paths after a self-update, so they must match what the scripts build.
+app_build=mac/Sources/RcGitKit/AppBuild.swift
+swift_const() { sed -n "s/.*static let $1 = \"\([^\"]*\)\".*/\1/p" "$app_build"; }
+script_app() { sed -n "s|^ *APP=\"\$ROOT/\([^\"]*\)\"$|\1|p" "$1"; }
+installedPath="$(swift_const installedPath)"
+devBundleName="$(swift_const devBundleName)"
+install_apps="$(sed -n 's|^APPS=.*:-\([^}]*\)}"|\1|p' scripts/install-app.sh)"
+install_name="$(sed -n "s|^TARGET=\"\\\$APPS/\([^\"]*\)\"\$|\1|p" scripts/install-app.sh)"
+install_target="$install_apps/$install_name"
+install_app="$(script_app scripts/install-app.sh)"
+build_apps="$(script_app scripts/build-app.sh)"
+release_app="$(sed -n 1p <<<"$build_apps")"
+dev_app="$(sed -n 2p <<<"$build_apps")"
+if [[ -z "$installedPath" || -z "$install_apps" || -z "$install_name" ||
+  "$install_target" != "$installedPath" ||
+  -z "$devBundleName" || "$dev_app" != "$devBundleName" ||
+  -z "$install_app" || "$install_app" != "$release_app" ]]; then
+  echo "error: bundle paths differ: $app_build installedPath '$installedPath'," \
+    "devBundleName '$devBundleName'; scripts/install-app.sh TARGET '$install_target'," \
+    "APP '$install_app'; scripts/build-app.sh release APP '$release_app'," \
+    "dev APP '$dev_app'; set them alike" >&2
+  exit 1
+fi
+plist_keys="$(sed -n 's/.*string("\(RCGit[A-Za-z]*\)").*/\1/p' "$app_build")"
+[[ -n "$plist_keys" ]] || {
+  echo "error: found no string(\"RCGit...\") Info.plist reads in $app_build" >&2
+  exit 1
+}
+for key in $plist_keys; do
+  grep -q "^stamp $key " scripts/build-app.sh || {
+    echo "error: $app_build reads Info.plist key $key," \
+      "but scripts/build-app.sh never stamps it" >&2
+    exit 1
+  }
+done
 
 if ((fast == 0)); then
   step "macOS platform floor"
