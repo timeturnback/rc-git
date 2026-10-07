@@ -4,6 +4,8 @@
     reason = "test helpers panic when the binary cannot run"
 )]
 
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::process::{Command, Output};
 
 use rc_git_testkit::{COMMIT_1_TITLE, COMMIT_2_TITLE, Fixture, MAIN_RS};
@@ -322,6 +324,44 @@ fn usage_and_open_errors_have_distinct_exit_codes() {
     let not_repo = rc_git(&["head", fx.path().to_str().unwrap()]);
     assert_eq!(not_repo.status.code(), Some(1));
     assert!(stderr(&not_repo).contains("cannot open git repository at"));
+}
+
+#[expect(clippy::disallowed_methods, reason = "tests run the built binary")]
+fn rc_git_os(args: &[OsString]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rc-git"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn non_utf8_arguments_are_usage_errors_and_repo_paths_stay_bytes() {
+    let fx = Fixture::standard();
+    let not_utf8 = OsStr::from_bytes(b"\xff.txt").to_owned();
+
+    let path_arg = rc_git_os(&[
+        "cat".into(),
+        fx.path().into(),
+        "HEAD".into(),
+        not_utf8.clone(),
+    ]);
+    assert_eq!(path_arg.status.code(), Some(2));
+    assert!(stderr(&path_arg).contains("is not valid UTF-8"));
+    assert!(!stderr(&path_arg).contains("panicked"));
+
+    let verb = rc_git_os(&[not_utf8.clone(), fx.path().into()]);
+    assert_eq!(verb.status.code(), Some(2));
+    assert!(!stderr(&verb).contains("panicked"));
+
+    let mut repo = fx.path().as_os_str().to_owned();
+    repo.push(&not_utf8);
+    let repo_arg = rc_git_os(&["head".into(), repo]);
+    assert_eq!(
+        repo_arg.status.code(),
+        Some(1),
+        "an open error, not a usage error"
+    );
+    assert!(stderr(&repo_arg).contains("cannot open git repository at"));
 }
 
 #[test]

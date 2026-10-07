@@ -4,6 +4,7 @@
 //! repository open and the command took, which is how the budgets in `docs/performance.md`
 //! are checked without the GUI.
 
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -312,7 +313,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let invocation = match parse(std::env::args().skip(1).collect()) {
+    let invocation = match parse(std::env::args_os().skip(1).collect()) {
         Ok(Command::Run(invocation)) => invocation,
         Ok(Command::Help) => {
             if let Err(err) = io::stdout().lock().write_all(USAGE.as_bytes()) {
@@ -369,7 +370,10 @@ fn error_line(err: &anyhow::Error) -> String {
     line
 }
 
-fn parse(mut args: Vec<String>) -> std::result::Result<Command, String> {
+/// Splits argv into the verb, the repository path and the verb's arguments. The repository path
+/// is kept as raw bytes; every other word must be UTF-8, since revisions, flag values and tree
+/// paths are text to the core, so a word that is not is a usage error rather than a panic.
+fn parse(mut args: Vec<OsString>) -> std::result::Result<Command, String> {
     let wants_help = args
         .iter()
         .take_while(|arg| *arg != "--")
@@ -384,15 +388,28 @@ fn parse(mut args: Vec<String>) -> std::result::Result<Command, String> {
     if args.len() < 2 {
         return Err("expected <command> <repo>".to_owned());
     }
-    let command = args.remove(0);
+    let command = utf8_arg(args.remove(0))?;
     let verb = Verb::parse(&command).ok_or_else(|| format!("unknown command '{command}'"))?;
     let repo = PathBuf::from(args.remove(0));
+    let args = args
+        .into_iter()
+        .map(utf8_arg)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(Command::Run(Invocation {
         time,
         verb,
         repo,
         args,
     }))
+}
+
+fn utf8_arg(arg: OsString) -> std::result::Result<String, String> {
+    arg.into_string().map_err(|raw| {
+        format!(
+            "argument '{}' is not valid UTF-8; rc-git reads revisions, flags and paths as text",
+            raw.to_string_lossy()
+        )
+    })
 }
 
 fn run(invocation: &Invocation) -> Result<ExitCode> {
