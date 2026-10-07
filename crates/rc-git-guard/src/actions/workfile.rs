@@ -371,10 +371,48 @@ mod tests {
         assert_eq!(out, b"a\nX\nc\n");
     }
 
+    /// The stamps rc-git-core produces for `old` -> `new` at `context`, so a change in the
+    /// producer's numbering convention fails the splice tests that use them.
+    fn core_stamps(old: &[u8], new: &[u8], context: u32) -> Vec<HunkStamp> {
+        let fx = rc_git_testkit::Fixture::standard();
+        fx.write("old.txt", old);
+        fx.write("new.txt", new);
+        let blob = |path| {
+            let hex = fx.git_output(&["hash-object", "-w", path]);
+            rc_git_core::Oid::from_hex(&hex).unwrap()
+        };
+        let (old, new) = (blob("old.txt"), blob("new.txt"));
+        let repo = rc_git_core::Repository::open(fx.path()).unwrap();
+        let diff = repo
+            .diff_blobs(
+                Some(old),
+                Some(new),
+                rc_git_core::DEFAULT_BLOB_LIMIT,
+                context,
+            )
+            .unwrap();
+        let rc_git_core::BlobDiff::Text { hunks } = diff else {
+            panic!("expected a text diff, got {diff:?}");
+        };
+        hunks.iter().map(HunkStamp::from).collect()
+    }
+
     #[test]
     fn an_insertion_hunk_lands_after_its_anchor_line() {
-        let out = splice(b"a\nb\n", b"a\nX\nb\n", &[stamp(1, 0, 2, 1)]).unwrap();
-        assert_eq!(out, b"a\nX\nb\n");
+        let (old, new) = (b"a\nb\n", b"a\nX\nb\n");
+        for context in [0, rc_git_core::DEFAULT_DIFF_CONTEXT] {
+            let stamps = core_stamps(old, new, context);
+            assert_eq!(splice(old, new, &stamps).unwrap(), new, "context {context}");
+        }
+        assert_eq!(core_stamps(old, new, 0), [stamp(1, 0, 2, 1)]);
+    }
+
+    #[test]
+    fn a_context_free_deletion_hunk_removes_its_line() {
+        let (old, new) = (b"a\nb\nc\n", b"a\nc\n");
+        let stamps = core_stamps(old, new, 0);
+        assert_eq!(stamps, [stamp(2, 1, 1, 0)]);
+        assert_eq!(splice(old, new, &stamps).unwrap(), new);
     }
 
     #[test]

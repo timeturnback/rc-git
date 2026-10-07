@@ -473,7 +473,7 @@ fn diff_lists_changes_and_prints_hunks() {
 
     let out = rc_git(&["diff", path, "v0.9", "main", "docs/guide.md"]);
     assert!(out.status.success());
-    assert_eq!(stdout(&out), "@@ -1,0 +1,1 @@\n+guide\n");
+    assert_eq!(stdout(&out), "@@ -0,0 +1,1 @@\n+guide\n");
 
     let out = rc_git(&["diff", path, "v0.9", "main", "bin.dat"]);
     assert_eq!(out.status.code(), Some(3), "binary exit code");

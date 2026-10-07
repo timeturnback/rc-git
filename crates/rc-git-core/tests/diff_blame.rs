@@ -363,6 +363,22 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
     assert_eq!(hunks.len(), 1);
     assert!(hunks[0].lines.iter().all(|l| l.kind == DiffLineKind::Added));
     assert_eq!(hunks[0].old_lines, 0);
+    assert_eq!(
+        hunks[0].old_start, 0,
+        "an empty side starts at 0, as in git's header"
+    );
+    assert_eq!(hunks[0].new_start, 1);
+
+    let BlobDiff::Text { hunks } = repo
+        .diff_blobs(Some(readme), None, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)
+        .unwrap()
+    else {
+        panic!("expected a text diff for a deleted file");
+    };
+    assert_eq!(
+        (hunks[0].old_start, hunks[0].new_start, hunks[0].new_lines),
+        (1, 0, 0)
+    );
 
     let identical = repo
         .diff_blobs(

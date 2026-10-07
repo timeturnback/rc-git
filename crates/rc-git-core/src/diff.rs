@@ -67,11 +67,13 @@ pub enum DiffLineKind {
 /// A run of changed lines with its surrounding context, as in unified diff output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunk {
-    /// 1-based first line of the hunk in the old blob.
+    /// 1-based first line of the hunk in the old blob. When `old_lines` is 0 it is the line
+    /// the empty range follows, 0 at the top of the blob, as in git's `@@` header.
     pub old_start: u32,
     /// Number of old-blob lines the hunk covers.
     pub old_lines: u32,
-    /// 1-based first line of the hunk in the new blob.
+    /// 1-based first line of the hunk in the new blob. When `new_lines` is 0 it is the line
+    /// the empty range follows, 0 at the top of the blob, as in git's `@@` header.
     pub new_start: u32,
     /// Number of new-blob lines the hunk covers.
     pub new_lines: u32,
@@ -348,9 +350,9 @@ impl ConsumeHunk for CollectHunks {
             });
         }
         self.hunks.push(DiffHunk {
-            old_start: header.before_hunk_start,
+            old_start: unified_start(header.before_hunk_start, header.before_hunk_len),
             old_lines: header.before_hunk_len,
-            new_start: header.after_hunk_start,
+            new_start: unified_start(header.after_hunk_start, header.after_hunk_len),
             new_lines: header.after_hunk_len,
             lines: collected,
         });
@@ -359,6 +361,16 @@ impl ConsumeHunk for CollectHunks {
 
     fn finish(self) -> Self::Out {
         self.hunks
+    }
+}
+
+/// git's start line for one side of a hunk. gix numbers an empty side from the line after
+/// the gap; unified diff numbers it from the line before, 0 at the top of the file.
+fn unified_start(gix_start: u32, len: u32) -> u32 {
+    if len == 0 {
+        gix_start.saturating_sub(1)
+    } else {
+        gix_start
     }
 }
 
