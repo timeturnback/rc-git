@@ -31,6 +31,8 @@ fn opens_from_work_dir_and_from_git_dir() {
 
     let from_git = Repository::open(fx.git_dir()).unwrap();
     assert_eq!(from_git.head().unwrap(), from_work.head().unwrap());
+    assert_eq!(from_git.work_dir(), from_work.work_dir());
+    assert_eq!(from_git.git_dir(), from_work.git_dir());
     assert!(format!("{from_work:?}").contains("pool_slots"));
 }
 
