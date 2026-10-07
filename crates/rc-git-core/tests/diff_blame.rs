@@ -222,6 +222,37 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
 }
 
 #[test]
+fn a_diff_over_the_limit_reports_the_larger_side_from_the_headers() {
+    let fx = Fixture::standard();
+    fx.write("big.txt", &[b'x'; 40]);
+    let big = oid(fx.git_output(&["hash-object", "-w", "big.txt"]).trim());
+    let repo = Repository::open(fx.path()).unwrap();
+    let readme = oid(&fx.rev_parse("HEAD:README.md"));
+
+    let diff = repo
+        .diff_blobs(Some(readme), Some(big), 10, DEFAULT_DIFF_CONTEXT)
+        .unwrap();
+    assert_eq!(
+        diff,
+        BlobDiff::TooLarge {
+            size: 40,
+            limit: 10
+        }
+    );
+
+    let diff = repo
+        .diff_worktree_file(Some(readme), "big.txt", 10, DEFAULT_DIFF_CONTEXT)
+        .unwrap();
+    assert_eq!(
+        diff,
+        BlobDiff::TooLarge {
+            size: 40,
+            limit: 10
+        }
+    );
+}
+
+#[test]
 fn blame_attributes_lines_to_their_commits() {
     let fx = diff_fixture();
     let repo = Repository::open(fx.path()).unwrap();

@@ -5,8 +5,8 @@ use gix::diff::blob::unified_diff::{ConsumeHunk, ContextSize, HunkHeader};
 use gix::diff::blob::{Algorithm, Diff, InternedInput, UnifiedDiff};
 use gix::object::tree::diff::{Action, Change};
 
-use crate::blob::{BlobContent, is_binary};
-use crate::error::{Error, ObjectKind, Result, git, object};
+use crate::blob::BlobContent;
+use crate::error::{Result, git, object};
 use crate::oid::Oid;
 use crate::repo::Repository;
 use crate::tree::EntryKind;
@@ -114,8 +114,8 @@ impl Repository {
     /// unchanged subtrees share an id and are skipped whole.
     ///
     /// # Errors
-    /// [`Error::Object`] when either id is missing or does not peel to a tree,
-    /// [`Error::Git`] when the diff itself fails.
+    /// [`Error::Object`](crate::Error::Object) when either id is missing or does not peel to
+    /// a tree, [`Error::Git`](crate::Error::Git) when the diff itself fails.
     pub fn diff_trees(&self, from: Option<Oid>, to: Oid) -> Result<Vec<TreeChange>> {
         let from = from.map(|id| self.tree_of(id)).transpose()?;
         let to = self.tree_of(to)?;
@@ -149,12 +149,13 @@ impl Repository {
     }
 
     /// Line diff between two blobs, either of which may be absent for an added or deleted
-    /// file. Each side's size is checked against `limit` before decoding, exactly as
-    /// [`Repository::read_blob`] does.
+    /// file. Both sizes are read from the object headers and checked against `limit` before
+    /// either side is decoded, and a binary old side settles the result without decoding the
+    /// new one.
     ///
     /// # Errors
-    /// [`Error::Object`] when a given id is missing, [`Error::WrongKind`] when it is not
-    /// a blob.
+    /// [`Error::Object`](crate::Error::Object) when a given id is missing,
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when it is not a blob.
     pub fn diff_blobs(
         &self,
         old: Option<Oid>,
@@ -162,18 +163,30 @@ impl Repository {
         limit: u64,
         context: u32,
     ) -> Result<BlobDiff> {
+        let old_size = self.side_size(old)?;
+        let new_size = self.side_size(new)?;
+        if let Some(too_large) = too_large(old_size, new_size, limit) {
+            return Ok(too_large);
+        }
         let old_data = self.blob_for_diff(old, limit)?;
+        if let DiffSide::Binary { size } = old_data {
+            return Ok(BlobDiff::Binary {
+                old_size: size,
+                new_size,
+            });
+        }
         let new_data = self.blob_for_diff(new, limit)?;
         diff_sides(old_data, new_data, context)
     }
 
     /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
     /// bytes: gitattributes filters and eol conversion are not applied. `old` is absent for
-    /// an untracked file, which makes the diff pure additions. Each side's size is checked
-    /// against `limit` before decoding.
+    /// an untracked file, which makes the diff pure additions. The blob header and the file's
+    /// metadata are checked against `limit` before either side is decoded.
     ///
     /// # Errors
-    /// [`Error::Object`] when `old` is missing, [`Error::WrongKind`] when it is not a blob,
+    /// [`Error::Object`](crate::Error::Object) when `old` is missing,
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when it is not a blob,
     /// [`Error::Worktree`](crate::Error::Worktree) when the file cannot be read.
     pub fn diff_worktree_file(
         &self,
@@ -182,44 +195,39 @@ impl Repository {
         limit: u64,
         context: u32,
     ) -> Result<BlobDiff> {
+        let old_size = self.side_size(old)?;
+        let new_size = self.worktree_file_size(path)?;
+        if let Some(too_large) = too_large(old_size, new_size, limit) {
+            return Ok(too_large);
+        }
         let old_data = self.blob_for_diff(old, limit)?;
-        let new_data = match self.worktree_file(path, limit)? {
-            BlobContent::Text { data, .. } => DiffSide::Text(data),
-            BlobContent::Binary { size } => DiffSide::Binary { size },
-            BlobContent::TooLarge { size, limit } => DiffSide::TooLarge { size, limit },
-        };
+        if let DiffSide::Binary { size } = old_data {
+            return Ok(BlobDiff::Binary {
+                old_size: size,
+                new_size,
+            });
+        }
+        let new_data = DiffSide::from(self.worktree_file(path, limit)?);
         diff_sides(old_data, new_data, context)
     }
 
-    fn blob_for_diff(&self, oid: Option<Oid>, limit: u64) -> Result<DiffSide> {
-        let Some(oid) = oid else {
-            return Ok(DiffSide::Text(Vec::new()));
-        };
-        self.with(|repo| {
-            let header = repo
-                .find_header(*oid.as_gix())
-                .map_err(object("read blob header", oid))?;
-            if header.kind() != gix::objs::Kind::Blob {
-                return Err(Error::WrongKind {
-                    oid,
-                    expected: ObjectKind::Blob,
-                    actual: ObjectKind::from_gix(header.kind()),
-                });
-            }
-            let size = header.size();
-            if size > limit {
-                return Ok(DiffSide::TooLarge { size, limit });
-            }
-            let mut blob = repo
-                .find_blob(*oid.as_gix())
-                .map_err(object("read blob", oid))?;
-            let data = blob.take_data();
-            if is_binary(&data) {
-                return Ok(DiffSide::Binary { size });
-            }
-            Ok(DiffSide::Text(data))
-        })
+    /// Header size of one diff side; an absent side is empty.
+    fn side_size(&self, oid: Option<Oid>) -> Result<u64> {
+        oid.map_or(Ok(0), |oid| self.blob_size(oid))
     }
+
+    fn blob_for_diff(&self, oid: Option<Oid>, limit: u64) -> Result<DiffSide> {
+        match oid {
+            None => Ok(DiffSide::Text(Vec::new())),
+            Some(oid) => self.read_blob(oid, limit).map(DiffSide::from),
+        }
+    }
+}
+
+/// The result when either side is over `limit`, naming the larger size.
+fn too_large(old_size: u64, new_size: u64, limit: u64) -> Option<BlobDiff> {
+    let size = old_size.max(new_size);
+    (size > limit).then_some(BlobDiff::TooLarge { size, limit })
 }
 
 /// Runs the line diff once both sides are classified.
@@ -252,6 +260,16 @@ enum DiffSide {
     Text(Vec<u8>),
     Binary { size: u64 },
     TooLarge { size: u64, limit: u64 },
+}
+
+impl From<BlobContent> for DiffSide {
+    fn from(content: BlobContent) -> Self {
+        match content {
+            BlobContent::Text { data, .. } => DiffSide::Text(data),
+            BlobContent::Binary { size } => DiffSide::Binary { size },
+            BlobContent::TooLarge { size, limit } => DiffSide::TooLarge { size, limit },
+        }
+    }
 }
 
 impl DiffSide {

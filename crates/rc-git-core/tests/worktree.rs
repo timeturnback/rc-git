@@ -93,6 +93,50 @@ fn a_changed_symlink_is_modified() {
     assert_eq!(link.status, WorktreeStatus::Modified);
 }
 
+/// Commits a symlink entry at `path` that points at `oid`, then puts a real symlink on disk.
+fn commit_symlink_entry(fx: &Fixture, oid: &str, path: &str) {
+    fx.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("120000,{oid},{path}"),
+    ]);
+    fx.git(&["commit", "-q", "-m", "odd symlink"]);
+    fx.symlink("x", path);
+}
+
+fn status_of(fx: &Fixture, path: &str) -> Result<WorktreeStatus, Error> {
+    let repo = Repository::open(fx.path())?;
+    let tree = repo.resolve_tree("HEAD")?;
+    let report = repo.worktree_status(tree, 10_000)?;
+    Ok(report
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .map_or(WorktreeStatus::Unchanged, |entry| entry.status))
+}
+
+#[test]
+fn a_symlink_entry_holding_a_huge_blob_is_modified_without_decoding() {
+    let fx = Fixture::standard();
+    fx.write("big.bin", &vec![b'y'; 8192]);
+    let oid = fx.git_output(&["hash-object", "-w", "big.bin"]);
+    fx.remove("big.bin");
+    commit_symlink_entry(&fx, oid.trim(), "biglink");
+    assert_eq!(status_of(&fx, "biglink").unwrap(), WorktreeStatus::Modified);
+}
+
+#[test]
+fn a_symlink_entry_naming_a_tree_is_modified_not_an_error() {
+    let fx = Fixture::standard();
+    let tree = fx.rev_parse("HEAD^{tree}");
+    commit_symlink_entry(&fx, &tree, "treelink");
+    assert_eq!(
+        status_of(&fx, "treelink").unwrap(),
+        WorktreeStatus::Modified
+    );
+}
+
 #[test]
 fn a_directory_not_in_the_tree_is_untracked() {
     let fx = Fixture::standard();

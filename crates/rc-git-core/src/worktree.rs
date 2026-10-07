@@ -9,7 +9,7 @@ use gix::bstr::{BString, ByteSlice};
 use gix::index::entry::{Flags, Stage};
 use gix::worktree::stack::state::ignore::Source;
 
-use crate::blob::{BlobContent, is_binary, line_starts};
+use crate::blob::{BlobContent, classify};
 use crate::error::{BoxError, Error, Result, git, object};
 use crate::oid::Oid;
 use crate::repo::Repository;
@@ -233,31 +233,14 @@ impl Repository {
     /// [`Repository::read_blob`]. A symlink yields its target as text.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository, a missing file, or an unreadable one.
+    /// [`Error::Worktree`] for a bare repository, a missing file, a directory, or an
+    /// unreadable file.
     pub fn worktree_file(&self, path: &str, limit: u64) -> Result<BlobContent> {
-        let work_dir = self.require_work_dir("read working tree file", path)?;
-        let full = join_under(&work_dir, path)
-            .map_err(|source| worktree_error("read working tree file", path, source))?;
-        let meta = std::fs::symlink_metadata(&full)
-            .map_err(|source| worktree_error("read working tree file", path, Box::new(source)))?;
+        let (full, meta) = self.stat_worktree_file(path)?;
         if meta.file_type().is_symlink() {
             let target = std::fs::read_link(&full)
                 .map_err(|source| worktree_error("read symlink", path, Box::new(source)))?;
-            let data = target.into_os_string().into_encoded_bytes();
-            let starts = line_starts(&data);
-            let valid_utf8 = std::str::from_utf8(&data).is_ok();
-            return Ok(BlobContent::Text {
-                data,
-                line_starts: starts,
-                valid_utf8,
-            });
-        }
-        if meta.is_dir() {
-            return Err(worktree_error(
-                "read working tree file",
-                path,
-                "is a directory".into(),
-            ));
+            return Ok(classify(target.into_os_string().into_encoded_bytes()));
         }
         let size = meta.len();
         if size > limit {
@@ -265,16 +248,30 @@ impl Repository {
         }
         let data = std::fs::read(&full)
             .map_err(|source| worktree_error("read working tree file", path, Box::new(source)))?;
-        if is_binary(&data) {
-            return Ok(BlobContent::Binary { size });
+        Ok(classify(data))
+    }
+
+    /// Size of a working-tree file from its metadata, without reading it; a symlink's size is
+    /// its target's length.
+    pub(crate) fn worktree_file_size(&self, path: &str) -> Result<u64> {
+        Ok(self.stat_worktree_file(path)?.1.len())
+    }
+
+    /// The file's full path and `symlink_metadata`; a directory is an error.
+    fn stat_worktree_file(&self, path: &str) -> Result<(PathBuf, std::fs::Metadata)> {
+        let work_dir = self.require_work_dir("read working tree file", path)?;
+        let full = join_under(&work_dir, path)
+            .map_err(|source| worktree_error("read working tree file", path, source))?;
+        let meta = std::fs::symlink_metadata(&full)
+            .map_err(|source| worktree_error("read working tree file", path, Box::new(source)))?;
+        if meta.is_dir() {
+            return Err(worktree_error(
+                "read working tree file",
+                path,
+                "is a directory".into(),
+            ));
         }
-        let starts = line_starts(&data);
-        let valid_utf8 = std::str::from_utf8(&data).is_ok();
-        Ok(BlobContent::Text {
-            data,
-            line_starts: starts,
-            valid_utf8,
-        })
+        Ok((full, meta))
     }
 
     fn require_work_dir(&self, op: &'static str, path: &str) -> Result<PathBuf> {
@@ -345,7 +342,8 @@ impl<'repo> WorktreeContext<'repo> {
         self.compare_content(tree_entry, disk, dir)
     }
 
-    /// A symlink is its target; the blob holding that target is small enough to read whole.
+    /// A symlink is its target. The blob header must name a blob of the target's length before
+    /// the blob is decoded, so a tree entry pointing at a huge blob costs one header read.
     fn compare_symlink(
         &self,
         tree_entry: &TreeEntry,
@@ -354,11 +352,20 @@ impl<'repo> WorktreeContext<'repo> {
     ) -> Result<WorktreeStatus> {
         let target = std::fs::read_link(disk_path)
             .map_err(|source| worktree_error("read symlink", dir, Box::new(source)))?;
+        let target = target.as_os_str().as_encoded_bytes();
+        let header = self
+            .repo
+            .find_header(*tree_entry.oid.as_gix())
+            .map_err(object("read blob header", tree_entry.oid))?;
+        let same_length = u64::try_from(target.len()).is_ok_and(|len| len == header.size());
+        if header.kind() != gix::objs::Kind::Blob || !same_length {
+            return Ok(WorktreeStatus::Modified);
+        }
         let blob = self
             .repo
             .find_blob(*tree_entry.oid.as_gix())
             .map_err(object("read blob", tree_entry.oid))?;
-        Ok(if blob.data == target.as_os_str().as_encoded_bytes() {
+        Ok(if blob.data == target {
             WorktreeStatus::Unchanged
         } else {
             WorktreeStatus::Modified

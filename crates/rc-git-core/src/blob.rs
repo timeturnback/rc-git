@@ -86,7 +86,8 @@ fn expect_blob(oid: Oid, kind: gix::objs::Kind) -> Result<()> {
     })
 }
 
-fn classify(data: Vec<u8>) -> BlobContent {
+/// Sorts bytes already read into text or binary. Callers check the size limit before reading.
+pub(crate) fn classify(data: Vec<u8>) -> BlobContent {
     if is_binary(&data) {
         return BlobContent::Binary {
             size: u64::try_from(data.len()).unwrap_or(u64::MAX),
