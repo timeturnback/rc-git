@@ -36,12 +36,10 @@ fn missing_or_wrong_credentials_are_rejected_and_correct_ones_accepted() {
         ".",
     ]);
     // A 401 makes git ask for credentials; with prompts disabled that surfaces as
-    // "could not read Username".
+    // "could not read Username". The URL echoes the port, so a status code is no proof.
     assert!(
-        output.contains("401")
-            || output.contains("Authentication")
-            || output.contains("could not read Username"),
-        "expected an auth failure, got: {output}"
+        output.contains("could not read Username"),
+        "expected a 401 challenge, got: {output}"
     );
 
     let wrong = Fixture::empty_dir();
