@@ -42,6 +42,12 @@ shfmt -d scripts/*.sh
 step "github actions"
 actionlint
 zizmor .github/workflows
+step "kit layering"
+if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI)\b' \
+  mac/Sources/RcGitKit; then
+  echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
+  exit 1
+fi
 
 if ((fast == 0)); then
   step "macOS platform floor"
