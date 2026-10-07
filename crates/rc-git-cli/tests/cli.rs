@@ -519,6 +519,59 @@ fn files_lists_every_file_on_disk_including_ignored_ones() {
 }
 
 #[test]
+fn a_newline_in_a_name_is_quoted_not_split_into_two_records() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("evil\nREADME.md", b"x\n");
+
+    let out = rc_git(&["files", path]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout(&out),
+        "README.md\nZeta.txt\nalpha.txt\nbin.dat\ndocs/guide.md\n\"evil\\nREADME.md\"\nlink\n\
+         src/lib.rs\nsrc/main.rs\n"
+    );
+
+    let out = rc_git(&["changes", path]);
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), "?\t\"evil\\nREADME.md\"\n");
+
+    let out = rc_git(&["status", path]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("?\tblob\t\"evil\\nREADME.md\"\n"));
+
+    let out = rc_git(&["files", path, "-z"]);
+    assert!(out.status.success());
+    let records: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
+    assert_eq!(records.get(5).copied(), Some(b"evil\nREADME.md".as_slice()));
+    assert_eq!(
+        records.last().copied(),
+        Some(b"".as_slice()),
+        "every record ends in NUL"
+    );
+    let out = rc_git(&["changes", path, "-z"]);
+    assert_eq!(out.stdout, b"?\tevil\nREADME.md\0");
+    let out = rc_git(&["status", path, "-z"]);
+    assert!(
+        out.stdout
+            .split(|byte| *byte == 0)
+            .any(|record| record == b"?\tblob\tevil\nREADME.md")
+    );
+
+    fx.write("tab\there \"q\".txt", b"x\n");
+    fx.git(&["add", "."]);
+    fx.git(&["commit", "-q", "-m", "odd names"]);
+    let out = rc_git(&["ls", path]);
+    assert!(stdout(&out).contains("\t\"evil\\nREADME.md\"\n"));
+    assert!(stdout(&out).contains("\t\"tab\\there \\\"q\\\".txt\"\n"));
+    let out = rc_git(&["diff", path, "main~1", "main"]);
+    assert_eq!(
+        stdout(&out),
+        "A\t\"evil\\nREADME.md\"\nA\t\"tab\\there \\\"q\\\".txt\"\n"
+    );
+}
+
+#[test]
 fn stash_lists_entries_newest_first() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

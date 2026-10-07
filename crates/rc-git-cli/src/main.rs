@@ -31,9 +31,9 @@ usage: rc-git [--time] <command> <repo> [args]
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   diff    <repo> --worktree <path>        one working-tree file's hunks against HEAD
   blame   <repo> <rev> <path>             which commit introduced each line
-  status  <repo> [dir]                    one working-tree directory against HEAD
-  changes <repo> [--max-scan N]           every changed working-tree path against HEAD
-  files   <repo> [--max-scan N]           every file on disk, ignored folders skipped
+  status  <repo> [-z] [dir]               one working-tree directory against HEAD
+  changes <repo> [-z] [--max-scan N]      every changed working-tree path against HEAD
+  files   <repo> [-z] [--max-scan N]      every file on disk, ignored folders skipped
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
@@ -57,6 +57,11 @@ usage: rc-git [--time] <command> <repo> [args]
   RC_GIT_TOKEN, which keeps it out of process lists), --accept-hostkey SHA256:...
   (trust this ssh host-key fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh,
   an encrypted key's passphrase comes from RC_GIT_KEY_PASSPHRASE.
+
+  Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
+  or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
+  octal \\ooo), so \"a\\nb\" is one file. -z (files, changes, status) ends each record with
+  NUL instead of a newline and prints the path raw, unquoted, as the last field.
 
   An unknown flag or a surplus argument is a usage error. `--` ends the flags, so a path
   after it may start with '-'. -h or --help anywhere before `--` prints this text.
@@ -492,6 +497,71 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
     Ok(code)
 }
 
+/// Ends a record: a newline, or NUL under `-z`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Records {
+    Lines,
+    Nul,
+}
+
+impl Records {
+    fn from_args(args: &VerbArgs<'_>) -> Self {
+        if args.has("-z") {
+            Self::Nul
+        } else {
+            Self::Lines
+        }
+    }
+
+    /// Writes `path` as the last field of a record and ends the record.
+    fn end_with_path(self, out: &mut Vec<u8>, path: &[u8]) {
+        match self {
+            Self::Lines => {
+                write_path(out, path);
+                out.push(b'\n');
+            }
+            Self::Nul => {
+                out.extend_from_slice(path);
+                out.push(0);
+            }
+        }
+    }
+}
+
+/// Writes a path the way git's `core.quotePath` does: unchanged when it is UTF-8 with no control
+/// character, `"` or `\`; otherwise in double quotes with C escapes and every other byte that
+/// needs one in octal, so a newline in a name cannot split one record into two.
+fn write_path(out: &mut Vec<u8>, path: &[u8]) {
+    let plain = std::str::from_utf8(path).is_ok_and(|text| {
+        !text
+            .bytes()
+            .any(|byte| byte < 0x20 || byte == 0x7f || byte == b'"' || byte == b'\\')
+    });
+    if plain {
+        out.extend_from_slice(path);
+        return;
+    }
+    let utf8_valid = std::str::from_utf8(path).is_ok();
+    out.push(b'"');
+    for &byte in path {
+        match byte {
+            0x07 => out.extend_from_slice(b"\\a"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            0x0b => out.extend_from_slice(b"\\v"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            0x20..=0x7e => out.push(byte),
+            0x80..=0xff if utf8_valid => out.push(byte),
+            _ => out.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+        }
+    }
+    out.push(b'"');
+}
+
 fn head(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     split_args("head", args, &[], &[])?.expect(0, 0, "no arguments")?;
     let head = repo.head()?;
@@ -565,7 +635,8 @@ fn ls(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode>
             EntryKind::Symlink => "link",
             EntryKind::Submodule => "submodule",
         };
-        writeln!(out, "{kind}\t{}\t{}", entry.oid, entry.name_lossy())?;
+        write!(out, "{kind}\t{}\t", entry.oid)?;
+        Records::Lines.end_with_path(out, &entry.name);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -776,11 +847,15 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
                 ChangeKind::Renamed => "R",
                 ChangeKind::Copied => "C",
             };
-            write!(out, "{letter}\t{}", change.path)?;
-            if let Some(source) = &change.source_path {
-                write!(out, "\t{source}")?;
+            write!(out, "{letter}\t")?;
+            match &change.source_path {
+                Some(source) => {
+                    write_path(out, &change.path);
+                    out.push(b'\t');
+                    Records::Lines.end_with_path(out, source);
+                }
+                None => Records::Lines.end_with_path(out, &change.path),
             }
-            writeln!(out)?;
         }
         return Ok(ExitCode::SUCCESS);
     };
@@ -861,8 +936,9 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
 }
 
 fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let args = split_args("changes", args, &["--max-scan"], &[])?;
+    let args = split_args("changes", args, &["--max-scan"], &["-z"])?;
     args.expect(0, 0, "no positional arguments")?;
+    let records = Records::from_args(&args);
     let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
     let tree = repo.resolve_tree("HEAD")?;
     let report = repo.worktree_status(tree, max_scan)?;
@@ -874,7 +950,8 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
             WorktreeStatus::Ignored => "!",
             WorktreeStatus::Deleted => "D",
         };
-        writeln!(out, "{letter}\t{}", String::from_utf8_lossy(&entry.path))?;
+        write!(out, "{letter}\t")?;
+        records.end_with_path(out, &entry.path);
     }
     if report.truncated {
         writeln!(
@@ -887,13 +964,14 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
 }
 
 fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let args = split_args("files", args, &["--max-scan"], &[])?;
+    let args = split_args("files", args, &["--max-scan"], &["-z"])?;
     args.expect(0, 0, "no positional arguments")?;
+    let records = Records::from_args(&args);
     let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
     let tree = repo.resolve_tree("HEAD")?;
     let list = repo.worktree_files(tree, max_scan)?;
     for file in &list.files {
-        writeln!(out, "{}", String::from_utf8_lossy(&file.path))?;
+        records.end_with_path(out, &file.path);
     }
     if list.truncated {
         writeln!(
@@ -920,8 +998,9 @@ fn stash(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
 }
 
 fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let args = split_args("status", args, &[], &[])?;
+    let args = split_args("status", args, &[], &["-z"])?;
     args.expect(0, 1, "[dir]")?;
+    let records = Records::from_args(&args);
     let dir = &canonical_path(args.positional(0).unwrap_or(""))?;
     let tree = repo.resolve_tree("HEAD")?;
     let listing = repo.worktree_entries(tree, dir)?;
@@ -940,14 +1019,12 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
             EntryKind::Symlink => "link",
             EntryKind::Submodule => "submodule",
         };
-        writeln!(
-            out,
-            "{letter}\t{kind}\t{}",
-            String::from_utf8_lossy(&entry.name)
-        )?;
+        write!(out, "{letter}\t{kind}\t")?;
+        records.end_with_path(out, &entry.name);
     }
     for missing in &listing.missing {
-        writeln!(out, "D\t-\t{}", missing.name_lossy())?;
+        out.extend_from_slice(b"D\t-\t");
+        records.end_with_path(out, &missing.name);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1288,4 +1365,35 @@ fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
         None => writeln!(out, "push\tup to date")?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::write_path;
+
+    fn quoted(path: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_path(&mut out, path);
+        out
+    }
+
+    #[test]
+    fn plain_and_utf8_names_print_unchanged() {
+        assert_eq!(quoted(b"src/lib.rs"), b"src/lib.rs");
+        assert_eq!(
+            quoted("caf\u{e9}.txt".as_bytes()),
+            "caf\u{e9}.txt".as_bytes()
+        );
+    }
+
+    #[test]
+    fn control_quote_and_backslash_are_escaped() {
+        assert_eq!(quoted(b"a\nb"), br#""a\nb""#);
+        assert_eq!(quoted(b"a\x01\x7f\"\\"), br#""a\001\177\"\\""#);
+    }
+
+    #[test]
+    fn bytes_that_are_not_utf8_print_in_octal() {
+        assert_eq!(quoted(b"caf\xe9\xff"), br#""caf\351\377""#);
+    }
 }
