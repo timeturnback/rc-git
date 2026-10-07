@@ -16,7 +16,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public init(path: String) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let handle = rcgit_repo_open(path, &error) else {
-            throw Repository.take(error, fallback: "cannot open \(path)")
+            throw RepositoryError.take(error, fallback: "cannot open \(path)")
         }
         self.handle = handle
     }
@@ -32,18 +32,18 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
 
     /// The `.git` directory.
     public var gitDirectory: String {
-        Repository.takeString(rcgit_repo_git_dir(handle)) ?? ""
+        RepositoryError.takeString(rcgit_repo_git_dir(handle)) ?? ""
     }
 
     /// The working directory, or `nil` for a bare repository.
     public var workingDirectory: String? {
-        Repository.takeString(rcgit_repo_work_dir(handle))
+        RepositoryError.takeString(rcgit_repo_work_dir(handle))
     }
 
     public func head() throws -> Head {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let head = rcgit_head(handle, &error) else {
-            throw Repository.take(error, fallback: "cannot read HEAD")
+            throw RepositoryError.take(error, fallback: "cannot read HEAD")
         }
         defer { rcgit_head_free(head) }
         let refName = head.pointee.ref_name.map { String(cString: $0) }
@@ -58,18 +58,17 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let branch = rcgit_default_branch(handle, &error) else {
             if let error {
-                throw Repository.take(error, fallback: "cannot read the default branch")
+                throw RepositoryError.take(error, fallback: "cannot read the default branch")
             }
             return nil
         }
-        defer { rcgit_string_free(branch) }
-        return String(cString: branch)
+        return RepositoryError.takeString(branch)
     }
 
     public func refs() throws -> RefListing {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let list = rcgit_refs(handle, &error) else {
-            throw Repository.take(error, fallback: "cannot list references")
+            throw RepositoryError.take(error, fallback: "cannot list references")
         }
         defer { rcgit_ref_list_free(list) }
         var refs: [RefEntry] = []
@@ -98,7 +97,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var out = RcGitOid()
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_resolve(handle, spec, &out, &error) == RCGIT_OK else {
-            throw Repository.take(error, fallback: "cannot resolve \(spec)")
+            throw RepositoryError.take(error, fallback: "cannot resolve \(spec)")
         }
         return Oid(c: out)
     }
@@ -107,7 +106,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var out = RcGitOid()
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_resolve_tree(handle, spec, &out, &error) == RCGIT_OK else {
-            throw Repository.take(error, fallback: "cannot resolve \(spec)")
+            throw RepositoryError.take(error, fallback: "cannot resolve \(spec)")
         }
         return Oid(c: out)
     }
@@ -117,7 +116,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = oid.withC { rcgit_tree_of(handle, $0, &out, &error) }
         guard status == RCGIT_OK else {
-            throw Repository.take(error, fallback: "cannot peel \(oid)")
+            throw RepositoryError.take(error, fallback: "cannot peel \(oid)")
         }
         return Oid(c: out)
     }
@@ -125,7 +124,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public func treeEntries(_ tree: Oid) throws -> [TreeEntry] {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let list = tree.withC({ rcgit_tree_entries(handle, $0, &error) }) else {
-            throw Repository.take(error, fallback: "cannot read tree \(tree)")
+            throw RepositoryError.take(error, fallback: "cannot read tree \(tree)")
         }
         defer { rcgit_tree_list_free(list) }
         var entries: [TreeEntry] = []
@@ -140,7 +139,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public func entry(at path: String, under root: Oid) throws -> TreeEntry? {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let entry = root.withC({ rcgit_entry_at_path(handle, $0, path, &error) }) else {
-            if let error { throw Repository.take(error, fallback: "cannot look up \(path)") }
+            if let error { throw RepositoryError.take(error, fallback: "cannot look up \(path)") }
             return nil
         }
         defer { rcgit_tree_entry_free(entry) }
@@ -152,20 +151,10 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let blob = oid.withC({ rcgit_blob_read(handle, $0, limit, &error) }) else {
-            throw Repository.take(error, fallback: "cannot read blob \(oid)")
+            throw RepositoryError.take(error, fallback: "cannot read blob \(oid)")
         }
         defer { rcgit_blob_free(blob) }
-        let c = blob.pointee
-        switch c.kind {
-        case RcGitBlobKind_Text:
-            let data = Array(UnsafeBufferPointer(start: c.data, count: c.data_len))
-            let lineStarts = Array(UnsafeBufferPointer(start: c.line_starts, count: c.line_count))
-            return .text(data: data, lineStarts: lineStarts, validUTF8: c.valid_utf8)
-        case RcGitBlobKind_Binary:
-            return .binary(size: c.size)
-        default:
-            return .tooLarge(size: c.size, limit: c.limit)
-        }
+        return BlobContent(c: blob.pointee)
     }
 
     /// Size in bytes, from the object header, without decoding the content.
@@ -174,7 +163,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = oid.withC { rcgit_blob_size(handle, $0, &size, &error) }
         guard status == RCGIT_OK else {
-            throw Repository.take(error, fallback: "cannot size blob \(oid)")
+            throw RepositoryError.take(error, fallback: "cannot size blob \(oid)")
         }
         return size
     }
@@ -183,7 +172,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public func log(tip: Oid, skip: Int = 0, limit: Int = 100) throws -> [CommitSummary] {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let list = tip.withC({ rcgit_log(handle, $0, skip, limit, &error) }) else {
-            throw Repository.take(error, fallback: "cannot walk history from \(tip)")
+            throw RepositoryError.take(error, fallback: "cannot walk history from \(tip)")
         }
         defer { rcgit_commit_list_free(list) }
         var commits: [CommitSummary] = []
@@ -207,7 +196,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             }
         }
         guard let page else {
-            throw Repository.take(error, fallback: "cannot walk history of '\(path)'")
+            throw RepositoryError.take(error, fallback: "cannot walk history of '\(path)'")
         }
         defer { rcgit_commit_page_free(page) }
         return Repository.commitPage(page.pointee)
@@ -230,7 +219,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             }
         }
         guard let page else {
-            throw Repository.take(error, fallback: "cannot search history from \(tip)")
+            throw RepositoryError.take(error, fallback: "cannot search history from \(tip)")
         }
         defer { rcgit_commit_page_free(page) }
         return Repository.commitPage(page.pointee)
@@ -262,7 +251,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             }
         }
         guard let list else {
-            throw Repository.take(error, fallback: "cannot diff trees")
+            throw RepositoryError.take(error, fallback: "cannot diff trees")
         }
         defer { rcgit_tree_change_list_free(list) }
         var changes: [TreeChange] = []
@@ -285,7 +274,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             }
         }
         guard let diff else {
-            throw Repository.take(error, fallback: "cannot diff blobs")
+            throw RepositoryError.take(error, fallback: "cannot diff blobs")
         }
         defer { rcgit_blob_diff_free(diff) }
         return Repository.blobDiff(from: diff.pointee)
@@ -301,7 +290,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             rcgit_diff_worktree_file(handle, oldPtr, path, limit, context, &error)
         }
         guard let diff else {
-            throw Repository.take(error, fallback: "cannot diff '\(path)' against the tree")
+            throw RepositoryError.take(error, fallback: "cannot diff '\(path)' against the tree")
         }
         defer { rcgit_blob_diff_free(diff) }
         return Repository.blobDiff(from: diff.pointee)
@@ -329,7 +318,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = tip.withC { rcgit_blame(handle, $0, path, &error) }
         guard let list else {
-            throw Repository.take(error, fallback: "cannot blame \(path)")
+            throw RepositoryError.take(error, fallback: "cannot blame \(path)")
         }
         defer { rcgit_blame_list_free(list) }
         var ranges: [BlameRange] = []
@@ -356,7 +345,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = tree.withC { rcgit_worktree_entries(handle, $0, dir, &error) }
         guard let list else {
-            throw Repository.take(error, fallback: "cannot list working tree at '\(dir)'")
+            throw RepositoryError.take(error, fallback: "cannot list working tree at '\(dir)'")
         }
         defer { rcgit_worktree_list_free(list) }
         var entries: [WorktreeEntry] = []
@@ -389,7 +378,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = tree.withC { rcgit_worktree_status(handle, $0, maxScan, &error) }
         guard let list else {
-            throw Repository.take(error, fallback: "cannot scan the working tree")
+            throw RepositoryError.take(error, fallback: "cannot scan the working tree")
         }
         defer { rcgit_status_list_free(list) }
         var entries: [StatusEntry] = []
@@ -418,7 +407,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = tree.withC { rcgit_worktree_files(handle, $0, maxScan, &error) }
         guard let list else {
-            throw Repository.take(error, fallback: "cannot list the working tree's files")
+            throw RepositoryError.take(error, fallback: "cannot list the working tree's files")
         }
         defer { rcgit_worktree_file_list_free(list) }
         var files: [WorktreeFile] = []
@@ -435,7 +424,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public func stashList() throws -> [StashEntry] {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let list = rcgit_stash_list(handle, &error) else {
-            throw Repository.take(error, fallback: "cannot read the stash")
+            throw RepositoryError.take(error, fallback: "cannot read the stash")
         }
         defer { rcgit_stash_list_free(list) }
         var entries: [StashEntry] = []
@@ -455,26 +444,17 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let blob = rcgit_worktree_read(handle, path, limit, &error) else {
-            throw Repository.take(error, fallback: "cannot read '\(path)' from the working tree")
+            throw RepositoryError.take(
+                error, fallback: "cannot read '\(path)' from the working tree")
         }
         defer { rcgit_blob_free(blob) }
-        let c = blob.pointee
-        switch c.kind {
-        case RcGitBlobKind_Text:
-            let data = Array(UnsafeBufferPointer(start: c.data, count: c.data_len))
-            let lineStarts = Array(UnsafeBufferPointer(start: c.line_starts, count: c.line_count))
-            return .text(data: data, lineStarts: lineStarts, validUTF8: c.valid_utf8)
-        case RcGitBlobKind_Binary:
-            return .binary(size: c.size)
-        default:
-            return .tooLarge(size: c.size, limit: c.limit)
-        }
+        return BlobContent(c: blob.pointee)
     }
 
     public func commit(_ oid: Oid) throws -> CommitSummary {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let commit = oid.withC({ rcgit_commit(handle, $0, &error) }) else {
-            throw Repository.take(error, fallback: "cannot read commit \(oid)")
+            throw RepositoryError.take(error, fallback: "cannot read commit \(oid)")
         }
         defer { rcgit_commit_free(commit) }
         return CommitSummary(c: commit.pointee)
@@ -484,7 +464,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     public func commitDetails(_ oid: Oid) throws -> CommitDetail {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let detail = oid.withC({ rcgit_commit_details(handle, $0, &error) }) else {
-            throw Repository.take(error, fallback: "cannot read commit \(oid)")
+            throw RepositoryError.take(error, fallback: "cannot read commit \(oid)")
         }
         defer { rcgit_commit_detail_free(detail) }
         let c = detail.pointee
@@ -498,17 +478,20 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             tree: Oid(c: c.tree)
         )
     }
+}
 
-    private static func take(_ error: UnsafeMutablePointer<CChar>?, fallback: String)
-        -> RepositoryError
-    {
-        RepositoryError(takeString(error) ?? fallback)
-    }
-
-    private static func takeString(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
-        guard let pointer else { return nil }
-        defer { rcgit_string_free(pointer) }
-        return String(cString: pointer)
+extension BlobContent {
+    init(c: RcGitBlob) {
+        switch c.kind {
+        case RcGitBlobKind_Text:
+            let data = Array(UnsafeBufferPointer(start: c.data, count: c.data_len))
+            let lineStarts = Array(UnsafeBufferPointer(start: c.line_starts, count: c.line_count))
+            self = .text(data: data, lineStarts: lineStarts, validUTF8: c.valid_utf8)
+        case RcGitBlobKind_Binary:
+            self = .binary(size: c.size)
+        default:
+            self = .tooLarge(size: c.size, limit: c.limit)
+        }
     }
 }
 

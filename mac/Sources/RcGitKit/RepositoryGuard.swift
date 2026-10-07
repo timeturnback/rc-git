@@ -111,7 +111,7 @@ public enum RepositoryGuard {
     public static func planBranchDelete(repoPath: String, name: String) throws -> GuardDecision {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let plan = rcgit_guard_plan_branch_delete(repoPath, name, &error) else {
-            throw take(error, fallback: "cannot plan deleting '\(name)'")
+            throw RepositoryError.take(error, fallback: "cannot plan deleting '\(name)'")
         }
         defer { rcgit_guard_decision_free(plan) }
         return GuardDecision(c: plan)
@@ -119,16 +119,14 @@ public enum RepositoryGuard {
 
     /// What deleting a tag would need. Pure policy.
     public static func planTagDelete(name: String) -> GuardDecision? {
-        guard let plan = rcgit_guard_plan_tag_delete(name) else { return nil }
-        defer { rcgit_guard_decision_free(plan) }
-        return GuardDecision(c: plan)
+        decision(rcgit_guard_plan_tag_delete(name))
     }
 
     /// Creates a branch at `revspec`, never overwriting an existing one.
     public static func createBranch(repoPath: String, name: String, revspec: String) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_guard_branch_create(repoPath, name, revspec, &error) == RCGIT_OK else {
-            throw take(error, fallback: "cannot create branch '\(name)'")
+            throw RepositoryError.take(error, fallback: "cannot create branch '\(name)'")
         }
     }
 
@@ -136,7 +134,7 @@ public enum RepositoryGuard {
     public static func createTag(repoPath: String, name: String, revspec: String) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_guard_tag_create(repoPath, name, revspec, &error) == RCGIT_OK else {
-            throw take(error, fallback: "cannot create tag '\(name)'")
+            throw RepositoryError.take(error, fallback: "cannot create tag '\(name)'")
         }
     }
 
@@ -149,9 +147,9 @@ public enum RepositoryGuard {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = rcgit_guard_branch_delete(repoPath, name, input, &backup, &error)
         guard status == RCGIT_OK else {
-            throw take(error, fallback: "cannot delete branch '\(name)'")
+            throw RepositoryError.take(error, fallback: "cannot delete branch '\(name)'")
         }
-        return takeString(backup)
+        return RepositoryError.takeString(backup)
     }
 
     /// Deletes a tag; `input` answers the challenge. Returns the backup ref, if written.
@@ -163,9 +161,9 @@ public enum RepositoryGuard {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = rcgit_guard_tag_delete(repoPath, name, input, &backup, &error)
         guard status == RCGIT_OK else {
-            throw take(error, fallback: "cannot delete tag '\(name)'")
+            throw RepositoryError.take(error, fallback: "cannot delete tag '\(name)'")
         }
-        return takeString(backup)
+        return RepositoryError.takeString(backup)
     }
 
     /// What committing `files` selected files would need. Pure policy.
@@ -240,7 +238,7 @@ public enum RepositoryGuard {
             }
         }
         guard let result else {
-            throw take(error, fallback: "cannot commit")
+            throw RepositoryError.take(error, fallback: "cannot commit")
         }
         defer { rcgit_commit_result_free(result) }
         return CommitOutcome(
@@ -254,18 +252,17 @@ public enum RepositoryGuard {
         input: String?
     ) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let ownedPaths = paths.map { strdup($0) }
-        defer { ownedPaths.forEach { free($0) } }
-        let pathPointers = ownedPaths.map { UnsafePointer($0) }
-        let status = withOwnedCStrings([message, author?.name, author?.email, input]) { strings in
-            pathPointers.withUnsafeBufferPointer { buffer in
-                rcgit_guard_stash_push(
-                    repoPath, buffer.baseAddress, paths.count, strings[0], strings[1],
-                    strings[2], strings[3], &error)
+        let status = withOwnedCStrings(paths) { pathPointers in
+            withOwnedCStrings([message, author?.name, author?.email, input]) { strings in
+                pathPointers.withUnsafeBufferPointer { buffer in
+                    rcgit_guard_stash_push(
+                        repoPath, buffer.baseAddress, paths.count, strings[0], strings[1],
+                        strings[2], strings[3], &error)
+                }
             }
         }
         guard status == RCGIT_OK else {
-            throw take(error, fallback: "cannot stash")
+            throw RepositoryError.take(error, fallback: "cannot stash")
         }
     }
 
@@ -273,7 +270,7 @@ public enum RepositoryGuard {
     public static func stashApply(repoPath: String, index: Int, input: String?) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_guard_stash_apply(repoPath, index, input, &error) == RCGIT_OK else {
-            throw take(error, fallback: "cannot apply the stash")
+            throw RepositoryError.take(error, fallback: "cannot apply the stash")
         }
     }
 
@@ -283,9 +280,9 @@ public enum RepositoryGuard {
         var backup: UnsafeMutablePointer<CChar>? = nil
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_guard_stash_pop(repoPath, index, input, &backup, &error) == RCGIT_OK else {
-            throw take(error, fallback: "cannot pop the stash")
+            throw RepositoryError.take(error, fallback: "cannot pop the stash")
         }
-        return takeString(backup)
+        return RepositoryError.takeString(backup)
     }
 
     /// Deletes `stash@{index}` without applying it. Returns the backup ref, if written.
@@ -294,24 +291,24 @@ public enum RepositoryGuard {
         var backup: UnsafeMutablePointer<CChar>? = nil
         var error: UnsafeMutablePointer<CChar>? = nil
         guard rcgit_guard_stash_drop(repoPath, index, input, &backup, &error) == RCGIT_OK else {
-            throw take(error, fallback: "cannot drop the stash")
+            throw RepositoryError.take(error, fallback: "cannot drop the stash")
         }
-        return takeString(backup)
+        return RepositoryError.takeString(backup)
     }
 
     /// Discards every change at `paths`; `input` answers the typed-phrase challenge.
     public static func discard(repoPath: String, paths: [String], input: String?) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let ownedPaths = paths.map { strdup($0) }
-        defer { ownedPaths.forEach { free($0) } }
-        let pathPointers = ownedPaths.map { UnsafePointer($0) }
-        let status = withOwnedCStrings([input]) { strings in
-            pathPointers.withUnsafeBufferPointer { buffer in
-                rcgit_guard_discard(repoPath, buffer.baseAddress, paths.count, strings[0], &error)
+        let status = withOwnedCStrings(paths) { pathPointers in
+            withOwnedCStrings([input]) { strings in
+                pathPointers.withUnsafeBufferPointer { buffer in
+                    rcgit_guard_discard(
+                        repoPath, buffer.baseAddress, paths.count, strings[0], &error)
+                }
             }
         }
         guard status == RCGIT_OK else {
-            throw take(error, fallback: "cannot discard")
+            throw RepositoryError.take(error, fallback: "cannot discard")
         }
     }
 
@@ -328,7 +325,7 @@ public enum RepositoryGuard {
             }
         }
         guard status == RCGIT_OK else {
-            throw take(error, fallback: "cannot discard hunks of '\(path)'")
+            throw RepositoryError.take(error, fallback: "cannot discard hunks of '\(path)'")
         }
     }
 
@@ -348,18 +345,6 @@ public enum RepositoryGuard {
         let owned = strings.map { $0.map { strdup($0) } ?? nil }
         defer { owned.forEach { free($0) } }
         return body(owned.map { UnsafePointer($0) })
-    }
-
-    private static func take(_ error: UnsafeMutablePointer<CChar>?, fallback: String)
-        -> RepositoryError
-    {
-        RepositoryError(takeString(error) ?? fallback)
-    }
-
-    private static func takeString(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
-        guard let pointer else { return nil }
-        defer { rcgit_string_free(pointer) }
-        return String(cString: pointer)
     }
 }
 
@@ -503,7 +488,7 @@ extension RepositoryGuard {
     public static func remotePreflight(repoPath: String) throws -> RemoteStatus {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let status = rcgit_guard_remote_preflight(repoPath, &error) else {
-            throw take(error, fallback: "cannot read the upstream status")
+            throw RepositoryError.take(error, fallback: "cannot read the upstream status")
         }
         defer { rcgit_remote_status_free(status) }
         let value = status.pointee
@@ -607,13 +592,14 @@ extension RepositoryGuard {
         _ status: Int32, _ error: UnsafeMutablePointer<CChar>?,
         _ hostkey: UnsafeMutablePointer<CChar>? = nil, fallback: String
     ) -> SyncError {
-        let message = takeString(error) ?? fallback
+        let message = RepositoryError.takeString(error) ?? fallback
         switch status {
         case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
         case RCGIT_CANCELLED: return .cancelled(message: message)
         case RCGIT_DIVERGED: return .diverged(message: message)
         case RCGIT_HOSTKEY_UNKNOWN:
-            return .hostKeyUnknown(message: message, hostKey: takeString(hostkey) ?? "")
+            return .hostKeyUnknown(
+                message: message, hostKey: RepositoryError.takeString(hostkey) ?? "")
         default: return .failure(message: message)
         }
     }
