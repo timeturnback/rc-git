@@ -1025,48 +1025,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// A changed file's label: the change letter in its color, then the whole path when flat
-    /// or the name in a folder tree. Folder rows are the name alone. The truncation lives in
-    /// the string's paragraph style — a label showing an attributed string ignores the one
-    /// set on the field.
+    /// or the name in a folder tree. Folder rows are the name alone.
     private static func label(for row: ChangeRow) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        // A whole path reads from its tail, a bare name from its head.
-        paragraph.lineBreakMode = row.name.contains("/") ? .byTruncatingHead : .byTruncatingTail
-        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        guard let change = row.entry else {
-            return NSAttributedString(
-                string: row.name,
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                    .paragraphStyle: paragraph,
-                ])
-        }
-        let text = NSMutableAttributedString(
-            string: change.kind.letter + "  ",
-            attributes: [
-                .font: NSFont.monospacedSystemFont(
-                    ofSize: NSFont.smallSystemFontSize, weight: .bold),
-                .foregroundColor: color(for: change.kind),
-                .paragraphStyle: paragraph,
-            ])
-        text.append(
-            NSAttributedString(
-                string: row.name,
-                attributes: [
-                    .font: font, .foregroundColor: NSColor.labelColor,
-                    .paragraphStyle: paragraph,
-                ]))
-        return text
-    }
-
-    private static func color(for kind: ChangeKind) -> NSColor {
-        switch kind {
-        case .added: .systemGreen
-        case .deleted: .systemRed
-        case .modified: .systemOrange
-        case .renamed, .copied: .systemBlue
-        }
+        guard let change = row.entry else { return ChangeRowLabel.folder(name: row.name) }
+        return ChangeRowLabel.make(
+            letter: change.kind.letter, color: StatusPalette.color(for: change.kind),
+            name: row.name)
     }
 
     private func reusableCell(

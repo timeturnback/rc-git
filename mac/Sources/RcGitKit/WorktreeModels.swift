@@ -17,6 +17,17 @@ public enum WorktreeStatus: Sendable, Hashable {
         default: self = .ignored
         }
     }
+
+    /// One-letter label for a row badge; `nil` when the path is unchanged.
+    public var letter: String? {
+        switch self {
+        case .unchanged: return nil
+        case .modified: return "M"
+        case .untracked: return "U"
+        case .ignored: return "I"
+        case .deleted: return "D"
+        }
+    }
 }
 
 /// One changed path from a full working-tree scan.

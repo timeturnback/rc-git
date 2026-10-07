@@ -333,14 +333,9 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     /// The status letter a working-tree row carries at its trailing edge, if any.
     static func badge(for row: BrowseRow) -> (letter: String, color: NSColor)? {
-        if row.missing { return ("D", .systemRed) }
-        return switch row.status {
-        case .modified: ("M", .systemOrange)
-        case .untracked: ("U", .systemGreen)
-        case .ignored: ("I", .tertiaryLabelColor)
-        case .deleted: ("D", .systemRed)
-        case .unchanged, nil: nil
-        }
+        guard let status = row.missing ? .deleted : row.status, let letter = status.letter
+        else { return nil }
+        return (letter, StatusPalette.color(for: status))
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

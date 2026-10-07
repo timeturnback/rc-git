@@ -778,45 +778,12 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// A change row's label: the status letter, then the path in `.flat` or the name in
-    /// `.folders`. The truncation lives in the string's paragraph style — a label showing an
-    /// attributed string ignores the one set on the cell, and clips with no ellipsis.
+    /// `.folders`.
     private static func label(for node: StatusNode) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        // A whole path reads from its tail, a bare name from its head.
-        paragraph.lineBreakMode = node.name.contains("/") ? .byTruncatingHead : .byTruncatingTail
-        guard let entry = node.entry else {
-            return NSAttributedString(
-                string: node.name,
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                    .paragraphStyle: paragraph,
-                ])
-        }
-        let (letter, color): (String, NSColor) =
-            switch entry.status {
-            case .modified: ("M", .systemOrange)
-            case .untracked: ("U", .systemGreen)
-            case .deleted: ("D", .systemRed)
-            case .unchanged, .ignored: (" ", .labelColor)
-            }
-        let text = NSMutableAttributedString(
-            string: letter + "  ",
-            attributes: [
-                .font: NSFont.monospacedSystemFont(
-                    ofSize: NSFont.smallSystemFontSize, weight: .bold),
-                .foregroundColor: color,
-                .paragraphStyle: paragraph,
-            ])
-        text.append(
-            NSAttributedString(
-                string: node.name,
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                    .foregroundColor: NSColor.labelColor,
-                    .paragraphStyle: paragraph,
-                ]))
-        return text
+        guard let entry = node.entry else { return ChangeRowLabel.folder(name: node.name) }
+        return ChangeRowLabel.make(
+            letter: entry.status.letter ?? " ", color: StatusPalette.color(for: entry.status),
+            name: node.name)
     }
 
     private func diffCell(row: Int) -> NSView? {
