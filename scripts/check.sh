@@ -49,7 +49,18 @@ if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
   exit 1
 fi
 step "cargo clippy"
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+# clippy reports a clippy.toml path that resolves to nothing as a config warning -D misses.
+clippy_out="$(cargo clippy --locked --workspace --all-targets --all-features \
+  -- -D warnings 2>&1)" || {
+  printf '%s\n' "$clippy_out"
+  exit 1
+}
+printf '%s\n' "$clippy_out"
+if grep -q 'does not refer to a reachable' <<<"$clippy_out"; then
+  echo 'error: clippy.toml names a path that resolves to nothing;' \
+    'fix it or mark it allow-invalid with a reason' >&2
+  exit 1
+fi
 step "cargo test"
 cargo test --locked --workspace
 step "cargo doc"
