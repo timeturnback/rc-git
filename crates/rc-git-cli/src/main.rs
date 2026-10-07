@@ -13,7 +13,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
-    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, RefKind, Repository, WorktreeStatus,
+    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, WorktreeStatus,
 };
 
 const USAGE: &str = "\
@@ -28,6 +28,8 @@ usage: rc-git [--time] <command> <repo> [args]
   search  <repo> [rev] [--message S] [--author S] [--since EPOCH] [--until EPOCH] [-n N]
           [--max-scan N]                  commits matching every given filter
   show    <repo> <rev>                    one commit: header lines, then the message
+  diff    <repo> <rev>                    changed files of one commit against its first parent;
+                                          a root commit lists every file as added
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   diff    <repo> --worktree <path>        one working-tree file's hunks against HEAD
   blame   <repo> <rev> <path>             which commit introduced each line
@@ -854,32 +856,19 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
         let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
         return render_blob_diff(diff, path, out);
     }
-    args.expect(2, 3, "<old> <new> [path]")?;
+    args.expect(1, 3, "<rev>, or <old> <new> [path]")?;
+    if let [rev] = args.positionals[..] {
+        let new = repo.resolve(rev)?;
+        let parent = repo.commit(new)?.parents.first().copied();
+        return render_tree_changes(repo, parent, new, out);
+    }
     let [old_rev, new_rev, ..] = args.positionals[..] else {
         bail!("diff needs <old> <new>\n\n{USAGE}");
     };
     let old = repo.resolve(old_rev)?;
     let new = repo.resolve(new_rev)?;
     let Some(path) = args.positional(2) else {
-        for change in repo.diff_trees(Some(old), new)? {
-            let letter = match change.kind {
-                ChangeKind::Added => "A",
-                ChangeKind::Deleted => "D",
-                ChangeKind::Modified => "M",
-                ChangeKind::Renamed => "R",
-                ChangeKind::Copied => "C",
-            };
-            write!(out, "{letter}\t")?;
-            match &change.source_path {
-                Some(source) => {
-                    write_path(out, &change.path);
-                    out.push(b'\t');
-                    Records::Lines.end_with_path(out, source);
-                }
-                None => Records::Lines.end_with_path(out, &change.path),
-            }
-        }
-        return Ok(ExitCode::SUCCESS);
+        return render_tree_changes(repo, Some(old), new, out);
     };
     let path = &canonical_path(path)?;
     let old_tree = repo.tree_of(old)?;
@@ -891,6 +880,35 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     }
     let diff = repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
     render_blob_diff(diff, path, out)
+}
+
+/// One `<letter>\t<path>[\t<source>]` line per changed file from `old` (the empty tree when
+/// `None`) to `new`.
+fn render_tree_changes(
+    repo: &Repository,
+    old: Option<Oid>,
+    new: Oid,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    for change in repo.diff_trees(old, new)? {
+        let letter = match change.kind {
+            ChangeKind::Added => "A",
+            ChangeKind::Deleted => "D",
+            ChangeKind::Modified => "M",
+            ChangeKind::Renamed => "R",
+            ChangeKind::Copied => "C",
+        };
+        write!(out, "{letter}\t")?;
+        match &change.source_path {
+            Some(source) => {
+                write_path(out, &change.path);
+                out.push(b'\t');
+                Records::Lines.end_with_path(out, source);
+            }
+            None => Records::Lines.end_with_path(out, &change.path),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<ExitCode> {

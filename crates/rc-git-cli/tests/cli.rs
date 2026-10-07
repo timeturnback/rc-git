@@ -463,9 +463,27 @@ fn diff_lists_changes_and_prints_hunks() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("does not exist"));
 
-    let out = rc_git(&["diff", path, "v0.9"]);
+    let out = rc_git(&["diff", path]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("diff needs <old> <new>"));
+    assert!(stderr(&out).contains("diff needs <rev>, or <old> <new> [path]"));
+}
+
+#[test]
+fn diff_of_one_commit_uses_first_parent_or_nothing_for_a_root() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["diff", path, "v0.9"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "A\tREADME.md\nA\tbin.dat\nA\tsrc/main.rs\n");
+
+    let out = rc_git(&["diff", path, "main"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        stdout(&rc_git(&["diff", path, "main~1", "main"]))
+    );
+    assert!(stdout(&out).contains("A\tdocs/guide.md\n"));
 }
 
 #[test]
