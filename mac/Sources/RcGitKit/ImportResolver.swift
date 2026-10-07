@@ -44,7 +44,8 @@ public struct ImportResolver {
         if specifier.hasPrefix("./") || specifier.hasPrefix("../") || last == "." || last == ".." {
             // `.`, `..` and a trailing slash name a directory, never a file beside it.
             let namesDirectory = last == "." || last == ".." || last == ""
-            return Self.join(directory, specifier).flatMap(namesDirectory ? indexFile : probe)
+            return RepoPath.flatten(directory, specifier).flatMap(
+                namesDirectory ? indexFile : probe)
         }
         return resolveThroughConfig(specifier, from: directory)
     }
@@ -92,24 +93,6 @@ public struct ImportResolver {
             case .tree, .submodule: return false
             }
         }
-    }
-
-    /// Joins and flattens `.` and `..`. `nil` when the path climbs out of the repository; an
-    /// empty result is the repository root.
-    private static func join(_ base: [String], _ relative: String) -> [String]? {
-        var components = base
-        for component in relative.split(separator: "/") {
-            switch component {
-            case ".":
-                continue
-            case "..":
-                guard !components.isEmpty else { return nil }
-                components.removeLast()
-            default:
-                components.append(String(component))
-            }
-        }
-        return components
     }
 
     // MARK: Config
@@ -164,11 +147,11 @@ public struct ImportResolver {
             let base = config.baseURL ?? paths.directory
             for target in targets where !target.hasPrefix("/") {
                 let path = target.replacingOccurrences(of: "*", with: wildcard)
-                if let found = Self.join(base, path).flatMap(probe) { return found }
+                if let found = RepoPath.flatten(base, path).flatMap(probe) { return found }
             }
         }
         guard let baseURL = config.baseURL else { return nil }
-        return Self.join(baseURL, specifier).flatMap(probe)
+        return RepoPath.flatten(baseURL, specifier).flatMap(probe)
     }
 
     /// The `paths` entry a specifier falls under and the text its `*` stands for. An exact
@@ -205,13 +188,14 @@ public struct ImportResolver {
         let options = root["compilerOptions"] as? [String: Any] ?? [:]
         var result = ModulePaths()
         if let baseURL = options["baseUrl"] as? String {
-            result.baseURL = Self.join(directory, baseURL)
+            result.baseURL = RepoPath.flatten(directory, baseURL)
         }
         if let patterns = options["paths"] as? [String: [String]] {
             result.paths = (patterns, directory)
         }
         for reference in root["references"] as? [[String: Any]] ?? [] {
-            guard let target = (reference["path"] as? String).flatMap({ Self.join(directory, $0) })
+            guard let path = reference["path"] as? String,
+                let target = RepoPath.flatten(directory, path)
             else { continue }
             result.references.append(target)
         }
@@ -220,7 +204,7 @@ public struct ImportResolver {
         }
         let extended = (root["extends"] as? [String]) ?? (root["extends"] as? String).map { [$0] }
         for parent in (extended ?? []).reversed() where parent.hasPrefix(".") {
-            guard let target = Self.join(directory, parent),
+            guard let target = RepoPath.flatten(directory, parent),
                 let inherited = modulePaths(at: configFile(at: target), depth: depth + 1)
             else { continue }
             result.baseURL = result.baseURL ?? inherited.baseURL

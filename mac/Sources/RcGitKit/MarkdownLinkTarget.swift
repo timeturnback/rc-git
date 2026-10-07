@@ -65,21 +65,8 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
     }
 
     /// Joins and flattens `.` and `..`. Returns `nil` when the link climbs out of the
-    /// repository, which nothing in the tree could answer.
+    /// repository or lands on its root, neither of which names a file in the tree.
     private static func normalize(base: [String], relative: String) -> String? {
-        var components = base
-        for component in relative.split(separator: "/") {
-            switch component {
-            case ".":
-                continue
-            case "..":
-                guard !components.isEmpty else { return nil }
-                components.removeLast()
-            default:
-                components.append(String(component))
-            }
-        }
-        guard !components.isEmpty else { return nil }
-        return components.joined(separator: "/")
+        RepoPath.flatten(base, relative).flatMap { $0.isEmpty ? nil : $0.joined(separator: "/") }
     }
 }
