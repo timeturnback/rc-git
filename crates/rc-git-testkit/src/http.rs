@@ -181,6 +181,8 @@ struct RequestHead {
     chunked: bool,
     expects_continue: bool,
     authorization: String,
+    /// Every header in arrival order, for the `HTTP_*` CGI variables.
+    headers: Vec<(String, String)>,
 }
 
 /// What `git http-backend` needs to answer one request, as CGI variables plus the body.
@@ -189,6 +191,7 @@ struct CgiRequest<'a> {
     path_info: &'a str,
     query_string: &'a str,
     content_type: &'a str,
+    headers: &'a [(String, String)],
     body: &'a [u8],
 }
 
@@ -221,6 +224,7 @@ fn handle_connection(
         path_info,
         query_string,
         content_type: &head.content_type,
+        headers: &head.headers,
         body: &body,
     };
     let output = run_backend(backend, project_root, &request);
@@ -262,6 +266,17 @@ fn apply_header(head: &mut RequestHead, name: &str, value: &str) {
         "authorization" => value.clone_into(&mut head.authorization),
         _ => {}
     }
+    head.headers.push((name.to_owned(), value.to_owned()));
+}
+
+/// The CGI variable for a request header (RFC 3875 4.1.18): `Git-Protocol` becomes
+/// `HTTP_GIT_PROTOCOL`. `None` for Content-Type and Content-Length, which have their own
+/// CGI names, and for a name that is not a plain token.
+fn cgi_header_var(name: &str) -> Option<String> {
+    let plain = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    let excluded =
+        name.eq_ignore_ascii_case("content-type") || name.eq_ignore_ascii_case("content-length");
+    (plain && !excluded).then(|| format!("HTTP_{}", name.to_ascii_uppercase().replace('-', "_")))
 }
 
 /// Answers `401` with a Basic challenge and closes the connection.
@@ -294,7 +309,8 @@ fn run_backend(
     project_root: &std::path::Path,
     request: &CgiRequest<'_>,
 ) -> Vec<u8> {
-    let mut child = Command::new(backend)
+    let mut command = Command::new(backend);
+    command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("GIT_PROJECT_ROOT", project_root)
@@ -305,7 +321,13 @@ fn run_backend(
         .env("CONTENT_TYPE", request.content_type)
         .env("CONTENT_LENGTH", request.body.len().to_string())
         .env("REMOTE_ADDR", "127.0.0.1")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    for (name, value) in request.headers {
+        if let Some(var) = cgi_header_var(name) {
+            command.env(var, value);
+        }
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
