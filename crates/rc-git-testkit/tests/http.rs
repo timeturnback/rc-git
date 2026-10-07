@@ -5,16 +5,8 @@ use rc_git_testkit::{Fixture, HttpGitServer};
 #[test]
 fn a_served_repository_clones_and_accepts_a_push() {
     let origin = Fixture::standard();
-    origin.git(&["clone", "--bare", "--quiet", ".", "remote.git"]);
-    origin.git(&[
-        "--git-dir",
-        "remote.git",
-        "config",
-        "http.receivepack",
-        "true",
-    ]);
-    let bare = origin.path().join("remote.git");
-    let server = HttpGitServer::serve(&bare);
+    let (bare, bare_path) = origin.bare_copy();
+    let server = HttpGitServer::serve(&bare_path);
 
     let clone = Fixture::empty_dir();
     clone.git(&["clone", "--quiet", &server.url(), "."]);
@@ -24,14 +16,15 @@ fn a_served_repository_clones_and_accepts_a_push() {
     clone.commit("Pushed over HTTP", "2024-02-01T00:00:00+0000");
     clone.git(&["-c", "http.receivepack=true", "push", "--quiet"]);
 
-    let served_tip = origin.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
+    let served_tip = bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
     assert_eq!(clone.rev_parse("HEAD"), served_tip);
 }
 
 #[test]
 fn missing_or_wrong_credentials_are_rejected_and_correct_ones_accepted() {
     let origin = Fixture::standard();
-    let server = origin.serve_http_with_auth("user", "sekret");
+    let (_bare, bare_path) = origin.bare_copy();
+    let server = HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
 
     let denied = Fixture::empty_dir();
     let output = denied.git_expect_failure(&[

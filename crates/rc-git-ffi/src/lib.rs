@@ -4823,21 +4823,9 @@ mod tests {
     #[test]
     fn ssh_unknown_hostkey_maps_to_its_status_and_an_accepted_retry_succeeds() {
         let origin = Fixture::standard();
-        let bare = Fixture::empty_dir();
-        let bare_path = bare.path().join("remote.git");
-        origin.git(&[
-            "clone",
-            "--bare",
-            "--quiet",
-            ".",
-            &bare_path.to_string_lossy(),
-        ]);
+        let (_bare, bare_path) = origin.bare_copy();
         let server = rc_git_testkit::SshGitServer::serve(&bare_path);
-        let clone = Fixture::empty_dir();
-        clone.git(&["clone", "--quiet", &bare_path.to_string_lossy(), "."]);
-        clone.git(&["remote", "set-url", "origin", &server.url()]);
-        let ssh_home = Fixture::empty_dir();
-        server.write_client_key(ssh_home.path());
+        let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
 
         let path = CString::new(clone.path().to_str().unwrap()).unwrap();
         let ssh_dir = CString::new(ssh_home.path().to_str().unwrap()).unwrap();

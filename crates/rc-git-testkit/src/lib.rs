@@ -185,35 +185,75 @@ impl Fixture {
         self.git_output(&["rev-parse", spec])
     }
 
-    /// Serves this repository over smart HTTP, with pushes enabled
-    /// (`http.receivepack=true`).
+    /// Bare-clones this repository into a sibling temp dir, with pushes enabled
+    /// (`http.receivepack=true`), for a network test to serve. Returns the holder, which
+    /// deletes the copy on drop, and the path of the bare `.git` directory.
+    ///
+    /// The copy is never placed inside this working tree, where the next
+    /// [`commit`](Self::commit) would sweep it in.
     ///
     /// # Panics
-    /// When the server cannot start.
+    /// When any git command fails.
     #[must_use]
-    pub fn serve_http(&self) -> HttpGitServer {
-        self.git(&["config", "http.receivepack", "true"]);
-        HttpGitServer::serve(&self.git_dir())
+    pub fn bare_copy(&self) -> (Self, PathBuf) {
+        let bare = Self::empty_dir();
+        let path = bare.path().join("remote.git");
+        self.git(&["clone", "--bare", "--quiet", ".", &path.to_string_lossy()]);
+        bare.git(&[
+            "--git-dir",
+            "remote.git",
+            "config",
+            "http.receivepack",
+            "true",
+        ]);
+        (bare, path)
     }
 
-    /// Serves this repository over loopback ssh, publickey auth against the fixture
-    /// client keys.
+    /// Pushes this repository's `main` into the bare repository at `bare_git_dir`.
     ///
     /// # Panics
-    /// When the server cannot start.
-    #[must_use]
-    pub fn serve_ssh(&self) -> SshGitServer {
-        SshGitServer::serve(&self.git_dir())
+    /// When the push fails.
+    pub fn push_main_to(&self, bare_git_dir: &Path) {
+        self.git(&["push", "--quiet", &bare_git_dir.to_string_lossy(), "main"]);
     }
 
-    /// Like [`serve_http`](Self::serve_http), demanding HTTP Basic credentials.
+    /// Clones the bare repository at `bare_git_dir` from its local path, re-points `origin`
+    /// at `server`, and writes the server's client key into a fresh ssh directory. The git
+    /// CLI never speaks to the test server. Returns the clone and the ssh directory.
     ///
     /// # Panics
-    /// When the server cannot start.
+    /// When any git command or key write fails.
     #[must_use]
-    pub fn serve_http_with_auth(&self, user: &str, pass: &str) -> HttpGitServer {
-        self.git(&["config", "http.receivepack", "true"]);
-        HttpGitServer::serve_with_auth(&self.git_dir(), user, pass)
+    pub fn ssh_clone(bare_git_dir: &Path, server: &SshGitServer) -> (Self, Self) {
+        let clone = Self::empty_dir();
+        clone.git(&["clone", "--quiet", &bare_git_dir.to_string_lossy(), "."]);
+        clone.git(&["remote", "set-url", "origin", &server.url()]);
+        let ssh_home = Self::empty_dir();
+        server.write_client_key(ssh_home.path());
+        (clone, ssh_home)
+    }
+
+    /// Clones from an HTTP Basic-auth `server` with `user:pass` in the URL, then re-points
+    /// `origin` at the bare URL so the code under test must supply credentials itself.
+    ///
+    /// # Panics
+    /// When any git command fails.
+    #[must_use]
+    pub fn basic_auth_clone(server: &HttpGitServer, user: &str, pass: &str) -> Self {
+        let clone = Self::empty_dir();
+        let with_creds = server
+            .url()
+            .replace("http://", &format!("http://{user}:{pass}@"));
+        clone.git(&[
+            "-c",
+            "credential.helper=",
+            "clone",
+            "--quiet",
+            &with_creds,
+            ".",
+        ]);
+        clone.git(&["remote", "set-url", "origin", &server.url()]);
+        clone
     }
 
     /// Writes a file below the working directory, creating parent directories.

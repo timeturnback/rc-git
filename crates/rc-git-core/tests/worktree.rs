@@ -171,21 +171,18 @@ fn worktree_file_reads_text_binary_symlink_and_limits() {
 #[test]
 fn a_bare_repository_has_no_working_tree() {
     let fx = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    bare.git(&[
-        "clone",
-        "--bare",
-        "-q",
-        fx.path().to_str().unwrap(),
-        bare.path().join("bare.git").to_str().unwrap(),
-    ]);
-    let repo = Repository::open(bare.path().join("bare.git")).unwrap();
+    let (_bare, bare_path) = fx.bare_copy();
+    let repo = Repository::open(&bare_path).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     let err = repo.worktree_entries(tree, "").unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
     let err = repo
         .worktree_file("README.md", DEFAULT_BLOB_LIMIT)
         .unwrap_err();
+    assert!(err.to_string().contains("bare"), "{err}");
+    let err = repo.worktree_status(tree, 10_000).unwrap_err();
+    assert!(err.to_string().contains("bare"), "{err}");
+    let err = repo.worktree_files(tree, 10_000).unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
 }
 
@@ -405,23 +402,6 @@ fn a_racy_index_entry_still_reports_the_edit() {
     assert_eq!(report.entries[0].status, WorktreeStatus::Modified);
 }
 
-#[test]
-fn worktree_status_on_a_bare_repository_is_an_error() {
-    let fx = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    fx.git(&[
-        "clone",
-        "--bare",
-        "-q",
-        fx.path().to_str().unwrap(),
-        bare.path().join("bare.git").to_str().unwrap(),
-    ]);
-    let repo = Repository::open(bare.path().join("bare.git")).unwrap();
-    let tree = repo.resolve_tree("HEAD").unwrap();
-    let err = repo.worktree_status(tree, 10_000).unwrap_err();
-    assert!(err.to_string().contains("bare"), "{err}");
-}
-
 fn file_paths(list: &rc_git_core::WorktreeFileList) -> Vec<String> {
     list.files
         .iter()
@@ -502,23 +482,6 @@ fn worktree_files_truncates_at_the_scan_cap() {
     let full = repo.worktree_files(tree, 100_000).unwrap();
     assert!(!full.truncated);
     assert_eq!(full.files.len(), 28);
-}
-
-#[test]
-fn worktree_files_on_a_bare_repository_is_an_error() {
-    let fx = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    fx.git(&[
-        "clone",
-        "--bare",
-        "-q",
-        fx.path().to_str().unwrap(),
-        bare.path().join("bare.git").to_str().unwrap(),
-    ]);
-    let repo = Repository::open(bare.path().join("bare.git")).unwrap();
-    let tree = repo.resolve_tree("HEAD").unwrap();
-    let err = repo.worktree_files(tree, 10_000).unwrap_err();
-    assert!(err.to_string().contains("bare"), "{err}");
 }
 
 #[test]

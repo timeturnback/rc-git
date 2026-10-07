@@ -2,13 +2,24 @@
 //! refs proving the safety net works.
 
 use rc_git_guard::actions::{
-    ActionError, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
+    ActionError, Identity, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
 };
 use rc_git_guard::{Decision, Policy, Risk};
 use rc_git_testkit::Fixture;
 
 fn refs(fx: &Fixture) -> String {
     fx.git_output(&["for-each-ref", "--format=%(refname)"])
+}
+
+fn porcelain(fx: &Fixture) -> String {
+    fx.git_output(&["status", "--porcelain"])
+}
+
+fn identity() -> Identity {
+    Identity {
+        name: "Test User".to_owned(),
+        email: "test@example.com".to_owned(),
+    }
 }
 
 #[test]
@@ -162,25 +173,16 @@ mod commit_and_discard {
     use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Repository};
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, FileSelection, HunkStamp, Identity, commit, discard_files, discard_hunks,
+        ActionError, FileSelection, HunkStamp, commit, discard_files, discard_hunks,
     };
     use rc_git_testkit::Fixture;
 
-    fn identity() -> Identity {
-        Identity {
-            name: "Test User".to_owned(),
-            email: "test@example.com".to_owned(),
-        }
-    }
+    use super::{identity, porcelain};
 
     fn whole(path: &str) -> FileSelection {
         FileSelection::Whole {
             path: path.to_owned(),
         }
-    }
-
-    fn porcelain(fx: &Fixture) -> String {
-        fx.git_output(&["status", "--porcelain"])
     }
 
     /// The stamps of the current worktree diff of `path` against HEAD, in file order.
@@ -509,17 +511,10 @@ mod stash {
     )]
 
     use rc_git_guard::Policy;
-    use rc_git_guard::actions::{
-        ActionError, Identity, stash_apply, stash_drop, stash_pop, stash_push,
-    };
+    use rc_git_guard::actions::{ActionError, stash_apply, stash_drop, stash_pop, stash_push};
     use rc_git_testkit::Fixture;
 
-    fn identity() -> Identity {
-        Identity {
-            name: "Test User".to_owned(),
-            email: "test@example.com".to_owned(),
-        }
-    }
+    use super::{identity, porcelain, refs};
 
     fn stash_list(fx: &Fixture) -> String {
         fx.git_output(&["stash", "list", "--format=%gs"])
@@ -550,7 +545,7 @@ mod stash {
             "the stashed file is back at HEAD content"
         );
         assert!(!fx.path().join("brand-new.txt").exists());
-        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+        assert_eq!(porcelain(&fx), "");
 
         // The compat proof: the real git pops what rc-git pushed.
         fx.git(&["stash", "pop", "-q"]);
@@ -583,7 +578,7 @@ mod stash {
         );
         assert_eq!(stash_list(&fx), "", "the entry is gone");
         assert_eq!(
-            fx.git_output(&["status", "--porcelain"]),
+            porcelain(&fx),
             "M alpha.txt".to_owned(),
             "the restored change is an ordinary unstaged edit"
         );
@@ -643,10 +638,7 @@ mod stash {
 
         stash_drop(fx.path(), &policy, 0, Some("drop")).unwrap();
         assert_eq!(stash_list(&fx), "");
-        assert!(
-            !fx.git_output(&["for-each-ref", "--format=%(refname)"])
-                .contains("refs/stash")
-        );
+        assert!(!refs(&fx).contains("refs/stash"));
     }
 
     #[test]
@@ -709,6 +701,8 @@ mod checkout {
     use rc_git_guard::actions::{ActionError, checkout_branch};
     use rc_git_testkit::Fixture;
 
+    use super::porcelain;
+
     fn head_branch(fx: &Fixture) -> String {
         fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
     }
@@ -735,11 +729,7 @@ mod checkout {
             !fx.path().join("alpha.txt").exists(),
             "a file only the old branch has must be gone"
         );
-        assert_eq!(
-            fx.git_output(&["status", "--porcelain"]),
-            "",
-            "the index must agree with the new tree"
-        );
+        assert_eq!(porcelain(&fx), "", "the index must agree with the new tree");
         assert_eq!(
             fx.git_output(&["reflog", "show", "--format=%gs", "-1", "HEAD"]),
             "checkout: moving from main to feature",
@@ -761,7 +751,7 @@ mod checkout {
             b"alpha\n"
         );
         assert!(!fx.path().join("feature.txt").exists());
-        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+        assert_eq!(porcelain(&fx), "");
     }
 
     #[test]
@@ -842,7 +832,7 @@ mod checkout {
         checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
         assert_eq!(head_branch(&fx), "feature");
         assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("feature"));
-        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+        assert_eq!(porcelain(&fx), "");
     }
 
     #[test]

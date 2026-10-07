@@ -523,40 +523,25 @@ fn the_stash_verbs_round_trip() {
 /// Origin, a served bare copy (pushes enabled), and a clone with `origin` upstream.
 fn served_clone() -> (Fixture, Fixture, rc_git_testkit::HttpGitServer, Fixture) {
     let origin = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    let bare_path = bare.path().join("remote.git");
-    origin.git(&[
-        "clone",
-        "--bare",
-        "--quiet",
-        ".",
-        bare_path.to_str().unwrap(),
-    ]);
-    bare.git(&[
-        "--git-dir",
-        "remote.git",
-        "config",
-        "http.receivepack",
-        "true",
-    ]);
+    let (bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
     let clone = Fixture::empty_dir();
     clone.git(&["clone", "--quiet", &server.url(), "."]);
     (origin, bare, server, clone)
 }
 
+/// Commits one change on `origin` and pushes it into the served bare copy held by `bare`.
+fn advance_origin(origin: &Fixture, bare: &Fixture) {
+    origin.write("news.txt", b"news\n");
+    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
+    origin.push_main_to(&bare.path().join("remote.git"));
+}
+
 #[test]
 fn sync_fetches_pulls_and_pushes() {
     let (origin, bare, _server, clone) = served_clone();
     // Remote gains one commit; local gains none, then commits one after the pull.
-    origin.write("news.txt", b"news\n");
-    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
-    origin.git(&[
-        "push",
-        "--quiet",
-        bare.path().join("remote.git").to_str().unwrap(),
-        "main",
-    ]);
+    advance_origin(&origin, &bare);
     let path = clone.path().to_str().unwrap();
 
     let out = rc_git(&["sync", path]);
@@ -584,27 +569,9 @@ fn sync_fetches_pulls_and_pushes() {
 #[test]
 fn network_verbs_report_auth_with_exit_code_5() {
     let origin = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    let bare_path = bare.path().join("remote.git");
-    origin.git(&[
-        "clone",
-        "--bare",
-        "--quiet",
-        ".",
-        bare_path.to_str().unwrap(),
-    ]);
+    let (_bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
-    let clone = Fixture::empty_dir();
-    let with_creds = server.url().replace("http://", "http://user:sekret@");
-    clone.git(&[
-        "-c",
-        "credential.helper=",
-        "clone",
-        "--quiet",
-        &with_creds,
-        ".",
-    ]);
-    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
     let path = clone.path().to_str().unwrap();
 
     let out = rc_git(&["fetch", path]);
@@ -622,14 +589,7 @@ fn network_verbs_report_auth_with_exit_code_5() {
 #[test]
 fn pull_reports_divergence_as_an_error() {
     let (origin, bare, _server, clone) = served_clone();
-    origin.write("news.txt", b"news\n");
-    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
-    origin.git(&[
-        "push",
-        "--quiet",
-        bare.path().join("remote.git").to_str().unwrap(),
-        "main",
-    ]);
+    advance_origin(&origin, &bare);
     clone.write("local.txt", b"local\n");
     clone.commit("Local work", "2024-03-02T00:00:00+0000");
     let path = clone.path().to_str().unwrap();
@@ -646,21 +606,9 @@ fn pull_reports_divergence_as_an_error() {
 #[test]
 fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
     let origin = Fixture::standard();
-    let bare = Fixture::empty_dir();
-    let bare_path = bare.path().join("remote.git");
-    origin.git(&[
-        "clone",
-        "--bare",
-        "--quiet",
-        ".",
-        bare_path.to_str().unwrap(),
-    ]);
+    let (_bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::SshGitServer::serve(&bare_path);
-    let clone = Fixture::empty_dir();
-    clone.git(&["clone", "--quiet", bare_path.to_str().unwrap(), "."]);
-    clone.git(&["remote", "set-url", "origin", &server.url()]);
-    let ssh_home = Fixture::empty_dir();
-    server.write_client_key(ssh_home.path());
+    let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
     let path = clone.path().to_str().unwrap();
     let ssh_dir = ssh_home.path().to_str().unwrap();
 

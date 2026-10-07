@@ -6,6 +6,8 @@
 //! behind the test kit's loopback listener). The git CLI builds the fixtures; the
 //! guard is the only code under test that touches the network.
 
+use std::path::{Path, PathBuf};
+
 use rc_git_guard::Policy;
 use rc_git_guard::actions::{
     ActionError, Cancel, Credentials, RemoteAuth, fetch_upstream, upstream_status,
@@ -33,61 +35,37 @@ use rc_git_testkit::Fixture;
 struct Remoted {
     origin: Fixture,
     bare: Fixture,
+    bare_path: PathBuf,
     server: rc_git_testkit::HttpGitServer,
     clone: Fixture,
 }
 
-/// Bare-clones `origin` into its own temp dir and returns it with the serving path.
-fn bare_copy(origin: &Fixture) -> (Fixture, std::path::PathBuf) {
-    let bare = Fixture::empty_dir();
-    let path = bare.path().join("remote.git");
-    origin.git(&["clone", "--bare", "--quiet", ".", &path.to_string_lossy()]);
-    bare.git(&[
-        "--git-dir",
-        "remote.git",
-        "config",
-        "http.receivepack",
-        "true",
-    ]);
-    (bare, path)
-}
-
 fn remoted() -> Remoted {
     let origin = Fixture::standard();
-    let (bare, bare_path) = bare_copy(&origin);
+    let (bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
     let clone = Fixture::empty_dir();
     clone.git(&["clone", "--quiet", &server.url(), "."]);
     Remoted {
         origin,
         bare,
+        bare_path,
         server,
         clone,
     }
 }
 
-/// `git rev-parse main` in the served bare repository.
-fn bare_tip(remoted: &Remoted) -> String {
-    remoted
-        .bare
-        .git_output(&["--git-dir", "remote.git", "rev-parse", "main"])
+/// `git rev-parse <rev>` in the served bare repository held by `bare`.
+fn bare_rev(bare: &Fixture, rev: &str) -> String {
+    bare.git_output(&["--git-dir", "remote.git", "rev-parse", rev])
 }
 
-/// Adds one commit to the served bare repository, past what the clone has.
-fn advance_origin(remoted: &Remoted) {
-    remoted.origin.write("news.txt", b"news\n");
-    remoted
-        .origin
-        .commit("News on origin", "2024-03-01T00:00:00+0000");
-    push_origin(remoted);
-}
-
-/// Pushes the origin's `main` into the served bare repository.
-fn push_origin(remoted: &Remoted) {
-    let target = remoted.bare.path().join("remote.git");
-    remoted
-        .origin
-        .git(&["push", "--quiet", &target.to_string_lossy(), "main"]);
+/// Adds one commit on `origin` and pushes it into the served bare repository at
+/// `bare_path`, past what the clone has.
+fn advance_origin(origin: &Fixture, bare_path: &Path) {
+    origin.write("news.txt", b"news\n");
+    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
+    origin.push_main_to(bare_path);
 }
 
 #[test]
@@ -136,14 +114,8 @@ fn upstream_status_counts_against_origin_when_the_branch_names_no_upstream() {
     remoted
         .clone
         .commit("Local work", "2024-03-02T00:00:00+0000");
-    advance_origin(&remoted);
-    fetch_upstream(
-        remoted.clone.path(),
-        &Policy::default(),
-        RemoteAuth::default(),
-        &Cancel::new(),
-    )
-    .expect("fetch");
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    fetch_clone(&remoted);
 
     let status = upstream_status(remoted.clone.path()).expect("status");
     assert!(status.has_upstream);
@@ -155,7 +127,7 @@ fn upstream_status_counts_against_origin_when_the_branch_names_no_upstream() {
 #[test]
 fn fetch_updates_the_tracking_ref_and_reports_it() {
     let remoted = remoted();
-    advance_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
 
     let outcome = fetch_upstream(
         remoted.clone.path(),
@@ -165,7 +137,7 @@ fn fetch_updates_the_tracking_ref_and_reports_it() {
     )
     .expect("fetch");
     assert_eq!(outcome.remote, "origin");
-    let served_tip = bare_tip(&remoted);
+    let served_tip = bare_rev(&remoted.bare, "main");
     let moved = outcome
         .updated_refs
         .iter()
@@ -197,21 +169,9 @@ fn fetch_with_nothing_new_reports_no_updates() {
 #[test]
 fn fetch_against_an_auth_server_requires_matching_credentials() {
     let origin = Fixture::standard();
-    let (bare, bare_path) = bare_copy(&origin);
+    let (_bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
-    let clone = Fixture::empty_dir();
-    let with_creds = server.url().replace("http://", "http://user:sekret@");
-    clone.git(&[
-        "-c",
-        "credential.helper=",
-        "clone",
-        "--quiet",
-        &with_creds,
-        ".",
-    ]);
-    // The cloned config keeps the userinfo URL; point it at the bare URL so the
-    // guard must supply credentials itself.
-    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
 
     let anonymous = fetch_upstream(
         clone.path(),
@@ -238,14 +198,7 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
         "{wrong:?}"
     );
 
-    origin.write("news.txt", b"news\n");
-    origin.commit("News on origin", "2024-03-01T00:00:00+0000");
-    origin.git(&[
-        "push",
-        "--quiet",
-        &bare.path().join("remote.git").to_string_lossy(),
-        "main",
-    ]);
+    advance_origin(&origin, &bare_path);
     let outcome = fetch_upstream(
         clone.path(),
         &Policy::default(),
@@ -345,14 +298,17 @@ fn pull_fast_forwards_files_index_and_ref() {
     remoted
         .origin
         .commit("Rework on origin", "2024-03-01T00:00:00+0000");
-    push_origin(&remoted);
+    remoted.origin.push_main_to(&remoted.bare_path);
     fetch_clone(&remoted);
 
     let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
     assert_eq!(outcome.branch, "main");
     assert_ne!(outcome.old, outcome.new);
     assert_eq!(outcome.files_changed, 3);
-    assert_eq!(remoted.clone.rev_parse("main"), bare_tip(&remoted));
+    assert_eq!(
+        remoted.clone.rev_parse("main"),
+        bare_rev(&remoted.bare, "main")
+    );
     assert_eq!(
         std::fs::read(remoted.clone.path().join("news.txt")).expect("news.txt"),
         b"news\n"
@@ -373,12 +329,15 @@ fn pull_fast_forwards_files_index_and_ref() {
 fn pull_fast_forwards_from_origin_when_the_branch_names_no_upstream() {
     let remoted = remoted();
     untrack(&remoted);
-    advance_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
     fetch_clone(&remoted);
 
     let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
     assert_eq!(outcome.files_changed, 1);
-    assert_eq!(remoted.clone.rev_parse("main"), bare_tip(&remoted));
+    assert_eq!(
+        remoted.clone.rev_parse("main"),
+        bare_rev(&remoted.bare, "main")
+    );
 }
 
 #[test]
@@ -405,7 +364,7 @@ fn pull_when_only_local_moved_is_a_no_op() {
 #[test]
 fn pull_refuses_when_both_sides_moved() {
     let remoted = remoted();
-    advance_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
     remoted.clone.write("local.txt", b"local\n");
     remoted
         .clone
@@ -435,7 +394,7 @@ fn pull_refuses_dirty_overlap_and_touches_nothing() {
     remoted
         .origin
         .commit("Rewrite README", "2024-03-01T00:00:00+0000");
-    push_origin(&remoted);
+    remoted.origin.push_main_to(&remoted.bare_path);
     fetch_clone(&remoted);
     remoted
         .clone
@@ -458,7 +417,7 @@ fn pull_refuses_dirty_overlap_and_touches_nothing() {
 #[test]
 fn pull_refuses_an_untracked_file_in_the_way() {
     let remoted = remoted();
-    advance_origin(&remoted); // adds news.txt upstream
+    advance_origin(&remoted.origin, &remoted.bare_path); // adds news.txt upstream
     fetch_clone(&remoted);
     remoted.clone.write("news.txt", b"mine, not yours\n");
 
@@ -482,7 +441,7 @@ fn pull_refuses_a_staged_change_on_a_touched_path() {
     remoted
         .origin
         .commit("Rewrite README", "2024-03-01T00:00:00+0000");
-    push_origin(&remoted);
+    remoted.origin.push_main_to(&remoted.bare_path);
     fetch_clone(&remoted);
     remoted
         .clone
@@ -529,7 +488,7 @@ fn push_uploads_commits_and_updates_the_tracking_ref() {
     assert_eq!(outcome.pushed_commits, 1);
     assert_eq!(outcome.new.to_string(), tip);
     assert_eq!(
-        bare_tip(&remoted),
+        bare_rev(&remoted.bare, "main"),
         tip,
         "the served repository must have the commit"
     );
@@ -575,9 +534,7 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
         "every object already exists remotely"
     );
     assert_eq!(
-        remoted
-            .bare
-            .git_output(&["--git-dir", "remote.git", "rev-parse", "topic"]),
+        bare_rev(&remoted.bare, "topic"),
         remoted.clone.rev_parse("HEAD")
     );
 }
@@ -585,7 +542,7 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
 #[test]
 fn push_is_rejected_when_the_remote_moved() {
     let remoted = remoted();
-    advance_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
     remoted.clone.write("local.txt", b"local\n");
     remoted
         .clone
@@ -599,25 +556,18 @@ fn push_is_rejected_when_the_remote_moved() {
     )
     .expect_err("rejected");
     assert!(matches!(err, ActionError::PushRejected { .. }), "{err}");
-    assert_ne!(bare_tip(&remoted), remoted.clone.rev_parse("HEAD"));
+    assert_ne!(
+        bare_rev(&remoted.bare, "main"),
+        remoted.clone.rev_parse("HEAD")
+    );
 }
 
 #[test]
 fn push_against_an_auth_server_requires_credentials() {
     let origin = Fixture::standard();
-    let (bare, bare_path) = bare_copy(&origin);
+    let (bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
-    let clone = Fixture::empty_dir();
-    let with_creds = server.url().replace("http://", "http://user:sekret@");
-    clone.git(&[
-        "-c",
-        "credential.helper=",
-        "clone",
-        "--quiet",
-        &with_creds,
-        ".",
-    ]);
-    clone.git(&["remote", "set-url", "origin", &server.url()]);
+    let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
     clone.write("local.txt", b"local\n");
     clone.commit("Local work", "2024-03-02T00:00:00+0000");
 
@@ -643,10 +593,7 @@ fn push_against_an_auth_server_requires_credentials() {
     )
     .expect("authenticated push");
     assert_eq!(outcome.pushed_commits, 1);
-    assert_eq!(
-        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]),
-        clone.rev_parse("HEAD")
-    );
+    assert_eq!(bare_rev(&bare, "main"), clone.rev_parse("HEAD"));
 }
 
 #[test]
@@ -682,7 +629,10 @@ fn push_surfaces_a_hook_rejection() {
     .expect_err("hook rejects");
     let message = err.to_string();
     assert!(message.contains("refused"), "{message}");
-    assert_ne!(bare_tip(&remoted), remoted.clone.rev_parse("HEAD"));
+    assert_ne!(
+        bare_rev(&remoted.bare, "main"),
+        remoted.clone.rev_parse("HEAD")
+    );
 }
 
 #[test]
@@ -708,6 +658,7 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
 struct SshRemoted {
     origin: Fixture,
     bare: Fixture,
+    bare_path: PathBuf,
     server: rc_git_testkit::SshGitServer,
     clone: Fixture,
     ssh_home: Fixture,
@@ -727,39 +678,24 @@ impl SshRemoted {
 /// never speaks to the test server) and re-pointed at the ssh URL.
 fn ssh_remoted() -> SshRemoted {
     let origin = Fixture::standard();
-    let (bare, bare_path) = bare_copy(&origin);
+    let (bare, bare_path) = origin.bare_copy();
     let server = rc_git_testkit::SshGitServer::serve(&bare_path);
-    let clone = Fixture::empty_dir();
-    clone.git(&["clone", "--quiet", &bare_path.to_string_lossy(), "."]);
-    clone.git(&["remote", "set-url", "origin", &server.url()]);
-    let ssh_home = Fixture::empty_dir();
-    server.write_client_key(ssh_home.path());
+    let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
     SshRemoted {
         origin,
         bare,
+        bare_path,
         server,
         clone,
         ssh_home,
     }
 }
 
-/// Adds one commit to the ssh-served bare repository, past what the clone has.
-fn advance_ssh_origin(remoted: &SshRemoted) {
-    remoted.origin.write("news.txt", b"news\n");
-    remoted
-        .origin
-        .commit("News on origin", "2024-03-01T00:00:00+0000");
-    let target = remoted.bare.path().join("remote.git");
-    remoted
-        .origin
-        .git(&["push", "--quiet", &target.to_string_lossy(), "main"]);
-}
-
 #[test]
 fn ssh_fetch_updates_the_tracking_ref() {
     let remoted = ssh_remoted();
     remoted.server.write_known_hosts(remoted.ssh_home.path());
-    advance_ssh_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
 
     let outcome = fetch_upstream(
         remoted.clone.path(),
@@ -793,10 +729,10 @@ fn ssh_push_uploads_commits_and_updates_the_tracking_ref() {
     )
     .expect("ssh push");
     assert_eq!(outcome.pushed_commits, 1);
-    let tip = remoted
-        .bare
-        .git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
-    assert_eq!(tip, remoted.clone.rev_parse("HEAD"));
+    assert_eq!(
+        bare_rev(&remoted.bare, "main"),
+        remoted.clone.rev_parse("HEAD")
+    );
     let status = upstream_status(remoted.clone.path()).expect("status");
     assert_eq!((status.ahead, status.behind), (0, 0));
 }
@@ -944,12 +880,9 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
         "remote",
         "set-url",
         "origin",
-        &format!(
-            "ssh://bitbucket.org-work{}",
-            remoted.bare.path().join("remote.git").display()
-        ),
+        &format!("ssh://bitbucket.org-work{}", remoted.bare_path.display()),
     ]);
-    advance_ssh_origin(&remoted);
+    advance_origin(&remoted.origin, &remoted.bare_path);
 
     let outcome = fetch_upstream(
         remoted.clone.path(),
