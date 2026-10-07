@@ -77,6 +77,30 @@ fn path_history_follows_a_file_through_merges() {
 }
 
 #[test]
+fn path_history_shows_a_mode_only_change() {
+    let fx = merge_fixture();
+    fx.git(&["update-index", "--chmod=+x", "file.txt"]);
+    let date = "2024-01-07T00:00:00+0000";
+    fx.git_with_env(
+        &["commit", "-q", "-m", "mode change"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let mode = fx.git_output(&["ls-tree", "main", "file.txt"]);
+    assert!(mode.starts_with("100755 "), "only the mode changed: {mode}");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let page = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let expected = fx.git_output(&["log", "--format=%s", "--", "file.txt"]);
+    assert_eq!(titles(&page), expected.lines().collect::<Vec<_>>());
+    assert_eq!(
+        titles(&page).first().map(String::as_str),
+        Some("mode change"),
+        "flipping the executable bit touches the path"
+    );
+}
+
+#[test]
 fn path_history_covers_folders_roots_and_missing_paths() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();
