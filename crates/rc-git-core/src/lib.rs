@@ -31,7 +31,7 @@ pub use log::{CommitDetail, CommitSummary};
 pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
 pub use repo::Repository;
-pub use stash::StashEntry;
+pub use stash::{StashEntry, StashReflogLine, stash_reflog_lines};
 pub use tree::{EntryKind, TreeEntry, sort_for_display};
 pub use worktree::{
     StatusEntry, StatusReport, UnreadableEntry, WorktreeEntry, WorktreeFile, WorktreeFileList,

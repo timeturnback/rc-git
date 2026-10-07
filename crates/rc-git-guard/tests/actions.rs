@@ -1141,6 +1141,28 @@ mod stash {
     }
 
     #[test]
+    fn dropping_past_a_junk_reflog_line_drops_the_entry_git_lists() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["kept", "second"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let older = fx.rev_parse("stash@{1}");
+        let mut log = std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap();
+        log.extend_from_slice(b"junk\n");
+        fx.write(".git/logs/refs/stash", &log);
+
+        stash_drop(fx.path(), &policy, 1, Some("drop")).unwrap();
+        assert_eq!(stash_list(&fx), "On main: second");
+        assert_eq!(
+            fx.rev_parse("refs/rc-git/backup/stash/1"),
+            older,
+            "the backup keeps the stash git called stash@{{1}}"
+        );
+    }
+
+    #[test]
     fn apply_refuses_a_stashed_gitlink_before_writing_anything() {
         let fx = Fixture::standard();
         let policy = Policy::default();

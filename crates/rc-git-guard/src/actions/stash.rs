@@ -376,8 +376,10 @@ fn require_absent_or_base(
 }
 
 /// Drops `stash@{index}`: backup ref, reflog line removal with re-chaining, and the
-/// `refs/stash` update or deletion. The log file is rewritten last, under a lock, so the
-/// spurious reflog line the ref update appends is erased again.
+/// `refs/stash` update or deletion. `index` counts the reflog lines git can read, newest
+/// first (see [`rc_git_core::stash_reflog_lines`]); unreadable lines stay as they are. The log
+/// file is rewritten last, under a lock, so the spurious reflog line the ref update appends is
+/// erased again.
 fn drop_inner(
     repo: &gix::Repository,
     index: usize,
@@ -386,20 +388,21 @@ fn drop_inner(
 ) -> ActionResult<Deleted> {
     let log_path = repo.common_dir().join("logs/refs/stash");
     let raw = std::fs::read(&log_path).map_err(git_err(op, "refs/stash"))?;
-    let lines: Vec<&[u8]> = raw
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .collect();
-    if index >= lines.len() {
+    let valid = rc_git_core::stash_reflog_lines(&raw);
+    let Some(target) = index
+        .checked_add(1)
+        .and_then(|from_end| valid.len().checked_sub(from_end))
+    else {
         return Err(ActionError::git(
             op,
             "refs/stash",
             "no stash entry at that position",
         ));
-    }
-    let position = lines.len() - 1 - index;
-    let removed = lines[position];
-    let (removed_old, removed_new) = line_oids(removed, op)?;
+    };
+    let pieces: Vec<&[u8]> = raw.split(|byte| *byte == b'\n').collect();
+    let position = valid[target].line;
+    let (removed_old, removed_new) = line_oids(pieces[position], op)?;
+    let newer = valid.get(target + 1).map(|line| line.line);
 
     let backup = if write_backup {
         Some(write_backup_ref(
@@ -412,24 +415,8 @@ fn drop_inner(
         None
     };
 
-    let mut kept: Vec<Vec<u8>> = Vec::with_capacity(lines.len() - 1);
-    for (current, line) in lines.iter().enumerate() {
-        if current == position {
-            continue;
-        }
-        if current == position + 1 {
-            // The newer neighbor's old-oid re-chains to what the removed line pointed from.
-            let (_, rest) = line.split_at(removed_old.to_string().len());
-            let mut rebuilt = removed_old.to_string().into_bytes();
-            rebuilt.extend_from_slice(rest);
-            kept.push(rebuilt);
-        } else {
-            kept.push((*line).to_vec());
-        }
-    }
-
     let full_name = format!("stash@{{{index}}}");
-    if kept.is_empty() {
+    if valid.len() == 1 {
         let expected = PreviousValue::MustExistAndMatch(Target::Object(removed_new));
         let edit = super::delete_edit("refs/stash", expected, op)?;
         super::apply_edit(repo, edit, op, "refs/stash")?;
@@ -439,8 +426,25 @@ fn drop_inner(
         });
     }
 
-    if position == lines.len() - 1 {
-        let (_, new_top) = line_oids(&kept[kept.len() - 1], op)?;
+    let mut kept: Vec<Vec<u8>> = Vec::with_capacity(pieces.len() - 1);
+    for (current, line) in pieces.iter().enumerate() {
+        if current == position {
+            continue;
+        }
+        if Some(current) == newer {
+            // The newer neighbor's old-oid re-chains to what the removed line pointed from.
+            let (newer_old, _) = line_oids(line, op)?;
+            let (_, rest) = line.split_at(newer_old.to_string().len());
+            let mut rebuilt = removed_old.to_string().into_bytes();
+            rebuilt.extend_from_slice(rest);
+            kept.push(rebuilt);
+        } else {
+            kept.push((*line).to_vec());
+        }
+    }
+
+    if newer.is_none() {
+        let new_top = gix_oid(valid[target - 1].oid, op)?;
         let edit = super::update_edit(
             "refs/stash",
             PreviousValue::MustExistAndMatch(Target::Object(removed_new)),
@@ -451,19 +455,19 @@ fn drop_inner(
         super::apply_edit(repo, edit, op, "refs/stash")?;
     }
 
-    rewrite_log(&log_path, &kept, op)?;
+    rewrite_log(&log_path, &kept.join(&b'\n'), op)?;
     Ok(Deleted {
         full_name,
         backup_ref: backup,
     })
 }
 
-/// Replaces the stash reflog with exactly `kept`, under a lock so nothing races git itself.
+/// Replaces the stash reflog with exactly `content`, under a lock so nothing races git itself.
 #[expect(
     clippy::disallowed_methods,
     reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
 )]
-fn rewrite_log(log_path: &Path, kept: &[Vec<u8>], op: &'static str) -> ActionResult<()> {
+fn rewrite_log(log_path: &Path, content: &[u8], op: &'static str) -> ActionResult<()> {
     let log_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
         ActionError::git(op, "refs/stash", source)
     };
@@ -475,11 +479,8 @@ fn rewrite_log(log_path: &Path, kept: &[Vec<u8>], op: &'static str) -> ActionRes
     .map_err(|source| log_error(Box::new(source)))?;
     {
         use std::io::Write;
-        for line in kept {
-            lock.write_all(line)
-                .and_then(|()| lock.write_all(b"\n"))
-                .map_err(|source| log_error(Box::new(source)))?;
-        }
+        lock.write_all(content)
+            .map_err(|source| log_error(Box::new(source)))?;
     }
     lock.commit()
         .map_err(|source| log_error(Box::new(source)))?;
@@ -507,19 +508,20 @@ fn stash_oid_at(repo: &gix::Repository, index: usize, op: &'static str) -> Actio
         .map_err(git_err(op, "refs/stash"))?
         .ok_or_else(|| ActionError::git(op, "refs/stash", "the repository has no stash"))?;
     let mut platform = reference.log_iter();
-    let lines = platform
-        .all()
-        .map_err(git_err(op, "refs/stash"))?
-        .ok_or_else(|| ActionError::git(op, "refs/stash", "the repository has no stash"))?;
-    let mut oids: Vec<ObjectId> = Vec::new();
-    for line in lines {
-        let line = line.map_err(git_err(op, "refs/stash"))?;
-        oids.push(line.new_oid());
+    if platform.all().map_err(git_err(op, "refs/stash"))?.is_none() {
+        return Err(ActionError::git(
+            op,
+            "refs/stash",
+            "the repository has no stash",
+        ));
     }
-    oids.reverse();
-    oids.get(index)
-        .copied()
-        .ok_or_else(|| ActionError::git(op, "refs/stash", "no stash entry at that position"))
+    let valid = rc_git_core::stash_reflog_lines(&platform.buf);
+    let line = index
+        .checked_add(1)
+        .and_then(|from_end| valid.len().checked_sub(from_end))
+        .and_then(|position| valid.get(position))
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "no stash entry at that position"))?;
+    gix_oid(line.oid, op)
 }
 
 fn stash_target(repo: &gix::Repository) -> ActionResult<Option<ObjectId>> {
