@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib"]
 
 [dependencies]
 rc-git-core.workspace = true
