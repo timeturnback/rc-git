@@ -83,11 +83,27 @@ cp "$ICON" "$STAGE/Contents/Resources/AppIcon.icns"
 
 plist="$STAGE/Contents/Info.plist"
 
-# Sets a key whether or not the template already carries it.
+# Sets a key whether or not the template already carries it. plutil takes the value as its
+# own argv word, so quotes and backslashes in a path are stored byte for byte.
+stamped_keys=()
+stamped_values=()
 stamp() {
   local key="$1" value="$2"
-  /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist" >/dev/null 2>&1 ||
-    /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist"
+  plutil -replace "$key" -string "$value" "$plist"
+  stamped_keys+=("$key")
+  stamped_values+=("$value")
+}
+
+verify_stamps() {
+  local i key actual
+  for i in "${!stamped_keys[@]}"; do
+    key="${stamped_keys[$i]}"
+    actual="$(plutil -extract "$key" raw "$plist")" || actual=""
+    if [ "$actual" != "${stamped_values[$i]}" ]; then
+      echo "error: Info.plist key $key reads back as '$actual', expected '${stamped_values[$i]}'" >&2
+      exit 1
+    fi
+  done
 }
 
 commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -98,8 +114,7 @@ dirty=false
 # The version's patch is the commit count, so a commit on master is the only thing that
 # moves it and nothing has to be bumped by hand. mac/Info.plist carries the major and minor;
 # CFBundleVersion stays the bare count, which is the monotonic build number macOS wants.
-series="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist" 2>/dev/null ||
-  echo 0.1.0)"
+series="$(plutil -extract CFBundleShortVersionString raw "$plist" 2>/dev/null || echo 0.1.0)"
 
 stamp CFBundleIdentifier "$BUNDLE_ID"
 stamp CFBundleName "$NAME"
@@ -111,6 +126,7 @@ stamp RCGitSourceRoot "$ROOT"
 stamp RCGitSourceCommit "$commit"
 stamp RCGitSourceDirty "$dirty"
 stamp RCGitBuildDate "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+verify_stamps
 
 # Ad-hoc signature: enough for local use, no developer account needed.
 codesign --force --sign - "$STAGE" >/dev/null 2>&1 || {
