@@ -63,8 +63,8 @@ cargo run --release -p rc-git-cli -- status ~/code/some-repo
 
 ## Safety
 
-The core cannot write. The workspace's `clippy.toml` rejects every gix write API and every
-filesystem mutation at lint time, a test compares `.git` byte for byte before and after every
+The core cannot write. The workspace's `clippy.toml` rejects the gix and std write, spawn and
+network entry points it lists at lint time, a test compares `.git` byte for byte before and after every
 operation, and repositories open in isolated mode so an untrusted checkout cannot pull in
 configuration from anywhere else. Actions that change a repository — today, branch and tag
 management — pass through `rc-git-guard`, a policy that denies deletions on protected

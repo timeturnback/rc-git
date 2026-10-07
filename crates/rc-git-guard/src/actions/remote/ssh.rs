@@ -82,6 +82,10 @@ pub(super) fn transport(
 
 /// Dial, verify the host key, authenticate, open a session channel, and exec the git
 /// service on it. Runs on the transport's private runtime.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
+)]
 async fn connect_and_exec(
     target: &SshTarget,
     handler: HostKeyHandler,

@@ -7,8 +7,8 @@ process is ever spawned; nothing is written except guard-approved ref edits.
 
 Two rules define the project. A change that breaks either is wrong even when it works:
 
-- **The core never writes.** `clippy.toml` bans every gix write API and every filesystem
-  mutation; `crates/rc-git-core/tests/read_only.rs` proves `.git` is byte-identical after every
+- **The core never writes.** `clippy.toml` bans the gix and std write, spawn and network entry
+  points it lists; `crates/rc-git-core/tests/read_only.rs` proves `.git` is byte-identical after every
   operation. The one write path is `rc-git-guard`'s `actions` module (see
   `.claude/rules/guard.md`); every mutation goes through it. Say so rather than bypassing it.
 - **Nothing scales with repository size except what is on screen.** One tree object per folder

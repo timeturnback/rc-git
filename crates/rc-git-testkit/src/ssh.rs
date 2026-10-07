@@ -354,6 +354,10 @@ fn parse_git_command(command: &str, git_dir: &Path) -> Option<&'static str> {
     (Path::new(path) == git_dir).then_some(subcommand)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test kit shells out to the git CLI by design"
+)]
 fn spawn_git(
     subcommand: &str,
     git_dir: &Path,

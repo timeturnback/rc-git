@@ -476,6 +476,10 @@ fn drop_inner(
 }
 
 /// Replaces the stash reflog with exactly `kept`, under a lock so nothing races git itself.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+)]
 fn rewrite_log(log_path: &Path, kept: &[Vec<u8>], op: &'static str) -> ActionResult<()> {
     let log_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
         op,

@@ -1,6 +1,6 @@
 # rc-git never mutates a repository from library code and never shells out.
-# Every method here is a write path or a process spawn. Adding a caller means
-# routing it through rc-git-guard first; see docs/safety.md.
+# Every method here is a write path, a process spawn, or a network entry point.
+# Adding a caller means routing it through rc-git-guard first; see docs/safety.md.
 disallowed-methods = [
     { path = "gix::Repository::edit_reference", reason = "core is read-only; ref writes go through rc-git-guard" },
     { path = "gix::Repository::edit_references", reason = "core is read-only; ref writes go through rc-git-guard" },
@@ -35,6 +35,42 @@ disallowed-methods = [
     { path = "gix::Remote::to_connection_with_transport", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "gix_protocol::handshake", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "gix_transport::client::blocking_io::connect::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix_object::Write::write", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix_object::Write::write_buf", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix_object::Write::write_stream", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix_object::Write::write_buf_with_known_id", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix_ref::file::Store::transaction", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Reference::delete", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Reference::set_target_id", reason = "core is read-only; ref writes go through rc-git-guard" },
+    { path = "gix::Repository::new_commit", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::new_commit_as", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::Repository::edit_tree", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::object::tree::Editor::write", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::object::tree::editor::Cursor::write", reason = "core is read-only; object writes go through rc-git-guard" },
+    { path = "gix::init", reason = "core is read-only; repository creation goes through rc-git-guard" },
+    { path = "gix::init_bare", reason = "core is read-only; repository creation goes through rc-git-guard" },
+    { path = "gix_lock::File::acquire_to_update_resource", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "gix_lock::File::acquire_to_update_resource_with_permissions", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "gix_lock::Marker::acquire_to_hold_resource", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "gix_lock::Marker::acquire_to_hold_resource_with_permissions", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "gix_lock::File::commit", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "gix_lock::Marker::commit", reason = "core is read-only; lock-file writes go through rc-git-guard" },
+    { path = "std::fs::copy", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::hard_link", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::File::create_new", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::DirBuilder::create", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::File::set_permissions", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::File::set_times", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::fs::File::set_modified", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::os::unix::fs::chown", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::os::unix::fs::fchown", reason = "core never writes files; see docs/safety.md" },
+    { path = "std::os::unix::fs::lchown", reason = "core never writes files; see docs/safety.md" },
+    { path = "tokio::process::Command::new", reason = "never shell out to git; use gix. Test fixtures may expect() this lint with a reason" },
+    { path = "std::net::TcpStream::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "std::net::TcpStream::connect_timeout", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "tokio::net::TcpStream::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "russh::client::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "russh::client::connect_stream", reason = "network entry point; remote I/O goes through rc-git-guard" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.

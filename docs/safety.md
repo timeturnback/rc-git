@@ -6,11 +6,15 @@ Two promises: rc-git cannot damage a repository, and rc-git cannot be tricked by
 
 Four layers enforce it, and each catches what the others miss.
 
-1. **Lint.** `clippy.toml` lists every gix write method (`edit_reference`, `write_object`,
-   `commit`, `tag`, ...), every `std::fs` mutation, and `Command::new`. Clippy rejects a call
-   to any of them in any crate. The test kit opts out per function with a written reason, and
-   `rc-git-guard` — the one sanctioned write path — opts out the same way at each write it
-   performs: every ref edit, and the working-tree and reflog writes that go with them. A write
+1. **Lint.** `clippy.toml` lists the gix object and ref writes (`edit_reference`,
+   `write_object`, `commit`, `tag`, `edit_tree`, `Reference::delete`, the `objects` and `refs`
+   stores' write and transaction methods, `gix::init`, ...), the `gix_lock` lock-file acquire
+   and commit methods, the `std::fs` mutations (write, create, copy, link, rename, remove,
+   permissions, ownership, times), the std and tokio `Command::new` spawns, and the network
+   entry points. Clippy rejects a call to any of them in any crate. The test kit opts out per
+   function with a written reason, and `rc-git-guard` — the one sanctioned write path — opts
+   out the same way at each write it performs: every ref edit, and the working-tree and reflog
+   writes that go with them. A write
    primitive the workspace has not used before joins the list in the change that first uses it;
    an unlisted one passes the lint and leaves the guarantee unenforced for that path.
 2. **Test.** `crates/rc-git-core/tests/read_only.rs` snapshots every file under `.git`, runs
@@ -19,8 +23,9 @@ Four layers enforce it, and each catches what the others miss.
 3. **Features.** The read-only crates compile `gix` without checkout or credential
    features. `rc-git-guard` alone enables the transports — HTTPS
    (`blocking-http-transport-curl`, system libcurl) and SSH (russh, in-process; no `ssh`
-   child) — and clippy bans every network entry point — `remote_at`, `find_remote`,
-   `connect`, `handshake` — outside the guard's `actions/remote` module. The curl
+   child) — and clippy bans the network entry points it lists — gix's `remote_at`,
+   `find_remote`, `connect`, `handshake`, plus `russh::client::connect` and the std and
+   tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The curl
    feature also compiles gix's credential-helper and prompt machinery into the binary;
    it is unreachable, because every connection installs a credential callback that
    answers from caller-supplied credentials and never consults the helper cascade, and

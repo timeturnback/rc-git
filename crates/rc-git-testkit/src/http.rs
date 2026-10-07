@@ -93,6 +93,10 @@ impl HttpGitServer {
 }
 
 impl Drop for HttpGitServer {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test kit opens a loopback connection to stop its own server"
+    )]
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
         // Unblock the accept loop with one throwaway connection.
