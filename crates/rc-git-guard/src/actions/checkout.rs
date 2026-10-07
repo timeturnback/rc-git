@@ -70,9 +70,9 @@ pub fn checkout_branch(
     let current = repo.head_id().ok().map(gix::Id::detach);
 
     let changes = treeapply::plan(repo_path, current, target, OP)?;
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     treeapply::verify_clean(&repo, &work_dir, &changes, OP)?;
-    treeapply::apply(&repo, &work_dir, &changes)?;
+    treeapply::apply(&repo, &work_dir, &changes, OP)?;
     let from = head.as_ref().map_or_else(
         || current.map_or_else(|| "an unborn HEAD".to_owned(), |commit| commit.to_string()),
         |name| name.shorten().to_string(),

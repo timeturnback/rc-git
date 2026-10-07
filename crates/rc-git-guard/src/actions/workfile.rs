@@ -155,16 +155,16 @@ pub(super) fn require_exact_name(
 
 /// Writes `data` to `relative` below `work_dir` as `kind` describes: a symlink's blob holds
 /// its target, and the executable bit follows the mode. Any existing file is removed first,
-/// so writing never follows a stale symlink.
+/// so writing never follows a stale symlink. Errors name `op`, the action the write is for.
 pub(super) fn restore_file(
+    op: &'static str,
     work_dir: &Path,
     relative: &str,
     data: &[u8],
     kind: EntryKind,
 ) -> ActionResult<()> {
-    const OP: &str = "restore file";
-    validate_path(OP, relative, kind == EntryKind::Link)?;
-    let full = join_under(work_dir, relative, OP)?;
+    validate_path(op, relative, kind == EntryKind::Link)?;
+    let full = join_under(work_dir, relative, op)?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
@@ -172,12 +172,12 @@ pub(super) fn restore_file(
     {
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|source| file_error(OP, relative, Box::new(source)))?;
+                .map_err(|source| file_error(op, relative, Box::new(source)))?;
         }
         match std::fs::remove_file(&full) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(file_error(OP, relative, Box::new(error))),
+            Err(error) => return Err(file_error(op, relative, Box::new(error))),
         }
         match kind {
             EntryKind::Link => {
@@ -186,20 +186,20 @@ pub(super) fn restore_file(
                     std::ffi::OsStr::from_bytes(data)
                 };
                 std::os::unix::fs::symlink(target, &full)
-                    .map_err(|source| file_error(OP, relative, Box::new(source)))?;
+                    .map_err(|source| file_error(op, relative, Box::new(source)))?;
             }
             EntryKind::Blob | EntryKind::BlobExecutable => {
                 std::fs::write(&full, data)
-                    .map_err(|source| file_error(OP, relative, Box::new(source)))?;
+                    .map_err(|source| file_error(op, relative, Box::new(source)))?;
                 if kind == EntryKind::BlobExecutable {
                     use std::os::unix::fs::PermissionsExt;
                     std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755))
-                        .map_err(|source| file_error(OP, relative, Box::new(source)))?;
+                        .map_err(|source| file_error(op, relative, Box::new(source)))?;
                 }
             }
             EntryKind::Tree | EntryKind::Commit => {
                 return Err(file_error(
-                    OP,
+                    op,
                     relative,
                     "only files and symlinks can be restored".into(),
                 ));
@@ -210,9 +210,9 @@ pub(super) fn restore_file(
 }
 
 /// Deletes `relative` below `work_dir`; a file already gone is not an error, so a retried
-/// action lands in the state it retries from.
-pub(super) fn delete_file(work_dir: &Path, relative: &str) -> ActionResult<()> {
-    let full = join_under(work_dir, relative, "delete file")?;
+/// action lands in the state it retries from. Errors name `op`, the action the delete is for.
+pub(super) fn delete_file(op: &'static str, work_dir: &Path, relative: &str) -> ActionResult<()> {
+    let full = join_under(work_dir, relative, op)?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
@@ -220,7 +220,7 @@ pub(super) fn delete_file(work_dir: &Path, relative: &str) -> ActionResult<()> {
     match std::fs::remove_file(&full) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(file_error("delete file", relative, Box::new(error))),
+        Err(error) => Err(file_error(op, relative, Box::new(error))),
     }
 }
 

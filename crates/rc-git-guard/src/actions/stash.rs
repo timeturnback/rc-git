@@ -55,20 +55,20 @@ pub fn stash_push(
     if paths.is_empty() {
         return Err(stash_error(OP, "nothing selected to stash"));
     }
-    let (branch_ref, head_commit) = checked_out_branch(&repo)?;
+    let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
     let head =
         head_commit.ok_or_else(|| stash_error(OP, "cannot stash before the first commit"))?;
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
-    let base_tree = tree_of(&repo, head)?;
+    let base_tree = tree_of(&repo, OP, head)?;
     for path in paths {
         refuse_case_variant_path(&repo, &work_dir, Some(base_tree), path, OP)?;
     }
 
     let mut edits = std::collections::BTreeMap::new();
     for path in paths {
-        let edit = whole_file_edit(&repo, &work_dir, Some(base_tree), path)?;
+        let edit = whole_file_edit(&repo, OP, &work_dir, Some(base_tree), path)?;
         treebuild::insert(&mut edits, path, edit)?;
     }
     let stash_tree = treebuild::rewrite(&repo, Some(base_tree), &edits)?
@@ -94,6 +94,7 @@ pub fn stash_push(
     };
     let index_commit = write_object(
         &repo,
+        OP,
         &gix::objs::Commit {
             tree: base_tree,
             parents: [head].into_iter().collect(),
@@ -106,6 +107,7 @@ pub fn stash_push(
     )?;
     let stash_commit = write_object(
         &repo,
+        OP,
         &gix::objs::Commit {
             tree: stash_tree,
             parents: [head, index_commit].into_iter().collect(),
@@ -144,7 +146,7 @@ pub fn stash_push(
     )?;
 
     // Only now that the stash records everything: put the files back to HEAD state.
-    restore_to_base(&repo, &work_dir, base_tree, paths)?;
+    restore_to_base(&repo, OP, &work_dir, base_tree, paths)?;
     Ok(StashSaved {
         oid: stash_commit.to_string(),
         message: stash_message,
@@ -155,17 +157,18 @@ pub fn stash_push(
 /// deleted otherwise.
 fn restore_to_base(
     repo: &gix::Repository,
+    op: &'static str,
     work_dir: &Path,
     base_tree: ObjectId,
     paths: &[String],
 ) -> ActionResult<()> {
     for path in paths {
-        match super::commit::tree_entry_at(repo, Some(base_tree), path)? {
+        match super::commit::tree_entry_at(repo, op, Some(base_tree), path)? {
             Some(entry) => {
-                let data = blob_data(repo, path, entry.oid)?;
-                workfile::restore_file(work_dir, path, &data, entry.mode.into())?;
+                let data = blob_data(repo, op, path, entry.oid)?;
+                workfile::restore_file(op, work_dir, path, &data, entry.mode.into())?;
             }
-            None => workfile::delete_file(work_dir, path)?,
+            None => workfile::delete_file(op, work_dir, path)?,
         }
     }
     Ok(())
@@ -266,7 +269,7 @@ fn apply_inner(
             name: "stash".to_owned(),
             source: Box::new(source),
         })?;
-    let work_dir = work_dir(repo)?;
+    let work_dir = work_dir(repo, op)?;
 
     // Pass 1: every touched path must be valid and exactly at the base state; refuse before
     // any write.
@@ -307,10 +310,10 @@ fn apply_inner(
             | rc_git_core::ChangeKind::Modified => {
                 restore_change(repo, &work_dir, &path, change, op)?;
             }
-            rc_git_core::ChangeKind::Deleted => workfile::delete_file(&work_dir, &path)?,
+            rc_git_core::ChangeKind::Deleted => workfile::delete_file(op, &work_dir, &path)?,
             rc_git_core::ChangeKind::Renamed => {
                 if let Some(source) = &change.source_path {
-                    workfile::delete_file(&work_dir, &source.to_string())?;
+                    workfile::delete_file(op, &work_dir, &source.to_string())?;
                 }
                 restore_change(repo, &work_dir, &path, change, op)?;
             }
@@ -330,8 +333,8 @@ fn restore_change(
         .new
         .ok_or_else(|| stash_error(op, "a written change carries no blob"))?;
     let oid = gix_oid(new, op)?;
-    let data = blob_data(repo, path, oid)?;
-    workfile::restore_file(work_dir, path, &data, entry_kind(change.entry))
+    let data = blob_data(repo, op, path, oid)?;
+    workfile::restore_file(op, work_dir, path, &data, entry_kind(change.entry))
 }
 
 fn entry_kind(kind: rc_git_core::EntryKind) -> gix::objs::tree::EntryKind {
@@ -350,6 +353,7 @@ fn require_absent(work_dir: &Path, path: &str, op: &'static str) -> ActionResult
     match std::fs::symlink_metadata(&full) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) | Err(_) => Err(ActionError::DirtyPath {
+            op,
             path: path.to_owned(),
         }),
     }
@@ -364,10 +368,11 @@ fn require_base_content(
     op: &'static str,
 ) -> ActionResult<()> {
     let dirty = || ActionError::DirtyPath {
+        op,
         path: path.to_owned(),
     };
     let base = base.ok_or_else(|| stash_error(op, "a modification carries no base blob"))?;
-    let expected = blob_data(repo, path, gix_oid(base, op)?)?;
+    let expected = blob_data(repo, op, path, gix_oid(base, op)?)?;
     let full = workfile::join_under(work_dir, path, op)?;
     let meta = std::fs::symlink_metadata(&full).map_err(|_| dirty())?;
     let actual = if meta.file_type().is_symlink() {

@@ -432,9 +432,10 @@ fn pull_refuses_dirty_overlap_and_touches_nothing() {
 
     let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("dirty");
     assert!(
-        matches!(&err, ActionError::DirtyPath { path } if path == "README.md"),
+        matches!(&err, ActionError::DirtyPath { op: "pull", path } if path == "README.md"),
         "{err}"
     );
+    assert!(err.to_string().starts_with("pull: 'README.md'"), "{err}");
     assert_eq!(remoted.clone.rev_parse("main"), before_head);
     assert_eq!(
         std::fs::read(remoted.clone.path().join("README.md")).expect("README.md"),
@@ -520,7 +521,7 @@ fn pull_refuses_an_untracked_file_in_the_way() {
 
     let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("blocked");
     assert!(
-        matches!(&err, ActionError::DirtyPath { path } if path == "news.txt"),
+        matches!(&err, ActionError::DirtyPath { op: "pull", path } if path == "news.txt"),
         "{err}"
     );
     assert_eq!(
@@ -547,7 +548,7 @@ fn pull_refuses_a_staged_change_on_a_touched_path() {
 
     let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("staged");
     assert!(
-        matches!(&err, ActionError::DirtyPath { path } if path == "README.md"),
+        matches!(&err, ActionError::DirtyPath { path, .. } if path == "README.md"),
         "{err}"
     );
 }

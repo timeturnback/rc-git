@@ -619,7 +619,8 @@ private let alreadyOnMain = CheckoutOutcome(
                     .failure(
                         .failure(
                             message:
-                                "cannot apply the stash: 'alpha.txt' has uncommitted changes"))
+                                "checkout: 'alpha.txt' has uncommitted changes; "
+                                + "commit, stash, or discard it first"))
                 ]
             ))
         await model.refreshStatus()

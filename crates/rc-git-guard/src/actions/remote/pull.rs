@@ -77,9 +77,9 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     }
 
     let changes = treeapply::plan(repo_path, Some(old), new, OP)?;
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     treeapply::verify_clean(&repo, &work_dir, &changes, OP)?;
-    treeapply::apply(&repo, &work_dir, &changes)?;
+    treeapply::apply(&repo, &work_dir, &changes, OP)?;
     advance_ref(&repo, &branch, old, new)?;
     Ok(PullOutcome {
         branch,

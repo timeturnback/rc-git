@@ -29,12 +29,12 @@ pub fn discard_files(
     let repo = open(repo_path, OP, "working tree")?;
     let decision = policy.evaluate(&Action::DiscardWorkingChanges { files: paths.len() });
     let _proof = confirm(decision, OP, "working tree", input)?;
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
     let mut planned = Vec::with_capacity(paths.len());
     for path in paths {
-        let entry = tree_entry_at(&repo, head_tree, path)?;
+        let entry = tree_entry_at(&repo, OP, head_tree, path)?;
         match &entry {
             Some(entry) if entry.mode.is_tree() => {
                 return Err(ActionError::Git {
@@ -51,10 +51,10 @@ pub fn discard_files(
     for (path, entry) in planned {
         match entry {
             Some(entry) => {
-                let data = blob_data(&repo, path, entry.oid)?;
-                workfile::restore_file(&work_dir, path, &data, entry.mode.into())?;
+                let data = blob_data(&repo, OP, path, entry.oid)?;
+                workfile::restore_file(OP, &work_dir, path, &data, entry.mode.into())?;
             }
-            None => workfile::delete_file(&work_dir, path)?,
+            None => workfile::delete_file(OP, &work_dir, path)?,
         }
     }
     Ok(())
@@ -84,13 +84,13 @@ pub fn discard_hunks(
     if stamps.is_empty() {
         return Err(mismatch());
     }
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     let full = workfile::join_under(&work_dir, path, OP)?;
-    let entry = tree_entry_at(&repo, head_tree(&repo)?, path)?.ok_or_else(mismatch)?;
+    let entry = tree_entry_at(&repo, OP, head_tree(&repo)?, path)?.ok_or_else(mismatch)?;
     if !entry.mode.is_blob() {
         return Err(mismatch());
     }
-    let hunks = recompute_hunks(repo_path, path, entry.oid)?;
+    let hunks = recompute_hunks(repo_path, OP, path, entry.oid)?;
     for stamp in stamps {
         if !stamp_matches(*stamp, &hunks) {
             return Err(mismatch());
@@ -108,7 +108,7 @@ pub fn discard_hunks(
         })
         .filter(|stamp| !stamps.contains(stamp))
         .collect();
-    let old = blob_data(&repo, path, entry.oid)?;
+    let old = blob_data(&repo, OP, path, entry.oid)?;
     let new = std::fs::read(&full).map_err(|source| ActionError::Git {
         op: OP,
         name: path.to_owned(),
@@ -121,7 +121,7 @@ pub fn discard_hunks(
     } else {
         gix::objs::tree::EntryKind::Blob
     };
-    workfile::restore_file(&work_dir, path, &result, kind)
+    workfile::restore_file(OP, &work_dir, path, &result, kind)
 }
 
 /// The tree `HEAD` points at; `None` on an unborn branch, where everything is untracked.
@@ -129,7 +129,7 @@ fn head_tree(repo: &gix::Repository) -> ActionResult<Option<gix::ObjectId>> {
     let Some(head) = repo.head_id().ok().map(gix::Id::detach) else {
         return Ok(None);
     };
-    super::commit::tree_of(repo, head).map(Some)
+    super::commit::tree_of(repo, OP, head).map(Some)
 }
 
 fn is_executable(path: &Path) -> bool {

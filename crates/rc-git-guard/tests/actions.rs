@@ -522,8 +522,25 @@ mod commit_and_discard {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, ActionError::DetachedHead { .. }), "{err}");
+        assert!(
+            matches!(err, ActionError::DetachedHead { op: "commit" }),
+            "{err}"
+        );
         assert_eq!(fx.rev_parse("main"), head, "nothing moved");
+    }
+
+    #[test]
+    fn discard_in_a_bare_repository_names_discard() {
+        let fx = Fixture::standard();
+        let (_holder, bare) = fx.bare_copy();
+        let err =
+            discard_files(&bare, &Policy::default(), &["alpha.txt".to_owned()], None).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "discard", .. }),
+            "{err}"
+        );
+        assert!(err.to_string().starts_with("discard "), "{err}");
+        assert!(err.to_string().contains("bare"), "{err}");
     }
 
     #[test]
@@ -1034,8 +1051,25 @@ mod stash {
         fx.write("alpha.txt", b"conflicting edit\n");
 
         let err = stash_apply(fx.path(), &policy, 0, None).unwrap_err();
-        assert!(matches!(err, ActionError::DirtyPath { .. }), "{err}");
-        assert!(err.to_string().contains("alpha.txt"), "{err}");
+        assert!(
+            matches!(&err, ActionError::DirtyPath { op: "stash apply", path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().starts_with("stash apply: 'alpha.txt'"),
+            "{err}"
+        );
+        let err = stash_pop(fx.path(), &policy, 0, None).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ActionError::DirtyPath {
+                    op: "stash pop",
+                    ..
+                }
+            ),
+            "{err}"
+        );
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"conflicting edit\n",
@@ -1077,6 +1111,27 @@ mod stash {
 
         stash_pop(fx.path(), &policy, 0, None).unwrap();
         assert!(!fx.path().join("Zeta.txt").exists());
+    }
+
+    #[test]
+    fn stash_push_on_a_detached_head_names_stash_push() {
+        let fx = Fixture::standard();
+        fx.git(&["checkout", "-q", "--detach", "HEAD"]);
+        fx.write("alpha.txt", b"changed\n");
+        let err = stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned()],
+            None,
+            Some(identity()),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ActionError::DetachedHead { op: "stash push" }),
+            "{err}"
+        );
+        assert_eq!(stash_list(&fx), "");
     }
 
     #[test]
@@ -1232,9 +1287,14 @@ mod checkout {
 
         let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
         assert!(
-            matches!(&err, ActionError::DirtyPath { path } if path == "alpha.txt"),
+            matches!(&err, ActionError::DirtyPath { op: "checkout", path } if path == "alpha.txt"),
             "{err}"
         );
+        assert!(
+            err.to_string().starts_with("checkout: 'alpha.txt'"),
+            "{err}"
+        );
+        assert!(!err.to_string().contains("apply the stash"), "{err}");
         assert_eq!(head_branch(&fx), "main", "HEAD stayed put");
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
@@ -1254,7 +1314,7 @@ mod checkout {
 
         let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
         assert!(
-            matches!(&err, ActionError::DirtyPath { path } if path == "feature.txt"),
+            matches!(&err, ActionError::DirtyPath { path, .. } if path == "feature.txt"),
             "{err}"
         );
         assert_eq!(head_branch(&fx), "main");

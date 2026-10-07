@@ -56,53 +56,37 @@ pub fn commit(
     });
     let _proof = confirm(decision, OP, "HEAD", input)?;
     let message = normalized_message(message)?;
-    let (branch_ref, head_commit) = checked_out_branch(&repo)?;
+    let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
     let current = head_commit.map(|id| id.to_string());
     if current.as_deref() != expected_head {
         return Err(ActionError::StaleRepository { op: OP });
     }
     if selections.is_empty() {
-        return Err(git_error("nothing selected to commit"));
+        return Err(git_error(OP, "nothing selected to commit"));
     }
-    let work_dir = work_dir(&repo)?;
+    let work_dir = work_dir(&repo, OP)?;
     let selected = selections.iter().map(|selection| match selection {
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
     });
     workfile::check_paths(&work_dir, selected.clone(), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
-    let base_tree = head_commit.map(|id| tree_of(&repo, id)).transpose()?;
+    let base_tree = head_commit.map(|id| tree_of(&repo, OP, id)).transpose()?;
     for path in selected {
         refuse_case_variant_path(&repo, &work_dir, base_tree, path, OP)?;
     }
 
-    let mut edits: BTreeMap<BString, Node> = BTreeMap::new();
-    let mut index_changes: Vec<(String, Option<(ObjectId, EntryKind)>)> = Vec::new();
-    for selection in selections {
-        let (path, edit) = match selection {
-            FileSelection::Whole { path } => {
-                (path, whole_file_edit(&repo, &work_dir, base_tree, path)?)
-            }
-            FileSelection::Hunks { path, hunks } => (
-                path,
-                spliced_edit(&repo, repo_path, &work_dir, base_tree, path, hunks)?,
-            ),
-        };
-        index_changes.push((
-            path.clone(),
-            match &edit {
-                PathEdit::Put { oid, kind } => Some((*oid, *kind)),
-                PathEdit::Remove => None,
-            },
-        ));
-        treebuild::insert(&mut edits, path, edit)?;
-    }
+    let (edits, index_changes) =
+        selection_edits(&repo, repo_path, &work_dir, base_tree, selections)?;
 
     let new_tree = match treebuild::rewrite(&repo, base_tree, &edits)? {
         Some(oid) => oid,
-        None => write_object(&repo, &gix::objs::Tree::empty())?,
+        None => write_object(&repo, OP, &gix::objs::Tree::empty())?,
     };
     if Some(new_tree) == base_tree {
-        return Err(git_error("the selection matches HEAD; nothing to commit"));
+        return Err(git_error(
+            OP,
+            "the selection matches HEAD; nothing to commit",
+        ));
     }
 
     let signature = gix::actor::Signature {
@@ -119,7 +103,7 @@ pub fn commit(
         message: message.into(),
         extra_headers: Vec::new(),
     };
-    let commit_oid = write_object(&repo, &commit_object)?;
+    let commit_oid = write_object(&repo, OP, &commit_object)?;
 
     let expected = match head_commit {
         Some(id) => PreviousValue::MustExistAndMatch(Target::Object(id)),
@@ -145,7 +129,7 @@ pub fn commit(
         deref: false,
     };
     super::apply_edit(&repo, edit, OP, &branch_ref)?;
-    update_index(&repo, &work_dir, &index_changes)?;
+    update_index(&repo, OP, &work_dir, &index_changes)?;
 
     Ok(Committed {
         oid: commit_oid.to_string(),
@@ -156,34 +140,76 @@ pub fn commit(
     })
 }
 
+/// A path and the blob and kind the index records for it; `None` removes its entry.
+type IndexChange = (String, Option<(ObjectId, EntryKind)>);
+
+/// The tree edits for every selection, and the index changes that make terminal
+/// `git status` agree once the commit lands.
+fn selection_edits(
+    repo: &gix::Repository,
+    repo_path: &Path,
+    work_dir: &Path,
+    base_tree: Option<ObjectId>,
+    selections: &[FileSelection],
+) -> ActionResult<(BTreeMap<BString, Node>, Vec<IndexChange>)> {
+    let mut edits: BTreeMap<BString, Node> = BTreeMap::new();
+    let mut index_changes: Vec<IndexChange> = Vec::new();
+    for selection in selections {
+        let (path, edit) = match selection {
+            FileSelection::Whole { path } => {
+                (path, whole_file_edit(repo, OP, work_dir, base_tree, path)?)
+            }
+            FileSelection::Hunks { path, hunks } => (
+                path,
+                spliced_edit(repo, repo_path, work_dir, base_tree, path, hunks)?,
+            ),
+        };
+        index_changes.push((
+            path.clone(),
+            match &edit {
+                PathEdit::Put { oid, kind } => Some((*oid, *kind)),
+                PathEdit::Remove => None,
+            },
+        ));
+        treebuild::insert(&mut edits, path, edit)?;
+    }
+    Ok((edits, index_changes))
+}
+
 /// The full ref name `HEAD` points at and the commit it resolves to; `None` for an unborn
-/// branch. A detached `HEAD` is refused: v1 commits to a branch or not at all.
+/// branch. A detached `HEAD` is refused: v1 commits to a branch or not at all. Errors name
+/// `op`.
 pub(super) fn checked_out_branch(
     repo: &gix::Repository,
+    op: &'static str,
 ) -> ActionResult<(String, Option<ObjectId>)> {
     let head_name = repo
         .head_name()
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: "HEAD".to_owned(),
             source: Box::new(source),
         })?
-        .ok_or(ActionError::DetachedHead { op: "commit" })?;
+        .ok_or(ActionError::DetachedHead { op })?;
     let commit = repo.head_id().ok().map(gix::Id::detach);
     Ok((head_name.as_bstr().to_string(), commit))
 }
 
-pub(super) fn work_dir(repo: &gix::Repository) -> ActionResult<PathBuf> {
+pub(super) fn work_dir(repo: &gix::Repository, op: &'static str) -> ActionResult<PathBuf> {
     repo.workdir()
         .map(Path::to_path_buf)
-        .ok_or_else(|| git_error("the repository is bare and has no working tree"))
+        .ok_or_else(|| git_error(op, "the repository is bare and has no working tree"))
 }
 
-pub(super) fn tree_of(repo: &gix::Repository, commit: ObjectId) -> ActionResult<ObjectId> {
+pub(super) fn tree_of(
+    repo: &gix::Repository,
+    op: &'static str,
+    commit: ObjectId,
+) -> ActionResult<ObjectId> {
     let commit = repo
         .find_commit(commit)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: commit.to_string(),
             source: Box::new(source),
         })?;
@@ -191,7 +217,7 @@ pub(super) fn tree_of(repo: &gix::Repository, commit: ObjectId) -> ActionResult<
         .tree_id()
         .map(gix::Id::detach)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: commit.id.to_string(),
             source: Box::new(source),
         })
@@ -321,34 +347,35 @@ fn tree_case_variant(
 }
 
 /// The edit for committing `path` exactly as disk has it: an addition or replacement from
-/// the file's bytes, or a removal when the file is gone.
+/// the file's bytes, or a removal when the file is gone. Errors name `op`.
 pub(super) fn whole_file_edit(
     repo: &gix::Repository,
+    op: &'static str,
     work_dir: &Path,
     base_tree: Option<ObjectId>,
     path: &str,
 ) -> ActionResult<PathEdit> {
-    let full = workfile::join_under(work_dir, path, OP)?;
+    let full = workfile::join_under(work_dir, path, op)?;
     let meta = match std::fs::symlink_metadata(&full) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if tree_entry_at(repo, base_tree, path)?.is_none() {
-                return Err(git_error_for(path, "does not exist on disk or in HEAD"));
+            if tree_entry_at(repo, op, base_tree, path)?.is_none() {
+                return Err(git_error_for(op, path, "does not exist on disk or in HEAD"));
             }
             return Ok(PathEdit::Remove);
         }
         Err(error) => {
             return Err(ActionError::Git {
-                op: OP,
+                op,
                 name: path.to_owned(),
                 source: Box::new(error),
             });
         }
     };
     let (data, kind) = if meta.file_type().is_symlink() {
-        workfile::validate_path(OP, path, true)?;
+        workfile::validate_path(op, path, true)?;
         let target = std::fs::read_link(&full).map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: path.to_owned(),
             source: Box::new(source),
         })?;
@@ -357,10 +384,14 @@ pub(super) fn whole_file_edit(
             EntryKind::Link,
         )
     } else if meta.is_dir() {
-        return Err(git_error_for(path, "is a directory; select files instead"));
+        return Err(git_error_for(
+            op,
+            path,
+            "is a directory; select files instead",
+        ));
     } else {
         let data = std::fs::read(&full).map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: path.to_owned(),
             source: Box::new(source),
         })?;
@@ -377,7 +408,7 @@ pub(super) fn whole_file_edit(
             },
         )
     };
-    let oid = write_blob(repo, path, &data)?;
+    let oid = write_blob(repo, op, path, &data)?;
     Ok(PathEdit::Put { oid, kind })
 }
 
@@ -397,9 +428,10 @@ fn spliced_edit(
             path: path.to_owned(),
         });
     }
-    let entry = tree_entry_at(repo, base_tree, path)?.ok_or_else(|| ActionError::HunkMismatch {
-        path: path.to_owned(),
-    })?;
+    let entry =
+        tree_entry_at(repo, OP, base_tree, path)?.ok_or_else(|| ActionError::HunkMismatch {
+            path: path.to_owned(),
+        })?;
     if !entry.mode.is_blob() {
         return Err(ActionError::HunkMismatch {
             path: path.to_owned(),
@@ -407,7 +439,7 @@ fn spliced_edit(
     }
     verify_stamps(repo_path, path, entry.oid, stamps)?;
 
-    let old = blob_data(repo, path, entry.oid)?;
+    let old = blob_data(repo, OP, path, entry.oid)?;
     let full = workfile::join_under(work_dir, path, OP)?;
     let new = std::fs::read(&full).map_err(|source| ActionError::Git {
         op: OP,
@@ -420,7 +452,7 @@ fn spliced_edit(
         workfile::splice(&old, &new, &ordered).map_err(|_| ActionError::HunkMismatch {
             path: path.to_owned(),
         })?;
-    let oid = write_blob(repo, path, &spliced)?;
+    let oid = write_blob(repo, OP, path, &spliced)?;
     // The partially committed file keeps HEAD's kind: the exec bit only changes when the
     // whole file is committed.
     Ok(PathEdit::Put {
@@ -434,6 +466,7 @@ fn spliced_edit(
 /// reports a mismatch.
 pub(super) fn recompute_hunks(
     repo_path: &Path,
+    op: &'static str,
     path: &str,
     old: ObjectId,
 ) -> ActionResult<Vec<rc_git_core::DiffHunk>> {
@@ -441,7 +474,7 @@ pub(super) fn recompute_hunks(
         path: path.to_owned(),
     };
     let core = rc_git_core::Repository::open(repo_path).map_err(|source| ActionError::Git {
-        op: OP,
+        op,
         name: path.to_owned(),
         source: Box::new(source),
     })?;
@@ -454,7 +487,7 @@ pub(super) fn recompute_hunks(
             rc_git_core::DEFAULT_DIFF_CONTEXT,
         )
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: path.to_owned(),
             source: Box::new(source),
         })?;
@@ -490,7 +523,7 @@ fn verify_stamps(
     old: ObjectId,
     stamps: &[HunkStamp],
 ) -> ActionResult<()> {
-    let hunks = recompute_hunks(repo_path, path, old)?;
+    let hunks = recompute_hunks(repo_path, OP, path, old)?;
     for stamp in stamps {
         if !stamp_matches(*stamp, &hunks) {
             return Err(ActionError::HunkMismatch {
@@ -503,6 +536,7 @@ fn verify_stamps(
 
 pub(super) fn tree_entry_at(
     repo: &gix::Repository,
+    op: &'static str,
     base_tree: Option<ObjectId>,
     path: &str,
 ) -> ActionResult<Option<gix::objs::tree::Entry>> {
@@ -512,7 +546,7 @@ pub(super) fn tree_entry_at(
     let tree = repo
         .find_tree(base_tree)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: base_tree.to_string(),
             source: Box::new(source),
         })?;
@@ -523,7 +557,7 @@ pub(super) fn tree_entry_at(
     let found = tree
         .lookup_entry(segments)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: path.to_owned(),
             source: Box::new(source),
         })?;
@@ -536,18 +570,24 @@ pub(super) fn tree_entry_at(
 
 pub(super) fn blob_data(
     repo: &gix::Repository,
+    op: &'static str,
     path: &str,
     oid: ObjectId,
 ) -> ActionResult<Vec<u8>> {
     let mut blob = repo.find_blob(oid).map_err(|source| ActionError::Git {
-        op: OP,
+        op,
         name: path.to_owned(),
         source: Box::new(source),
     })?;
     Ok(blob.take_data())
 }
 
-fn write_blob(repo: &gix::Repository, path: &str, data: &[u8]) -> ActionResult<ObjectId> {
+fn write_blob(
+    repo: &gix::Repository,
+    op: &'static str,
+    path: &str,
+    data: &[u8],
+) -> ActionResult<ObjectId> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
@@ -555,7 +595,7 @@ fn write_blob(repo: &gix::Repository, path: &str, data: &[u8]) -> ActionResult<O
     repo.write_blob(data)
         .map(gix::Id::detach)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: path.to_owned(),
             source: Box::new(source),
         })
@@ -563,6 +603,7 @@ fn write_blob(repo: &gix::Repository, path: &str, data: &[u8]) -> ActionResult<O
 
 pub(super) fn write_object(
     repo: &gix::Repository,
+    op: &'static str,
     object: &impl gix::objs::WriteTo,
 ) -> ActionResult<ObjectId> {
     #[expect(
@@ -572,7 +613,7 @@ pub(super) fn write_object(
     repo.write_object(object)
         .map(gix::Id::detach)
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: "object".to_owned(),
             source: Box::new(source),
         })
@@ -584,6 +625,7 @@ pub(super) fn write_object(
 /// tree-cache extension is dropped rather than rewritten; git rebuilds it on demand.
 pub(in crate::actions) fn update_index(
     repo: &gix::Repository,
+    op: &'static str,
     work_dir: &Path,
     changes: &[(String, Option<(ObjectId, EntryKind)>)],
 ) -> ActionResult<()> {
@@ -595,14 +637,14 @@ pub(in crate::actions) fn update_index(
         gix::index::decode::Options::default(),
     )
     .map_err(|source| ActionError::Git {
-        op: OP,
+        op,
         name: "index".to_owned(),
         source: Box::new(source),
     })?;
     for (path, change) in changes {
         file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
         if let Some((oid, kind)) = change {
-            let stat = workfile::join_under(work_dir, path, OP)
+            let stat = workfile::join_under(work_dir, path, op)
                 .ok()
                 .and_then(|full| gix::index::fs::Metadata::from_path_no_follow(&full).ok())
                 .and_then(|meta| gix::index::entry::Stat::from_fs(&meta).ok())
@@ -624,7 +666,7 @@ pub(in crate::actions) fn update_index(
     )]
     file.write(gix::index::write::Options::default())
         .map_err(|source| ActionError::Git {
-            op: OP,
+            op,
             name: "index".to_owned(),
             source: Box::new(source),
         })?;
@@ -639,17 +681,17 @@ fn index_mode(kind: EntryKind) -> gix::index::entry::Mode {
     }
 }
 
-fn git_error(message: &'static str) -> ActionError {
+fn git_error(op: &'static str, message: &'static str) -> ActionError {
     ActionError::Git {
-        op: OP,
+        op,
         name: "HEAD".to_owned(),
         source: message.into(),
     }
 }
 
-fn git_error_for(path: &str, message: &'static str) -> ActionError {
+fn git_error_for(op: &'static str, path: &str, message: &'static str) -> ActionError {
     ActionError::Git {
-        op: OP,
+        op,
         name: path.to_owned(),
         source: message.into(),
     }
@@ -660,7 +702,7 @@ fn git_error_for(path: &str, message: &'static str) -> ActionError {
 fn normalized_message(message: &str) -> ActionResult<String> {
     let trimmed = message.trim();
     if trimmed.is_empty() {
-        return Err(git_error("the commit message is empty"));
+        return Err(git_error(OP, "the commit message is empty"));
     }
     Ok(format!("{trimmed}\n"))
 }

@@ -157,9 +157,11 @@ pub enum ActionError {
         /// The file involved.
         path: String,
     },
-    /// A stash restore would overwrite uncommitted changes.
-    #[error("cannot apply the stash: '{path}' has uncommitted changes; use git directly")]
+    /// A path the operation would write has uncommitted changes.
+    #[error("{op}: '{path}' has uncommitted changes; commit, stash, or discard it first")]
     DirtyPath {
+        /// What was being done.
+        op: &'static str,
         /// The file involved.
         path: String,
     },

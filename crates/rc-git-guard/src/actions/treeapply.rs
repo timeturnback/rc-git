@@ -137,10 +137,11 @@ pub(super) fn verify_clean(
     let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
     for change in changes {
         let dirty = || ActionError::DirtyPath {
+            op,
             path: change.path.clone(),
         };
         if let Some((old_blob, kind)) = change.old {
-            let expected = blob_data(repo, &change.path, old_blob)?;
+            let expected = blob_data(repo, op, &change.path, old_blob)?;
             if !disk_matches(work_dir, &change.path, &expected, kind, op)? {
                 return Err(dirty());
             }
@@ -226,25 +227,26 @@ fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) ->
 /// Call [`verify_clean`] first.
 ///
 /// # Errors
-/// [`ActionError::Git`] when a file or the index cannot be written.
+/// [`ActionError::Git`] naming `op` when a file or the index cannot be written.
 pub(super) fn apply(
     repo: &gix::Repository,
     work_dir: &Path,
     changes: &[PathChange],
+    op: &'static str,
 ) -> ActionResult<()> {
     let mut index_changes: Vec<(String, Option<(ObjectId, EntryKind)>)> = Vec::new();
     for change in changes.iter().filter(|change| change.new.is_none()) {
-        workfile::delete_file(work_dir, &change.path)?;
+        workfile::delete_file(op, work_dir, &change.path)?;
         index_changes.push((change.path.clone(), None));
     }
     for change in changes {
         if let Some((oid, kind)) = change.new {
-            let data = blob_data(repo, &change.path, oid)?;
-            workfile::restore_file(work_dir, &change.path, &data, kind)?;
+            let data = blob_data(repo, op, &change.path, oid)?;
+            workfile::restore_file(op, work_dir, &change.path, &data, kind)?;
             index_changes.push((change.path.clone(), Some((oid, kind))));
         }
     }
-    update_index(repo, work_dir, &index_changes)
+    update_index(repo, op, work_dir, &index_changes)
 }
 
 fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
