@@ -89,9 +89,12 @@ pub fn fetch_upstream(
                 .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
             let mut connection =
                 connection.with_credentials(authenticate_with(auth.creds.cloned()));
-            if let Some(options) = timed_http_options(&repo, &url, &remote_name) {
-                connection.set_transport_options(options);
-            }
+            connection.set_transport_options(timed_http_options(
+                &repo,
+                &url,
+                &remote_name,
+                cancel,
+            )?);
             run_fetch(connection, &remote_name, &host, cancel)?
         }
         RemoteScheme::Ssh => {
@@ -118,27 +121,41 @@ pub fn fetch_upstream(
     })
 }
 
-/// The repository's own HTTP transport options with rc-git's timeouts applied, or
-/// `None` when the repository configures none — gix then builds its defaults, which
-/// this overrides in turn by returning a fresh set.
+/// The repository's own HTTP transport options with rc-git's timeouts applied, built
+/// from gix's defaults when the repository configures none.
+///
+/// # Errors
+/// [`ActionError::Git`] when the repository's HTTP settings cannot be read, or when gix
+/// hands back options of a type other than the curl backend's: then the idle budget
+/// could not be set, and a fetch without it can hang forever on a silent server.
 fn timed_http_options(
     repo: &gix::Repository,
     url: &gix::Url,
     remote_name: &str,
-) -> Option<Box<dyn std::any::Any>> {
+    cancel: &Cancel,
+) -> ActionResult<Box<dyn std::any::Any>> {
     use gix::bstr::{BStr, ByteSlice};
+    use gix::protocol::transport::client::blocking_io::http::Options;
     let url = url.to_bstring();
     let mut options = repo
         .transport_options(url.as_bstr(), Some(<&BStr>::from(remote_name.as_bytes())))
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            Box::new(gix::protocol::transport::client::blocking_io::http::Options::default())
+        .map_err(|source| ActionError::Git {
+            op: OP,
+            name: remote_name.to_owned(),
+            source: Box::new(source),
+        })?
+        .unwrap_or_else(|| Box::new(Options::default()));
+    let Some(http) = options.downcast_mut::<Options>() else {
+        return Err(ActionError::Git {
+            op: OP,
+            name: remote_name.to_owned(),
+            source: "the HTTP transport options are not curl's, so the idle timeout \
+                     cannot be set; refusing to fetch without it"
+                .into(),
         });
-    let http =
-        options.downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()?;
-    http_timeouts(http);
-    Some(options)
+    };
+    http_timeouts(http, cancel.idle());
+    Ok(options)
 }
 
 /// Runs the prepared connection through negotiation and pack receive, mapping errors

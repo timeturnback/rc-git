@@ -80,7 +80,7 @@ pub fn push_upstream(
     let full_ref = format!("refs/heads/{branch}");
 
     let mut transport = match scheme {
-        RemoteScheme::Https => connect(&url, &host)?,
+        RemoteScheme::Https => connect(&url, &host, cancel)?,
         RemoteScheme::Ssh => super::ssh::transport(
             &url,
             auth,
@@ -246,6 +246,7 @@ fn send(
 fn connect(
     url: &gix::Url,
     host: &str,
+    cancel: &Cancel,
 ) -> ActionResult<Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>> {
     use gix::protocol::transport::client::TransportWithoutIO;
     let failed = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
@@ -264,7 +265,7 @@ fn connect(
     )
     .map_err(|source| failed(Box::new(source)))?;
     let mut options = gix::protocol::transport::client::blocking_io::http::Options::default();
-    http_timeouts(&mut options);
+    http_timeouts(&mut options, cancel.idle());
     transport.configure(&options).map_err(failed)?;
     Ok(transport)
 }

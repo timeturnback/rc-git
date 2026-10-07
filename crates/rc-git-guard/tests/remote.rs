@@ -272,6 +272,35 @@ fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
     drop(remoted.server);
 }
 
+/// The HTTPS idle budget is the only thing that ends a read curl is blocked in; the
+/// cancel flag is never looked at there. This fails if the budget stops reaching the
+/// backend, whether through a gix type change or a switch to a backend that ignores it.
+#[test]
+fn a_stalling_https_server_ends_the_fetch_once_the_idle_budget_is_spent() {
+    let remoted = remoted();
+    let stalling = rc_git_testkit::HttpGitServer::serve_stalling(&remoted.bare_path);
+    remoted
+        .clone
+        .git(&["remote", "set-url", "origin", &stalling.url()]);
+    let cancel = Cancel::new().with_idle_timeout(std::time::Duration::from_secs(2));
+
+    // On its own thread so a regression fails here instead of hanging the suite: without
+    // the budget nothing ever ends the read.
+    let repo = remoted.clone.path().to_path_buf();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = fetch_upstream(&repo, &Policy::default(), RemoteAuth::default(), &cancel);
+        drop(done.send(result));
+    });
+    let err = finished
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the fetch ends within 10 s of a 2 s idle budget")
+        .expect_err("a silent server fails the fetch");
+
+    assert!(matches!(err, ActionError::Git { op: "fetch", .. }), "{err}");
+    drop(stalling);
+}
+
 // --- fast-forward pull ---
 
 use rc_git_guard::actions::pull_fast_forward;

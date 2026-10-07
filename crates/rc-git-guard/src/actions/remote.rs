@@ -40,35 +40,64 @@ pub(super) const CANCEL_POLL: Duration = Duration::from_millis(200);
 /// thread ends the operation with [`ActionError::Cancelled`]: the ssh transport wakes
 /// out of its read within a fifth of a second, and the pack steps of both transports
 /// check it between objects.
-#[derive(Debug, Clone, Default)]
-pub struct Cancel(Arc<AtomicBool>);
+///
+/// It also carries the idle budget both transports measure silence against,
+/// two minutes unless [`Cancel::with_idle_timeout`] changes it: a read that blocks
+/// in curl never sees the flag, so that budget is what ends a stalled HTTPS transfer.
+#[derive(Debug, Clone)]
+pub struct Cancel {
+    flag: Arc<AtomicBool>,
+    idle: Duration,
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        Self {
+            flag: Arc::default(),
+            idle: IDLE_TIMEOUT,
+        }
+    }
+}
 
 impl Cancel {
-    /// A flag nobody has set yet.
+    /// A flag nobody has set yet, with the default idle budget.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The same flag with a different idle budget: how long a transfer may move no
+    /// bytes before it fails. HTTPS counts it in whole seconds, rounding down, with a
+    /// floor of one.
+    #[must_use]
+    pub fn with_idle_timeout(self, idle: Duration) -> Self {
+        Self { idle, ..self }
+    }
+
     /// Asks the operation holding this flag to stop. Safe from any thread.
     pub fn signal(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.flag.store(true, Ordering::SeqCst);
     }
 
     /// Whether [`Cancel::signal`] has been called.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.flag.load(Ordering::SeqCst)
     }
 
     /// The raw flag, for the gix APIs that take `&AtomicBool` as their interrupt.
     pub(super) fn flag(&self) -> &AtomicBool {
-        &self.0
+        &self.flag
     }
 
     /// A handle the ssh transport keeps for as long as the connection lives.
     pub(super) fn share(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.0)
+        Arc::clone(&self.flag)
+    }
+
+    /// How long a transfer may move no bytes before it counts as dead.
+    pub(super) fn idle(&self) -> Duration {
+        self.idle
     }
 }
 
@@ -446,12 +475,16 @@ fn bail_if_cancelled(cancel: &Cancel, op: &'static str) -> ActionResult<()> {
 /// accepts the connection and then goes quiet.
 ///
 /// `low_speed_limit_bytes_per_second` is 1 rather than a realistic rate on purpose:
-/// the pair means "fail when fewer than 1 byte moves for [`IDLE_TIMEOUT`]", which
-/// never punishes a slow link, only a dead one.
-fn http_timeouts(options: &mut gix::protocol::transport::client::blocking_io::http::Options) {
+/// the pair means "fail when fewer than 1 byte moves for `idle`", which never punishes
+/// a slow link, only a dead one. curl counts that time in whole seconds, and 0 would
+/// switch the check off, so a budget under a second becomes one second.
+fn http_timeouts(
+    options: &mut gix::protocol::transport::client::blocking_io::http::Options,
+    idle: Duration,
+) {
     options.connect_timeout = Some(CONNECT_TIMEOUT);
     options.low_speed_limit_bytes_per_second = 1;
-    options.low_speed_time_seconds = IDLE_TIMEOUT.as_secs();
+    options.low_speed_time_seconds = idle.as_secs().max(1);
 }
 
 /// Whether `ancestor` is reachable from `tip`.

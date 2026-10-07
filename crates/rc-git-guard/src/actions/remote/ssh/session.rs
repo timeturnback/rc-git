@@ -20,7 +20,7 @@ use russh::client::{Handle, Msg};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::runtime::Runtime;
 
-use crate::actions::remote::{CANCEL_POLL, Cancel, IDLE_TIMEOUT};
+use crate::actions::remote::{CANCEL_POLL, Cancel};
 use crate::actions::{ActionError, ActionResult};
 
 use super::hostkey::HostKeyHandler;
@@ -52,8 +52,8 @@ pub(super) fn build_runtime(op: &'static str) -> ActionResult<Runtime> {
 pub(super) struct Watch {
     cancel: Arc<AtomicBool>,
     op: &'static str,
-    /// How long one read or write may make no progress. A field rather than the
-    /// constant directly so the tests can measure a budget in milliseconds.
+    /// How long one read or write may make no progress, taken from the [`Cancel`] so
+    /// both transports share one budget and tests can shrink it.
     idle: Duration,
 }
 
@@ -62,7 +62,7 @@ impl Watch {
         Self {
             cancel: cancel.share(),
             op,
-            idle: IDLE_TIMEOUT,
+            idle: cancel.idle(),
         }
     }
 
@@ -70,8 +70,8 @@ impl Watch {
     /// [`CANCEL_POLL`] to look at the cancel flag.
     ///
     /// Returns [`io::ErrorKind::Interrupted`] once the flag is set, and
-    /// [`io::ErrorKind::TimedOut`] once the peer has been silent for
-    /// [`IDLE_TIMEOUT`]. The clock starts at each call, so it measures the gap between
+    /// [`io::ErrorKind::TimedOut`] once the peer has been silent for the idle
+    /// budget. The clock starts at each call, so it measures the gap between
     /// bytes rather than the length of the transfer: a slow link is never punished,
     /// only a dead one.
     ///
@@ -243,6 +243,7 @@ impl Drop for SshWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::remote::IDLE_TIMEOUT;
 
     fn watch(cancel: &Cancel, idle: Duration) -> Watch {
         Watch {

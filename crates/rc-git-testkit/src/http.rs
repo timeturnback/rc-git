@@ -26,6 +26,15 @@ struct BasicAuth {
     header: String,
 }
 
+/// How the server answers each connection.
+#[derive(Debug, Clone)]
+enum Mode {
+    /// Runs `git http-backend`, demanding Basic auth first when set.
+    Backend(Option<BasicAuth>),
+    /// Reads the request head, then holds the socket open and never writes.
+    Stall,
+}
+
 impl HttpGitServer {
     /// Serves `git_dir` anonymously.
     ///
@@ -33,7 +42,19 @@ impl HttpGitServer {
     /// When the listener cannot bind or `git --exec-path` fails.
     #[must_use]
     pub fn serve(git_dir: &std::path::Path) -> Self {
-        Self::start(git_dir, None)
+        Self::start(git_dir, Mode::Backend(None))
+    }
+
+    /// Accepts every connection and reads the request head, then holds the socket open
+    /// without writing a byte until the server is dropped: a peer that went quiet
+    /// mid-request, for testing idle timeouts. `git_dir` only names the mount, so
+    /// [`HttpGitServer::url`] has the usual shape.
+    ///
+    /// # Panics
+    /// When the listener cannot bind or `git --exec-path` fails.
+    #[must_use]
+    pub fn serve_stalling(git_dir: &std::path::Path) -> Self {
+        Self::start(git_dir, Mode::Stall)
     }
 
     /// Serves `git_dir` behind HTTP Basic auth: requests without the exact
@@ -46,7 +67,7 @@ impl HttpGitServer {
         let auth = BasicAuth {
             header: format!("Basic {}", base64(format!("{user}:{pass}").as_bytes())),
         };
-        Self::start(git_dir, Some(auth))
+        Self::start(git_dir, Mode::Backend(Some(auth)))
     }
 
     /// URL of the served repository, e.g. `http://127.0.0.1:49321/fixture.git`.
@@ -55,7 +76,7 @@ impl HttpGitServer {
         format!("http://127.0.0.1:{}/{}", self.port, self.mount)
     }
 
-    fn start(git_dir: &std::path::Path, auth: Option<BasicAuth>) -> Self {
+    fn start(git_dir: &std::path::Path, mode: Mode) -> Self {
         let git_dir = git_dir.canonicalize().expect("canonicalize git dir");
         let project_root = git_dir
             .parent()
@@ -79,8 +100,12 @@ impl HttpGitServer {
                 let Ok(stream) = stream else { continue };
                 let root = project_root.clone();
                 let backend = backend.clone();
-                let auth = auth.clone();
-                std::thread::spawn(move || handle_connection(stream, &root, &backend, auth));
+                let mode = mode.clone();
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || match mode {
+                    Mode::Backend(auth) => handle_connection(stream, &root, &backend, auth),
+                    Mode::Stall => stall(stream, &stop),
+                });
             }
         });
         Self {
@@ -126,6 +151,24 @@ fn resolve_git_http_backend() -> PathBuf {
     assert!(output.status.success(), "git --exec-path failed");
     let exec_path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     PathBuf::from(exec_path).join("git-http-backend")
+}
+
+/// Reads the request line and headers, then keeps the connection open and silent until
+/// `stop` is set, so the client's reads block for as long as it is willing to wait.
+fn stall(stream: TcpStream, stop: &AtomicBool) {
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) if line.trim_end().is_empty() => break,
+            Ok(_) => {}
+        }
+    }
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(reader);
 }
 
 fn handle_connection(
