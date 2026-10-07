@@ -197,9 +197,10 @@ impl Repository {
     /// Walks the whole working tree against `tree` and returns every changed path: modified,
     /// untracked, and deleted files, sorted by path. Clean and ignored paths are not listed,
     /// and an ignored directory is pruned without reading it, so `node_modules` never costs a
-    /// `read_dir`. The walk stops after visiting `max_scan` entries and reports the
-    /// truncation, which bounds both the disk work and how long the borrowed pool handle is
-    /// held.
+    /// `read_dir`. `.git` is never entered at any depth, and an untracked directory that
+    /// holds its own repository is skipped whole: its files belong to that repository. The
+    /// walk stops after visiting `max_scan` entries and reports the truncation, which bounds
+    /// both the disk work and how long the borrowed pool handle is held.
     ///
     /// # Errors
     /// [`Error::Worktree`] for a bare repository or an unreadable directory,
@@ -221,8 +222,9 @@ impl Repository {
 
     /// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
     /// untracked, and ignored files alike, so a gitignored `.env` is found. An ignored
-    /// directory that `tree` does not track is pruned without reading it, and a submodule is
-    /// not entered. The walk stops after visiting `max_scan` entries and reports the
+    /// directory that `tree` does not track is pruned without reading it, and neither a
+    /// submodule, `.git`, nor an untracked directory holding its own repository is entered.
+    /// The walk stops after visiting `max_scan` entries and reports the
     /// truncation, which bounds both the disk work and how long the borrowed pool handle is
     /// held. Nothing is hashed: this lists names, it does not compare content.
     ///
@@ -753,7 +755,10 @@ impl StatusWalk<'_> {
                         continue;
                     }
                     if kind == EntryKind::Tree {
-                        self.walk_dir(None, &path, &entry.path())?;
+                        let disk_path = entry.path();
+                        if !holds_nested_repository(&disk_path) {
+                            self.walk_dir(None, &path, &disk_path)?;
+                        }
                     } else {
                         self.report.entries.push(StatusEntry {
                             path,
@@ -919,14 +924,23 @@ impl FileWalk<'_> {
                 Some((EntryKind::Submodule, _)) => {}
                 Some((EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink, _))
                 | None => {
-                    if !self.excludes.is_ignored(&path, true) {
-                        self.walk_dir(None, &path, &entry.path())?;
+                    let disk_path = entry.path();
+                    if !self.excludes.is_ignored(&path, true)
+                        && !holds_nested_repository(&disk_path)
+                    {
+                        self.walk_dir(None, &path, &disk_path)?;
                     }
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Whether an untracked directory holds its own repository: a `.git` directory, file or
+/// symlink of any kind. Its files belong to that repository, so a walk never enters it.
+fn holds_nested_repository(disk_dir: &Path) -> bool {
+    std::fs::symlink_metadata(disk_dir.join(".git")).is_ok()
 }
 
 /// The repository's `core.fileMode`, which git turns off itself on a volume whose executable

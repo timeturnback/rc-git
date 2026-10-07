@@ -840,3 +840,67 @@ fn a_fifo_replacing_a_tracked_directory_leaves_its_files_deleted() {
     assert!(listing.entries.iter().all(|entry| entry.name != "docs"));
     assert!(listing.missing.iter().any(|entry| entry.name == "docs"));
 }
+
+/// The standard fixture with an untracked repository at `nested`, holding one commit, and a
+/// stray `.git` directory below a tracked one.
+fn with_nested_repository() -> Fixture {
+    let fx = Fixture::standard();
+    fx.write("nested/inner.txt", b"inner\n");
+    fx.git(&["-C", "nested", "init", "-q", "-b", "main"]);
+    fx.git(&["-C", "nested", "add", "inner.txt"]);
+    fx.git(&["-C", "nested", "commit", "-q", "-m", "inner"]);
+    fx.write("src/.git/config", b"[core]\n");
+    fx
+}
+
+#[test]
+fn worktree_status_never_enters_a_nested_repository_or_a_git_directory() {
+    let fx = with_nested_repository();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(status_paths(&report), []);
+    // The root's entries, `nested` itself and `src`'s entries; nothing inside either `.git`.
+    assert!(report.scanned < 15, "scanned {}", report.scanned);
+}
+
+#[test]
+fn worktree_files_never_enters_a_nested_repository_or_a_git_directory() {
+    let fx = with_nested_repository();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let paths = file_paths(&repo.worktree_files(tree, 10_000).unwrap());
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.starts_with("nested/") && !path.contains(".git/")),
+        "{paths:?}"
+    );
+    assert!(paths.contains(&"src/lib.rs".to_owned()), "{paths:?}");
+}
+
+#[test]
+fn worktree_entries_never_lists_a_git_directory_at_any_depth() {
+    let fx = with_nested_repository();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let root = repo.worktree_entries(tree, "").unwrap();
+    let nested = root
+        .entries
+        .iter()
+        .find(|entry| entry.name == "nested")
+        .unwrap();
+    assert_eq!(
+        (nested.kind, nested.status),
+        (EntryKind::Tree, WorktreeStatus::Untracked)
+    );
+    assert_eq!(
+        statuses(&repo.worktree_entries(tree, "nested").unwrap()),
+        [("inner.txt".to_owned(), WorktreeStatus::Untracked)]
+    );
+    let src = repo.worktree_entries(tree, "src").unwrap();
+    assert!(src.entries.iter().all(|entry| entry.name != ".git"));
+}
