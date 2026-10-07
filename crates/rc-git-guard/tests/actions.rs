@@ -961,6 +961,36 @@ mod stash {
     }
 
     #[test]
+    fn push_refuses_a_head_directory_before_writing_anything() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stash me\n");
+        fx.remove("src");
+
+        let err = stash_push(
+            fx.path(),
+            &policy,
+            &["alpha.txt".to_owned(), "src".to_owned()],
+            None,
+            Some(identity()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(
+            err.to_string().contains("'src'") && err.to_string().contains("is a directory"),
+            "{err}"
+        );
+        assert_eq!(stash_list(&fx), "", "no stash entry was written");
+        assert!(!refs(&fx).contains("refs/stash"));
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stash me\n",
+            "the edit stays on disk"
+        );
+    }
+
+    #[test]
     fn our_pop_restores_a_stash_the_real_git_pushed() {
         let fx = Fixture::standard();
         let policy = Policy::default();

@@ -15,9 +15,10 @@ use gix::refs::Target;
 use gix::refs::transaction::{Change, PreviousValue};
 
 use super::commit::{
-    blob_data, checked_out_branch, refuse_case_variant_path, tree_of, whole_file_edit, work_dir,
-    write_object,
+    blob_data, checked_out_branch, refuse_case_variant_path, tree_entry_at, tree_of,
+    whole_file_edit, work_dir, write_object,
 };
+use super::discard::restore_paths;
 use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
 use super::workfile::{self, DiskEntry};
@@ -67,6 +68,13 @@ pub fn stash_push(
     let base_tree = tree_of(&repo, OP, head)?;
     for path in paths {
         refuse_case_variant_path(&repo, &work_dir, Some(base_tree), path, OP)?;
+        if tree_entry_at(&repo, OP, Some(base_tree), path)?.is_some_and(|e| e.mode.is_tree()) {
+            return Err(ActionError::git(
+                OP,
+                path.clone(),
+                "is a directory; select files instead",
+            ));
+        }
     }
 
     let mut edits = std::collections::BTreeMap::new();
@@ -122,7 +130,26 @@ pub fn stash_push(
         },
     )?;
 
-    let expected = match stash_target(&repo)? {
+    write_stash_ref(&repo, stash_commit, &stash_message, &identity)?;
+
+    // Only now that the stash records everything: put the files back to HEAD state.
+    restore_paths(&repo, &work_dir, Some(base_tree), paths, OP)?;
+    Ok(StashSaved {
+        oid: stash_commit.to_string(),
+        message: stash_message,
+    })
+}
+
+/// Points `refs/stash` at `stash_commit`, adding a reflog line with `message`; the ref must
+/// still be where it was read, so a concurrent push is refused rather than lost.
+fn write_stash_ref(
+    repo: &gix::Repository,
+    stash_commit: ObjectId,
+    message: &str,
+    identity: &Identity,
+) -> ActionResult<()> {
+    const OP: &str = "stash push";
+    let expected = match stash_target(repo)? {
         Some(current) => PreviousValue::MustExistAndMatch(Target::Object(current)),
         None => PreviousValue::MustNotExist,
     };
@@ -130,48 +157,20 @@ pub fn stash_push(
         "refs/stash",
         expected,
         Target::Object(stash_commit),
-        &stash_message,
+        message,
         OP,
     )?;
     if let Change::Update { log, .. } = &mut edit.change {
         log.force_create_reflog = true;
     }
     super::apply_edit_as(
-        &repo,
+        repo,
         edit,
         OP,
         "refs/stash",
         &identity.name,
         &identity.email,
-    )?;
-
-    // Only now that the stash records everything: put the files back to HEAD state.
-    restore_to_base(&repo, OP, &work_dir, base_tree, paths)?;
-    Ok(StashSaved {
-        oid: stash_commit.to_string(),
-        message: stash_message,
-    })
-}
-
-/// Puts each of `paths` back to its state in `base_tree`: restored when tracked there,
-/// deleted otherwise.
-fn restore_to_base(
-    repo: &gix::Repository,
-    op: &'static str,
-    work_dir: &Path,
-    base_tree: ObjectId,
-    paths: &[String],
-) -> ActionResult<()> {
-    for path in paths {
-        match super::commit::tree_entry_at(repo, op, Some(base_tree), path)? {
-            Some(entry) => {
-                let data = blob_data(repo, op, path, entry.oid)?;
-                workfile::restore_file(op, work_dir, path, &data, entry.mode.into())?;
-            }
-            None => workfile::delete_file(op, work_dir, path)?,
-        }
-    }
-    Ok(())
+    )
 }
 
 /// Writes `stash@{index}`'s changes back to the working tree, keeping the entry.

@@ -34,10 +34,8 @@ pub fn discard_files(
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
-    let mut planned = Vec::with_capacity(paths.len());
     for path in paths {
-        let entry = tree_entry_at(&repo, OP, head_tree, path)?;
-        match &entry {
+        match tree_entry_at(&repo, OP, head_tree, path)? {
             Some(entry) if entry.mode.is_tree() => {
                 return Err(ActionError::git(
                     OP,
@@ -48,15 +46,30 @@ pub fn discard_files(
             Some(_) => {}
             None => workfile::require_exact_name(&work_dir, path, OP)?,
         }
-        planned.push((path, entry));
     }
-    for (path, entry) in planned {
-        match entry {
+    restore_paths(&repo, &work_dir, head_tree, paths, OP)
+}
+
+/// Puts each of `paths` back to its state in `tree`: a tracked file gets its blob bytes and
+/// mode written back, an untracked one is deleted. Callers refuse directory entries first.
+///
+/// # Errors
+/// [`ActionError::Git`] when an entry cannot be read, or a file can be neither restored nor
+/// deleted.
+pub(super) fn restore_paths(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    tree: Option<gix::ObjectId>,
+    paths: &[String],
+    op: &'static str,
+) -> ActionResult<()> {
+    for path in paths {
+        match tree_entry_at(repo, op, tree, path)? {
             Some(entry) => {
-                let data = blob_data(&repo, OP, path, entry.oid)?;
-                workfile::restore_file(OP, &work_dir, path, &data, entry.mode.into())?;
+                let data = blob_data(repo, op, path, entry.oid)?;
+                workfile::restore_file(op, work_dir, path, &data, entry.mode.into())?;
             }
-            None => workfile::delete_file(OP, &work_dir, path)?,
+            None => workfile::delete_file(op, work_dir, path)?,
         }
     }
     Ok(())
