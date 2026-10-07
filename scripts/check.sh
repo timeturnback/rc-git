@@ -44,10 +44,19 @@ actionlint
 zizmor .github/workflows
 
 if ((fast == 0)); then
+  step "macOS platform floor"
+  cargo_floor="$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET = { value = "\([0-9.]*\)".*/\1/p' \
+    .cargo/config.toml)"
+  package_floor="$(sed -n 's/.*\.macOS("\([0-9.]*\)").*/\1/p' mac/Package.swift)"
+  plist_floor="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' mac/Info.plist)"
+  if [[ -z "$cargo_floor" || "$cargo_floor" != "$package_floor" ||
+    "$cargo_floor" != "$plist_floor" ]]; then
+    echo "error: macOS floor differs: .cargo/config.toml '$cargo_floor'," \
+      "mac/Package.swift '$package_floor', mac/Info.plist '$plist_floor'; set all three alike" >&2
+    exit 1
+  fi
   step "rust release library"
-  # Same platform floor as scripts/build.sh: without it ring's assembly objects are built
-  # for the host SDK and the Swift link warns on every one of them.
-  MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --locked --release -p rc-git-ffi
+  cargo build --locked --release -p rc-git-ffi
   step "swift-format"
   xcrun swift-format lint --strict --recursive \
     mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
