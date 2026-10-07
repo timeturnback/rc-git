@@ -4155,6 +4155,27 @@ mod tests {
         assert_eq!(unsafe { &*page }.len, 1);
         unsafe { rcgit_commit_list_free(page) };
         unsafe { rcgit_repo_free(repo) };
+
+        fx.git_with_env(
+            &["commit", "-q", "--allow-empty", "-m", "zoned"],
+            &[
+                ("GIT_AUTHOR_DATE", "2024-01-05T00:00:00+0530"),
+                ("GIT_COMMITTER_DATE", "2024-01-05T00:00:00-0800"),
+            ],
+        );
+        let repo = open(&fx);
+        let zoned = resolve(repo, "main");
+        let list = unsafe { rcgit_log(repo, &raw const zoned, 0, 1, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let commits = unsafe { std::slice::from_raw_parts((*list).commits, (*list).len) };
+        assert_eq!(commits[0].author_offset, 19_800);
+        unsafe { rcgit_commit_list_free(list) };
+        let detail = unsafe { rcgit_commit_details(repo, &raw const zoned, &raw mut error) };
+        assert!(!detail.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { &*detail }.summary.author_offset, 19_800);
+        assert_eq!(unsafe { &*detail }.committer_offset, -28_800);
+        unsafe { rcgit_commit_detail_free(detail) };
+        unsafe { rcgit_repo_free(repo) };
     }
 
     #[test]

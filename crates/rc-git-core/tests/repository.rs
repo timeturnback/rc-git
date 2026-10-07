@@ -580,6 +580,107 @@ fn commit_details_reports_body_committer_and_tree() {
 }
 
 #[test]
+fn log_reports_non_utc_offsets() {
+    let fx = Fixture::standard();
+    fx.write("east.txt", b"east\n");
+    fx.commit("East", "2024-01-05T00:00:00+0530");
+    fx.write("west.txt", b"west\n");
+    fx.commit("West", "2024-01-06T00:00:00-0800");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let commits = repo.log(tip, 0, 2).unwrap();
+    let west = &commits[0];
+    let east = &commits[1];
+    assert_eq!((west.title.as_str(), west.author_offset), ("West", -28_800));
+    assert_eq!((east.title.as_str(), east.author_offset), ("East", 19_800));
+    assert_eq!(west.author_time, 1_704_528_000, "2024-01-06T08:00:00Z");
+    assert_eq!(east.author_time, 1_704_393_000, "2024-01-04T18:30:00Z");
+
+    let west_detail = repo.commit_details(west.oid).unwrap();
+    assert_eq!(west_detail.committer_offset, -28_800);
+    assert_eq!(
+        repo.commit_details(east.oid).unwrap().committer_offset,
+        19_800
+    );
+}
+
+#[test]
+fn offsets_are_seconds_east_of_utc_and_kept_apart() {
+    let fx = Fixture::standard();
+    fx.git_with_env(
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "tz",
+            "--date",
+            "2024-01-05T07:00:00+0700",
+        ],
+        &[("GIT_COMMITTER_DATE", "2024-01-05T00:00:00-0130")],
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let summary = repo.commit(tip).unwrap();
+    assert_eq!(
+        (summary.author_time, summary.author_offset),
+        (1_704_412_800, 25_200)
+    );
+    let detail = repo.commit_details(tip).unwrap();
+    assert_eq!(
+        (detail.committer_time, detail.committer_offset),
+        (1_704_418_200, -5_400)
+    );
+    assert_ne!(summary.author_time, detail.committer_time);
+
+    // gix reads a malformed offset as UTC and keeps the seconds.
+    let repo = raw_signature_commit(&fx, "short-offset", "1704412800 +07");
+    let short = repo.resolve("short-offset").unwrap();
+    let summary = repo.commit(short).unwrap();
+    assert_eq!(
+        (summary.author_time, summary.author_offset),
+        (1_704_412_800, 0)
+    );
+    let detail = repo.commit_details(short).unwrap();
+    assert_eq!(
+        (detail.committer_time, detail.committer_offset),
+        (1_704_412_800, 0)
+    );
+
+    // A time with no leading digits cannot be parsed at all: the fallback reports epoch and UTC.
+    let repo = raw_signature_commit(&fx, "no-seconds", "- +0700");
+    let unparsable = repo.resolve("no-seconds").unwrap();
+    let summary = repo.commit(unparsable).unwrap();
+    assert_eq!((summary.author_time, summary.author_offset), (0, 0));
+    let detail = repo.commit_details(unparsable).unwrap();
+    assert_eq!((detail.committer_time, detail.committer_offset), (0, 0));
+}
+
+/// Writes a commit on top of `main` whose author and committer lines end in `time`, bypassing
+/// git's checks, points `branch` at it, and reopens the repository.
+fn raw_signature_commit(fx: &Fixture, branch: &str, time: &str) -> Repository {
+    let raw = format!(
+        "tree {}\nparent {}\nauthor A <a@example.com> {time}\n\
+         committer C <c@example.com> {time}\n\nraw signature\n",
+        fx.rev_parse("main^{tree}"),
+        fx.rev_parse("main"),
+    );
+    fx.write("raw-commit", raw.as_bytes());
+    let oid = fx.git_output(&[
+        "hash-object",
+        "-t",
+        "commit",
+        "--literally",
+        "-w",
+        "raw-commit",
+    ]);
+    fx.git(&["update-ref", &format!("refs/heads/{branch}"), &oid]);
+    Repository::open(fx.path()).unwrap()
+}
+
+#[test]
 fn concurrent_readers_share_one_repository() {
     let fx = Fixture::standard();
     let repo = Arc::new(Repository::open(fx.path()).unwrap());

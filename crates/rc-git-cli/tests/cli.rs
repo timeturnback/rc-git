@@ -339,6 +339,25 @@ fn show_prints_header_and_message() {
 }
 
 #[test]
+fn show_prints_author_and_committer_offsets_apart() {
+    let fx = Fixture::standard();
+    fx.git_with_env(
+        &["commit", "-q", "--allow-empty", "-m", "zoned"],
+        &[
+            ("GIT_AUTHOR_DATE", "2024-01-04T00:00:00-0130"),
+            ("GIT_COMMITTER_DATE", "2024-01-04T00:00:00+0545"),
+        ],
+    );
+    let path = fx.path().to_str().unwrap();
+
+    let shown = stdout(&rc_git(&["show", path, "main"]));
+    assert!(shown.contains("author\tTest Author <author@example.com>\t1704331800\t-5400\n"));
+    assert!(
+        shown.contains("committer\tTest Committer <committer@example.com>\t1704305700\t20700\n")
+    );
+}
+
+#[test]
 fn resolve_prints_the_oid() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

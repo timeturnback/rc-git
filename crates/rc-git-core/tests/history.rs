@@ -248,6 +248,71 @@ fn search_time_floor_terminates_the_walk_and_ceiling_filters() {
     );
 }
 
+/// Adds an empty commit titled `title` on `main` with separate author and committer dates.
+fn commit_with_dates(fx: &Fixture, title: &str, author_date: &str, committer_date: &str) {
+    fx.git_with_env(
+        &["commit", "-q", "--allow-empty", "-m", title],
+        &[
+            ("GIT_AUTHOR_DATE", author_date),
+            ("GIT_COMMITTER_DATE", committer_date),
+        ],
+    );
+}
+
+#[test]
+fn commit_details_keeps_author_and_committer_offsets_apart() {
+    let fx = merge_fixture();
+    commit_with_dates(
+        &fx,
+        "zoned",
+        "2024-01-04T00:00:00-0130",
+        "2024-01-04T00:00:00+0545",
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let detail = repo.commit_details(tip).unwrap();
+    assert_eq!(detail.summary.author_offset, -5_400);
+    assert_eq!(
+        detail.summary.author_time, 1_704_331_800,
+        "2024-01-04T01:30:00Z"
+    );
+    assert_eq!(detail.committer_offset, 20_700);
+    assert_eq!(detail.committer_time, 1_704_305_700, "2024-01-03T18:15:00Z");
+}
+
+#[test]
+fn time_filters_use_committer_time() {
+    let fx = merge_fixture();
+    commit_with_dates(
+        &fx,
+        "skewed",
+        "2020-01-01T00:00:00-0130",
+        "2024-01-07T00:00:00+0545",
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let floor = CommitFilter {
+        after: Some(1_704_564_900),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &floor, 0, 100, 1000).unwrap();
+    assert_eq!(titles(&page), ["skewed"], "committed 2024-01-06T18:15:00Z");
+
+    let ceiling = CommitFilter {
+        before: Some(1_704_499_200),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &ceiling, 0, 100, 1000).unwrap();
+    assert_eq!(
+        page.commits.len(),
+        6,
+        "authored in 2020, still above the ceiling"
+    );
+    assert!(!titles(&page).contains(&"skewed".to_owned()));
+}
+
 #[test]
 fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
     let fx = merge_fixture();
