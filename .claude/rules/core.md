@@ -31,5 +31,7 @@ paths: crates/rc-git-core/**
   a conflicted, assume-valid, skip-worktree, intent-to-add or racy entry, an id that is not
   the tree's, or any read that fails falls through to hashing. Never let it answer
   `Unchanged` from anything but a full stat match — that hides a real edit.
-- Compare a directory against its tree through `index_by_name`, not a scan per file. A wide
+- Compare a directory against its tree through `FsRules::index`, not a scan per file. A wide
   directory otherwise costs a pass over the whole tree listing for every file in it.
+- Name a disk entry with `FsRules::disk_name` and match it with `TreeIndex::resolve`: macOS
+  returns NFD names git stores as NFC, and `core.ignoreCase` matches across case.

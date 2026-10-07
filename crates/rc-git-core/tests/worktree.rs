@@ -1130,3 +1130,89 @@ fn a_readable_index_reports_no_warnings() {
             .is_empty()
     );
 }
+
+/// A name listed by its path in `files`.
+fn has_file(files: &rc_git_core::WorktreeFileList, path: &str) -> bool {
+    files.files.iter().any(|file| file.path == path)
+}
+
+#[test]
+fn an_nfd_name_matches_its_precomposed_tree_entry() {
+    let fx = Fixture::standard();
+    // Set explicitly: `git init` turns it on only on macOS.
+    fx.git(&["config", "core.precomposeUnicode", "true"]);
+    fx.write("caf\u{e9}.txt", b"x\n");
+    fx.commit("add an accented name", "2024-01-03T00:00:00Z");
+    fx.remove("caf\u{e9}.txt");
+    // How Finder and Foundation spell the same name: `e` plus a combining acute accent.
+    fx.write("cafe\u{301}.txt", b"x\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(status_paths(&report), []);
+
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    assert_eq!(listing.missing, []);
+    let cafe = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "caf\u{e9}.txt")
+        .unwrap();
+    assert_eq!(cafe.status, WorktreeStatus::Unchanged);
+    assert!(
+        !listing
+            .entries
+            .iter()
+            .any(|entry| entry.name == "cafe\u{301}.txt")
+    );
+
+    let files = repo.worktree_files(tree, 10_000).unwrap();
+    assert!(has_file(&files, "caf\u{e9}.txt"));
+    assert!(!has_file(&files, "cafe\u{301}.txt"));
+}
+
+#[test]
+fn an_nfd_name_stays_untracked_and_precomposed_when_new() {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.precomposeUnicode", "true"]);
+    fx.write("cafe\u{301}.txt", b"x\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(
+        status_paths(&report),
+        [("caf\u{e9}.txt".to_owned(), WorktreeStatus::Untracked)]
+    );
+}
+
+/// Needs a case-insensitive filesystem, so that the renamed file still opens under its old
+/// name; macOS's default APFS volume is one.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_case_only_rename_is_clean_under_ignore_case() {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.ignoreCase", "true"]);
+    let readme = std::fs::read(fx.path().join("README.md")).unwrap();
+    fx.remove("README.md");
+    fx.write("readme.md", &readme);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(status_paths(&report), []);
+
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    assert_eq!(listing.missing, []);
+    let readme = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "README.md")
+        .unwrap();
+    assert_eq!(readme.status, WorktreeStatus::Unchanged);
+
+    let files = repo.worktree_files(tree, 10_000).unwrap();
+    assert!(has_file(&files, "README.md"));
+    assert!(!has_file(&files, "readme.md"));
+}

@@ -1,7 +1,9 @@
 //! The working directory as a read-only view: files on disk with a status overlay against
 //! `HEAD`. Nothing here writes; hashing a file to compare it with a blob reads it once.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -33,7 +35,9 @@ pub enum WorktreeStatus {
 /// One entry of a working-tree directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
-    /// File name as stored on disk.
+    /// File name as git records it: the tree entry's name when the disk name matches one,
+    /// which under `core.precomposeUnicode` or `core.ignoreCase` may be spelled differently on
+    /// disk; otherwise the disk name, precomposed to NFC under `core.precomposeUnicode`.
     pub name: BString,
     /// What the entry is on disk.
     pub kind: EntryKind,
@@ -149,12 +153,12 @@ impl Repository {
                 Ok(disk_dir)
             })
             .map_err(|source| worktree_error("list working tree", dir, source))?;
-        let on_disk = list_disk_dir(&disk_dir, dir)?;
 
         let mut listing = WorktreeListing::default();
-        let by_name = index_by_name(&tree_entries);
         self.with(|repo| {
             let mut context = WorktreeContext::new(repo, "list working tree")?;
+            let on_disk = list_disk_dir(&disk_dir, dir, context.fs)?;
+            let by_name = context.fs.index(&tree_entries);
             for DiskEntry {
                 name,
                 kind: disk,
@@ -162,8 +166,8 @@ impl Repository {
                 path,
             } in on_disk
             {
+                let (name, in_tree) = by_name.resolve(name);
                 let rela = relative_path(dir, &name);
-                let in_tree = by_name.get(&name).copied();
                 let Some(disk) = disk else {
                     listing.entries.extend(special_entry(name, in_tree, size));
                     continue;
@@ -261,7 +265,7 @@ impl Repository {
         self.with(|repo| {
             let mut walk = FileWalk {
                 repo,
-                executable_bit: executable_bit(repo, "list working tree files")?,
+                fs: FsRules::new(repo, "list working tree files")?,
                 excludes: ExcludeCheck::new(repo),
                 list: WorktreeFileList::default(),
                 max_scan,
@@ -378,16 +382,16 @@ struct DiskEntry {
     path: PathBuf,
 }
 
-/// One directory's entries with their `symlink_metadata`. An entry that vanished between the
-/// listing and its stat is left out, as git would never have seen it.
-fn list_disk_dir(disk_dir: &Path, dir: &str) -> Result<Vec<DiskEntry>> {
+/// One directory's entries with their `symlink_metadata`, named as `fs` spells them. An entry
+/// that vanished between the listing and its stat is left out, as git would never have seen it.
+fn list_disk_dir(disk_dir: &Path, dir: &str, fs: FsRules) -> Result<Vec<DiskEntry>> {
     let read = std::fs::read_dir(disk_dir)
         .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
     let mut on_disk = Vec::new();
     for entry in read {
         let entry =
             entry.map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
-        let name = BString::from(entry.file_name().as_encoded_bytes());
+        let name = fs.disk_name(&entry.file_name());
         if name == ".git" {
             continue;
         }
@@ -434,8 +438,7 @@ struct DiskFacts<'a> {
 /// costs one stack build and the index is read once however many files are compared.
 struct WorktreeContext<'repo> {
     repo: &'repo gix::Repository,
-    /// `core.fileMode`: whether the disk's executable bit means anything in this repository.
-    executable_bit: bool,
+    fs: FsRules,
     excludes: ExcludeCheck<'repo>,
     stats: StatCache<'repo>,
 }
@@ -444,7 +447,7 @@ impl<'repo> WorktreeContext<'repo> {
     fn new(repo: &'repo gix::Repository, op: &'static str) -> Result<Self> {
         Ok(Self {
             repo,
-            executable_bit: executable_bit(repo, op)?,
+            fs: FsRules::new(repo, op)?,
             excludes: ExcludeCheck::new(repo),
             stats: StatCache::new(repo),
         })
@@ -463,7 +466,11 @@ impl<'repo> WorktreeContext<'repo> {
 
     /// The kind git would record for a disk entry of `disk` kind tracked as `tracked`.
     fn kind_of(&self, disk: EntryKind, tracked: Option<&TreeEntry>) -> EntryKind {
-        git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit)
+        git_kind(
+            disk,
+            tracked.map(|entry| entry.kind),
+            self.fs.executable_bit,
+        )
     }
 
     /// Whether a disk file differs from its tree entry. Kind decides first, then the blob
@@ -907,7 +914,7 @@ impl StatusWalk<'_> {
             Some(oid) => tree_children(self.context.repo, oid)?,
             None => Vec::new(),
         };
-        let by_name = index_by_name(&tree_entries);
+        let by_name = self.context.fs.index(&tree_entries);
         let read = match std::fs::read_dir(disk_dir) {
             Ok(read) => read,
             // Gone since its parent was read: everything the tree has there is deleted.
@@ -925,14 +932,14 @@ impl StatusWalk<'_> {
                 Ok(entry) => entry,
                 Err(source) => return self.skip_unreadable_dir(dir, source),
             };
-            let name = BString::from(entry.file_name().as_encoded_bytes());
+            let name = self.context.fs.disk_name(&entry.file_name());
             if name == ".git" {
                 continue;
             }
             if !self.visit() {
                 return Ok(());
             }
-            let tracked = by_name.get(&name).copied();
+            let (name, tracked) = by_name.resolve(name);
             let path = child_path(dir, &name);
             if self.walk_entry(tracked, path, &entry.path())? == Presence::OnDisk {
                 on_disk.insert(name);
@@ -1150,8 +1157,7 @@ impl StatusWalk<'_> {
 /// directory, which is always entered, from an untracked one, which an ignore rule prunes.
 struct FileWalk<'repo> {
     repo: &'repo gix::Repository,
-    /// `core.fileMode`, as in [`WorktreeContext`].
-    executable_bit: bool,
+    fs: FsRules,
     excludes: ExcludeCheck<'repo>,
     list: WorktreeFileList,
     max_scan: usize,
@@ -1173,7 +1179,7 @@ impl FileWalk<'_> {
             Some(oid) => tree_children(self.repo, oid)?,
             None => Vec::new(),
         };
-        let by_name = index_by_name(&tree_entries);
+        let by_name = self.fs.index(&tree_entries);
         let read = match std::fs::read_dir(disk_dir) {
             Ok(read) => read,
             // Gone since its parent was read: there is nothing on disk to list.
@@ -1190,14 +1196,14 @@ impl FileWalk<'_> {
                 Ok(entry) => entry,
                 Err(source) => return self.skip_unreadable_dir(dir, source),
             };
-            let name = BString::from(entry.file_name().as_encoded_bytes());
+            let name = self.fs.disk_name(&entry.file_name());
             if name == ".git" {
                 continue;
             }
             if !self.visit() {
                 return Ok(());
             }
-            let tracked = by_name.get(&name).copied();
+            let (name, tracked) = by_name.resolve(name);
             self.walk_entry(tracked, child_path(dir, &name), &entry.path())?;
         }
         Ok(())
@@ -1233,7 +1239,11 @@ impl FileWalk<'_> {
         let Some(disk) = disk_kind(&meta) else {
             return Ok(());
         };
-        let kind = git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit);
+        let kind = git_kind(
+            disk,
+            tracked.map(|entry| entry.kind),
+            self.fs.executable_bit,
+        );
         if kind != EntryKind::Tree {
             self.list.files.push(WorktreeFile { path, kind });
             return Ok(());
@@ -1257,12 +1267,77 @@ fn holds_nested_repository(disk_dir: &Path) -> bool {
     std::fs::symlink_metadata(disk_dir.join(".git")).is_ok()
 }
 
-/// The repository's `core.fileMode`, which git turns off itself on a volume whose executable
-/// bit cannot be trusted (FAT, exFAT, many SMB mounts show every file as 0777).
-fn executable_bit(repo: &gix::Repository, op: &'static str) -> Result<bool> {
-    repo.filesystem_options()
-        .map(|options| options.executable_bit)
-        .map_err(git(op))
+/// What the repository's config says about its working tree's filesystem, read once per walk.
+#[derive(Debug, Clone, Copy)]
+struct FsRules {
+    /// `core.fileMode`, which git turns off itself on a volume whose executable bit cannot be
+    /// trusted (FAT, exFAT, many SMB mounts show every file as 0777).
+    executable_bit: bool,
+    /// `core.precomposeUnicode`: macOS hands back names in NFD, git records them in NFC.
+    precompose: bool,
+    /// `core.ignoreCase`: a disk name matches a tree entry that differs from it only in case.
+    ignore_case: bool,
+}
+
+impl FsRules {
+    fn new(repo: &gix::Repository, op: &'static str) -> Result<Self> {
+        let options = repo.filesystem_options().map_err(git(op))?;
+        Ok(Self {
+            executable_bit: options.executable_bit,
+            precompose: options.precompose_unicode,
+            ignore_case: options.ignore_case,
+        })
+    }
+
+    /// A name `read_dir` returned, spelled as git would record it. Only the name changes: the
+    /// file is still opened through its `read_dir` path, which APFS resolves either way.
+    fn disk_name(self, name: &OsStr) -> BString {
+        let name = if self.precompose {
+            gix::utils::str::precompose_os_string(Cow::Borrowed(name))
+        } else {
+            Cow::Borrowed(name)
+        };
+        BString::from(name.as_encoded_bytes())
+    }
+
+    /// Tree entries keyed by name, so matching a directory's files against the tree costs one
+    /// lookup each rather than a scan of the whole tree listing per file.
+    fn index(self, entries: &[TreeEntry]) -> TreeIndex<'_> {
+        let mut exact = HashMap::with_capacity(entries.len());
+        let mut folded = HashMap::new();
+        for entry in entries {
+            exact.insert(&entry.name, entry);
+            if self.ignore_case {
+                folded
+                    .entry(entry.name.to_ascii_lowercase())
+                    .or_insert(entry);
+            }
+        }
+        TreeIndex { exact, folded }
+    }
+}
+
+/// One tree's entries for matching disk names; `folded` is filled only under `core.ignoreCase`.
+struct TreeIndex<'a> {
+    exact: HashMap<&'a BString, &'a TreeEntry>,
+    /// Entries keyed by ASCII-lowercased name, as git folds case.
+    folded: HashMap<Vec<u8>, &'a TreeEntry>,
+}
+
+impl<'a> TreeIndex<'a> {
+    /// The tree entry a disk name stands for, and the name to report: the entry's own name
+    /// when there is one, so the path matches the tree and the index, else the disk name.
+    fn resolve(&self, name: BString) -> (BString, Option<&'a TreeEntry>) {
+        let tracked = match self.exact.get(&name) {
+            Some(entry) => Some(*entry),
+            None if self.folded.is_empty() => None,
+            None => self.folded.get(&name.to_ascii_lowercase()).copied(),
+        };
+        match tracked {
+            Some(entry) => (entry.name.clone(), Some(entry)),
+            None => (name, None),
+        }
+    }
 }
 
 /// The kind git would record for a disk entry. With `core.fileMode` off the disk's executable
@@ -1305,12 +1380,6 @@ fn disk_kind(meta: &std::fs::Metadata) -> Option<EntryKind> {
     } else {
         EntryKind::Blob
     })
-}
-
-/// Tree entries keyed by name, so matching a directory's files against the tree costs one
-/// lookup each rather than a scan of the whole tree listing per file.
-fn index_by_name(entries: &[TreeEntry]) -> HashMap<&BString, &TreeEntry> {
-    entries.iter().map(|entry| (&entry.name, entry)).collect()
 }
 
 /// `dir/name` with `/` separators; just `name` at the root.
@@ -1553,7 +1622,7 @@ mod tests {
         repo.with(|repo| {
             let mut walk = FileWalk {
                 repo,
-                executable_bit: true,
+                fs: FsRules::new(repo, "list working tree files").unwrap(),
                 excludes: ExcludeCheck::new(repo),
                 list: WorktreeFileList::default(),
                 max_scan: 10_000,
