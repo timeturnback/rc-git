@@ -12,32 +12,30 @@ import Testing
         #expect(OpenTabs.clampedSelection(0, count: 0) == 0)
     }
 
-    @Test func persistsThroughDefaults() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        #expect(tabs.paths.isEmpty)
-        #expect(tabs.selectedIndex == 0)
-        tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
-        #expect(tabs.paths == ["/one", "/two", "/three"])
-        #expect(tabs.selectedIndex == 2)
-        tabs.clear()
-        #expect(tabs.paths.isEmpty)
-        #expect(tabs.selectedIndex == 0)
+    @Test func persistsThroughDefaults() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            #expect(tabs.paths.isEmpty)
+            #expect(tabs.selectedIndex == 0)
+            tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
+            #expect(tabs.paths == ["/one", "/two", "/three"])
+            #expect(tabs.selectedIndex == 2)
+            tabs.clear()
+            #expect(tabs.paths.isEmpty)
+            #expect(tabs.selectedIndex == 0)
+        }
     }
 
     /// The handover to a relaunching build writes the same state as a record; what it adds is
     /// the flush, which cannot be observed from inside one process.
-    @Test func handsOffTheSameStateItRecords() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
-        tabs.handOff(live: ["/two", "/one"], selectedIndex: 1)
-        #expect(tabs.paths == ["/two", "/one", "/three"])
-        #expect(tabs.selectedIndex == 1)
+    @Test func handsOffTheSameStateItRecords() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
+            tabs.handOff(live: ["/two", "/one"], selectedIndex: 1)
+            #expect(tabs.paths == ["/two", "/one", "/three"])
+            #expect(tabs.selectedIndex == 1)
+        }
     }
 
     @Test func mergeKeepsTabsThatAreNoLongerOpen() {
@@ -51,61 +49,57 @@ import Testing
 
     /// Without `dropping` — ⇧⌘W and ⌘Q — what is recorded is the live order plus everything
     /// that was saved before it.
-    @Test func recordWithoutDroppingKeepsClosedTabs() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        tabs.record(live: ["/one", "/two"], selectedIndex: 1)
-        #expect(tabs.paths == ["/one", "/two"])
+    @Test func recordWithoutDroppingKeepsClosedTabs() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            tabs.record(live: ["/one", "/two"], selectedIndex: 1)
+            #expect(tabs.paths == ["/one", "/two"])
 
-        tabs.record(live: ["/one"], selectedIndex: 0)  // closed /two
-        #expect(tabs.paths == ["/one", "/two"])
-        #expect(tabs.selectedIndex == 0)
+            tabs.record(live: ["/one"], selectedIndex: 0)  // closed /two
+            #expect(tabs.paths == ["/one", "/two"])
+            #expect(tabs.selectedIndex == 0)
 
-        tabs.record(live: [], selectedIndex: 0)  // closed the window, then quit
-        #expect(tabs.paths == ["/one", "/two"])
+            tabs.record(live: [], selectedIndex: 0)  // closed the window, then quit
+            #expect(tabs.paths == ["/one", "/two"])
 
-        tabs.record(live: ["/three"], selectedIndex: 0)
-        #expect(tabs.paths == ["/three", "/one", "/two"])
+            tabs.record(live: ["/three"], selectedIndex: 0)
+            #expect(tabs.paths == ["/three", "/one", "/two"])
+        }
     }
 
     /// ⌘W on its own drops that tab's repository; the rest of the saved list stays.
-    @Test func recordDropsTheTabClosedOnItsOwn() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 0)
-        tabs.record(live: ["/one"], selectedIndex: 0, dropping: "/two")
-        #expect(tabs.paths == ["/one", "/three"])
+    @Test func recordDropsTheTabClosedOnItsOwn() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 0)
+            tabs.record(live: ["/one"], selectedIndex: 0, dropping: "/two")
+            #expect(tabs.paths == ["/one", "/three"])
 
-        tabs.record(live: [], selectedIndex: 0, dropping: "/one")
-        #expect(tabs.paths == ["/three"])
+            tabs.record(live: [], selectedIndex: 0, dropping: "/one")
+            #expect(tabs.paths == ["/three"])
 
-        tabs.record(live: ["/three"], selectedIndex: 0, dropping: "/gone")
-        #expect(tabs.paths == ["/three"])
+            tabs.record(live: ["/three"], selectedIndex: 0, dropping: "/gone")
+            #expect(tabs.paths == ["/three"])
+        }
     }
 
     /// The restore at launch replaces the list, so a repository that
     /// no longer opens is not retried on every launch.
-    @Test func saveReplacesTheListSoRestoreCanPrune() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        tabs.record(live: ["/one", "/gone", "/two"], selectedIndex: 2)
-        tabs.save(paths: ["/one", "/two"], selectedIndex: 1)
-        #expect(tabs.paths == ["/one", "/two"])
-        #expect(tabs.selectedIndex == 1)
+    @Test func saveReplacesTheListSoRestoreCanPrune() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            tabs.record(live: ["/one", "/gone", "/two"], selectedIndex: 2)
+            tabs.save(paths: ["/one", "/two"], selectedIndex: 1)
+            #expect(tabs.paths == ["/one", "/two"])
+            #expect(tabs.selectedIndex == 1)
+        }
     }
 
-    @Test func savedSelectionOutsideTheListFallsBackToFirst() {
-        let suite = "rc-git.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let tabs = OpenTabs(defaults: defaults)
-        tabs.save(paths: ["/one", "/two"], selectedIndex: 9)
-        #expect(tabs.selectedIndex == 0)
+    @Test func savedSelectionOutsideTheListFallsBackToFirst() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            tabs.save(paths: ["/one", "/two"], selectedIndex: 9)
+            #expect(tabs.selectedIndex == 0)
+        }
     }
 }
