@@ -294,6 +294,56 @@ mod commit_and_discard {
         hunks.iter().map(HunkStamp::from).collect()
     }
 
+    fn ls_tree_mode(fx: &Fixture, path: &str) -> String {
+        fx.git_output(&["ls-tree", "HEAD", path])
+            .split(' ')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[expect(clippy::unwrap_used, reason = "test helper panics on a failed commit")]
+    fn commit_whole(fx: &Fixture, paths: &[&str]) {
+        let head = fx.rev_parse("HEAD");
+        let selections: Vec<FileSelection> = paths.iter().map(|path| whole(path)).collect();
+        commit(
+            fx.path(),
+            &Policy::default(),
+            "modes",
+            Some(identity()),
+            Some(&head),
+            &selections,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_the_owner_exec_bit_makes_a_committed_file_executable() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"edited\n");
+        fx.set_mode("alpha.txt", 0o654);
+
+        commit_whole(&fx, &["alpha.txt"]);
+        assert_eq!(ls_tree_mode(&fx, "alpha.txt"), "100644");
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn with_file_mode_off_a_commit_keeps_the_recorded_mode_whatever_the_disk_says() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "core.fileMode", "false"]);
+        fx.write("alpha.txt", b"edited\n");
+        fx.set_mode("alpha.txt", 0o755);
+        fx.write("fresh.txt", b"new\n");
+        fx.set_mode("fresh.txt", 0o755);
+
+        commit_whole(&fx, &["alpha.txt", "fresh.txt"]);
+        assert_eq!(ls_tree_mode(&fx, "alpha.txt"), "100644");
+        assert_eq!(ls_tree_mode(&fx, "fresh.txt"), "100644");
+        assert_eq!(porcelain(&fx), "");
+    }
+
     #[test]
     fn a_mis_cased_selection_is_refused_and_head_is_unchanged() {
         let fx = Fixture::standard();

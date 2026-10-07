@@ -165,7 +165,7 @@ pub(super) enum DiskEntry {
 }
 
 /// Reads `relative` below `work_dir` without following a symlink at the path itself: a
-/// symlink yields its target, a regular file its bytes and the executable bit of its mode.
+/// symlink yields its target, a regular file its bytes and the owner's executable bit.
 /// The one reader every guard check uses, so they agree on what counts as a change.
 ///
 /// # Errors
@@ -201,7 +201,8 @@ pub(super) fn disk_entry(
             Err(error) => absent_or_error(error),
         };
     }
-    let kind = if meta.permissions().mode() & 0o111 == 0 {
+    // Only the owner's bit counts, as in git: group- or other-executable alone is a blob.
+    let kind = if meta.permissions().mode() & 0o100 == 0 {
         EntryKind::Blob
     } else {
         EntryKind::BlobExecutable

@@ -141,10 +141,11 @@ impl Repository {
 
         let by_name = index_by_name(&tree_entries);
         self.with(|repo| {
-            let mut context = WorktreeContext::new(repo);
+            let mut context = WorktreeContext::new(repo, "list working tree")?;
             for (name, kind, size, path) in on_disk {
                 let rela = relative_path(dir, &name);
                 let in_tree = by_name.get(&name).copied();
+                let kind = context.kind_of(kind, in_tree);
                 let status = if let Some(tree_entry) = in_tree {
                     let disk = DiskFacts {
                         kind,
@@ -196,7 +197,7 @@ impl Repository {
         let work_dir = self.require_work_dir("scan working tree", "")?;
         self.with(|repo| {
             let mut walk = StatusWalk {
-                context: WorktreeContext::new(repo),
+                context: WorktreeContext::new(repo, "scan working tree")?,
                 report: StatusReport::default(),
                 max_scan,
             };
@@ -222,6 +223,7 @@ impl Repository {
         self.with(|repo| {
             let mut walk = FileWalk {
                 repo,
+                executable_bit: executable_bit(repo, "list working tree files")?,
                 excludes: ExcludeCheck::new(repo),
                 list: WorktreeFileList::default(),
                 max_scan,
@@ -316,17 +318,25 @@ struct DiskFacts<'a> {
 /// costs one stack build and the index is read once however many files are compared.
 struct WorktreeContext<'repo> {
     repo: &'repo gix::Repository,
+    /// `core.fileMode`: whether the disk's executable bit means anything in this repository.
+    executable_bit: bool,
     excludes: ExcludeCheck<'repo>,
     stats: StatCache<'repo>,
 }
 
 impl<'repo> WorktreeContext<'repo> {
-    fn new(repo: &'repo gix::Repository) -> Self {
-        Self {
+    fn new(repo: &'repo gix::Repository, op: &'static str) -> Result<Self> {
+        Ok(Self {
             repo,
+            executable_bit: executable_bit(repo, op)?,
             excludes: ExcludeCheck::new(repo),
             stats: StatCache::new(repo),
-        }
+        })
+    }
+
+    /// The kind git would record for a disk entry of `disk` kind tracked as `tracked`.
+    fn kind_of(&self, disk: EntryKind, tracked: Option<&TreeEntry>) -> EntryKind {
+        git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit)
     }
 
     /// Whether a disk file differs from its tree entry. Kind decides first, then the blob
@@ -626,10 +636,11 @@ impl StatusWalk<'_> {
             let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
                 worktree_error("stat working tree entry", &dir_str, Box::new(source))
             })?;
-            let kind = disk_kind(&meta);
+            let tracked = by_name.get(&name).copied();
+            let kind = self.context.kind_of(disk_kind(&meta), tracked);
             let path = child_path(dir, &name);
             on_disk.insert(name.clone());
-            match by_name.get(&name).copied() {
+            match tracked {
                 Some(tree_entry)
                     if tree_entry.kind == EntryKind::Tree && kind == EntryKind::Tree =>
                 {
@@ -737,6 +748,8 @@ impl StatusWalk<'_> {
 /// directory, which is always entered, from an untracked one, which an ignore rule prunes.
 struct FileWalk<'repo> {
     repo: &'repo gix::Repository,
+    /// `core.fileMode`, as in [`WorktreeContext`].
+    executable_bit: bool,
     excludes: ExcludeCheck<'repo>,
     list: WorktreeFileList,
     max_scan: usize,
@@ -779,13 +792,17 @@ impl FileWalk<'_> {
             let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
                 worktree_error("stat working tree entry", &dir_str, Box::new(source))
             })?;
-            let kind = disk_kind(&meta);
+            let tracked = by_name.get(&name).copied();
+            let kind = git_kind(
+                disk_kind(&meta),
+                tracked.map(|entry| entry.kind),
+                self.executable_bit,
+            );
             let path = child_path(dir, &name);
             if kind != EntryKind::Tree {
                 self.list.files.push(WorktreeFile { path, kind });
                 continue;
             }
-            let tracked = by_name.get(&name).copied();
             match tracked.map(|tree_entry| (tree_entry.kind, tree_entry.oid)) {
                 Some((EntryKind::Tree, oid)) => self.walk_dir(Some(oid), &path, &entry.path())?,
                 Some((EntryKind::Submodule, _)) => {}
@@ -801,7 +818,29 @@ impl FileWalk<'_> {
     }
 }
 
-/// What a disk entry is, from its `symlink_metadata`.
+/// The repository's `core.fileMode`, which git turns off itself on a volume whose executable
+/// bit cannot be trusted (FAT, exFAT, many SMB mounts show every file as 0777).
+fn executable_bit(repo: &gix::Repository, op: &'static str) -> Result<bool> {
+    repo.filesystem_options()
+        .map(|options| options.executable_bit)
+        .map_err(git(op))
+}
+
+/// The kind git would record for a disk entry. With `core.fileMode` off the disk's executable
+/// bit is ignored: a tracked file keeps the tree's kind and an untracked one is a plain blob.
+fn git_kind(disk: EntryKind, tree: Option<EntryKind>, executable_bit: bool) -> EntryKind {
+    let is_file = |kind| matches!(kind, EntryKind::Blob | EntryKind::ExecutableBlob);
+    if executable_bit || !is_file(disk) {
+        return disk;
+    }
+    match tree {
+        Some(tree) if is_file(tree) => tree,
+        Some(_) | None => EntryKind::Blob,
+    }
+}
+
+/// What a disk entry is, from its `symlink_metadata`. Only the owner's executable bit counts,
+/// as in git: a file executable by its group or others alone is still a plain blob.
 fn disk_kind(meta: &std::fs::Metadata) -> EntryKind {
     if meta.file_type().is_symlink() {
         return EntryKind::Symlink;
@@ -812,7 +851,7 @@ fn disk_kind(meta: &std::fs::Metadata) -> EntryKind {
     #[cfg(unix)]
     let executable = {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.permissions().mode() & 0o100 != 0
     };
     #[cfg(not(unix))]
     let executable = false;

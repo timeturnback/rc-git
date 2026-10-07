@@ -343,8 +343,36 @@ pub(super) fn whole_file_edit(
     if kind == EntryKind::Link {
         workfile::validate_path(op, path, true)?;
     }
+    let kind = recorded_file_kind(repo, op, base_tree, path, kind)?;
     let oid = write_blob(repo, op, path, &data)?;
     Ok(PathEdit::Put { oid, kind })
+}
+
+/// The kind to record for a file read from disk as `disk`. With `core.fileMode` off the disk's
+/// executable bit is not evidence, so a tracked file keeps `base_tree`'s kind and a new one is a
+/// plain blob — the mode git itself would record.
+fn recorded_file_kind(
+    repo: &gix::Repository,
+    op: &'static str,
+    base_tree: Option<ObjectId>,
+    path: &str,
+    disk: EntryKind,
+) -> ActionResult<EntryKind> {
+    if disk == EntryKind::Link {
+        return Ok(disk);
+    }
+    let file_mode = repo
+        .filesystem_options()
+        .map_err(git_err(op, "core.fileMode"))?
+        .executable_bit;
+    if file_mode {
+        return Ok(disk);
+    }
+    let tracked = tree_entry_at(repo, op, base_tree, path)?.map(|entry| entry.mode.kind());
+    Ok(match tracked {
+        Some(kind @ (EntryKind::Blob | EntryKind::BlobExecutable)) => kind,
+        Some(_) | None => EntryKind::Blob,
+    })
 }
 
 /// The edit for committing only `stamps` of `path`: the diff is recomputed with the same

@@ -396,6 +396,71 @@ fn worktree_status_flags_exec_bit_and_symlink_changes() {
 }
 
 #[test]
+fn only_the_owner_exec_bit_counts_as_a_mode_change() {
+    let fx = Fixture::standard();
+    fx.set_mode("alpha.txt", 0o645);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    assert_eq!(repo.worktree_status(tree, 10_000).unwrap().entries, []);
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    let alpha = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "alpha.txt")
+        .unwrap();
+    assert_eq!(
+        (alpha.kind, alpha.status),
+        (EntryKind::Blob, WorktreeStatus::Unchanged)
+    );
+}
+
+#[test]
+fn with_file_mode_off_the_disk_exec_bit_is_ignored() {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.fileMode", "false"]);
+    fx.set_mode("alpha.txt", 0o755);
+    fx.write("fresh.sh", b"echo\n");
+    fx.set_mode("fresh.sh", 0o755);
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "?? fresh.sh");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let rows: Vec<(String, EntryKind, WorktreeStatus)> = repo
+        .worktree_status(tree, 10_000)
+        .unwrap()
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.kind, entry.status))
+        .collect();
+    assert_eq!(
+        rows,
+        [(
+            "fresh.sh".to_owned(),
+            EntryKind::Blob,
+            WorktreeStatus::Untracked
+        )]
+    );
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    let alpha = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "alpha.txt")
+        .unwrap();
+    assert_eq!(
+        (alpha.kind, alpha.status),
+        (EntryKind::Blob, WorktreeStatus::Unchanged)
+    );
+    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    let kinds: Vec<EntryKind> = files
+        .iter()
+        .filter(|file| file.path == "alpha.txt" || file.path == "fresh.sh")
+        .map(|file| file.kind)
+        .collect();
+    assert_eq!(kinds, [EntryKind::Blob, EntryKind::Blob]);
+}
+
+#[test]
 fn worktree_status_prunes_ignored_directories_unopened() {
     let fx = Fixture::standard();
     fx.write(".gitignore", b"junk/\n");
