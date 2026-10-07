@@ -13,8 +13,8 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
-    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, UnreadableEntry,
-    WorktreeStatus,
+    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeEntry,
+    UnreadableEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -904,7 +904,7 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
         };
         let path = &canonical_path(path)?;
         let old = match head_tree(repo)? {
-            Some(tree) => repo.entry_at_path(tree, path)?.map(|entry| entry.oid),
+            Some(tree) => file_oid(repo.entry_at_path(tree, path)?, path)?,
             None => None,
         };
         let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
@@ -927,13 +927,21 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     let path = &canonical_path(path)?;
     let old_tree = repo.tree_of(old)?;
     let new_tree = repo.tree_of(new)?;
-    let old_blob = repo.entry_at_path(old_tree, path)?.map(|entry| entry.oid);
-    let new_blob = repo.entry_at_path(new_tree, path)?.map(|entry| entry.oid);
+    let old_blob = file_oid(repo.entry_at_path(old_tree, path)?, path)?;
+    let new_blob = file_oid(repo.entry_at_path(new_tree, path)?, path)?;
     if old_blob.is_none() && new_blob.is_none() {
         bail!("'{path}' does not exist at {old_rev} or {new_rev}");
     }
     let diff = repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
     render_blob_diff(diff, path, out)
+}
+
+/// The blob id of a diffed side, refusing a directory as `cat` does.
+fn file_oid(entry: Option<TreeEntry>, path: &str) -> Result<Option<Oid>> {
+    match entry {
+        Some(entry) if entry.kind == EntryKind::Tree => bail!("'{path}' is a directory"),
+        entry => Ok(entry.map(|entry| entry.oid)),
+    }
 }
 
 /// One `<letter>\t<path>[\t<source>]` line per changed file from `old` (the empty tree when

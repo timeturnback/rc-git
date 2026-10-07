@@ -47,7 +47,7 @@ impl Repository {
             let header = repo
                 .find_header(*oid.as_gix())
                 .map_err(object("read blob header", oid))?;
-            expect_blob(oid, header.kind())?;
+            expect_blob("read blob size", oid, header.kind())?;
             Ok(header.size())
         })
     }
@@ -62,7 +62,7 @@ impl Repository {
             let header = repo
                 .find_header(*oid.as_gix())
                 .map_err(object("read blob header", oid))?;
-            expect_blob(oid, header.kind())?;
+            expect_blob("read blob", oid, header.kind())?;
             let size = header.size();
             if size > limit {
                 return Ok(BlobContent::TooLarge { size, limit });
@@ -75,11 +75,12 @@ impl Repository {
     }
 }
 
-fn expect_blob(oid: Oid, kind: gix::objs::Kind) -> Result<()> {
+fn expect_blob(op: &'static str, oid: Oid, kind: gix::objs::Kind) -> Result<()> {
     if kind == gix::objs::Kind::Blob {
         return Ok(());
     }
     Err(Error::WrongKind {
+        op,
         oid,
         expected: ObjectKind::Blob,
         actual: ObjectKind::from_gix(kind),

@@ -74,7 +74,8 @@ FFI layer only marshals; `docs/ffi.md` has the checklist for adding a function, 
   `tags`, `problem_type`), organized by category — relevant when debugging in a documented area.
 - `CONCEPTS.md` defines the words that mean something specific here (guard, challenge, dirty
   overlap, isolated open) — read it before naming a new concept, and use its terms in prose.
-- Every public Rust fn documents `# Errors`; every error names the operation and the object.
+- Every public Rust fn documents `# Errors`; every error names what failed and the thing it
+  failed on (path, spec, oid, or op plus path/oid).
 
 ## Invariants
 

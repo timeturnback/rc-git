@@ -112,7 +112,17 @@ fn tree_diff_peels_and_rejects_non_trees() {
     let err = repo
         .diff_trees(Some(blob), repo.resolve("main").unwrap())
         .unwrap_err();
-    assert!(matches!(err, Error::WrongKind { .. }), "{err}");
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                expected: ObjectKind::Tree,
+                actual: ObjectKind::Blob,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]
@@ -240,7 +250,17 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
             DEFAULT_DIFF_CONTEXT,
         )
         .unwrap_err();
-    assert!(matches!(err, Error::WrongKind { .. }), "{err}");
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                expected: ObjectKind::Blob,
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]
@@ -305,7 +325,28 @@ fn blame_reports_missing_paths_and_bad_tips() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
     let err = repo.blame(tip, "no/such/file").unwrap_err();
-    assert!(matches!(err, Error::Object { .. }), "{err}");
+    assert!(
+        matches!(&err, Error::PathNotFound { path, commit, .. }
+            if path == "no/such/file" && *commit == tip),
+        "{err}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("no/such/file"), "{msg}");
+    assert!(!msg.contains("missing or unreadable"), "{msg}");
+
+    let err = repo.blame(tip, "src").unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                op: "blame file",
+                expected: ObjectKind::Blob,
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err}"
+    );
 
     let tag = repo.resolve("v1.0").unwrap();
     assert_ne!(tag, tip, "v1.0 is an annotated tag");

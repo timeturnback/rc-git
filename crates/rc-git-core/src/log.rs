@@ -128,6 +128,7 @@ pub(crate) fn peel_to_commit(repo: &gix::Repository, oid: Oid) -> Result<gix::Co
     let (id, kind) = peel_tags(repo, oid)?;
     if kind != gix::objs::Kind::Commit {
         return Err(Error::WrongKind {
+            op: "read commit",
             oid: id,
             expected: ObjectKind::Commit,
             actual: ObjectKind::from_gix(kind),

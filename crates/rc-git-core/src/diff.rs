@@ -114,8 +114,9 @@ impl Repository {
     /// unchanged subtrees share an id and are skipped whole.
     ///
     /// # Errors
-    /// [`Error::Object`](crate::Error::Object) when either id is missing or does not peel to
-    /// a tree, or when a tree below them cannot be read during the diff (then naming `to`).
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when either id does not peel to a tree,
+    /// [`Error::Object`](crate::Error::Object) when either id is missing, or when a tree below
+    /// them cannot be read during the diff (then naming `to`).
     pub fn diff_trees(&self, from: Option<Oid>, to: Oid) -> Result<Vec<TreeChange>> {
         let from = from.map(|id| self.tree_of(id)).transpose()?;
         let to = self.tree_of(to)?;

@@ -5,10 +5,11 @@ use std::cell::Cell;
 use gix::ObjectId;
 use gix::objs::{Find, FindHeader};
 
-use crate::error::{Result, git, object};
+use crate::error::{Error, ObjectKind, Result, git, object};
 use crate::log::peel_to_commit;
 use crate::oid::Oid;
 use crate::repo::Repository;
+use crate::tree::lookup_path;
 
 /// A run of consecutive lines introduced by one commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,14 +35,19 @@ impl Repository {
     /// An annotated tag `tip` is followed to its commit.
     ///
     /// # Errors
-    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob.
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob,
+    /// or when `path` is a directory or a submodule in it.
+    /// [`Error::PathNotFound`](crate::Error::PathNotFound) when `path` does not exist in `tip`.
     /// [`Error::Git`](crate::Error::Git) when the shallow file, diff settings or commit-graph
-    /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing, the
-    /// path does not exist in it, or the walk fails; it names the object the walk could not
-    /// find when there was one, `tip` otherwise.
+    /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing or the
+    /// walk fails; it names the object the walk could not find when there was one, `tip`
+    /// otherwise.
     pub fn blame(&self, tip: Oid, path: &str) -> Result<Vec<BlameRange>> {
         self.with(|repo| {
-            let tip = Oid::from_gix(peel_to_commit(repo, tip)?.id);
+            let commit = peel_to_commit(repo, tip)?;
+            let tip = Oid::from_gix(commit.id);
+            let tree = commit.tree_id().map_err(object("decode commit", tip))?;
+            expect_file(repo, tip, Oid::from_gix(tree.detach()), path)?;
             let odb = ShallowCut {
                 inner: &repo.objects,
                 boundary: repo.shallow_commits().map_err(git("read shallow file"))?,
@@ -84,6 +90,36 @@ impl Repository {
             Ok(ranges)
         })
     }
+}
+
+/// Fails unless `path` names a file in the commit `tip` whose root tree is `tree`, so a
+/// missing path or a directory is reported as such instead of as a failed blame walk.
+fn expect_file(repo: &gix::Repository, tip: Oid, tree: Oid, path: &str) -> Result<()> {
+    const OP: &str = "blame file";
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .map(str::as_bytes);
+    let Some(entry) = lookup_path(repo, tree, segments)? else {
+        return Err(Error::PathNotFound {
+            op: OP,
+            path: path.to_owned(),
+            commit: tip,
+        });
+    };
+    let actual = if entry.mode.is_tree() {
+        ObjectKind::Tree
+    } else if entry.mode.is_commit() {
+        ObjectKind::Commit
+    } else {
+        return Ok(());
+    };
+    Err(Error::WrongKind {
+        op: OP,
+        oid: Oid::from_gix(entry.oid),
+        expected: ObjectKind::Blob,
+        actual,
+    })
 }
 
 /// The object database as seen through the shallow file: a boundary commit reads without its

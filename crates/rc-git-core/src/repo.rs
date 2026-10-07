@@ -151,6 +151,7 @@ impl Repository {
                     Ok(Oid::from_gix(tree.detach()))
                 }
                 actual => Err(Error::WrongKind {
+                    op: "peel to tree",
                     oid: id,
                     expected: ObjectKind::Tree,
                     actual: ObjectKind::from_gix(actual),

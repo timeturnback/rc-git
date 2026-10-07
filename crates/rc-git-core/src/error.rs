@@ -44,8 +44,8 @@ impl fmt::Display for ObjectKind {
     }
 }
 
-/// Every failure this crate reports. Each variant names the operation that failed and carries
-/// the cause, so the message is actionable on its own.
+/// Every failure this crate reports. Each message names what failed and the thing it failed on
+/// (path, spec, oid, or the operation plus a path or oid), so it is actionable on its own.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The path is not a git repository or cannot be read.
@@ -57,8 +57,8 @@ pub enum Error {
         #[source]
         source: BoxError,
     },
-    /// An object lookup or decode failed.
-    #[error("{op}: object {oid} is missing or unreadable: {}", Causes(.source))]
+    /// An object lookup, decode or object-scoped operation failed.
+    #[error("{op}: object {oid}: {}", Causes(.source))]
     Object {
         /// What was being done.
         op: &'static str,
@@ -87,14 +87,26 @@ pub enum Error {
         source: BoxError,
     },
     /// The object exists but is not the kind the operation needs.
-    #[error("object {oid} is a {actual}, expected a {expected}")]
+    #[error("{op}: object {oid} is a {actual}, expected a {expected}")]
     WrongKind {
+        /// What was being done.
+        op: &'static str,
         /// The object involved.
         oid: Oid,
         /// What the operation needed.
         expected: ObjectKind,
         /// What the object is.
         actual: ObjectKind,
+    },
+    /// A path does not exist in the commit an operation reads it from.
+    #[error("{op}: '{path}' does not exist in commit {commit}")]
+    PathNotFound {
+        /// What was being done.
+        op: &'static str,
+        /// The repository-relative path as given.
+        path: String,
+        /// The commit the path was looked up in.
+        commit: Oid,
     },
     /// A string is not a hexadecimal object id.
     #[error("'{input}' is not a hexadecimal object id")]
@@ -151,6 +163,24 @@ where
     }
 }
 
+/// Maps a typed lookup such as `find_tree`: an object of another kind becomes
+/// [`Error::WrongKind`], anything else [`Error::Object`].
+pub(crate) fn typed_object(
+    op: &'static str,
+    oid: Oid,
+) -> impl FnOnce(gix::object::find::existing::with_conversion::Error) -> Error {
+    use gix::object::find::existing::with_conversion::Error as Lookup;
+    move |source| match source {
+        Lookup::Convert(wrong) => Error::WrongKind {
+            op,
+            oid,
+            expected: ObjectKind::from_gix(wrong.expected),
+            actual: ObjectKind::from_gix(wrong.actual),
+        },
+        Lookup::Find(missing) => object(op, oid)(missing),
+    }
+}
+
 pub(crate) fn object<E>(op: &'static str, oid: Oid) -> impl FnOnce(E) -> Error
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -178,13 +208,54 @@ mod tests {
     fn messages_name_the_operation_and_object() {
         let oid = Oid::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap();
         let err = Error::WrongKind {
+            op: "read tree",
             oid,
             expected: ObjectKind::Tree,
             actual: ObjectKind::Blob,
         };
         assert_eq!(
             err.to_string(),
-            "object 0123456789abcdef0123456789abcdef01234567 is a blob, expected a tree"
+            "read tree: object 0123456789abcdef0123456789abcdef01234567 is a blob, expected a tree"
+        );
+        let err = Error::Open {
+            path: "/repos/gone".into(),
+            source: "missing".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "cannot open git repository at /repos/gone: missing"
+        );
+        let err = Error::Object {
+            op: "read blob",
+            oid,
+            source: "missing".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "read blob: object 0123456789abcdef0123456789abcdef01234567: missing"
+        );
+        let err = Error::Git {
+            op: "start commit walk",
+            source: "missing".into(),
+        };
+        assert_eq!(err.to_string(), "start commit walk: missing");
+        let err = Error::RevSpec {
+            spec: "nope".into(),
+            source: "missing".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "'nope' is not a revision in this repository: missing"
+        );
+        let err = Error::PathNotFound {
+            op: "blame file",
+            path: "no/such/file".into(),
+            commit: oid,
+        };
+        assert_eq!(
+            err.to_string(),
+            "blame file: 'no/such/file' does not exist in commit \
+             0123456789abcdef0123456789abcdef01234567"
         );
         let err = Error::InvalidOid { input: "zz".into() };
         assert_eq!(err.to_string(), "'zz' is not a hexadecimal object id");

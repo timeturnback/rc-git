@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use gix::bstr::{BString, ByteSlice};
 use gix::objs::tree::EntryKind as GixEntryKind;
 
-use crate::error::{Result, object};
+use crate::error::{Result, object, typed_object};
 use crate::oid::Oid;
 use crate::repo::Repository;
 
@@ -62,7 +62,8 @@ impl Repository {
     /// ten-file repository and a hundred-thousand-file one.
     ///
     /// # Errors
-    /// [`Error::Object`](crate::Error::Object) when `tree` is missing, not a tree, or malformed.
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tree` is not a tree,
+    /// [`Error::Object`](crate::Error::Object) when it is missing or malformed.
     pub fn tree_entries(&self, tree: Oid) -> Result<Vec<TreeEntry>> {
         self.with(|repo| {
             let mut entries = tree_children(repo, tree)?;
@@ -76,6 +77,7 @@ impl Repository {
     /// or a segment before the last is a file or a submodule.
     ///
     /// # Errors
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `root` is not a tree,
     /// [`Error::Object`](crate::Error::Object) when a tree on the path cannot be read.
     pub fn entry_at_path(&self, root: Oid, path: &str) -> Result<Option<TreeEntry>> {
         self.with(|repo| {
@@ -104,7 +106,7 @@ pub(crate) fn lookup_path<'a>(
 ) -> Result<Option<gix::objs::tree::Entry>> {
     let mut tree = repo
         .find_tree(*root.as_gix())
-        .map_err(object("read tree", root))?;
+        .map_err(typed_object("read tree", root))?;
     let mut segments = segments.into_iter().peekable();
     while let Some(segment) = segments.next() {
         let Some(entry) = tree.find_entry(segment) else {
@@ -124,7 +126,7 @@ pub(crate) fn lookup_path<'a>(
         }
         tree = repo
             .find_tree(oid)
-            .map_err(object("read tree", Oid::from_gix(oid)))?;
+            .map_err(typed_object("read tree", Oid::from_gix(oid)))?;
     }
     Ok(None)
 }
@@ -134,7 +136,7 @@ pub(crate) fn lookup_path<'a>(
 pub(crate) fn tree_children(repo: &gix::Repository, tree: Oid) -> Result<Vec<TreeEntry>> {
     let tree_obj = repo
         .find_tree(*tree.as_gix())
-        .map_err(object("read tree", tree))?;
+        .map_err(typed_object("read tree", tree))?;
     let mut entries = Vec::new();
     for entry in tree_obj.iter() {
         let entry = entry.map_err(object("decode tree", tree))?;

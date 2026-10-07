@@ -303,8 +303,45 @@ fn tree_entries_list_one_level_sorted_for_display() {
     let blob = oid(&fx.rev_parse("main:README.md"));
     assert!(matches!(
         repo.tree_entries(blob).unwrap_err(),
-        Error::Object { .. }
+        Error::WrongKind {
+            op: "read tree",
+            expected: ObjectKind::Tree,
+            actual: ObjectKind::Blob,
+            ..
+        }
     ));
+    assert!(matches!(
+        repo.entry_at_path(blob, "x").unwrap_err(),
+        Error::WrongKind {
+            expected: ObjectKind::Tree,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn reads_of_an_absent_object_name_the_operation_and_oid() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let hex = "1".repeat(40);
+    let absent = oid(&hex);
+    let errors = [
+        (
+            "read blob header",
+            repo.read_blob(absent, DEFAULT_BLOB_LIMIT).unwrap_err(),
+        ),
+        ("read blob header", repo.blob_size(absent).unwrap_err()),
+        ("read object header", repo.commit(absent).unwrap_err()),
+    ];
+    for (op, err) in errors {
+        assert!(
+            matches!(err, Error::Object { oid, .. } if oid == absent),
+            "{err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.starts_with(&format!("{op}: object {hex}: ")), "{msg}");
+        assert!(!msg.contains("missing or unreadable"), "{msg}");
+    }
 }
 
 #[test]
@@ -383,7 +420,11 @@ fn read_blob_distinguishes_text_binary_and_oversize() {
     ));
     assert!(matches!(
         repo.blob_size(tree).unwrap_err(),
-        Error::WrongKind { .. }
+        Error::WrongKind {
+            expected: ObjectKind::Blob,
+            actual: ObjectKind::Tree,
+            ..
+        }
     ));
 }
 

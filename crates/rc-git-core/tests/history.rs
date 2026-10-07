@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use rc_git_core::{CommitFilter, CommitPage, Repository};
+use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Repository};
 use rc_git_testkit::Fixture;
 
 /// Six commits, oldest first: `root` adds `file.txt` and `dir/a.txt`; `topic change` (branch
@@ -277,7 +277,20 @@ fn path_history_rejects_a_non_commit_tip() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("main").unwrap();
-    assert!(repo.path_history(tree, "file.txt", 0, 100, 1000).is_err());
+    let err = repo
+        .path_history(tree, "file.txt", 0, 100, 1000)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                expected: ObjectKind::Commit,
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 /// A `--depth 2` clone of `origin` in a sibling temp dir.

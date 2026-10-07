@@ -463,6 +463,14 @@ fn diff_lists_changes_and_prints_hunks() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("does not exist"));
 
+    let out = rc_git(&["diff", path, "v0.9", "main", "src"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("'src' is a directory"),
+        "{}",
+        stderr(&out)
+    );
+
     let out = rc_git(&["diff", path]);
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("diff needs <rev>, or <old> <new> [path]"));
@@ -781,6 +789,14 @@ fn diff_worktree_shows_hunks_against_head() {
     let text = stdout(&out);
     assert!(text.starts_with("@@ "), "{text}");
     assert!(text.contains("+beta\n"), "{text}");
+
+    let out = rc_git(&["diff", path, "--worktree", "src"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("'src' is a directory"),
+        "{}",
+        stderr(&out)
+    );
 
     let out = rc_git(&["diff", path, "--worktree"]);
     assert_eq!(out.status.code(), Some(2));

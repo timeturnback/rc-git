@@ -12,8 +12,8 @@ paths: crates/rc-git-core/**
   `CommitSummary`, so the FFI and Swift never chase gix releases.
 - Every operation runs inside `Repository::with`. Never keep a `gix::Repository` beyond one
   call: the pool lends one per call and builds a temporary handle when all are busy.
-- Every `Error` variant names the operation (`op`) and the object. A new variant needs a test
-  of its message in `error.rs`.
+- Every `Error` message names what failed and the thing it failed on (path, spec, oid, or op
+  plus path/oid). A new variant needs a test of its full message in `error.rs`.
 - Read a header before decoding a blob, and honor the caller's limit. A huge blob must cost one
   header read, never a decode.
 - Adding a read operation: core fn with `# Errors` docs, test in `tests/repository.rs`, call in
