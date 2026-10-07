@@ -809,11 +809,17 @@ public final class BrowserModel {
         }
     }
 
-    /// Loads the line diff of one changed file from `commitChanges`.
+    /// Loads the line diff of one changed file from `commitChanges`. A submodule change has
+    /// no blobs in this repository and settles without a read.
     public func loadFileDiff(_ change: TreeChange) async {
         guard let repository else { return }
         diffGeneration += 1
         let generation = diffGeneration
+        if change.entry == .submodule {
+            fileDiff = .submodule(change)
+            onDiffChanged?()
+            return
+        }
         fileDiff = .loading(change)
         onDiffChanged?()
         let result = await RepositoryError.run {

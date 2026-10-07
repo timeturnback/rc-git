@@ -180,9 +180,13 @@ impl Repository {
     /// either side is decoded, and a binary old side settles the result without decoding the
     /// new one.
     ///
+    /// A [`TreeChange`] whose `entry` is [`EntryKind::Submodule`] carries gitlink ids: commits
+    /// in the submodule's repository, not objects in this one. Callers branch on it instead
+    /// of passing those ids here.
+    ///
     /// # Errors
-    /// [`Error::Object`](crate::Error::Object) when a given id is missing,
-    /// [`Error::WrongKind`](crate::Error::WrongKind) when it is not a blob.
+    /// [`Error::Object`](crate::Error::Object) when a given id is missing (a gitlink id
+    /// included), [`Error::WrongKind`](crate::Error::WrongKind) when it is not a blob.
     pub fn diff_blobs(
         &self,
         old: Option<Oid>,

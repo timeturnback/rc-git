@@ -726,6 +726,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         case let .loaded(change, diff):
             showChange(change)
             renderDiff(change: change, diff: diff)
+        case let .submodule(change):
+            showChange(change)
+            showDiffPlaceholder(FileDiffState.submoduleSummary(change))
         case let .failed(change, message):
             showChange(change)
             showDiffPlaceholder(message)

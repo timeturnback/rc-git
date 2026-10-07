@@ -20,6 +20,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var searchCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
+    var diffBlobsCalls = 0
     var blames: [String: [BlameRange]] = [:]
     var worktreeListings: [String: WorktreeListing] = [:]
     var worktreeFiles: [String: BlobContent] = [:]
@@ -204,7 +205,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
 
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff {
         let key = FakeRepository.diffKey(old: old, new: new)
-        let found = lock.withLock { blobDiffs[key] }
+        let found = lock.withLock { () -> BlobDiff? in
+            diffBlobsCalls += 1
+            return blobDiffs[key]
+        }
         guard let found else {
             throw RepositoryError("read blob: a diff side is missing or unreadable")
         }

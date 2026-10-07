@@ -423,6 +423,28 @@ import Testing
         #expect(message.contains("read blob"))
     }
 
+    @Test func aSubmoduleChangeNeverReachesDiffBlobs() async throws {
+        await model.attach(repo)
+        let oldCommit = try #require(Oid(hex: String(repeating: "1", count: 40)))
+        let newCommit = try #require(Oid(hex: String(repeating: "2", count: 40)))
+        let bump = TreeChange(
+            kind: .modified, path: "sub", sourcePath: nil, old: oldCommit, new: newCommit,
+            entry: .submodule)
+        var events = 0
+        model.onDiffChanged = { events += 1 }
+        await model.loadFileDiff(bump)
+        #expect(repo.lock.withLock { repo.diffBlobsCalls } == 0)
+        guard case let .submodule(change) = model.fileDiff else {
+            Issue.record("expected a submodule state, got \(model.fileDiff)")
+            return
+        }
+        #expect(change == bump)
+        #expect(events == 1)
+        #expect(
+            FileDiffState.submoduleSummary(change)
+                == "Subproject commit \(oldCommit.hex) → \(newCommit.hex)")
+    }
+
     @Test func closingTheCommitDetailEmptiesIt() async {
         await model.attach(repo)
         repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }

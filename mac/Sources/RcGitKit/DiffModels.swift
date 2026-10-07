@@ -138,7 +138,16 @@ public enum FileDiffState: Sendable {
     case empty
     case loading(TreeChange)
     case loaded(TreeChange, BlobDiff)
+    /// A gitlink change: its ids name commits in another repository, so there is no line diff.
+    case submodule(TreeChange)
     case failed(TreeChange, String)
+
+    /// The line the diff pane shows for a submodule change, as git words it.
+    public static func submoduleSummary(_ change: TreeChange) -> String {
+        let old = change.old?.hex ?? "none"
+        let new = change.new?.hex ?? "none"
+        return "Subproject commit \(old) → \(new)"
+    }
 }
 
 /// One blame range together with the commit that owns it.

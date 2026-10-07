@@ -496,6 +496,35 @@ fn diff_lists_changes_and_prints_hunks() {
 }
 
 #[test]
+fn diff_of_a_submodule_bump_prints_subproject_lines() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("a", b"x\n");
+    fx.commit("no submodule yet", "2024-01-01T00:00:00+0000");
+    let old = "1111111111111111111111111111111111111111";
+    let new = "2222222222222222222222222222222222222222";
+    let date = "2024-01-02T00:00:00+0000";
+    let dates = [("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)];
+    for (sha, title) in [(old, "one"), (new, "two")] {
+        let gitlink = format!("160000,{sha},sub");
+        fx.git(&["update-index", "--add", "--cacheinfo", &gitlink]);
+        fx.git_with_env(&["commit", "-q", "-m", title], &dates);
+    }
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["diff", path, "HEAD~1", "HEAD", "sub"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("-Subproject commit {old}\n+Subproject commit {new}\n")
+    );
+
+    let out = rc_git(&["diff", path, "HEAD~2", "HEAD", "sub"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), format!("+Subproject commit {new}\n"));
+}
+
+#[test]
 fn diff_of_one_commit_uses_first_parent_or_nothing_for_a_root() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

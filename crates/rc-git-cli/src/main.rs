@@ -927,13 +927,41 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     let path = &canonical_path(path)?;
     let old_tree = repo.tree_of(old)?;
     let new_tree = repo.tree_of(new)?;
-    let old_blob = file_oid(repo.entry_at_path(old_tree, path)?, path)?;
-    let new_blob = file_oid(repo.entry_at_path(new_tree, path)?, path)?;
+    let old_entry = repo.entry_at_path(old_tree, path)?;
+    let new_entry = repo.entry_at_path(new_tree, path)?;
+    if is_submodule_bump(old_entry.as_ref(), new_entry.as_ref()) {
+        return render_submodule_bump(old_entry, new_entry, out);
+    }
+    let old_blob = file_oid(old_entry, path)?;
+    let new_blob = file_oid(new_entry, path)?;
     if old_blob.is_none() && new_blob.is_none() {
         bail!("'{path}' does not exist at {old_rev} or {new_rev}");
     }
     let diff = repo.diff_blobs(old_blob, new_blob, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
     render_blob_diff(diff, path, out)
+}
+
+/// Whether every side present is a gitlink, whose id names a commit in another repository
+/// and so has no blob to diff here.
+fn is_submodule_bump(old: Option<&TreeEntry>, new: Option<&TreeEntry>) -> bool {
+    let is_gitlink =
+        |entry: Option<&TreeEntry>| entry.is_none_or(|entry| entry.kind == EntryKind::Submodule);
+    (old.is_some() || new.is_some()) && is_gitlink(old) && is_gitlink(new)
+}
+
+/// The `-Subproject commit` / `+Subproject commit` lines git prints for a gitlink change.
+fn render_submodule_bump(
+    old: Option<TreeEntry>,
+    new: Option<TreeEntry>,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    if let Some(old) = old {
+        writeln!(out, "-Subproject commit {}", old.oid)?;
+    }
+    if let Some(new) = new {
+        writeln!(out, "+Subproject commit {}", new.oid)?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The blob id of a diffed side, refusing a directory as `cat` does.
