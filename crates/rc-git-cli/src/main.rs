@@ -412,6 +412,16 @@ fn utf8_arg(arg: OsString) -> std::result::Result<String, String> {
     })
 }
 
+/// Writes the verb's output. A reader that closed early (`rc-git log | head`) is a normal end,
+/// as it is for other Unix tools: the rest of the output is dropped without a message.
+fn write_stdout(out: &[u8]) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    match stdout.write_all(out).and_then(|()| stdout.flush()) {
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        result => result.context("write to stdout"),
+    }
+}
+
 fn run(invocation: &Invocation) -> Result<ExitCode> {
     let opened_at = Instant::now();
     let repo = Repository::open(&invocation.repo)?;
@@ -462,10 +472,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
     };
     let command_elapsed = started_at.elapsed();
 
-    io::stdout()
-        .lock()
-        .write_all(&out)
-        .context("write to stdout")?;
+    write_stdout(&out)?;
     if invocation.time {
         writeln!(
             io::stderr().lock(),

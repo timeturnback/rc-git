@@ -6,7 +6,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use rc_git_testkit::{COMMIT_1_TITLE, COMMIT_2_TITLE, Fixture, MAIN_RS};
 
@@ -362,6 +362,22 @@ fn non_utf8_arguments_are_usage_errors_and_repo_paths_stay_bytes() {
         "an open error, not a usage error"
     );
     assert!(stderr(&repo_arg).contains("cannot open git repository at"));
+}
+
+#[test]
+#[expect(clippy::disallowed_methods, reason = "tests run the built binary")]
+fn a_reader_that_closes_early_is_not_an_error() {
+    let fx = Fixture::standard();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rc-git"))
+        .args(["log", fx.path().to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "status {:?}", out.status);
+    assert_eq!(stderr(&out), "");
 }
 
 #[test]
