@@ -263,7 +263,7 @@ pub enum ActionError {
         op: &'static str,
     },
     /// The underlying git operation failed.
-    #[error("{op} '{name}': {source}")]
+    #[error("{op} '{name}': {source:#}")]
     Git {
         /// What was being done.
         op: &'static str,

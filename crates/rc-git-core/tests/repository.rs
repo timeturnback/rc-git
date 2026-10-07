@@ -38,7 +38,14 @@ fn open_names_the_path_when_not_a_repository() {
     let fx = Fixture::empty_dir();
     let err = Repository::open(fx.path()).unwrap_err();
     assert!(matches!(err, Error::Open { .. }));
-    assert!(err.to_string().contains(&fx.path().display().to_string()));
+    let msg = err.to_string();
+    assert!(msg.contains(&fx.path().display().to_string()));
+    assert_no_source_location(&msg);
+}
+
+fn assert_no_source_location(msg: &str) {
+    assert!(!msg.contains(".rs:"), "{msg}");
+    assert!(!msg.contains(", at /"), "{msg}");
 }
 
 #[test]
@@ -210,7 +217,11 @@ fn resolve_accepts_rev_parse_syntax() {
 
     let err = repo.resolve("nope").unwrap_err();
     assert!(matches!(err, Error::RevSpec { .. }));
-    assert!(err.to_string().starts_with("'nope' is not a revision"));
+    let msg = err.to_string();
+    assert!(msg.starts_with("'nope' is not a revision"), "{msg}");
+    assert!(msg.contains("could not be found"), "{msg}");
+    assert!(msg.matches("couldn't parse revision").count() <= 1, "{msg}");
+    assert_no_source_location(&msg);
 }
 
 #[test]

@@ -358,10 +358,15 @@ import Testing
         await model.jumpToRevision("abc1")
         #expect(model.diffCommit?.oid == parentCommit)
 
-        var reported: String?
-        model.onError = { reported = $0 }
+        var readFailure: String?
+        var inputError: (title: String, message: String)?
+        model.onError = { readFailure = $0 }
+        model.onInputError = { inputError = ($0, $1) }
         await model.jumpToRevision("nope")
-        #expect(reported?.contains("not a revision") == true)
+        #expect(inputError?.title == BrowserModel.revisionNotFoundTitle)
+        #expect(inputError?.message.contains("not a revision") == true)
+        #expect(readFailure == nil)
+        #expect(model.lastError == nil)
     }
 
     @Test func commitWithNoChangesShowsEmptyDetail() async {

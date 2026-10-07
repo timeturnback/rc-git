@@ -49,7 +49,7 @@ impl fmt::Display for ObjectKind {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The path is not a git repository or cannot be read.
-    #[error("cannot open git repository at {}: {source}", path.display())]
+    #[error("cannot open git repository at {}: {}", path.display(), Causes(.source))]
     Open {
         /// The path that was opened.
         path: PathBuf,
@@ -58,7 +58,7 @@ pub enum Error {
         source: BoxError,
     },
     /// An object lookup or decode failed.
-    #[error("{op}: object {oid} is missing or unreadable: {source}")]
+    #[error("{op}: object {oid} is missing or unreadable: {}", Causes(.source))]
     Object {
         /// What was being done.
         op: &'static str,
@@ -69,7 +69,7 @@ pub enum Error {
         source: BoxError,
     },
     /// Any other repository-level failure.
-    #[error("{op}: {source}")]
+    #[error("{op}: {}", Causes(.source))]
     Git {
         /// What was being done.
         op: &'static str,
@@ -78,7 +78,7 @@ pub enum Error {
         source: BoxError,
     },
     /// A revision expression did not resolve.
-    #[error("'{spec}' is not a revision in this repository: {source}")]
+    #[error("'{spec}' is not a revision in this repository: {}", Causes(.source))]
     RevSpec {
         /// The expression as given.
         spec: String,
@@ -103,7 +103,7 @@ pub enum Error {
         input: String,
     },
     /// A working-tree read failed.
-    #[error("{op}: '{path}': {source}")]
+    #[error("{op}: '{path}': {}", Causes(.source))]
     Worktree {
         /// What was being done.
         op: &'static str,
@@ -113,6 +113,29 @@ pub enum Error {
         #[source]
         source: BoxError,
     },
+}
+
+/// Renders a cause and every error below it once each, in alternate form.
+///
+/// gix errors append `, at <file>:<line>` from the build machine unless formatted with `{:#}`,
+/// and many of them repeat their own source in their message, so a frame whose text is
+/// already in the line is skipped.
+struct Causes<'a>(&'a BoxError);
+
+impl fmt::Display for Causes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut line = format!("{:#}", self.0);
+        let mut frame = self.0.source();
+        while let Some(err) = frame {
+            let text = format!("{err:#}");
+            if !text.is_empty() && !line.contains(&text) {
+                line.push_str(": ");
+                line.push_str(&text);
+            }
+            frame = err.source();
+        }
+        f.write_str(&line)
+    }
 }
 
 /// Result alias for this crate.
@@ -173,6 +196,55 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "read working tree file: 'src/gone.rs': missing"
+        );
+    }
+
+    #[derive(Debug)]
+    struct Frame {
+        text: &'static str,
+        source: Option<Box<Frame>>,
+    }
+
+    impl fmt::Display for Frame {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.text)?;
+            if !f.alternate() {
+                f.write_str(", at /build/src/lib.rs:1")?;
+            }
+            Ok(())
+        }
+    }
+
+    impl std::error::Error for Frame {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|frame| frame as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn causes_list_each_frame_once_without_source_locations() {
+        let leaf = Frame {
+            text: "ref 'nope' could not be found",
+            source: None,
+        };
+        let repeat = Frame {
+            text: "ref 'nope' could not be found",
+            source: Some(Box::new(leaf)),
+        };
+        let top = Frame {
+            text: "couldn't parse revision",
+            source: Some(Box::new(repeat)),
+        };
+        let err = Error::RevSpec {
+            spec: "nope".into(),
+            source: Box::new(top),
+        };
+        assert_eq!(
+            err.to_string(),
+            "'nope' is not a revision in this repository: couldn't parse revision: \
+             ref 'nope' could not be found"
         );
     }
 }

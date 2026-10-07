@@ -99,6 +99,9 @@ public final class BrowserModel {
     public var onDiffChanged: (() -> Void)?
     /// Fired when a background operation failed with a message worth showing.
     public var onError: ((String) -> Void)?
+    /// Fired when something the user typed named nothing in the repository: a title for what
+    /// was wrong, then the detail. Not a read failure, so it never sets `lastError`.
+    public var onInputError: ((_ title: String, _ message: String) -> Void)?
     /// Fired after `location` changed, once per move: a ref switch that also closes the open
     /// file reports where it ended up, never the step in between.
     public var onLocationChanged: (() -> Void)?
@@ -688,9 +691,12 @@ public final class BrowserModel {
         case let .success(oid):
             await jumpToCommit(oid)
         case let .failure(error):
-            fail(error.message)
+            onInputError?(Self.revisionNotFoundTitle, error.message)
         }
     }
+
+    /// Title for a revision the jump field could not resolve.
+    public static let revisionNotFoundTitle = "No such revision"
 
     private func continueSearch(target: Int) async {
         guard let repository, let tip = historyAnchor, let filter = searchFilter else { return }

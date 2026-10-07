@@ -218,7 +218,7 @@ fn main() -> ExitCode {
     match run(&invocation) {
         Ok(code) => code,
         Err(err) => {
-            let _ = writeln!(io::stderr().lock(), "error: {err:#}");
+            let _ = writeln!(io::stderr().lock(), "error: {}", error_line(&err));
             if err.downcast_ref::<UsageError>().is_some() {
                 return ExitCode::from(EXIT_USAGE);
             }
@@ -235,6 +235,26 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_ERROR)
         }
     }
+}
+
+/// Joins the error chain into one line, each cause once and without gix's source locations.
+///
+/// Core and guard errors already carry their cause in their message, and gix appends
+/// `, at <file>:<line>` unless formatted with `{:#}`, so a frame whose text the line already
+/// holds is skipped. Context causes such as a parse failure are kept.
+fn error_line(err: &anyhow::Error) -> String {
+    let mut line = String::new();
+    for frame in err.chain() {
+        let text = format!("{frame:#}");
+        if line.contains(&text) {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push_str(": ");
+        }
+        line.push_str(&text);
+    }
+    line
 }
 
 fn parse(mut args: Vec<String>) -> std::result::Result<Invocation, String> {

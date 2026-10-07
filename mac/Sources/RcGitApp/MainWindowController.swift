@@ -759,6 +759,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         model.onError = { [weak self] message in
             self?.presentError(message)
         }
+        model.onInputError = { [weak self] title, message in
+            self?.presentError(message, title: title)
+        }
         refsController.onSelect = { [weak self] ref in
             self?.browse(ref)
         }

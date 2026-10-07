@@ -289,7 +289,14 @@ fn resolve_prints_the_oid() {
     assert_eq!(stdout(&out), format!("{}\n", fx.rev_parse("v1.0")));
     let bad = rc_git(&["resolve", path, "nope"]);
     assert_eq!(bad.status.code(), Some(1));
-    assert!(stderr(&bad).contains("'nope' is not a revision"));
+    let err = stderr(&bad);
+    assert_eq!(
+        err,
+        "error: 'nope' is not a revision in this repository: couldn't parse revision: \"nope\": \
+         The ref partially named \"nope\" could not be found\n"
+    );
+    assert_eq!(err.matches("could not be found").count(), 1);
+    assert!(!err.contains("registry/src"), "{err}");
 }
 
 #[test]
