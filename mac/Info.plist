@@ -9,6 +9,8 @@
     <key>LSMinimumSystemVersion</key>       <string>15.0</string>
     <key>NSHighResolutionCapable</key>      <true/>
     <key>LSApplicationCategoryType</key>    <string>public.app-category.developer-tools</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>rc-git connects to git remotes you fetch from or push to, including servers on your local network.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
