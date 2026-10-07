@@ -1,6 +1,7 @@
 # Run by the global core.hooksPath dispatcher (see docs/development.md); `prek run` runs by hand.
 # Every hook is a local system command so the tool versions are the ones on the machine, the same
 # ones scripts/check.sh uses.
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
