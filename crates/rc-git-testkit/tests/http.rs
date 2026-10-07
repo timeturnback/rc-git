@@ -14,7 +14,7 @@ fn a_served_repository_clones_and_accepts_a_push() {
 
     clone.write("pushed.txt", b"pushed\n");
     clone.commit("Pushed over HTTP", "2024-02-01T00:00:00+0000");
-    clone.git(&["-c", "http.receivepack=true", "push", "--quiet"]);
+    clone.git(&["push", "--quiet"]);
 
     let served_tip = bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
     assert_eq!(clone.rev_parse("HEAD"), served_tip);
@@ -42,6 +42,21 @@ fn missing_or_wrong_credentials_are_rejected_and_correct_ones_accepted() {
             || output.contains("Authentication")
             || output.contains("could not read Username"),
         "expected an auth failure, got: {output}"
+    );
+
+    let wrong = Fixture::empty_dir();
+    let with_wrong_password = server.url().replace("http://", "http://user:not-sekret@");
+    let output = wrong.git_expect_failure(&[
+        "-c",
+        "credential.helper=",
+        "clone",
+        "--quiet",
+        &with_wrong_password,
+        ".",
+    ]);
+    assert!(
+        output.contains("Authentication failed"),
+        "expected a wrong password to be rejected, got: {output}"
     );
 
     let allowed = Fixture::empty_dir();
