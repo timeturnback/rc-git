@@ -15,6 +15,7 @@ path = "src/main.rs"
 rc-git-core.workspace = true
 rc-git-guard.workspace = true
 anyhow.workspace = true
+signal-hook.workspace = true
 
 [dev-dependencies]
 rc-git-testkit.workspace = true

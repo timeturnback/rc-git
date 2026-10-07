@@ -15,6 +15,7 @@ use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
     DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, WorktreeStatus,
 };
+use rc_git_guard::actions::{ActionError, Cancel};
 
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
@@ -77,7 +78,9 @@ usage: rc-git [--time] <command> <repo> [args]
 
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey),
-  7 diverged or push rejected (reconcile with git, e.g. git pull --rebase)
+  7 diverged or push rejected (reconcile with git, e.g. git pull --rebase),
+  130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push or sync between steps
+  (a second one exits at once, even mid-step)
 ";
 
 const EXIT_ERROR: u8 = 1;
@@ -87,6 +90,7 @@ const EXIT_TOO_LARGE: u8 = 4;
 const EXIT_AUTH: u8 = 5;
 const EXIT_HOSTKEY: u8 = 6;
 const EXIT_DIVERGED: u8 = 7;
+const EXIT_INTERRUPTED: u8 = 130;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
 #[derive(Debug)]
@@ -348,26 +352,46 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             let _ = writeln!(io::stderr().lock(), "error: {}", error_line(&err));
-            if err.downcast_ref::<UsageError>().is_some() {
-                return ExitCode::from(EXIT_USAGE);
-            }
-            match err.downcast_ref::<rc_git_guard::actions::ActionError>() {
-                Some(
-                    rc_git_guard::actions::ActionError::AuthRequired { .. }
-                    | rc_git_guard::actions::ActionError::PassphraseRequired { .. },
-                ) => return ExitCode::from(EXIT_AUTH),
-                Some(rc_git_guard::actions::ActionError::UnknownHostKey { .. }) => {
-                    return ExitCode::from(EXIT_HOSTKEY);
-                }
-                Some(
-                    rc_git_guard::actions::ActionError::Diverged { .. }
-                    | rc_git_guard::actions::ActionError::PushRejected { .. },
-                ) => return ExitCode::from(EXIT_DIVERGED),
-                Some(_) | None => {}
-            }
-            ExitCode::from(EXIT_ERROR)
+            ExitCode::from(exit_code_for(&err))
         }
     }
+}
+
+/// The exit code a failed command ends with, per the table in [`USAGE`].
+fn exit_code_for(err: &anyhow::Error) -> u8 {
+    if err.downcast_ref::<UsageError>().is_some() {
+        return EXIT_USAGE;
+    }
+    match err.downcast_ref::<ActionError>() {
+        Some(ActionError::AuthRequired { .. } | ActionError::PassphraseRequired { .. }) => {
+            EXIT_AUTH
+        }
+        Some(ActionError::UnknownHostKey { .. }) => EXIT_HOSTKEY,
+        Some(ActionError::Diverged { .. } | ActionError::PushRejected { .. }) => EXIT_DIVERGED,
+        Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
+        Some(_) | None => EXIT_ERROR,
+    }
+}
+
+/// One cancel flag for every remote step of the command, set by SIGINT or SIGTERM so the guard
+/// stops between steps and cleans up instead of the process dying with `.lock` and `tmp_pack_*`
+/// files left in `.git`. A second signal, once the flag is set, exits at once with
+/// [`EXIT_INTERRUPTED`]: some steps never look at the flag (the ssh dial, a blocked HTTPS read,
+/// the pull's tree apply), and Ctrl+C must still end them.
+fn interruptible_cancel() -> Result<Cancel> {
+    let cancel = Cancel::new();
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        // Registered first so it runs first: it sees the flag still clear on the first signal.
+        signal_hook::flag::register_conditional_shutdown(
+            signal,
+            i32::from(EXIT_INTERRUPTED),
+            cancel.share(),
+        )
+        .with_context(|| format!("install the second-signal exit for signal {signal}"))?;
+        signal_hook::flag::register(signal, cancel.share())
+            .with_context(|| format!("install the cancel handler for signal {signal}"))?;
+    }
+    Ok(cancel)
 }
 
 /// Joins the error chain into one line, each cause once and without gix's source locations.
@@ -485,10 +509,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         )?,
         Verb::Discard => discard_verb(&invocation.repo, &invocation.args)?,
         Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Fetch => fetch_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Pull => pull_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Push => push_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Sync => sync_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Fetch | Verb::Pull | Verb::Push | Verb::Sync => remote_verb(invocation, &mut out)?,
     };
     let command_elapsed = started_at.elapsed();
 
@@ -1406,31 +1427,51 @@ fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -
     Ok(())
 }
 
-fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+fn fetch_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    cancel: &Cancel,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
     let remote = parse_remote_args("fetch", repo_path, args)?;
     let outcome = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &rc_git_guard::actions::Cancel::new(),
+        cancel,
     )?;
     write_fetch(out, &outcome)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+/// Only the fetch half honors `cancel`: the fast-forward's tree apply takes no flag, so a
+/// second signal during it can leave files rewritten with the branch ref not yet moved.
+fn pull_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    cancel: &Cancel,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
     let remote = parse_remote_args("pull", repo_path, args)?;
     let policy = rc_git_guard::Policy::default();
-    let fetch = rc_git_guard::actions::fetch_upstream(
-        repo_path,
-        &policy,
-        remote.auth(),
-        &rc_git_guard::actions::Cancel::new(),
-    )?;
+    let fetch = rc_git_guard::actions::fetch_upstream(repo_path, &policy, remote.auth(), cancel)?;
     write_fetch(out, &fetch)?;
     let outcome = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
     write_pull(out, &outcome)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs a verb that talks to the remote, with Ctrl+C and SIGTERM wired to its cancel flag.
+fn remote_verb(invocation: &Invocation, out: &mut Vec<u8>) -> Result<ExitCode> {
+    let cancel = interruptible_cancel()?;
+    let (repo, args) = (invocation.repo.as_path(), invocation.args.as_slice());
+    match invocation.verb {
+        Verb::Fetch => fetch_verb(repo, args, &cancel, out),
+        Verb::Pull => pull_verb(repo, args, &cancel, out),
+        Verb::Push => push_verb(repo, args, &cancel, out),
+        Verb::Sync => sync_verb(repo, args, &cancel, out),
+        other => bail!("'{}' is not a remote command", other.name()),
+    }
 }
 
 fn checkout_verb(
@@ -1460,25 +1501,35 @@ fn checkout_verb(
     Ok(ExitCode::SUCCESS)
 }
 
-fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+fn push_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    cancel: &Cancel,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
     let remote = parse_remote_args("push", repo_path, args)?;
     let outcome = rc_git_guard::actions::push_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &rc_git_guard::actions::Cancel::new(),
+        cancel,
     )?;
     write_push(out, &outcome)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+fn sync_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    cancel: &Cancel,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
     let remote = parse_remote_args("sync", repo_path, args)?;
     let outcome = rc_git_guard::actions::sync(
         repo_path,
         &rc_git_guard::Policy::default(),
         remote.auth(),
-        &rc_git_guard::actions::Cancel::new(),
+        cancel,
     )?;
     write_fetch(out, &outcome.fetch)?;
     write_pull(out, &outcome.pull)?;
@@ -1497,6 +1548,20 @@ mod tests {
         let mut out = Vec::new();
         write_path(&mut out, path);
         out
+    }
+
+    #[test]
+    fn a_cancelled_remote_step_exits_130() {
+        let err = anyhow::Error::new(crate::ActionError::Cancelled { op: "fetch" });
+        assert_eq!(crate::exit_code_for(&err), 130);
+    }
+
+    #[test]
+    fn sigint_sets_the_shared_cancel_flag() {
+        let cancel = crate::interruptible_cancel().unwrap();
+        assert!(!cancel.is_cancelled());
+        signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
+        assert!(cancel.is_cancelled());
     }
 
     #[test]

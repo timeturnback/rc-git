@@ -1224,3 +1224,64 @@ fn checkout_switches_branches_and_reports_a_dirty_path() {
         stderr(&out)
     );
 }
+
+/// Sends `signal` (a `kill` name such as `INT`) to the process `pid`.
+#[expect(clippy::disallowed_methods, reason = "tests signal the built binary")]
+fn send_signal(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .args([&format!("-{signal}"), &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success(), "kill -{signal} {pid} failed");
+}
+
+/// Waits up to `limit` for `child` to exit, killing it if it does not: a killed child exits by
+/// signal, with no code, so the caller's exit-code assertion fails.
+fn wait_with_deadline(child: &mut std::process::Child, limit: std::time::Duration) -> Output {
+    let deadline = std::time::Instant::now() + limit;
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut output = Output {
+        status: child.wait().unwrap(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    if let Some(mut stderr) = child.stderr.take() {
+        std::io::Read::read_to_end(&mut stderr, &mut output.stderr).unwrap();
+    }
+    output
+}
+
+#[test]
+fn interrupting_a_stalled_fetch_exits_130() {
+    let (_origin, _bare, _server, clone) = served_clone();
+    // A remote that accepts the connection and then never says a word: the HTTPS read blocks
+    // where the cancel flag cannot reach it, so only the second signal ends the fetch.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/remote.git", silent.local_addr().unwrap());
+    clone.git(&["remote", "set-url", "origin", &url]);
+
+    let mut child = rc_git_command()
+        .args(["fetch", clone.path().to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Accepting proves the fetch is past the handler setup, so the signal cannot kill it raw.
+    let (_held_open, _) = silent.accept().unwrap();
+    send_signal(child.id(), "INT");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the first Ctrl+C only sets the cancel flag"
+    );
+    send_signal(child.id(), "INT");
+
+    let out = wait_with_deadline(&mut child, std::time::Duration::from_secs(10));
+    assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
+}

@@ -30,6 +30,8 @@ anyhow = "=1.0.104"
 tempfile = "=3.27.0"
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-config = "=0.58.0"
+# Safe SIGINT/SIGTERM registration for the CLI's remote verbs; the CLI forbids `unsafe`.
+signal-hook = { version = "=0.4.5", default-features = false }
 tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 [workspace.lints.rust]

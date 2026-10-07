@@ -90,8 +90,11 @@ impl Cancel {
         &self.flag
     }
 
-    /// A handle the ssh transport keeps for as long as the connection lives.
-    pub(super) fn share(&self) -> Arc<AtomicBool> {
+    /// A shared handle to the flag, for whoever sets it from outside the operation: the
+    /// ssh transport keeps one for as long as the connection lives, and a signal handler
+    /// stores `true` into one to cancel.
+    #[must_use]
+    pub fn share(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.flag)
     }
 
