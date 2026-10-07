@@ -6,8 +6,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+usage() { echo "usage: check.sh [--fast]"; }
+(($# <= 1)) || {
+  usage >&2
+  exit 2
+}
 fast=0
-[[ "${1:-}" == "--fast" ]] && fast=1
+case "${1:-}" in
+"") ;;
+--fast) fast=1 ;;
+-h | --help)
+  usage
+  exit 0
+  ;;
+*)
+  usage >&2
+  exit 2
+  ;;
+esac
 
 step() { printf '\n==> %s\n' "$*"; }
 require() {

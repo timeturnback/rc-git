@@ -16,15 +16,27 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VARIANT=release
 CONFIG=""
 
+usage() { echo "usage: build-app.sh [--dev] [--config release|debug]"; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
   --dev) VARIANT=dev ;;
   --config)
-    CONFIG="${2:-}"
+    case "${2:-}" in
+    release | debug) CONFIG="$2" ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+    esac
     shift
     ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
   *)
-    echo "usage: build-app.sh [--dev] [--config release|debug]" >&2
+    usage >&2
     exit 2
     ;;
   esac

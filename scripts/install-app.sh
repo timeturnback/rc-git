@@ -10,6 +10,22 @@ APPS="/Applications"
 TARGET="$APPS/RCGit.app"
 APP="$ROOT/RCGit.app"
 
+usage() {
+  echo "usage: install-app.sh"
+  echo "Builds the release bundle and replaces $TARGET with it."
+}
+case "$#:${1:-}" in
+0:) ;;
+1:-h | 1:--help)
+  usage
+  exit 0
+  ;;
+*)
+  usage >&2
+  exit 2
+  ;;
+esac
+
 [ -w "$APPS" ] || {
   echo "error: $APPS is not writable by $(whoami); install as an administrator" >&2
   exit 1
