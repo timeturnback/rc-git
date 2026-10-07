@@ -29,4 +29,4 @@ cd "$ROOT"
 scripts/rust-lib.sh "$CONFIG"
 scripts/gen-header.sh
 swift build --package-path mac -c "$CONFIG"
-echo "built $(swift build --package-path mac -c "$CONFIG" --show-bin-path)/RcGitApp"
+echo "built mac/.build/$CONFIG/RcGitApp"
