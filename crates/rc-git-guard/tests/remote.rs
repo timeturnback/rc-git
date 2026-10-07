@@ -835,6 +835,10 @@ fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
         &Cancel::new(),
     )
     .expect("accepted fingerprint fetch");
+    assert!(
+        !remoted.ssh_home.path().join("known_hosts").exists(),
+        "an accepted fingerprint must not be written to known_hosts"
+    );
 }
 
 #[test]
