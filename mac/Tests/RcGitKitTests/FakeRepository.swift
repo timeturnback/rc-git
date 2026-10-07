@@ -14,6 +14,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// one scanned commit, so `scanSkip` indexes into this list.
     var pathHistories: [String: [CommitSummary]] = [:]
     var pathHistoryCalls = 0
+    /// When set, `pathHistory` fails for every `scanSkip` at or past this index.
+    var pathHistoryFailFrom: Int?
     var resolves: [String: Oid] = [:]
     var searchCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
@@ -139,9 +141,13 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
         -> CommitPage
     {
-        let found = lock.withLock { () -> [CommitSummary]? in
+        let (found, failFrom) = lock.withLock { () -> ([CommitSummary]?, Int?) in
             pathHistoryCalls += 1
-            return pathHistories[FakeRepository.pathKey(tip: tip, path: path)]
+            let key = FakeRepository.pathKey(tip: tip, path: path)
+            return (pathHistories[key], pathHistoryFailFrom)
+        }
+        if let failFrom, scanSkip >= failFrom {
+            throw RepositoryError("read commit: object \(tip) is missing or unreadable")
         }
         guard let found else {
             throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")

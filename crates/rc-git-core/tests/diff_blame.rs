@@ -311,6 +311,65 @@ fn blame_reports_missing_paths_and_bad_tips() {
     assert!(repo.blame(blob, "README.md").is_err());
 }
 
+/// Three commits, each appending one line to `a.txt`: `one`, `two`, `three`.
+fn append_fixture() -> Fixture {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("a.txt", b"1\n");
+    fx.commit("one", "2024-01-01T00:00:00+0000");
+    fx.write("a.txt", b"1\n2\n");
+    fx.commit("two", "2024-01-02T00:00:00+0000");
+    fx.write("a.txt", b"1\n2\n3\n");
+    fx.commit("three", "2024-01-03T00:00:00+0000");
+    fx
+}
+
+/// The commit of each line, in line order.
+fn line_owners(ranges: &[rc_git_core::BlameRange]) -> Vec<Oid> {
+    let mut owners = Vec::new();
+    for range in ranges {
+        owners.extend(std::iter::repeat_n(range.commit, range.line_count as usize));
+    }
+    owners
+}
+
+#[test]
+fn blame_stops_at_the_shallow_boundary() {
+    let origin = append_fixture();
+    let clone = Fixture::empty_dir();
+    let url = format!("file://{}", origin.path().display());
+    clone.git(&["clone", "-q", "--depth", "2", &url, "."]);
+    let repo = Repository::open(clone.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let boundary = oid(&clone.rev_parse("main~1"));
+
+    let ranges = repo.blame(tip, "a.txt").unwrap();
+    assert_eq!(
+        line_owners(&ranges),
+        [boundary, boundary, tip],
+        "the boundary keeps the lines older than the clone, as `git blame` does"
+    );
+}
+
+#[test]
+fn blame_names_the_missing_commit() {
+    let fx = append_fixture();
+    let root = fx.rev_parse("main~2");
+    fx.remove(&format!(".git/objects/{}/{}", &root[..2], &root[2..]));
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let err = repo.blame(tip, "a.txt").unwrap_err();
+    let Error::Object { oid: culprit, .. } = err else {
+        panic!("expected an object error, got {err}");
+    };
+    assert_eq!(
+        culprit,
+        oid(&root),
+        "the error names the missing commit, not the tip"
+    );
+}
+
 #[test]
 fn worktree_diff_shows_disk_edits_against_the_blob() {
     let fx = Fixture::standard();

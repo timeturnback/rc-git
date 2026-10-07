@@ -279,3 +279,45 @@ fn path_history_rejects_a_non_commit_tip() {
     let tree = repo.resolve_tree("main").unwrap();
     assert!(repo.path_history(tree, "file.txt", 0, 100, 1000).is_err());
 }
+
+/// A `--depth 2` clone of `origin` in a sibling temp dir.
+fn shallow_clone(origin: &Fixture) -> Fixture {
+    let clone = Fixture::empty_dir();
+    let url = format!("file://{}", origin.path().display());
+    clone.git(&["clone", "-q", "--depth", "2", &url, "."]);
+    assert!(
+        clone.git_dir().join("shallow").is_file(),
+        "the clone is shallow"
+    );
+    clone
+}
+
+#[test]
+fn path_history_treats_the_shallow_boundary_as_a_root() {
+    let fx = merge_fixture();
+    let clone = shallow_clone(&fx);
+    let repo = Repository::open(clone.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+
+    let page = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let oids: Vec<String> = page.commits.iter().map(|c| c.oid.to_string()).collect();
+    let expected = clone.git_output(&["log", "--format=%H", "--", "file.txt"]);
+    assert_eq!(oids, expected.lines().collect::<Vec<_>>());
+    let expected = clone.git_output(&["log", "--format=%s", "--", "file.txt"]);
+    assert_eq!(titles(&page), expected.lines().collect::<Vec<_>>());
+    assert!(
+        titles(&page).contains(&"clean merge".to_owned()),
+        "a boundary merge holding the file matches like a root"
+    );
+    assert!(page.complete);
+}
+
+#[test]
+fn path_history_still_fails_on_a_missing_parent_outside_a_shallow_clone() {
+    let fx = merge_fixture();
+    let root = fx.git_output(&["rev-list", "--max-parents=0", "main"]);
+    fx.remove(&format!(".git/objects/{}/{}", &root[..2], &root[2..]));
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    assert!(repo.path_history(tip, "file.txt", 0, 100, 1000).is_err());
+}

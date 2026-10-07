@@ -568,7 +568,11 @@ public final class BrowserModel {
                 pathHistoryCache[key] = (history, skip + page.scanned, page.complete)
                 onHistoryChanged?()
             case let .failure(error):
+                // Keep the commits already shown and stop paging, so a scroll or resize does
+                // not re-walk into the same failure. Not cached: scoping again retries.
                 isLoadingHistory = false
+                historyComplete = true
+                onHistoryChanged?()
                 fail(error.message)
                 return
             }

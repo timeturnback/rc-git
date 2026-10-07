@@ -172,6 +172,29 @@ import Testing
         #expect(reported?.contains("start commit walk") == true)
     }
 
+    @Test func pathScopeFailureKeepsShownCommitsAndStopsPaging() async {
+        await model.attach(repo)
+        let touching = (0..<150).map { index in
+            commitSummary(oid(UInt8(index % 250)), title: "touch \(index)")
+        }
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "big")] = touching
+        }
+        await model.showPathHistory("big")
+        #expect(model.history.count == 100)
+        repo.lock.withLock { repo.pathHistoryFailFrom = 100 }
+        var reports = 0
+        model.onError = { _ in reports += 1 }
+        await model.loadMoreHistory()
+        #expect(model.history.count == 100, "the commits already shown stay")
+        #expect(model.historyComplete, "a failed walk stops paging")
+        #expect(!model.isLoadingHistory)
+        let calls = repo.lock.withLock { repo.pathHistoryCalls }
+        await model.loadMoreHistory()
+        #expect(repo.lock.withLock { repo.pathHistoryCalls } == calls, "no re-walk")
+        #expect(reports == 1, "one alert, not one per scroll")
+    }
+
     @Test func historyIsCachedPerTipAcrossReselection() async {
         await model.attach(repo)
         await model.loadMoreHistory()

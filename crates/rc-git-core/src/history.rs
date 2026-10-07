@@ -45,6 +45,7 @@ impl Repository {
     /// first. A root commit matches when the entry exists. Empty and `.` segments are
     /// ignored, so `./a` names `a`. An empty `path` names the root tree, so every commit that
     /// changed anything matches. Renames are not followed; blame covers deeper archaeology.
+    /// In a shallow clone a boundary commit is judged like a root, since its parents are absent.
     ///
     /// Like `log`, the walk restarts from `tip` and skips `scan_skip` commits, so keep pages
     /// contiguous and cache them. At most `max_scan` commits are examined per call, whatever
@@ -54,8 +55,9 @@ impl Repository {
     /// 1, so every incomplete page advances the cursor.
     ///
     /// # Errors
-    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance,
-    /// [`Error::Object`](crate::Error::Object) when a commit or tree on the way is unreadable.
+    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or the shallow
+    /// file is unreadable, [`Error::Object`](crate::Error::Object) when a commit or tree on the
+    /// way is unreadable.
     pub fn path_history(
         &self,
         tip: Oid,
@@ -76,6 +78,7 @@ impl Repository {
                 .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
                 .all()
                 .map_err(git("start commit walk"))?;
+            let shallow = repo.shallow_commits().map_err(git("read shallow file"))?;
             let mut lookup = Lookup::default();
             let mut commits = Vec::new();
             let mut scanned = 0;
@@ -94,7 +97,13 @@ impl Repository {
                     .map_err(object("decode commit", oid))?
                     .detach();
                 lookup.trees.insert(info.id, tree);
-                if lookup.touches(repo, tree, &info.parent_ids, &segments)? {
+                // A shallow boundary lists parents the clone does not have; git judges it as a
+                // root. A parent missing anywhere else is corruption and still errors.
+                let is_boundary = shallow
+                    .as_ref()
+                    .is_some_and(|commits| commits.binary_search(&info.id).is_ok());
+                let parents: &[ObjectId] = if is_boundary { &[] } else { &info.parent_ids };
+                if lookup.touches(repo, tree, parents, &segments)? {
                     commits.push(summarize(&commit)?);
                 }
             }
