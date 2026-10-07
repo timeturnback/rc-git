@@ -21,7 +21,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::runtime::Runtime;
 
 use crate::actions::remote::{CANCEL_POLL, Cancel};
-use crate::actions::{ActionError, ActionResult};
+use crate::actions::{ActionResult, git_err};
 
 use super::hostkey::HostKeyHandler;
 
@@ -38,11 +38,7 @@ pub(super) fn build_runtime(op: &'static str) -> ActionResult<Runtime> {
         .enable_io()
         .enable_time()
         .build()
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "ssh".to_owned(),
-            source: Box::new(source),
-        })
+        .map_err(git_err(op, "ssh"))
 }
 
 /// The cancel flag and the idle budget every channel read and write is measured

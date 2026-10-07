@@ -10,11 +10,13 @@ use gix::ObjectId;
 use gix::bstr::{BString, ByteSlice};
 use gix::objs::tree::EntryKind;
 use gix::refs::Target;
-use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+use gix::refs::transaction::PreviousValue;
 
 use super::treebuild::{self, Node, PathEdit};
 use super::workfile;
-use super::{ActionError, ActionResult, FileSelection, HunkStamp, Identity, confirm, open};
+use super::{
+    ActionError, ActionResult, FileSelection, HunkStamp, Identity, confirm, git_err, open,
+};
 use crate::{Action, Policy};
 
 /// What a completed commit produced.
@@ -62,7 +64,7 @@ pub fn commit(
         return Err(ActionError::StaleRepository { op: OP });
     }
     if selections.is_empty() {
-        return Err(git_error(OP, "nothing selected to commit"));
+        return Err(ActionError::git(OP, "HEAD", "nothing selected to commit"));
     }
     let work_dir = work_dir(&repo, OP)?;
     let selected = selections.iter().map(|selection| match selection {
@@ -83,8 +85,9 @@ pub fn commit(
         None => write_object(&repo, OP, &gix::objs::Tree::empty())?,
     };
     if Some(new_tree) == base_tree {
-        return Err(git_error(
+        return Err(ActionError::git(
             OP,
+            "HEAD",
             "the selection matches HEAD; nothing to commit",
         ));
     }
@@ -109,25 +112,13 @@ pub fn commit(
         Some(id) => PreviousValue::MustExistAndMatch(Target::Object(id)),
         None => PreviousValue::MustNotExist,
     };
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: false,
-                message: "rc-git: commit".into(),
-            },
-            expected,
-            new: Target::Object(commit_oid),
-        },
-        name: branch_ref.as_str().try_into().map_err(
-            |source: gix::validate::reference::name::Error| ActionError::Git {
-                op: OP,
-                name: branch_ref.clone(),
-                source: Box::new(source),
-            },
-        )?,
-        deref: false,
-    };
+    let edit = super::update_edit(
+        &branch_ref,
+        expected,
+        Target::Object(commit_oid),
+        "rc-git: commit",
+        OP,
+    )?;
     super::apply_edit(&repo, edit, OP, &branch_ref)?;
     update_index(&repo, OP, &work_dir, &index_changes)?;
 
@@ -185,20 +176,16 @@ pub(super) fn checked_out_branch(
 ) -> ActionResult<(String, Option<ObjectId>)> {
     let head_name = repo
         .head_name()
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "HEAD".to_owned(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(op, "HEAD"))?
         .ok_or(ActionError::DetachedHead { op })?;
     let commit = repo.head_id().ok().map(gix::Id::detach);
     Ok((head_name.as_bstr().to_string(), commit))
 }
 
 pub(super) fn work_dir(repo: &gix::Repository, op: &'static str) -> ActionResult<PathBuf> {
-    repo.workdir()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| git_error(op, "the repository is bare and has no working tree"))
+    repo.workdir().map(Path::to_path_buf).ok_or_else(|| {
+        ActionError::git(op, "HEAD", "the repository is bare and has no working tree")
+    })
 }
 
 pub(super) fn tree_of(
@@ -208,19 +195,11 @@ pub(super) fn tree_of(
 ) -> ActionResult<ObjectId> {
     let commit = repo
         .find_commit(commit)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: commit.to_string(),
-            source: Box::new(source),
-        })?;
+        .map_err(|source| ActionError::git(op, commit.to_string(), source))?;
     commit
         .tree_id()
         .map(gix::Id::detach)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: commit.id.to_string(),
-            source: Box::new(source),
-        })
+        .map_err(|source| ActionError::git(op, commit.id.to_string(), source))
 }
 
 /// Under `core.ignoreCase`, refuses a selected path any segment of which matches an entry on
@@ -265,15 +244,14 @@ fn case_variant_error(
     found: &str,
     place: &str,
 ) -> ActionError {
-    ActionError::Git {
+    ActionError::git(
         op,
-        name: path.to_owned(),
-        source: format!(
+        path,
+        format!(
             "'{segment}' is spelled '{found}' {place}, and this repository ignores case \
              (core.ignoreCase); select the path as '{found}' or use git directly"
-        )
-        .into(),
-    }
+        ),
+    )
 }
 
 /// The name in `parent` that equals `segment` only by case, when no entry has exactly that
@@ -284,11 +262,7 @@ fn disk_case_variant(
     path: &str,
     op: &'static str,
 ) -> ActionResult<Option<String>> {
-    let read_error = |source: std::io::Error| ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source: Box::new(source),
-    };
+    let read_error = git_err(op, path);
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -321,17 +295,8 @@ fn tree_case_variant(
     let Some(tree) = tree else {
         return Ok((None, None));
     };
-    let git_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source,
-    };
-    let tree = repo
-        .find_tree(tree)
-        .map_err(|source| git_error(Box::new(source)))?;
-    let decoded = tree
-        .decode()
-        .map_err(|source| git_error(Box::new(source)))?;
+    let tree = repo.find_tree(tree).map_err(git_err(op, path))?;
+    let decoded = tree.decode().map_err(git_err(op, path))?;
     let folded = segment.to_lowercase();
     let mut variant = None;
     for entry in &decoded.entries {
@@ -360,41 +325,33 @@ pub(super) fn whole_file_edit(
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if tree_entry_at(repo, op, base_tree, path)?.is_none() {
-                return Err(git_error_for(op, path, "does not exist on disk or in HEAD"));
+                return Err(ActionError::git(
+                    op,
+                    path,
+                    "does not exist on disk or in HEAD",
+                ));
             }
             return Ok(PathEdit::Remove);
         }
         Err(error) => {
-            return Err(ActionError::Git {
-                op,
-                name: path.to_owned(),
-                source: Box::new(error),
-            });
+            return Err(ActionError::git(op, path, error));
         }
     };
     let (data, kind) = if meta.file_type().is_symlink() {
         workfile::validate_path(op, path, true)?;
-        let target = std::fs::read_link(&full).map_err(|source| ActionError::Git {
-            op,
-            name: path.to_owned(),
-            source: Box::new(source),
-        })?;
+        let target = std::fs::read_link(&full).map_err(git_err(op, path))?;
         (
             target.into_os_string().into_encoded_bytes(),
             EntryKind::Link,
         )
     } else if meta.is_dir() {
-        return Err(git_error_for(
+        return Err(ActionError::git(
             op,
             path,
             "is a directory; select files instead",
         ));
     } else {
-        let data = std::fs::read(&full).map_err(|source| ActionError::Git {
-            op,
-            name: path.to_owned(),
-            source: Box::new(source),
-        })?;
+        let data = std::fs::read(&full).map_err(git_err(op, path))?;
         let executable = {
             use std::os::unix::fs::PermissionsExt;
             meta.permissions().mode() & 0o111 != 0
@@ -441,11 +398,7 @@ fn spliced_edit(
 
     let old = blob_data(repo, OP, path, entry.oid)?;
     let full = workfile::join_under(work_dir, path, OP)?;
-    let new = std::fs::read(&full).map_err(|source| ActionError::Git {
-        op: OP,
-        name: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let new = std::fs::read(&full).map_err(git_err(OP, path))?;
     let mut ordered = stamps.to_vec();
     ordered.sort_by_key(|stamp| (stamp.old_start, stamp.old_lines));
     let spliced =
@@ -473,11 +426,7 @@ pub(super) fn recompute_hunks(
     let mismatch = || ActionError::HunkMismatch {
         path: path.to_owned(),
     };
-    let core = rc_git_core::Repository::open(repo_path).map_err(|source| ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let core = rc_git_core::Repository::open(repo_path).map_err(git_err(op, path))?;
     let old = rc_git_core::Oid::from_bytes(old.as_slice()).ok_or_else(mismatch)?;
     let diff = core
         .diff_worktree_file(
@@ -486,11 +435,7 @@ pub(super) fn recompute_hunks(
             rc_git_core::DEFAULT_BLOB_LIMIT,
             rc_git_core::DEFAULT_DIFF_CONTEXT,
         )
-        .map_err(|source| ActionError::Git {
-            op,
-            name: path.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, path))?;
     match diff {
         rc_git_core::BlobDiff::Text { hunks } => Ok(hunks),
         rc_git_core::BlobDiff::Binary { .. } | rc_git_core::BlobDiff::TooLarge { .. } => {
@@ -545,22 +490,12 @@ pub(super) fn tree_entry_at(
     };
     let tree = repo
         .find_tree(base_tree)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: base_tree.to_string(),
-            source: Box::new(source),
-        })?;
+        .map_err(|source| ActionError::git(op, base_tree.to_string(), source))?;
     let segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())
         .map(str::as_bytes);
-    let found = tree
-        .lookup_entry(segments)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: path.to_owned(),
-            source: Box::new(source),
-        })?;
+    let found = tree.lookup_entry(segments).map_err(git_err(op, path))?;
     Ok(found.map(|entry| gix::objs::tree::Entry {
         mode: entry.mode(),
         filename: entry.filename().to_owned(),
@@ -574,11 +509,7 @@ pub(super) fn blob_data(
     path: &str,
     oid: ObjectId,
 ) -> ActionResult<Vec<u8>> {
-    let mut blob = repo.find_blob(oid).map_err(|source| ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let mut blob = repo.find_blob(oid).map_err(git_err(op, path))?;
     Ok(blob.take_data())
 }
 
@@ -594,11 +525,7 @@ fn write_blob(
     )]
     repo.write_blob(data)
         .map(gix::Id::detach)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: path.to_owned(),
-            source: Box::new(source),
-        })
+        .map_err(git_err(op, path))
 }
 
 pub(super) fn write_object(
@@ -612,11 +539,7 @@ pub(super) fn write_object(
     )]
     repo.write_object(object)
         .map(gix::Id::detach)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "object".to_owned(),
-            source: Box::new(source),
-        })
+        .map_err(git_err(op, "object"))
 }
 
 /// Upserts the committed paths into `.git/index` — new blob id, mode, and a fresh stat — and
@@ -636,11 +559,7 @@ pub(in crate::actions) fn update_index(
         false,
         gix::index::decode::Options::default(),
     )
-    .map_err(|source| ActionError::Git {
-        op,
-        name: "index".to_owned(),
-        source: Box::new(source),
-    })?;
+    .map_err(git_err(op, "index"))?;
     for (path, change) in changes {
         file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
         if let Some((oid, kind)) = change {
@@ -665,11 +584,7 @@ pub(in crate::actions) fn update_index(
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
     )]
     file.write(gix::index::write::Options::default())
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "index".to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, "index"))?;
     Ok(())
 }
 
@@ -681,28 +596,12 @@ fn index_mode(kind: EntryKind) -> gix::index::entry::Mode {
     }
 }
 
-fn git_error(op: &'static str, message: &'static str) -> ActionError {
-    ActionError::Git {
-        op,
-        name: "HEAD".to_owned(),
-        source: message.into(),
-    }
-}
-
-fn git_error_for(op: &'static str, path: &str, message: &'static str) -> ActionError {
-    ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source: message.into(),
-    }
-}
-
 /// A commit message with surrounding whitespace trimmed and one trailing newline; an empty
 /// message is refused.
 fn normalized_message(message: &str) -> ActionResult<String> {
     let trimmed = message.trim();
     if trimmed.is_empty() {
-        return Err(git_error(OP, "the commit message is empty"));
+        return Err(ActionError::git(OP, "HEAD", "the commit message is empty"));
     }
     Ok(format!("{trimmed}\n"))
 }

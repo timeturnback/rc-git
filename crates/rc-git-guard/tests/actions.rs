@@ -1207,7 +1207,7 @@ mod stash {
 
 mod checkout {
     use rc_git_guard::Policy;
-    use rc_git_guard::actions::{ActionError, checkout_branch};
+    use rc_git_guard::actions::{ActionError, checkout_branch, create_branch};
     use rc_git_testkit::Fixture;
 
     use super::commit_and_discard::CROSSES_LINK;
@@ -1244,6 +1244,23 @@ mod checkout {
             fx.git_output(&["reflog", "show", "--format=%gs", "-1", "HEAD"]),
             "checkout: moving from main to feature",
             "HEAD's reflog carries the switch, so `git checkout -` works afterwards"
+        );
+    }
+
+    #[test]
+    fn ref_edits_and_the_head_switch_line_share_one_reflog_identity() {
+        let fx = Fixture::standard();
+        create_branch(fx.path(), &Policy::default(), "topic", "main").unwrap();
+        checkout_branch(fx.path(), &Policy::default(), "topic").unwrap();
+
+        let identity = |reference: &str| {
+            fx.git_output(&["reflog", "show", "--format=%gn <%ge>", "-1", reference])
+        };
+        assert_eq!(identity("topic"), "rc-git <rc-git@localhost>");
+        assert_eq!(
+            identity("HEAD"),
+            identity("topic"),
+            "the hand-written checkout line must carry the same committer as apply_edit"
         );
     }
 

@@ -9,7 +9,12 @@ use gix::ObjectId;
 use gix::bstr::BString;
 use gix::objs::tree::{Entry, EntryKind};
 
-use super::{ActionError, ActionResult};
+use super::{ActionError, ActionResult, git_err};
+
+/// The operation a path-insertion refusal names.
+const OP_BUILD: &str = "build tree";
+/// Why [`insert`] refuses a path.
+const OVERLAP: &str = "the selected paths overlap or a path is empty";
 
 /// What happens to one path.
 pub(super) enum PathEdit {
@@ -53,7 +58,7 @@ pub(super) fn insert(
                 .insert(BString::from(segment), Node::Leaf(edit))
                 .is_some();
             if clash {
-                return Err(conflict(path));
+                return Err(ActionError::git(OP_BUILD, path, OVERLAP));
             }
             return Ok(());
         }
@@ -62,18 +67,10 @@ pub(super) fn insert(
             .or_insert_with(|| Node::Dir(BTreeMap::new()));
         current = match child {
             Node::Dir(children) => children,
-            Node::Leaf(_) => return Err(conflict(path)),
+            Node::Leaf(_) => return Err(ActionError::git(OP_BUILD, path, OVERLAP)),
         };
     }
-    Err(conflict(path))
-}
-
-fn conflict(path: &str) -> ActionError {
-    ActionError::Git {
-        op: "build tree",
-        name: path.to_owned(),
-        source: "the selected paths overlap or a path is empty".into(),
-    }
+    Err(ActionError::git(OP_BUILD, path, OVERLAP))
 }
 
 /// Rewrites the tree at `base` with `edits`, writing each rebuilt tree object, and returns
@@ -128,28 +125,18 @@ pub(super) fn rewrite(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
     )]
-    let oid = repo
-        .write_object(&tree)
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: "tree".to_owned(),
-            source: Box::new(source),
-        })?;
+    let oid = repo.write_object(&tree).map_err(git_err(OP, "tree"))?;
     Ok(Some(oid.detach()))
 }
 
 fn decode_entries(repo: &gix::Repository, tree: ObjectId) -> ActionResult<Vec<Entry>> {
     const OP: &str = "read tree";
-    let tree = repo.find_tree(tree).map_err(|source| ActionError::Git {
-        op: OP,
-        name: tree.to_string(),
-        source: Box::new(source),
-    })?;
-    let decoded = tree.decode().map_err(|source| ActionError::Git {
-        op: OP,
-        name: tree.id.to_string(),
-        source: Box::new(source),
-    })?;
+    let tree = repo
+        .find_tree(tree)
+        .map_err(|source| ActionError::git(OP, tree.to_string(), source))?;
+    let decoded = tree
+        .decode()
+        .map_err(|source| ActionError::git(OP, tree.id.to_string(), source))?;
     Ok(decoded
         .entries
         .iter()

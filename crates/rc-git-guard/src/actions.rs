@@ -73,6 +73,11 @@ pub enum FileSelection {
     },
 }
 
+/// Reflog committer name for every ref edit rc-git makes outside the stash.
+pub(super) const REFLOG_NAME: &str = "rc-git";
+/// Reflog committer email paired with [`REFLOG_NAME`].
+pub(super) const REFLOG_EMAIL: &str = "rc-git@localhost";
+
 /// Applies one ref edit as the synthetic `rc-git` committer, so reflog entries never depend
 /// on user configuration the isolated open refuses to read.
 fn apply_edit(
@@ -81,7 +86,53 @@ fn apply_edit(
     op: &'static str,
     name: &str,
 ) -> ActionResult<()> {
-    apply_edit_as(repo, edit, op, name, "rc-git", "rc-git@localhost")
+    apply_edit_as(repo, edit, op, name, REFLOG_NAME, REFLOG_EMAIL)
+}
+
+/// A direct (never dereferenced) update of `full_name` to `new` that logs `message` to the
+/// ref's reflog, provided one exists.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `full_name` when the name is not a valid ref name.
+fn update_edit(
+    full_name: &str,
+    expected: PreviousValue,
+    new: Target,
+    message: &str,
+    op: &'static str,
+) -> ActionResult<RefEdit> {
+    Ok(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: message.into(),
+            },
+            expected,
+            new,
+        },
+        name: full_name.try_into().map_err(git_err(op, full_name))?,
+        deref: false,
+    })
+}
+
+/// A direct (never dereferenced) deletion of `full_name` together with its reflog.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `full_name` when the name is not a valid ref name.
+fn delete_edit(
+    full_name: &str,
+    expected: PreviousValue,
+    op: &'static str,
+) -> ActionResult<RefEdit> {
+    Ok(RefEdit {
+        change: Change::Delete {
+            expected,
+            log: RefLog::AndReference,
+        },
+        name: full_name.try_into().map_err(git_err(op, full_name))?,
+        deref: false,
+    })
 }
 
 /// Applies one ref edit with an explicit reflog committer. The stash uses the user's own
@@ -108,11 +159,7 @@ fn apply_edit_as(
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
     )]
     repo.edit_references_as(Some(edit), Some(committer))
-        .map_err(|source| ActionError::Git {
-            op,
-            name: name.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, name))?;
     Ok(())
 }
 
@@ -275,6 +322,30 @@ pub enum ActionError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+}
+
+impl ActionError {
+    /// A [`ActionError::Git`] for `op` on `name`, caused by `source`.
+    pub(crate) fn git(
+        op: &'static str,
+        name: impl Into<String>,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::Git {
+            op,
+            name: name.into(),
+            source: source.into(),
+        }
+    }
+}
+
+/// A `map_err` adapter turning any error into [`ActionError::Git`] for `op` on `name`. The
+/// name is copied only when an error actually occurs.
+pub(crate) fn git_err<E>(op: &'static str, name: &str) -> impl Fn(E) -> ActionError + Copy
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    move |source| ActionError::git(op, name, source)
 }
 
 /// Result alias for this module.
@@ -468,11 +539,7 @@ fn confirm(
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {
     gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
         .map(|shared| shared.to_thread_local())
-        .map_err(|source| ActionError::Git {
-            op,
-            name: name.to_owned(),
-            source: Box::new(source),
-        })
+        .map_err(git_err(op, name))
 }
 
 fn create_ref(
@@ -485,29 +552,15 @@ fn create_ref(
     refuse_case_variant(&repo, op, full_name)?;
     let target = repo
         .rev_parse_single(revspec)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: revspec.to_owned(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(op, revspec))?
         .detach();
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: false,
-                message: format!("rc-git: {op}").into(),
-            },
-            expected: PreviousValue::MustNotExist,
-            new: Target::Object(target),
-        },
-        name: full_name.try_into().map_err(|source| ActionError::Git {
-            op,
-            name: full_name.to_owned(),
-            source: Box::new(source),
-        })?,
-        deref: false,
-    };
+    let edit = update_edit(
+        full_name,
+        PreviousValue::MustNotExist,
+        Target::Object(target),
+        &format!("rc-git: {op}"),
+        op,
+    )?;
     apply_edit(&repo, edit, op, full_name)
 }
 
@@ -521,11 +574,7 @@ fn delete_ref(
 ) -> ActionResult<Deleted> {
     let reference = repo
         .find_reference(full_name)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: full_name.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, full_name))?;
     let target = reference.target().into_owned();
     let backup = if challenge.backup_ref {
         let target_id = match target.clone() {
@@ -533,11 +582,7 @@ fn delete_ref(
             Target::Symbolic(_) => reference
                 .clone()
                 .into_fully_peeled_id()
-                .map_err(|source| ActionError::Git {
-                    op,
-                    name: full_name.to_owned(),
-                    source: Box::new(source),
-                })?
+                .map_err(git_err(op, full_name))?
                 .detach(),
         };
         Some(write_backup_ref(repo, backup_kind, short_name, target_id)?)
@@ -545,18 +590,7 @@ fn delete_ref(
         None
     };
     drop(reference);
-    let edit = RefEdit {
-        change: Change::Delete {
-            expected: PreviousValue::MustExistAndMatch(target),
-            log: RefLog::AndReference,
-        },
-        name: full_name.try_into().map_err(|source| ActionError::Git {
-            op,
-            name: full_name.to_owned(),
-            source: Box::new(source),
-        })?,
-        deref: false,
-    };
+    let edit = delete_edit(full_name, PreviousValue::MustExistAndMatch(target), op)?;
     apply_edit(repo, edit, op, full_name)?;
     Ok(Deleted {
         full_name: full_name.to_owned(),
@@ -579,26 +613,13 @@ fn write_backup_ref(
         } else {
             format!("refs/rc-git/backup/{kind}/{name}-{attempt}")
         };
-        let edit = RefEdit {
-            change: Change::Update {
-                log: LogChange {
-                    mode: RefLog::AndReference,
-                    force_create_reflog: false,
-                    message: "rc-git: backup before deletion".into(),
-                },
-                expected: PreviousValue::MustNotExist,
-                new: Target::Object(target),
-            },
-            name: candidate
-                .as_str()
-                .try_into()
-                .map_err(|source| ActionError::Git {
-                    op: OP,
-                    name: candidate.clone(),
-                    source: Box::new(source),
-                })?,
-            deref: false,
-        };
+        let edit = update_edit(
+            &candidate,
+            PreviousValue::MustNotExist,
+            Target::Object(target),
+            "rc-git: backup before deletion",
+            OP,
+        )?;
         match apply_edit(repo, edit, OP, &candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) => {
@@ -618,28 +639,16 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
     require_listed_ref(repo, OP, &full_name)?;
     let reference = repo
         .find_reference(&full_name)
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: full_name.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(OP, &full_name))?;
     let tip = reference
         .into_fully_peeled_id()
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: full_name.clone(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(OP, &full_name))?
         .detach();
     let mut others: Vec<gix::ObjectId> = Vec::new();
     if let Ok(head) = repo.head_id() {
         others.push(head.detach());
     }
-    let references = repo.references().map_err(|source| ActionError::Git {
-        op: OP,
-        name: full_name.clone(),
-        source: Box::new(source),
-    })?;
+    let references = repo.references().map_err(git_err(OP, &full_name))?;
     if let Ok(branches) = references.local_branches() {
         for branch in branches.flatten() {
             if branch.name().as_bstr() == full_name.as_str() {
@@ -678,26 +687,19 @@ fn listed_spellings(
     op: &'static str,
     full_name: &str,
 ) -> ActionResult<ListedSpellings> {
-    let git_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
-        op,
-        name: full_name.to_owned(),
-        source,
-    };
-    let references = repo
-        .references()
-        .map_err(|source| git_error(Box::new(source)))?;
+    let references = repo.references().map_err(git_err(op, full_name))?;
     let listing = if full_name.starts_with("refs/tags/") {
         references.tags()
     } else {
         references.local_branches()
     }
-    .map_err(|source| git_error(Box::new(source)))?;
+    .map_err(git_err(op, full_name))?;
     let mut spellings = ListedSpellings {
         exact: false,
         variant: None,
     };
     for reference in listing {
-        let reference = reference.map_err(git_error)?;
+        let reference = reference.map_err(|source| ActionError::git(op, full_name, source))?;
         let name = reference.name().as_bstr();
         if name == full_name.as_bytes() {
             spellings.exact = true;
@@ -718,15 +720,14 @@ fn ignores_case(repo: &gix::Repository) -> bool {
 
 /// The refusal for `full_name` when `variant` differs from it only in case.
 fn case_clash(op: &'static str, full_name: &str, variant: &str) -> ActionError {
-    ActionError::Git {
+    ActionError::git(
         op,
-        name: full_name.to_owned(),
-        source: format!(
+        full_name,
+        format!(
             "'{variant}' differs only in case, and this repository ignores case \
              (core.ignoreCase), so both names are one file; use git directly"
-        )
-        .into(),
-    }
+        ),
+    )
 }
 
 /// Requires a ref listed under exactly `full_name`. A name that reaches a ref only through
@@ -748,11 +749,11 @@ fn require_listed_ref(
         return Err(case_clash(op, full_name, variant));
     }
     if !spellings.exact {
-        return Err(ActionError::Git {
+        return Err(ActionError::git(
             op,
-            name: full_name.to_owned(),
-            source: "no ref has exactly this name".into(),
-        });
+            full_name,
+            "no ref has exactly this name",
+        ));
     }
     Ok(())
 }

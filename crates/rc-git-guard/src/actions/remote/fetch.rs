@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::actions::{ActionError, ActionResult, confirm, open};
+use crate::actions::{ActionError, ActionResult, confirm, git_err, open};
 use crate::{Action, Policy};
 
 use super::{
@@ -63,11 +63,7 @@ pub fn fetch_upstream(
     )]
     let remote = repo
         .find_remote(remote_name.as_str())
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: remote_name.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(OP, &remote_name))?;
     let url = remote
         .url(gix::remote::Direction::Fetch)
         .ok_or_else(|| ActionError::NoUpstream {
@@ -139,20 +135,15 @@ fn timed_http_options(
     let url = url.to_bstring();
     let mut options = repo
         .transport_options(url.as_bstr(), Some(<&BStr>::from(remote_name.as_bytes())))
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: remote_name.to_owned(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(OP, remote_name))?
         .unwrap_or_else(|| Box::new(Options::default()));
     let Some(http) = options.downcast_mut::<Options>() else {
-        return Err(ActionError::Git {
-            op: OP,
-            name: remote_name.to_owned(),
-            source: "the HTTP transport options are not curl's, so the idle timeout \
-                     cannot be set; refusing to fetch without it"
-                .into(),
-        });
+        return Err(ActionError::git(
+            OP,
+            remote_name,
+            "the HTTP transport options are not curl's, so the idle timeout \
+                     cannot be set; refusing to fetch without it",
+        ));
     };
     http_timeouts(http, cancel.idle());
     Ok(options)

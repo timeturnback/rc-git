@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use gix::objs::tree::EntryKind;
 
-use super::{ActionError, ActionResult, HunkStamp, Identity};
+use super::{ActionError, ActionResult, HunkStamp, Identity, git_err};
 
 /// The author to record: the explicit one when given, else the repository's own
 /// `user.name`/`user.email` (the isolated open reads exactly that file).
@@ -58,7 +58,7 @@ pub(super) fn validate_path(op: &'static str, path: &str, symlink: bool) -> Acti
             None
         };
         gix::validate::path::component(segment.as_bytes().as_bstr(), mode, PATH_RULES).map_err(
-            |error| file_error(op, path, format!("not a valid git path: {error}").into()),
+            |error| ActionError::git(op, path, format!("not a valid git path: {error}")),
         )?;
     }
     Ok(())
@@ -92,7 +92,7 @@ pub(super) fn join_under(
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(file_error(op, relative, Box::new(error))),
+            Err(error) => return Err(ActionError::git(op, relative, error)),
         }
     }
     Ok(work_dir.join(relative))
@@ -129,10 +129,10 @@ pub(super) fn require_exact_name(
     use std::os::unix::ffi::OsStrExt;
     let full = join_under(work_dir, relative, op)?;
     let missing = || {
-        file_error(
+        ActionError::git(
             op,
             relative,
-            "not in HEAD and no file has exactly this name".into(),
+            "not in HEAD and no file has exactly this name",
         )
     };
     let Some(parent) = full.parent() else {
@@ -142,10 +142,10 @@ pub(super) fn require_exact_name(
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
-        Err(error) => return Err(file_error(op, relative, Box::new(error))),
+        Err(error) => return Err(ActionError::git(op, relative, error)),
     };
     for entry in entries {
-        let entry = entry.map_err(|error| file_error(op, relative, Box::new(error)))?;
+        let entry = entry.map_err(git_err(op, relative))?;
         if entry.file_name().as_bytes() == name.as_bytes() {
             return Ok(());
         }
@@ -171,13 +171,12 @@ pub(super) fn restore_file(
     )]
     {
         if let Some(parent) = full.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|source| file_error(op, relative, Box::new(source)))?;
+            std::fs::create_dir_all(parent).map_err(git_err(op, relative))?;
         }
         match std::fs::remove_file(&full) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(file_error(op, relative, Box::new(error))),
+            Err(error) => return Err(ActionError::git(op, relative, error)),
         }
         match kind {
             EntryKind::Link => {
@@ -185,23 +184,21 @@ pub(super) fn restore_file(
                     use std::os::unix::ffi::OsStrExt;
                     std::ffi::OsStr::from_bytes(data)
                 };
-                std::os::unix::fs::symlink(target, &full)
-                    .map_err(|source| file_error(op, relative, Box::new(source)))?;
+                std::os::unix::fs::symlink(target, &full).map_err(git_err(op, relative))?;
             }
             EntryKind::Blob | EntryKind::BlobExecutable => {
-                std::fs::write(&full, data)
-                    .map_err(|source| file_error(op, relative, Box::new(source)))?;
+                std::fs::write(&full, data).map_err(git_err(op, relative))?;
                 if kind == EntryKind::BlobExecutable {
                     use std::os::unix::fs::PermissionsExt;
                     std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755))
-                        .map_err(|source| file_error(op, relative, Box::new(source)))?;
+                        .map_err(git_err(op, relative))?;
                 }
             }
             EntryKind::Tree | EntryKind::Commit => {
-                return Err(file_error(
+                return Err(ActionError::git(
                     op,
                     relative,
-                    "only files and symlinks can be restored".into(),
+                    "only files and symlinks can be restored",
                 ));
             }
         }
@@ -220,29 +217,17 @@ pub(super) fn delete_file(op: &'static str, work_dir: &Path, relative: &str) -> 
     match std::fs::remove_file(&full) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(file_error(op, relative, Box::new(error))),
+        Err(error) => Err(ActionError::git(op, relative, error)),
     }
 }
 
 /// The refusal for `relative` passing through the symlink `link`.
 pub(super) fn crosses_link(op: &'static str, relative: &str, link: &str) -> ActionError {
-    file_error(
+    ActionError::git(
         op,
         relative,
-        format!("crosses a symbolic link at '{link}', which would leave the working tree").into(),
+        format!("crosses a symbolic link at '{link}', which would leave the working tree"),
     )
-}
-
-fn file_error(
-    op: &'static str,
-    path: &str,
-    source: Box<dyn std::error::Error + Send + Sync + 'static>,
-) -> ActionError {
-    ActionError::Git {
-        op,
-        name: path.to_owned(),
-        source,
-    }
 }
 
 /// Applies the `selected` hunks of the diff `old` -> `new` onto `old`: the result carries

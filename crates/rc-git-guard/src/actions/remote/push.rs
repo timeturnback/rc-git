@@ -7,6 +7,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use gix::ObjectId;
+use gix::refs::Target;
+use gix::refs::transaction::PreviousValue;
 
 use crate::actions::{ActionError, ActionResult, confirm, open};
 use crate::{Action, Policy};
@@ -60,10 +62,12 @@ pub fn push_upstream(
     });
     let _proof = confirm(decision, OP, &branch, None)?;
     bail_if_cancelled(cancel, OP)?;
-    let tip = tip.ok_or_else(|| ActionError::Git {
-        op: OP,
-        name: branch.clone(),
-        source: "the branch has no commits yet; nothing to push".into(),
+    let tip = tip.ok_or_else(|| {
+        ActionError::git(
+            OP,
+            branch.clone(),
+            "the branch has no commits yet; nothing to push",
+        )
     })?;
     let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
         op: OP,
@@ -226,17 +230,13 @@ fn send(
                         .to_owned(),
                 });
             }
-            Err(ActionError::Git {
-                op: OP,
-                name: full_ref.to_owned(),
-                source: format!("the server refused the push: {reason}").into(),
-            })
+            Err(ActionError::git(
+                OP,
+                full_ref,
+                format!("the server refused the push: {reason}"),
+            ))
         }
-        Err(message) => Err(ActionError::Git {
-            op: OP,
-            name: full_ref.to_owned(),
-            source: message.into(),
-        }),
+        Err(message) => Err(ActionError::git(OP, full_ref, message)),
     }
 }
 
@@ -278,27 +278,13 @@ fn update_tracking_ref(
     branch: &str,
     tip: ObjectId,
 ) -> ActionResult<()> {
-    use gix::refs::Target;
-    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
     let full_name = format!("refs/remotes/{remote}/{branch}");
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: false,
-                message: "rc-git: push".into(),
-            },
-            expected: PreviousValue::Any,
-            new: Target::Object(tip),
-        },
-        name: full_name.as_str().try_into().map_err(
-            |source: gix::validate::reference::name::Error| ActionError::Git {
-                op: OP,
-                name: full_name.clone(),
-                source: Box::new(source),
-            },
-        )?,
-        deref: false,
-    };
+    let edit = crate::actions::update_edit(
+        &full_name,
+        PreviousValue::Any,
+        Target::Object(tip),
+        "rc-git: push",
+        OP,
+    )?;
     crate::actions::apply_edit(repo, edit, OP, &full_name)
 }

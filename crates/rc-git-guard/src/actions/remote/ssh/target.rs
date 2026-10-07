@@ -48,7 +48,9 @@ pub(in crate::actions::remote) fn resolve(
     let host = url
         .host()
         .filter(|host| !host.is_empty())
-        .ok_or_else(|| git_err(op, url, "the ssh URL has no host"))?
+        .ok_or_else(|| {
+            ActionError::git(op, super::super::redacted(url), "the ssh URL has no host")
+        })?
         .to_owned();
     let ssh_dir = match ssh_dir {
         Some(dir) => dir.to_path_buf(),
@@ -65,9 +67,9 @@ pub(in crate::actions::remote) fn resolve(
         .or_else(|| std::env::var("USER").ok())
         .filter(|user| !user.is_empty())
         .ok_or_else(|| {
-            git_err(
+            ActionError::git(
                 op,
-                url,
+                super::super::redacted(url),
                 "no ssh user: none in the URL, the ssh config, or $USER",
             )
         })?;
@@ -112,20 +114,18 @@ pub(in crate::actions::remote) fn quoted_command(
     path: &gix::bstr::BStr,
     op: &'static str,
 ) -> ActionResult<String> {
-    let path = std::str::from_utf8(path).map_err(|_| ActionError::Git {
-        op,
-        name: path.to_string(),
-        source: "the remote path is not valid UTF-8".into(),
+    let path = std::str::from_utf8(path).map_err(|_| {
+        ActionError::git(op, path.to_string(), "the remote path is not valid UTF-8")
     })?;
     if path
         .bytes()
         .any(|byte| matches!(byte, b'\0' | b'\n' | b'\''))
     {
-        return Err(ActionError::Git {
+        return Err(ActionError::git(
             op,
-            name: path.to_owned(),
-            source: "the remote path contains NUL, newline, or a single quote".into(),
-        });
+            path,
+            "the remote path contains NUL, newline, or a single quote",
+        ));
     }
     Ok(format!("{} '{path}'", service.as_str()))
 }
@@ -134,11 +134,11 @@ pub(in crate::actions::remote) fn quoted_command(
 fn default_ssh_dir(op: &'static str) -> ActionResult<PathBuf> {
     std::env::home_dir()
         .map(|home| home.join(".ssh"))
-        .ok_or(ActionError::Git {
+        .ok_or(ActionError::git(
             op,
-            name: "ssh".to_owned(),
-            source: "no home directory; cannot locate ~/.ssh".into(),
-        })
+            "ssh",
+            "no home directory; cannot locate ~/.ssh",
+        ))
 }
 
 /// What the ssh config says about one host.
@@ -166,10 +166,12 @@ fn load_config(
     if !path.exists() {
         return Ok(None);
     }
-    let parse_err = |source: &dyn std::fmt::Display| ActionError::Git {
-        op,
-        name: super::super::redacted(url),
-        source: format!("cannot parse '{}': {source}", path.display()).into(),
+    let parse_err = |source: &dyn std::fmt::Display| {
+        ActionError::git(
+            op,
+            super::super::redacted(url),
+            format!("cannot parse '{}': {source}", path.display()),
+        )
     };
     let contents = std::fs::read_to_string(&path).map_err(|source| parse_err(&source))?;
     let contents = normalize_config(&contents);
@@ -242,14 +244,6 @@ fn normalize_config(contents: &str) -> String {
         normalized.push('\n');
     }
     normalized
-}
-
-fn git_err(op: &'static str, url: &gix::Url, message: &str) -> ActionError {
-    ActionError::Git {
-        op,
-        name: super::super::redacted(url),
-        source: message.to_owned().into(),
-    }
 }
 
 #[cfg(test)]

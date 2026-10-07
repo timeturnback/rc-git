@@ -13,7 +13,7 @@ use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
 use super::commit::{blob_data, update_index};
-use super::{ActionError, ActionResult, workfile};
+use super::{ActionError, ActionResult, git_err, workfile};
 
 /// One path the change touches, with its blob on each side.
 pub(super) struct PathChange {
@@ -37,11 +37,7 @@ pub(super) fn plan(
     to: ObjectId,
     op: &'static str,
 ) -> ActionResult<Vec<PathChange>> {
-    let core = rc_git_core::Repository::open(repo_path).map_err(|source| ActionError::Git {
-        op,
-        name: "repository".to_owned(),
-        source: Box::new(source),
-    })?;
+    let core = rc_git_core::Repository::open(repo_path).map_err(git_err(op, "repository"))?;
     let from = match from {
         Some(from) => Some(core_oid(from, op)?),
         None => None,
@@ -49,11 +45,7 @@ pub(super) fn plan(
     let to_oid = core_oid(to, op)?;
     let tree_changes = core
         .diff_trees(from, to_oid)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: to.to_string(),
-            source: Box::new(source),
-        })?;
+        .map_err(|source| ActionError::git(op, to.to_string(), source))?;
 
     let mut changes = Vec::new();
     for change in tree_changes {
@@ -128,11 +120,7 @@ pub(super) fn verify_clean(
         false,
         gix::index::decode::Options::default(),
     )
-    .map_err(|source| ActionError::Git {
-        op,
-        name: "index".to_owned(),
-        source: Box::new(source),
-    })?;
+    .map_err(git_err(op, "index"))?;
     refuse_paths_under_written_links(changes, op)?;
     let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
     for change in changes {
@@ -250,11 +238,8 @@ pub(super) fn apply(
 }
 
 fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
-    rc_git_core::Oid::from_bytes(oid.as_slice()).ok_or_else(|| ActionError::Git {
-        op,
-        name: oid.to_string(),
-        source: "not a valid object id".into(),
-    })
+    rc_git_core::Oid::from_bytes(oid.as_slice())
+        .ok_or_else(|| ActionError::git(op, oid.to_string(), "not a valid object id"))
 }
 
 /// Maps the core's entry kind back to gix's, refusing what these writes cannot produce.
@@ -267,16 +252,16 @@ fn entry_kind(
         rc_git_core::EntryKind::Blob => Ok(EntryKind::Blob),
         rc_git_core::EntryKind::ExecutableBlob => Ok(EntryKind::BlobExecutable),
         rc_git_core::EntryKind::Symlink => Ok(EntryKind::Link),
-        rc_git_core::EntryKind::Submodule => Err(ActionError::Git {
+        rc_git_core::EntryKind::Submodule => Err(ActionError::git(
             op,
-            name: path.to_owned(),
-            source: "changing a submodule is not supported; use git directly".into(),
-        }),
-        rc_git_core::EntryKind::Tree => Err(ActionError::Git {
+            path,
+            "changing a submodule is not supported; use git directly",
+        )),
+        rc_git_core::EntryKind::Tree => Err(ActionError::git(
             op,
-            name: path.to_owned(),
-            source: "unexpected directory entry in a tree diff".into(),
-        }),
+            path,
+            "unexpected directory entry in a tree diff",
+        )),
     }
 }
 

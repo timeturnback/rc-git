@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::commit::{blob_data, recompute_hunks, stamp_matches, tree_entry_at, work_dir};
 use super::workfile;
-use super::{ActionError, ActionResult, HunkStamp, confirm, open};
+use super::{ActionError, ActionResult, HunkStamp, confirm, git_err, open};
 use crate::{Action, Policy};
 
 const OP: &str = "discard";
@@ -37,11 +37,11 @@ pub fn discard_files(
         let entry = tree_entry_at(&repo, OP, head_tree, path)?;
         match &entry {
             Some(entry) if entry.mode.is_tree() => {
-                return Err(ActionError::Git {
-                    op: OP,
-                    name: path.clone(),
-                    source: "is a directory; select files instead".into(),
-                });
+                return Err(ActionError::git(
+                    OP,
+                    path.clone(),
+                    "is a directory; select files instead",
+                ));
             }
             Some(_) => {}
             None => workfile::require_exact_name(&work_dir, path, OP)?,
@@ -109,11 +109,7 @@ pub fn discard_hunks(
         .filter(|stamp| !stamps.contains(stamp))
         .collect();
     let old = blob_data(&repo, OP, path, entry.oid)?;
-    let new = std::fs::read(&full).map_err(|source| ActionError::Git {
-        op: OP,
-        name: path.to_owned(),
-        source: Box::new(source),
-    })?;
+    let new = std::fs::read(&full).map_err(git_err(OP, path))?;
     let result = workfile::splice(&old, &new, &kept).map_err(|_| mismatch())?;
     // The file keeps its on-disk kind: hunk discard never touches the exec bit.
     let kind = if is_executable(&full) {

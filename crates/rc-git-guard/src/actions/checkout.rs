@@ -10,10 +10,10 @@ use std::path::Path;
 
 use gix::ObjectId;
 use gix::refs::Target;
-use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+use gix::refs::transaction::PreviousValue;
 
 use super::commit::work_dir;
-use super::{ActionError, ActionResult, confirm, open, treeapply};
+use super::{ActionResult, confirm, git_err, open, treeapply};
 use crate::{Action, Policy};
 
 const OP: &str = "checkout";
@@ -35,9 +35,10 @@ pub struct CheckoutOutcome {
 /// `HEAD`. Creates nothing: the branch must already exist locally.
 ///
 /// # Errors
-/// [`ActionError::DirtyPath`] when a path the switch touches has uncommitted work (nothing is
-/// written), [`ActionError::Git`] when the branch does not exist, has no commit, or the
-/// repository cannot be read or written.
+/// [`ActionError::DirtyPath`](super::ActionError::DirtyPath) when a path the switch touches
+/// has uncommitted work (nothing is written), [`ActionError::Git`](super::ActionError::Git)
+/// when the branch does not exist, has no commit, or the repository cannot be read or
+/// written.
 pub fn checkout_branch(
     repo_path: &Path,
     policy: &Policy,
@@ -51,11 +52,7 @@ pub fn checkout_branch(
 
     let full_name = format!("refs/heads/{branch}");
     let target = branch_tip(&repo, &full_name)?;
-    let head = repo.head_name().map_err(|source| ActionError::Git {
-        op: OP,
-        name: "HEAD".to_owned(),
-        source: Box::new(source),
-    })?;
+    let head = repo.head_name().map_err(git_err(OP, "HEAD"))?;
     if head
         .as_ref()
         .is_some_and(|name| name.as_bstr() == full_name.as_str())
@@ -92,18 +89,10 @@ fn branch_tip(repo: &gix::Repository, full_name: &str) -> ActionResult<ObjectId>
     super::require_listed_ref(repo, OP, full_name)?;
     let reference = repo
         .find_reference(full_name)
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: full_name.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(OP, full_name))?;
     Ok(reference
         .into_fully_peeled_id()
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: full_name.to_owned(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(OP, full_name))?
         .detach())
 }
 
@@ -122,33 +111,13 @@ fn point_head_at(
         (None, Some(commit)) => PreviousValue::MustExistAndMatch(Target::Object(commit)),
         (None, None) => PreviousValue::MustExist,
     };
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: false,
-                message: format!("rc-git: checkout: moving to {full_name}").into(),
-            },
-            expected,
-            new: Target::Symbolic(full_name.try_into().map_err(
-                |source: gix::validate::reference::name::Error| ActionError::Git {
-                    op: OP,
-                    name: full_name.to_owned(),
-                    source: Box::new(source),
-                },
-            )?),
-        },
-        name: "HEAD"
-            .try_into()
-            .map_err(
-                |source: gix::validate::reference::name::Error| ActionError::Git {
-                    op: OP,
-                    name: "HEAD".to_owned(),
-                    source: Box::new(source),
-                },
-            )?,
-        deref: false,
-    };
+    let edit = super::update_edit(
+        "HEAD",
+        expected,
+        Target::Symbolic(full_name.try_into().map_err(git_err(OP, full_name))?),
+        &format!("rc-git: checkout: moving to {full_name}"),
+        OP,
+    )?;
     super::apply_edit(repo, edit, OP, "HEAD")
 }
 
@@ -172,15 +141,15 @@ fn log_head_switch(
         previous_oid: old.unwrap_or_else(|| ObjectId::null(repo.object_hash())),
         new_oid: new,
         signature: gix::actor::Signature {
-            name: "rc-git".into(),
-            email: "rc-git@localhost".into(),
+            name: super::REFLOG_NAME.into(),
+            email: super::REFLOG_EMAIL.into(),
             time: gix::date::Time::now_local_or_utc(),
         },
         message: format!("checkout: moving from {from} to {to}").into(),
     };
     let mut serialized = Vec::new();
     line.write_to(&mut serialized)
-        .map_err(|source| reflog_error(Box::new(source)))?;
+        .map_err(git_err(OP, "logs/HEAD"))?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
@@ -190,17 +159,9 @@ fn log_head_switch(
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
-            .map_err(|source| reflog_error(Box::new(source)))?;
+            .map_err(git_err(OP, "logs/HEAD"))?;
         file.write_all(&serialized)
-            .map_err(|source| reflog_error(Box::new(source)))?;
+            .map_err(git_err(OP, "logs/HEAD"))?;
     }
     Ok(())
-}
-
-fn reflog_error(source: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {
-    ActionError::Git {
-        op: OP,
-        name: "logs/HEAD".to_owned(),
-        source,
-    }
 }

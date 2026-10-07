@@ -3,7 +3,7 @@
 
 use gix::ObjectId;
 
-use crate::actions::{ActionError, ActionResult};
+use crate::actions::{ActionError, ActionResult, git_err};
 
 use super::Cancel;
 
@@ -34,18 +34,10 @@ pub(super) fn build_pack(
         .rev_walk([tip])
         .with_hidden(haves.iter().copied())
         .all()
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: tip.to_string(),
-            source: Box::new(source),
-        })?;
+        .map_err(|source| ActionError::git(OP, tip.to_string(), source))?;
     let mut commits: Vec<ObjectId> = Vec::new();
     for info in walk {
-        let info = info.map_err(|source| ActionError::Git {
-            op: OP,
-            name: tip.to_string(),
-            source: Box::new(source),
-        })?;
+        let info = info.map_err(|source| ActionError::git(OP, tip.to_string(), source))?;
         commits.push(info.id);
     }
     let commit_count = commits.len();
@@ -79,17 +71,10 @@ pub(super) fn build_pack(
             ..Default::default()
         },
     )
-    .map_err(|source| ActionError::Git {
-        op: OP,
-        name: "object enumeration".to_owned(),
-        source: Box::new(source),
-    })?;
+    .map_err(git_err(OP, "object enumeration"))?;
 
-    let entry_count = u32::try_from(counts.len()).map_err(|_| ActionError::Git {
-        op: OP,
-        name: "pack".to_owned(),
-        source: "more than u32::MAX objects in one push".into(),
-    })?;
+    let entry_count = u32::try_from(counts.len())
+        .map_err(|_| ActionError::git(OP, "pack", "more than u32::MAX objects in one push"))?;
     let entries = gix_pack::data::output::entry::iter_from_counts(
         counts,
         db,
@@ -108,11 +93,7 @@ pub(super) fn build_pack(
         repo.object_hash(),
     );
     for written in writer {
-        written.map_err(|source| ActionError::Git {
-            op: OP,
-            name: "pack".to_owned(),
-            source: Box::new(source),
-        })?;
+        written.map_err(git_err(OP, "pack"))?;
     }
     Ok(BuiltPack {
         bytes,
@@ -132,11 +113,7 @@ fn empty_pack(hash: gix::hash::Kind) -> ActionResult<Vec<u8>> {
         hash,
     );
     for written in writer {
-        written.map_err(|source| ActionError::Git {
-            op: OP,
-            name: "pack".to_owned(),
-            source: Box::new(source),
-        })?;
+        written.map_err(git_err(OP, "pack"))?;
     }
     Ok(bytes)
 }

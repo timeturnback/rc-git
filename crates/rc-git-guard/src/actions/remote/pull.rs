@@ -7,6 +7,8 @@
 use std::path::Path;
 
 use gix::ObjectId;
+use gix::refs::Target;
+use gix::refs::transaction::PreviousValue;
 
 use crate::actions::commit::work_dir;
 use crate::actions::{ActionError, ActionResult, confirm, open, treeapply};
@@ -44,10 +46,12 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
         branch: branch.clone(),
     });
     let _proof = confirm(decision, OP, &branch, None)?;
-    let old = tip.ok_or_else(|| ActionError::Git {
-        op: OP,
-        name: branch.clone(),
-        source: "the branch has no commits yet; cannot pull into an unborn branch".into(),
+    let old = tip.ok_or_else(|| {
+        ActionError::git(
+            OP,
+            branch.clone(),
+            "the branch has no commits yet; cannot pull into an unborn branch",
+        )
     })?;
     let upstream_ref =
         tracking_ref_name(&repo, &branch).ok_or_else(|| ActionError::NoUpstream {
@@ -97,27 +101,13 @@ fn advance_ref(
     old: ObjectId,
     new: ObjectId,
 ) -> ActionResult<()> {
-    use gix::refs::Target;
-    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
     let full_name = format!("refs/heads/{branch}");
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: false,
-                message: "rc-git: pull --ff-only".into(),
-            },
-            expected: PreviousValue::MustExistAndMatch(Target::Object(old)),
-            new: Target::Object(new),
-        },
-        name: full_name.as_str().try_into().map_err(
-            |source: gix::validate::reference::name::Error| ActionError::Git {
-                op: OP,
-                name: full_name.clone(),
-                source: Box::new(source),
-            },
-        )?,
-        deref: false,
-    };
+    let edit = crate::actions::update_edit(
+        &full_name,
+        PreviousValue::MustExistAndMatch(Target::Object(old)),
+        Target::Object(new),
+        "rc-git: pull --ff-only",
+        OP,
+    )?;
     crate::actions::apply_edit(repo, edit, OP, &full_name)
 }

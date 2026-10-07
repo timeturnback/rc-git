@@ -9,7 +9,7 @@ use gix::protocol::transport::client::git::ConnectMode;
 use gix::protocol::transport::{Protocol, Service};
 use russh::client::{Handle, Msg};
 
-use crate::actions::{ActionError, ActionResult};
+use crate::actions::{ActionError, ActionResult, git_err};
 
 use super::{CONNECT_TIMEOUT, Cancel, RemoteAuth, bail_if_cancelled};
 
@@ -97,35 +97,47 @@ async fn connect_and_exec(
 ) -> ActionResult<(Handle<HostKeyHandler>, russh::Channel<Msg>)> {
     let config = Arc::new(russh::client::Config::default());
     let address = (target.host_name.as_str(), target.port);
+    let timed_out = || {
+        ActionError::git(
+            op,
+            &target.host,
+            format!(
+                "'{}:{}' did not complete the ssh handshake within {}s",
+                target.host_name,
+                target.port,
+                CONNECT_TIMEOUT.as_secs()
+            ),
+        )
+    };
     let mut client = tokio::time::timeout(
         CONNECT_TIMEOUT,
         russh::client::connect(config, address, handler),
     )
     .await
-    .map_err(|_| timeout_err(op, target))?
-    .map_err(|source| connection_err(op, target, source))?;
+    .map_err(|_| timed_out())?
+    .map_err(git_err(op, &target.host))?;
     tokio::time::timeout(
         CONNECT_TIMEOUT,
         auth::authenticate(&mut client, target, passphrase, op),
     )
     .await
-    .map_err(|_| timeout_err(op, target))??;
+    .map_err(|_| timed_out())??;
     let channel = client
         .channel_open_session()
         .await
-        .map_err(|source| connection_err(op, target, source))?;
+        .map_err(git_err(op, &target.host))?;
     if service == Service::UploadPack && desired_version == Protocol::V2 {
         // Best effort: a server that ignores the env just advertises V0/V1, which the
         // handshake accepts as a downgrade.
         channel
             .set_env(false, "GIT_PROTOCOL", "version=2")
             .await
-            .map_err(|source| connection_err(op, target, source))?;
+            .map_err(git_err(op, &target.host))?;
     }
     channel
         .exec(false, command)
         .await
-        .map_err(|source| connection_err(op, target, source))?;
+        .map_err(git_err(op, &target.host))?;
     Ok((client, channel))
 }
 
@@ -155,30 +167,4 @@ fn typed_refusal(report: &ReportSlot, target: &SshTarget, op: &'static str) -> O
             fingerprint,
         },
     })
-}
-
-fn connection_err(
-    op: &'static str,
-    target: &SshTarget,
-    source: impl std::error::Error + Send + Sync + 'static,
-) -> ActionError {
-    ActionError::Git {
-        op,
-        name: target.host.clone(),
-        source: Box::new(source),
-    }
-}
-
-fn timeout_err(op: &'static str, target: &SshTarget) -> ActionError {
-    ActionError::Git {
-        op,
-        name: target.host.clone(),
-        source: format!(
-            "'{}:{}' did not complete the ssh handshake within {}s",
-            target.host_name,
-            target.port,
-            CONNECT_TIMEOUT.as_secs()
-        )
-        .into(),
-    }
 }

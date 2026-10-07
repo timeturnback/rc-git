@@ -12,7 +12,7 @@ use std::path::Path;
 
 use gix::ObjectId;
 use gix::refs::Target;
-use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+use gix::refs::transaction::{Change, PreviousValue};
 
 use super::commit::{
     blob_data, checked_out_branch, refuse_case_variant_path, tree_of, whole_file_edit, work_dir,
@@ -20,7 +20,9 @@ use super::commit::{
 };
 use super::treebuild;
 use super::workfile;
-use super::{ActionError, ActionResult, Deleted, Identity, confirm, open, write_backup_ref};
+use super::{
+    ActionError, ActionResult, Deleted, Identity, confirm, git_err, open, write_backup_ref,
+};
 use crate::{Action, Policy};
 
 /// What a completed stash push produced.
@@ -52,12 +54,12 @@ pub fn stash_push(
     let repo = open(repo_path, OP, "refs/stash")?;
     let decision = policy.evaluate(&Action::StashPush { files: paths.len() });
     let _proof = confirm(decision, OP, "refs/stash", input)?;
+    let refused = |reason: &'static str| ActionError::git(OP, "refs/stash", reason);
     if paths.is_empty() {
-        return Err(stash_error(OP, "nothing selected to stash"));
+        return Err(refused("nothing selected to stash"));
     }
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
-    let head =
-        head_commit.ok_or_else(|| stash_error(OP, "cannot stash before the first commit"))?;
+    let head = head_commit.ok_or_else(|| refused("cannot stash before the first commit"))?;
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
@@ -72,9 +74,9 @@ pub fn stash_push(
         treebuild::insert(&mut edits, path, edit)?;
     }
     let stash_tree = treebuild::rewrite(&repo, Some(base_tree), &edits)?
-        .ok_or_else(|| stash_error(OP, "stashing every file would empty the tree"))?;
+        .ok_or_else(|| refused("stashing every file would empty the tree"))?;
     if stash_tree == base_tree {
-        return Err(stash_error(OP, "no changes to stash at the selected paths"));
+        return Err(refused("no changes to stash at the selected paths"));
     }
 
     let branch = branch_ref
@@ -119,23 +121,20 @@ pub fn stash_push(
         },
     )?;
 
-    let existing = stash_target(&repo)?;
-    let edit = RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                mode: RefLog::AndReference,
-                force_create_reflog: true,
-                message: stash_message.clone().into(),
-            },
-            expected: match existing {
-                Some(current) => PreviousValue::MustExistAndMatch(Target::Object(current)),
-                None => PreviousValue::MustNotExist,
-            },
-            new: Target::Object(stash_commit),
-        },
-        name: stash_ref_name(OP)?,
-        deref: false,
+    let expected = match stash_target(&repo)? {
+        Some(current) => PreviousValue::MustExistAndMatch(Target::Object(current)),
+        None => PreviousValue::MustNotExist,
     };
+    let mut edit = super::update_edit(
+        "refs/stash",
+        expected,
+        Target::Object(stash_commit),
+        &stash_message,
+        OP,
+    )?;
+    if let Change::Update { log, .. } = &mut edit.change {
+        log.force_create_reflog = true;
+    }
     super::apply_edit_as(
         &repo,
         edit,
@@ -247,28 +246,16 @@ fn apply_inner(
     let stash_commit = stash_oid_at(repo, index, op)?;
     let base = repo
         .find_commit(stash_commit)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: stash_commit.to_string(),
-            source: Box::new(source),
-        })?
+        .map_err(|source| ActionError::git(op, stash_commit.to_string(), source))?
         .parent_ids()
         .next()
         .map(gix::Id::detach)
-        .ok_or_else(|| stash_error(op, "the stash commit has no base parent"))?;
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "the stash commit has no base parent"))?;
 
-    let core = rc_git_core::Repository::open(repo_path).map_err(|source| ActionError::Git {
-        op,
-        name: "repository".to_owned(),
-        source: Box::new(source),
-    })?;
+    let core = rc_git_core::Repository::open(repo_path).map_err(git_err(op, "repository"))?;
     let changes = core
         .diff_trees(core_oid(base, op)?.into(), core_oid(stash_commit, op)?)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "stash".to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, "stash"))?;
     let work_dir = work_dir(repo, op)?;
 
     // Pass 1: every touched path must be valid and exactly at the base state; refuse before
@@ -292,9 +279,9 @@ fn apply_inner(
                 require_absent_or_base(repo, &work_dir, &path, change.old, op)?;
             }
             rc_git_core::ChangeKind::Renamed => {
-                let source = source_path
-                    .as_deref()
-                    .ok_or_else(|| stash_error(op, "a rename without a source path"))?;
+                let source = source_path.as_deref().ok_or_else(|| {
+                    ActionError::git(op, "refs/stash", "a rename without a source path")
+                })?;
                 require_absent_or_base(repo, &work_dir, source, change.old, op)?;
                 require_absent(&work_dir, &path, op)?;
             }
@@ -331,7 +318,7 @@ fn restore_change(
 ) -> ActionResult<()> {
     let new = change
         .new
-        .ok_or_else(|| stash_error(op, "a written change carries no blob"))?;
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "a written change carries no blob"))?;
     let oid = gix_oid(new, op)?;
     let data = blob_data(repo, op, path, oid)?;
     workfile::restore_file(op, work_dir, path, &data, entry_kind(change.entry))
@@ -371,7 +358,8 @@ fn require_base_content(
         op,
         path: path.to_owned(),
     };
-    let base = base.ok_or_else(|| stash_error(op, "a modification carries no base blob"))?;
+    let base = base
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "a modification carries no base blob"))?;
     let expected = blob_data(repo, op, path, gix_oid(base, op)?)?;
     let full = workfile::join_under(work_dir, path, op)?;
     let meta = std::fs::symlink_metadata(&full).map_err(|_| dirty())?;
@@ -418,17 +406,17 @@ fn drop_inner(
     op: &'static str,
 ) -> ActionResult<Deleted> {
     let log_path = repo.common_dir().join("logs/refs/stash");
-    let raw = std::fs::read(&log_path).map_err(|source| ActionError::Git {
-        op,
-        name: "refs/stash".to_owned(),
-        source: Box::new(source),
-    })?;
+    let raw = std::fs::read(&log_path).map_err(git_err(op, "refs/stash"))?;
     let lines: Vec<&[u8]> = raw
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .collect();
     if index >= lines.len() {
-        return Err(stash_error(op, "no stash entry at that position"));
+        return Err(ActionError::git(
+            op,
+            "refs/stash",
+            "no stash entry at that position",
+        ));
     }
     let position = lines.len() - 1 - index;
     let removed = lines[position];
@@ -463,14 +451,8 @@ fn drop_inner(
 
     let full_name = format!("stash@{{{index}}}");
     if kept.is_empty() {
-        let edit = RefEdit {
-            change: Change::Delete {
-                expected: PreviousValue::MustExistAndMatch(Target::Object(removed_new)),
-                log: RefLog::AndReference,
-            },
-            name: stash_ref_name(op)?,
-            deref: false,
-        };
+        let expected = PreviousValue::MustExistAndMatch(Target::Object(removed_new));
+        let edit = super::delete_edit("refs/stash", expected, op)?;
         super::apply_edit(repo, edit, op, "refs/stash")?;
         return Ok(Deleted {
             full_name,
@@ -480,19 +462,13 @@ fn drop_inner(
 
     if position == lines.len() - 1 {
         let (_, new_top) = line_oids(&kept[kept.len() - 1], op)?;
-        let edit = RefEdit {
-            change: Change::Update {
-                log: LogChange {
-                    mode: RefLog::AndReference,
-                    force_create_reflog: false,
-                    message: "rc-git: stash drop".into(),
-                },
-                expected: PreviousValue::MustExistAndMatch(Target::Object(removed_new)),
-                new: Target::Object(new_top),
-            },
-            name: stash_ref_name(op)?,
-            deref: false,
-        };
+        let edit = super::update_edit(
+            "refs/stash",
+            PreviousValue::MustExistAndMatch(Target::Object(removed_new)),
+            Target::Object(new_top),
+            "rc-git: stash drop",
+            op,
+        )?;
         super::apply_edit(repo, edit, op, "refs/stash")?;
     }
 
@@ -509,10 +485,8 @@ fn drop_inner(
     reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
 )]
 fn rewrite_log(log_path: &Path, kept: &[Vec<u8>], op: &'static str) -> ActionResult<()> {
-    let log_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
-        op,
-        name: "refs/stash".to_owned(),
-        source,
+    let log_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
+        ActionError::git(op, "refs/stash", source)
     };
     let mut lock = gix::lock::File::acquire_to_update_resource(
         log_path,
@@ -539,11 +513,11 @@ fn line_oids(line: &[u8], op: &'static str) -> ActionResult<(ObjectId, ObjectId)
     let old = fields
         .next()
         .and_then(|hex| ObjectId::from_hex(hex).ok())
-        .ok_or_else(|| stash_error(op, "a reflog line has no old oid"))?;
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "a reflog line has no old oid"))?;
     let new = fields
         .next()
         .and_then(|hex| ObjectId::from_hex(hex).ok())
-        .ok_or_else(|| stash_error(op, "a reflog line has no new oid"))?;
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "a reflog line has no new oid"))?;
     Ok((old, new))
 }
 
@@ -551,45 +525,29 @@ fn line_oids(line: &[u8], op: &'static str) -> ActionResult<(ObjectId, ObjectId)
 fn stash_oid_at(repo: &gix::Repository, index: usize, op: &'static str) -> ActionResult<ObjectId> {
     let reference = repo
         .try_find_reference("refs/stash")
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "refs/stash".to_owned(),
-            source: Box::new(source),
-        })?
-        .ok_or_else(|| stash_error(op, "the repository has no stash"))?;
+        .map_err(git_err(op, "refs/stash"))?
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "the repository has no stash"))?;
     let mut platform = reference.log_iter();
     let lines = platform
         .all()
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "refs/stash".to_owned(),
-            source: Box::new(source),
-        })?
-        .ok_or_else(|| stash_error(op, "the repository has no stash"))?;
+        .map_err(git_err(op, "refs/stash"))?
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "the repository has no stash"))?;
     let mut oids: Vec<ObjectId> = Vec::new();
     for line in lines {
-        let line = line.map_err(|source| ActionError::Git {
-            op,
-            name: "refs/stash".to_owned(),
-            source: Box::new(source),
-        })?;
+        let line = line.map_err(git_err(op, "refs/stash"))?;
         oids.push(line.new_oid());
     }
     oids.reverse();
     oids.get(index)
         .copied()
-        .ok_or_else(|| stash_error(op, "no stash entry at that position"))
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "no stash entry at that position"))
 }
 
 fn stash_target(repo: &gix::Repository) -> ActionResult<Option<ObjectId>> {
     const OP: &str = "stash push";
-    let Some(reference) =
-        repo.try_find_reference("refs/stash")
-            .map_err(|source| ActionError::Git {
-                op: OP,
-                name: "refs/stash".to_owned(),
-                source: Box::new(source),
-            })?
+    let Some(reference) = repo
+        .try_find_reference("refs/stash")
+        .map_err(git_err(OP, "refs/stash"))?
     else {
         return Ok(None);
     };
@@ -597,26 +555,18 @@ fn stash_target(repo: &gix::Repository) -> ActionResult<Option<ObjectId>> {
         .clone()
         .into_fully_peeled_id()
         .map(|id| Some(id.detach()))
-        .map_err(|source| ActionError::Git {
-            op: OP,
-            name: "refs/stash".to_owned(),
-            source: Box::new(source),
-        })
+        .map_err(git_err(OP, "refs/stash"))
 }
 
 /// The first line of a commit's message, for `WIP on <branch>: <short> <subject>`.
 fn commit_subject(repo: &gix::Repository, id: ObjectId) -> ActionResult<String> {
     const OP: &str = "stash push";
-    let commit = repo.find_commit(id).map_err(|source| ActionError::Git {
-        op: OP,
-        name: id.to_string(),
-        source: Box::new(source),
-    })?;
-    let message = commit.message_raw().map_err(|source| ActionError::Git {
-        op: OP,
-        name: id.to_string(),
-        source: Box::new(source),
-    })?;
+    let commit = repo
+        .find_commit(id)
+        .map_err(|source| ActionError::git(OP, id.to_string(), source))?;
+    let message = commit
+        .message_raw()
+        .map_err(|source| ActionError::git(OP, id.to_string(), source))?;
     let first = message
         .split(|byte| *byte == b'\n')
         .next()
@@ -624,31 +574,12 @@ fn commit_subject(repo: &gix::Repository, id: ObjectId) -> ActionResult<String> 
     Ok(String::from_utf8_lossy(first).into_owned())
 }
 
-fn stash_ref_name(op: &'static str) -> ActionResult<gix::refs::FullName> {
-    "refs/stash"
-        .try_into()
-        .map_err(
-            |source: gix::validate::reference::name::Error| ActionError::Git {
-                op,
-                name: "refs/stash".to_owned(),
-                source: Box::new(source),
-            },
-        )
-}
-
-fn stash_error(op: &'static str, message: &'static str) -> ActionError {
-    ActionError::Git {
-        op,
-        name: "refs/stash".to_owned(),
-        source: message.into(),
-    }
-}
-
 fn core_oid(id: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {
     rc_git_core::Oid::from_bytes(id.as_slice())
-        .ok_or_else(|| stash_error(op, "an oid did not convert"))
+        .ok_or_else(|| ActionError::git(op, "refs/stash", "an oid did not convert"))
 }
 
 fn gix_oid(id: rc_git_core::Oid, op: &'static str) -> ActionResult<ObjectId> {
-    ObjectId::try_from(id.as_bytes()).map_err(|_| stash_error(op, "an oid did not convert"))
+    ObjectId::try_from(id.as_bytes())
+        .map_err(|_| ActionError::git(op, "refs/stash", "an oid did not convert"))
 }

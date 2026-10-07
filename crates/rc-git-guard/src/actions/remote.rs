@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::{ActionError, ActionResult, open};
+use super::{ActionError, ActionResult, git_err, open};
 
 mod fetch;
 mod pack;
@@ -244,11 +244,7 @@ fn current_branch(
 ) -> ActionResult<(String, Option<gix::ObjectId>)> {
     let head_name = repo
         .head_name()
-        .map_err(|source| ActionError::Git {
-            op,
-            name: "HEAD".to_owned(),
-            source: Box::new(source),
-        })?
+        .map_err(git_err(op, "HEAD"))?
         .ok_or(ActionError::DetachedHead { op })?;
     let branch = head_name.shorten().to_string();
     let tip = repo.head_id().ok().map(gix::Id::detach);
@@ -286,11 +282,7 @@ fn remote_fetch_url(
     )]
     let remote = repo
         .find_remote(remote_name)
-        .map_err(|source| ActionError::Git {
-            op,
-            name: remote_name.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(git_err(op, remote_name))?;
     Ok(remote.url(gix::remote::Direction::Fetch).cloned())
 }
 
@@ -335,11 +327,7 @@ fn count_ahead_behind(
             .rev_walk([tip])
             .with_hidden([hide])
             .all()
-            .map_err(|source| ActionError::Git {
-                op,
-                name: tip.to_string(),
-                source: Box::new(source),
-            })?;
+            .map_err(|source| ActionError::git(op, tip.to_string(), source))?;
         Ok(walk.flatten().count())
     };
     Ok((count(local, upstream)?, count(upstream, local)?))
@@ -453,11 +441,7 @@ fn map_network_error(
         }
         current = err.source();
     }
-    ActionError::Git {
-        op,
-        name: name.to_owned(),
-        source: error,
-    }
+    ActionError::git(op, name, error)
 }
 
 /// Returns [`ActionError::Cancelled`] when the flag is already set, so a cancelled
@@ -503,19 +487,11 @@ fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionRe
     let mut set = |key: &'static dyn gix::config::tree::Key, value: &str| -> ActionResult<()> {
         config
             .set_value(key, value)
-            .map_err(|source| ActionError::Git {
-                op,
-                name: "configuration".to_owned(),
-                source: Box::new(source),
-            })?;
+            .map_err(git_err(op, "configuration"))?;
         Ok(())
     };
-    set(&gix::config::tree::User::NAME, "rc-git")?;
-    set(&gix::config::tree::User::EMAIL, "rc-git@localhost")?;
-    config.commit().map_err(|source| ActionError::Git {
-        op,
-        name: "configuration".to_owned(),
-        source: Box::new(source),
-    })?;
+    set(&gix::config::tree::User::NAME, super::REFLOG_NAME)?;
+    set(&gix::config::tree::User::EMAIL, super::REFLOG_EMAIL)?;
+    config.commit().map_err(git_err(op, "configuration"))?;
     Ok(())
 }

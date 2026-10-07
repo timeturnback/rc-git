@@ -16,7 +16,7 @@ use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 
-use crate::actions::{ActionError, ActionResult};
+use crate::actions::{ActionError, ActionResult, git_err};
 
 use super::hostkey::HostKeyHandler;
 use super::target::SshTarget;
@@ -56,7 +56,7 @@ pub(super) async fn authenticate(
     let rsa_hash = handle
         .best_supported_rsa_hash()
         .await
-        .map_err(|source| connection_err(op, &target.host, source))?
+        .map_err(git_err(op, &target.host))?
         .flatten();
     let mut ladder = Ladder {
         handle,
@@ -172,7 +172,7 @@ impl Ladder<'_> {
             .handle
             .authenticate_publickey_with(self.target.user.clone(), key, hash_alg, agent)
             .await
-            .map_err(|source| connection_err(self.op, &self.target.host, source))?;
+            .map_err(git_err(self.op, &self.target.host))?;
         Ok(accepted_or_rejected(result.success()))
     }
 
@@ -195,7 +195,7 @@ impl Ladder<'_> {
                 PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
             )
             .await
-            .map_err(|source| connection_err(self.op, &self.target.host, source))?;
+            .map_err(git_err(self.op, &self.target.host))?;
         Ok(accepted_or_rejected(result.success()))
     }
 }
@@ -249,19 +249,6 @@ fn rsa_hash_for(algorithm: &Algorithm, rsa_hash: Option<HashAlg>) -> Option<Hash
         _ => None,
     }
 }
-
-fn connection_err(
-    op: &'static str,
-    host: &str,
-    source: impl std::error::Error + Send + Sync + 'static,
-) -> ActionError {
-    ActionError::Git {
-        op,
-        name: host.to_owned(),
-        source: Box::new(source),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
