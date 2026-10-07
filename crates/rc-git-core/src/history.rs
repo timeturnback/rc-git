@@ -33,10 +33,12 @@ pub struct CommitFilter {
     pub message: Option<String>,
     /// Case-insensitive (ASCII) substring of the author name or email.
     pub author: Option<String>,
-    /// Only commits at or after this time, seconds since the Unix epoch. Also terminates the
-    /// walk: nothing older is examined.
+    /// Only commits whose committer time is at or after this time, seconds since the Unix
+    /// epoch. Also terminates the walk: nothing older is examined. Committer time can differ
+    /// from the author time the CLI and UI show.
     pub after: Option<i64>,
-    /// Only commits at or before this time, seconds since the Unix epoch.
+    /// Only commits whose committer time is at or before this time, seconds since the Unix
+    /// epoch. Committer time can differ from the author time the CLI and UI show.
     pub before: Option<i64>,
 }
 

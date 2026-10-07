@@ -216,6 +216,84 @@ fn search_matches_author_name_and_email() {
     let empty = CommitFilter::default();
     let page = repo.search_commits(tip, &empty, 0, 100, 1000).unwrap();
     assert_eq!(page.commits.len(), 6, "an empty filter matches everything");
+
+    let by_name = CommitFilter {
+        author: Some("test AUTHOR".to_owned()),
+        ..CommitFilter::default()
+    };
+    let page = repo.search_commits(tip, &by_name, 0, 100, 1000).unwrap();
+    assert_eq!(page.commits.len(), 6, "the name matches, ASCII case folded");
+
+    for committer in ["Test Committer", "committer@example.com"] {
+        let filter = CommitFilter {
+            author: Some(committer.to_owned()),
+            ..CommitFilter::default()
+        };
+        let page = repo.search_commits(tip, &filter, 0, 100, 1000).unwrap();
+        assert_eq!(
+            page.commits.len(),
+            0,
+            "{committer}: committer identity is not searched"
+        );
+        assert!(page.complete);
+    }
+}
+
+#[test]
+fn search_requires_every_set_field_to_match() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let search = |filter: CommitFilter| repo.search_commits(tip, &filter, 0, 100, 1000).unwrap();
+
+    let page = search(CommitFilter {
+        message: Some("merge".to_owned()),
+        before: Some(1_704_326_400),
+        ..CommitFilter::default()
+    });
+    assert_eq!(
+        titles(&page),
+        ["clean merge"],
+        "the evil merge is newer than the ceiling"
+    );
+
+    let page = search(CommitFilter {
+        message: Some("change".to_owned()),
+        author: Some("nobody".to_owned()),
+        ..CommitFilter::default()
+    });
+    assert_eq!(
+        titles(&page),
+        Vec::<String>::new(),
+        "an OR would return the change commits"
+    );
+
+    let page = search(CommitFilter {
+        message: Some("merge".to_owned()),
+        author: Some("nobody".to_owned()),
+        ..CommitFilter::default()
+    });
+    assert_eq!(page.commits.len(), 0);
+    assert!(page.complete);
+
+    let page = search(CommitFilter {
+        message: Some("merge".to_owned()),
+        author: Some("author@example.com".to_owned()),
+        ..CommitFilter::default()
+    });
+    assert_eq!(titles(&page), ["evil merge", "clean merge"]);
+
+    let page = search(CommitFilter {
+        message: Some("change".to_owned()),
+        after: Some(1_704_240_000),
+        before: Some(1_704_412_800),
+        ..CommitFilter::default()
+    });
+    assert_eq!(
+        titles(&page),
+        ["hack change", "main change"],
+        "newest first; the floor is inclusive"
+    );
 }
 
 #[test]
@@ -299,6 +377,11 @@ fn time_filters_use_committer_time() {
     };
     let page = repo.search_commits(tip, &floor, 0, 100, 1000).unwrap();
     assert_eq!(titles(&page), ["skewed"], "committed 2024-01-06T18:15:00Z");
+    let skewed = page.commits.first().unwrap();
+    assert_eq!(
+        skewed.author_time, 1_577_842_200,
+        "authored 2020-01-01T01:30:00Z, far below the floor"
+    );
 
     let ceiling = CommitFilter {
         before: Some(1_704_499_200),
