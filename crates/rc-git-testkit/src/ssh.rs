@@ -39,7 +39,7 @@ kSg4N213wWeUQUEx5qmJrcMB/UoZyW+CtmZow=
 ";
 
 /// The passphrase [`ENCRYPTED_CLIENT_KEY`] is encrypted with.
-pub const ENCRYPTED_CLIENT_KEY_PASSPHRASE: &str = "rc-git-test-passphrase";
+const ENCRYPTED_CLIENT_KEY_PASSPHRASE: &str = "rc-git-test-passphrase";
 
 /// Public half of [`ENCRYPTED_CLIENT_KEY`].
 const ENCRYPTED_CLIENT_KEY_PUB: &str =
