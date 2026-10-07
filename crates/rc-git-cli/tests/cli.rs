@@ -126,7 +126,7 @@ fn cat_streams_text_and_signals_binary_and_oversize() {
     assert!(stderr(&dir).contains("is a directory"));
 
     let bad_limit = rc_git(&["cat", path, "main", "README.md", "lots"]);
-    assert_eq!(bad_limit.status.code(), Some(1));
+    assert_eq!(bad_limit.status.code(), Some(2));
     assert!(stderr(&bad_limit).contains("not a number"));
 }
 
@@ -150,8 +150,8 @@ fn log_pages_newest_first() {
     assert!(skipped.ends_with(&format!("{COMMIT_1_TITLE}\n")));
 
     let bad = rc_git(&["log", path, "-n"]);
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(stderr(&bad).contains("-n needs a number"));
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(stderr(&bad).contains("-n needs a value"));
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn filelog_lists_commits_that_changed_a_path() {
     assert_eq!(none.len(), 0);
 
     let missing = rc_git(&["filelog", path]);
-    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("filelog needs <path>"));
 }
 
@@ -216,7 +216,7 @@ fn every_verb_reads_one_spelling_of_a_path() {
     for args in [
         ["filelog", path, "src/../README.md"].as_slice(),
         ["status", path, ".."].as_slice(),
-        ["discard", path, "../outside.txt"].as_slice(),
+        ["discard", path, "--yes", "../outside.txt"].as_slice(),
     ] {
         let out = rc_git(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -255,7 +255,7 @@ fn search_filters_by_message_author_and_dates() {
     assert_eq!(chunked, docs, "chunked scanning changes nothing");
 
     let bad = rc_git(&["search", path, "--since", "yesterday"]);
-    assert_eq!(bad.status.code(), Some(1));
+    assert_eq!(bad.status.code(), Some(2));
     assert!(stderr(&bad).contains("not a number"));
 }
 
@@ -277,7 +277,7 @@ fn show_prints_header_and_message() {
     assert!(plain.ends_with("Add docs and library\n"));
 
     let missing = rc_git(&["show", path]);
-    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("show needs <rev>"));
 }
 
@@ -306,7 +306,9 @@ fn usage_and_open_errors_have_distinct_exit_codes() {
     assert!(stderr(&no_args).contains("usage: rc-git"));
 
     let help = rc_git(&["--help"]);
-    assert_eq!(help.status.code(), Some(2));
+    assert_eq!(help.status.code(), Some(0));
+    assert!(stdout(&help).starts_with("usage: rc-git"));
+    assert_eq!(stderr(&help), "");
 
     let unknown = rc_git(&["frobnicate", "."]);
     assert_eq!(
@@ -355,7 +357,7 @@ fn diff_lists_changes_and_prints_hunks() {
     assert!(stderr(&out).contains("does not exist"));
 
     let out = rc_git(&["diff", path, "v0.9"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("diff needs <old> <new>"));
 }
 
@@ -379,7 +381,7 @@ fn blame_prints_commit_per_range() {
     assert!(stderr(&out).contains("blame file"));
 
     let out = rc_git(&["blame", path, "main"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("blame needs <rev> <path>"));
 }
 
@@ -431,7 +433,7 @@ fn changes_lists_every_changed_path_flat() {
     assert!(stderr(&out).contains("truncated after scanning 2 entries"));
 
     let out = rc_git(&["changes", path, "--bogus"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("--bogus"));
 }
 
@@ -456,7 +458,7 @@ fn files_lists_every_file_on_disk_including_ignored_ones() {
     assert!(stderr(&out).contains("truncated after scanning 2 entries"));
 
     let out = rc_git(&["files", path, "--bogus"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("--bogus"));
 }
 
@@ -498,7 +500,7 @@ fn diff_worktree_shows_hunks_against_head() {
     assert!(text.contains("+beta\n"), "{text}");
 
     let out = rc_git(&["diff", path, "--worktree"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("diff --worktree needs <path>"));
 }
 
@@ -527,9 +529,120 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
     assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
 
     fx.write("alpha.txt", b"dirty again\n");
-    let out = rc_git(&["discard", path, "alpha.txt"]);
+    let out = rc_git(&["discard", path, "--yes", "alpha.txt"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn discard_needs_an_explicit_yes_and_rejects_unknown_flags() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("alpha.txt", b"keep this edit\n");
+    let edit = || std::fs::read(fx.path().join("alpha.txt")).unwrap();
+
+    for args in [
+        ["discard", path, "--dry-run", "alpha.txt"].as_slice(),
+        ["discard", path, "alpha.txt"].as_slice(),
+        ["discard", path, "--confirm", "yes", "alpha.txt"].as_slice(),
+        ["discard", path, "--yes"].as_slice(),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert_eq!(edit(), b"keep this edit\n", "{args:?}");
+    }
+    assert!(stderr(&rc_git(&["discard", path, "--dry-run", "alpha.txt"])).contains("'--dry-run'"));
+
+    let out = rc_git(&["discard", path, "--confirm", "discard", "alpha.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+    fx.write("-x.txt", b"untracked\n");
+    let out = rc_git(&["discard", path, "--yes", "--", "-x.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !fx.path().join("-x.txt").exists(),
+        "`--` passes a dash-named path"
+    );
+}
+
+#[test]
+fn unknown_flags_and_surplus_arguments_are_usage_errors() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    for (args, token) in [
+        (["refs", path, "--json"].as_slice(), "--json"),
+        (["head", path, "extra"].as_slice(), "extra"),
+        (["stash", path, "extra"].as_slice(), "extra"),
+        (["default-branch", path, "extra"].as_slice(), "extra"),
+        (["log", path, "--oneline"].as_slice(), "--oneline"),
+        (
+            ["log", path, "main", "main~1", "-n", "1"].as_slice(),
+            "main~1",
+        ),
+        (["search", path, "--grep", "x"].as_slice(), "--grep"),
+        (
+            ["filelog", path, "README.md", "main", "extra"].as_slice(),
+            "extra",
+        ),
+        (["ls", path, "HEAD", "src", "extra"].as_slice(), "extra"),
+        (
+            ["cat", path, "HEAD", "README.md", "10", "extra"].as_slice(),
+            "extra",
+        ),
+        (["status", path, "src", "extra"].as_slice(), "extra"),
+        (
+            ["blame", path, "main", "README.md", "extra"].as_slice(),
+            "extra",
+        ),
+        (
+            ["commit", path, "-m", "x", "--amend", "alpha.txt"].as_slice(),
+            "--amend",
+        ),
+        (["stash-drop", path, "0", "1"].as_slice(), "1"),
+        (["checkout", path, "main", "feature"].as_slice(), "feature"),
+        (["fetch", path, "--bogus"].as_slice(), "--bogus"),
+        (["push", path, "origin"].as_slice(), "origin"),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(&format!("'{token}'")),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        assert_eq!(stdout(&out), "", "{args:?}");
+    }
+
+    let cat = rc_git(&["cat", path]);
+    assert_eq!(cat.status.code(), Some(2));
+    assert!(
+        stderr(&cat).contains("cat needs <rev> <path>"),
+        "{}",
+        stderr(&cat)
+    );
+}
+
+#[test]
+fn help_anywhere_prints_usage_to_stdout() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("--help", b"untracked\n");
+    for args in [
+        ["-h"].as_slice(),
+        ["--time", "--help"].as_slice(),
+        ["log", "--help"].as_slice(),
+        ["discard", path, "--help"].as_slice(),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        assert!(stdout(&out).starts_with("usage: rc-git"), "{args:?}");
+        assert_eq!(stderr(&out), "", "{args:?}");
+    }
+    assert!(
+        fx.path().join("--help").exists(),
+        "help never runs the verb"
+    );
 }
 
 #[test]
@@ -540,7 +653,7 @@ fn discard_refuses_a_path_through_a_symlinked_directory() {
     outside.write("outside.txt", b"keep me\n");
     fx.symlink(outside.path().to_str().unwrap(), "up");
 
-    let out = rc_git(&["discard", path, "up/outside.txt"]);
+    let out = rc_git(&["discard", path, "--yes", "up/outside.txt"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("up/outside.txt"), "{}", stderr(&out));
     assert_eq!(
@@ -548,7 +661,7 @@ fn discard_refuses_a_path_through_a_symlinked_directory() {
         b"keep me\n"
     );
 
-    let out = rc_git(&["discard", path, ".git/config"]);
+    let out = rc_git(&["discard", path, "--yes", ".git/config"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(fx.git_dir().join("config").exists());
 }
@@ -751,7 +864,7 @@ fn checkout_switches_branches_and_reports_a_dirty_path() {
     );
 
     let out = rc_git(&["checkout", path]);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("exactly one branch name"),
         "{}",

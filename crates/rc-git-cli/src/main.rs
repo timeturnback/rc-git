@@ -37,12 +37,15 @@ usage: rc-git [--time] <command> <repo> [args]
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
 
-  commit      <repo> -m <msg> [--author \"Name <email>\"] <path>...  commit files to the branch
-  stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] <path>... stash files, restore to HEAD
-  stash-apply <repo> [n]                  write stash@{n} back to the working tree
-  stash-pop   <repo> [n]                  apply stash@{n}, then drop it
-  stash-drop  <repo> <n> --confirm drop   delete stash@{n} without applying
-  discard     <repo> <path>...            restore files to HEAD, delete untracked
+  commit      <repo> -m <msg> [--author \"Name <email>\"] [--confirm <phrase>] <path>...
+                                          commit files to the branch
+  stash-push  <repo> [-m <msg>] [--author \"Name <email>\"] [--confirm <phrase>] <path>...
+                                          stash files, restore them to HEAD
+  stash-apply <repo> [n] [--confirm <phrase>]  write stash@{n} back to the working tree
+  stash-pop   <repo> [n] [--confirm <phrase>]  apply stash@{n}, then drop it
+  stash-drop  <repo> [n] --confirm drop   delete stash@{n} without applying
+  discard     <repo> --yes <path>...      restore files to HEAD, delete untracked; no undo
+                                          (--confirm discard works in place of --yes)
   checkout    <repo> <branch>             switch the working tree and HEAD to a local branch
 
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
@@ -53,6 +56,9 @@ usage: rc-git [--time] <command> <repo> [args]
   RC_GIT_TOKEN, which keeps it out of process lists), --accept-hostkey SHA256:...
   (trust this ssh host-key fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh,
   an encrypted key's passphrase comes from RC_GIT_KEY_PASSPHRASE.
+
+  An unknown flag or a surplus argument is a usage error. `--` ends the flags, so a path
+  after it may start with '-'. -h or --help anywhere before `--` prints this text.
 
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey)
@@ -77,6 +83,100 @@ impl std::fmt::Display for UsageError {
 
 impl std::error::Error for UsageError {}
 
+fn usage_error(message: String) -> anyhow::Error {
+    UsageError(message).into()
+}
+
+/// One verb's arguments, split by the flags that verb declares.
+struct VerbArgs<'a> {
+    label: &'static str,
+    values: Vec<(&'static str, &'a str)>,
+    switches: Vec<&'static str>,
+    positionals: Vec<&'a str>,
+}
+
+/// Splits `args` into flag values, switches and positionals. A flag in `valued` takes the next
+/// word as its value; one in `switches` stands alone. Any other word starting with `-` is a
+/// usage error naming it, and every word after `--` is positional.
+fn split_args<'a>(
+    label: &'static str,
+    args: &'a [String],
+    valued: &[&'static str],
+    switches: &[&'static str],
+) -> Result<VerbArgs<'a>> {
+    let mut parsed = VerbArgs {
+        label,
+        values: Vec::new(),
+        switches: Vec::new(),
+        positionals: Vec::new(),
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            parsed.positionals.extend(iter.by_ref().map(String::as_str));
+        } else if !arg.starts_with('-') || arg == "-" {
+            parsed.positionals.push(arg);
+        } else if let Some(flag) = valued.iter().find(|flag| **flag == arg) {
+            let value = iter
+                .next()
+                .ok_or_else(|| usage_error(format!("{flag} needs a value\n\n{USAGE}")))?;
+            parsed.values.push((flag, value));
+        } else if let Some(flag) = switches.iter().find(|flag| **flag == arg) {
+            parsed.switches.push(flag);
+        } else {
+            return Err(usage_error(format!(
+                "{label} does not take '{arg}'\n\n{USAGE}"
+            )));
+        }
+    }
+    Ok(parsed)
+}
+
+impl<'a> VerbArgs<'a> {
+    /// Fails unless there are `min..=max` positionals; `shape` names them in the message.
+    fn expect(&self, min: usize, max: usize, shape: &str) -> Result<()> {
+        let label = self.label;
+        if self.positionals.len() < min {
+            return Err(usage_error(format!("{label} needs {shape}\n\n{USAGE}")));
+        }
+        if let Some(surplus) = self.positionals.get(max) {
+            return Err(usage_error(format!(
+                "{label} takes {shape}; unexpected '{surplus}'\n\n{USAGE}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn positional(&self, index: usize) -> Option<&'a str> {
+        self.positionals.get(index).copied()
+    }
+
+    /// The last value given for any of `names`.
+    fn value(&self, names: &[&str]) -> Option<&'a str> {
+        let mut found = None;
+        for (flag, value) in &self.values {
+            if names.contains(flag) {
+                found = Some(*value);
+            }
+        }
+        found
+    }
+
+    fn number(&self, flag: &str) -> Result<Option<usize>> {
+        let Some(raw) = self.value(&[flag]) else {
+            return Ok(None);
+        };
+        let parsed = raw
+            .parse()
+            .map_err(|_| usage_error(format!("{flag} value '{raw}' is not a number")))?;
+        Ok(Some(parsed))
+    }
+
+    fn has(&self, switch: &str) -> bool {
+        self.switches.contains(&switch)
+    }
+}
+
 /// Spells a repository path one way: leading `/` and `./`, doubled slashes and `.` segments
 /// dropped, so `./src//lib.rs` is `src/lib.rs` and `/` is the root (empty). A `..` segment is
 /// a usage error, since no tree entry can carry that name.
@@ -97,7 +197,7 @@ fn canonical_path(raw: &str) -> Result<String> {
     Ok(segments.join("/"))
 }
 
-fn canonical_paths(raw: &[String]) -> Result<Vec<String>> {
+fn canonical_paths(raw: &[&str]) -> Result<Vec<String>> {
     raw.iter().map(|path| canonical_path(path)).collect()
 }
 
@@ -206,9 +306,21 @@ struct Invocation {
     args: Vec<String>,
 }
 
+enum Command {
+    Help,
+    Run(Invocation),
+}
+
 fn main() -> ExitCode {
     let invocation = match parse(std::env::args().skip(1).collect()) {
-        Ok(invocation) => invocation,
+        Ok(Command::Run(invocation)) => invocation,
+        Ok(Command::Help) => {
+            if let Err(err) = io::stdout().lock().write_all(USAGE.as_bytes()) {
+                let _ = writeln!(io::stderr().lock(), "error: write usage to stdout: {err}");
+                return ExitCode::from(EXIT_ERROR);
+            }
+            return ExitCode::SUCCESS;
+        }
         Err(message) => {
             let mut stderr = io::stderr().lock();
             let _ = writeln!(stderr, "error: {message}\n\n{USAGE}");
@@ -257,13 +369,17 @@ fn error_line(err: &anyhow::Error) -> String {
     line
 }
 
-fn parse(mut args: Vec<String>) -> std::result::Result<Invocation, String> {
+fn parse(mut args: Vec<String>) -> std::result::Result<Command, String> {
+    let wants_help = args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help" || arg == "-h");
+    if wants_help {
+        return Ok(Command::Help);
+    }
     let time = args.first().is_some_and(|a| a == "--time");
     if time {
         args.remove(0);
-    }
-    if args.first().is_some_and(|a| a == "--help" || a == "-h") {
-        return Err("help requested".to_owned());
     }
     if args.len() < 2 {
         return Err("expected <command> <repo>".to_owned());
@@ -271,12 +387,12 @@ fn parse(mut args: Vec<String>) -> std::result::Result<Invocation, String> {
     let command = args.remove(0);
     let verb = Verb::parse(&command).ok_or_else(|| format!("unknown command '{command}'"))?;
     let repo = PathBuf::from(args.remove(0));
-    Ok(Invocation {
+    Ok(Command::Run(Invocation {
         time,
         verb,
         repo,
         args,
-    })
+    }))
 }
 
 fn run(invocation: &Invocation) -> Result<ExitCode> {
@@ -287,8 +403,8 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
     let started_at = Instant::now();
     let mut out = Vec::new();
     let code = match invocation.verb {
-        Verb::Head => head(&repo, &mut out)?,
-        Verb::Refs => refs(&repo, &mut out)?,
+        Verb::Head => head(&repo, &invocation.args, &mut out)?,
+        Verb::Refs => refs(&repo, &invocation.args, &mut out)?,
         Verb::Ls => ls(&repo, &invocation.args, &mut out)?,
         Verb::Cat => cat(&repo, &invocation.args, &mut out)?,
         Verb::Log => log(&repo, &invocation.args, &mut out)?,
@@ -300,9 +416,9 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
         Verb::Status => status(&repo, &invocation.args, &mut out)?,
         Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
         Verb::Files => files(&repo, &invocation.args, &mut out)?,
-        Verb::Stash => stash(&repo, &mut out)?,
+        Verb::Stash => stash(&repo, &invocation.args, &mut out)?,
         Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
-        Verb::DefaultBranch => default_branch(&repo, &mut out)?,
+        Verb::DefaultBranch => default_branch(&repo, &invocation.args, &mut out)?,
         Verb::Commit => commit_verb(&repo, &invocation.repo, &invocation.args, &mut out)?,
         Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::StashApply => stash_index_verb(
@@ -320,7 +436,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
             StashVerb::Drop,
             &mut out,
         )?,
-        Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
+        Verb::Discard => discard_verb(&invocation.repo, &invocation.args)?,
         Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Fetch => fetch_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Pull => pull_verb(&invocation.repo, &invocation.args, &mut out)?,
@@ -346,7 +462,8 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
     Ok(code)
 }
 
-fn head(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+fn head(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    split_args("head", args, &[], &[])?.expect(0, 0, "no arguments")?;
     let head = repo.head()?;
     let name = head.ref_name.as_deref().unwrap_or("detached");
     let target = head
@@ -356,7 +473,8 @@ fn head(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn default_branch(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+fn default_branch(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    split_args("default-branch", args, &[], &[])?.expect(0, 0, "no arguments")?;
     match repo.default_branch()? {
         Some(branch) => writeln!(out, "{branch}")?,
         None => writeln!(out, "none")?,
@@ -364,7 +482,8 @@ fn default_branch(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn refs(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+fn refs(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    split_args("refs", args, &[], &[])?.expect(0, 0, "no arguments")?;
     let listing = repo.refs()?;
     for entry in &listing.refs {
         let kind = match entry.kind {
@@ -391,8 +510,10 @@ fn refs(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
 }
 
 fn ls(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let rev = args.first().map_or("HEAD", String::as_str);
-    let path = &canonical_path(args.get(1).map_or("", String::as_str))?;
+    let args = split_args("ls", args, &[], &[])?;
+    args.expect(0, 2, "[rev] [path]")?;
+    let rev = args.positional(0).unwrap_or("HEAD");
+    let path = &canonical_path(args.positional(1).unwrap_or(""))?;
     let root = repo.resolve_tree(rev)?;
     let tree = if path.is_empty() {
         root
@@ -419,14 +540,16 @@ fn ls(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode>
 }
 
 fn cat(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let [rev, path, rest @ ..] = args else {
+    let args = split_args("cat", args, &[], &[])?;
+    args.expect(2, 3, "<rev> <path> [limit]")?;
+    let [rev, path, ..] = args.positionals[..] else {
         bail!("cat needs <rev> <path>\n\n{USAGE}");
     };
     let path = &canonical_path(path)?;
-    let limit = match rest.first() {
+    let limit = match args.positional(2) {
         Some(raw) => raw
             .parse::<u64>()
-            .with_context(|| format!("limit '{raw}' is not a number"))?,
+            .map_err(|_| usage_error(format!("limit '{raw}' is not a number")))?,
         None => DEFAULT_BLOB_LIMIT,
     };
     let root = repo.resolve_tree(rev)?;
@@ -456,17 +579,11 @@ fn cat(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
 }
 
 fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let mut rev = "HEAD";
-    let mut limit = 20;
-    let mut skip = 0;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-n" => limit = number(iter.next(), "-n")?,
-            "--skip" => skip = number(iter.next(), "--skip")?,
-            other => rev = other,
-        }
-    }
+    let args = split_args("log", args, &["-n", "--skip"], &[])?;
+    args.expect(0, 1, "[rev]")?;
+    let rev = args.positional(0).unwrap_or("HEAD");
+    let limit = args.number("-n")?.unwrap_or(20);
+    let skip = args.number("--skip")?.unwrap_or(0);
     let tip = repo.resolve(rev)?;
     for commit in repo.log(tip, skip, limit)? {
         writeln!(
@@ -479,21 +596,15 @@ fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
 }
 
 fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let [path, rest @ ..] = args else {
+    let args = split_args("filelog", args, &["-n", "--max-scan"], &[])?;
+    args.expect(1, 2, "<path> [rev]")?;
+    let Some(path) = args.positional(0) else {
         bail!("filelog needs <path>\n\n{USAGE}");
     };
     let path = &canonical_path(path)?;
-    let mut rev = "HEAD";
-    let mut limit = 20;
-    let mut max_scan = 5000;
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-n" => limit = number(iter.next(), "-n")?,
-            "--max-scan" => max_scan = number(iter.next(), "--max-scan")?,
-            other => rev = other,
-        }
-    }
+    let rev = args.positional(1).unwrap_or("HEAD");
+    let limit = args.number("-n")?.unwrap_or(20);
+    let max_scan = args.number("--max-scan")?.unwrap_or(5000);
     let tip = repo.resolve(rev)?;
     let mut printed = 0;
     let mut scan_skip = 0;
@@ -516,22 +627,29 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
 }
 
 fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let mut rev = "HEAD";
-    let mut limit = 20;
-    let mut max_scan = 10_000;
-    let mut filter = CommitFilter::default();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-n" => limit = number(iter.next(), "-n")?,
-            "--max-scan" => max_scan = number(iter.next(), "--max-scan")?,
-            "--message" => filter.message = Some(text_value(iter.next(), "--message")?),
-            "--author" => filter.author = Some(text_value(iter.next(), "--author")?),
-            "--since" => filter.after = Some(epoch(iter.next(), "--since")?),
-            "--until" => filter.before = Some(epoch(iter.next(), "--until")?),
-            other => rev = other,
-        }
-    }
+    let args = split_args(
+        "search",
+        args,
+        &[
+            "-n",
+            "--max-scan",
+            "--message",
+            "--author",
+            "--since",
+            "--until",
+        ],
+        &[],
+    )?;
+    args.expect(0, 1, "[rev]")?;
+    let rev = args.positional(0).unwrap_or("HEAD");
+    let limit = args.number("-n")?.unwrap_or(20);
+    let max_scan = args.number("--max-scan")?.unwrap_or(10_000);
+    let filter = CommitFilter {
+        message: args.value(&["--message"]).map(str::to_owned),
+        author: args.value(&["--author"]).map(str::to_owned),
+        after: epoch(&args, "--since")?,
+        before: epoch(&args, "--until")?,
+    };
     let tip = repo.resolve(rev)?;
     let mut printed = 0;
     let mut scan_skip = 0;
@@ -553,20 +671,22 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-fn text_value(value: Option<&String>, flag: &str) -> Result<String> {
-    value
-        .cloned()
-        .with_context(|| format!("{flag} needs a value"))
-}
-
-fn epoch(value: Option<&String>, flag: &str) -> Result<i64> {
-    let raw = value.with_context(|| format!("{flag} needs seconds since the Unix epoch"))?;
-    raw.parse()
-        .with_context(|| format!("{flag} value '{raw}' is not a number"))
+fn epoch(args: &VerbArgs<'_>, flag: &str) -> Result<Option<i64>> {
+    let Some(raw) = args.value(&[flag]) else {
+        return Ok(None);
+    };
+    let seconds = raw.parse().map_err(|_| {
+        usage_error(format!(
+            "{flag} value '{raw}' is not a number of seconds since the Unix epoch"
+        ))
+    })?;
+    Ok(Some(seconds))
 }
 
 fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let Some(rev) = args.first() else {
+    let args = split_args("show", args, &[], &[])?;
+    args.expect(1, 1, "<rev>")?;
+    let Some(rev) = args.positional(0) else {
         bail!("show needs <rev>\n\n{USAGE}");
     };
     let detail = repo.commit_details(repo.resolve(rev)?)?;
@@ -597,8 +717,11 @@ fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
 }
 
 fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    if args.first().is_some_and(|arg| arg == "--worktree") {
-        let [_, path] = args else {
+    let mut args = split_args("diff", args, &[], &["--worktree"])?;
+    if args.has("--worktree") {
+        args.label = "diff --worktree";
+        args.expect(1, 1, "<path>")?;
+        let Some(path) = args.positional(0) else {
             bail!("diff --worktree needs <path>\n\n{USAGE}");
         };
         let path = &canonical_path(path)?;
@@ -607,12 +730,13 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
         let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
         return render_blob_diff(diff, path, out);
     }
-    let [old_rev, new_rev, rest @ ..] = args else {
+    args.expect(2, 3, "<old> <new> [path]")?;
+    let [old_rev, new_rev, ..] = args.positionals[..] else {
         bail!("diff needs <old> <new>\n\n{USAGE}");
     };
     let old = repo.resolve(old_rev)?;
     let new = repo.resolve(new_rev)?;
-    let Some(path) = rest.first() else {
+    let Some(path) = args.positional(2) else {
         for change in repo.diff_trees(Some(old), new)? {
             let letter = match change.kind {
                 ChangeKind::Added => "A",
@@ -681,7 +805,9 @@ fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<Exi
 }
 
 fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let [rev, path] = args else {
+    let args = split_args("blame", args, &[], &[])?;
+    args.expect(2, 2, "<rev> <path>")?;
+    let [rev, path] = args.positionals[..] else {
         bail!("blame needs <rev> <path>\n\n{USAGE}");
     };
     let path = &canonical_path(path)?;
@@ -704,15 +830,9 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
 }
 
 fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let mut max_scan = 200_000;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--max-scan" {
-            max_scan = number(iter.next(), "--max-scan")?;
-        } else {
-            bail!("changes does not take '{arg}'\n\n{USAGE}");
-        }
-    }
+    let args = split_args("changes", args, &["--max-scan"], &[])?;
+    args.expect(0, 0, "no positional arguments")?;
+    let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
     let tree = repo.resolve_tree("HEAD")?;
     let report = repo.worktree_status(tree, max_scan)?;
     for entry in &report.entries {
@@ -736,15 +856,9 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
 }
 
 fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let mut max_scan = 200_000;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--max-scan" {
-            max_scan = number(iter.next(), "--max-scan")?;
-        } else {
-            bail!("files does not take '{arg}'\n\n{USAGE}");
-        }
-    }
+    let args = split_args("files", args, &["--max-scan"], &[])?;
+    args.expect(0, 0, "no positional arguments")?;
+    let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
     let tree = repo.resolve_tree("HEAD")?;
     let list = repo.worktree_files(tree, max_scan)?;
     for file in &list.files {
@@ -760,7 +874,8 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-fn stash(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
+fn stash(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    split_args("stash", args, &[], &[])?.expect(0, 0, "no arguments")?;
     for entry in repo.stash_list()? {
         writeln!(
             out,
@@ -774,7 +889,9 @@ fn stash(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
 }
 
 fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let dir = &canonical_path(args.first().map_or("", String::as_str))?;
+    let args = split_args("status", args, &[], &[])?;
+    args.expect(0, 1, "[dir]")?;
+    let dir = &canonical_path(args.positional(0).unwrap_or(""))?;
     let tree = repo.resolve_tree("HEAD")?;
     let listing = repo.worktree_entries(tree, dir)?;
     for entry in &listing.entries {
@@ -804,43 +921,14 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-/// Flags shared by the mutating verbs: `-m`, `--author`, `--confirm`, and positional paths.
-#[derive(Default)]
-struct MutationArgs {
-    message: Option<String>,
-    author: Option<rc_git_guard::actions::Identity>,
-    confirm: Option<String>,
-    paths: Vec<String>,
-}
-
-fn parse_mutation(args: &[String]) -> Result<MutationArgs> {
-    let mut parsed = MutationArgs::default();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-m" | "--message" => {
-                parsed.message = Some(text_value(iter.next(), "-m")?);
-            }
-            "--author" => {
-                let raw = text_value(iter.next(), "--author")?;
-                parsed.author = Some(parse_author(&raw)?);
-            }
-            "--confirm" => {
-                parsed.confirm = Some(text_value(iter.next(), "--confirm")?);
-            }
-            other => parsed.paths.push(other.to_owned()),
-        }
-    }
-    Ok(parsed)
-}
-
 /// `"Name <email>"`, as `git --author` takes it.
 fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
+    let malformed = || usage_error(format!("--author needs \"Name <email>\", got '{raw}'"));
     let Some((name, rest)) = raw.split_once('<') else {
-        bail!("--author needs \"Name <email>\", got '{raw}'");
+        return Err(malformed());
     };
     let Some(email) = rest.strip_suffix('>') else {
-        bail!("--author needs \"Name <email>\", got '{raw}'");
+        return Err(malformed());
     };
     Ok(rc_git_guard::actions::Identity {
         name: name.trim().to_owned(),
@@ -848,32 +936,36 @@ fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
     })
 }
 
+fn author(args: &VerbArgs<'_>) -> Result<Option<rc_git_guard::actions::Identity>> {
+    args.value(&["--author"]).map(parse_author).transpose()
+}
+
+const MESSAGE_FLAGS: [&str; 4] = ["-m", "--message", "--author", "--confirm"];
+
 fn commit_verb(
     repo: &Repository,
     repo_path: &std::path::Path,
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let parsed = parse_mutation(args)?;
-    let message = parsed
-        .message
-        .with_context(|| format!("commit needs -m <msg>\n\n{USAGE}"))?;
-    if parsed.paths.is_empty() {
-        bail!("commit needs at least one <path>\n\n{USAGE}");
-    }
+    let args = split_args("commit", args, &MESSAGE_FLAGS, &[])?;
+    args.expect(1, usize::MAX, "at least one <path>")?;
+    let message = args
+        .value(&["-m", "--message"])
+        .ok_or_else(|| usage_error(format!("commit needs -m <msg>\n\n{USAGE}")))?;
     let expected = repo.resolve("HEAD").ok().map(|oid| oid.to_hex());
-    let selections: Vec<rc_git_guard::actions::FileSelection> = canonical_paths(&parsed.paths)?
+    let selections: Vec<rc_git_guard::actions::FileSelection> = canonical_paths(&args.positionals)?
         .into_iter()
         .map(|path| rc_git_guard::actions::FileSelection::Whole { path })
         .collect();
     let done = rc_git_guard::actions::commit(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &message,
-        parsed.author,
+        message,
+        author(&args)?,
         expected.as_deref(),
         &selections,
-        parsed.confirm.as_deref(),
+        args.value(&["--confirm"]),
     )?;
     writeln!(out, "{}\t{}", done.oid, done.branch)?;
     Ok(ExitCode::SUCCESS)
@@ -884,17 +976,15 @@ fn stash_push_verb(
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let parsed = parse_mutation(args)?;
-    if parsed.paths.is_empty() {
-        bail!("stash-push needs at least one <path>\n\n{USAGE}");
-    }
+    let args = split_args("stash-push", args, &MESSAGE_FLAGS, &[])?;
+    args.expect(1, usize::MAX, "at least one <path>")?;
     let saved = rc_git_guard::actions::stash_push(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &canonical_paths(&parsed.paths)?,
-        parsed.message.as_deref(),
-        parsed.author,
-        parsed.confirm.as_deref(),
+        &canonical_paths(&args.positionals)?,
+        args.value(&["-m", "--message"]),
+        author(&args)?,
+        args.value(&["--confirm"]),
     )?;
     writeln!(out, "{}\t{}", saved.oid, saved.message)?;
     Ok(ExitCode::SUCCESS)
@@ -913,15 +1003,21 @@ fn stash_index_verb(
     verb: StashVerb,
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let parsed = parse_mutation(args)?;
-    let index = match parsed.paths.first() {
+    let label = match verb {
+        StashVerb::Apply => "stash-apply",
+        StashVerb::Pop => "stash-pop",
+        StashVerb::Drop => "stash-drop",
+    };
+    let args = split_args(label, args, &["--confirm"], &[])?;
+    args.expect(0, 1, "[n]")?;
+    let index = match args.positional(0) {
         Some(raw) => raw
             .parse()
-            .with_context(|| format!("'{raw}' is not a stash index"))?,
+            .map_err(|_| usage_error(format!("'{raw}' is not a stash index")))?,
         None => 0,
     };
     let policy = rc_git_guard::Policy::default();
-    let input = parsed.confirm.as_deref();
+    let input = args.value(&["--confirm"]);
     match verb {
         StashVerb::Apply => {
             rc_git_guard::actions::stash_apply(repo_path, &policy, index, input)?;
@@ -942,33 +1038,35 @@ fn stash_index_verb(
     Ok(ExitCode::SUCCESS)
 }
 
-fn discard_verb(
-    repo_path: &std::path::Path,
-    args: &[String],
-    out: &mut Vec<u8>,
-) -> Result<ExitCode> {
-    let parsed = parse_mutation(args)?;
-    if parsed.paths.is_empty() {
-        bail!("discard needs at least one <path>\n\n{USAGE}");
+/// Discarding cannot be undone and the guard asks no typed phrase for it, so the CLI's form of
+/// the confirm button is an explicit `--yes` or `--confirm discard`.
+fn discard_verb(repo_path: &std::path::Path, args: &[String]) -> Result<ExitCode> {
+    let args = split_args("discard", args, &["--confirm"], &["--yes"])?;
+    args.expect(1, usize::MAX, "at least one <path>")?;
+    let confirm = args.value(&["--confirm"]);
+    let confirmed = match confirm {
+        Some(phrase) => phrase.trim() == "discard",
+        None => args.has("--yes"),
+    };
+    if !confirmed {
+        return Err(usage_error(format!(
+            "discard cannot be undone; pass --yes (or --confirm discard) to restore the files\n\n\
+             {USAGE}"
+        )));
     }
     rc_git_guard::actions::discard_files(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &canonical_paths(&parsed.paths)?,
-        parsed.confirm.as_deref(),
+        &canonical_paths(&args.positionals)?,
+        confirm,
     )?;
-    let _ = out;
     Ok(ExitCode::SUCCESS)
 }
 
-fn number(value: Option<&String>, flag: &str) -> Result<usize> {
-    let raw = value.with_context(|| format!("{flag} needs a number"))?;
-    raw.parse()
-        .with_context(|| format!("{flag} value '{raw}' is not a number"))
-}
-
 fn resolve(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let Some(rev) = args.first() else {
+    let args = split_args("resolve", args, &[], &[])?;
+    args.expect(1, 1, "<rev>")?;
+    let Some(rev) = args.positional(0) else {
         bail!("resolve needs <rev>\n\n{USAGE}");
     };
     writeln!(out, "{}", repo.resolve(rev)?)?;
@@ -995,35 +1093,18 @@ impl RemoteArgs {
 /// `--username U` / `--token T` (the token falling back to `RC_GIT_TOKEN`),
 /// `--accept-hostkey F`, and `--ssh-dir D`. With no token, `RC_GIT_KEY_PASSPHRASE`
 /// supplies an ssh key passphrase.
-fn parse_remote_args(args: &[String]) -> Result<RemoteArgs> {
-    let mut username = None;
-    let mut token = None;
-    let mut accepted_hostkey = None;
-    let mut ssh_dir = None;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--username" => {
-                username = Some(iter.next().context("--username needs a value")?.to_owned());
-            }
-            "--token" => {
-                token = Some(iter.next().context("--token needs a value")?.to_owned());
-            }
-            "--accept-hostkey" => {
-                accepted_hostkey = Some(
-                    iter.next()
-                        .context("--accept-hostkey needs a value")?
-                        .to_owned(),
-                );
-            }
-            "--ssh-dir" => {
-                ssh_dir = Some(std::path::PathBuf::from(
-                    iter.next().context("--ssh-dir needs a value")?,
-                ));
-            }
-            other => bail!("unknown argument '{other}'\n\n{USAGE}"),
-        }
-    }
+fn parse_remote_args(label: &'static str, args: &[String]) -> Result<RemoteArgs> {
+    let args = split_args(
+        label,
+        args,
+        &["--username", "--token", "--accept-hostkey", "--ssh-dir"],
+        &[],
+    )?;
+    args.expect(0, 0, "no positional arguments")?;
+    let username = args.value(&["--username"]).map(str::to_owned);
+    let mut token = args.value(&["--token"]).map(str::to_owned);
+    let accepted_hostkey = args.value(&["--accept-hostkey"]).map(str::to_owned);
+    let ssh_dir = args.value(&["--ssh-dir"]).map(std::path::PathBuf::from);
     if token.is_none()
         && let Ok(env_token) = std::env::var("RC_GIT_TOKEN")
         && !env_token.is_empty()
@@ -1041,8 +1122,16 @@ fn parse_remote_args(args: &[String]) -> Result<RemoteArgs> {
             }),
             Ok(_) | Err(_) => None,
         },
-        (Some(_), None) => bail!("--username was given without --token (or RC_GIT_TOKEN)"),
-        (None, Some(_)) => bail!("a token was given without --username"),
+        (Some(_), None) => {
+            return Err(usage_error(
+                "--username was given without --token (or RC_GIT_TOKEN)".to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(usage_error(
+                "a token was given without --username".to_owned(),
+            ));
+        }
     };
     Ok(RemoteArgs {
         creds,
@@ -1088,7 +1177,7 @@ fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -
 }
 
 fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args(args)?;
+    let remote = parse_remote_args("fetch", args)?;
     let outcome = rc_git_guard::actions::fetch_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1100,7 +1189,7 @@ fn fetch_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -
 }
 
 fn pull_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args(args)?;
+    let remote = parse_remote_args("pull", args)?;
     let policy = rc_git_guard::Policy::default();
     let fetch = rc_git_guard::actions::fetch_upstream(
         repo_path,
@@ -1119,8 +1208,10 @@ fn checkout_verb(
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let [branch] = args else {
-        bail!("checkout takes exactly one branch name");
+    let args = split_args("checkout", args, &[], &[])?;
+    args.expect(1, 1, "exactly one branch name")?;
+    let Some(branch) = args.positional(0) else {
+        bail!("checkout needs exactly one branch name\n\n{USAGE}");
     };
     let outcome = rc_git_guard::actions::checkout_branch(
         repo_path,
@@ -1140,7 +1231,7 @@ fn checkout_verb(
 }
 
 fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args(args)?;
+    let remote = parse_remote_args("push", args)?;
     let outcome = rc_git_guard::actions::push_upstream(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1152,7 +1243,7 @@ fn push_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) ->
 }
 
 fn sync_verb(repo_path: &std::path::Path, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let remote = parse_remote_args(args)?;
+    let remote = parse_remote_args("sync", args)?;
     let outcome = rc_git_guard::actions::sync(
         repo_path,
         &rc_git_guard::Policy::default(),
