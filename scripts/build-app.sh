@@ -93,7 +93,9 @@ BIN="$(swift build --package-path "$ROOT/mac" -c "$CONFIG" --show-bin-path)/RcGi
 # the dev bundle it is replacing, and a bundle deleted out from under a live process loses
 # every resource it has not already loaded. Plain -r (not -rf) so a wrong path fails loudly.
 STAGE="$ROOT/build/stage/$(basename "$APP")"
-[ -d "$STAGE" ] && rm -r "$STAGE"
+BACKUP="$ROOT/build/stage/previous-$(basename "$APP")"
+[ ! -d "$STAGE" ] || rm -r "$STAGE"
+[ ! -d "$BACKUP" ] || rm -r "$BACKUP"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/RCGit"
 cp "$ROOT/mac/Info.plist" "$STAGE/Contents/Info.plist"
@@ -147,9 +149,15 @@ codesign --force --sign - "$STAGE" || {
   exit 1
 }
 
-# The swap. A rename on the same filesystem, so the window where the bundle is missing is
-# as short as it can be.
-[ -d "$APP" ] && rm -r "$APP"
-mv "$STAGE" "$APP"
+# The swap: two renames on the same filesystem. The old bundle moves aside under build/, the
+# new one takes its place, and only then is the old one deleted. If the second rename fails,
+# the old bundle moves back.
+[ ! -d "$APP" ] || mv "$APP" "$BACKUP"
+if ! mv "$STAGE" "$APP"; then
+  echo "error: could not move $STAGE into place; restoring the previous $APP" >&2
+  [ ! -d "$BACKUP" ] || mv "$BACKUP" "$APP"
+  exit 1
+fi
+[ ! -d "$BACKUP" ] || rm -r "$BACKUP"
 
 echo "built $APP"
