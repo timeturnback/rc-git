@@ -486,7 +486,7 @@ fn changes_lists_every_changed_path_flat() {
 
     let out = rc_git(&["changes", path, "--max-scan", "1"]);
     assert!(out.status.success());
-    assert!(stderr(&out).contains("truncated after scanning 2 entries"));
+    assert!(stderr(&out).contains("warning: truncated after scanning 2 entries"));
 
     let out = rc_git(&["changes", path, "--bogus"]);
     assert_eq!(out.status.code(), Some(2));
@@ -511,7 +511,7 @@ fn files_lists_every_file_on_disk_including_ignored_ones() {
 
     let out = rc_git(&["files", path, "--max-scan", "1"]);
     assert!(out.status.success());
-    assert!(stderr(&out).contains("truncated after scanning 2 entries"));
+    assert!(stderr(&out).contains("warning: truncated after scanning 2 entries"));
 
     let out = rc_git(&["files", path, "--bogus"]);
     assert_eq!(out.status.code(), Some(2));
@@ -830,7 +830,7 @@ fn network_verbs_report_auth_with_exit_code_5() {
 }
 
 #[test]
-fn pull_reports_divergence_as_an_error() {
+fn pull_and_push_report_divergence_with_exit_7() {
     let (origin, bare, _server, clone) = served_clone();
     advance_origin(&origin, &bare);
     clone.write("local.txt", b"local\n");
@@ -838,12 +838,16 @@ fn pull_reports_divergence_as_an_error() {
     let path = clone.path().to_str().unwrap();
 
     let out = rc_git(&["pull", path]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("cannot fast-forward"),
         "{}",
         stderr(&out)
     );
+
+    let out = rc_git(&["push", path]);
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+    assert!(stderr(&out).contains("push rejected"), "{}", stderr(&out));
 }
 
 #[test]
@@ -875,7 +879,7 @@ fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
 }
 
 #[test]
-fn default_branch_names_the_mainline_or_none() {
+fn default_branch_names_the_mainline_or_fails() {
     let fx = Fixture::standard();
     let out = rc_git(&["default-branch", fx.path().to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -883,6 +887,22 @@ fn default_branch_names_the_mainline_or_none() {
 
     let bare = Fixture::empty_dir();
     bare.git(&["init", "-q", "-b", "work"]);
+    let out = rc_git(&["default-branch", bare.path().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(
+        stderr(&out).contains("no default branch"),
+        "{}",
+        stderr(&out)
+    );
+
+    bare.git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    bare.git(&["update-ref", "refs/remotes/origin/none", "HEAD"]);
+    bare.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/none",
+    ]);
     let out = rc_git(&["default-branch", bare.path().to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "none\n");

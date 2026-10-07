@@ -62,7 +62,8 @@ usage: rc-git [--time] <command> <repo> [args]
   after it may start with '-'. -h or --help anywhere before `--` prints this text.
 
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
-  5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey)
+  5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey),
+  7 diverged or push rejected (reconcile with git, e.g. git pull --rebase)
 ";
 
 const EXIT_ERROR: u8 = 1;
@@ -71,6 +72,7 @@ const EXIT_BINARY: u8 = 3;
 const EXIT_TOO_LARGE: u8 = 4;
 const EXIT_AUTH: u8 = 5;
 const EXIT_HOSTKEY: u8 = 6;
+const EXIT_DIVERGED: u8 = 7;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
 #[derive(Debug)]
@@ -343,6 +345,10 @@ fn main() -> ExitCode {
                 Some(rc_git_guard::actions::ActionError::UnknownHostKey { .. }) => {
                     return ExitCode::from(EXIT_HOSTKEY);
                 }
+                Some(
+                    rc_git_guard::actions::ActionError::Diverged { .. }
+                    | rc_git_guard::actions::ActionError::PushRejected { .. },
+                ) => return ExitCode::from(EXIT_DIVERGED),
                 Some(_) | None => {}
             }
             ExitCode::from(EXIT_ERROR)
@@ -499,10 +505,11 @@ fn head(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
 
 fn default_branch(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     split_args("default-branch", args, &[], &[])?.expect(0, 0, "no arguments")?;
-    match repo.default_branch()? {
-        Some(branch) => writeln!(out, "{branch}")?,
-        None => writeln!(out, "none")?,
-    }
+    let Some(branch) = repo.default_branch()? else {
+        writeln!(io::stderr().lock(), "error: no default branch")?;
+        return Ok(ExitCode::from(EXIT_ERROR));
+    };
+    writeln!(out, "{branch}")?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -872,7 +879,7 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     if report.truncated {
         writeln!(
             io::stderr().lock(),
-            "truncated after scanning {} entries",
+            "warning: truncated after scanning {} entries",
             report.scanned
         )?;
     }
@@ -891,7 +898,7 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     if list.truncated {
         writeln!(
             io::stderr().lock(),
-            "truncated after scanning {} entries",
+            "warning: truncated after scanning {} entries",
             list.scanned
         )?;
     }
