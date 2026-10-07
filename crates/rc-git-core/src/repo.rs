@@ -306,4 +306,26 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Repository>();
     }
+
+    #[test]
+    fn a_call_with_every_slot_busy_uses_a_temporary_handle() {
+        let fx = rc_git_testkit::Fixture::standard();
+        let repo = Repository::open(fx.path()).expect("open fixture");
+        std::thread::scope(|scope| {
+            let guards: Vec<_> = repo
+                .pool
+                .iter()
+                .map(|slot| slot.lock().expect("pool slot"))
+                .collect();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let repo = &repo;
+            scope.spawn(move || tx.send(repo.resolve("HEAD")));
+            let result = rx.recv_timeout(std::time::Duration::from_secs(5));
+            drop(guards);
+            assert!(
+                matches!(result, Ok(Ok(_))),
+                "resolve with every pool slot held must not wait: {result:?}"
+            );
+        });
+    }
 }
