@@ -18,7 +18,7 @@ require() {
 
 require cargo "rustup (https://rustup.rs)"
 require cargo-deny "brew install cargo-deny"
-require cbindgen "brew install cbindgen"
+require cbindgen "cargo install cbindgen --version 0.29.4 --locked"
 require shellcheck "brew install shellcheck"
 require shfmt "brew install shfmt"
 require actionlint "brew install actionlint"

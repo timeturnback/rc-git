@@ -55,6 +55,9 @@ jobs:
       - run: sudo xcode-select -s /Applications/Xcode_27.0.app
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
+        with:
+          tool: cbindgen@0.29.4   # build-app.sh regenerates the header through build.sh
       - run: cargo build --locked --release -p rc-git-ffi
       - run: xcrun swift-format lint --strict --recursive mac/Sources mac/Tests mac/Package.swift
       - run: swift build --package-path mac

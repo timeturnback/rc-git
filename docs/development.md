@@ -4,7 +4,8 @@
 
 ```sh
 rustup toolchain install   # the version pinned in rust-toolchain.toml
-brew install cbindgen cargo-deny prek shellcheck shfmt actionlint zizmor
+cargo install cbindgen --version 0.29.4 --locked   # brew cannot pin it
+brew install cargo-deny prek shellcheck shfmt actionlint zizmor
 xcode-select --install     # or Xcode 27+; swift-format ships with it
 scripts/build.sh           # Rust lib, header, Swift package
 ```
@@ -22,9 +23,11 @@ scripts/check.sh --fast                     # everything except the Swift half
 scripts/check.sh                            # the whole gate, same as CI
 ```
 
-`rust-toolchain.toml` pins Rust (with clippy and rustfmt) and CI pins cbindgen 0.29.4, so a new
-release cannot change the gate's verdict on its own. Bump either on purpose, in its own commit,
-and fix what the new lints or header formatting report in the same change.
+`rust-toolchain.toml` pins Rust (with clippy and rustfmt), and `scripts/gen-header.sh` and CI
+pin cbindgen 0.29.4, so a new release cannot change the gate's verdict on its own. When another
+cbindgen produces a different header, `gen-header.sh` names both versions and leaves the header
+alone. Bump either on purpose, in its own commit, and fix what the new lints or header formatting
+report in the same change.
 
 `swift build` and `swift test` link `target/release/librc_git_ffi.a`; rebuild it with
 `cargo build --release -p rc-git-ffi` whenever the Rust side changes.

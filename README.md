@@ -10,7 +10,8 @@ through a policy that backs up what it deletes.
 ## Build
 
 ```sh
-brew install cbindgen cargo-deny
+cargo install cbindgen --version 0.29.4 --locked
+brew install cargo-deny
 scripts/install-app.sh    # builds and installs /Applications/RCGit.app
 open -a RCGit ~/code/some-repo
 ```
