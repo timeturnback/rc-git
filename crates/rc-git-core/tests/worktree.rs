@@ -762,3 +762,81 @@ fn listing_inside_a_submodule_reads_its_files_as_another_repository() {
     );
     assert_eq!(below.entries[0].oid, None);
 }
+
+fn status_paths(report: &rc_git_core::StatusReport) -> Vec<(String, WorktreeStatus)> {
+    report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status))
+        .collect()
+}
+
+#[test]
+fn an_untracked_fifo_is_never_listed_or_opened() {
+    let fx = Fixture::standard();
+    fx.mkfifo("pipe");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let err = repo.worktree_file("pipe", DEFAULT_BLOB_LIMIT).unwrap_err();
+    assert!(err.to_string().contains("is not a regular file"), "{err}");
+    let err = repo
+        .diff_worktree_file(None, "pipe", DEFAULT_BLOB_LIMIT, 3)
+        .unwrap_err();
+    assert!(err.to_string().contains("is not a regular file"), "{err}");
+
+    assert_eq!(
+        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        []
+    );
+    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    assert!(files.iter().all(|file| file.path != "pipe"), "{files:?}");
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    assert!(listing.entries.iter().all(|entry| entry.name != "pipe"));
+}
+
+#[test]
+fn a_fifo_replacing_a_tracked_empty_file_is_modified_without_opening_it() {
+    let fx = Fixture::standard();
+    fx.write("empty", b"");
+    fx.commit("Add empty", "2024-01-04T00:00:00+0000");
+    fx.remove("empty");
+    fx.mkfifo("empty");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    assert_eq!(
+        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        [("empty".to_owned(), WorktreeStatus::Modified)]
+    );
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    let entry = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "empty")
+        .unwrap();
+    assert_eq!(
+        (entry.kind, entry.status),
+        (EntryKind::Blob, WorktreeStatus::Modified)
+    );
+    assert_eq!(entry.oid.unwrap().to_hex(), fx.rev_parse("HEAD:empty"));
+    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    assert!(files.iter().all(|file| file.path != "empty"), "{files:?}");
+}
+
+#[test]
+fn a_fifo_replacing_a_tracked_directory_leaves_its_files_deleted() {
+    let fx = Fixture::standard();
+    fx.remove("docs");
+    fx.mkfifo("docs");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    assert_eq!(
+        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        [("docs/guide.md".to_owned(), WorktreeStatus::Deleted)]
+    );
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    assert!(listing.entries.iter().all(|entry| entry.name != "docs"));
+    assert!(listing.missing.iter().any(|entry| entry.name == "docs"));
+}

@@ -322,6 +322,24 @@ impl Fixture {
         std::os::unix::fs::symlink(target, self.dir.path().join(relative)).expect("create symlink");
     }
 
+    /// Creates a named pipe (FIFO) at `relative` in the working directory with `mkfifo`.
+    ///
+    /// # Panics
+    /// When `mkfifo` cannot be started or exits non-zero.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures create their own files"
+    )]
+    pub fn mkfifo(&self, relative: &str) {
+        let status = Command::new("mkfifo")
+            .arg(self.dir.path().join(relative))
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo {relative} failed: {status}");
+    }
+
     /// Removes a file, symlink, or directory tree below the working directory. An empty
     /// `relative` removes the whole working directory.
     ///

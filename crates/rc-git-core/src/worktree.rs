@@ -130,7 +130,7 @@ impl Repository {
             .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
 
         let mut listing = WorktreeListing::default();
-        let mut on_disk: Vec<(BString, EntryKind, u64, PathBuf)> = Vec::new();
+        let mut on_disk: Vec<(BString, Option<EntryKind>, u64, PathBuf)> = Vec::new();
         for entry in read {
             let entry = entry
                 .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
@@ -147,10 +147,14 @@ impl Repository {
         let by_name = index_by_name(&tree_entries);
         self.with(|repo| {
             let mut context = WorktreeContext::new(repo, "list working tree")?;
-            for (name, kind, size, path) in on_disk {
+            for (name, disk, size, path) in on_disk {
                 let rela = relative_path(dir, &name);
                 let in_tree = by_name.get(&name).copied();
-                let kind = context.kind_of(kind, in_tree);
+                let Some(disk) = disk else {
+                    listing.entries.extend(special_entry(name, in_tree, size));
+                    continue;
+                };
+                let kind = context.kind_of(disk, in_tree);
                 let status = if in_submodule {
                     WorktreeStatus::Unchanged
                 } else if let Some(tree_entry) = in_tree {
@@ -246,8 +250,8 @@ impl Repository {
     /// [`Repository::read_blob`]. A symlink yields its target as text.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository, a missing file, a directory, a path through
-    /// a symlinked directory, or an unreadable file.
+    /// [`Error::Worktree`] for a bare repository, a missing file, a directory, a FIFO, socket
+    /// or device file, a path through a symlinked directory, or an unreadable file.
     pub fn worktree_file(&self, path: &str, limit: u64) -> Result<BlobContent> {
         let (full, meta) = self.stat_worktree_file(path)?;
         if meta.file_type().is_symlink() {
@@ -255,12 +259,29 @@ impl Repository {
                 .map_err(|source| worktree_error("read symlink", path, Box::new(source)))?;
             return Ok(classify(target.into_os_string().into_encoded_bytes()));
         }
+        // A FIFO blocks `open` until a writer appears and a device never reaches EOF, so
+        // anything but a regular file is refused before it is opened.
+        if !meta.file_type().is_file() {
+            return Err(worktree_error(
+                "read working tree file",
+                path,
+                "is not a regular file".into(),
+            ));
+        }
         let size = meta.len();
         if size > limit {
             return Ok(BlobContent::TooLarge { size, limit });
         }
-        let data = std::fs::read(&full)
+        let data = read_at_most(&full, limit)
             .map_err(|source| worktree_error("read working tree file", path, Box::new(source)))?;
+        let read = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        if read > limit {
+            // The file grew after the stat; the caller's limit still holds.
+            return Ok(BlobContent::TooLarge {
+                size: size.max(read),
+                limit,
+            });
+        }
         Ok(classify(data))
     }
 
@@ -453,6 +474,27 @@ impl<'repo> WorktreeContext<'repo> {
             WorktreeStatus::Modified
         })
     }
+}
+
+/// How a listing shows a FIFO, socket or device file, judged without opening it: like git,
+/// only where it replaced a tracked file, as modified. One where a tracked directory was is
+/// left out, so the directory lists as missing.
+fn special_entry(name: BString, tracked: Option<&TreeEntry>, size: u64) -> Option<WorktreeEntry> {
+    let tree_entry = tracked?;
+    let status = match tree_entry.kind {
+        EntryKind::Tree => return None,
+        EntryKind::Submodule => WorktreeStatus::Unchanged,
+        EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink => {
+            WorktreeStatus::Modified
+        }
+    };
+    Some(WorktreeEntry {
+        name,
+        kind: tree_entry.kind,
+        status,
+        oid: Some(tree_entry.oid),
+        size,
+    })
 }
 
 /// The verdict kind alone settles: a directory on either side, a submodule, or a kind change.
@@ -665,9 +707,13 @@ impl StatusWalk<'_> {
                 worktree_error("stat working tree entry", &dir_str, Box::new(source))
             })?;
             let tracked = by_name.get(&name).copied();
-            let kind = self.context.kind_of(disk_kind(&meta), tracked);
             let path = child_path(dir, &name);
             on_disk.insert(name.clone());
+            let Some(disk) = disk_kind(&meta) else {
+                self.special_file(tracked, path, meta.len())?;
+                continue;
+            };
+            let kind = self.context.kind_of(disk, tracked);
             match tracked {
                 Some(tree_entry)
                     if tree_entry.kind == EntryKind::Tree && kind == EntryKind::Tree =>
@@ -720,7 +766,17 @@ impl StatusWalk<'_> {
                 }
             }
         }
-        for tree_entry in &tree_entries {
+        self.walk_missing(&tree_entries, &on_disk, dir)
+    }
+
+    /// The tree entries of `dir` with no counterpart on disk: deleted files and directories.
+    fn walk_missing(
+        &mut self,
+        tree_entries: &[TreeEntry],
+        on_disk: &HashSet<BString>,
+        dir: &BString,
+    ) -> Result<()> {
+        for tree_entry in tree_entries {
             if self.report.truncated {
                 return Ok(());
             }
@@ -740,6 +796,34 @@ impl StatusWalk<'_> {
             }
         }
         Ok(())
+    }
+
+    /// A FIFO, socket or device file, judged without opening it. Git lists one only when it
+    /// replaced a tracked file, as modified; where a tracked directory was, the directory's
+    /// files are deleted.
+    fn special_file(
+        &mut self,
+        tracked: Option<&TreeEntry>,
+        path: BString,
+        size: u64,
+    ) -> Result<()> {
+        let Some(tree_entry) = tracked else {
+            return Ok(());
+        };
+        match tree_entry.kind {
+            EntryKind::Tree => self.walk_deleted(tree_entry.oid, &path),
+            EntryKind::Submodule => Ok(()),
+            EntryKind::Blob | EntryKind::ExecutableBlob | EntryKind::Symlink => {
+                self.report.entries.push(StatusEntry {
+                    path,
+                    kind: tree_entry.kind,
+                    status: WorktreeStatus::Modified,
+                    oid: Some(tree_entry.oid),
+                    size,
+                });
+                Ok(())
+            }
+        }
     }
 
     /// Everything below a tree with no counterpart on disk is deleted; walking it reads
@@ -820,12 +904,11 @@ impl FileWalk<'_> {
             let meta = std::fs::symlink_metadata(entry.path()).map_err(|source| {
                 worktree_error("stat working tree entry", &dir_str, Box::new(source))
             })?;
+            let Some(disk) = disk_kind(&meta) else {
+                continue;
+            };
             let tracked = by_name.get(&name).copied();
-            let kind = git_kind(
-                disk_kind(&meta),
-                tracked.map(|entry| entry.kind),
-                self.executable_bit,
-            );
+            let kind = git_kind(disk, tracked.map(|entry| entry.kind), self.executable_bit);
             let path = child_path(dir, &name);
             if kind != EntryKind::Tree {
                 self.list.files.push(WorktreeFile { path, kind });
@@ -868,13 +951,19 @@ fn git_kind(disk: EntryKind, tree: Option<EntryKind>, executable_bit: bool) -> E
 }
 
 /// What a disk entry is, from its `symlink_metadata`. Only the owner's executable bit counts,
-/// as in git: a file executable by its group or others alone is still a plain blob.
-fn disk_kind(meta: &std::fs::Metadata) -> EntryKind {
-    if meta.file_type().is_symlink() {
-        return EntryKind::Symlink;
+/// as in git: a file executable by its group or others alone is still a plain blob. `None` for
+/// a FIFO, socket or device file, which git cannot track and which is never opened: `open` on
+/// a FIFO blocks until a writer appears.
+fn disk_kind(meta: &std::fs::Metadata) -> Option<EntryKind> {
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        return Some(EntryKind::Symlink);
     }
-    if meta.is_dir() {
-        return EntryKind::Tree;
+    if file_type.is_dir() {
+        return Some(EntryKind::Tree);
+    }
+    if !file_type.is_file() {
+        return None;
     }
     #[cfg(unix)]
     let executable = {
@@ -883,11 +972,11 @@ fn disk_kind(meta: &std::fs::Metadata) -> EntryKind {
     };
     #[cfg(not(unix))]
     let executable = false;
-    if executable {
+    Some(if executable {
         EntryKind::ExecutableBlob
     } else {
         EntryKind::Blob
-    }
+    })
 }
 
 /// Tree entries keyed by name, so matching a directory's files against the tree costs one
@@ -963,6 +1052,17 @@ fn refuse_symlink(full: &std::path::Path, spelled: &[&str]) -> std::result::Resu
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(Box::new(error)),
     }
+}
+
+/// Reads up to `limit + 1` bytes of `path`, so a caller can tell a file that grew past `limit`
+/// from one that fits without ever holding more than one byte over the limit.
+fn read_at_most(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut data)?;
+    Ok(data)
 }
 
 fn worktree_error(op: &'static str, path: &str, source: BoxError) -> Error {
