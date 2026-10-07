@@ -130,7 +130,8 @@ impl Repository {
     /// names when the clone recorded one, else whichever of `master` and `main` exists
     /// locally. `None` when nothing names one. The branch itself may not exist locally — the
     /// remote's `HEAD` is what the clone was told, so the caller reports a missing branch by
-    /// name.
+    /// name — but its remote-tracking branch must: a remote `HEAD` that names itself or a
+    /// tracking branch that is gone is skipped.
     ///
     /// # Errors
     /// [`Error::Git`] when the reference store cannot be read or its directories cannot be
@@ -154,7 +155,7 @@ impl Repository {
                         continue;
                     }
                 };
-                let Some(branch) = remote_head_branch(&reference) else {
+                let Some(branch) = remote_head_branch(repo, &reference) else {
                     continue;
                 };
                 // `origin` wins when several remotes record a HEAD; any other remote answers
@@ -217,16 +218,25 @@ fn unparsable_ref(repo: &gix::Repository, op: &'static str, source: BoxError) ->
 }
 
 /// The branch `refs/remotes/<remote>/HEAD` points at, without its namespace. `None` for any
-/// other reference, and for a remote `HEAD` that is not symbolic.
-fn remote_head_branch(reference: &gix::Reference<'_>) -> Option<String> {
+/// other reference, for a remote `HEAD` that is not symbolic, that names itself, or whose
+/// tracking branch is gone (as after a remote renamed its default branch and a prune deleted
+/// the old one): none of those names a branch the remote still has.
+fn remote_head_branch(repo: &gix::Repository, reference: &gix::Reference<'_>) -> Option<String> {
     let full_name = reference.name().as_bstr();
     let remote_prefix = full_name.strip_suffix(b"/HEAD")?;
     let gix::refs::TargetRef::Symbolic(target) = reference.target() else {
         return None;
     };
-    let target = target.as_bstr();
-    let branch = target.strip_prefix(remote_prefix)?.strip_prefix(b"/")?;
-    (!branch.is_empty()).then(|| lossy(branch.as_bstr()))
+    let branch = target
+        .as_bstr()
+        .strip_prefix(remote_prefix)?
+        .strip_prefix(b"/")?;
+    if branch.is_empty() || branch == b"HEAD" {
+        return None;
+    }
+    // A target that cannot be read names no branch, the same as an unparsable remote ref.
+    repo.find_reference(target).ok()?;
+    Some(lossy(branch.as_bstr()))
 }
 
 /// The kind of a reference and its display name. Branches, remote branches and tags drop their

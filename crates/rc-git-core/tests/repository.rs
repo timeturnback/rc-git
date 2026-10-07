@@ -115,6 +115,83 @@ fn a_remote_head_names_the_default_branch() {
 }
 
 #[test]
+fn a_self_pointing_remote_head_falls_back_to_local_mainline() {
+    let fx = Fixture::standard();
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/HEAD",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+}
+
+#[test]
+fn a_dangling_remote_head_falls_back_to_local_mainline() {
+    let fx = Fixture::standard();
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/gone",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("main"),
+        "a remote HEAD naming a pruned tracking branch names nothing"
+    );
+    let listing = repo.refs().unwrap();
+    assert!(
+        listing
+            .broken
+            .iter()
+            .any(|b| b.full_name == "refs/remotes/origin/HEAD")
+    );
+    assert!(
+        listing
+            .refs
+            .iter()
+            .any(|r| r.full_name == "refs/heads/main")
+    );
+}
+
+#[test]
+fn origin_head_wins_over_other_remotes() {
+    let fx = Fixture::standard();
+    fx.git(&["update-ref", "refs/remotes/aaa/dev", "main"]);
+    fx.git(&["update-ref", "refs/remotes/origin/trunk", "main"]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/aaa/HEAD",
+        "refs/remotes/aaa/dev",
+    ]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(
+        repo.default_branch().unwrap().as_deref(),
+        Some("trunk"),
+        "origin answers even though aaa sorts first"
+    );
+}
+
+#[test]
+fn a_detached_remote_head_falls_back_to_local_mainline() {
+    let fx = Fixture::standard();
+    fx.git(&[
+        "update-ref",
+        "--no-deref",
+        "refs/remotes/origin/HEAD",
+        "main",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+}
+
+#[test]
 fn a_repository_with_no_branches_has_no_default_branch() {
     let fx = Fixture::empty_dir();
     fx.git(&["init", "-q", "-b", "work"]);
