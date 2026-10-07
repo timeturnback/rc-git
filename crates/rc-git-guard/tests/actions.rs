@@ -291,15 +291,7 @@ mod commit_and_discard {
         let BlobDiff::Text { hunks } = diff else {
             panic!("expected a text diff");
         };
-        hunks
-            .iter()
-            .map(|hunk| HunkStamp {
-                old_start: hunk.old_start,
-                old_lines: hunk.old_lines,
-                new_start: hunk.new_start,
-                new_lines: hunk.new_lines,
-            })
-            .collect()
+        hunks.iter().map(HunkStamp::from).collect()
     }
 
     #[test]

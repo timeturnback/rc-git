@@ -372,7 +372,7 @@ fn spliced_edit(
             path: path.to_owned(),
         });
     }
-    verify_stamps(repo_path, path, entry.oid, stamps)?;
+    verified_hunks(repo_path, OP, path, entry.oid, stamps)?;
 
     let old = blob_data(repo, OP, path, entry.oid)?;
     let full = workfile::join_under(work_dir, path, OP)?;
@@ -395,7 +395,7 @@ fn spliced_edit(
 /// The current hunks of `path`'s worktree diff against the blob `old`, computed by the same
 /// code that built the UI's hunks. A binary or over-limit file has no hunks to select, so it
 /// reports a mismatch.
-pub(super) fn recompute_hunks(
+fn recompute_hunks(
     repo_path: &Path,
     op: &'static str,
     path: &str,
@@ -422,39 +422,28 @@ pub(super) fn recompute_hunks(
     }
 }
 
-/// Whether `stamp` names one of `hunks` exactly.
-pub(super) fn stamp_matches(stamp: HunkStamp, hunks: &[rc_git_core::DiffHunk]) -> bool {
-    hunks.iter().any(|hunk| {
-        (
-            hunk.old_start,
-            hunk.old_lines,
-            hunk.new_start,
-            hunk.new_lines,
-        ) == (
-            stamp.old_start,
-            stamp.old_lines,
-            stamp.new_start,
-            stamp.new_lines,
-        )
-    })
-}
-
-/// Every stamp must match a hunk of a fresh diff, or the file moved under the selection.
-fn verify_stamps(
+/// The current hunks of `path`'s worktree diff against the blob `old`, after checking that
+/// every stamp names one of them exactly; otherwise the file moved under the selection.
+///
+/// # Errors
+/// [`ActionError::HunkMismatch`] when a stamp matches no current hunk or the file has no text
+/// diff, [`ActionError::Git`] when the diff cannot be computed.
+pub(super) fn verified_hunks(
     repo_path: &Path,
+    op: &'static str,
     path: &str,
     old: ObjectId,
     stamps: &[HunkStamp],
-) -> ActionResult<()> {
-    let hunks = recompute_hunks(repo_path, OP, path, old)?;
+) -> ActionResult<Vec<rc_git_core::DiffHunk>> {
+    let hunks = recompute_hunks(repo_path, op, path, old)?;
     for stamp in stamps {
-        if !stamp_matches(*stamp, &hunks) {
+        if !hunks.iter().any(|hunk| HunkStamp::from(hunk) == *stamp) {
             return Err(ActionError::HunkMismatch {
                 path: path.to_owned(),
             });
         }
     }
-    Ok(())
+    Ok(hunks)
 }
 
 pub(super) fn tree_entry_at(

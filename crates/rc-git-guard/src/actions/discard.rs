@@ -7,7 +7,7 @@ use std::path::Path;
 
 use gix::objs::tree::EntryKind;
 
-use super::commit::{blob_data, recompute_hunks, stamp_matches, tree_entry_at, work_dir};
+use super::commit::{blob_data, tree_entry_at, verified_hunks, work_dir};
 use super::workfile::{self, DiskEntry};
 use super::{ActionError, ActionResult, HunkStamp, confirm, open};
 use crate::{Action, Policy};
@@ -105,22 +105,12 @@ pub fn discard_hunks(
     if !entry.mode.is_blob() {
         return Err(mismatch());
     }
-    let hunks = recompute_hunks(repo_path, OP, path, entry.oid)?;
-    for stamp in stamps {
-        if !stamp_matches(*stamp, &hunks) {
-            return Err(mismatch());
-        }
-    }
+    let hunks = verified_hunks(repo_path, OP, path, entry.oid, stamps)?;
     // Keeping the unselected hunks and dropping the selected ones is one splice: apply
     // only the kept hunks onto the HEAD bytes.
     let kept: Vec<HunkStamp> = hunks
         .iter()
-        .map(|hunk| HunkStamp {
-            old_start: hunk.old_start,
-            old_lines: hunk.old_lines,
-            new_start: hunk.new_start,
-            new_lines: hunk.new_lines,
-        })
+        .map(HunkStamp::from)
         .filter(|stamp| !stamps.contains(stamp))
         .collect();
     let old = blob_data(&repo, OP, path, entry.oid)?;

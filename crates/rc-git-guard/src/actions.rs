@@ -56,6 +56,17 @@ pub struct HunkStamp {
     pub new_lines: u32,
 }
 
+impl From<&rc_git_core::DiffHunk> for HunkStamp {
+    fn from(hunk: &rc_git_core::DiffHunk) -> Self {
+        Self {
+            old_start: hunk.old_start,
+            old_lines: hunk.old_lines,
+            new_start: hunk.new_start,
+            new_lines: hunk.new_lines,
+        }
+    }
+}
+
 /// What of one file goes into a commit or a stash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileSelection {
