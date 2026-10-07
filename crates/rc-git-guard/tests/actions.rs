@@ -23,6 +23,22 @@ fn identity() -> Identity {
 }
 
 #[test]
+fn a_reftable_repository_is_refused_before_any_write() {
+    let Some(fx) = Fixture::reftable() else {
+        return;
+    };
+    let before = refs(&fx);
+    let err = create_branch(fx.path(), &Policy::default(), "topic", "main").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("reftable repositories are not supported"),
+        "{err}"
+    );
+    assert_eq!(refs(&fx), before, "no ref was written");
+}
+
+#[test]
 fn branches_and_tags_are_created_at_the_named_revision_and_never_overwritten() {
     let fx = Fixture::standard();
     let policy = Policy::default();

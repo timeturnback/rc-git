@@ -548,9 +548,18 @@ fn confirm(
 }
 
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {
-    gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
+    let repo = gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
         .map(|shared| shared.to_thread_local())
-        .map_err(git_err(op, name))
+        .map_err(git_err(op, name))?;
+    rc_git_core::require_files_ref_storage(
+        repo_path,
+        repo.config_snapshot()
+            .string("extensions.refStorage")
+            .as_deref()
+            .map(Vec::as_slice),
+    )
+    .map_err(git_err(op, name))?;
+    Ok(repo)
 }
 
 fn create_ref(

@@ -56,6 +56,29 @@ fn global_excludes_file() -> Option<PathBuf> {
     file.is_absolute().then_some(file)
 }
 
+/// Refuses a repository whose refs are not stored as loose files plus `packed-refs`.
+///
+/// `ref_storage` is the repository's `extensions.refStorage` value, `None` when unset. gix
+/// reads only the files backend, so a reftable repository opens but every ref read then
+/// fails on its compatibility stubs. Call this right after opening, with the value read
+/// under the isolated open, so the refusal names the format instead of a broken ref.
+///
+/// # Errors
+/// [`Error::Open`] for `path` when `ref_storage` is set to anything other than `files`.
+pub fn require_files_ref_storage(path: &Path, ref_storage: Option<&[u8]>) -> Result<()> {
+    match ref_storage {
+        None | Some(b"files") => Ok(()),
+        Some(format) => Err(Error::Open {
+            path: path.to_path_buf(),
+            source: format!(
+                "{} repositories are not supported: extensions.refStorage must be files",
+                gix::bstr::BStr::new(format)
+            )
+            .into(),
+        }),
+    }
+}
+
 impl Repository {
     /// Opens the repository at `path`, either a working directory or a `.git` directory.
     ///
@@ -67,7 +90,8 @@ impl Repository {
     /// `docs/safety.md`.
     ///
     /// # Errors
-    /// [`Error::Open`] when `path` is not a git repository or cannot be read.
+    /// [`Error::Open`] when `path` is not a git repository, cannot be read, or stores its refs
+    /// in a format other than files (see [`require_files_ref_storage`]).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let shared =
@@ -78,6 +102,14 @@ impl Repository {
                 }
             })?;
         let probe = shared.to_thread_local();
+        require_files_ref_storage(
+            path,
+            probe
+                .config_snapshot()
+                .string("extensions.refStorage")
+                .as_deref()
+                .map(Vec::as_slice),
+        )?;
         let git_dir = probe.git_dir().to_path_buf();
         let work_dir = probe.workdir().map(Path::to_path_buf);
         let slots = std::thread::available_parallelism()

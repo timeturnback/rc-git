@@ -44,6 +44,21 @@ fn open_names_the_path_when_not_a_repository() {
     assert_no_source_location(&msg);
 }
 
+#[test]
+fn open_refuses_a_reftable_repository_by_name() {
+    let Some(fx) = Fixture::reftable() else {
+        return;
+    };
+    let err = Repository::open(fx.path()).unwrap_err();
+    assert!(matches!(err, Error::Open { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("reftable repositories are not supported"),
+        "{msg}"
+    );
+    assert!(msg.contains(&fx.path().display().to_string()), "{msg}");
+}
+
 fn assert_no_source_location(msg: &str) {
     assert!(!msg.contains(".rs:"), "{msg}");
     assert!(!msg.contains(", at /"), "{msg}");

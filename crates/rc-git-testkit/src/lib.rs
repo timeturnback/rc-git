@@ -66,6 +66,30 @@ impl Fixture {
         Self::clone_of(TEMPLATE.get_or_init(Self::build_standard))
     }
 
+    /// A repository made by `git init --ref-format=reftable` with one commit on `main`, or
+    /// `None` when the git CLI is older than 2.45 and cannot create one.
+    ///
+    /// # Panics
+    /// When any git command fails on a git that supports reftable.
+    #[must_use]
+    pub fn reftable() -> Option<Self> {
+        let fixture = Self::empty_dir();
+        let version = fixture.git_output(&["version"]);
+        let mut numbers = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0));
+        let major = numbers.next().unwrap_or(0);
+        let minor = numbers.next().unwrap_or(0);
+        if (major, minor) < (2, 45) {
+            return None;
+        }
+        fixture.git(&["init", "-q", "-b", "main", "--ref-format=reftable"]);
+        fixture.write("README.md", README);
+        fixture.commit(COMMIT_1_TITLE, "2024-01-01T00:00:00+0000");
+        Some(fixture)
+    }
+
     fn build_standard() -> Self {
         let fixture = Self::empty_dir();
         fixture.git(&["init", "-q", "-b", "main"]);
