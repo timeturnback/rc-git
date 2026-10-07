@@ -136,18 +136,23 @@ struct Causes<'a>(&'a BoxError);
 
 impl fmt::Display for Causes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut line = format!("{:#}", self.0);
-        let mut frame = self.0.source();
-        while let Some(err) = frame {
-            let text = format!("{err:#}");
-            if !text.is_empty() && !line.contains(&text) {
-                line.push_str(": ");
-                line.push_str(&text);
-            }
-            frame = err.source();
-        }
-        f.write_str(&line)
+        f.write_str(&cause_chain(&**self.0))
     }
+}
+
+/// `error` and every error below it, each once, joined by `: ` — the text [`Causes`] renders.
+pub(crate) fn cause_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut line = format!("{error:#}");
+    let mut frame = error.source();
+    while let Some(err) = frame {
+        let text = format!("{err:#}");
+        if !text.is_empty() && !line.contains(&text) {
+            line.push_str(": ");
+            line.push_str(&text);
+        }
+        frame = err.source();
+    }
+    line
 }
 
 /// Result alias for this crate.

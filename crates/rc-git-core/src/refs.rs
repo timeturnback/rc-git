@@ -4,7 +4,7 @@ use gix::bstr::{BStr, ByteSlice};
 use gix::refs::file::ReferenceExt;
 use gix::refs::{Category, FullNameRef};
 
-use crate::error::{Error, Result, git};
+use crate::error::{BoxError, Error, Result, cause_chain, git};
 use crate::oid::Oid;
 use crate::repo::Repository;
 
@@ -66,18 +66,23 @@ impl Repository {
     /// object they annotate.
     ///
     /// # Errors
-    /// [`Error::Git`] when the reference store cannot be read. A single unreadable reference
-    /// lands in [`RefListing::broken`] instead of failing the whole listing.
+    /// [`Error::Git`] when the reference store cannot be read or its directories cannot be
+    /// walked. A single unreadable or unparsable reference lands in [`RefListing::broken`]
+    /// instead of failing the whole listing.
     pub fn refs(&self) -> Result<RefListing> {
         self.with(|repo| {
             let platform = repo.references().map_err(git("open reference store"))?;
+            let mut listing = RefListing::default();
             let mut collected = Vec::new();
             for reference in platform.all().map_err(git("list references"))? {
-                let reference = reference.map_err(|source| Error::Git {
-                    op: "iterate references",
-                    source,
-                })?;
-                collected.push(reference.detach());
+                match reference {
+                    Ok(reference) => collected.push(reference.detach()),
+                    Err(source) => listing.broken.push(unparsable_ref(
+                        repo,
+                        "walk the reference directories under .git/refs",
+                        source,
+                    )?),
+                }
             }
             drop(platform);
 
@@ -86,7 +91,6 @@ impl Repository {
                 .cached_packed_buffer()
                 .map_err(git("read packed-refs"))?;
             let packed = packed.as_ref().map(|snapshot| &***snapshot);
-            let mut listing = RefListing::default();
             for mut reference in collected {
                 let full_name = lossy(reference.name.as_bstr());
                 let (kind, short_name) = classify(reference.name.as_ref());
@@ -100,7 +104,7 @@ impl Repository {
                     Err(error) => {
                         listing.broken.push(BrokenRef {
                             full_name,
-                            error: error.to_string(),
+                            error: cause_chain(&error),
                         });
                     }
                 }
@@ -129,7 +133,8 @@ impl Repository {
     /// name.
     ///
     /// # Errors
-    /// [`Error::Git`] when the reference store cannot be read.
+    /// [`Error::Git`] when the reference store cannot be read or its directories cannot be
+    /// walked. A remote reference that does not parse is skipped: it names no branch.
     pub fn default_branch(&self) -> Result<Option<String>> {
         self.with(|repo| {
             let platform = repo.references().map_err(git("open reference store"))?;
@@ -138,10 +143,17 @@ impl Repository {
                 .prefixed("refs/remotes/")
                 .map_err(git("list remote branches"))?
             {
-                let reference = reference.map_err(|source| Error::Git {
-                    op: "iterate remote branches",
-                    source,
-                })?;
+                let reference = match reference {
+                    Ok(reference) => reference,
+                    Err(source) => {
+                        unparsable_ref(
+                            repo,
+                            "walk the remote branches under .git/refs/remotes",
+                            source,
+                        )?;
+                        continue;
+                    }
+                };
                 let Some(branch) = remote_head_branch(&reference) else {
                     continue;
                 };
@@ -172,6 +184,36 @@ impl Repository {
             Ok(None)
         })
     }
+}
+
+/// The reference an iteration error is about, reported under its name relative to the git dir,
+/// or `packed-refs:<line>` for a bad line in `packed-refs`. Both iterators have already moved
+/// past the bad entry, so the caller can continue.
+///
+/// # Errors
+/// [`Error::Git`] with `op` when the error is about the store rather than one reference, such
+/// as a directory under `.git/refs` that cannot be walked.
+fn unparsable_ref(repo: &gix::Repository, op: &'static str, source: BoxError) -> Result<BrokenRef> {
+    use gix::refs::file::iter::loose_then_packed::Error as IterError;
+    let full_name = match source.downcast_ref::<IterError>() {
+        Some(IterError::ReferenceCreation { relative_path, .. }) => {
+            relative_path.to_string_lossy().into_owned()
+        }
+        Some(IterError::ReadFileContents { path, .. }) => [repo.git_dir(), repo.common_dir()]
+            .iter()
+            .find_map(|base| path.strip_prefix(base).ok())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned(),
+        Some(IterError::PackedReference { line_number, .. }) => {
+            format!("packed-refs:{line_number}")
+        }
+        Some(IterError::Traversal(_)) | None => return Err(Error::Git { op, source }),
+    };
+    Ok(BrokenRef {
+        full_name,
+        error: cause_chain(&*source),
+    })
 }
 
 /// The branch `refs/remotes/<remote>/HEAD` points at, without its namespace. `None` for any

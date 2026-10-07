@@ -190,6 +190,66 @@ fn a_broken_ref_is_reported_without_hiding_the_rest() {
 }
 
 #[test]
+fn an_unparsable_ref_file_is_reported_without_hiding_the_rest() {
+    let fx = Fixture::standard();
+    fx.write(".git/refs/heads/crashed", b"");
+    fx.write(".git/refs/heads/junk", b"not a ref\n");
+    fx.write(".git/refs/remotes/origin/zero", b"");
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    let mut broken: Vec<&str> = listing
+        .broken
+        .iter()
+        .map(|b| b.full_name.as_str())
+        .collect();
+    broken.sort_unstable();
+    assert_eq!(
+        broken,
+        [
+            "refs/heads/crashed",
+            "refs/heads/junk",
+            "refs/remotes/origin/zero"
+        ]
+    );
+    assert!(
+        listing
+            .broken
+            .iter()
+            .all(|b| b.error.contains(&b.full_name)),
+        "{:?}",
+        listing.broken
+    );
+    assert!(
+        listing
+            .refs
+            .iter()
+            .any(|r| r.full_name == "refs/heads/main")
+    );
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+}
+
+#[test]
+fn a_corrupt_object_behind_a_ref_names_the_real_cause() {
+    let fx = Fixture::standard();
+    let main = fx.rev_parse("main");
+    let object = format!(".git/objects/{}/{}", &main[..2], &main[2..]);
+    fx.set_mode(&object, 0o644);
+    fx.write(&object, b"garbage\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    let main_ref = listing
+        .broken
+        .iter()
+        .find(|b| b.full_name == "refs/heads/main")
+        .unwrap_or_else(|| panic!("main not broken: {:?}", listing.broken));
+    assert!(
+        main_ref.error.contains("decompression"),
+        "{}",
+        main_ref.error
+    );
+}
+
+#[test]
 fn resolve_accepts_rev_parse_syntax() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
