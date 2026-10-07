@@ -384,8 +384,11 @@ pub fn delete_branch(
     const OP: &str = "delete branch";
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/heads/{name}");
+    require_listed_ref(&repo, OP, &full_name)?;
     if let Ok(Some(head_name)) = repo.head_name()
-        && head_name.as_bstr() == full_name.as_str()
+        && head_name
+            .as_bstr()
+            .eq_ignore_ascii_case(full_name.as_bytes())
     {
         return Err(ActionError::CheckedOut {
             name: name.to_owned(),
@@ -414,18 +417,13 @@ pub fn delete_tag(
 ) -> ActionResult<Deleted> {
     const OP: &str = "delete tag";
     let repo = open(repo_path, OP, name)?;
+    let full_name = format!("refs/tags/{name}");
+    require_listed_ref(&repo, OP, &full_name)?;
     let decision = policy.evaluate(&Action::DeleteTag {
         name: name.to_owned(),
     });
     let confirmation = confirm(decision, OP, name, input)?;
-    delete_ref(
-        &repo,
-        OP,
-        &format!("refs/tags/{name}"),
-        "tag",
-        name,
-        confirmation,
-    )
+    delete_ref(&repo, OP, &full_name, "tag", name, confirmation)
 }
 
 /// Turns a decision plus the user's input into proof, or the matching error.
@@ -482,6 +480,7 @@ fn create_ref(
     revspec: &str,
 ) -> ActionResult<()> {
     let repo = open(repo_path, op, full_name)?;
+    refuse_case_variant(&repo, op, full_name)?;
     let target = repo
         .rev_parse_single(revspec)
         .map_err(|source| ActionError::Git {
@@ -614,6 +613,7 @@ fn write_backup_ref(
 fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
     const OP: &str = "check branch reachability";
     let full_name = format!("refs/heads/{name}");
+    require_listed_ref(repo, OP, &full_name)?;
     let reference = repo
         .find_reference(&full_name)
         .map_err(|source| ActionError::Git {
@@ -659,4 +659,117 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
         }
     }
     Ok(false)
+}
+
+/// How `full_name` appears in the repository's own ref listing, loose and packed alike.
+struct ListedSpellings {
+    /// A ref is listed under exactly this name.
+    exact: bool,
+    /// A ref whose name differs from `full_name` only in ASCII case.
+    variant: Option<String>,
+}
+
+/// Reads the branch or tag listing `full_name` belongs to. The listing reports names as they
+/// are stored, so unlike a lookup it never resolves a name through filesystem case folding.
+fn listed_spellings(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<ListedSpellings> {
+    let git_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
+        op,
+        name: full_name.to_owned(),
+        source,
+    };
+    let references = repo
+        .references()
+        .map_err(|source| git_error(Box::new(source)))?;
+    let listing = if full_name.starts_with("refs/tags/") {
+        references.tags()
+    } else {
+        references.local_branches()
+    }
+    .map_err(|source| git_error(Box::new(source)))?;
+    let mut spellings = ListedSpellings {
+        exact: false,
+        variant: None,
+    };
+    for reference in listing {
+        let reference = reference.map_err(git_error)?;
+        let name = reference.name().as_bstr();
+        if name == full_name.as_bytes() {
+            spellings.exact = true;
+        } else if name.eq_ignore_ascii_case(full_name.as_bytes()) {
+            spellings.variant = Some(name.to_string());
+        }
+    }
+    Ok(spellings)
+}
+
+/// Whether the repository's own config sets `core.ignoreCase`, as git does on a
+/// case-insensitive volume. Read under the isolated open, so only the repository's config.
+fn ignores_case(repo: &gix::Repository) -> bool {
+    repo.config_snapshot()
+        .boolean("core.ignoreCase")
+        .unwrap_or(false)
+}
+
+/// The refusal for `full_name` when `variant` differs from it only in case.
+fn case_clash(op: &'static str, full_name: &str, variant: &str) -> ActionError {
+    ActionError::Git {
+        op,
+        name: full_name.to_owned(),
+        source: format!(
+            "'{variant}' differs only in case, and this repository ignores case \
+             (core.ignoreCase), so both names are one file; use git directly"
+        )
+        .into(),
+    }
+}
+
+/// Requires a ref listed under exactly `full_name`. A name that reaches a ref only through
+/// filesystem case folding (`MAIN` opening `main` on a case-insensitive volume) is not
+/// found, and under `core.ignoreCase` a name with a case-variant sibling is refused, since a
+/// write to one would land on the other.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `full_name`.
+fn require_listed_ref(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<()> {
+    let spellings = listed_spellings(repo, op, full_name)?;
+    if let Some(variant) = &spellings.variant
+        && ignores_case(repo)
+    {
+        return Err(case_clash(op, full_name, variant));
+    }
+    if !spellings.exact {
+        return Err(ActionError::Git {
+            op,
+            name: full_name.to_owned(),
+            source: "no ref has exactly this name".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Under `core.ignoreCase`, refuses creating `full_name` when a ref differing only in case
+/// exists: the new loose ref would be the existing one's file.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op`, `full_name`, and the existing spelling.
+fn refuse_case_variant(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<()> {
+    if !ignores_case(repo) {
+        return Ok(());
+    }
+    match listed_spellings(repo, op, full_name)?.variant {
+        Some(variant) => Err(case_clash(op, full_name, &variant)),
+        None => Ok(()),
+    }
 }

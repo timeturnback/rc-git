@@ -15,7 +15,8 @@ use gix::refs::Target;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
 use super::commit::{
-    blob_data, checked_out_branch, tree_of, whole_file_edit, work_dir, write_object,
+    blob_data, checked_out_branch, refuse_case_variant_path, tree_of, whole_file_edit, work_dir,
+    write_object,
 };
 use super::treebuild;
 use super::workfile;
@@ -61,6 +62,9 @@ pub fn stash_push(
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
     let base_tree = tree_of(&repo, head)?;
+    for path in paths {
+        refuse_case_variant_path(&repo, &work_dir, Some(base_tree), path, OP)?;
+    }
 
     let mut edits = std::collections::BTreeMap::new();
     for path in paths {

@@ -94,7 +94,9 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | stash pop | confirm, backup ref | same |
 | stash drop | type `drop`, backup ref | same |
 
-Protected patterns default to `main`, `master`, and `release/*`. A `Deny` cannot be confirmed
+Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
+a case-insensitive volume stores `MAIN` and `main` as one file, and the policy has no
+repository to ask, so `Main` is protected on every volume. A `Deny` cannot be confirmed
 away inside rc-git; the message points the user at git itself. A `Confirm` produces a
 `Challenge`; only `Challenge::verify` — with the exact phrase when the challenge names one,
 which the rows above spell out — yields a `Confirmation`, and the
@@ -102,7 +104,11 @@ write path holds one before it edits anything, so the compiler enforces the flow
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
 so no backup ever overwrites an earlier one. Two more rules live in the write path itself:
-the checked-out branch cannot be deleted, and a ref is never created over an existing one.
+the checked-out branch cannot be deleted (compared ignoring case), and a ref is never created
+over an existing one. Every name a delete, a checkout or the merged check acts on must appear
+byte for byte in the repository's own branch or tag listing, so `MAIN` never reaches `main`
+through filesystem case folding. Under `core.ignoreCase`, creating or deleting a name that
+another ref matches except for case is refused, since both names are one file on disk.
 
 The Changes tab's write paths add their own guarantees:
 
@@ -129,7 +135,9 @@ The Changes tab's write paths add their own guarantees:
   `.git/refs/heads/main` cannot be discarded as a file. A checkout or pull that writes a
   symlink and also a path below a directory spelled like it in another case (`D` and
   `d/payload`) is refused from the plan, since a case-insensitive volume would resolve that
-  directory to the new link.
+  directory to the new link. Under `core.ignoreCase`, a commit or stash refuses a selected
+  path that matches a file on disk or an entry in `HEAD` only by case (`F` for `f`), naming
+  both spellings, instead of storing the bytes under a second name.
 - **Discard** and stash restores write through one helper that re-checks every parent
   directory at write time and removes the old file first, so no write follows a symlink,
   whether at the last segment or above it, and deleting an already-gone file is not an
@@ -140,7 +148,9 @@ The Changes tab's write paths add their own guarantees:
 - **A branch switch** applies the tree diff between the two commits to exactly the changed
   paths, through the same planner the fast-forward pull uses: any dirty or staged overlap
   refuses the whole switch, named by path, before a byte is written, and paths the switch does
-  not touch keep their changes. `HEAD` moves last, expecting the branch or detached commit the
+  not touch keep their changes. A case-only rename (`Readme.md` to `README.md`) is not an
+  overlap: the added path exists on disk only as the clean file the switch deletes, and
+  deletions run before writes. `HEAD` moves last, expecting the branch or detached commit the
   switch was planned against. Its `checkout:` reflog line is appended explicitly, because a
   gix transaction writes none for a symbolic update — without it `git checkout -` and `HEAD@{n}`
   would name the wrong commit

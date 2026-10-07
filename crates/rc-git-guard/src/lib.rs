@@ -221,19 +221,22 @@ impl Policy {
         Self { protected }
     }
 
-    /// Whether `branch` matches a protected pattern.
+    /// Whether `branch` matches a protected pattern, ignoring ASCII case. A case-insensitive
+    /// volume stores `MAIN` and `main` as one file, and the policy has no repository to ask,
+    /// so it fails closed everywhere: in a repository holding both, `Main` is protected too.
     #[must_use]
     pub fn is_protected(&self, branch: &str) -> bool {
-        let branch = strip_heads(branch);
+        let branch = strip_heads(branch).as_bytes();
         for pattern in &self.protected {
             if let Some(prefix) = pattern.strip_suffix("/*") {
-                if branch
-                    .strip_prefix(prefix)
-                    .is_some_and(|rest| rest.starts_with('/'))
+                let prefix = prefix.as_bytes();
+                if branch.len() > prefix.len()
+                    && branch[..prefix.len()].eq_ignore_ascii_case(prefix)
+                    && branch[prefix.len()] == b'/'
                 {
                     return true;
                 }
-            } else if pattern == branch {
+            } else if pattern.as_bytes().eq_ignore_ascii_case(branch) {
                 return true;
             }
         }
@@ -370,9 +373,18 @@ mod tests {
         assert!(!policy.is_protected("releases/1.2"));
         assert!(!policy.is_protected("maintenance"));
         assert!(!policy.is_protected("feature/main"));
+        assert!(policy.is_protected("MAIN"), "case variants fail closed");
+        assert!(policy.is_protected("Main"));
+        assert!(policy.is_protected("refs/heads/Master"));
+        assert!(policy.is_protected("Release/1.2"));
+        assert!(policy.is_protected("RELEASE/x"));
+        assert!(!policy.is_protected("RELEASE"));
+        assert!(!policy.is_protected("Releases/1.2"));
 
         let custom = Policy::new(["refs/heads/trunk", "hotfix/*"]);
         assert!(custom.is_protected("trunk"));
+        assert!(custom.is_protected("Trunk"));
+        assert!(custom.is_protected("HotFix/x"));
         assert!(custom.is_protected("hotfix/x"));
         assert!(!custom.is_protected("main"));
     }
@@ -506,13 +518,18 @@ mod tests {
         assert_eq!(unmerged.typed_phrase.as_deref(), Some("topic"));
         assert!(unmerged.backup_ref);
 
-        assert!(matches!(
-            policy.evaluate(&Action::DeleteLocalBranch {
-                name: "main".into(),
-                merged: true
-            }),
-            Decision::Deny { .. }
-        ));
+        for name in ["main", "MAIN", "Release/2.0"] {
+            assert!(
+                matches!(
+                    policy.evaluate(&Action::DeleteLocalBranch {
+                        name: name.into(),
+                        merged: true
+                    }),
+                    Decision::Deny { .. }
+                ),
+                "{name}"
+            );
+        }
         assert!(matches!(
             policy.evaluate(&Action::DeleteRemoteBranch {
                 name: "release/2.0".into()

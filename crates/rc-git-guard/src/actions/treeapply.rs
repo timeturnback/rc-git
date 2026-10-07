@@ -6,7 +6,7 @@
 //! The caller writes its ref last. An interruption therefore leaves visibly modified files
 //! rather than what looks like lost work.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use gix::ObjectId;
@@ -134,6 +134,7 @@ pub(super) fn verify_clean(
         source: Box::new(source),
     })?;
     refuse_paths_under_written_links(changes, op)?;
+    let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
     for change in changes {
         let dirty = || ActionError::DirtyPath {
             path: change.path.clone(),
@@ -146,7 +147,9 @@ pub(super) fn verify_clean(
         } else {
             // The other side adds this path; anything already there is in the way.
             let full = workfile::join_under(work_dir, &change.path, op)?;
-            if std::fs::symlink_metadata(&full).is_ok() {
+            if let Ok(meta) = std::fs::symlink_metadata(&full)
+                && !deleted_files.contains(&file_id(&meta))
+            {
                 return Err(dirty());
             }
         }
@@ -159,6 +162,35 @@ pub(super) fn verify_clean(
         }
     }
     Ok(())
+}
+
+/// The device and inode of a file on disk: two spellings that a case-insensitive or
+/// normalization-insensitive volume resolves to one file share it.
+fn file_id(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+/// The files on disk the plan deletes. An added path that resolves to one of them exists only
+/// because the volume folds its spelling onto a path the plan removes first, as in the
+/// case-only rename `Readme.md` -> `README.md`; [`verify_clean`] checks that path is clean
+/// like every other.
+///
+/// # Errors
+/// [`ActionError::Git`] when a deleted path is invalid or crosses a symlink.
+fn deleted_files_on_disk(
+    work_dir: &Path,
+    changes: &[PathChange],
+    op: &'static str,
+) -> ActionResult<HashSet<(u64, u64)>> {
+    let mut files = HashSet::new();
+    for change in changes.iter().filter(|change| change.new.is_none()) {
+        let full = workfile::join_under(work_dir, &change.path, op)?;
+        if let Ok(meta) = std::fs::symlink_metadata(&full) {
+            files.insert(file_id(&meta));
+        }
+    }
+    Ok(files)
 }
 
 /// Refuses a plan that writes a symlink and also writes a path below a directory spelled like
@@ -189,6 +221,8 @@ fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) ->
 }
 
 /// Writes every change to the working tree, then updates the index for exactly those paths.
+/// Deletions run before writes: on a case-insensitive volume a deleted `Readme.md` is the
+/// same file as an added `README.md`, and deleting it afterwards would remove the new file.
 /// Call [`verify_clean`] first.
 ///
 /// # Errors
@@ -199,14 +233,15 @@ pub(super) fn apply(
     changes: &[PathChange],
 ) -> ActionResult<()> {
     let mut index_changes: Vec<(String, Option<(ObjectId, EntryKind)>)> = Vec::new();
+    for change in changes.iter().filter(|change| change.new.is_none()) {
+        workfile::delete_file(work_dir, &change.path)?;
+        index_changes.push((change.path.clone(), None));
+    }
     for change in changes {
         if let Some((oid, kind)) = change.new {
             let data = blob_data(repo, &change.path, oid)?;
             workfile::restore_file(work_dir, &change.path, &data, kind)?;
             index_changes.push((change.path.clone(), Some((oid, kind))));
-        } else {
-            workfile::delete_file(work_dir, &change.path)?;
-            index_changes.push((change.path.clone(), None));
         }
     }
     update_index(repo, work_dir, &index_changes)

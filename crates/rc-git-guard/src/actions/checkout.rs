@@ -89,6 +89,7 @@ pub fn checkout_branch(
 
 /// The commit a local branch points at.
 fn branch_tip(repo: &gix::Repository, full_name: &str) -> ActionResult<ObjectId> {
+    super::require_listed_ref(repo, OP, full_name)?;
     let reference = repo
         .find_reference(full_name)
         .map_err(|source| ActionError::Git {

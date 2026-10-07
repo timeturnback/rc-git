@@ -68,9 +68,12 @@ pub fn commit(
     let selected = selections.iter().map(|selection| match selection {
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
     });
-    workfile::check_paths(&work_dir, selected, OP)?;
+    workfile::check_paths(&work_dir, selected.clone(), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
     let base_tree = head_commit.map(|id| tree_of(&repo, id)).transpose()?;
+    for path in selected {
+        refuse_case_variant_path(&repo, &work_dir, base_tree, path, OP)?;
+    }
 
     let mut edits: BTreeMap<BString, Node> = BTreeMap::new();
     let mut index_changes: Vec<(String, Option<(ObjectId, EntryKind)>)> = Vec::new();
@@ -192,6 +195,129 @@ pub(super) fn tree_of(repo: &gix::Repository, commit: ObjectId) -> ActionResult<
             name: commit.id.to_string(),
             source: Box::new(source),
         })
+}
+
+/// Under `core.ignoreCase`, refuses a selected path any segment of which matches an entry on
+/// disk or in `base_tree` only by case: the volume would read `F` through `f`, and the commit
+/// would store the bytes under a second name beside the old entry. Each segment is compared
+/// with its parent directory's listing and the base tree's entries, so the cost is one
+/// listing and one tree per segment.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op`, the path, and both spellings, or when a directory or
+/// tree cannot be read.
+pub(super) fn refuse_case_variant_path(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    base_tree: Option<ObjectId>,
+    path: &str,
+    op: &'static str,
+) -> ActionResult<()> {
+    if !super::ignores_case(repo) {
+        return Ok(());
+    }
+    let mut dir = work_dir.to_path_buf();
+    let mut tree = base_tree;
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        if let Some(found) = disk_case_variant(&dir, segment, path, op)? {
+            return Err(case_variant_error(op, path, segment, &found, "on disk"));
+        }
+        let (subtree, variant) = tree_case_variant(repo, tree, segment, path, op)?;
+        if let Some(found) = variant {
+            return Err(case_variant_error(op, path, segment, &found, "in HEAD"));
+        }
+        tree = subtree;
+        dir.push(segment);
+    }
+    Ok(())
+}
+
+fn case_variant_error(
+    op: &'static str,
+    path: &str,
+    segment: &str,
+    found: &str,
+    place: &str,
+) -> ActionError {
+    ActionError::Git {
+        op,
+        name: path.to_owned(),
+        source: format!(
+            "'{segment}' is spelled '{found}' {place}, and this repository ignores case \
+             (core.ignoreCase); select the path as '{found}' or use git directly"
+        )
+        .into(),
+    }
+}
+
+/// The name in `parent` that equals `segment` only by case, when no entry has exactly that
+/// name; `None` when one does, when none matches, or when `parent` does not exist.
+fn disk_case_variant(
+    parent: &Path,
+    segment: &str,
+    path: &str,
+    op: &'static str,
+) -> ActionResult<Option<String>> {
+    let read_error = |source: std::io::Error| ActionError::Git {
+        op,
+        name: path.to_owned(),
+        source: Box::new(source),
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(read_error(error)),
+    };
+    let folded = segment.to_lowercase();
+    let mut variant = None;
+    for entry in entries {
+        let name = entry.map_err(read_error)?.file_name();
+        let name = name.to_string_lossy();
+        if name == segment {
+            return Ok(None);
+        }
+        if name.to_lowercase() == folded {
+            variant = Some(name.into_owned());
+        }
+    }
+    Ok(variant)
+}
+
+/// Looks `segment` up in `tree`: the subtree to descend into when the entry exists exactly
+/// and is a directory, and the entry's name when it matches only by case.
+fn tree_case_variant(
+    repo: &gix::Repository,
+    tree: Option<ObjectId>,
+    segment: &str,
+    path: &str,
+    op: &'static str,
+) -> ActionResult<(Option<ObjectId>, Option<String>)> {
+    let Some(tree) = tree else {
+        return Ok((None, None));
+    };
+    let git_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| ActionError::Git {
+        op,
+        name: path.to_owned(),
+        source,
+    };
+    let tree = repo
+        .find_tree(tree)
+        .map_err(|source| git_error(Box::new(source)))?;
+    let decoded = tree
+        .decode()
+        .map_err(|source| git_error(Box::new(source)))?;
+    let folded = segment.to_lowercase();
+    let mut variant = None;
+    for entry in &decoded.entries {
+        if entry.filename == segment.as_bytes() {
+            let subtree = entry.mode.is_tree().then(|| entry.oid.to_owned());
+            return Ok((subtree, None));
+        }
+        if entry.filename.to_str_lossy().to_lowercase() == folded {
+            variant = Some(entry.filename.to_string());
+        }
+    }
+    Ok((None, variant))
 }
 
 /// The edit for committing `path` exactly as disk has it: an addition or replacement from

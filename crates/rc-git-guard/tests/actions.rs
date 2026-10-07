@@ -164,6 +164,94 @@ fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     assert!(matches!(err, ActionError::Git { .. }), "{err}");
 }
 
+/// The standard fixture with `core.ignorecase=true`, as git sets it on a case-insensitive
+/// volume. Every case-variant name below must fail on either kind of volume.
+fn ignore_case_fixture() -> Fixture {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.ignorecase", "true"]);
+    fx
+}
+
+#[test]
+fn a_case_variant_of_the_checked_out_branch_is_refused() {
+    let fx = ignore_case_fixture();
+    let main_tip = fx.rev_parse("main");
+    let policy = Policy::default();
+
+    assert!(delete_branch(fx.path(), &policy, "MAIN", None).is_err());
+    assert!(delete_branch(fx.path(), &policy, "Main", Some("Main")).is_err());
+    assert!(plan_branch_delete(fx.path(), &policy, "MAIN").is_err());
+    assert_eq!(fx.rev_parse("main"), main_tip);
+    assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD still resolves");
+    assert!(!refs(&fx).contains("refs/rc-git/backup"));
+}
+
+#[test]
+fn a_case_variant_of_a_protected_branch_is_denied() {
+    let fx = ignore_case_fixture();
+    let policy = Policy::default();
+    fx.git(&["checkout", "-q", "feature"]);
+    fx.git(&["branch", "Release/2", "main"]);
+
+    let err = delete_branch(fx.path(), &policy, "MAIN", Some("MAIN")).unwrap_err();
+    assert!(err.to_string().contains("refs/heads/MAIN"), "{err}");
+    assert!(refs(&fx).contains("refs/heads/main"));
+
+    let err = delete_branch(fx.path(), &policy, "Release/2", Some("Release/2")).unwrap_err();
+    assert!(matches!(err, ActionError::Denied { .. }), "{err}");
+    assert!(refs(&fx).contains("refs/heads/Release/2"));
+}
+
+#[test]
+fn a_case_variant_of_an_unmerged_branch_is_refused_without_a_backup() {
+    let fx = ignore_case_fixture();
+    let feature_tip = fx.rev_parse("feature");
+
+    let err = delete_branch(fx.path(), &Policy::default(), "FEATURE", Some("FEATURE")).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'refs/heads/feature' differs only in case"),
+        "{err}"
+    );
+    assert_eq!(fx.rev_parse("feature"), feature_tip);
+    assert!(!refs(&fx).contains("refs/rc-git/backup"));
+}
+
+#[test]
+fn a_case_variant_of_a_packed_ref_is_never_created_or_deleted() {
+    let fx = ignore_case_fixture();
+    let policy = Policy::default();
+    fx.git(&["pack-refs", "--all"]);
+    let main_tip = fx.rev_parse("main");
+    let tag_object = fx.rev_parse("v1.0");
+
+    let err = create_branch(fx.path(), &policy, "MAIN", "feature").unwrap_err();
+    assert!(
+        err.to_string().contains("refs/heads/main"),
+        "names the existing spelling: {err}"
+    );
+    assert_eq!(fx.rev_parse("main"), main_tip);
+    assert!(create_tag(fx.path(), &policy, "V1.0", "feature").is_err());
+    assert!(delete_tag(fx.path(), &policy, "V1.0", Some("V1.0")).is_err());
+    assert_eq!(fx.rev_parse("v1.0"), tag_object);
+    assert!(!refs(&fx).contains("refs/heads/MAIN"));
+    assert!(!refs(&fx).contains("refs/rc-git/backup"));
+}
+
+#[test]
+fn a_branch_with_a_case_variant_sibling_is_refused() {
+    let fx = ignore_case_fixture();
+    fx.git(&["branch", "topic", "main~1"]);
+    fx.git(&["pack-refs", "--all"]);
+    fx.git(&["update-ref", "refs/heads/Topic", "feature"]);
+    let listed = refs(&fx);
+    assert!(listed.contains("refs/heads/Topic") && listed.contains("refs/heads/topic"));
+
+    let err = delete_branch(fx.path(), &Policy::default(), "Topic", Some("Topic")).unwrap_err();
+    assert!(err.to_string().contains("differs only in case"), "{err}");
+    assert_eq!(refs(&fx), listed, "both refs survive");
+}
+
 mod commit_and_discard {
     #![expect(
         clippy::disallowed_methods,
@@ -212,6 +300,56 @@ mod commit_and_discard {
                 new_lines: hunk.new_lines,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_mis_cased_selection_is_refused_and_head_is_unchanged() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "core.ignorecase", "true"]);
+        if !fx.path().join("ALPHA.TXT").exists() {
+            return; // A case-sensitive volume keeps `ALPHA.TXT` and `alpha.txt` apart.
+        }
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "case",
+            Some(identity()),
+            Some(&head),
+            &[whole("ALPHA.TXT")],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'ALPHA.TXT' is spelled 'alpha.txt' on disk"),
+            "{err}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head);
+        assert_eq!(porcelain(&fx), " M alpha.txt");
+
+        fx.git(&["mv", "docs", "docs-tmp"]);
+        fx.git(&["mv", "docs-tmp", "Docs"]);
+        fx.git(&["commit", "-qm", "rename docs"]);
+        let head = fx.rev_parse("HEAD");
+        fx.write("Docs/guide.md", b"edited\n");
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "case",
+            Some(identity()),
+            Some(&head),
+            &[whole("docs/guide.md")],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("'docs' is spelled 'Docs'"),
+            "{err}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head);
     }
 
     #[test]
@@ -1232,6 +1370,44 @@ mod checkout {
             assert_eq!(fx.rev_parse("HEAD"), head, "{link}");
             assert_eq!(porcelain(&fx), "", "{link}");
         }
+    }
+
+    #[test]
+    fn a_case_only_rename_switches_like_git() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "core.ignorecase", "true"]);
+        fx.git(&["checkout", "-q", "-b", "renamed"]);
+        fx.git(&["mv", "README.md", "Readme.md"]);
+        fx.git(&["commit", "-qm", "case-only rename"]);
+        fx.git(&["checkout", "-q", "main"]);
+        let renamed_tip = fx.rev_parse("renamed");
+
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "renamed").unwrap();
+        assert_eq!(outcome.new_head.to_string(), renamed_tip);
+        let names: Vec<String> = std::fs::read_dir(fx.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"Readme.md".to_owned()), "{names:?}");
+        assert!(!names.contains(&"README.md".to_owned()), "{names:?}");
+        assert_eq!(
+            porcelain(&fx),
+            "",
+            "the index and the disk agree with the new tree"
+        );
+
+        checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+        assert_eq!(porcelain(&fx), "");
+        assert!(fx.path().join("README.md").exists());
+    }
+
+    #[test]
+    fn a_case_variant_branch_name_is_not_checked_out() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "core.ignorecase", "true"]);
+        let err = checkout_branch(fx.path(), &Policy::default(), "FEATURE").unwrap_err();
+        assert!(err.to_string().contains("refs/heads/FEATURE"), "{err}");
+        assert_eq!(head_branch(&fx), "main");
     }
 
     #[test]
