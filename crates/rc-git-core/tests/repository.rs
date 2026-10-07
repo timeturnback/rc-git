@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use rc_git_core::{
     BlobContent, DEFAULT_BLOB_LIMIT, EntryKind, Error, ObjectKind, Oid, RefKind, Repository,
+    WorktreeStatus,
 };
 use rc_git_testkit::{
     BIN_DAT, COMMIT_1_TITLE, COMMIT_2_TITLE, FEATURE_TITLE, Fixture, MAIN_RS, README,
@@ -467,5 +468,53 @@ fn concurrent_readers_share_one_repository() {
     }
     for handle in handles {
         handle.join().unwrap();
+    }
+}
+
+#[test]
+fn an_index_shorter_than_its_trailer_is_read_as_unavailable() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"*.log\nbuild/\n");
+    fx.write("newdir/untracked.txt", b"x\n");
+    fx.write("newdir/noise.log", b"x\n");
+    fx.write("build/out.txt", b"x\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    for len in [0, 12, 31] {
+        fx.write(".git/index", &vec![0; len]);
+
+        let report = repo.worktree_status(tree, 10_000).unwrap();
+        let paths: Vec<String> = report.entries.iter().map(|e| e.path.to_string()).collect();
+        assert_eq!(
+            paths,
+            [".gitignore", "newdir/untracked.txt"],
+            "index of {len} bytes"
+        );
+
+        let listing = repo.worktree_entries(tree, "newdir").unwrap();
+        let statuses: Vec<(String, WorktreeStatus)> = listing
+            .entries
+            .iter()
+            .map(|e| (e.name.to_string(), e.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("noise.log".to_owned(), WorktreeStatus::Ignored),
+                ("untracked.txt".to_owned(), WorktreeStatus::Untracked),
+            ],
+            "index of {len} bytes"
+        );
+
+        let files = repo.worktree_files(tree, 10_000).unwrap();
+        let paths: Vec<String> = files.files.iter().map(|f| f.path.to_string()).collect();
+        assert!(
+            paths.iter().any(|p| p == "newdir/untracked.txt"),
+            "index of {len} bytes: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("build/")),
+            "an ignored directory is still pruned over an empty index: {paths:?}"
+        );
     }
 }

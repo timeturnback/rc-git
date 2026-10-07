@@ -602,6 +602,9 @@ impl<'repo> StatCache<'repo> {
     }
 
     fn build(repo: &'repo gix::Repository) -> Option<LoadedIndex> {
+        if index_unparseable(repo) {
+            return None;
+        }
         let index = repo.index().ok()?;
         let options = repo.stat_options().ok()?;
         Some(LoadedIndex { index, options })
@@ -652,10 +655,27 @@ impl<'repo> ExcludeCheck<'repo> {
     }
 
     fn build(repo: &'repo gix::Repository) -> Option<gix::AttributeStack<'repo>> {
+        let source = Source::WorktreeThenIdMappingIfNotSkipped;
+        if index_unparseable(repo) {
+            let empty = gix::index::State::new(repo.object_hash());
+            return repo.excludes(&empty, None, source).ok();
+        }
         let index = repo.index_or_empty().ok()?;
-        repo.excludes(&index, None, Source::WorktreeThenIdMappingIfNotSkipped)
-            .ok()
+        repo.excludes(&index, None, source).ok()
     }
+}
+
+/// Whether the index file exists but cannot hold even a header and its trailing hash, or is
+/// not a regular file. gix-index 0.55 slices the trailer off before it checks the length, so
+/// such a file panics (and aborts a release build) instead of returning an error; a FIFO
+/// would block the open. A missing file, or a metadata read that fails, goes to gix as before.
+fn index_unparseable(repo: &gix::Repository) -> bool {
+    const HEADER_LEN: u64 = 12;
+    let Ok(meta) = std::fs::metadata(repo.index_path()) else {
+        return false;
+    };
+    let hash_len = u64::try_from(repo.object_hash().len_in_bytes()).unwrap_or(u64::MAX);
+    !meta.is_file() || meta.len() < HEADER_LEN.saturating_add(hash_len)
 }
 
 /// Recursive full-tree status walk. Holds the borrowed handle for its whole run; the
