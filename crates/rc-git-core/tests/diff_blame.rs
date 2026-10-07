@@ -347,6 +347,41 @@ fn huge_context_is_clamped() {
     assert_eq!(hunk_ranges(&hunks), [(1, 10, 1, 10)]);
 }
 
+fn numbered_lines(edited: &[u32]) -> Vec<u8> {
+    let mut text = Vec::new();
+    for n in 1..=20 {
+        let line = if edited.contains(&n) {
+            format!("EDITED {n}\n")
+        } else {
+            format!("line {n}\n")
+        };
+        text.extend_from_slice(line.as_bytes());
+    }
+    text
+}
+
+#[test]
+fn context_size_controls_hunk_splitting() {
+    let fx = two_versions("f.txt", &numbered_lines(&[]), &numbered_lines(&[2, 18]));
+
+    let hunks = text_hunks(&fx, "f.txt", 3);
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(hunk_ranges(&hunks), [(1, 5, 1, 5), (15, 6, 15, 6)]);
+
+    let hunks = text_hunks(&fx, "f.txt", 10);
+    assert_eq!(hunk_ranges(&hunks), [(1, 20, 1, 20)]);
+
+    let hunks = text_hunks(&fx, "f.txt", 0);
+    assert_eq!(hunk_ranges(&hunks), [(2, 1, 2, 1), (18, 1, 18, 1)]);
+    assert!(
+        hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .all(|l| l.kind != DiffLineKind::Context),
+        "{hunks:?}"
+    );
+}
+
 /// One file committed twice on `main`, `old` then `new`.
 fn two_versions(path: &str, old: &[u8], new: &[u8]) -> Fixture {
     let fx = Fixture::empty_dir();
