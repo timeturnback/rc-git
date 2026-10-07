@@ -64,6 +64,24 @@ if [ ! -f "$ICON" ] || [ "$ROOT/scripts/make-icon.swift" -nt "$ICON" ]; then
   swift "$ROOT/scripts/make-icon.swift" --variant "$VARIANT" --output "$ICON" >/dev/null
 fi
 
+# Read before the build, so a checkout, commit or stash made while it runs cannot land in the
+# stamp. A tree git cannot read (an export, a dubious-ownership refusal) still builds, but says
+# so: its stamp names no commit and cannot be matched by the update window.
+git_err="$(mktemp)"
+git_state() { git -C "$ROOT" "$@" 2>"$git_err"; }
+dirty=false
+if commit="$(git_state rev-parse HEAD)" &&
+  count="$(git_state rev-list --count HEAD)" &&
+  porcelain="$(git_state status --porcelain --untracked-files=no)"; then
+  if [ -n "$porcelain" ]; then dirty=true; fi
+else
+  reason="$(head -n 1 "$git_err")"
+  echo "warning: cannot read git state ($reason); stamping commit unknown, build 0" >&2
+  commit=unknown
+  count=0
+fi
+rm -f "$git_err"
+
 "$ROOT/scripts/build.sh" "$CONFIG"
 BIN="$(swift build --package-path "$ROOT/mac" -c "$CONFIG" --show-bin-path)/RcGitApp"
 [ -x "$BIN" ] || {
@@ -105,11 +123,6 @@ verify_stamps() {
     fi
   done
 }
-
-commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-count="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
-dirty=false
-[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ] && dirty=true
 
 # The version's patch is the commit count, so a commit on master is the only thing that
 # moves it and nothing has to be bumped by hand. mac/Info.plist carries the major and minor;
