@@ -152,7 +152,8 @@ import Testing
     @Test func aSolutionConfigHandsOverToTheConfigsItReferences() {
         var files = sources("src/lib/x.ts", "src/main.tsx")
         files["tsconfig.json"] = """
-            {"files": [], "references": [{"path": "./tsconfig.node.json"}, {"path": "./tsconfig.app.json"}]}
+            {"files": [], "references": [{"path": "./tsconfig.node.json"}, \
+            {"path": "./tsconfig.app.json"}]}
             """
         files["tsconfig.node.json"] = #"{"compilerOptions": {"composite": true}}"#
         files["tsconfig.app.json"] = #"{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}"#

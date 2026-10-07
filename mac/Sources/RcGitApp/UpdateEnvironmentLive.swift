@@ -232,7 +232,8 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         guard outcome.status == 0 else {
             let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"
             return .failure(
-                "your login shell failed the toolchain check (status \(outcome.status)): \(lastLine)"
+                "your login shell failed the toolchain check "
+                    + "(status \(outcome.status)): \(lastLine)"
             )
         }
         return .ready

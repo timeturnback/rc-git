@@ -809,11 +809,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             diffText.scroll(.zero)
         case let .binary(oldSize, newSize):
             showDiffPlaceholder(
-                "\(change.path) is binary (\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
+                "\(change.path) is binary "
+                    + "(\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
             )
         case let .tooLarge(size, limit):
             showDiffPlaceholder(
-                "\(change.path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
+                "\(change.path) is \(ByteFormat.string(size)), "
+                    + "over the \(ByteFormat.string(limit)) limit"
             )
         }
     }

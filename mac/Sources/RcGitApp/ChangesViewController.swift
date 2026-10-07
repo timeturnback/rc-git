@@ -445,12 +445,14 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             case let .binary(oldSize, newSize):
                 diffRows = []
                 showDiffPlaceholder(
-                    "\(path) is binary (\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
+                    "\(path) is binary "
+                        + "(\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
                 )
             case let .tooLarge(size, limit):
                 diffRows = []
                 showDiffPlaceholder(
-                    "\(path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
+                    "\(path) is \(ByteFormat.string(size)), "
+                        + "over the \(ByteFormat.string(limit)) limit"
                 )
             }
         }

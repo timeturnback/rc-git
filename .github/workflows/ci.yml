@@ -102,3 +102,10 @@ jobs:
             echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
             exit 1
           fi
+      - name: Swift lines fit 100 columns   # same check as check.sh's "swift line length"
+        run: |
+          if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
+            mac/Sources mac/Tests mac/Package.swift scripts; then
+            echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
+            exit 1
+          fi

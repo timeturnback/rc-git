@@ -95,7 +95,8 @@ struct GitFixture {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw FixtureError(
-                "git \(args.joined(separator: " ")) failed: \(String(decoding: errors, as: UTF8.self))"
+                "git \(args.joined(separator: " ")) failed: "
+                    + String(decoding: errors, as: UTF8.self)
             )
         }
         return String(decoding: output, as: UTF8.self).trimmingCharacters(
