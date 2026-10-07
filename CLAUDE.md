@@ -18,7 +18,7 @@ Two rules define the project. A change that breaks either is wrong even when it 
 ## Commands
 
 ```sh
-scripts/check.sh                  # the full gate CI runs; --fast skips the Swift half
+scripts/check.sh                  # CI's checks minus build-app.sh; --fast skips the Swift half
 cargo test --workspace            # Rust tests; fixtures are built with the git CLI
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 scripts/build.sh                  # release Rust lib + header + swift build

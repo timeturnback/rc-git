@@ -84,4 +84,4 @@ mac/                     Swift package: RcGitKit (logic, tested) and RcGitApp (A
 docs/                    architecture, performance, safety, ffi, testing, development, roadmap
 ```
 
-`scripts/check.sh` runs everything CI runs.
+`scripts/check.sh` runs the checks CI runs; CI also assembles the app with `scripts/build-app.sh`.

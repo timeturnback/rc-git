@@ -63,7 +63,9 @@ jobs:
           tool: cbindgen@0.29.4   # build-app.sh regenerates the header through build.sh
       - run: cargo build --locked --release -p rc-git-ffi
       - run: cargo test --locked --workspace   # fixtures under macOS git config and APFS
-      - run: xcrun swift-format lint --strict --recursive mac/Sources mac/Tests mac/Package.swift
+      - run: |
+          xcrun swift-format lint --strict --recursive \
+            mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
       - run: swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
       - run: swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
       - run: scripts/build-app.sh

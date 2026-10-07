@@ -20,7 +20,7 @@ cargo test --workspace                      # after Rust changes
 scripts/gen-header.sh                       # after changing rc-git-ffi
 swift test --package-path mac               # after Swift changes
 scripts/check.sh --fast                     # everything except the Swift half
-scripts/check.sh                            # the whole gate, same as CI
+scripts/check.sh                            # CI's checks; CI also runs build-app.sh
 ```
 
 `rust-toolchain.toml` pins Rust (with clippy and rustfmt), and `scripts/gen-header.sh` and CI

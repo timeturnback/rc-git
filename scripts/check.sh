@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The full gate, identical to CI. Pass --fast to skip the Swift build and tests.
+# The checks CI runs, minus assembling the app bundle, which only CI does.
+# Pass --fast to skip the Swift build and tests.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
