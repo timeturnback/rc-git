@@ -9,13 +9,13 @@ repos:
         name: cargo fmt
         entry: cargo fmt --all -- --check
         language: system
-        types: [rust]
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^(clippy|rustfmt)\.toml$)
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
         language: system
-        types: [rust]
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^(clippy|rustfmt)\.toml$)
         pass_filenames: false
       - id: ffi-header
         name: FFI header in sync
@@ -25,9 +25,12 @@ repos:
         pass_filenames: false
       - id: swift-format
         name: swift-format lint
-        entry: xcrun swift-format lint --strict
+        entry: >-
+          xcrun swift-format lint --strict --recursive
+          mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
         language: system
-        types: [swift]
+        files: (\.swift$|^\.swift-format$)
+        pass_filenames: false
       - id: shellcheck
         name: shellcheck
         entry: shellcheck
