@@ -20,7 +20,8 @@ rc-git-highlight.workspace = true
 rc-git-testkit.workspace = true
 
 # Not `workspace = true`: the workspace forbids unsafe_code and this crate is the
-# one place it is allowed. Every other lint mirrors the workspace table.
+# one place it is allowed. Every other lint mirrors the workspace table, and the
+# "lint tables" step in scripts/check.sh fails when the two drift.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"

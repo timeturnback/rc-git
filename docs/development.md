@@ -109,7 +109,7 @@ churn is expected during development.
 
 | File | Governs |
 |---|---|
-| `Cargo.toml` `[workspace.lints]` | rustc and clippy levels for every crate |
+| `Cargo.toml` `[workspace.lints]` | rustc and clippy levels for all crates but rc-git-ffi and rc-git-testkit, whose hand copies `scripts/check.sh` diffs against it |
 | `clippy.toml` | banned write APIs, test allowances |
 | `rustfmt.toml` | 100 columns, 2024 edition style |
 | `deny.toml` | advisories, license allowlist, sources |

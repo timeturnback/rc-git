@@ -13,7 +13,10 @@ tempfile.workspace = true
 russh.workspace = true
 tokio = { workspace = true, features = ["process", "macros"] }
 
-# Test support: a broken fixture must fail loudly, so panics are the right tool here.
+# Not `workspace = true`: test support drops the panic-prevention group (unwrap_used,
+# expect_used, panic, panic_in_result_fn, unimplemented) because a broken fixture must fail
+# loudly. Every other lint mirrors the workspace table, and the "lint tables" step in
+# scripts/check.sh fails when the two drift.
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
@@ -25,5 +28,10 @@ dbg_macro = "deny"
 todo = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
 module_name_repetitions = "allow"
 similar_names = "allow"

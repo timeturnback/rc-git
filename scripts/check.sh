@@ -29,6 +29,30 @@ step "cargo fmt"
 cargo fmt --all -- --check
 step "ffi header"
 scripts/gen-header.sh --verify
+step "lint tables"
+# rc-git-ffi and rc-git-testkit hand-copy the workspace lint tables; each Cargo.toml says why.
+lint_table() {
+  awk -v section="[$2]" '$0 == section { f = 1; next } /^\[/ { f = 0 } f && /^[a-z_]+ =/' "$1" |
+    sort
+}
+lint_drift() {
+  echo "error: $1 drifted from the workspace lint table in Cargo.toml (diff above)" >&2
+  exit 1
+}
+ffi=crates/rc-git-ffi/Cargo.toml
+testkit=crates/rc-git-testkit/Cargo.toml
+panic_lints='^(unwrap_used|expect_used|panic|panic_in_result_fn|unimplemented) ='
+diff <(lint_table Cargo.toml workspace.lints.clippy) \
+  <(lint_table "$ffi" lints.clippy | grep -v '^undocumented_unsafe_blocks =') ||
+  lint_drift "$ffi [lints.clippy]"
+diff <(lint_table Cargo.toml workspace.lints.rust | grep -v '^unsafe_code =') \
+  <(lint_table "$ffi" lints.rust | grep -v '^unsafe_op_in_unsafe_fn =') ||
+  lint_drift "$ffi [lints.rust]"
+diff <(lint_table Cargo.toml workspace.lints.clippy | grep -Ev "$panic_lints") \
+  <(lint_table "$testkit" lints.clippy) ||
+  lint_drift "$testkit [lints.clippy]"
+diff <(lint_table Cargo.toml workspace.lints.rust) <(lint_table "$testkit" lints.rust) ||
+  lint_drift "$testkit [lints.rust]"
 step "shell scripts"
 shellcheck scripts/*.sh
 shfmt -d scripts/*.sh
