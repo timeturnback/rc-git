@@ -23,7 +23,6 @@ let package = Package(
             path: "Sources/RcGitKit",
             linkerSettings: [
                 .unsafeFlags(["-L", rustLibDir]),
-                .linkedLibrary("rc_git_ffi"),
                 // The Rust side's HTTPS transport uses the system libcurl.
                 .linkedLibrary("curl"),
                 // The ssh transport's OpenSSH-config parsing resolves the local user
