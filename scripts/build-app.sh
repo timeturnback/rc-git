@@ -72,7 +72,7 @@ git_state() { git -C "$ROOT" "$@" 2>"$git_err"; }
 dirty=false
 if commit="$(git_state rev-parse HEAD)" &&
   count="$(git_state rev-list --count HEAD)" &&
-  porcelain="$(git_state status --porcelain --untracked-files=no)"; then
+  porcelain="$(git_state --no-optional-locks status --porcelain --untracked-files=no)"; then
   if [ -n "$porcelain" ]; then dirty=true; fi
 else
   reason="$(head -n 1 "$git_err")"
