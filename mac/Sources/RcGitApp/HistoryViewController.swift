@@ -799,24 +799,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private func renderDiff(change: TreeChange, diff: BlobDiff) {
         diffPlaceholder.isHidden = true
-        switch diff {
-        case let .text(hunks):
-            if hunks.isEmpty {
-                showDiffPlaceholder("\(change.path): no line changes")
-                return
-            }
+        if let placeholder = diff.placeholder(path: change.path) {
+            showDiffPlaceholder(placeholder)
+        } else if case let .text(hunks) = diff {
             diffText.textStorage?.setAttributedString(DiffRendering.attributed(hunks: hunks))
             diffText.scroll(.zero)
-        case let .binary(oldSize, newSize):
-            showDiffPlaceholder(
-                "\(change.path) is binary "
-                    + "(\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
-            )
-        case let .tooLarge(size, limit):
-            showDiffPlaceholder(
-                "\(change.path) is \(ByteFormat.string(size)), "
-                    + "over the \(ByteFormat.string(limit)) limit"
-            )
         }
     }
 

@@ -426,34 +426,19 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             showDiffPlaceholder(message)
         case let .loaded(path, diff):
             diffPath = path
-            switch diff {
-            case let .text(hunks):
+            diffRows = []
+            if let placeholder = diff.placeholder(path: path) {
+                showDiffPlaceholder(placeholder)
+            } else if case let .text(hunks) = diff {
                 let all = hunks.map(Self.stamp(of:))
-                diffRows = []
                 for hunk in hunks {
                     diffRows.append(.header(stamp: Self.stamp(of: hunk), all: all))
                     for line in hunk.lines {
                         diffRows.append(.line(line))
                     }
                 }
-                if diffRows.isEmpty {
-                    showDiffPlaceholder("\(path): no line changes")
-                } else {
-                    diffPlaceholder.isHidden = true
-                    diffScroll.isHidden = false
-                }
-            case let .binary(oldSize, newSize):
-                diffRows = []
-                showDiffPlaceholder(
-                    "\(path) is binary "
-                        + "(\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
-                )
-            case let .tooLarge(size, limit):
-                diffRows = []
-                showDiffPlaceholder(
-                    "\(path) is \(ByteFormat.string(size)), "
-                        + "over the \(ByteFormat.string(limit)) limit"
-                )
+                diffPlaceholder.isHidden = true
+                diffScroll.isHidden = false
             }
         }
         diffTable.reloadData()

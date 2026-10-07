@@ -116,6 +116,26 @@ public enum BlobDiff: Sendable, Hashable {
     case tooLarge(size: UInt64, limit: UInt64)
 }
 
+extension BlobDiff {
+    /// The line a diff pane shows in place of hunks, or nil when there are hunks to show.
+    public func placeholder(path: String) -> String? {
+        switch self {
+        case let .text(hunks):
+            return hunks.isEmpty ? "\(path): no line changes" : nil
+        case let .binary(oldSize, newSize):
+            return "\(path) is binary "
+                + "(\(ByteFormat.string(oldSize)) → \(ByteFormat.string(newSize)))"
+        case let .tooLarge(size, limit):
+            return Self.tooLargePlaceholder(path: path, size: size, limit: limit)
+        }
+    }
+
+    /// The line a pane shows for a file over its size limit.
+    public static func tooLargePlaceholder(path: String, size: UInt64, limit: UInt64) -> String {
+        "\(path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
+    }
+}
+
 /// What the history detail's diff pane shows.
 public enum FileDiffState: Sendable {
     case empty

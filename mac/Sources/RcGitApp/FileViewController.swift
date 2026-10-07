@@ -229,8 +229,7 @@ final class FileViewController: NSViewController {
             pathLabel.stringValue = entry.name
             detailLabel.stringValue = ByteFormat.string(size)
             showPlaceholder(
-                "\(entry.name) is \(ByteFormat.string(size)), "
-                    + "over the \(ByteFormat.string(limit)) limit."
+                BlobDiff.tooLargePlaceholder(path: entry.name, size: size, limit: limit)
             )
             if size <= FileViewController.hardLimit {
                 tooLargeEntry = (entry, size)
