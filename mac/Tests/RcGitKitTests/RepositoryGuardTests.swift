@@ -11,7 +11,7 @@ import Testing
 
         try RepositoryGuard.createBranch(
             repoPath: fixture.path, name: "topic", revspec: "main~1")
-        #expect(fixture.revParse("refs/heads/topic") == fixture.revParse("main~1"))
+        #expect(try fixture.revParse("refs/heads/topic") == fixture.revParse("main~1"))
         #expect(throws: RepositoryError.self) {
             try RepositoryGuard.createBranch(repoPath: fixture.path, name: "topic", revspec: "main")
         }
@@ -65,13 +65,13 @@ import Testing
         defer { fixture.remove() }
         let author = CommitIdentity(name: "Bridge User", email: "bridge@example.com")
         try fixture.write("alpha.txt", "bridge edit\n")
-        let head = fixture.revParse("HEAD")
+        let head = try fixture.revParse("HEAD")
 
         let outcome = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Bridge commit", author: author,
             expectedHead: head, selections: [.whole(path: "alpha.txt")], input: nil)
         #expect(outcome.branch == "main")
-        #expect(outcome.oid == fixture.revParse("HEAD"))
+        #expect(try outcome.oid == fixture.revParse("HEAD"))
         #expect(
             try fixture.gitOutput(["log", "-1", "--format=%an|%s"]) == "Bridge User|Bridge commit")
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
@@ -96,7 +96,7 @@ import Testing
         #expect(outcome.branch == "feature")
         #expect(!outcome.alreadyOnBranch)
         #expect(outcome.filesChanged > 0)
-        #expect(outcome.newHead.hex == fixture.revParse("feature"))
+        #expect(try outcome.newHead.hex == fixture.revParse("feature"))
         #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
 

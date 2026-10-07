@@ -43,8 +43,8 @@ struct GitFixture {
         try? FileManager.default.removeItem(atPath: path)
     }
 
-    func revParse(_ spec: String) -> String {
-        (try? gitOutput(["rev-parse", spec])) ?? ""
+    func revParse(_ spec: String) throws -> String {
+        try gitOutput(["rev-parse", "--verify", spec])
     }
 
     func write(_ relative: String, _ contents: String) throws {

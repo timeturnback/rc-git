@@ -57,3 +57,20 @@ fn an_expected_failure_runs_with_the_same_hermetic_identity() {
         ["Test Committer", "0"]
     );
 }
+
+#[test]
+fn an_expected_failure_reports_what_git_printed_on_stdout() {
+    let fixture = Fixture::standard();
+    let report = fixture.git_expect_failure(&["commit", "-q", "-m", "nothing staged"]);
+    assert!(
+        report.contains("nothing to commit"),
+        "expected git's stdout in the report, got: {report:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "stdout: On branch main")]
+fn a_failing_command_panics_with_its_stdout() {
+    let fixture = Fixture::standard();
+    fixture.git(&["commit", "-q", "-m", "nothing staged"]);
+}

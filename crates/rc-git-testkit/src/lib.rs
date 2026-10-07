@@ -150,7 +150,9 @@ impl Fixture {
         self.run(args, extra_env);
     }
 
-    /// Runs `git` expecting it to fail, returning its stderr for assertions.
+    /// Runs `git` expecting it to fail, returning its stderr followed by its stdout for
+    /// assertions. Both, because some failures (`commit` with nothing staged, a conflicting
+    /// `merge`) report only on stdout.
     ///
     /// # Panics
     /// When git cannot be started or exits zero.
@@ -162,7 +164,9 @@ impl Fixture {
             "git {} unexpectedly succeeded",
             args.join(" ")
         );
-        String::from_utf8_lossy(&output.stderr).into_owned()
+        let mut report = String::from_utf8_lossy(&output.stderr).into_owned();
+        report.push_str(&String::from_utf8_lossy(&output.stdout));
+        report
     }
 
     fn run(&self, args: &[&str], extra_env: &[(&str, &str)]) -> String {
@@ -173,9 +177,12 @@ impl Fixture {
             .expect("run git");
         assert!(
             output.status.success(),
-            "git {} failed: {}",
+            "git {} failed in {} ({}):\nstderr: {}\nstdout: {}",
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
+            self.path().display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }

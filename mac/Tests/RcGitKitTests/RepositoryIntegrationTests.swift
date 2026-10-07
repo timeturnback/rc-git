@@ -33,7 +33,7 @@ import Testing
 
         let head = try repo.head()
         #expect(head.refName == "refs/heads/main")
-        #expect(head.target?.hex == fixture.revParse("HEAD"))
+        #expect(try head.target?.hex == fixture.revParse("HEAD"))
 
         #expect(
             try repo.defaultBranch() == "main",
@@ -45,10 +45,10 @@ import Testing
         #expect(names == ["main", "feature", "origin/main", "v0.9", "v1.0"])
         let tag = try #require(listing.refs.first { $0.shortName == "v1.0" })
         #expect(tag.kind == .tag)
-        #expect(tag.target.hex == fixture.revParse("v1.0^{commit}"))
+        #expect(try tag.target.hex == fixture.revParse("v1.0^{commit}"))
 
         let root = try repo.resolveTree("main")
-        #expect(root.hex == fixture.revParse("main^{tree}"))
+        #expect(try root.hex == fixture.revParse("main^{tree}"))
         #expect(try repo.treeOf(tag.target) == root)
         let entries = try repo.treeEntries(root)
         #expect(
@@ -157,7 +157,7 @@ import Testing
         #expect(detail.committerName == "Test Committer")
         #expect(detail.committerEmail == "committer@example.com")
         #expect(detail.committerTime == 1_704_326_400)
-        #expect(detail.tree.hex == fixture.revParse("main^{tree}"))
+        #expect(try detail.tree.hex == fixture.revParse("main^{tree}"))
 
         let titledOnly = try repo.resolve("main~1")
         #expect(try repo.commitDetails(titledOnly).body.isEmpty)
@@ -208,7 +208,7 @@ import Testing
         #expect(spans.count == 1)
         #expect(spans[0].startLine == 1)
         #expect(spans[0].lineCount == 3)
-        #expect(spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
+        #expect(try spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
 
         #expect(throws: RepositoryError.self) { try repo.blame(tip: new, path: "nope.txt") }
     }
@@ -227,7 +227,7 @@ import Testing
         #expect(untracked.oid == nil)
         let readme = try #require(listing.entries.first { $0.name == "README.md" })
         #expect(readme.status == .unchanged)
-        #expect(readme.oid?.hex == fixture.revParse("HEAD:README.md"))
+        #expect(try readme.oid?.hex == fixture.revParse("HEAD:README.md"))
 
         guard case let .text(data, _, _) = try repo.worktreeFile(path: "untracked.txt") else {
             Issue.record("expected text")
@@ -277,7 +277,7 @@ import Testing
         #expect(rows.map(\.0) == ["Zeta.txt", "alpha.txt", "untracked.txt"])
         #expect(rows.map(\.1) == [.deleted, .modified, .untracked])
         let modified = report.entries[1]
-        #expect(modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
+        #expect(try modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
 
         guard
             case let .text(hunks) = try repo.diffWorktreeFile(
@@ -295,7 +295,7 @@ import Testing
         #expect(stashes.count == 1)
         #expect(stashes[0].index == 0)
         #expect(stashes[0].message.hasSuffix("kept"))
-        #expect(stashes[0].oid.hex == fixture.revParse("stash@{0}"))
+        #expect(try stashes[0].oid.hex == fixture.revParse("stash@{0}"))
     }
 
     @Test func repositoryIsUsableFromManyThreadsAtOnce() async throws {
