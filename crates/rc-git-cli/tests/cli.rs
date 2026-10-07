@@ -592,7 +592,7 @@ fn changes_lists_every_changed_path_flat() {
 
     let out = rc_git(&["changes", path, "--max-scan", "1"]);
     assert!(out.status.success());
-    assert!(stderr(&out).contains("warning: truncated after scanning 2 entries"));
+    assert!(stderr(&out).contains("warning: truncated after scanning 1 entries"));
 
     let out = rc_git(&["changes", path, "--bogus"]);
     assert_eq!(out.status.code(), Some(2));
@@ -644,7 +644,7 @@ fn files_lists_every_file_on_disk_including_ignored_ones() {
 
     let out = rc_git(&["files", path, "--max-scan", "1"]);
     assert!(out.status.success());
-    assert!(stderr(&out).contains("warning: truncated after scanning 2 entries"));
+    assert!(stderr(&out).contains("warning: truncated after scanning 1 entries"));
 
     let out = rc_git(&["files", path, "--bogus"]);
     assert_eq!(out.status.code(), Some(2));

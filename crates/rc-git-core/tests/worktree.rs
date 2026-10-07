@@ -492,7 +492,7 @@ fn worktree_status_truncates_at_the_scan_cap() {
     let tree = repo.resolve_tree("HEAD").unwrap();
     let report = repo.worktree_status(tree, 5).unwrap();
     assert!(report.truncated);
-    assert_eq!(report.scanned, 6);
+    assert_eq!(report.scanned, 5);
 
     let full = repo.worktree_status(tree, 100_000).unwrap();
     assert!(!full.truncated);
@@ -698,6 +698,33 @@ fn worktree_files_enters_an_ignored_directory_that_holds_tracked_files() {
 }
 
 #[test]
+fn worktree_status_stops_inside_a_deleted_tree_at_the_cap() {
+    let fx = Fixture::standard();
+    for i in 0..50 {
+        // Distinct contents give each subtree its own object.
+        fx.write(&format!("d/p{i:02}/f"), format!("{i}\n").as_bytes());
+    }
+    fx.commit("Add d", "2024-01-05T00:00:00+0000");
+    fx.remove("d");
+    let full = {
+        let repo = Repository::open(fx.path()).unwrap();
+        repo.worktree_status(repo.resolve_tree("HEAD").unwrap(), 100_000)
+            .unwrap()
+    };
+    assert!(!full.truncated);
+    // Corrupt the last deleted subtree: a walk that keeps decoding past the cap fails on it.
+    let last = fx.rev_parse("HEAD:d/p49");
+    fx.remove(&format!(".git/objects/{}/{}", &last[..2], &last[2..]));
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let cap = full.scanned - 25;
+    let report = repo.worktree_status(tree, cap).unwrap();
+    assert!(report.truncated);
+    assert_eq!(report.scanned, cap);
+}
+
+#[test]
 fn worktree_files_truncates_at_the_scan_cap() {
     let fx = Fixture::standard();
     for i in 0..20 {
@@ -708,7 +735,7 @@ fn worktree_files_truncates_at_the_scan_cap() {
     let tree = repo.resolve_tree("HEAD").unwrap();
     let list = repo.worktree_files(tree, 5).unwrap();
     assert!(list.truncated);
-    assert_eq!(list.scanned, 6);
+    assert_eq!(list.scanned, 5);
 
     let full = repo.worktree_files(tree, 100_000).unwrap();
     assert!(!full.truncated);

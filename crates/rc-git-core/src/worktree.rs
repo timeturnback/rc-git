@@ -894,11 +894,12 @@ struct StatusWalk<'repo> {
 impl StatusWalk<'_> {
     /// Counts one visited entry; `false` when the cap is hit and the walk must stop.
     fn visit(&mut self) -> bool {
-        self.report.scanned += 1;
-        if self.report.scanned > self.max_scan {
+        if self.report.scanned >= self.max_scan {
             self.report.truncated = true;
+            return false;
         }
-        !self.report.truncated
+        self.report.scanned += 1;
+        true
     }
 
     fn walk_dir(&mut self, tree: Option<Oid>, dir: &BString, disk_dir: &Path) -> Result<()> {
@@ -1116,6 +1117,9 @@ impl StatusWalk<'_> {
     /// tree objects only, never the disk.
     fn walk_deleted(&mut self, tree: Oid, dir: &BString) -> Result<()> {
         for tree_entry in tree_children(self.context.repo, tree)? {
+            if self.report.truncated {
+                return Ok(());
+            }
             let path = child_path(dir, &tree_entry.name);
             match tree_entry.kind {
                 EntryKind::Tree => self.walk_deleted(tree_entry.oid, &path)?,
@@ -1156,11 +1160,12 @@ struct FileWalk<'repo> {
 impl FileWalk<'_> {
     /// Counts one visited entry; `false` when the cap is hit and the walk must stop.
     fn visit(&mut self) -> bool {
-        self.list.scanned += 1;
-        if self.list.scanned > self.max_scan {
+        if self.list.scanned >= self.max_scan {
             self.list.truncated = true;
+            return false;
         }
-        !self.list.truncated
+        self.list.scanned += 1;
+        true
     }
 
     fn walk_dir(&mut self, tree: Option<Oid>, dir: &BString, disk_dir: &Path) -> Result<()> {
