@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the Rust static library, regenerates the C header, and builds the Swift package.
-# Run it once before `swift build` or `swift test` in mac/: both link ../target/release.
+# Run it once before `swift build` or `swift test` in mac/: both link ../target/app.
 #
-#   scripts/build.sh [release|debug]   Swift build configuration, release by default; the Rust
-#                                      library is always built release
+#   scripts/build.sh [release|debug]   build configuration, release by default; debug builds the
+#                                      Rust library with the faster app-dev profile
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,8 +26,7 @@ release | debug) ;;
 esac
 cd "$ROOT"
 
-# Package.swift links ../target/release, so pin cargo there over any CARGO_TARGET_DIR or config.
-CARGO_TARGET_DIR="$ROOT/target" cargo build --release -p rc-git-ffi
+scripts/rust-lib.sh "$CONFIG"
 scripts/gen-header.sh
 swift build --package-path mac -c "$CONFIG"
 echo "built $(swift build --package-path mac -c "$CONFIG" --show-bin-path)/RcGitApp"

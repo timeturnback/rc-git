@@ -50,6 +50,7 @@ releases everything inside it. Arrays are `Box<[T]>` turned into a pointer and a
 
 ## Linking
 
-`mac/Package.swift` links `librc_git_ffi.a` from `target/release` through the `CRcGit` system
-library target and its module map. `scripts/build.sh` builds the library and regenerates the
-header before invoking `swift build`; run it once after cloning or after touching Rust.
+`mac/Package.swift` links `librc_git_ffi.a` from `target/app` through the `CRcGit` system
+library target and its module map; `scripts/rust-lib.sh` copies the release or app-dev build
+there. `scripts/build.sh` builds the library and regenerates the header before invoking
+`swift build`; run it once after cloning or after touching Rust.

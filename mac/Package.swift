@@ -3,10 +3,10 @@ import Foundation
 import PackageDescription
 
 // The Rust static library lives in the workspace's target directory. `swift build` and
-// `swift test` both link against the release build; run `scripts/build.sh` from the workspace
-// root to produce it before building here.
+// `swift test` both link target/app, where `scripts/rust-lib.sh` copies the release or app-dev
+// build; run `scripts/build.sh` from the workspace root to produce it before building here.
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-let rustLibDir = packageDir + "/../target/release"
+let rustLibDir = packageDir + "/../target/app"
 
 let package = Package(
     name: "RcGit",

@@ -175,8 +175,7 @@ if ((fast == 0)); then
   xcrun swift-format lint --strict --recursive \
     mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
   step "rust release library"
-  # Pinned to where Package.swift links it, whatever CARGO_TARGET_DIR or a cargo config says.
-  CARGO_TARGET_DIR="$ROOT/target" cargo build --locked --release -p rc-git-ffi
+  scripts/rust-lib.sh release --locked
   # Same flags on both, so swift test reuses the build; kept out of Package.swift and build.sh.
   step "swift build"
   swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings

@@ -65,3 +65,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# The dev bundle's Rust library (scripts/build.sh debug): release minus fat LTO, with parallel
+# and incremental codegen, so a one-line core edit relinks in seconds instead of a minute.
+[profile.app-dev]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true

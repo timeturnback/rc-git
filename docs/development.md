@@ -31,8 +31,9 @@ cbindgen produces a different header, `gen-header.sh` names both versions and le
 alone. Bump either on purpose, in its own commit, and fix what the new lints or header formatting
 report in the same change.
 
-`swift build` and `swift test` link `target/release/librc_git_ffi.a`; rebuild it with
-`cargo build --release -p rc-git-ffi` whenever the Rust side changes.
+`swift build` and `swift test` link `target/app/librc_git_ffi.a`; rebuild it with
+`scripts/rust-lib.sh release` (or `debug`, the faster `app-dev` profile without LTO) whenever the
+Rust side changes. A plain `cargo build -p rc-git-ffi` does not update that copy.
 
 ## Running the app
 

@@ -21,7 +21,7 @@ Two rules define the project. A change that breaks either is wrong even when it 
 scripts/check.sh                  # CI's checks minus build-app.sh; --fast skips the Swift half
 cargo test --workspace            # Rust tests; fixtures are built with the git CLI
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-scripts/build.sh                  # release Rust lib + header + swift build
+scripts/build.sh [debug]          # Rust lib + header + swift build (debug: app-dev profile)
 swift test --package-path mac     # RcGitKit tests; run scripts/build.sh once first
 scripts/build-app.sh [--dev]      # assemble RCGit.app, or RCGit-dev.app, ad-hoc signed
 scripts/install-app.sh            # build the release bundle into /Applications
