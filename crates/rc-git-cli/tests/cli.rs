@@ -726,6 +726,26 @@ fn a_newline_in_a_name_is_quoted_not_split_into_two_records() {
 }
 
 #[test]
+fn a_wrapped_or_tabbed_title_stays_one_record() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("wrapped.txt", b"x\n");
+    fx.commit("first line\nsecond\tline\n\nBody", "2024-01-05T00:00:00Z");
+    let head = fx.rev_parse("main");
+
+    let out = stdout(&rc_git(&["log", path, "-n", "1"]));
+    assert_eq!(
+        out,
+        format!("{head}\t1704412800\tTest Author\tfirst line second line\n")
+    );
+    let out = stdout(&rc_git(&["blame", path, "main", "wrapped.txt"]));
+    assert_eq!(
+        out,
+        format!("{head}\t1\t1\tTest Author\tfirst line second line\n")
+    );
+}
+
+#[test]
 fn stash_lists_entries_newest_first() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

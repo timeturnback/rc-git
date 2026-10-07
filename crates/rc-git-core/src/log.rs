@@ -23,7 +23,7 @@ pub struct CommitSummary {
     pub author_time: i64,
     /// Author timezone, seconds east of UTC.
     pub author_offset: i32,
-    /// First paragraph of the message with surrounding whitespace removed.
+    /// First paragraph of the message folded onto one line, as git's `%s`.
     pub title: String,
 }
 
@@ -139,6 +139,6 @@ pub(crate) fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {
         author_email: author.email.to_str_lossy().into_owned(),
         author_time,
         author_offset,
-        title: decoded.message().title.to_str_lossy().trim().to_owned(),
+        title: decoded.message().summary().to_str_lossy().into_owned(),
     })
 }

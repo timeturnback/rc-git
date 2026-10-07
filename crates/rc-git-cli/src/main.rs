@@ -73,6 +73,8 @@ usage: rc-git [--time] <command> <repo> [args]
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
   octal \\ooo), so \"a\\nb\" is one file. -z (files, changes, status) ends each record with
   NUL instead of a newline and prints the path raw, unquoted, as the last field.
+  A commit title is its first paragraph on one line, as git's %s; a control character in a
+  title, name or message column prints as a space.
 
   An unknown flag or a surplus argument is a usage error. `--` ends the flags, so a path
   after it may start with '-'. -h or --help anywhere before `--` prints this text.
@@ -753,9 +755,25 @@ fn write_commit_row(out: &mut Vec<u8>, commit: &CommitSummary) -> Result<()> {
     writeln!(
         out,
         "{}\t{}\t{}\t{}",
-        commit.oid, commit.author_time, commit.author_name, commit.title
+        commit.oid,
+        commit.author_time,
+        field(&commit.author_name),
+        field(&commit.title)
     )?;
     Ok(())
+}
+
+/// Free text from a commit (a name, a title, a message) as one TSV field: every control
+/// character, tab and newline included, becomes a space, so the text cannot split a record.
+fn field(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.chars().any(char::is_control) {
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .into()
+    } else {
+        text.into()
+    }
 }
 
 /// The `--max-scan` commit budget: every commit when the flag is absent, at least one when given.
@@ -856,13 +874,16 @@ fn show(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
     writeln!(
         out,
         "author\t{} <{}>\t{}\t{}",
-        summary.author_name, summary.author_email, summary.author_time, summary.author_offset
+        field(&summary.author_name),
+        field(&summary.author_email),
+        summary.author_time,
+        summary.author_offset
     )?;
     writeln!(
         out,
         "committer\t{} <{}>\t{}\t{}",
-        detail.committer_name,
-        detail.committer_email,
+        field(&detail.committer_name),
+        field(&detail.committer_email),
         detail.committer_time,
         detail.committer_offset
     )?;
@@ -1002,7 +1023,11 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
         writeln!(
             out,
             "{}\t{}\t{}\t{}\t{}",
-            range.commit, range.start_line, range.line_count, commit.author_name, commit.title
+            range.commit,
+            range.start_line,
+            range.line_count,
+            field(&commit.author_name),
+            field(&commit.title)
         )?;
     }
     Ok(ExitCode::SUCCESS)
@@ -1193,7 +1218,7 @@ fn stash_push_verb(
         author(&args)?,
         args.value(&["--confirm"]),
     )?;
-    writeln!(out, "{}\t{}", saved.oid, saved.message)?;
+    writeln!(out, "{}\t{}", saved.oid, field(&saved.message))?;
     Ok(ExitCode::SUCCESS)
 }
 

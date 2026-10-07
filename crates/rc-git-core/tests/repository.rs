@@ -416,6 +416,18 @@ fn log_reads_through_a_commit_graph() {
 }
 
 #[test]
+fn log_title_folds_a_wrapped_subject() {
+    let fx = Fixture::standard();
+    fx.write("wrapped.txt", b"x\n");
+    fx.commit("first line\r\nsecond line\n\nBody", "2024-01-05T00:00:00Z");
+    let repo = Repository::open(fx.path()).unwrap();
+    let head = repo.resolve("HEAD").unwrap();
+    let commits = repo.log(head, 0, 1).unwrap();
+    assert_eq!(commits[0].title, "first line second line");
+    assert_eq!(repo.commit_details(head).unwrap().body, "Body");
+}
+
+#[test]
 fn commit_details_reports_body_committer_and_tree() {
     let fx = Fixture::standard();
     fx.commit_with_body(
