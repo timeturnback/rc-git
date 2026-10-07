@@ -2,7 +2,7 @@
 //! `git http-backend` per request. Plain HTTP on loopback only; production code
 //! accepts `http://` for loopback hosts exactly so these tests run end to end.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -216,6 +216,8 @@ fn handle_connection(
         drop(writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n"));
     }
     let Some(body) = read_body(&mut reader, &head) else {
+        let reason = b"malformed or truncated request body\n";
+        write_response(&mut writer, "400 Bad Request", TEXT_PLAIN, reason);
         return;
     };
     let (path_info, query_string) = head.target.split_once('?').unwrap_or((&head.target, ""));
@@ -290,14 +292,22 @@ fn refuse_unauthorized(writer: &mut TcpStream) {
     drop(writer.write_all(body));
 }
 
-/// Reads a chunked or fixed-length body; `None` when a fixed-length body ends early.
-fn read_body(reader: &mut BufReader<TcpStream>, head: &RequestHead) -> Option<Vec<u8>> {
+/// Reads a chunked or fixed-length body; `None` when it ends early or a chunk size line
+/// does not parse.
+fn read_body(reader: &mut impl BufRead, head: &RequestHead) -> Option<Vec<u8>> {
     if head.chunked {
-        return Some(read_chunked(reader));
+        return read_chunked(reader);
     }
     let mut body = vec![0_u8; head.content_length.unwrap_or(0)];
     reader.read_exact(&mut body).ok()?;
     Some(body)
+}
+
+/// What `git http-backend` printed and how it exited.
+struct BackendOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
 }
 
 #[expect(
@@ -308,7 +318,7 @@ fn run_backend(
     backend: &std::path::Path,
     project_root: &std::path::Path,
     request: &CgiRequest<'_>,
-) -> Vec<u8> {
+) -> BackendOutput {
     let mut command = Command::new(backend);
     command
         .env_clear()
@@ -330,73 +340,136 @@ fn run_backend(
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn git-http-backend");
-    child
-        .stdin
-        .take()
-        .expect("child stdin")
-        .write_all(request.body)
-        .expect("write request body");
-    let output = child.wait_with_output().expect("wait for git-http-backend");
-    output.stdout
+    let stdin = child.stdin.take().expect("child stdin");
+    // The body is written from its own thread so a backend that answers before reading all
+    // of it cannot deadlock against a full stdout pipe.
+    let (output, written) = std::thread::scope(|scope| {
+        let writer = scope.spawn(|| write_body(stdin, request.body));
+        let output = child.wait_with_output().expect("wait for git-http-backend");
+        (output, writer.join().expect("join the request body writer"))
+    });
+    let mut stderr = output.stderr;
+    if let Err(error) = &written {
+        stderr.extend_from_slice(
+            format!("rc-git-testkit: writing the request body to git-http-backend: {error}\n")
+                .as_bytes(),
+        );
+    }
+    BackendOutput {
+        stdout: output.stdout,
+        stderr,
+        success: output.status.success() && written.is_ok(),
+    }
 }
 
-/// Translates CGI output (headers, blank line, body) into an HTTP/1.1 response.
-fn respond(writer: &mut TcpStream, cgi_output: &[u8]) {
-    let split = cgi_output
+/// Writes the request body to the backend and closes its stdin. A backend that refuses a
+/// request exits without reading it; that broken pipe is its answer, not a failure here.
+fn write_body(mut stdin: impl Write, body: &[u8]) -> std::io::Result<()> {
+    match stdin.write_all(body) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
+    }
+}
+
+const TEXT_PLAIN: &str = "Content-Type: text/plain; charset=utf-8\r\n";
+
+/// Translates CGI output (headers, blank line, body) into an HTTP/1.1 response. A backend
+/// that failed answers `500`, and any non-2xx status carries git's stderr as a text/plain
+/// body, which the git client prints as `remote: ...`.
+fn respond(writer: &mut impl Write, output: &BackendOutput) {
+    let split = output
+        .stdout
         .windows(4)
         .position(|window| window == b"\r\n\r\n");
-    let Some(split) = split else {
-        drop(writer.write_all(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n"));
+    let Some(split) = split.filter(|_| output.success) else {
+        let status = "500 Internal Server Error";
+        report_backend_failure(status, &output.stderr);
+        write_response(writer, status, TEXT_PLAIN, &output.stderr);
         return;
     };
-    let headers = String::from_utf8_lossy(&cgi_output[..split]);
-    let body = &cgi_output[split + 4..];
+    let headers = String::from_utf8_lossy(&output.stdout[..split]);
     let mut status = "200 OK".to_owned();
-    let mut passthrough = String::new();
+    let mut passthrough = Vec::new();
     for line in headers.lines() {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        let value = value.trim();
         if name.eq_ignore_ascii_case("status") {
-            value.clone_into(&mut status);
+            value.trim().clone_into(&mut status);
         } else {
-            passthrough.push_str(line);
-            passthrough.push_str("\r\n");
+            passthrough.push((name, line));
         }
     }
+    let success = status.starts_with('2');
+    let mut headers = String::new();
+    for (name, line) in passthrough {
+        if success || !name.eq_ignore_ascii_case("content-type") {
+            headers.push_str(line);
+            headers.push_str("\r\n");
+        }
+    }
+    if success {
+        write_response(writer, &status, &headers, &output.stdout[split + 4..]);
+        return;
+    }
+    report_backend_failure(&status, &output.stderr);
+    headers.push_str(TEXT_PLAIN);
+    write_response(writer, &status, &headers, &output.stderr);
+}
+
+/// Writes one complete response; `headers` is zero or more `Name: value\r\n` lines.
+fn write_response(writer: &mut impl Write, status: &str, headers: &str, body: &[u8]) {
     let head = format!(
-        "HTTP/1.1 {status}\r\n{passthrough}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
+    // The client may already have hung up; the test it runs reports that, not this thread.
     drop(writer.write_all(head.as_bytes()));
     drop(writer.write_all(body));
 }
 
-fn read_chunked(reader: &mut BufReader<TcpStream>) -> Vec<u8> {
+#[expect(
+    clippy::print_stderr,
+    reason = "surface git-http-backend's refusal in the failing test's output"
+)]
+fn report_backend_failure(status: &str, stderr: &[u8]) {
+    eprintln!(
+        "rc-git-testkit: git-http-backend answered {status}: {}",
+        String::from_utf8_lossy(stderr).trim_end()
+    );
+}
+
+/// Reads a chunked body through its terminal chunk; `None` on a size line that does not
+/// parse or on EOF before the terminal chunk.
+fn read_chunked(reader: &mut impl BufRead) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     loop {
-        let mut size_line = String::new();
-        if reader.read_line(&mut size_line).is_err() {
-            return body;
-        }
-        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        let size_line = read_crlf_line(reader)?;
+        let size_field = size_line.split(';').next().unwrap_or_default().trim();
+        let size = usize::from_str_radix(size_field, 16).ok()?;
         if size == 0 {
-            // Trailing CRLF after the terminal chunk.
-            let mut end = String::new();
-            drop(reader.read_line(&mut end));
-            return body;
+            // No trailers are sent by git; the blank line ends the body.
+            read_crlf_line(reader)?;
+            return Some(body);
         }
         let mut chunk = vec![0_u8; size];
-        if reader.read_exact(&mut chunk).is_err() {
-            return body;
-        }
+        reader.read_exact(&mut chunk).ok()?;
         body.extend_from_slice(&chunk);
-        let mut crlf = String::new();
-        drop(reader.read_line(&mut crlf));
+        if !read_crlf_line(reader)?.is_empty() {
+            return None;
+        }
+    }
+}
+
+/// One line without its line ending; `None` on EOF or a read error.
+fn read_crlf_line(reader: &mut impl BufRead) -> Option<String> {
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_owned()),
     }
 }
 
@@ -428,7 +501,116 @@ fn base64(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use std::io::Cursor;
+
+    use super::{
+        BackendOutput, CgiRequest, base64, git_http_backend, read_chunked, respond, run_backend,
+    };
+    use crate::Fixture;
+
+    fn output(stdout: &[u8], stderr: &[u8], success: bool) -> BackendOutput {
+        BackendOutput {
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+            success,
+        }
+    }
+
+    fn response_to(output: &BackendOutput) -> String {
+        let mut written = Vec::new();
+        respond(&mut written, output);
+        String::from_utf8(written).unwrap()
+    }
+
+    #[test]
+    fn read_chunked_joins_chunks_through_the_terminal_chunk() {
+        let mut input = Cursor::new(b"3\r\nabc\r\n2;ext=1\r\nde\r\n0\r\n\r\n".to_vec());
+        assert_eq!(read_chunked(&mut input).unwrap(), b"abcde");
+    }
+
+    #[test]
+    fn read_chunked_rejects_a_size_line_that_does_not_parse() {
+        let mut input = Cursor::new(b"3\r\nabc\r\nzz\r\nmore\r\n0\r\n\r\n".to_vec());
+        assert_eq!(read_chunked(&mut input), None);
+    }
+
+    #[test]
+    fn read_chunked_rejects_eof_before_the_terminal_chunk() {
+        let mut input = Cursor::new(b"3\r\nabc\r\n".to_vec());
+        assert_eq!(read_chunked(&mut input), None);
+    }
+
+    #[test]
+    fn output_without_a_header_block_answers_500_with_stderr() {
+        let response = response_to(&output(b"", b"fatal: broken\n", false));
+        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+        assert!(response.contains("Content-Type: text/plain"));
+        assert!(response.ends_with("\r\n\r\nfatal: broken\n"), "{response}");
+    }
+
+    #[test]
+    fn a_failed_exit_after_a_200_header_answers_500_with_stderr() {
+        let stdout = b"Content-Type: application/x-git-upload-pack-result\r\n\r\npartial";
+        let stderr = b"fatal: protocol error: bad line length character\n";
+        let response = response_to(&output(stdout, stderr, false));
+        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+        assert!(
+            response.ends_with("bad line length character\n"),
+            "{response}"
+        );
+        assert!(!response.contains("partial"));
+    }
+
+    #[test]
+    fn a_non_2xx_status_carries_stderr_as_plain_text() {
+        let stdout =
+            b"Status: 403 Forbidden\r\nContent-Type: text/html\r\nPragma: no-cache\r\n\r\n";
+        let stderr = b"Service not enabled: 'receive-pack'\n";
+        let response = response_to(&output(stdout, stderr, true));
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+        assert!(response.contains("Pragma: no-cache\r\n"));
+        assert!(!response.contains("text/html"));
+        assert!(response.contains("Content-Type: text/plain"));
+        assert!(response.ends_with("\r\n\r\nService not enabled: 'receive-pack'\n"));
+    }
+
+    #[test]
+    fn a_2xx_status_passes_the_cgi_body_through() {
+        let stdout = b"Content-Type: application/x-git-upload-pack-advertisement\r\n\r\nrefs";
+        let response = response_to(&output(stdout, b"warning: ignored\n", true));
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("application/x-git-upload-pack-advertisement"));
+        assert!(response.contains("Content-Length: 4\r\n"));
+        assert!(response.ends_with("\r\n\r\nrefs"));
+    }
+
+    #[test]
+    fn a_refused_push_body_is_not_a_panic_and_keeps_the_reason() {
+        let origin = Fixture::standard();
+        let (bare, bare_path) = origin.bare_copy();
+        bare.git(&[
+            "--git-dir",
+            "remote.git",
+            "config",
+            "http.receivepack",
+            "false",
+        ]);
+        let body = vec![b'0'; 4 << 20];
+        let request = CgiRequest {
+            method: "POST",
+            path_info: "/remote.git/git-receive-pack",
+            query_string: "",
+            content_type: "application/x-git-receive-pack-request",
+            headers: &[],
+            body: &body,
+        };
+
+        let output = run_backend(&git_http_backend(), bare_path.parent().unwrap(), &request);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Service not enabled"), "{stderr}");
+        assert!(response_to(&output).starts_with("HTTP/1.1 403 Forbidden\r\n"));
+    }
 
     #[test]
     fn base64_matches_known_vectors() {

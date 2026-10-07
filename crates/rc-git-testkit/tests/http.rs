@@ -128,3 +128,25 @@ fn a_git_protocol_header_selects_protocol_v2() {
         "expected a protocol v2 advertisement, got: {response}"
     );
 }
+
+#[test]
+fn a_refused_push_names_the_backend_reason() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = origin.bare_copy();
+    bare.git(&[
+        "--git-dir",
+        "remote.git",
+        "config",
+        "http.receivepack",
+        "false",
+    ]);
+    let server = HttpGitServer::serve(&bare_path);
+
+    let clone = Fixture::empty_dir();
+    clone.git(&["clone", "--quiet", &server.url(), "."]);
+    clone.write("pushed.txt", b"pushed\n");
+    clone.commit("Refused over HTTP", "2024-02-01T00:00:00+0000");
+    let output = clone.git_expect_failure(&["push", "--quiet"]);
+
+    assert!(output.contains("Service not enabled"), "{output}");
+}
