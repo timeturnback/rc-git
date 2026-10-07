@@ -515,7 +515,7 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
     else {
         panic!("expected too large");
     };
-    assert_eq!((size, limit), (17, 3));
+    assert_eq!((size, limit), (README.len() as u64, 3));
 
     let tree = repo.resolve_tree("main").unwrap();
     let err = repo

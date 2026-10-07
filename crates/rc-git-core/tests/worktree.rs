@@ -189,7 +189,7 @@ fn worktree_file_reads_text_binary_symlink_and_limits() {
     let BlobContent::TooLarge { size, limit } = repo.worktree_file("README.md", 3).unwrap() else {
         panic!("expected too large");
     };
-    assert_eq!((size, limit), (17, 3));
+    assert_eq!((size, limit), (rc_git_testkit::README.len() as u64, 3));
 
     let BlobContent::Text { data, .. } = repo.worktree_file("link", DEFAULT_BLOB_LIMIT).unwrap()
     else {
