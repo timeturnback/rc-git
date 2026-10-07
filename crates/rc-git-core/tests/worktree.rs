@@ -900,11 +900,34 @@ fn worktree_files_truncates_at_the_scan_cap() {
 #[test]
 fn worktree_files_reports_an_unreadable_directory() {
     let fx = Fixture::standard();
+    fx.set_mode("src", 0o000);
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    fx.remove("");
-    let err = repo.worktree_files(Some(tree), 10_000).unwrap_err();
-    assert!(err.to_string().contains("list working tree files"), "{err}");
+    let list = repo.worktree_files(Some(tree), 10_000);
+    fx.set_mode("src", 0o755);
+
+    let list = list.unwrap();
+    assert!(!list.files.iter().any(|file| file.path.starts_with(b"src/")));
+    assert!(list.files.iter().any(|file| file.path == "README.md"));
+    assert_eq!(list.unreadable.len(), 1, "{:?}", list.unreadable);
+    assert_eq!(list.unreadable[0].path, "src");
+    assert!(
+        list.unreadable[0].error.starts_with("read directory: "),
+        "{}",
+        list.unreadable[0].error
+    );
+}
+
+#[test]
+fn worktree_files_fails_on_an_unreadable_root() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    fx.set_mode("", 0o000);
+    let err = repo.worktree_files(None, 10_000);
+    fx.set_mode("", 0o755);
+
+    let err = err.unwrap_err().to_string();
+    assert!(err.contains("list working tree files: ''"), "{err}");
 }
 
 #[test]
