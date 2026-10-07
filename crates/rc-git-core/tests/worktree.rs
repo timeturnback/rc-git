@@ -668,17 +668,21 @@ fn the_stat_cache_answers_without_reading_a_clean_file() {
 
 /// Overwrites a file in place, keeping its inode, and puts its mtime back, so only the
 /// content and the ctime differ from what the index recorded.
+fn rewrite_keeping_mtime(fx: &Fixture, relative: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mtime = std::fs::metadata(fx.path().join(relative))?.modified()?;
+    fx.write(relative, contents);
+    set_mtime(fx, relative, mtime)
+}
+
+/// Sets a fixture file's mtime, so a test can match or outrun the stat the index recorded.
 #[expect(
     clippy::disallowed_methods,
     reason = "the test edits its own fixture file behind the index's back"
 )]
-fn rewrite_keeping_mtime(fx: &Fixture, relative: &str, contents: &[u8]) -> std::io::Result<()> {
-    let path = fx.path().join(relative);
-    let mtime = std::fs::metadata(&path)?.modified()?;
-    fx.write(relative, contents);
+fn set_mtime(fx: &Fixture, relative: &str, mtime: std::time::SystemTime) -> std::io::Result<()> {
     std::fs::OpenOptions::new()
         .write(true)
-        .open(&path)?
+        .open(fx.path().join(relative))?
         .set_modified(mtime)
 }
 
@@ -735,12 +739,19 @@ fn a_staged_same_size_edit_is_modified_against_the_tree() {
     );
 }
 
-/// A file edited in the same second the index was written is indistinguishable from one
-/// edited just after it, so the entry proves nothing and the file must be read.
+/// A file edited no earlier than the index was written is indistinguishable from one edited
+/// just after it, so the entry proves nothing and the file must be read. The future mtime makes
+/// the entry racy by construction, with every other compared stat field matching.
 #[test]
 fn a_racy_index_entry_still_reports_the_edit() {
     let fx = Fixture::standard();
+    fx.git(&["config", "core.trustctime", "false"]);
+    let tomorrow = std::time::SystemTime::now() + std::time::Duration::from_hours(24);
+    set_mtime(&fx, "alpha.txt", tomorrow).unwrap();
+    // The index now records an mtime later than its own timestamp, so the entry stays racy.
+    fx.git(&["update-index", "--refresh"]);
     fx.write("alpha.txt", b"omega\n");
+    set_mtime(&fx, "alpha.txt", tomorrow).unwrap();
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
