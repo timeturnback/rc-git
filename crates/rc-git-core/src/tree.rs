@@ -71,8 +71,8 @@ impl Repository {
         })
     }
 
-    /// Finds the entry at a `/`-separated `path` below `root`. Empty segments are ignored, so
-    /// `a//b` and `a/b/` both name `a/b`. `None` when any segment is missing.
+    /// Finds the entry at a `/`-separated `path` below `root`. Empty and `.` segments are
+    /// ignored, so `a//b`, `./a/b` and `a/b/` all name `a/b`. `None` when any segment is missing.
     ///
     /// # Errors
     /// [`Error::Object`](crate::Error::Object) when a tree on the path cannot be read.
@@ -83,7 +83,7 @@ impl Repository {
                 .map_err(object("read tree", root))?;
             let segments = path
                 .split('/')
-                .filter(|segment| !segment.is_empty())
+                .filter(|segment| !segment.is_empty() && *segment != ".")
                 .map(str::as_bytes);
             let found = tree_obj
                 .lookup_entry(segments)

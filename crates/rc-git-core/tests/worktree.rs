@@ -187,6 +187,34 @@ fn a_bare_repository_has_no_working_tree() {
 }
 
 #[test]
+fn every_spelling_of_a_directory_lists_the_same_entries() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let root = repo.worktree_entries(tree, "").unwrap();
+    for spelling in ["/", ".", "./", "//"] {
+        assert_eq!(
+            repo.worktree_entries(tree, spelling).unwrap(),
+            root,
+            "root spelled {spelling:?}"
+        );
+    }
+    let src = repo.worktree_entries(tree, "src").unwrap();
+    for spelling in ["./src", "/src/", "src//", "./src/."] {
+        assert_eq!(
+            repo.worktree_entries(tree, spelling).unwrap(),
+            src,
+            "src spelled {spelling:?}"
+        );
+    }
+
+    let err = repo.worktree_entries(tree, "src/..").unwrap_err();
+    assert!(matches!(err, Error::Worktree { .. }), "{err}");
+    assert!(err.to_string().contains("'..'"), "{err}");
+}
+
+#[test]
 fn a_missing_directory_is_an_error_but_a_tree_only_directory_lists_as_missing() {
     let fx = Fixture::standard();
     fx.remove("docs");

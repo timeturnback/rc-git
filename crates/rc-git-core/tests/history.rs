@@ -92,6 +92,14 @@ fn path_history_covers_folders_roots_and_missing_paths() {
         "an empty path names the root tree, which a merge combining both sides always changes"
     );
 
+    let file = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    assert!(!file.commits.is_empty());
+    assert_eq!(
+        repo.path_history(tip, "./file.txt", 0, 100, 1000).unwrap(),
+        file,
+        "a './' prefix names the same path"
+    );
+
     let missing = repo.path_history(tip, "nope.txt", 0, 100, 1000).unwrap();
     assert_eq!(missing.commits.len(), 0);
     assert!(missing.complete);

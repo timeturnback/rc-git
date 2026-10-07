@@ -290,6 +290,14 @@ fn entry_at_path_walks_segments() {
         main_rs
     );
     assert_eq!(
+        repo.entry_at_path(root, "./src/./main.rs")
+            .unwrap()
+            .unwrap()
+            .oid,
+        main_rs,
+        "a '.' segment names the folder it is in"
+    );
+    assert_eq!(
         repo.entry_at_path(root, "src").unwrap().unwrap().kind,
         EntryKind::Tree
     );

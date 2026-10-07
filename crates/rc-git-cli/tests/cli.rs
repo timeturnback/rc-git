@@ -179,6 +179,52 @@ fn filelog_lists_commits_that_changed_a_path() {
 }
 
 #[test]
+fn every_verb_reads_one_spelling_of_a_path() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let lib = stdout(&rc_git(&["filelog", path, "src/lib.rs"]));
+    assert_eq!(lib.lines().count(), 1);
+    for spelling in ["./src/lib.rs", "/src/lib.rs", "src//./lib.rs"] {
+        let out = rc_git(&["filelog", path, spelling]);
+        assert!(out.status.success(), "{spelling}: {}", stderr(&out));
+        assert_eq!(stdout(&out), lib, "filelog {spelling}");
+    }
+    assert_eq!(
+        stdout(&rc_git(&["cat", path, "HEAD", "./README.md"])),
+        stdout(&rc_git(&["cat", path, "HEAD", "README.md"]))
+    );
+    assert_eq!(
+        stdout(&rc_git(&["ls", path, "HEAD", "./src/"])),
+        stdout(&rc_git(&["ls", path, "HEAD", "src"]))
+    );
+
+    let root = stdout(&rc_git(&["status", path]));
+    assert!(!root.contains(".git"), "{root}");
+    for spelling in ["/", "./", "."] {
+        assert_eq!(
+            stdout(&rc_git(&["status", path, spelling])),
+            root,
+            "status {spelling}"
+        );
+    }
+    assert_eq!(
+        stdout(&rc_git(&["status", path, "./src"])),
+        stdout(&rc_git(&["status", path, "src"]))
+    );
+
+    for args in [
+        ["filelog", path, "src/../README.md"].as_slice(),
+        ["status", path, ".."].as_slice(),
+        ["discard", path, "../outside.txt"].as_slice(),
+    ] {
+        let out = rc_git(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&out).contains("'..' segment"), "{}", stderr(&out));
+    }
+}
+
+#[test]
 fn search_filters_by_message_author_and_dates() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

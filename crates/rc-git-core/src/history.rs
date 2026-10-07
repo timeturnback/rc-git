@@ -42,9 +42,9 @@ pub struct CommitFilter {
 impl Repository {
     /// Commits reachable from `tip` whose entry at `path` differs from the first parent's —
     /// from every parent's for merges, so a clean merge stays hidden — newest commit time
-    /// first. A root commit matches when the entry exists. An empty `path` names the root
-    /// tree, so every commit that changed anything matches. Renames are not followed; blame
-    /// covers deeper archaeology.
+    /// first. A root commit matches when the entry exists. Empty and `.` segments are
+    /// ignored, so `./a` names `a`. An empty `path` names the root tree, so every commit that
+    /// changed anything matches. Renames are not followed; blame covers deeper archaeology.
     ///
     /// Like `log`, the walk restarts from `tip` and skips `scan_skip` commits, so keep pages
     /// contiguous and cache them. At most `max_scan` commits are examined per call, whatever
@@ -65,7 +65,7 @@ impl Repository {
     ) -> Result<CommitPage> {
         let segments: Vec<Vec<u8>> = path
             .split('/')
-            .filter(|segment| !segment.is_empty())
+            .filter(|segment| !segment.is_empty() && *segment != ".")
             .map(|segment| segment.as_bytes().to_vec())
             .collect();
         self.with(|repo| {

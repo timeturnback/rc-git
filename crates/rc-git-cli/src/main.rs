@@ -65,6 +65,42 @@ const EXIT_TOO_LARGE: u8 = 4;
 const EXIT_AUTH: u8 = 5;
 const EXIT_HOSTKEY: u8 = 6;
 
+/// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Spells a repository path one way: leading `/` and `./`, doubled slashes and `.` segments
+/// dropped, so `./src//lib.rs` is `src/lib.rs` and `/` is the root (empty). A `..` segment is
+/// a usage error, since no tree entry can carry that name.
+fn canonical_path(raw: &str) -> Result<String> {
+    let mut segments = Vec::new();
+    for segment in raw.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                return Err(UsageError(format!(
+                    "path '{raw}' has a '..' segment; name it from the repository root"
+                ))
+                .into());
+            }
+            _ => segments.push(segment),
+        }
+    }
+    Ok(segments.join("/"))
+}
+
+fn canonical_paths(raw: &[String]) -> Result<Vec<String>> {
+    raw.iter().map(|path| canonical_path(path)).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verb {
     Head,
@@ -183,6 +219,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             let _ = writeln!(io::stderr().lock(), "error: {err:#}");
+            if err.downcast_ref::<UsageError>().is_some() {
+                return ExitCode::from(EXIT_USAGE);
+            }
             match err.downcast_ref::<rc_git_guard::actions::ActionError>() {
                 Some(
                     rc_git_guard::actions::ActionError::AuthRequired { .. }
@@ -333,9 +372,9 @@ fn refs(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
 
 fn ls(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     let rev = args.first().map_or("HEAD", String::as_str);
-    let path = args.get(1).map_or("", String::as_str);
+    let path = &canonical_path(args.get(1).map_or("", String::as_str))?;
     let root = repo.resolve_tree(rev)?;
-    let tree = if path.trim_matches('/').is_empty() {
+    let tree = if path.is_empty() {
         root
     } else {
         let entry = repo
@@ -363,6 +402,7 @@ fn cat(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
     let [rev, path, rest @ ..] = args else {
         bail!("cat needs <rev> <path>\n\n{USAGE}");
     };
+    let path = &canonical_path(path)?;
     let limit = match rest.first() {
         Some(raw) => raw
             .parse::<u64>()
@@ -422,6 +462,7 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     let [path, rest @ ..] = args else {
         bail!("filelog needs <path>\n\n{USAGE}");
     };
+    let path = &canonical_path(path)?;
     let mut rev = "HEAD";
     let mut limit = 20;
     let mut max_scan = 5000;
@@ -540,6 +581,7 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
         let [_, path] = args else {
             bail!("diff --worktree needs <path>\n\n{USAGE}");
         };
+        let path = &canonical_path(path)?;
         let tree = repo.resolve_tree("HEAD")?;
         let old = repo.entry_at_path(tree, path)?.map(|entry| entry.oid);
         let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
@@ -567,6 +609,7 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
         }
         return Ok(ExitCode::SUCCESS);
     };
+    let path = &canonical_path(path)?;
     let old_tree = repo.tree_of(old)?;
     let new_tree = repo.tree_of(new)?;
     let old_blob = repo.entry_at_path(old_tree, path)?.map(|entry| entry.oid);
@@ -621,6 +664,7 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     let [rev, path] = args else {
         bail!("blame needs <rev> <path>\n\n{USAGE}");
     };
+    let path = &canonical_path(path)?;
     let tip = repo.resolve(rev)?;
     let mut titles = std::collections::HashMap::new();
     for range in repo.blame(tip, path)? {
@@ -710,7 +754,7 @@ fn stash(repo: &Repository, out: &mut Vec<u8>) -> Result<ExitCode> {
 }
 
 fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let dir = args.first().map_or("", String::as_str);
+    let dir = &canonical_path(args.first().map_or("", String::as_str))?;
     let tree = repo.resolve_tree("HEAD")?;
     let listing = repo.worktree_entries(tree, dir)?;
     for entry in &listing.entries {
@@ -798,10 +842,9 @@ fn commit_verb(
         bail!("commit needs at least one <path>\n\n{USAGE}");
     }
     let expected = repo.resolve("HEAD").ok().map(|oid| oid.to_hex());
-    let selections: Vec<rc_git_guard::actions::FileSelection> = parsed
-        .paths
-        .iter()
-        .map(|path| rc_git_guard::actions::FileSelection::Whole { path: path.clone() })
+    let selections: Vec<rc_git_guard::actions::FileSelection> = canonical_paths(&parsed.paths)?
+        .into_iter()
+        .map(|path| rc_git_guard::actions::FileSelection::Whole { path })
         .collect();
     let done = rc_git_guard::actions::commit(
         repo_path,
@@ -828,7 +871,7 @@ fn stash_push_verb(
     let saved = rc_git_guard::actions::stash_push(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &parsed.paths,
+        &canonical_paths(&parsed.paths)?,
         parsed.message.as_deref(),
         parsed.author,
         parsed.confirm.as_deref(),
@@ -891,7 +934,7 @@ fn discard_verb(
     rc_git_guard::actions::discard_files(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &parsed.paths,
+        &canonical_paths(&parsed.paths)?,
         parsed.confirm.as_deref(),
     )?;
     let _ = out;

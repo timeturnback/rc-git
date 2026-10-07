@@ -103,15 +103,17 @@ pub struct StatusReport {
 
 impl Repository {
     /// Lists one directory of the working tree, comparing each entry with the tree at the
-    /// same path below `tree`. `dir` is repository-relative with `/` separators; empty for
-    /// the root. Reads one directory and one tree object, plus one content read per file
+    /// same path below `tree`. `dir` is repository-relative with `/` separators; empty, `/`
+    /// or `.` for the root, and `./` or doubled slashes name the same directory. Reads one directory and one tree object, plus one content read per file
     /// whose size matches its blob, so the cost stays proportional to the listing.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository or an unreadable directory,
-    /// [`Error::Object`] when the compared tree cannot be read.
+    /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, or an unreadable
+    /// directory, [`Error::Object`] when the compared tree cannot be read.
     pub fn worktree_entries(&self, tree: Oid, dir: &str) -> Result<WorktreeListing> {
         let work_dir = self.require_work_dir("list working tree", dir)?;
+        let dir = &normalize_dir(dir)
+            .map_err(|source| worktree_error("list working tree", dir, source))?;
         let tree_entries = self.tree_entries_at(tree, dir)?;
         let disk_dir = join_under(&work_dir, dir)
             .map_err(|source| worktree_error("list working tree", dir, source))?;
@@ -286,8 +288,9 @@ impl Repository {
     }
 
     /// The tree entries at `dir` below `tree`; empty when the directory is not in the tree.
+    /// `dir` is already normalized, so the root is the empty string.
     fn tree_entries_at(&self, tree: Oid, dir: &str) -> Result<Vec<TreeEntry>> {
-        if dir.trim_matches('/').is_empty() {
+        if dir.is_empty() {
             return self.tree_entries(tree);
         }
         match self.entry_at_path(tree, dir)? {
@@ -830,6 +833,20 @@ fn relative_path(dir: &str, name: &BString) -> BString {
     }
     path.extend_from_slice(name);
     path
+}
+
+/// Spells a repository-relative directory one way: `/`, `./` and `.` segments dropped, so
+/// the root is the empty string and `./src/` is `src`. A `..` segment is refused.
+fn normalize_dir(dir: &str) -> std::result::Result<String, BoxError> {
+    let mut segments = Vec::new();
+    for segment in dir.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => return Err("path may not contain a '..' segment".into()),
+            _ => segments.push(segment),
+        }
+    }
+    Ok(segments.join("/"))
 }
 
 /// Joins a repository-relative path under `root`, refusing traversal outside it.
