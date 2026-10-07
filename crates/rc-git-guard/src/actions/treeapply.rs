@@ -6,6 +6,7 @@
 //! The caller writes its ref last. An interruption therefore leaves visibly modified files
 //! rather than what looks like lost work.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use gix::ObjectId;
@@ -113,7 +114,8 @@ pub(super) fn plan(
 ///
 /// # Errors
 /// [`ActionError::DirtyPath`] for the first path that does not match `HEAD`,
-/// [`ActionError::Git`] when the index or a blob cannot be read.
+/// [`ActionError::Git`] when the index or a blob cannot be read, or a path would cross a
+/// symlink (one on disk, or one this plan writes).
 pub(super) fn verify_clean(
     repo: &gix::Repository,
     work_dir: &Path,
@@ -131,6 +133,7 @@ pub(super) fn verify_clean(
         name: "index".to_owned(),
         source: Box::new(source),
     })?;
+    refuse_paths_under_written_links(changes, op)?;
     for change in changes {
         let dirty = || ActionError::DirtyPath {
             path: change.path.clone(),
@@ -153,6 +156,33 @@ pub(super) fn verify_clean(
         let expected = change.old.map(|(oid, _)| oid);
         if staged != expected {
             return Err(dirty());
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a plan that writes a symlink and also writes a path below a directory spelled like
+/// it in another case. On a case-insensitive volume `Z` and `z` are one name, so writing
+/// `z/p` after the link `Z` would follow it out of the working tree. The check is on the plan
+/// because the link does not exist yet when [`verify_clean`] inspects the disk.
+///
+/// # Errors
+/// [`ActionError::Git`] naming the path that would cross the link.
+fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) -> ActionResult<()> {
+    let links: HashMap<String, &str> = changes
+        .iter()
+        .filter(|change| matches!(change.new, Some((_, EntryKind::Link))))
+        .map(|change| (change.path.to_lowercase(), change.path.as_str()))
+        .collect();
+    if links.is_empty() {
+        return Ok(());
+    }
+    for change in changes.iter().filter(|change| change.new.is_some()) {
+        let folded = change.path.to_lowercase();
+        for (end, _) in folded.match_indices('/') {
+            if let Some(link) = links.get(&folded[..end]) {
+                return Err(workfile::crosses_link(op, &change.path, link));
+            }
         }
     }
     Ok(())

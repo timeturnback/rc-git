@@ -108,14 +108,18 @@ impl Repository {
     /// whose size matches its blob, so the cost stays proportional to the listing.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, or an unreadable
-    /// directory, [`Error::Object`] when the compared tree cannot be read.
+    /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, a symlink at `dir`
+    /// or on the way to it, or an unreadable directory, [`Error::Object`] when the compared tree cannot be read.
     pub fn worktree_entries(&self, tree: Oid, dir: &str) -> Result<WorktreeListing> {
         let work_dir = self.require_work_dir("list working tree", dir)?;
         let dir = &normalize_dir(dir)
             .map_err(|source| worktree_error("list working tree", dir, source))?;
         let tree_entries = self.tree_entries_at(tree, dir)?;
         let disk_dir = join_under(&work_dir, dir)
+            .and_then(|disk_dir| {
+                refuse_symlink(&disk_dir, &[dir.as_str()])?;
+                Ok(disk_dir)
+            })
             .map_err(|source| worktree_error("list working tree", dir, source))?;
         let read = std::fs::read_dir(&disk_dir)
             .map_err(|source| worktree_error("list working tree", dir, Box::new(source)))?;
@@ -233,8 +237,8 @@ impl Repository {
     /// [`Repository::read_blob`]. A symlink yields its target as text.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository, a missing file, a directory, or an
-    /// unreadable file.
+    /// [`Error::Worktree`] for a bare repository, a missing file, a directory, a path through
+    /// a symlinked directory, or an unreadable file.
     pub fn worktree_file(&self, path: &str, limit: u64) -> Result<BlobContent> {
         let (full, meta) = self.stat_worktree_file(path)?;
         if meta.file_type().is_symlink() {
@@ -856,19 +860,40 @@ fn normalize_dir(dir: &str) -> std::result::Result<String, BoxError> {
     Ok(segments.join("/"))
 }
 
-/// Joins a repository-relative path under `root`, refusing traversal outside it.
+/// Joins a repository-relative path under `root`, refusing traversal outside it: a `..`
+/// segment, or a directory on the way to the last segment that is a symlink (git's "beyond a
+/// symbolic link" rule). The last segment itself is not checked; callers lstat it.
 fn join_under(root: &std::path::Path, relative: &str) -> std::result::Result<PathBuf, BoxError> {
+    let segments: Vec<&str> = relative
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
+    if segments.contains(&"..") {
+        return Err("path may not leave the working tree".into());
+    }
     let mut joined = root.to_path_buf();
-    for segment in relative.split('/') {
-        if segment.is_empty() || segment == "." {
-            continue;
-        }
-        if segment == ".." {
-            return Err("path may not leave the working tree".into());
-        }
+    for (index, segment) in segments.iter().enumerate() {
         joined.push(segment);
+        if index + 1 < segments.len() {
+            refuse_symlink(&joined, &segments[..=index])?;
+        }
     }
     Ok(joined)
+}
+
+/// Refuses `full` when it is a symlink; a missing component is left to the caller's own read,
+/// which reports it.
+fn refuse_symlink(full: &std::path::Path, spelled: &[&str]) -> std::result::Result<(), BoxError> {
+    match std::fs::symlink_metadata(full) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "crosses a symbolic link at '{}', which would leave the working tree",
+            spelled.join("/")
+        )
+        .into()),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Box::new(error)),
+    }
 }
 
 fn worktree_error(op: &'static str, path: &str, source: BoxError) -> Error {

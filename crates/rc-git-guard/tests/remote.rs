@@ -476,6 +476,42 @@ fn pull_refuses_a_fetched_tree_path_under_dot_git() {
 }
 
 #[test]
+fn pull_refuses_a_fetched_symlink_that_case_folds_onto_a_directory() {
+    let remoted = remoted();
+    let outside = Fixture::empty_dir();
+    let target = outside.path().to_str().expect("utf-8 temp path").as_bytes();
+    let evil = remoted
+        .origin
+        .commit_raw_entries(&[("D", target, "120000"), ("d/payload", b"pwned\n", "100644")]);
+    remoted
+        .origin
+        .git(&["update-ref", "refs/heads/main", &evil]);
+    remoted.origin.push_main_to(&remoted.bare_path);
+    fetch_clone(&remoted);
+    let before_head = remoted.clone.rev_parse("main");
+
+    let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("evil");
+    assert!(
+        matches!(&err, ActionError::Git { op: "pull", name, .. } if name == "d/payload"),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("which would leave the working tree"),
+        "{err}"
+    );
+    assert!(
+        std::fs::read_dir(outside.path())
+            .expect("list outside")
+            .next()
+            .is_none(),
+        "the pull wrote outside the tree"
+    );
+    assert_eq!(remoted.clone.rev_parse("main"), before_head);
+    assert_eq!(remoted.clone.git_output(&["status", "--porcelain"]), "");
+}
+
+#[test]
 fn pull_refuses_an_untracked_file_in_the_way() {
     let remoted = remoted();
     advance_origin(&remoted.origin, &remoted.bare_path); // adds news.txt upstream

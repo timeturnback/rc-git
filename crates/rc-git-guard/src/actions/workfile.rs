@@ -78,19 +78,17 @@ pub(super) fn join_under(
 ) -> ActionResult<PathBuf> {
     validate_path(op, relative, false)?;
     let mut parent = work_dir.to_path_buf();
+    let mut walked = 0;
     let mut segments = relative.split('/').peekable();
     while let Some(segment) = segments.next() {
         if segments.peek().is_none() {
             break;
         }
         parent.push(segment);
+        walked += segment.len() + 1;
         match std::fs::symlink_metadata(&parent) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(file_error(
-                    op,
-                    relative,
-                    "a parent directory is a symbolic link".into(),
-                ));
+                return Err(crosses_link(op, relative, &relative[..walked - 1]));
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
@@ -224,6 +222,15 @@ pub(super) fn delete_file(work_dir: &Path, relative: &str) -> ActionResult<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(file_error("delete file", relative, Box::new(error))),
     }
+}
+
+/// The refusal for `relative` passing through the symlink `link`.
+pub(super) fn crosses_link(op: &'static str, relative: &str, link: &str) -> ActionError {
+    file_error(
+        op,
+        relative,
+        format!("crosses a symbolic link at '{link}', which would leave the working tree").into(),
+    )
 }
 
 fn file_error(

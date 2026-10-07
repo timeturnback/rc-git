@@ -126,9 +126,13 @@ The Changes tab's write paths add their own guarantees:
   points), no symlinked `.gitmodules`, and no parent directory that is a symlink. A bad
   path is refused, never normalized, and it refuses the whole operation before the first
   byte is written — so a fetched tree carrying `.git/hooks/…` cannot plant a hook, and
-  `.git/refs/heads/main` cannot be discarded as a file.
-- **Discard** and stash restores write through one helper that removes the old file first,
-  so a write never follows a stale symlink, and deleting an already-gone file is not an
+  `.git/refs/heads/main` cannot be discarded as a file. A checkout or pull that writes a
+  symlink and also a path below a directory spelled like it in another case (`D` and
+  `d/payload`) is refused from the plan, since a case-insensitive volume would resolve that
+  directory to the new link.
+- **Discard** and stash restores write through one helper that re-checks every parent
+  directory at write time and removes the old file first, so no write follows a symlink,
+  whether at the last segment or above it, and deleting an already-gone file is not an
   error — a retried action lands in the state it retries from. Discard deletes a path
   missing from `HEAD` only when its directory holds an entry of exactly that name, so on a
   case-insensitive volume `ALPHA.TXT` never deletes the tracked `alpha.txt`.

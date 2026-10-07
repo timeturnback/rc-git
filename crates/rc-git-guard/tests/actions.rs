@@ -665,6 +665,89 @@ mod commit_and_discard {
         );
         assert_eq!(fx.rev_parse("HEAD"), head);
     }
+
+    /// The message every refusal of a path through a symlinked directory carries.
+    pub(super) const CROSSES_LINK: &str = "which would leave the working tree";
+
+    /// Replaces the standard fixture's tracked `docs/` with a link to a fresh directory
+    /// holding `guide.md` and `extra.md`, and returns that directory.
+    #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+    pub(super) fn link_docs_outside(fx: &Fixture) -> Fixture {
+        let outside = Fixture::empty_dir();
+        outside.write("guide.md", b"outside guide\n");
+        outside.write("extra.md", b"outside extra\n");
+        fx.remove("docs");
+        fx.symlink(outside.path().to_str().unwrap(), "docs");
+        outside
+    }
+
+    #[test]
+    fn discard_through_a_symlinked_tracked_directory_leaves_its_target_alone() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        let outside = link_docs_outside(&fx);
+
+        // Restore: docs/guide.md is tracked, so discard would write HEAD's bytes through docs.
+        // Delete: docs/extra.md is untracked, so discard would remove it through docs.
+        for path in ["docs/guide.md", "docs/extra.md"] {
+            let err = discard_files(fx.path(), &policy, &[path.to_owned()], None).unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "discard", name, .. } if name == path),
+                "{path}: {err}"
+            );
+            assert!(err.to_string().contains(CROSSES_LINK), "{path}: {err}");
+        }
+        let stamp = HunkStamp {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+        };
+        let err = discard_hunks(fx.path(), &policy, "docs/guide.md", &[stamp], None).unwrap_err();
+        assert!(err.to_string().contains(CROSSES_LINK), "{err}");
+
+        assert_eq!(
+            std::fs::read(outside.path().join("guide.md")).unwrap(),
+            b"outside guide\n"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("extra.md")).unwrap(),
+            b"outside extra\n"
+        );
+    }
+
+    #[test]
+    fn discard_refuses_dotdot_and_symlinked_parents() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        let outside = Fixture::empty_dir();
+        outside.write("escape.txt", b"outside\n");
+        assert_eq!(
+            outside.path().parent(),
+            fx.path().parent(),
+            "both fixtures sit in the same temp dir, so `..` reaches the outside one"
+        );
+        let name = outside.path().file_name().unwrap().to_str().unwrap();
+        fx.symlink(outside.path().to_str().unwrap(), "up");
+
+        for path in [
+            format!("../{name}/escape.txt"),
+            "up/escape.txt".to_owned(),
+            "src/../../escape.txt".to_owned(),
+        ] {
+            let err =
+                discard_files(fx.path(), &policy, std::slice::from_ref(&path), None).unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "discard", name, .. } if *name == path),
+                "{path}: {err}"
+            );
+            assert_eq!(
+                std::fs::read(outside.path().join("escape.txt")).unwrap(),
+                b"outside\n",
+                "{path} reached the outside file"
+            );
+        }
+    }
 }
 
 mod stash {
@@ -889,6 +972,44 @@ mod stash {
         assert_eq!(stash_list(&fx), "");
         assert!(!refs(&fx).contains("refs/stash"));
     }
+
+    #[test]
+    fn stash_never_writes_through_a_symlinked_directory() {
+        use super::commit_and_discard::{CROSSES_LINK, link_docs_outside};
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("docs/guide.md", b"stashed guide\n");
+        stash_push(
+            fx.path(),
+            &policy,
+            &["docs/guide.md".to_owned()],
+            None,
+            Some(identity()),
+            None,
+        )
+        .unwrap();
+        let stashed = stash_list(&fx);
+        let outside = link_docs_outside(&fx);
+
+        let err = stash_push(
+            fx.path(),
+            &policy,
+            &["docs/guide.md".to_owned()],
+            None,
+            Some(identity()),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(CROSSES_LINK), "push: {err}");
+        let err = stash_pop(fx.path(), &policy, 0, None).unwrap_err();
+        assert!(err.to_string().contains(CROSSES_LINK), "pop: {err}");
+
+        assert_eq!(
+            std::fs::read(outside.path().join("guide.md")).unwrap(),
+            b"outside guide\n"
+        );
+        assert_eq!(stash_list(&fx), stashed, "the stash survives");
+    }
 }
 
 mod checkout {
@@ -896,6 +1017,7 @@ mod checkout {
     use rc_git_guard::actions::{ActionError, checkout_branch};
     use rc_git_testkit::Fixture;
 
+    use super::commit_and_discard::CROSSES_LINK;
     use super::porcelain;
 
     fn head_branch(fx: &Fixture) -> String {
@@ -1053,6 +1175,62 @@ mod checkout {
             assert_eq!(head_branch(&fx), "main", "{path}");
             assert_eq!(fx.rev_parse("HEAD"), head, "{path}");
             assert_eq!(porcelain(&fx), "", "{path}");
+        }
+    }
+
+    #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+    fn outside_is_empty(outside: &Fixture) -> bool {
+        std::fs::read_dir(outside.path()).unwrap().next().is_none()
+    }
+
+    #[test]
+    fn an_untracked_symlinked_directory_is_not_written_through() {
+        let fx = Fixture::standard();
+        let head = fx.rev_parse("HEAD");
+        let vendored = fx.commit_raw_path("vendor/lib.rs", b"lib\n", "100644");
+        fx.git(&["branch", "vendored", &vendored]);
+        let outside = Fixture::empty_dir();
+        fx.symlink(outside.path().to_str().unwrap(), "vendor");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "vendored").unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "checkout", name, .. } if name == "vendor/lib.rs"),
+            "{err}"
+        );
+        assert!(err.to_string().contains(CROSSES_LINK), "{err}");
+        assert!(outside_is_empty(&outside));
+        assert_eq!(head_branch(&fx), "main");
+        assert_eq!(fx.rev_parse("HEAD"), head);
+    }
+
+    /// A tree holding a symlink and a directory that differ only in case is valid to git,
+    /// but on a case-insensitive volume writing the file after the link follows the link.
+    /// The plan is refused whatever the volume, before anything is written.
+    #[test]
+    fn a_symlink_that_case_folds_onto_a_directory_cannot_write_outside_the_tree() {
+        for (link, file) in [("D", "d/payload"), ("Z", "z/p"), ("Dir", "dir/pwned.txt")] {
+            let fx = Fixture::standard();
+            let head = fx.rev_parse("HEAD");
+            let outside = Fixture::empty_dir();
+            let target = outside.path().to_str().unwrap().as_bytes();
+            let evil =
+                fx.commit_raw_entries(&[(link, target, "120000"), (file, b"pwned\n", "100644")]);
+            fx.git(&["branch", "evil", &evil]);
+
+            let err = checkout_branch(fx.path(), &Policy::default(), "evil").unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "checkout", name, .. } if name == file),
+                "{link}: {err}"
+            );
+            assert!(err.to_string().contains(CROSSES_LINK), "{link}: {err}");
+            assert!(outside_is_empty(&outside), "{link} wrote outside the tree");
+            assert!(
+                std::fs::symlink_metadata(fx.path().join(link)).is_err(),
+                "{link} was written before the refusal"
+            );
+            assert_eq!(head_branch(&fx), "main", "{link}");
+            assert_eq!(fx.rev_parse("HEAD"), head, "{link}");
+            assert_eq!(porcelain(&fx), "", "{link}");
         }
     }
 

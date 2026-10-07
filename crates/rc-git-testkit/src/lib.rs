@@ -422,6 +422,33 @@ impl Fixture {
             .to_owned()
     }
 
+    /// A commit on top of `HEAD` whose tree is `HEAD`'s plus each `(path, contents, mode)`
+    /// entry, built in a scratch index so the fixture's own index is untouched. Unlike
+    /// [`commit_raw_path`](Self::commit_raw_path) it takes several entries, so it can store a
+    /// symlink `D` beside a directory `d/` that only a case-sensitive volume keeps apart. No
+    /// ref moves; returns the commit id.
+    ///
+    /// # Panics
+    /// When any git command fails.
+    #[must_use]
+    pub fn commit_raw_entries(&self, entries: &[(&str, &[u8], &str)]) -> String {
+        let index = self.git_dir().join("rc-git-testkit-raw-index");
+        let index = index.to_string_lossy();
+        let env = [("GIT_INDEX_FILE", index.as_ref())];
+        self.run(&["read-tree", "HEAD"], &env);
+        for (path, contents, mode) in entries {
+            let blob = self.run_with_stdin(&["hash-object", "-w", "--stdin"], contents);
+            let info = format!("{mode},{blob},{path}");
+            self.run(&["update-index", "--add", "--cacheinfo", &info], &env);
+        }
+        let tree = self.run(&["write-tree"], &env);
+        let date = "2024-02-01T00:00:00+0000";
+        self.run(
+            &["commit-tree", &tree, "-p", "HEAD", "-m", "raw entries"],
+            &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+        )
+    }
+
     fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> String {
         use std::io::Write;
         let mut child = self

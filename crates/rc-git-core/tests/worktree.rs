@@ -259,6 +259,45 @@ fn every_spelling_of_a_directory_lists_the_same_entries() {
 }
 
 #[test]
+fn worktree_reads_refuse_a_path_through_a_symlinked_directory() {
+    let fx = Fixture::standard();
+    let outside = Fixture::empty_dir();
+    outside.write("secret.txt", b"secret\n");
+    outside.write("nested/deeper.txt", b"deeper\n");
+    fx.symlink(outside.path().to_str().unwrap(), "escape");
+    fx.commit("Link outside", "2024-01-04T00:00:00+0000");
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    for path in [
+        "escape/secret.txt",
+        "./escape/secret.txt",
+        "escape/nested/deeper.txt",
+    ] {
+        let err = repo.worktree_file(path, DEFAULT_BLOB_LIMIT).unwrap_err();
+        assert!(matches!(err, Error::Worktree { .. }), "{path}: {err}");
+        assert!(
+            err.to_string().contains("symbolic link at 'escape'"),
+            "{path}: {err}"
+        );
+    }
+    for dir in ["escape", "escape/", "./escape", "escape/nested"] {
+        let err = repo.worktree_entries(tree, dir).unwrap_err();
+        assert!(matches!(err, Error::Worktree { .. }), "{dir}: {err}");
+        assert!(
+            err.to_string().contains("symbolic link at 'escape'"),
+            "{dir}: {err}"
+        );
+    }
+
+    let BlobContent::Text { data, .. } = repo.worktree_file("escape", DEFAULT_BLOB_LIMIT).unwrap()
+    else {
+        panic!("the link itself still reads as its target");
+    };
+    assert_eq!(data, outside.path().to_str().unwrap().as_bytes());
+}
+
+#[test]
 fn a_missing_directory_is_an_error_but_a_tree_only_directory_lists_as_missing() {
     let fx = Fixture::standard();
     fx.remove("docs");
