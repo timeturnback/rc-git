@@ -549,6 +549,29 @@ fn status_prints_the_kind_of_missing_entries() {
 }
 
 #[test]
+fn an_unreadable_index_keeps_ignore_rules_and_warns() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write(".gitignore", b".env\n");
+    fx.commit("ignore secrets", "2024-01-05T00:00:00Z");
+    fx.write(".env", b"S=1\n");
+    let index = std::fs::read(fx.git_dir().join("index")).unwrap();
+    fx.write(".git/index", &index[..40]);
+
+    for verb in ["changes", "status"] {
+        let out = rc_git(&[verb, path]);
+        assert!(out.status.success(), "{verb}: {}", stderr(&out));
+        assert!(
+            stderr(&out).starts_with("warning: read index '"),
+            "{verb}: {}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(stdout(&rc_git(&["changes", path])), "");
+    assert!(stdout(&rc_git(&["status", path])).contains("!\tblob\t.env\n"));
+}
+
+#[test]
 #[expect(
     clippy::disallowed_methods,
     reason = "the test arranges the fixture's working tree; the binary never mutates"

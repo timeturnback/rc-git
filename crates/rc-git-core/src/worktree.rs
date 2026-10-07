@@ -52,6 +52,9 @@ pub struct WorktreeListing {
     pub entries: Vec<WorktreeEntry>,
     /// Tree entries with no counterpart on disk: deleted files.
     pub missing: Vec<TreeEntry>,
+    /// Lookups that failed without failing the listing, such as an unreadable index; each
+    /// names what was read and why it failed. Ignore rules may then be incomplete.
+    pub warnings: Vec<String>,
 }
 
 /// One changed path found by [`Repository::worktree_status`].
@@ -88,6 +91,8 @@ pub struct WorktreeFileList {
     pub scanned: usize,
     /// Whether the walk stopped at `max_scan` before covering the whole tree.
     pub truncated: bool,
+    /// Lookups that failed without failing the walk, as in [`WorktreeListing::warnings`].
+    pub warnings: Vec<String>,
 }
 
 /// Every changed path in the working tree, with the walk's own cost accounting.
@@ -99,6 +104,9 @@ pub struct StatusReport {
     pub scanned: usize,
     /// Whether the walk stopped at `max_scan` before covering the whole tree.
     pub truncated: bool,
+    /// Lookups that failed without failing the walk, as in [`WorktreeListing::warnings`]: an
+    /// unreadable index also means every tracked file was hashed.
+    pub warnings: Vec<String>,
 }
 
 impl Repository {
@@ -179,6 +187,7 @@ impl Repository {
                     size,
                 });
             }
+            listing.warnings = context.into_warnings();
             Ok(())
         })?;
 
@@ -216,6 +225,7 @@ impl Repository {
             walk.walk_dir(Some(tree), &BString::from(""), &work_dir)?;
             let mut report = walk.report;
             report.entries.sort_by(|a, b| a.path.cmp(&b.path));
+            report.warnings = walk.context.into_warnings();
             Ok(report)
         })
     }
@@ -244,6 +254,7 @@ impl Repository {
             walk.walk_dir(Some(tree), &BString::from(""), &work_dir)?;
             let mut list = walk.list;
             list.files.sort_by(|a, b| a.path.cmp(&b.path));
+            list.warnings = walk.excludes.warnings;
             Ok(list)
         })
     }
@@ -381,6 +392,17 @@ impl<'repo> WorktreeContext<'repo> {
             excludes: ExcludeCheck::new(repo),
             stats: StatCache::new(repo),
         })
+    }
+
+    /// What the ignore stack and the stat cache could not read, each failure once.
+    fn into_warnings(self) -> Vec<String> {
+        let mut warnings = self.excludes.warnings;
+        for warning in self.stats.warnings {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        warnings
     }
 
     /// The kind git would record for a disk entry of `disk` kind tracked as `tracked`.
@@ -526,10 +548,11 @@ fn kind_verdict(tree_entry: &TreeEntry, disk_kind: EntryKind) -> Option<Worktree
 ///
 /// Read-only in both directions: the index is never refreshed or written, and every case the
 /// cache cannot settle answers "not known unchanged", so it can save a hash but never hide a
-/// change.
+/// change. An index that cannot be read is reported in `warnings`.
 struct StatCache<'repo> {
     repo: &'repo gix::Repository,
     state: StatCacheState,
+    warnings: Vec<String>,
 }
 
 enum StatCacheState {
@@ -582,6 +605,7 @@ impl<'repo> StatCache<'repo> {
         Self {
             repo,
             state: StatCacheState::Unbuilt,
+            warnings: Vec::new(),
         }
     }
 
@@ -590,7 +614,7 @@ impl<'repo> StatCache<'repo> {
     /// cost anyway.
     fn proves_unchanged(&mut self, rela_path: &BString, oid: Oid, disk_path: &Path) -> bool {
         if let StatCacheState::Unbuilt = self.state {
-            self.state = match Self::build(self.repo) {
+            self.state = match self.build() {
                 Some(loaded) => StatCacheState::Ready(loaded),
                 None => StatCacheState::Unavailable,
             };
@@ -601,20 +625,30 @@ impl<'repo> StatCache<'repo> {
         }
     }
 
-    fn build(repo: &'repo gix::Repository) -> Option<LoadedIndex> {
-        if index_unparseable(repo) {
-            return None;
-        }
-        let index = repo.index().ok()?;
-        let options = repo.stat_options().ok()?;
+    fn build(&mut self) -> Option<LoadedIndex> {
+        let index = read_index(self.repo)
+            .map_err(|warning| self.warnings.push(warning))
+            .ok()?;
+        let options = self
+            .repo
+            .stat_options()
+            .map_err(|error| {
+                self.warnings
+                    .push(format!("read stat options for the index: {error}"));
+            })
+            .ok()?;
         Some(LoadedIndex { index, options })
     }
 }
 
-/// Ignore-rule lookup, built lazily because most listings have no untracked entries.
+/// Ignore-rule lookup, built lazily because most listings have no untracked entries. Every
+/// failure lands in `warnings`, so a caller can say that ignore rules may be incomplete.
 struct ExcludeCheck<'repo> {
     repo: &'repo gix::Repository,
     state: ExcludeState<'repo>,
+    warnings: Vec<String>,
+    /// Whether a failed query is already in `warnings`.
+    query_failed: bool,
 }
 
 enum ExcludeState<'repo> {
@@ -628,14 +662,18 @@ impl<'repo> ExcludeCheck<'repo> {
         Self {
             repo,
             state: ExcludeState::Unbuilt,
+            warnings: Vec::new(),
+            query_failed: false,
         }
     }
 
-    /// Whether `rela_path` matches an ignore rule. Failing to build or query the stack means
-    /// "not ignored": the entry then shows as untracked, which never hides anything.
+    /// Whether `rela_path` matches an ignore rule. An unreadable index costs only the tracked
+    /// `.gitignore` files missing from disk; those on disk and `info/exclude` still apply.
+    /// Failing to build or query the stack means "not ignored" and records a warning, since
+    /// the entry then shows as untracked when it may be ignored.
     fn is_ignored(&mut self, rela_path: &BString, is_dir: bool) -> bool {
         if let ExcludeState::Unbuilt = self.state {
-            self.state = match Self::build(self.repo) {
+            self.state = match self.build() {
                 Some(attributes) => ExcludeState::Ready(Box::new(attributes)),
                 None => ExcludeState::Unavailable,
             };
@@ -649,20 +687,51 @@ impl<'repo> ExcludeCheck<'repo> {
         } else {
             gix::index::entry::Mode::FILE
         };
-        attributes
-            .at_entry(rela_path.as_bstr(), Some(mode))
-            .is_ok_and(|platform| platform.is_excluded())
+        match attributes.at_entry(rela_path.as_bstr(), Some(mode)) {
+            Ok(platform) => platform.is_excluded(),
+            Err(error) => {
+                // One unreadable `.gitignore` fails every path below it; the first failure
+                // already tells the caller the rules are incomplete.
+                if !self.query_failed {
+                    self.query_failed = true;
+                    self.warnings
+                        .push(format!("check ignore rules for '{rela_path}': {error}"));
+                }
+                false
+            }
+        }
     }
 
-    fn build(repo: &'repo gix::Repository) -> Option<gix::AttributeStack<'repo>> {
-        let source = Source::WorktreeThenIdMappingIfNotSkipped;
-        if index_unparseable(repo) {
-            let empty = gix::index::State::new(repo.object_hash());
-            return repo.excludes(&empty, None, source).ok();
-        }
-        let index = repo.index_or_empty().ok()?;
-        repo.excludes(&index, None, source).ok()
+    fn build(&mut self) -> Option<gix::AttributeStack<'repo>> {
+        let repo = self.repo;
+        let loaded = read_index(repo);
+        let empty;
+        let index: &gix::index::State = match &loaded {
+            Ok(index) => index,
+            Err(warning) => {
+                self.warnings.push(warning.clone());
+                empty = gix::index::State::new(repo.object_hash());
+                &empty
+            }
+        };
+        repo.excludes(index, None, Source::WorktreeThenIdMappingIfNotSkipped)
+            .map_err(|error| self.warnings.push(format!("build ignore rules: {error}")))
+            .ok()
     }
+}
+
+/// The on-disk index, empty when there is none, or a warning naming the index and why it
+/// could not be read.
+fn read_index(repo: &gix::Repository) -> std::result::Result<gix::worktree::Index, String> {
+    let path = repo.index_path();
+    if index_unparseable(repo) {
+        return Err(format!(
+            "read index '{}': too short to parse or not a regular file",
+            path.display()
+        ));
+    }
+    repo.index_or_empty()
+        .map_err(|error| format!("read index '{}': {error}", path.display()))
 }
 
 /// Whether the index file exists but cannot hold even a header and its trailing hash, or is

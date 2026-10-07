@@ -932,3 +932,68 @@ fn worktree_entries_never_lists_a_git_directory_at_any_depth() {
     let src = repo.worktree_entries(tree, "src").unwrap();
     assert!(src.entries.iter().all(|entry| entry.name != ".git"));
 }
+
+#[test]
+fn a_corrupt_index_keeps_worktree_ignore_rules_and_is_reported() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b".env\nnode_modules/\n");
+    fx.commit("ignore secrets", "2024-01-05T00:00:00Z");
+    fx.write(".env", b"S=1\n");
+    fx.write("node_modules/pkg/i.js", b"x\n");
+    fx.write("new.txt", b"x\n");
+    let index = std::fs::read(fx.git_dir().join("index")).unwrap();
+    // Long enough to pass the length check, so gix itself rejects it.
+    fx.write(".git/index", &index[..40]);
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    assert_eq!(
+        status_paths(&report),
+        [("new.txt".to_owned(), WorktreeStatus::Untracked)]
+    );
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0].starts_with("read index '"),
+        "{:?}",
+        report.warnings
+    );
+
+    let listing = repo.worktree_entries(tree, "").unwrap();
+    let ignored: Vec<String> = listing
+        .entries
+        .iter()
+        .filter(|entry| entry.status == WorktreeStatus::Ignored)
+        .map(|entry| entry.name.to_string())
+        .collect();
+    assert_eq!(ignored, ["node_modules", ".env"]);
+    assert_eq!(listing.warnings, report.warnings);
+
+    let files = repo.worktree_files(tree, 10_000).unwrap();
+    assert!(
+        !file_paths(&files)
+            .iter()
+            .any(|p| p.starts_with("node_modules/"))
+    );
+    assert_eq!(files.warnings, report.warnings);
+}
+
+#[test]
+fn a_readable_index_reports_no_warnings() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    assert!(
+        repo.worktree_status(tree, 10_000)
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+    assert!(repo.worktree_entries(tree, "").unwrap().warnings.is_empty());
+    assert!(
+        repo.worktree_files(tree, 10_000)
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+}

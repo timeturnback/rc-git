@@ -1007,6 +1007,7 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
         write!(out, "{}\t", status_letter(entry.status))?;
         records.end_with_path(out, &entry.path);
     }
+    print_warnings(&report.warnings)?;
     if report.truncated {
         writeln!(
             io::stderr().lock(),
@@ -1027,6 +1028,7 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     for file in &list.files {
         records.end_with_path(out, &file.path);
     }
+    print_warnings(&list.warnings)?;
     if list.truncated {
         writeln!(
             io::stderr().lock(),
@@ -1071,7 +1073,17 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         write!(out, "D\t{}\t", kind_name(missing.kind))?;
         records.end_with_path(out, &missing.name);
     }
+    print_warnings(&listing.warnings)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// A working-tree read's non-fatal failures, one `warning:` line each on stderr.
+fn print_warnings(warnings: &[String]) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    for warning in warnings {
+        writeln!(stderr, "warning: {warning}")?;
+    }
+    Ok(())
 }
 
 /// `"Name <email>"`, as `git --author` takes it.
