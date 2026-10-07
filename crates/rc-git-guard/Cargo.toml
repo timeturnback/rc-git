@@ -10,8 +10,6 @@ publish = false
 
 [dependencies]
 gix = { workspace = true, features = ["blocking-http-transport-curl"] }
-gix-protocol.workspace = true
-gix-packetline.workspace = true
 gix-pack.workspace = true
 rc-git-core.workspace = true
 thiserror.workspace = true

@@ -2540,8 +2540,6 @@ version = "0.1.0"
 dependencies = [
  "gix",
  "gix-pack",
- "gix-packetline",
- "gix-protocol",
  "gix-transport",
  "rc-git-core",
  "rc-git-testkit",
