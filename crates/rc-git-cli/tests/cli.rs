@@ -525,6 +525,24 @@ fn diff_of_a_submodule_bump_prints_subproject_lines() {
 }
 
 #[test]
+fn diff_marks_a_line_without_a_final_newline_as_git_does() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("f.txt", b"x\na");
+    fx.commit("one", "2024-01-01T00:00:00+0000");
+    fx.write("f.txt", b"x\na\n");
+    fx.commit("two", "2024-01-02T00:00:00+0000");
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["diff", path, "HEAD~1", "HEAD", "f.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let hunk = "@@ -1,2 +1,2 @@\n x\n-a\n\\ No newline at end of file\n+a\n";
+    assert_eq!(stdout(&out), hunk);
+    let git_diff = fx.git_output(&["diff", "HEAD~1", "HEAD"]);
+    assert!(git_diff.ends_with(hunk.trim_end()), "{git_diff}");
+}
+
+#[test]
 fn diff_of_one_commit_uses_first_parent_or_nothing_for_a_root() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

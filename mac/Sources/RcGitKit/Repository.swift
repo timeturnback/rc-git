@@ -521,7 +521,9 @@ extension DiffHunk {
         for index in 0..<c.line_count {
             let line = c.lines[index]
             lines.append(
-                DiffLine(kind: DiffLineKind(c: line.kind), text: String(cString: line.text)))
+                DiffLine(
+                    kind: DiffLineKind(c: line.kind), text: String(cString: line.text),
+                    eol: LineEnd(c: line.eol)))
         }
         self.init(
             oldStart: c.old_start, oldLines: c.old_lines, newStart: c.new_start,

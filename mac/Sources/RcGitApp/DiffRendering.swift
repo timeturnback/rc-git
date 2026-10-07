@@ -25,9 +25,16 @@ enum DiffRendering {
             case .added: ("+", .systemGreen)
             case .removed: ("-", .systemRed)
             }
-        return NSAttributedString(
+        let result = NSMutableAttributedString(
             string: sign + line.text,
             attributes: [.font: monoFont, .foregroundColor: color])
+        if let marker = line.eol.marker {
+            result.append(
+                NSAttributedString(
+                    string: marker,
+                    attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        return result
     }
 
     /// A whole diff as one attributed string, for text-view rendering.

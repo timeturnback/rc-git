@@ -13,7 +13,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
-    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeEntry,
+    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository, TreeEntry,
     UnreadableEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
@@ -1018,6 +1018,9 @@ fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<Exi
                     out.extend_from_slice(sign.as_bytes());
                     out.extend_from_slice(&line.text);
                     out.push(b'\n');
+                    if line.eol == LineEnd::None {
+                        out.extend_from_slice(b"\\ No newline at end of file\n");
+                    }
                 }
             }
             Ok(ExitCode::SUCCESS)

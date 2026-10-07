@@ -97,6 +97,16 @@ typedef enum RcGitDiffLineKind {
   RcGitDiffLineKind_Removed = 2,
 } RcGitDiffLineKind;
 
+// The terminator a diff line had before it was stripped.
+typedef enum RcGitLineEnd {
+  // `\n`.
+  RcGitLineEnd_Lf = 0,
+  // `\r\n`.
+  RcGitLineEnd_CrLf = 1,
+  // None: the last line of a blob that does not end in a newline.
+  RcGitLineEnd_None = 2,
+} RcGitLineEnd;
+
 // How a file on disk relates to the same path in the compared tree.
 typedef enum RcGitWorktreeStatus {
   // Content and kind match the tree entry.
@@ -357,6 +367,8 @@ typedef struct RcGitDiffLine {
   enum RcGitDiffLineKind kind;
   // The bytes of the line.
   char *text;
+  // How the line ended in its blob.
+  enum RcGitLineEnd eol;
 } RcGitDiffLine;
 
 // A run of changed lines with its surrounding context.

@@ -71,14 +71,43 @@ public enum DiffLineKind: Sendable, Hashable {
     }
 }
 
+/// The terminator a diff line had before it was stripped.
+public enum LineEnd: Sendable, Hashable {
+    case lf
+    case crlf
+    /// The last line of a blob that does not end in a newline.
+    case none
+
+    init(c: RcGitLineEnd) {
+        switch c {
+        case RcGitLineEnd_CrLf: self = .crlf
+        case RcGitLineEnd_None: self = .none
+        default: self = .lf
+        }
+    }
+
+    /// The note drawn after a line whose terminator is not a plain `\n`, so a change in line
+    /// ending alone does not render as two identical lines. `nil` for `\n`.
+    public var marker: String? {
+        switch self {
+        case .lf: nil
+        case .crlf: " \u{240D}CRLF"
+        case .none: " \u{2205} no newline at end of file"
+        }
+    }
+}
+
 /// A line of a diff hunk, without its line terminator.
 public struct DiffLine: Sendable, Hashable {
     public let kind: DiffLineKind
     public let text: String
+    /// How the line ended, so a change in terminator alone stays visible.
+    public let eol: LineEnd
 
-    public init(kind: DiffLineKind, text: String) {
+    public init(kind: DiffLineKind, text: String, eol: LineEnd = .lf) {
         self.kind = kind
         self.text = text
+        self.eol = eol
     }
 }
 

@@ -3,7 +3,7 @@
 
 use rc_git_core::{
     BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLineKind,
-    EntryKind, Error, ObjectKind, Oid, Repository,
+    EntryKind, Error, LineEnd, ObjectKind, Oid, Repository,
 };
 use rc_git_testkit::Fixture;
 
@@ -345,6 +345,64 @@ fn huge_context_is_clamped() {
     assert_eq!(hunk_ranges(&text_hunks(&two, "b.txt", 1)).len(), 2);
     let hunks = text_hunks(&two, "b.txt", 1 << 31);
     assert_eq!(hunk_ranges(&hunks), [(1, 10, 1, 10)]);
+}
+
+/// One file committed twice on `main`, `old` then `new`.
+fn two_versions(path: &str, old: &[u8], new: &[u8]) -> Fixture {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write(path, old);
+    fx.commit("first", "2024-01-01T00:00:00+0000");
+    fx.write(path, new);
+    fx.commit("second", "2024-01-02T00:00:00+0000");
+    fx
+}
+
+fn line_summary(hunks: &[DiffHunk]) -> Vec<(DiffLineKind, String, LineEnd)> {
+    hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .map(|l| (l.kind, l.text.to_string(), l.eol))
+        .collect()
+}
+
+#[test]
+fn adding_a_final_newline_marks_the_old_line_unterminated() {
+    let fx = two_versions("f.txt", b"x\na", b"x\na\n");
+    assert_eq!(
+        line_summary(&text_hunks(&fx, "f.txt", DEFAULT_DIFF_CONTEXT)),
+        [
+            (DiffLineKind::Context, "x".to_owned(), LineEnd::Lf),
+            (DiffLineKind::Removed, "a".to_owned(), LineEnd::None),
+            (DiffLineKind::Added, "a".to_owned(), LineEnd::Lf),
+        ]
+    );
+}
+
+#[test]
+fn lf_to_crlf_marks_the_added_lines_crlf() {
+    let fx = two_versions("f.txt", b"x\na\n", b"x\r\na\r\n");
+    assert_eq!(
+        line_summary(&text_hunks(&fx, "f.txt", DEFAULT_DIFF_CONTEXT)),
+        [
+            (DiffLineKind::Removed, "x".to_owned(), LineEnd::Lf),
+            (DiffLineKind::Removed, "a".to_owned(), LineEnd::Lf),
+            (DiffLineKind::Added, "x".to_owned(), LineEnd::CrLf),
+            (DiffLineKind::Added, "a".to_owned(), LineEnd::CrLf),
+        ]
+    );
+}
+
+#[test]
+fn a_trailing_carriage_return_without_newline_stays_in_the_text() {
+    let fx = two_versions("f.txt", b"a\n", b"a\r");
+    assert_eq!(
+        line_summary(&text_hunks(&fx, "f.txt", DEFAULT_DIFF_CONTEXT)),
+        [
+            (DiffLineKind::Removed, "a".to_owned(), LineEnd::Lf),
+            (DiffLineKind::Added, "a\r".to_owned(), LineEnd::None),
+        ]
+    );
 }
 
 #[test]

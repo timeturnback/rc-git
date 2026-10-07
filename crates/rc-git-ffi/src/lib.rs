@@ -18,7 +18,7 @@ use std::ptr;
 
 use rc_git_core::{
     BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage, CommitSummary,
-    DiffHunk, DiffLineKind, EntryKind, Oid, RefKind, Repository, TreeChange, TreeEntry,
+    DiffHunk, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository, TreeChange, TreeEntry,
     WorktreeStatus,
 };
 use rc_git_guard::actions::{
@@ -565,6 +565,28 @@ impl From<DiffLineKind> for RcGitDiffLineKind {
     }
 }
 
+/// The terminator a diff line had before it was stripped.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RcGitLineEnd {
+    /// `\n`.
+    Lf = 0,
+    /// `\r\n`.
+    CrLf = 1,
+    /// None: the last line of a blob that does not end in a newline.
+    None = 2,
+}
+
+impl From<LineEnd> for RcGitLineEnd {
+    fn from(eol: LineEnd) -> Self {
+        match eol {
+            LineEnd::Lf => Self::Lf,
+            LineEnd::CrLf => Self::CrLf,
+            LineEnd::None => Self::None,
+        }
+    }
+}
+
 /// A line of a diff hunk, without its line terminator.
 #[repr(C)]
 pub struct RcGitDiffLine {
@@ -572,6 +594,8 @@ pub struct RcGitDiffLine {
     pub kind: RcGitDiffLineKind,
     /// The bytes of the line.
     pub text: *mut c_char,
+    /// How the line ended in its blob.
+    pub eol: RcGitLineEnd,
 }
 
 impl Drop for RcGitDiffLine {
@@ -605,6 +629,7 @@ impl RcGitDiffHunk {
             lines.push(RcGitDiffLine {
                 kind: line.kind.into(),
                 text: export_string(Vec::from(line.text)),
+                eol: line.eol.into(),
             });
         }
         let (lines, line_count) = export_vec(lines);
@@ -4450,6 +4475,7 @@ mod tests {
         let lines = unsafe { std::slice::from_raw_parts(hunk.lines, hunk.line_count) };
         assert_eq!(lines[0].kind, RcGitDiffLineKind::Added);
         assert_eq!(text(lines[0].text), "guide");
+        assert_eq!(lines[0].eol, RcGitLineEnd::Lf);
         unsafe { rcgit_blob_diff_free(diff) };
 
         let bin = resolve(repo, "main:bin.dat");

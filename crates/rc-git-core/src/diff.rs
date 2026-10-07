@@ -49,8 +49,21 @@ pub struct TreeChange {
 pub struct DiffLine {
     /// Whether the line is context, added, or removed.
     pub kind: DiffLineKind,
-    /// The bytes of the line, `\n` or `\r\n` stripped.
+    /// The bytes of the line, its terminator stripped.
     pub text: BString,
+    /// How the line ended in its blob, so a change in terminator alone stays visible.
+    pub eol: LineEnd,
+}
+
+/// The terminator a diff line had before it was stripped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineEnd {
+    /// `\n`.
+    Lf,
+    /// `\r\n`.
+    CrLf,
+    /// None: the last line of a blob that does not end in a newline.
+    None,
 }
 
 /// The role of one line in a hunk.
@@ -344,9 +357,11 @@ impl ConsumeHunk for CollectHunks {
                 gix::diff::blob::unified_diff::DiffLineKind::Add => DiffLineKind::Added,
                 gix::diff::blob::unified_diff::DiffLineKind::Remove => DiffLineKind::Removed,
             };
+            let (text, eol) = split_line_end(bytes);
             collected.push(DiffLine {
                 kind,
-                text: strip_newline(bytes).into(),
+                text: text.into(),
+                eol,
             });
         }
         self.hunks.push(DiffHunk {
@@ -374,9 +389,15 @@ fn unified_start(gix_start: u32, len: u32) -> u32 {
     }
 }
 
-fn strip_newline(line: &[u8]) -> &[u8] {
-    let line = line.strip_suffix(b"\n").unwrap_or(line);
-    line.strip_suffix(b"\r").unwrap_or(line)
+/// Splits a line into its bytes and its terminator. A `\r` not followed by `\n` is content.
+fn split_line_end(line: &[u8]) -> (&[u8], LineEnd) {
+    if let Some(text) = line.strip_suffix(b"\r\n") {
+        (text, LineEnd::CrLf)
+    } else if let Some(text) = line.strip_suffix(b"\n") {
+        (text, LineEnd::Lf)
+    } else {
+        (line, LineEnd::None)
+    }
 }
 
 fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {

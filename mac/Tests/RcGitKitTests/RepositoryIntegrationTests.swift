@@ -213,6 +213,37 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.blame(tip: new, path: "nope.txt") }
     }
 
+    @Test func diffLinesCarryTheirLineEnding() throws {
+        let fixture = try GitFixture.emptyDirectory()
+        defer { fixture.remove() }
+        try fixture.git(["init", "-q", "-b", "main"])
+        try fixture.write("f.txt", "x\na")
+        try fixture.commit("one", date: "2024-01-01T00:00:00+0000")
+        try fixture.write("f.txt", "x\r\na\n")
+        try fixture.commit("two", date: "2024-01-02T00:00:00+0000")
+        let repo = try Repository(path: fixture.path)
+        let old = try #require(Oid(hex: try fixture.revParse("main~1:f.txt")))
+        let new = try #require(Oid(hex: try fixture.revParse("main:f.txt")))
+
+        guard case let .text(hunks) = try repo.diffBlobs(old: old, new: new) else {
+            Issue.record("expected a text diff")
+            return
+        }
+        #expect(
+            hunks.flatMap(\.lines) == [
+                DiffLine(kind: .removed, text: "x", eol: .lf),
+                DiffLine(kind: .removed, text: "a", eol: .none),
+                DiffLine(kind: .added, text: "x", eol: .crlf),
+                DiffLine(kind: .added, text: "a", eol: .lf),
+            ])
+    }
+
+    @Test func onlyAPlainNewlineGoesUnmarked() {
+        #expect(LineEnd.lf.marker == nil)
+        #expect(LineEnd.crlf.marker?.contains("CRLF") == true)
+        #expect(LineEnd.none.marker?.contains("no newline at end of file") == true)
+    }
+
     @Test func listsAndReadsTheWorkingTree() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
