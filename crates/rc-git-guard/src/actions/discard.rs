@@ -5,9 +5,11 @@
 
 use std::path::Path;
 
+use gix::objs::tree::EntryKind;
+
 use super::commit::{blob_data, recompute_hunks, stamp_matches, tree_entry_at, work_dir};
-use super::workfile;
-use super::{ActionError, ActionResult, HunkStamp, confirm, git_err, open};
+use super::workfile::{self, DiskEntry};
+use super::{ActionError, ActionResult, HunkStamp, confirm, open};
 use crate::{Action, Policy};
 
 const OP: &str = "discard";
@@ -85,7 +87,7 @@ pub fn discard_hunks(
         return Err(mismatch());
     }
     let work_dir = work_dir(&repo, OP)?;
-    let full = workfile::join_under(&work_dir, path, OP)?;
+    workfile::join_under(&work_dir, path, OP)?;
     let entry = tree_entry_at(&repo, OP, head_tree(&repo)?, path)?.ok_or_else(mismatch)?;
     if !entry.mode.is_blob() {
         return Err(mismatch());
@@ -109,14 +111,16 @@ pub fn discard_hunks(
         .filter(|stamp| !stamps.contains(stamp))
         .collect();
     let old = blob_data(&repo, OP, path, entry.oid)?;
-    let new = std::fs::read(&full).map_err(git_err(OP, path))?;
-    let result = workfile::splice(&old, &new, &kept).map_err(|_| mismatch())?;
     // The file keeps its on-disk kind: hunk discard never touches the exec bit.
-    let kind = if is_executable(&full) {
-        gix::objs::tree::EntryKind::BlobExecutable
-    } else {
-        gix::objs::tree::EntryKind::Blob
+    let (new, kind) = match workfile::disk_entry(&work_dir, path, OP)? {
+        DiskEntry::Present {
+            data,
+            kind: kind @ (EntryKind::Blob | EntryKind::BlobExecutable),
+        } => (data, kind),
+        DiskEntry::Present { .. } | DiskEntry::Directory => return Err(mismatch()),
+        DiskEntry::Absent => return Err(ActionError::git(OP, path, "does not exist on disk")),
     };
+    let result = workfile::splice(&old, &new, &kept).map_err(|_| mismatch())?;
     workfile::restore_file(OP, &work_dir, path, &result, kind)
 }
 
@@ -126,9 +130,4 @@ fn head_tree(repo: &gix::Repository) -> ActionResult<Option<gix::ObjectId>> {
         return Ok(None);
     };
     super::commit::tree_of(repo, OP, head).map(Some)
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
 }

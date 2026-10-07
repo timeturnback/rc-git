@@ -12,7 +12,8 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
-use super::commit::{blob_data, update_index};
+use super::commit::{blob_data, tree_entry_at, tree_of, update_index};
+use super::workfile::DiskEntry;
 use super::{ActionError, ActionResult, git_err, workfile};
 
 /// One path the change touches, with its blob on each side.
@@ -38,13 +39,13 @@ pub(super) fn plan(
     op: &'static str,
 ) -> ActionResult<Vec<PathChange>> {
     let core = rc_git_core::Repository::open(repo_path).map_err(git_err(op, "repository"))?;
-    let from = match from {
+    let from_core = match from {
         Some(from) => Some(core_oid(from, op)?),
         None => None,
     };
     let to_oid = core_oid(to, op)?;
     let tree_changes = core
-        .diff_trees(from, to_oid)
+        .diff_trees(from_core, to_oid)
         .map_err(|source| ActionError::git(op, to.to_string(), source))?;
 
     let mut changes = Vec::new();
@@ -98,7 +99,51 @@ pub(super) fn plan(
             }),
         }
     }
+    set_old_kinds(repo_path, from, &mut changes, op)?;
     Ok(changes)
+}
+
+/// Replaces each old side's kind with the one `from`'s tree records. The tree diff reports
+/// one kind per change, the new side's, so a mode change such as `chmod +x` would otherwise
+/// compare the disk against the new mode.
+///
+/// # Errors
+/// [`ActionError::Git`] when the repository or the tree cannot be read, or an old path is
+/// missing from it or is not a file or symlink there.
+fn set_old_kinds(
+    repo_path: &Path,
+    from: Option<ObjectId>,
+    changes: &mut [PathChange],
+    op: &'static str,
+) -> ActionResult<()> {
+    if changes.iter().all(|change| change.old.is_none()) {
+        return Ok(());
+    }
+    let repo = super::open(repo_path, op, "repository")?;
+    let from_tree = match from {
+        Some(commit) => Some(tree_of(&repo, op, commit)?),
+        None => None,
+    };
+    for change in changes.iter_mut() {
+        let Some((oid, _)) = change.old else {
+            continue;
+        };
+        let entry = tree_entry_at(&repo, op, from_tree, &change.path)?.ok_or_else(|| {
+            ActionError::git(op, change.path.as_str(), "missing from the old tree")
+        })?;
+        let kind = match entry.mode.kind() {
+            kind @ (EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link) => kind,
+            EntryKind::Tree | EntryKind::Commit => {
+                return Err(ActionError::git(
+                    op,
+                    change.path.as_str(),
+                    "is not a file or symlink in the old tree",
+                ));
+            }
+        };
+        change.old = Some((oid, kind));
+    }
+    Ok(())
 }
 
 /// Refuses the whole operation when any touched path is dirty on disk or staged in the index,
@@ -122,6 +167,10 @@ pub(super) fn verify_clean(
     )
     .map_err(git_err(op, "index"))?;
     refuse_paths_under_written_links(changes, op)?;
+    let file_mode = repo
+        .config_snapshot()
+        .boolean("core.fileMode")
+        .unwrap_or(true);
     let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
     for change in changes {
         let dirty = || ActionError::DirtyPath {
@@ -130,7 +179,7 @@ pub(super) fn verify_clean(
         };
         if let Some((old_blob, kind)) = change.old {
             let expected = blob_data(repo, op, &change.path, old_blob)?;
-            if !disk_matches(work_dir, &change.path, &expected, kind, op)? {
+            if !disk_matches(work_dir, &change.path, (&expected, kind), file_mode, op)? {
                 return Err(dirty());
             }
         } else {
@@ -268,27 +317,35 @@ pub(super) fn entry_kind(
     }
 }
 
-/// Whether the file on disk holds exactly `data`, honoring the entry kind.
+/// Whether the path on disk holds exactly `expected`: the same bytes and the same kind. The
+/// executable bit counts only under `file_mode` (`core.fileMode`), as in git. A missing path,
+/// a directory, or a symlink where a file was is a mismatch; any other read failure is an
+/// error, so its cause is not reported as an uncommitted change.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the path when it cannot be inspected or read.
 fn disk_matches(
     work_dir: &Path,
     path: &str,
-    data: &[u8],
-    kind: EntryKind,
+    expected: (&[u8], EntryKind),
+    file_mode: bool,
     op: &'static str,
 ) -> ActionResult<bool> {
-    let full = workfile::join_under(work_dir, path, op)?;
-    match kind {
-        EntryKind::Link => {
-            use std::os::unix::ffi::OsStrExt;
-            match std::fs::read_link(&full) {
-                Ok(target) => Ok(target.as_os_str().as_bytes() == data),
-                Err(_) => Ok(false),
-            }
-        }
-        EntryKind::Blob | EntryKind::BlobExecutable => match std::fs::read(&full) {
-            Ok(disk) => Ok(disk == data),
-            Err(_) => Ok(false),
-        },
-        EntryKind::Tree | EntryKind::Commit => Ok(false),
-    }
+    let (data, kind) = expected;
+    let DiskEntry::Present {
+        data: disk,
+        kind: disk_kind,
+    } = workfile::disk_entry(work_dir, path, op)?
+    else {
+        return Ok(false);
+    };
+    let kinds_match = match (disk_kind, kind) {
+        (EntryKind::Link, EntryKind::Link) => true,
+        (
+            EntryKind::Blob | EntryKind::BlobExecutable,
+            EntryKind::Blob | EntryKind::BlobExecutable,
+        ) => !file_mode || disk_kind == kind,
+        _ => false,
+    };
+    Ok(kinds_match && disk == data)
 }

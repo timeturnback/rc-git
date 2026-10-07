@@ -153,6 +153,65 @@ pub(super) fn require_exact_name(
     Err(missing())
 }
 
+/// What sits at a working-tree path, read the way git hashes it.
+pub(super) enum DiskEntry {
+    /// Nothing exists at the path.
+    Absent,
+    /// A directory, which no file entry can match.
+    Directory,
+    /// A symlink's target (`EntryKind::Link`), or a file's bytes with its executable bit
+    /// (`EntryKind::BlobExecutable` or `EntryKind::Blob`).
+    Present { data: Vec<u8>, kind: EntryKind },
+}
+
+/// Reads `relative` below `work_dir` without following a symlink at the path itself: a
+/// symlink yields its target, a regular file its bytes and the executable bit of its mode.
+/// The one reader every guard check uses, so they agree on what counts as a change.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the path for an invalid or link-crossing path, and
+/// for any failure to inspect or read it other than its absence, with the OS error kept.
+pub(super) fn disk_entry(
+    work_dir: &Path,
+    relative: &str,
+    op: &'static str,
+) -> ActionResult<DiskEntry> {
+    use std::os::unix::fs::PermissionsExt;
+    let full = join_under(work_dir, relative, op)?;
+    let absent_or_error = |error: std::io::Error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(DiskEntry::Absent)
+        } else {
+            Err(ActionError::git(op, relative, error))
+        }
+    };
+    let meta = match std::fs::symlink_metadata(&full) {
+        Ok(meta) => meta,
+        Err(error) => return absent_or_error(error),
+    };
+    if meta.is_dir() {
+        return Ok(DiskEntry::Directory);
+    }
+    if meta.file_type().is_symlink() {
+        return match std::fs::read_link(&full) {
+            Ok(target) => Ok(DiskEntry::Present {
+                data: target.into_os_string().into_encoded_bytes(),
+                kind: EntryKind::Link,
+            }),
+            Err(error) => absent_or_error(error),
+        };
+    }
+    let kind = if meta.permissions().mode() & 0o111 == 0 {
+        EntryKind::Blob
+    } else {
+        EntryKind::BlobExecutable
+    };
+    match std::fs::read(&full) {
+        Ok(data) => Ok(DiskEntry::Present { data, kind }),
+        Err(error) => absent_or_error(error),
+    }
+}
+
 /// Writes `data` to `relative` below `work_dir` as `kind` describes: a symlink's blob holds
 /// its target, and the executable bit follows the mode. Any existing file is removed first,
 /// so writing never follows a stale symlink. Errors name `op`, the action the write is for.

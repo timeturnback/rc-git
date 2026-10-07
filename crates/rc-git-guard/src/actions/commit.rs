@@ -320,10 +320,16 @@ pub(super) fn whole_file_edit(
     base_tree: Option<ObjectId>,
     path: &str,
 ) -> ActionResult<PathEdit> {
-    let full = workfile::join_under(work_dir, path, op)?;
-    let meta = match std::fs::symlink_metadata(&full) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let (data, kind) = match workfile::disk_entry(work_dir, path, op)? {
+        workfile::DiskEntry::Present { data, kind } => (data, kind),
+        workfile::DiskEntry::Directory => {
+            return Err(ActionError::git(
+                op,
+                path,
+                "is a directory; select files instead",
+            ));
+        }
+        workfile::DiskEntry::Absent => {
             if tree_entry_at(repo, op, base_tree, path)?.is_none() {
                 return Err(ActionError::git(
                     op,
@@ -333,38 +339,10 @@ pub(super) fn whole_file_edit(
             }
             return Ok(PathEdit::Remove);
         }
-        Err(error) => {
-            return Err(ActionError::git(op, path, error));
-        }
     };
-    let (data, kind) = if meta.file_type().is_symlink() {
+    if kind == EntryKind::Link {
         workfile::validate_path(op, path, true)?;
-        let target = std::fs::read_link(&full).map_err(git_err(op, path))?;
-        (
-            target.into_os_string().into_encoded_bytes(),
-            EntryKind::Link,
-        )
-    } else if meta.is_dir() {
-        return Err(ActionError::git(
-            op,
-            path,
-            "is a directory; select files instead",
-        ));
-    } else {
-        let data = std::fs::read(&full).map_err(git_err(op, path))?;
-        let executable = {
-            use std::os::unix::fs::PermissionsExt;
-            meta.permissions().mode() & 0o111 != 0
-        };
-        (
-            data,
-            if executable {
-                EntryKind::BlobExecutable
-            } else {
-                EntryKind::Blob
-            },
-        )
-    };
+    }
     let oid = write_blob(repo, op, path, &data)?;
     Ok(PathEdit::Put { oid, kind })
 }

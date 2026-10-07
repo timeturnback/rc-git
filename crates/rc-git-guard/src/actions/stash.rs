@@ -20,7 +20,7 @@ use super::commit::{
 };
 use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
-use super::workfile;
+use super::workfile::{self, DiskEntry};
 use super::{
     ActionError, ActionResult, Deleted, Identity, confirm, git_err, open, write_backup_ref,
 };
@@ -331,14 +331,16 @@ fn require_absent(work_dir: &Path, path: &str, op: &'static str) -> ActionResult
     let full = workfile::join_under(work_dir, path, op)?;
     match std::fs::symlink_metadata(&full) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(_) | Err(_) => Err(ActionError::DirtyPath {
+        Err(error) => Err(ActionError::git(op, path, error)),
+        Ok(_) => Err(ActionError::DirtyPath {
             op,
             path: path.to_owned(),
         }),
     }
 }
 
-/// The path's bytes on disk must equal the blob the stash recorded as its base.
+/// The path's bytes on disk must equal the blob the stash recorded as its base. A missing
+/// path or a directory is dirty; any other read failure is an error naming the path.
 fn require_base_content(
     repo: &gix::Repository,
     work_dir: &Path,
@@ -353,22 +355,9 @@ fn require_base_content(
     let base = base
         .ok_or_else(|| ActionError::git(op, "refs/stash", "a modification carries no base blob"))?;
     let expected = blob_data(repo, op, path, gix_oid(base, op)?)?;
-    let full = workfile::join_under(work_dir, path, op)?;
-    let meta = std::fs::symlink_metadata(&full).map_err(|_| dirty())?;
-    let actual = if meta.file_type().is_symlink() {
-        std::fs::read_link(&full)
-            .map_err(|_| dirty())?
-            .into_os_string()
-            .into_encoded_bytes()
-    } else if meta.is_dir() {
-        return Err(dirty());
-    } else {
-        std::fs::read(&full).map_err(|_| dirty())?
-    };
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(dirty())
+    match workfile::disk_entry(work_dir, path, op)? {
+        DiskEntry::Present { data, .. } if data == expected => Ok(()),
+        DiskEntry::Present { .. } | DiskEntry::Absent | DiskEntry::Directory => Err(dirty()),
     }
 }
 
@@ -380,12 +369,11 @@ fn require_absent_or_base(
     op: &'static str,
 ) -> ActionResult<()> {
     let full = workfile::join_under(work_dir, path, op)?;
-    if let Err(error) = std::fs::symlink_metadata(&full)
-        && error.kind() == std::io::ErrorKind::NotFound
-    {
-        return Ok(());
+    match std::fs::symlink_metadata(&full) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ActionError::git(op, path, error)),
+        Ok(_) => require_base_content(repo, work_dir, path, base, op),
     }
-    require_base_content(repo, work_dir, path, base, op)
 }
 
 /// Drops `stash@{index}`: backup ref, reflog line removal with re-chaining, and the

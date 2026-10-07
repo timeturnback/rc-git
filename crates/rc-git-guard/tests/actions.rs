@@ -1531,3 +1531,143 @@ mod checkout {
         assert_eq!(head_branch(&fx), "main");
     }
 }
+
+/// Checkout and fast-forward pull read a touched path the way git hashes it: the kind and the
+/// executable bit count, and a read failure is reported as itself.
+mod tree_switch_disk_reads {
+    use rc_git_guard::Policy;
+    use rc_git_guard::actions::{ActionError, checkout_branch, pull_fast_forward};
+    use rc_git_testkit::Fixture;
+
+    /// `main` as the standard fixture has it, and `next` (also `origin/main`) one commit
+    /// ahead with `alpha.txt` rewritten, so both a switch and a pull touch that file.
+    fn alpha_rewritten_ahead() -> Fixture {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"alpha\nmore\n");
+        fx.commit("Rewrite alpha", "2024-02-01T00:00:00+0000");
+        fx.git(&["branch", "next"]);
+        fx.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        // Pull reads only the tracking ref; the remote just has to exist. Nothing is fetched.
+        let url = fx.path().to_string_lossy().into_owned();
+        fx.git(&["remote", "add", "origin", &url]);
+        fx
+    }
+
+    fn mode(fx: &Fixture, relative: &str) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(fx.path().join(relative))
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o777)
+    }
+
+    fn assert_alpha_dirty(err: &ActionError, expected_op: &str) {
+        assert!(
+            matches!(err, ActionError::DirtyPath { op, path } if *op == expected_op && path == "alpha.txt"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_uncommitted_chmod_refuses_the_switch_and_the_pull() {
+        let fx = alpha_rewritten_ahead();
+        fx.set_mode("alpha.txt", 0o755);
+        assert!(
+            fx.git_output(&["status", "--porcelain"])
+                .contains("M alpha.txt")
+        );
+
+        let main_tip = fx.rev_parse("main");
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        assert_alpha_dirty(&err, "checkout");
+        let err = pull_fast_forward(fx.path(), &Policy::default()).unwrap_err();
+        assert_alpha_dirty(&err, "pull");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD stayed put");
+        assert_eq!(mode(&fx, "alpha.txt"), Some(0o755), "the exec bit survives");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n"
+        );
+    }
+
+    #[test]
+    fn a_chmod_is_no_change_when_the_repository_ignores_file_modes() {
+        let fx = alpha_rewritten_ahead();
+        fx.git(&["config", "core.fileMode", "false"]);
+        fx.set_mode("alpha.txt", 0o755);
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+        checkout_branch(fx.path(), &Policy::default(), "next").unwrap();
+        assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("next"));
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\nmore\n"
+        );
+    }
+
+    #[test]
+    fn a_file_swapped_for_a_symlink_to_identical_bytes_refuses_the_switch_and_the_pull() {
+        let fx = alpha_rewritten_ahead();
+        fx.write("copy.txt", b"alpha\n");
+        fx.remove("alpha.txt");
+        fx.symlink("copy.txt", "alpha.txt");
+        assert!(
+            fx.git_output(&["status", "--porcelain"])
+                .contains("T alpha.txt")
+        );
+
+        let main_tip = fx.rev_parse("main");
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        assert_alpha_dirty(&err, "checkout");
+        let err = pull_fast_forward(fx.path(), &Policy::default()).unwrap_err();
+        assert_alpha_dirty(&err, "pull");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD stayed put");
+        assert_eq!(
+            std::fs::read_link(fx.path().join("alpha.txt")).unwrap(),
+            std::path::Path::new("copy.txt"),
+            "the symlink survives"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_tracked_file_reports_the_os_error_not_a_dirty_path() {
+        let fx = alpha_rewritten_ahead();
+        fx.set_mode("alpha.txt", 0o000);
+        if std::fs::read(fx.path().join("alpha.txt")).is_ok() {
+            // Running as root: mode 000 does not stop the read, so there is no error to see.
+            return;
+        }
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "checkout", name, .. } if name == "alpha.txt"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("ermission denied"), "{err}");
+        let err = pull_fast_forward(fx.path(), &Policy::default()).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "pull", name, .. } if name == "alpha.txt"),
+            "{err}"
+        );
+        fx.set_mode("alpha.txt", 0o644);
+        assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("main"));
+    }
+
+    #[test]
+    fn a_clean_switch_onto_a_committed_chmod_sets_the_exec_bit() {
+        let fx = Fixture::standard();
+        fx.set_mode("alpha.txt", 0o755);
+        fx.commit("Make alpha executable", "2024-02-01T00:00:00+0000");
+        fx.git(&["branch", "exec"]);
+        fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        assert_eq!(mode(&fx, "alpha.txt"), Some(0o644));
+
+        checkout_branch(fx.path(), &Policy::default(), "exec").unwrap();
+        assert_eq!(mode(&fx, "alpha.txt"), Some(0o755));
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+        checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+        assert_eq!(mode(&fx, "alpha.txt"), Some(0o644));
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+    }
+}
