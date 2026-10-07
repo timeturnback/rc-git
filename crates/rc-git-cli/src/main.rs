@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitFilter, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT,
-    DiffLineKind, EntryKind, RefKind, Repository, WorktreeStatus,
+    BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
+    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, RefKind, Repository, WorktreeStatus,
 };
 
 const USAGE: &str = "\
@@ -37,6 +37,10 @@ usage: rc-git [--time] <command> <repo> [args]
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
+
+  --max-scan N stops after examining N commits (filelog, search; default: all history) or N
+  working-tree entries (changes, files; default 200000) and warns that the output is
+  truncated. filelog and search reject N = 0.
 
   commit      <repo> -m <msg> [--author \"Name <email>\"] [--confirm <phrase>]
               [--expect-head <oid>] <path>...
@@ -631,17 +635,32 @@ fn ls(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode>
         entry.oid
     };
     for entry in repo.tree_entries(tree)? {
-        let kind = match entry.kind {
-            EntryKind::Tree => "tree",
-            EntryKind::Blob => "blob",
-            EntryKind::ExecutableBlob => "exec",
-            EntryKind::Symlink => "link",
-            EntryKind::Submodule => "submodule",
-        };
-        write!(out, "{kind}\t{}\t", entry.oid)?;
+        write!(out, "{}\t{}\t", kind_name(entry.kind), entry.oid)?;
         Records::Lines.end_with_path(out, &entry.name);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The kind column `ls` and `status` print.
+fn kind_name(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Tree => "tree",
+        EntryKind::Blob => "blob",
+        EntryKind::ExecutableBlob => "exec",
+        EntryKind::Symlink => "link",
+        EntryKind::Submodule => "submodule",
+    }
+}
+
+/// The status column `status` and `changes` print.
+fn status_letter(status: WorktreeStatus) -> &'static str {
+    match status {
+        WorktreeStatus::Unchanged => " ",
+        WorktreeStatus::Modified => "M",
+        WorktreeStatus::Untracked => "?",
+        WorktreeStatus::Ignored => "!",
+        WorktreeStatus::Deleted => "D",
+    }
 }
 
 fn cat(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
@@ -691,13 +710,43 @@ fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
     let skip = args.number("--skip")?.unwrap_or(0);
     let tip = repo.resolve(rev)?;
     for commit in repo.log(tip, skip, limit)? {
-        writeln!(
-            out,
-            "{}\t{}\t{}\t{}",
-            commit.oid, commit.author_time, commit.author_name, commit.title
-        )?;
+        write_commit_row(out, &commit)?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One commit as `oid, author_time, author_name, title`, the row log, filelog and search print.
+fn write_commit_row(out: &mut Vec<u8>, commit: &CommitSummary) -> Result<()> {
+    writeln!(
+        out,
+        "{}\t{}\t{}\t{}",
+        commit.oid, commit.author_time, commit.author_name, commit.title
+    )?;
+    Ok(())
+}
+
+/// The `--max-scan` commit budget: every commit when the flag is absent, at least one when given.
+fn scan_budget(args: &VerbArgs<'_>) -> Result<usize> {
+    match args.number("--max-scan")? {
+        None => Ok(usize::MAX),
+        Some(0) => Err(usage_error("--max-scan must be at least 1".to_owned())),
+        Some(budget) => Ok(budget),
+    }
+}
+
+/// Prints a page's rows, and warns when the budget ran out before `limit` matches or the end.
+fn write_commit_page(out: &mut Vec<u8>, page: &CommitPage, limit: usize) -> Result<()> {
+    for commit in &page.commits {
+        write_commit_row(out, commit)?;
+    }
+    if !page.complete && page.commits.len() < limit {
+        writeln!(
+            io::stderr().lock(),
+            "warning: truncated after scanning {} commits",
+            page.scanned
+        )?;
+    }
+    Ok(())
 }
 
 fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
@@ -709,25 +758,10 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     let path = &canonical_path(path)?;
     let rev = args.positional(1).unwrap_or("HEAD");
     let limit = args.number("-n")?.unwrap_or(20);
-    let max_scan = args.number("--max-scan")?.unwrap_or(5000);
+    let max_scan = scan_budget(&args)?;
     let tip = repo.resolve(rev)?;
-    let mut printed = 0;
-    let mut scan_skip = 0;
-    loop {
-        let page = repo.path_history(tip, path, scan_skip, limit - printed, max_scan)?;
-        for commit in &page.commits {
-            writeln!(
-                out,
-                "{}\t{}\t{}\t{}",
-                commit.oid, commit.author_time, commit.author_name, commit.title
-            )?;
-        }
-        printed += page.commits.len();
-        scan_skip += page.scanned;
-        if page.complete || printed >= limit {
-            break;
-        }
-    }
+    let page = repo.path_history(tip, path, 0, limit, max_scan)?;
+    write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -748,7 +782,7 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     args.expect(0, 1, "[rev]")?;
     let rev = args.positional(0).unwrap_or("HEAD");
     let limit = args.number("-n")?.unwrap_or(20);
-    let max_scan = args.number("--max-scan")?.unwrap_or(10_000);
+    let max_scan = scan_budget(&args)?;
     let filter = CommitFilter {
         message: args.value(&["--message"]).map(str::to_owned),
         author: args.value(&["--author"]).map(str::to_owned),
@@ -756,23 +790,8 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         before: epoch(&args, "--until")?,
     };
     let tip = repo.resolve(rev)?;
-    let mut printed = 0;
-    let mut scan_skip = 0;
-    loop {
-        let page = repo.search_commits(tip, &filter, scan_skip, limit - printed, max_scan)?;
-        for commit in &page.commits {
-            writeln!(
-                out,
-                "{}\t{}\t{}\t{}",
-                commit.oid, commit.author_time, commit.author_name, commit.title
-            )?;
-        }
-        printed += page.commits.len();
-        scan_skip += page.scanned;
-        if page.complete || printed >= limit {
-            break;
-        }
-    }
+    let page = repo.search_commits(tip, &filter, 0, limit, max_scan)?;
+    write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -946,14 +965,7 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     let tree = repo.resolve_tree("HEAD")?;
     let report = repo.worktree_status(tree, max_scan)?;
     for entry in &report.entries {
-        let letter = match entry.status {
-            WorktreeStatus::Unchanged => " ",
-            WorktreeStatus::Modified => "M",
-            WorktreeStatus::Untracked => "?",
-            WorktreeStatus::Ignored => "!",
-            WorktreeStatus::Deleted => "D",
-        };
-        write!(out, "{letter}\t")?;
+        write!(out, "{}\t", status_letter(entry.status))?;
         records.end_with_path(out, &entry.path);
     }
     if report.truncated {
@@ -1008,21 +1020,12 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     let tree = repo.resolve_tree("HEAD")?;
     let listing = repo.worktree_entries(tree, dir)?;
     for entry in &listing.entries {
-        let letter = match entry.status {
-            WorktreeStatus::Unchanged => " ",
-            WorktreeStatus::Modified => "M",
-            WorktreeStatus::Untracked => "?",
-            WorktreeStatus::Ignored => "!",
-            WorktreeStatus::Deleted => "D",
-        };
-        let kind = match entry.kind {
-            EntryKind::Tree => "tree",
-            EntryKind::Blob => "blob",
-            EntryKind::ExecutableBlob => "exec",
-            EntryKind::Symlink => "link",
-            EntryKind::Submodule => "submodule",
-        };
-        write!(out, "{letter}\t{kind}\t")?;
+        write!(
+            out,
+            "{}\t{}\t",
+            status_letter(entry.status),
+            kind_name(entry.kind)
+        )?;
         records.end_with_path(out, &entry.name);
     }
     for missing in &listing.missing {

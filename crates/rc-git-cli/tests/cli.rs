@@ -185,8 +185,29 @@ fn filelog_lists_commits_that_changed_a_path() {
     assert_eq!(readme.lines().count(), 1);
     assert!(readme.ends_with(&format!("{COMMIT_1_TITLE}\n")));
 
-    let chunked = stdout(&rc_git(&["filelog", path, "README.md", "--max-scan", "1"]));
-    assert_eq!(chunked, readme, "chunked scanning changes nothing");
+    let bounded = rc_git(&["filelog", path, "README.md", "--max-scan", "1"]);
+    assert!(bounded.status.success(), "{}", stderr(&bounded));
+    assert_eq!(
+        stdout(&bounded),
+        "",
+        "README.md last changed in the second commit walked"
+    );
+    assert!(
+        stderr(&bounded).contains("warning: truncated after scanning 1 commits"),
+        "{}",
+        stderr(&bounded)
+    );
+    let wide = rc_git(&["filelog", path, "README.md", "--max-scan", "2"]);
+    assert_eq!(stdout(&wide), readme);
+    assert_eq!(
+        stderr(&wide),
+        "",
+        "a budget covering all history is no truncation"
+    );
+
+    let zero = rc_git(&["filelog", path, "README.md", "--max-scan", "0"]);
+    assert_eq!(zero.status.code(), Some(2));
+    assert!(stderr(&zero).contains("--max-scan must be at least 1"));
 
     let none = stdout(&rc_git(&["filelog", path, "nope.txt"]));
     assert_eq!(none.len(), 0);
@@ -262,15 +283,33 @@ fn search_filters_by_message_author_and_dates() {
     assert_eq!(since.lines().count(), 1);
     assert!(since.ends_with(&format!("{COMMIT_2_TITLE}\n")));
 
-    let chunked = stdout(&rc_git(&[
-        "search",
-        path,
-        "--message",
-        "docs",
-        "--max-scan",
-        "1",
-    ]));
-    assert_eq!(chunked, docs, "chunked scanning changes nothing");
+    let newest = rc_git(&["search", path, "--message", "docs", "--max-scan", "1"]);
+    assert_eq!(
+        stdout(&newest),
+        docs,
+        "the match is the first commit walked"
+    );
+
+    let bounded = rc_git(&["search", path, "--until", "1704067200", "--max-scan", "1"]);
+    assert!(bounded.status.success(), "{}", stderr(&bounded));
+    assert_eq!(
+        stdout(&bounded),
+        "",
+        "the only match is the second commit walked"
+    );
+    assert!(
+        stderr(&bounded).contains("warning: truncated after scanning 1 commits"),
+        "{}",
+        stderr(&bounded)
+    );
+
+    let filled = rc_git(&["search", path, "-n", "1", "--max-scan", "1"]);
+    assert_eq!(stdout(&filled).lines().count(), 1);
+    assert_eq!(stderr(&filled), "", "reaching -n is not truncation");
+
+    let zero = rc_git(&["search", path, "--max-scan", "0"]);
+    assert_eq!(zero.status.code(), Some(2));
+    assert!(stderr(&zero).contains("--max-scan must be at least 1"));
 
     let bad = rc_git(&["search", path, "--since", "yesterday"]);
     assert_eq!(bad.status.code(), Some(2));
