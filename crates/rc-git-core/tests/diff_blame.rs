@@ -5,7 +5,7 @@ use rc_git_core::{
     BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLineKind,
     EntryKind, Error, LineEnd, ObjectKind, Oid, Repository,
 };
-use rc_git_testkit::Fixture;
+use rc_git_testkit::{BIN_DAT, Fixture, README};
 
 fn oid(hex: &str) -> Oid {
     Oid::from_hex(hex).unwrap()
@@ -494,7 +494,20 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
     else {
         panic!("expected binary");
     };
-    assert!(old_size > 0 && new_size > 0);
+    assert_eq!(
+        (old_size, new_size),
+        (BIN_DAT.len() as u64, README.len() as u64)
+    );
+
+    assert_eq!(
+        repo.diff_blobs(None, Some(bin), DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)
+            .unwrap(),
+        BlobDiff::Binary {
+            old_size: 0,
+            new_size: BIN_DAT.len() as u64
+        },
+        "an absent side counts as size 0"
+    );
 
     let BlobDiff::TooLarge { size, limit } = repo
         .diff_blobs(Some(readme), Some(readme), 3, DEFAULT_DIFF_CONTEXT)
