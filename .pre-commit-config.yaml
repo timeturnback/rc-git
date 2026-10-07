@@ -51,4 +51,4 @@ repos:
         name: zizmor
         entry: zizmor
         language: system
-        files: ^\.github/workflows/
+        files: ^\.github/(workflows/|dependabot\.yml$)

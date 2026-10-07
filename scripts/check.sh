@@ -58,7 +58,7 @@ shellcheck scripts/*.sh
 shfmt -d scripts/*.sh
 step "github actions"
 actionlint
-zizmor --offline .github/workflows
+zizmor --offline .github
 step "kit layering"
 if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI)\b' \
   mac/Sources/RcGitKit; then
