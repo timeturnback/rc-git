@@ -2,8 +2,8 @@
 #![expect(clippy::unwrap_used, reason = "test helpers panic on fixture failure")]
 
 use rc_git_core::{
-    BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, Error,
-    ObjectKind, Oid, Repository,
+    BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLineKind,
+    EntryKind, Error, ObjectKind, Oid, Repository,
 };
 use rc_git_testkit::Fixture;
 
@@ -306,6 +306,45 @@ fn blob_diff_produces_unified_hunks() {
             (DiffLineKind::Added, "four".to_owned()),
         ]
     );
+}
+
+/// Runs `diff_blobs` on `path` between `main~1` and `main` and returns the text hunks.
+#[expect(clippy::panic, reason = "test helper panics on a non-text diff")]
+fn text_hunks(fx: &Fixture, path: &str, context: u32) -> Vec<DiffHunk> {
+    let repo = Repository::open(fx.path()).unwrap();
+    let old = oid(&fx.rev_parse(&format!("main~1:{path}")));
+    let new = oid(&fx.rev_parse(&format!("main:{path}")));
+    let BlobDiff::Text { hunks } = repo
+        .diff_blobs(Some(old), Some(new), DEFAULT_BLOB_LIMIT, context)
+        .unwrap()
+    else {
+        panic!("expected a text diff of {path}");
+    };
+    hunks
+}
+
+fn hunk_ranges(hunks: &[DiffHunk]) -> Vec<(u32, u32, u32, u32)> {
+    hunks
+        .iter()
+        .map(|h| (h.old_start, h.old_lines, h.new_start, h.new_lines))
+        .collect()
+}
+
+#[test]
+fn huge_context_is_clamped() {
+    let fx = diff_fixture();
+    let hunks = text_hunks(&fx, "a.txt", u32::MAX);
+    assert_eq!(hunk_ranges(&hunks), [(1, 3, 1, 4)]);
+
+    let two = Fixture::empty_dir();
+    two.git(&["init", "-q", "-b", "main"]);
+    two.write("b.txt", b"1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    two.commit("first", "2024-01-01T00:00:00+0000");
+    two.write("b.txt", b"ONE\n2\n3\n4\n5\n6\n7\n8\n9\nTEN\n");
+    two.commit("second", "2024-01-02T00:00:00+0000");
+    assert_eq!(hunk_ranges(&text_hunks(&two, "b.txt", 1)).len(), 2);
+    let hunks = text_hunks(&two, "b.txt", 1 << 31);
+    assert_eq!(hunk_ranges(&hunks), [(1, 10, 1, 10)]);
 }
 
 #[test]

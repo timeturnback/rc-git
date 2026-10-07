@@ -281,10 +281,20 @@ fn diff_sides(old: DiffSide, new: DiffSide, context: u32) -> Result<BlobDiff> {
         &diff,
         &input,
         CollectHunks::default(),
-        ContextSize::symmetrical(context),
+        ContextSize::symmetrical(clamp_context(context, &input)),
     );
     let hunks = unified.consume().map_err(git("collect diff hunks"))?;
     Ok(BlobDiff::Text { hunks })
+}
+
+/// Caps `context` at the longer side's line count: more context adds nothing, and gix-diff's
+/// unchecked `ctx_pos + ctx_size` and `2 * ctx_size` overflow on values near `u32::MAX`.
+fn clamp_context(context: u32, input: &InternedInput<&[u8]>) -> u32 {
+    let lines = input.before.len().max(input.after.len());
+    let half_range = u32::try_from(i32::MAX).unwrap_or(u32::MAX);
+    context
+        .min(u32::try_from(lines).unwrap_or(u32::MAX))
+        .min(half_range)
 }
 
 enum DiffSide {
