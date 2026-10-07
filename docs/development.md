@@ -11,7 +11,9 @@ scripts/build.sh           # Rust lib, header, Swift package
 ```
 
 Git hooks run through the global `core.hooksPath` dispatcher, which invokes `prek` whenever a
-repository has `.pre-commit-config.yaml`; there is no per-repository install step.
+repository has `.pre-commit-config.yaml`; with it there is no per-repository install step.
+Without a global dispatcher, run `prek install` once per clone; never run it where a global
+`core.hooksPath` already owns the hook slot (prek refuses there anyway).
 
 ## Daily loop
 
