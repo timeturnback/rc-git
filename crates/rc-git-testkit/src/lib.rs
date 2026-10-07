@@ -244,6 +244,42 @@ impl Fixture {
         std::os::unix::fs::symlink(target, self.dir.path().join(relative)).expect("create symlink");
     }
 
+    /// Removes a file, symlink, or directory tree below the working directory. An empty
+    /// `relative` removes the whole working directory.
+    ///
+    /// # Panics
+    /// On I/O failure, including when nothing exists at `relative`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures remove their own files"
+    )]
+    pub fn remove(&self, relative: &str) {
+        let path = self.dir.path().join(relative);
+        let meta = std::fs::symlink_metadata(&path)
+            .unwrap_or_else(|e| panic!("stat {} before removing: {e}", path.display()));
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        }
+        .unwrap_or_else(|e| panic!("remove {}: {e}", path.display()));
+    }
+
+    /// Sets the Unix permission bits of a file below the working directory, e.g. `0o755`.
+    ///
+    /// # Panics
+    /// On I/O failure.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures set their own file modes"
+    )]
+    pub fn set_mode(&self, relative: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.dir.path().join(relative);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .unwrap_or_else(|e| panic!("chmod {mode:o} {}: {e}", path.display()));
+    }
+
     /// Stages everything and commits with `date` as both author and committer date.
     pub fn commit(&self, title: &str, date: &str) {
         self.run(&["add", "-A"], &[]);

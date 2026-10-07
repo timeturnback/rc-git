@@ -1,8 +1,4 @@
 //! The working tree as a read-only view with a status overlay.
-#![expect(
-    clippy::disallowed_methods,
-    reason = "tests arrange the fixture's working tree; the library never mutates"
-)]
 
 use rc_git_core::{BlobContent, DEFAULT_BLOB_LIMIT, EntryKind, Error, Repository, WorktreeStatus};
 use rc_git_testkit::Fixture;
@@ -62,7 +58,7 @@ fn edits_deletions_and_new_files_are_flagged() {
     fx.write("untracked.txt", b"new\n");
     fx.write(".gitignore", b"*.tmp\n");
     fx.write("scratch.tmp", b"ignored\n");
-    std::fs::remove_file(fx.path().join("Zeta.txt")).unwrap();
+    fx.remove("Zeta.txt");
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
@@ -83,7 +79,7 @@ fn edits_deletions_and_new_files_are_flagged() {
 #[test]
 fn a_changed_symlink_is_modified() {
     let fx = Fixture::standard();
-    std::fs::remove_file(fx.path().join("link")).unwrap();
+    fx.remove("link");
     fx.symlink("alpha.txt", "link");
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
@@ -196,7 +192,7 @@ fn a_bare_repository_has_no_working_tree() {
 #[test]
 fn a_missing_directory_is_an_error_but_a_tree_only_directory_lists_as_missing() {
     let fx = Fixture::standard();
-    std::fs::remove_dir_all(fx.path().join("docs")).unwrap();
+    fx.remove("docs");
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
@@ -215,8 +211,8 @@ fn worktree_status_lists_every_change_flat_and_sorted() {
     fx.write("alpha.txt", b"omega\n");
     fx.write("untracked.txt", b"new\n");
     fx.write("newdir/inner/file.txt", b"x\n");
-    std::fs::remove_file(fx.path().join("src/lib.rs")).unwrap();
-    std::fs::remove_dir_all(fx.path().join("docs")).unwrap();
+    fx.remove("src/lib.rs");
+    fx.remove("docs");
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
@@ -262,11 +258,8 @@ fn worktree_status_lists_every_change_flat_and_sorted() {
 #[test]
 fn worktree_status_flags_exec_bit_and_symlink_changes() {
     let fx = Fixture::standard();
-    let alpha = fx.path().join("alpha.txt");
-    let mut perms = std::fs::metadata(&alpha).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&alpha, perms).unwrap();
-    std::fs::remove_file(fx.path().join("link")).unwrap();
+    fx.set_mode("alpha.txt", 0o755);
+    fx.remove("link");
     fx.symlink("Zeta.txt", "link");
 
     let repo = Repository::open(fx.path()).unwrap();
@@ -336,7 +329,7 @@ fn worktree_status_truncates_at_the_scan_cap() {
 #[test]
 fn worktree_status_reports_a_file_replacing_a_tracked_directory() {
     let fx = Fixture::standard();
-    std::fs::remove_dir_all(fx.path().join("docs")).unwrap();
+    fx.remove("docs");
     fx.write("docs", b"now a file\n");
 
     let repo = Repository::open(fx.path()).unwrap();
@@ -533,7 +526,7 @@ fn worktree_files_reports_an_unreadable_directory() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    std::fs::remove_dir_all(fx.path()).unwrap();
+    fx.remove("");
     let err = repo.worktree_files(tree, 10_000).unwrap_err();
     assert!(err.to_string().contains("list working tree files"), "{err}");
 }
