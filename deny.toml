@@ -31,6 +31,11 @@ allow = [
     "ISC",
 ]
 
+[licenses.private]
+# The workspace crates are `publish = false` and carry no license field: the project is not
+# licensed for redistribution. Skip them; every third-party crate is still checked.
+ignore = true
+
 [bans]
 # Duplicate versions come from gix's tree (sha1/digest 0.10) and from russh's pre-release
 # RustCrypto stack (digest/sha1 0.11, getrandom 0.2 via ring). Neither set is actionable until
