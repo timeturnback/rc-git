@@ -328,4 +328,17 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn gix_reads_the_commit_graph_git_writes() {
+        let fx = rc_git_testkit::Fixture::standard();
+        fx.git(&["commit-graph", "write", "--reachable"]);
+        let repo = Repository::open(fx.path()).expect("open fixture");
+        let graph_commits = repo.with(|r| r.commit_graph().map(|g| g.num_commits()).ok());
+        assert_eq!(
+            graph_commits,
+            Some(3),
+            "the log walk ignores a commit-graph gix cannot read, so log speed depends on this"
+        );
+    }
 }
