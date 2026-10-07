@@ -230,9 +230,13 @@ fn current_branch(
 /// `origin` when that remote exists.
 fn configured_remote_name(repo: &gix::Repository, branch: &str) -> Option<String> {
     use gix::bstr::ByteSlice;
-    if let Some(name) =
-        repo.branch_remote_name(branch.as_bytes().as_bstr(), gix::remote::Direction::Fetch)
-    {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one sanctioned resolver; it adds the origin fallback"
+    )]
+    let configured =
+        repo.branch_remote_name(branch.as_bytes().as_bstr(), gix::remote::Direction::Fetch);
+    if let Some(name) = configured {
         return Some(name.as_bstr().to_string());
     }
     repo.remote_names()
@@ -268,9 +272,13 @@ fn remote_fetch_url(
 fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
     let full = format!("refs/heads/{branch}");
     let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
-    let Some(tracking) =
-        repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch)
-    else {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one sanctioned resolver; it adds the origin fallback"
+    )]
+    let configured =
+        repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch);
+    let Some(tracking) = configured else {
         let remote = configured_remote_name(repo, branch)?;
         return Some(format!("refs/remotes/{remote}/{branch}"));
     };

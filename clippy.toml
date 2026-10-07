@@ -1,5 +1,6 @@
 # rc-git never mutates a repository from library code and never shells out.
-# Every method here is a write path, a process spawn, or a network entry point.
+# Every method here is a write path, a process spawn, a network entry point, or a
+# resolver that bypasses the guard's own (branch_remote* skips the origin fallback).
 # Adding a caller means routing it through rc-git-guard first; see docs/safety.md.
 disallowed-methods = [
     { path = "gix::Repository::edit_reference", reason = "core is read-only; ref writes go through rc-git-guard" },
@@ -71,6 +72,10 @@ disallowed-methods = [
     { path = "tokio::net::TcpStream::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "russh::client::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "russh::client::connect_stream", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "gix::Repository::branch_remote_ref_name", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
+    { path = "gix::Repository::branch_remote_tracking_ref_name", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
+    { path = "gix::Repository::branch_remote_name", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
+    { path = "gix::Repository::branch_remote", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.
