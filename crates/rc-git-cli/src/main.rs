@@ -958,7 +958,6 @@ fn render_tree_changes(
             ChangeKind::Deleted => "D",
             ChangeKind::Modified => "M",
             ChangeKind::Renamed => "R",
-            ChangeKind::Copied => "C",
         };
         write!(out, "{letter}\t")?;
         match &change.source_path {

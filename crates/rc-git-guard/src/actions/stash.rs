@@ -254,7 +254,7 @@ fn apply_inner(
 
     let core = rc_git_core::Repository::open(repo_path).map_err(git_err(op, "repository"))?;
     let changes = core
-        .diff_trees(core_oid(base, op)?.into(), core_oid(stash_commit, op)?)
+        .diff_trees_without_renames(core_oid(base, op)?.into(), core_oid(stash_commit, op)?)
         .map_err(git_err(op, "stash"))?;
     let work_dir = work_dir(repo, op)?;
 
@@ -269,7 +269,7 @@ fn apply_inner(
             workfile::validate_path(op, source, symlink)?;
         }
         match change.kind {
-            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Copied => {
+            rc_git_core::ChangeKind::Added => {
                 require_absent(&work_dir, &path, op)?;
             }
             rc_git_core::ChangeKind::Modified => {
@@ -292,9 +292,7 @@ fn apply_inner(
     for change in &changes {
         let path = change.path.to_string();
         match change.kind {
-            rc_git_core::ChangeKind::Added
-            | rc_git_core::ChangeKind::Copied
-            | rc_git_core::ChangeKind::Modified => {
+            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {
                 restore_change(repo, &work_dir, &path, change, op)?;
             }
             rc_git_core::ChangeKind::Deleted => workfile::delete_file(op, &work_dir, &path)?,

@@ -20,6 +20,5 @@ import Testing
         #expect(ChangeKind.deleted.letter == "D")
         #expect(ChangeKind.modified.letter == "M")
         #expect(ChangeKind.renamed.letter == "R")
-        #expect(ChangeKind.copied.letter == "C")
     }
 }

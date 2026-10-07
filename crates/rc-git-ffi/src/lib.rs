@@ -466,8 +466,6 @@ pub enum RcGitChangeKind {
     Modified = 2,
     /// Content moved from `source_path`.
     Renamed = 3,
-    /// Content copied from `source_path`.
-    Copied = 4,
 }
 
 impl From<ChangeKind> for RcGitChangeKind {
@@ -477,7 +475,6 @@ impl From<ChangeKind> for RcGitChangeKind {
             ChangeKind::Deleted => Self::Deleted,
             ChangeKind::Modified => Self::Modified,
             ChangeKind::Renamed => Self::Renamed,
-            ChangeKind::Copied => Self::Copied,
         }
     }
 }
@@ -489,7 +486,7 @@ pub struct RcGitTreeChange {
     pub kind: RcGitChangeKind,
     /// Path in the new tree, or in the old tree for a deletion.
     pub path: *mut c_char,
-    /// Where the content came from; NULL unless renamed or copied.
+    /// Where the content came from; NULL unless renamed.
     pub source_path: *mut c_char,
     /// False for additions, in which case `old_id` is meaningless.
     pub has_old: bool,

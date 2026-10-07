@@ -96,6 +96,121 @@ fn tree_diff_detects_modifications_renames_and_deletions() {
     assert_eq!(deleted.kind, ChangeKind::Deleted);
 }
 
+/// Eight numbered lines, the last one tagged so two files can differ only there.
+fn eight_lines(name: &str, last: &str) -> Vec<u8> {
+    let mut text = Vec::new();
+    for n in 1..8 {
+        text.extend_from_slice(format!("{name} line {n}\n").as_bytes());
+    }
+    text.extend_from_slice(format!("{name} {last}\n").as_bytes());
+    text
+}
+
+/// Two commits under `diff.renames=copies`: the second renames `keep.txt` to `kept.txt` with
+/// its last line changed, copies `src.txt` to `dup.txt`, and changes `src.txt`'s last line.
+fn rename_and_copy_fixture() -> Fixture {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("keep.txt", &eight_lines("keep", "end"));
+    fx.write("src.txt", &eight_lines("src", "end"));
+    fx.commit("first", "2024-01-01T00:00:00+0000");
+    fx.git(&["mv", "keep.txt", "kept.txt"]);
+    fx.write("kept.txt", &eight_lines("keep", "edited"));
+    fx.write("dup.txt", &eight_lines("src", "end"));
+    fx.write("src.txt", &eight_lines("src", "edited"));
+    fx.commit("second", "2024-01-02T00:00:00+0000");
+    fx.git(&["config", "diff.renames", "copies"]);
+    fx
+}
+
+#[test]
+fn tree_diff_keeps_the_source_of_a_copy() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("src.txt", &eight_lines("src", "end"));
+    fx.commit("first", "2024-01-01T00:00:00+0000");
+    fx.write("dup.txt", &eight_lines("src", "end"));
+    fx.write("src.txt", &eight_lines("src", "edited"));
+    fx.commit("second", "2024-01-02T00:00:00+0000");
+    fx.git(&["config", "diff.renames", "copies"]);
+    let repo = Repository::open(fx.path()).unwrap();
+
+    let changes = repo
+        .diff_trees(
+            Some(repo.resolve("main~1").unwrap()),
+            repo.resolve("main").unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    let source = changes.iter().find(|c| c.path == "src.txt").unwrap();
+    assert_eq!(source.kind, ChangeKind::Modified);
+    assert_eq!(source.old.unwrap(), oid(&fx.rev_parse("main~1:src.txt")));
+    assert_eq!(source.new.unwrap(), oid(&fx.rev_parse("main:src.txt")));
+    let copy = changes.iter().find(|c| c.path == "dup.txt").unwrap();
+    assert_eq!(copy.kind, ChangeKind::Added);
+    assert_eq!(copy.source_path, None);
+    assert_eq!(copy.new.unwrap(), oid(&fx.rev_parse("main:dup.txt")));
+}
+
+#[test]
+fn tree_diff_reports_rename_with_edit_and_copy() {
+    let fx = rename_and_copy_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+
+    let changes = repo
+        .diff_trees(
+            Some(repo.resolve("main~1").unwrap()),
+            repo.resolve("main").unwrap(),
+        )
+        .unwrap();
+
+    let paths: Vec<_> = changes.iter().map(|c| c.path.to_string()).collect();
+    assert_eq!(paths, ["dup.txt", "kept.txt", "src.txt"]);
+    let renamed = changes.iter().find(|c| c.path == "kept.txt").unwrap();
+    assert_eq!(renamed.kind, ChangeKind::Renamed);
+    assert_eq!(
+        renamed.source_path.as_ref().unwrap().to_string(),
+        "keep.txt"
+    );
+    assert_eq!(renamed.old.unwrap(), oid(&fx.rev_parse("main~1:keep.txt")));
+    assert_eq!(renamed.new.unwrap(), oid(&fx.rev_parse("main:kept.txt")));
+    assert_ne!(renamed.old, renamed.new);
+    let source = changes.iter().find(|c| c.path == "src.txt").unwrap();
+    assert_eq!(source.kind, ChangeKind::Modified);
+    let copy = changes.iter().find(|c| c.path == "dup.txt").unwrap();
+    assert_eq!(copy.kind, ChangeKind::Added);
+}
+
+#[test]
+fn tree_diff_without_renames_splits_a_rename() {
+    let fx = rename_and_copy_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+
+    let changes = repo
+        .diff_trees_without_renames(
+            Some(repo.resolve("main~1").unwrap()),
+            repo.resolve("main").unwrap(),
+        )
+        .unwrap();
+
+    let summary: Vec<_> = changes
+        .iter()
+        .map(|c| (c.path.to_string(), c.kind, c.source_path.is_some()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("dup.txt".to_owned(), ChangeKind::Added, false),
+            ("keep.txt".to_owned(), ChangeKind::Deleted, false),
+            ("kept.txt".to_owned(), ChangeKind::Added, false),
+            ("src.txt".to_owned(), ChangeKind::Modified, false),
+        ]
+    );
+    let deleted = changes.iter().find(|c| c.path == "keep.txt").unwrap();
+    assert_eq!(deleted.old.unwrap(), oid(&fx.rev_parse("main~1:keep.txt")));
+}
+
 #[test]
 fn tree_diff_peels_and_rejects_non_trees() {
     let fx = Fixture::standard();

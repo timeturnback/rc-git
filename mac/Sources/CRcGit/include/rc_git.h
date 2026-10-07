@@ -75,8 +75,6 @@ typedef enum RcGitChangeKind {
   RcGitChangeKind_Modified = 2,
   // Content moved from `source_path`.
   RcGitChangeKind_Renamed = 3,
-  // Content copied from `source_path`.
-  RcGitChangeKind_Copied = 4,
 } RcGitChangeKind;
 
 // What a blob diff produced.
@@ -331,7 +329,7 @@ typedef struct RcGitTreeChange {
   enum RcGitChangeKind kind;
   // Path in the new tree, or in the old tree for a deletion.
   char *path;
-  // Where the content came from; NULL unless renamed or copied.
+  // Where the content came from; NULL unless renamed.
   char *source_path;
   // False for additions, in which case `old_id` is meaningless.
   bool has_old;

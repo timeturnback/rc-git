@@ -19,7 +19,7 @@ enum StatusPalette {
         case .added: return .systemGreen
         case .deleted: return .systemRed
         case .modified: return .systemOrange
-        case .renamed, .copied: return .systemBlue
+        case .renamed: return .systemBlue
         }
     }
 }

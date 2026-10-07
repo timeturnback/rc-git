@@ -6,15 +6,13 @@ public enum ChangeKind: Sendable, Hashable {
     case deleted
     case modified
     case renamed
-    case copied
 
     init(c: RcGitChangeKind) {
         switch c {
         case RcGitChangeKind_Added: self = .added
         case RcGitChangeKind_Deleted: self = .deleted
         case RcGitChangeKind_Modified: self = .modified
-        case RcGitChangeKind_Renamed: self = .renamed
-        default: self = .copied
+        default: self = .renamed
         }
     }
 
@@ -25,7 +23,6 @@ public enum ChangeKind: Sendable, Hashable {
         case .deleted: return "D"
         case .modified: return "M"
         case .renamed: return "R"
-        case .copied: return "C"
         }
     }
 }

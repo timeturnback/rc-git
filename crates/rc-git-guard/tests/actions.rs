@@ -1477,6 +1477,31 @@ mod checkout {
     }
 
     #[test]
+    fn switching_across_a_copy_updates_the_copy_source_under_diff_renames_copies() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("b.txt", b"1\n2\n3\n4\n5\n6\n");
+        fx.commit("add", "2024-01-01T00:00:00+0000");
+        fx.git(&["branch", "base"]);
+        fx.write("c.txt", b"1\n2\n3\n4\n5\n6\n");
+        fx.write("b.txt", b"1\n2\n3\n4\n5\n6\n7\n");
+        fx.commit("copy", "2024-01-02T00:00:00+0000");
+        fx.git(&["config", "diff.renames", "copies"]);
+        fx.git(&["switch", "-q", "base"]);
+
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+
+        assert_eq!(outcome.files_changed, 2);
+        assert_eq!(head_branch(&fx), "main");
+        assert_eq!(
+            std::fs::read(fx.path().join("b.txt")).unwrap(),
+            b"1\n2\n3\n4\n5\n6\n7\n",
+            "the copy source's own change must be written"
+        );
+        assert_eq!(porcelain(&fx), "", "the index must agree with the new tree");
+    }
+
+    #[test]
     fn switching_back_restores_the_first_branch() {
         let fx = Fixture::standard();
         let main_tip = fx.rev_parse("main");

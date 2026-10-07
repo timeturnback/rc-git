@@ -45,7 +45,7 @@ pub(super) fn plan(
     };
     let to_oid = core_oid(to, op)?;
     let tree_changes = core
-        .diff_trees(from_core, to_oid)
+        .diff_trees_without_renames(from_core, to_oid)
         .map_err(|source| ActionError::git(op, to.to_string(), source))?;
 
     let mut changes = Vec::new();
@@ -92,11 +92,6 @@ pub(super) fn plan(
                     new: new_blob.map(|id| (id, kind)),
                 });
             }
-            rc_git_core::ChangeKind::Copied => changes.push(PathChange {
-                path,
-                old: None,
-                new: new_blob.map(|id| (id, kind)),
-            }),
         }
     }
     set_old_kinds(repo_path, from, &mut changes, op)?;

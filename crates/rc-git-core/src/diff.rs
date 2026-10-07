@@ -25,8 +25,6 @@ pub enum ChangeKind {
     Modified,
     /// The content moved from `source_path`; the old path is gone.
     Renamed,
-    /// The content was copied from `source_path`, which still exists.
-    Copied,
 }
 
 /// One changed file between two trees. Directories are folded into their entries.
@@ -36,7 +34,7 @@ pub struct TreeChange {
     pub kind: ChangeKind,
     /// The path in the new tree, or in the old tree for a deletion.
     pub path: BString,
-    /// Where the content came from, for renames and copies.
+    /// Where the content came from, for renames.
     pub source_path: Option<BString>,
     /// The blob before the change. `None` for additions.
     pub old: Option<Oid>,
@@ -106,9 +104,14 @@ pub enum BlobDiff {
 }
 
 impl Repository {
-    /// Lists every file that differs between two trees, renames and copies detected, sorted
-    /// by path. `from` and `to` may be any objects that peel to trees; `None` for `from`
-    /// stands for the empty tree, which turns a root commit's diff into pure additions.
+    /// Lists every file that differs between two trees, renames detected, sorted by path.
+    /// `from` and `to` may be any objects that peel to trees; `None` for `from` stands for the
+    /// empty tree, which turns a root commit's diff into pure additions.
+    ///
+    /// Rename detection is pinned to gix's defaults (50% similarity, at most 1000 candidate
+    /// pairs) whatever the repository's config says: copies are never reported, and
+    /// `diff.renames=false` and `diff.renameLimit` are not honoured. A copy's source therefore
+    /// keeps its own entry, and its destination is an addition.
     ///
     /// The cost scales with the difference between the trees, not with repository size:
     /// unchanged subtrees share an id and are skipped whole.
@@ -118,6 +121,29 @@ impl Repository {
     /// [`Error::Object`](crate::Error::Object) when either id is missing, or when a tree below
     /// them cannot be read during the diff (then naming `to`).
     pub fn diff_trees(&self, from: Option<Oid>, to: Oid) -> Result<Vec<TreeChange>> {
+        self.diff_trees_with(from, to, Some(gix::diff::Rewrites::default()))
+    }
+
+    /// Lists every file that differs between two trees with no rename detection, sorted by
+    /// path: a moved file is a deletion plus an addition. For callers that write the change
+    /// path by path and would discard a pairing, so no blob is loaded to measure similarity.
+    ///
+    /// # Errors
+    /// The same as [`Repository::diff_trees`].
+    pub fn diff_trees_without_renames(
+        &self,
+        from: Option<Oid>,
+        to: Oid,
+    ) -> Result<Vec<TreeChange>> {
+        self.diff_trees_with(from, to, None)
+    }
+
+    fn diff_trees_with(
+        &self,
+        from: Option<Oid>,
+        to: Oid,
+        rewrites: Option<gix::diff::Rewrites>,
+    ) -> Result<Vec<TreeChange>> {
         let from = from.map(|id| self.tree_of(id)).transpose()?;
         let to = self.tree_of(to)?;
         self.with(|repo| {
@@ -135,7 +161,7 @@ impl Repository {
                 .changes()
                 .map_err(object("prepare tree diff", to))?
                 .options(|options| {
-                    options.track_path();
+                    options.track_path().track_rewrites(rewrites);
                 })
                 .for_each_to_obtain_tree(&to_tree, |change| {
                     if let Some(mapped) = map_change(&change) {
@@ -375,14 +401,9 @@ fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {
             entry_mode,
             location,
             id,
-            copy,
             ..
         } => (!entry_mode.is_tree()).then(|| TreeChange {
-            kind: if copy {
-                ChangeKind::Copied
-            } else {
-                ChangeKind::Renamed
-            },
+            kind: ChangeKind::Renamed,
             path: location.to_owned(),
             source_path: Some(source_location.to_owned()),
             old: Some(Oid::from_gix(source_id.detach())),
