@@ -31,8 +31,10 @@ NUL so git and rc-git call it binary. Assertions compare against `git rev-parse`
 hard-coded hash.
 
 Every git invocation is hermetic: `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
-`HOME` inside the fixture, fixed author and committer, `commit.gpgsign=false`. A developer's
-signing or template configuration cannot leak into a test.
+`HOME` inside the fixture, fixed author and committer, `commit.gpgsign=false`,
+`GIT_TERMINAL_PROMPT=0`. A developer's signing or template configuration cannot leak into a test,
+and a git that wants a credential fails instead of waiting on the terminal. The Swift fixture
+also nulls stdin, drains both pipes at once, and fails a git that runs past 60 s.
 
 ## What a change needs
 

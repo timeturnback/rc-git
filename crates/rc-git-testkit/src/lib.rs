@@ -155,22 +155,8 @@ impl Fixture {
     /// # Panics
     /// When git cannot be started or exits zero.
     #[must_use]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixtures are built with the git CLI"
-    )]
     pub fn git_expect_failure(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(self.dir.path())
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.dir.path())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .expect("run git");
+        let output = self.hermetic_git(args).output().expect("run git");
         assert!(
             !output.status.success(),
             "git {} unexpectedly succeeded",
@@ -179,24 +165,9 @@ impl Fixture {
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixtures are built with the git CLI"
-    )]
     fn run(&self, args: &[&str], extra_env: &[(&str, &str)]) -> String {
-        let output = Command::new("git")
-            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
-            .args(args)
-            .current_dir(self.dir.path())
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.dir.path())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "Test Author")
-            .env("GIT_AUTHOR_EMAIL", "author@example.com")
-            .env("GIT_COMMITTER_NAME", "Test Committer")
-            .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+        let output = self
+            .hermetic_git(args)
             .envs(extra_env.iter().copied())
             .output()
             .expect("run git");
@@ -207,6 +178,33 @@ impl Fixture {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// A `git` command in the fixture with only the variables listed here: no global or system
+    /// config, `HOME` inside the fixture, a fixed identity, signing off, and no credential or
+    /// host-key prompt, so a test fails instead of waiting on the terminal.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures are built with the git CLI"
+    )]
+    fn hermetic_git(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
+            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+            .args(args)
+            .current_dir(self.dir.path())
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.dir.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+            .env("GIT_AUTHOR_NAME", "Test Author")
+            .env("GIT_AUTHOR_EMAIL", "author@example.com")
+            .env("GIT_COMMITTER_NAME", "Test Committer")
+            .env("GIT_COMMITTER_EMAIL", "committer@example.com");
+        command
     }
 
     /// `git rev-parse <spec>`.

@@ -80,6 +80,7 @@ struct GitFixture {
             "HOME": path,
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
             "GIT_AUTHOR_NAME": "Test Author",
             "GIT_AUTHOR_EMAIL": "author@example.com",
             "GIT_COMMITTER_NAME": "Test Committer",
@@ -87,22 +88,51 @@ struct GitFixture {
         ]
         environment.merge(extraEnvironment) { _, new in new }
         process.environment = environment
+        process.standardInput = FileHandle.nullDevice
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        let output = PipeDrain(stdout.fileHandleForReading)
+        let errors = PipeDrain(stderr.fileHandleForReading)
         try process.run()
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errors = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let command = "git \(args.joined(separator: " "))"
+        guard exited.wait(timeout: .now() + GitFixture.timeout) == .success else {
+            process.terminate()
+            throw FixtureError("\(command) timed out after \(Int(GitFixture.timeout)) s")
+        }
         guard process.terminationStatus == 0 else {
             throw FixtureError(
-                "git \(args.joined(separator: " ")) failed: "
-                    + String(decoding: errors, as: UTF8.self)
-            )
+                "\(command) failed: " + String(decoding: errors.wait(), as: UTF8.self))
         }
-        return String(decoding: output, as: UTF8.self).trimmingCharacters(
+        return String(decoding: output.wait(), as: UTF8.self).trimmingCharacters(
             in: .whitespacesAndNewlines)
+    }
+
+    private static let timeout: Double = 60
+}
+
+/// Reads one pipe to end of file on its own thread, so a child that fills one pipe while the
+/// other is being read cannot block, and a hung child cannot outlast the timed wait. A dedicated
+/// `Thread`, not `DispatchQueue.global()`: tests block cooperative-pool threads on semaphores,
+/// and a queued drain block then never gets a thread to run on.
+private final class PipeDrain: @unchecked Sendable {
+    // Written once on the drain thread before `done` signals; read only after the wait.
+    private var data = Data()
+    private let done = DispatchSemaphore(value: 0)
+
+    init(_ handle: FileHandle) {
+        Thread {
+            self.data = handle.readDataToEndOfFile()
+            self.done.signal()
+        }.start()
+    }
+
+    func wait() -> Data {
+        done.wait()
+        return data
     }
 }
 

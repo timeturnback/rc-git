@@ -56,3 +56,24 @@ fn missing_or_wrong_credentials_are_rejected_and_correct_ones_accepted() {
     ]);
     assert_eq!(allowed.rev_parse("HEAD"), origin.rev_parse("HEAD"));
 }
+
+#[test]
+fn a_fixture_git_that_needs_a_credential_fails_instead_of_prompting() {
+    let origin = Fixture::standard();
+    let (_bare, bare_path) = origin.bare_copy();
+    let server = HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let clone = Fixture::empty_dir();
+    let url = server.url();
+
+    let panic = std::panic::catch_unwind(|| {
+        clone.git(&["-c", "credential.helper=", "clone", "--quiet", &url, "."]);
+    })
+    .expect_err("a clone without credentials must fail");
+    let message = panic
+        .downcast_ref::<String>()
+        .expect("the fixture panics with a formatted message");
+    assert!(
+        message.contains("terminal prompts disabled"),
+        "git must refuse to prompt, got: {message}"
+    );
+}

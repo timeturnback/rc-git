@@ -43,3 +43,17 @@ fn clone_of_is_independent_of_its_template() {
     assert_ne!(copy.rev_parse("main"), template.rev_parse("main"));
     assert!(!template.path().join("new.txt").exists());
 }
+
+#[test]
+fn an_expected_failure_runs_with_the_same_hermetic_identity() {
+    let fixture = Fixture::empty_dir();
+    let stderr = fixture.git_expect_failure(&[
+        "-c",
+        "alias.who=!printenv GIT_COMMITTER_NAME >&2; printenv GIT_TERMINAL_PROMPT >&2; exit 1",
+        "who",
+    ]);
+    assert_eq!(
+        stderr.lines().take(2).collect::<Vec<_>>(),
+        ["Test Committer", "0"]
+    );
+}
