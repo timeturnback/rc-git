@@ -1268,9 +1268,28 @@ fn parse_remote_args(
     )?;
     args.expect(0, 0, "no positional arguments")?;
     let username = args.value(&["--username"]).map(str::to_owned);
-    let mut token = args.value(&["--token"]).map(str::to_owned);
+    let token = args.value(&["--token"]).map(str::to_owned);
     let accepted_hostkey = args.value(&["--accept-hostkey"]).map(str::to_owned);
     let ssh_dir = args.value(&["--ssh-dir"]).map(std::path::PathBuf::from);
+    let creds = credentials(repo_path, username, token)?;
+    Ok(RemoteArgs {
+        creds,
+        accepted_hostkey,
+        ssh_dir,
+    })
+}
+
+/// The credentials a remote verb sends: `--username` with `--token` (or `RC_GIT_TOKEN`), or,
+/// with neither flag and an ssh upstream, `RC_GIT_KEY_PASSPHRASE` as the key passphrase.
+///
+/// # Errors
+///
+/// Fails when the upstream cannot be read, or when only one of username and token is known.
+fn credentials(
+    repo_path: &std::path::Path,
+    username: Option<String>,
+    mut token: Option<String>,
+) -> Result<Option<rc_git_guard::actions::Credentials>> {
     let transport = if token.is_none() {
         upstream_transport(repo_path)?
     } else {
@@ -1279,33 +1298,23 @@ fn parse_remote_args(
     if token.is_none() && (username.is_some() || transport == Transport::Https) {
         token = non_empty_env("RC_GIT_TOKEN");
     }
-    let creds =
-        match (username, token) {
-            (Some(username), Some(token)) => {
-                Some(rc_git_guard::actions::Credentials { username, token })
-            }
-            (None, None) if transport == Transport::Ssh => non_empty_env("RC_GIT_KEY_PASSPHRASE")
-                .map(|passphrase| rc_git_guard::actions::Credentials {
-                    username: String::new(),
-                    token: passphrase,
-                }),
-            (None, None) => None,
-            (Some(_), None) => {
-                return Err(usage_error(
-                    "--username was given without --token (or RC_GIT_TOKEN)".to_owned(),
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(usage_error(
-                    "a token was given without --username".to_owned(),
-                ));
-            }
-        };
-    Ok(RemoteArgs {
-        creds,
-        accepted_hostkey,
-        ssh_dir,
-    })
+    match (username, token) {
+        (Some(username), Some(token)) => {
+            Ok(Some(rc_git_guard::actions::Credentials { username, token }))
+        }
+        (None, None) if transport == Transport::Ssh => Ok(non_empty_env("RC_GIT_KEY_PASSPHRASE")
+            .map(|passphrase| rc_git_guard::actions::Credentials {
+                username: String::new(),
+                token: passphrase,
+            })),
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(usage_error(
+            "--username was given without --token (or RC_GIT_TOKEN)".to_owned(),
+        )),
+        (None, Some(_)) => Err(usage_error(
+            "a token was given without --username".to_owned(),
+        )),
+    }
 }
 
 /// Which credential the upstream's transport reads: a token over HTTPS, a key
