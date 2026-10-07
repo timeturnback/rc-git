@@ -11,7 +11,7 @@ import Testing
     let tree = oid(0xBB)
 
     init() {
-        repo.resolves["HEAD"] = head
+        repo.headValue = Head(refName: "refs/heads/main", target: head)
         repo.treeOfMap[head] = tree
         repo.statusReport = StatusReport(
             entries: [
@@ -34,7 +34,27 @@ import Testing
         }
         #expect(report.entries.count == 3)
         #expect(model.expectedHead == head.hex)
+        #expect(repo.lock.withLock { repo.statusTrees } == [tree])
         #expect(statusCallbacks == 2, "one for loading, one for loaded")
+    }
+
+    @Test func anUnbornBranchListsEveryFileAsUntracked() async {
+        repo.headValue = Head(refName: "refs/heads/main", target: nil)
+        repo.statusReport = StatusReport(
+            entries: [
+                StatusEntry(path: "a.txt", kind: .blob, status: .untracked, oid: nil, size: 3),
+                StatusEntry(path: "src/b.txt", kind: .blob, status: .untracked, oid: nil, size: 2),
+            ], scanned: 3, truncated: false)
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        #expect(report.entries.map(\.path) == ["a.txt", "src/b.txt"])
+        #expect(report.entries.allSatisfy { $0.status == .untracked })
+        #expect(model.expectedHead == nil)
+        #expect(repo.lock.withLock { repo.statusTrees } == [nil], "scanned with no tree")
+        #expect(model.tickedPaths == ["a.txt", "src/b.txt"])
     }
 
     @Test func untrackedHiddenFilesStayOutOfTheListAndTheSelection() async {

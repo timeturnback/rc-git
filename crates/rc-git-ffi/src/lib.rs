@@ -2117,7 +2117,7 @@ pub unsafe extern "C" fn rcgit_worktree_entries(
         error.report("repo, tree, or dir is NULL or malformed");
         return ptr::null_mut();
     };
-    match repo.worktree_entries(tree, &String::from_utf8_lossy(dir)) {
+    match repo.worktree_entries(Some(tree), &String::from_utf8_lossy(dir)) {
         Ok(listing) => {
             let mut entries = Vec::with_capacity(listing.entries.len());
             for entry in listing.entries {
@@ -2190,12 +2190,13 @@ pub unsafe extern "C" fn rcgit_worktree_read(
 }
 
 /// Walks the whole working tree against `tree` and returns every changed path: modified,
-/// untracked, and deleted files, sorted by path. The walk stops after visiting `max_scan`
-/// entries and reports the truncation. Release with `rcgit_status_list_free`.
+/// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
+/// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
+/// reports the truncation. Release with `rcgit_status_list_free`.
 ///
 /// # Safety
-/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
-/// NULL or valid for writing a `char *`.
+/// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.
+/// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_worktree_status(
     repo: *const RcGitRepo,
@@ -2204,9 +2205,9 @@ pub unsafe extern "C" fn rcgit_worktree_status(
     error: *mut *mut c_char,
 ) -> *mut RcGitStatusList {
     // SAFETY: forwarded from this function's contract.
-    let (repo, tree, error) = unsafe { (repo_arg(repo), oid_arg(tree), Out::new(error)) };
-    let (Some(repo), Some(tree)) = (repo, tree) else {
-        error.report("repo or tree is NULL or malformed");
+    let (repo, tree, error) = unsafe { (repo_arg(repo), optional_oid_arg(tree), Out::new(error)) };
+    let (Some(repo), Ok(tree)) = (repo, tree) else {
+        error.report("repo is NULL or tree is malformed");
         return ptr::null_mut();
     };
     match repo.worktree_status(tree, max_scan) {
@@ -2268,7 +2269,7 @@ pub unsafe extern "C" fn rcgit_worktree_files(
         error.report("repo or tree is NULL or malformed");
         return ptr::null_mut();
     };
-    match repo.worktree_files(tree, max_scan) {
+    match repo.worktree_files(Some(tree), max_scan) {
         Ok(list) => {
             let mut files = Vec::with_capacity(list.files.len());
             for file in list.files {
@@ -4612,6 +4613,19 @@ mod tests {
         unsafe { rcgit_stash_list_free(stashes) };
 
         let list = unsafe { rcgit_worktree_status(repo, ptr::null(), 100_000, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let entries = unsafe { std::slice::from_raw_parts(list_ref.entries, list_ref.len) };
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.status == RcGitWorktreeStatus::Untracked && !entry.has_oid),
+            "with no tree every file is untracked"
+        );
+        assert!(entries.iter().any(|entry| text(entry.path) == "alpha.txt"));
+        unsafe { rcgit_status_list_free(list) };
+        let list =
+            unsafe { rcgit_worktree_status(ptr::null(), ptr::null(), 100_000, &raw mut error) };
         assert!(list.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         let diff = unsafe {

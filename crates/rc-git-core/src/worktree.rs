@@ -130,7 +130,8 @@ pub struct StatusReport {
 
 impl Repository {
     /// Lists one directory of the working tree, comparing each entry with the tree at the
-    /// same path below `tree`. `dir` is repository-relative with `/` separators; empty, `/`
+    /// same path below `tree`; with no tree (an unborn branch) every entry is untracked or
+    /// ignored. `dir` is repository-relative with `/` separators; empty, `/`
     /// or `.` for the root, and `./` or doubled slashes name the same directory. Reads one directory and one tree object, plus one content read per file
     /// whose size matches its blob, so the cost stays proportional to the listing.
     /// A directory at or below a submodule lists every entry as unchanged with no tree
@@ -139,13 +140,16 @@ impl Repository {
     /// # Errors
     /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, a symlink at `dir`
     /// or on the way to it, or an unreadable directory, [`Error::Object`] when the compared tree cannot be read.
-    pub fn worktree_entries(&self, tree: Oid, dir: &str) -> Result<WorktreeListing> {
+    pub fn worktree_entries(&self, tree: Option<Oid>, dir: &str) -> Result<WorktreeListing> {
         let work_dir = self.require_work_dir("list working tree", dir)?;
         let dir = &normalize_dir(dir)
             .map_err(|source| worktree_error("list working tree", dir, source))?;
-        let (tree_entries, in_submodule) = match self.tree_at(tree, dir)? {
-            TreeAt::Entries(entries) => (entries, false),
-            TreeAt::Submodule => (Vec::new(), true),
+        let (tree_entries, in_submodule) = match tree.map(|tree| self.tree_at(tree, dir)) {
+            None => (Vec::new(), false),
+            Some(found) => match found? {
+                TreeAt::Entries(entries) => (entries, false),
+                TreeAt::Submodule => (Vec::new(), true),
+            },
         };
         let disk_dir = join_under(&work_dir, dir)
             .and_then(|disk_dir| {
@@ -219,7 +223,8 @@ impl Repository {
     }
 
     /// Walks the whole working tree against `tree` and returns every changed path: modified,
-    /// untracked, and deleted files, sorted by path. Clean and ignored paths are not listed,
+    /// untracked, and deleted files, sorted by path. With no tree (an unborn branch) every
+    /// file is untracked. Clean and ignored paths are not listed,
     /// and an ignored directory is pruned without reading it, so `node_modules` never costs a
     /// `read_dir`. `.git` is never entered at any depth, and an untracked directory that
     /// holds its own repository is skipped whole: its files belong to that repository. The
@@ -231,7 +236,7 @@ impl Repository {
     /// # Errors
     /// [`Error::Worktree`] for a bare repository or an unreadable working-tree root,
     /// [`Error::Object`] when a tree object on the walk cannot be read.
-    pub fn worktree_status(&self, tree: Oid, max_scan: usize) -> Result<StatusReport> {
+    pub fn worktree_status(&self, tree: Option<Oid>, max_scan: usize) -> Result<StatusReport> {
         let work_dir = self.require_work_dir("scan working tree", "")?;
         self.with(|repo| {
             let mut walk = StatusWalk {
@@ -239,7 +244,7 @@ impl Repository {
                 report: StatusReport::default(),
                 max_scan,
             };
-            walk.walk_dir(Some(tree), &BString::from(""), &work_dir)?;
+            walk.walk_dir(tree, &BString::from(""), &work_dir)?;
             let mut report = walk.report;
             report.entries.sort_by(|a, b| a.path.cmp(&b.path));
             report.warnings = walk.context.into_warnings();
@@ -248,9 +253,10 @@ impl Repository {
     }
 
     /// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
-    /// untracked, and ignored files alike, so a gitignored `.env` is found. An ignored
-    /// directory that `tree` does not track is pruned without reading it, and neither a
-    /// submodule, `.git`, nor an untracked directory holding its own repository is entered.
+    /// untracked, and ignored files alike, so a gitignored `.env` is found; `tree` is `None`
+    /// on an unborn branch. An ignored directory that `tree` does not track is pruned without
+    /// reading it, and neither a submodule, `.git`, nor an untracked directory holding its own
+    /// repository is entered.
     /// The walk stops after visiting `max_scan` entries and reports the
     /// truncation, which bounds both the disk work and how long the borrowed pool handle is
     /// held. Nothing is hashed: this lists names, it does not compare content. An entry that
@@ -260,7 +266,7 @@ impl Repository {
     /// # Errors
     /// [`Error::Worktree`] for a bare repository or an unreadable working-tree root,
     /// [`Error::Object`] when a tree object on the walk cannot be read.
-    pub fn worktree_files(&self, tree: Oid, max_scan: usize) -> Result<WorktreeFileList> {
+    pub fn worktree_files(&self, tree: Option<Oid>, max_scan: usize) -> Result<WorktreeFileList> {
         let work_dir = self.require_work_dir("list working tree files", "")?;
         self.with(|repo| {
             let mut walk = FileWalk {
@@ -270,7 +276,7 @@ impl Repository {
                 list: WorktreeFileList::default(),
                 max_scan,
             };
-            walk.walk_dir(Some(tree), &BString::from(""), &work_dir)?;
+            walk.walk_dir(tree, &BString::from(""), &work_dir)?;
             let mut list = walk.list;
             list.files.sort_by(|a, b| a.path.cmp(&b.path));
             list.warnings = walk.excludes.warnings;

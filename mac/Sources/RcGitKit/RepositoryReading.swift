@@ -22,7 +22,7 @@ public protocol RepositoryReading: Sendable {
     func blame(tip: Oid, path: String) throws -> [BlameRange]
     func worktreeEntries(tree: Oid, dir: String) throws -> WorktreeListing
     func worktreeFile(path: String, limit: UInt64) throws -> BlobContent
-    func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport
+    func worktreeStatus(tree: Oid?, maxScan: Int) throws -> StatusReport
     func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff

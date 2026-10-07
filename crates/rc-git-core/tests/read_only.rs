@@ -80,13 +80,14 @@ fn every_operation_leaves_git_dir_untouched() {
         .unwrap();
     }
     repo.blame(tip, "README.md").unwrap();
-    let listing = repo.worktree_entries(root, "").unwrap();
+    let listing = repo.worktree_entries(Some(root), "").unwrap();
     assert_ne!(listing.entries.len(), 0);
-    repo.worktree_entries(root, "src").unwrap();
+    repo.worktree_entries(Some(root), "src").unwrap();
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
-    let status = repo.worktree_status(root, 100_000).unwrap();
+    let status = repo.worktree_status(Some(root), 100_000).unwrap();
     assert!(!status.truncated);
-    let files = repo.worktree_files(root, 100_000).unwrap();
+    repo.worktree_status(None, 100_000).unwrap();
+    let files = repo.worktree_files(Some(root), 100_000).unwrap();
     assert!(!files.truncated);
     repo.diff_worktree_file(None, "README.md", DEFAULT_BLOB_LIMIT, 3)
         .unwrap();

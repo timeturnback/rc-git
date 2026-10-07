@@ -600,6 +600,27 @@ fn changes_lists_every_changed_path_flat() {
 }
 
 #[test]
+fn worktree_verbs_list_untracked_files_on_an_unborn_branch() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("a.txt", b"hi\n");
+    let path = fx.path().to_str().unwrap();
+
+    for (args, expected) in [
+        (&["changes", path][..], "?\ta.txt\n"),
+        (&["files", path][..], "a.txt\n"),
+        (&["status", path][..], "?\tblob\ta.txt\n"),
+    ] {
+        let out = rc_git(args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out), expected, "{args:?}");
+    }
+    let out = rc_git(&["diff", path, "--worktree", "a.txt"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("+hi\n"), "{}", stdout(&out));
+}
+
+#[test]
 fn an_unreadable_directory_is_a_warning_and_the_rest_is_listed() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

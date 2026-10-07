@@ -24,6 +24,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// The full-repo status walk result, replaced by tests as the "disk" changes.
     var statusReport = StatusReport(entries: [], scanned: 0, truncated: false)
     var statusCalls = 0
+    /// The tree each `worktreeStatus` call compared against, in call order.
+    var statusTrees: [Oid?] = []
     var failNextStatus = false
     /// Per path, the worktree-vs-blob diff.
     var worktreeDiffs: [String: BlobDiff] = [:]
@@ -234,9 +236,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         return found
     }
 
-    func worktreeStatus(tree: Oid, maxScan: Int) throws -> StatusReport {
+    func worktreeStatus(tree: Oid?, maxScan: Int) throws -> StatusReport {
         let (report, delay, fail) = lock.withLock { () -> (StatusReport, TimeInterval, Bool) in
             statusCalls += 1
+            statusTrees.append(tree)
             let fail = failNextStatus
             failNextStatus = false
             return (statusReport, statusDelay, fail)

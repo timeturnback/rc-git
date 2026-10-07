@@ -370,13 +370,13 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     }
 
     /// Every changed working-tree path against `tree`: modified, untracked, and deleted
-    /// files, sorted by path. The walk stops at `maxScan` visited entries and reports the
-    /// truncation.
-    public func worktreeStatus(tree: Oid, maxScan: Int = Repository.defaultStatusScanCap)
+    /// files, sorted by path. A `nil` tree (an unborn branch) lists every file as untracked.
+    /// The walk stops at `maxScan` visited entries and reports the truncation.
+    public func worktreeStatus(tree: Oid?, maxScan: Int = Repository.defaultStatusScanCap)
         throws -> StatusReport
     {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let list = tree.withC { rcgit_worktree_status(handle, $0, maxScan, &error) }
+        let list = withOptionalOid(tree) { rcgit_worktree_status(handle, $0, maxScan, &error) }
         guard let list else {
             throw RepositoryError.take(error, fallback: "cannot scan the working tree")
         }

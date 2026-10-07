@@ -202,6 +202,15 @@ impl<'a> VerbArgs<'a> {
 /// Spells a repository path one way: leading `/` and `./`, doubled slashes and `.` segments
 /// dropped, so `./src//lib.rs` is `src/lib.rs` and `/` is the root (empty). A `..` segment is
 /// a usage error, since no tree entry can carry that name.
+/// The tree `HEAD` points at, or `None` on an unborn branch, read once so the caller compares
+/// the working tree against one consistent `HEAD`.
+fn head_tree(repo: &Repository) -> Result<Option<Oid>> {
+    match repo.head()?.target {
+        Some(commit) => Ok(Some(repo.tree_of(commit)?)),
+        None => Ok(None),
+    }
+}
+
 fn canonical_path(raw: &str) -> Result<String> {
     let mut segments = Vec::new();
     for segment in raw.split('/') {
@@ -873,8 +882,10 @@ fn diff(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCod
             bail!("diff --worktree needs <path>\n\n{USAGE}");
         };
         let path = &canonical_path(path)?;
-        let tree = repo.resolve_tree("HEAD")?;
-        let old = repo.entry_at_path(tree, path)?.map(|entry| entry.oid);
+        let old = match head_tree(repo)? {
+            Some(tree) => repo.entry_at_path(tree, path)?.map(|entry| entry.oid),
+            None => None,
+        };
         let diff = repo.diff_worktree_file(old, path, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)?;
         return render_blob_diff(diff, path, out);
     }
@@ -1002,8 +1013,7 @@ fn changes(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     args.expect(0, 0, "no positional arguments")?;
     let records = Records::from_args(&args);
     let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
-    let tree = repo.resolve_tree("HEAD")?;
-    let report = repo.worktree_status(tree, max_scan)?;
+    let report = repo.worktree_status(head_tree(repo)?, max_scan)?;
     for entry in &report.entries {
         write!(out, "{}\t", status_letter(entry.status))?;
         records.end_with_path(out, &entry.path);
@@ -1025,8 +1035,7 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     args.expect(0, 0, "no positional arguments")?;
     let records = Records::from_args(&args);
     let max_scan = args.number("--max-scan")?.unwrap_or(200_000);
-    let tree = repo.resolve_tree("HEAD")?;
-    let list = repo.worktree_files(tree, max_scan)?;
+    let list = repo.worktree_files(head_tree(repo)?, max_scan)?;
     for file in &list.files {
         records.end_with_path(out, &file.path);
     }
@@ -1061,8 +1070,7 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
     args.expect(0, 1, "[dir]")?;
     let records = Records::from_args(&args);
     let dir = &canonical_path(args.positional(0).unwrap_or(""))?;
-    let tree = repo.resolve_tree("HEAD")?;
-    let listing = repo.worktree_entries(tree, dir)?;
+    let listing = repo.worktree_entries(head_tree(repo)?, dir)?;
     for entry in &listing.entries {
         write!(
             out,

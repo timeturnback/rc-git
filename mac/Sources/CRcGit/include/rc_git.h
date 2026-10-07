@@ -977,12 +977,13 @@ struct RcGitBlob *rcgit_worktree_read(const struct RcGitRepo *repo,
                                       char **error);
 
 // Walks the whole working tree against `tree` and returns every changed path: modified,
-// untracked, and deleted files, sorted by path. The walk stops after visiting `max_scan`
-// entries and reports the truncation. Release with `rcgit_status_list_free`.
+// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
+// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
+// reports the truncation. Release with `rcgit_status_list_free`.
 //
 // # Safety
-// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
-// NULL or valid for writing a `char *`.
+// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.
+// `error` is NULL or valid for writing a `char *`.
 struct RcGitStatusList *rcgit_worktree_status(const struct RcGitRepo *repo,
                                               const struct RcGitOid *tree,
                                               size_t max_scan,

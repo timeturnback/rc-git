@@ -16,7 +16,7 @@ fn a_clean_checkout_is_all_unchanged() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert_eq!(listing.missing.len(), 0);
     assert_eq!(
         statuses(&listing),
@@ -38,7 +38,7 @@ fn a_clean_checkout_is_all_unchanged() {
     assert_eq!(readme.oid.unwrap().to_hex(), fx.rev_parse("HEAD:README.md"));
     assert!(readme.size > 0);
 
-    let sub = repo.worktree_entries(tree, "src").unwrap();
+    let sub = repo.worktree_entries(Some(tree), "src").unwrap();
     assert_eq!(
         statuses(&sub),
         [
@@ -62,7 +62,7 @@ fn edits_deletions_and_new_files_are_flagged() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let by_name: std::collections::HashMap<String, WorktreeStatus> =
         statuses(&listing).into_iter().collect();
     assert_eq!(by_name["alpha.txt"], WorktreeStatus::Modified);
@@ -83,7 +83,7 @@ fn a_changed_symlink_is_modified() {
     fx.symlink("alpha.txt", "link");
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let link = listing
         .entries
         .iter()
@@ -108,7 +108,7 @@ fn commit_symlink_entry(fx: &Fixture, oid: &str, path: &str) {
 fn status_of(fx: &Fixture, path: &str) -> Result<WorktreeStatus, Error> {
     let repo = Repository::open(fx.path())?;
     let tree = repo.resolve_tree("HEAD")?;
-    let report = repo.worktree_status(tree, 10_000)?;
+    let report = repo.worktree_status(Some(tree), 10_000)?;
     Ok(report
         .entries
         .iter()
@@ -143,7 +143,7 @@ fn a_directory_not_in_the_tree_is_untracked() {
     fx.write("newdir/file.txt", b"x\n");
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let dir = listing
         .entries
         .iter()
@@ -155,7 +155,7 @@ fn a_directory_not_in_the_tree_is_untracked() {
     );
     assert!(dir.oid.is_none());
 
-    let inside = repo.worktree_entries(tree, "newdir").unwrap();
+    let inside = repo.worktree_entries(Some(tree), "newdir").unwrap();
     assert_eq!(
         statuses(&inside),
         [("file.txt".to_owned(), WorktreeStatus::Untracked)]
@@ -218,15 +218,15 @@ fn a_bare_repository_has_no_working_tree() {
     let (_bare, bare_path) = fx.bare_copy();
     let repo = Repository::open(&bare_path).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let err = repo.worktree_entries(tree, "").unwrap_err();
+    let err = repo.worktree_entries(Some(tree), "").unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
     let err = repo
         .worktree_file("README.md", DEFAULT_BLOB_LIMIT)
         .unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
-    let err = repo.worktree_status(tree, 10_000).unwrap_err();
+    let err = repo.worktree_status(Some(tree), 10_000).unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
-    let err = repo.worktree_files(tree, 10_000).unwrap_err();
+    let err = repo.worktree_files(Some(tree), 10_000).unwrap_err();
     assert!(err.to_string().contains("bare"), "{err}");
 }
 
@@ -236,24 +236,24 @@ fn every_spelling_of_a_directory_lists_the_same_entries() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let root = repo.worktree_entries(tree, "").unwrap();
+    let root = repo.worktree_entries(Some(tree), "").unwrap();
     for spelling in ["/", ".", "./", "//"] {
         assert_eq!(
-            repo.worktree_entries(tree, spelling).unwrap(),
+            repo.worktree_entries(Some(tree), spelling).unwrap(),
             root,
             "root spelled {spelling:?}"
         );
     }
-    let src = repo.worktree_entries(tree, "src").unwrap();
+    let src = repo.worktree_entries(Some(tree), "src").unwrap();
     for spelling in ["./src", "/src/", "src//", "./src/."] {
         assert_eq!(
-            repo.worktree_entries(tree, spelling).unwrap(),
+            repo.worktree_entries(Some(tree), spelling).unwrap(),
             src,
             "src spelled {spelling:?}"
         );
     }
 
-    let err = repo.worktree_entries(tree, "src/..").unwrap_err();
+    let err = repo.worktree_entries(Some(tree), "src/..").unwrap_err();
     assert!(matches!(err, Error::Worktree { .. }), "{err}");
     assert!(err.to_string().contains("'..'"), "{err}");
 }
@@ -282,7 +282,7 @@ fn worktree_reads_refuse_a_path_through_a_symlinked_directory() {
         );
     }
     for dir in ["escape", "escape/", "./escape", "escape/nested"] {
-        let err = repo.worktree_entries(tree, dir).unwrap_err();
+        let err = repo.worktree_entries(Some(tree), dir).unwrap_err();
         assert!(matches!(err, Error::Worktree { .. }), "{dir}: {err}");
         assert!(
             err.to_string().contains("symbolic link at 'escape'"),
@@ -304,11 +304,11 @@ fn a_missing_directory_is_an_error_but_a_tree_only_directory_lists_as_missing() 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert_eq!(listing.missing.len(), 1);
     assert_eq!(listing.missing[0].name, "docs");
 
-    let err = repo.worktree_entries(tree, "docs").unwrap_err();
+    let err = repo.worktree_entries(Some(tree), "docs").unwrap_err();
     assert!(matches!(err, Error::Worktree { .. }), "{err}");
 }
 
@@ -324,7 +324,7 @@ fn worktree_status_lists_every_change_flat_and_sorted() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert!(!report.truncated);
     assert!(report.scanned > 0);
 
@@ -364,6 +364,48 @@ fn worktree_status_lists_every_change_flat_and_sorted() {
 }
 
 #[test]
+fn an_unborn_branch_scans_with_no_tree_and_lists_every_file_as_untracked() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("a.txt", b"hi\n");
+    fx.write("src/b.txt", b"b\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    assert_eq!(repo.head().unwrap().target, None);
+
+    let report = repo.worktree_status(None, 10_000).unwrap();
+    let rows: Vec<(String, WorktreeStatus, bool)> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status, entry.oid.is_some()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("a.txt".to_owned(), WorktreeStatus::Untracked, false),
+            ("src/b.txt".to_owned(), WorktreeStatus::Untracked, false),
+        ]
+    );
+
+    let listing = repo.worktree_entries(None, "").unwrap();
+    assert_eq!(
+        statuses(&listing),
+        [
+            ("src".to_owned(), WorktreeStatus::Untracked),
+            ("a.txt".to_owned(), WorktreeStatus::Untracked),
+        ]
+    );
+    assert_eq!(listing.missing.len(), 0);
+    let paths: Vec<String> = repo
+        .worktree_files(None, 10_000)
+        .unwrap()
+        .files
+        .iter()
+        .map(|file| file.path.to_string())
+        .collect();
+    assert_eq!(paths, ["a.txt", "src/b.txt"]);
+}
+
+#[test]
 fn worktree_status_flags_exec_bit_and_symlink_changes() {
     let fx = Fixture::standard();
     fx.set_mode("alpha.txt", 0o755);
@@ -372,7 +414,7 @@ fn worktree_status_flags_exec_bit_and_symlink_changes() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     let rows: Vec<(String, EntryKind, WorktreeStatus)> = report
         .entries
         .iter()
@@ -402,8 +444,11 @@ fn only_the_owner_exec_bit_counts_as_a_mode_change() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    assert_eq!(repo.worktree_status(tree, 10_000).unwrap().entries, []);
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    assert_eq!(
+        repo.worktree_status(Some(tree), 10_000).unwrap().entries,
+        []
+    );
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let alpha = listing
         .entries
         .iter()
@@ -427,7 +472,7 @@ fn with_file_mode_off_the_disk_exec_bit_is_ignored() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     let rows: Vec<(String, EntryKind, WorktreeStatus)> = repo
-        .worktree_status(tree, 10_000)
+        .worktree_status(Some(tree), 10_000)
         .unwrap()
         .entries
         .iter()
@@ -441,7 +486,7 @@ fn with_file_mode_off_the_disk_exec_bit_is_ignored() {
             WorktreeStatus::Untracked
         )]
     );
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let alpha = listing
         .entries
         .iter()
@@ -451,7 +496,7 @@ fn with_file_mode_off_the_disk_exec_bit_is_ignored() {
         (alpha.kind, alpha.status),
         (EntryKind::Blob, WorktreeStatus::Unchanged)
     );
-    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap().files;
     let kinds: Vec<EntryKind> = files
         .iter()
         .filter(|file| file.path == "alpha.txt" || file.path == "fresh.sh")
@@ -470,7 +515,7 @@ fn worktree_status_prunes_ignored_directories_unopened() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     let rows: Vec<String> = report
         .entries
         .iter()
@@ -490,11 +535,11 @@ fn worktree_status_truncates_at_the_scan_cap() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 5).unwrap();
+    let report = repo.worktree_status(Some(tree), 5).unwrap();
     assert!(report.truncated);
     assert_eq!(report.scanned, 5);
 
-    let full = repo.worktree_status(tree, 100_000).unwrap();
+    let full = repo.worktree_status(Some(tree), 100_000).unwrap();
     assert!(!full.truncated);
     assert_eq!(full.entries.len(), 20);
 }
@@ -507,7 +552,7 @@ fn worktree_status_reports_a_file_replacing_a_tracked_directory() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     let rows: Vec<(String, WorktreeStatus)> = report
         .entries
         .iter()
@@ -531,7 +576,7 @@ fn worktree_status_reports_a_directory_replacing_a_tracked_file() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     let rows: Vec<(String, WorktreeStatus)> = report
         .entries
         .iter()
@@ -575,7 +620,7 @@ fn the_index_stat_cache_never_vouches_for_a_changed_file() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     let rows: std::collections::HashMap<String, WorktreeStatus> = report
         .entries
         .iter()
@@ -600,7 +645,7 @@ fn a_racy_index_entry_still_reports_the_edit() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(report.entries.len(), 1, "{:?}", report.entries);
     assert_eq!(report.entries[0].path, "alpha.txt");
     assert_eq!(report.entries[0].status, WorktreeStatus::Modified);
@@ -629,7 +674,7 @@ fn a_converted_file_the_index_vouches_for_is_clean() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert!(report.entries.is_empty(), "{:?}", report.entries);
 }
 
@@ -653,7 +698,7 @@ fn worktree_files_lists_tracked_untracked_and_ignored_files_sorted() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let list = repo.worktree_files(tree, 10_000).unwrap();
+    let list = repo.worktree_files(Some(tree), 10_000).unwrap();
     assert!(!list.truncated);
     assert_eq!(
         file_paths(&list),
@@ -689,7 +734,7 @@ fn worktree_files_enters_an_ignored_directory_that_holds_tracked_files() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let list = repo.worktree_files(tree, 10_000).unwrap();
+    let list = repo.worktree_files(Some(tree), 10_000).unwrap();
     let vendored: Vec<String> = file_paths(&list)
         .into_iter()
         .filter(|path| path.starts_with("vendor/"))
@@ -708,7 +753,7 @@ fn worktree_status_stops_inside_a_deleted_tree_at_the_cap() {
     fx.remove("d");
     let full = {
         let repo = Repository::open(fx.path()).unwrap();
-        repo.worktree_status(repo.resolve_tree("HEAD").unwrap(), 100_000)
+        repo.worktree_status(Some(repo.resolve_tree("HEAD").unwrap()), 100_000)
             .unwrap()
     };
     assert!(!full.truncated);
@@ -719,7 +764,7 @@ fn worktree_status_stops_inside_a_deleted_tree_at_the_cap() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     let cap = full.scanned - 25;
-    let report = repo.worktree_status(tree, cap).unwrap();
+    let report = repo.worktree_status(Some(tree), cap).unwrap();
     assert!(report.truncated);
     assert_eq!(report.scanned, cap);
 }
@@ -733,11 +778,11 @@ fn worktree_files_truncates_at_the_scan_cap() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let list = repo.worktree_files(tree, 5).unwrap();
+    let list = repo.worktree_files(Some(tree), 5).unwrap();
     assert!(list.truncated);
     assert_eq!(list.scanned, 5);
 
-    let full = repo.worktree_files(tree, 100_000).unwrap();
+    let full = repo.worktree_files(Some(tree), 100_000).unwrap();
     assert!(!full.truncated);
     assert_eq!(full.files.len(), 28);
 }
@@ -748,7 +793,7 @@ fn worktree_files_reports_an_unreadable_directory() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     fx.remove("");
-    let err = repo.worktree_files(tree, 10_000).unwrap_err();
+    let err = repo.worktree_files(Some(tree), 10_000).unwrap_err();
     assert!(err.to_string().contains("list working tree files"), "{err}");
 }
 
@@ -760,8 +805,8 @@ fn an_unreadable_untracked_directory_is_skipped_and_the_rest_listed() {
     fx.set_mode("locked", 0o000);
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000);
-    let list = repo.worktree_files(tree, 10_000);
+    let report = repo.worktree_status(Some(tree), 10_000);
+    let list = repo.worktree_files(Some(tree), 10_000);
     fx.set_mode("locked", 0o755);
 
     let report = report.unwrap();
@@ -793,7 +838,7 @@ fn an_unreadable_tracked_directory_is_not_reported_deleted() {
     fx.set_mode("src", 0o000);
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000);
+    let report = repo.worktree_status(Some(tree), 10_000);
     fx.set_mode("src", 0o755);
 
     let report = report.unwrap();
@@ -812,7 +857,7 @@ fn worktree_status_reports_an_unreadable_root() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     fx.remove("");
-    let err = repo.worktree_status(tree, 10_000).unwrap_err();
+    let err = repo.worktree_status(Some(tree), 10_000).unwrap_err();
     assert!(err.to_string().contains("scan working tree"), "{err}");
 }
 
@@ -829,7 +874,7 @@ fn worktree_status_names_an_unreadable_file() {
     let fx = with_unreadable_main_rs();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000);
+    let report = repo.worktree_status(Some(tree), 10_000);
     fx.set_mode("src/main.rs", 0o644);
 
     let report = report.unwrap();
@@ -850,7 +895,7 @@ fn a_listing_error_names_the_unreadable_file() {
     let fx = with_unreadable_main_rs();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let err = repo.worktree_entries(tree, "src");
+    let err = repo.worktree_entries(Some(tree), "src");
     fx.set_mode("src/main.rs", 0o644);
 
     let err = err.unwrap_err().to_string();
@@ -887,10 +932,10 @@ fn a_checked_out_submodule_is_unchanged() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(report.entries, []);
 
-    let listing = repo.worktree_entries(tree, "vendor").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "vendor").unwrap();
     assert_eq!(
         statuses(&listing),
         [("sub".to_owned(), WorktreeStatus::Unchanged)]
@@ -905,7 +950,7 @@ fn listing_inside_a_submodule_reads_its_files_as_another_repository() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let at = repo.worktree_entries(tree, "vendor/sub").unwrap();
+    let at = repo.worktree_entries(Some(tree), "vendor/sub").unwrap();
     assert_eq!(
         statuses(&at),
         [
@@ -916,7 +961,9 @@ fn listing_inside_a_submodule_reads_its_files_as_another_repository() {
     assert!(at.entries.iter().all(|entry| entry.oid.is_none()));
     assert_eq!(at.missing, []);
 
-    let below = repo.worktree_entries(tree, "vendor/sub/inner").unwrap();
+    let below = repo
+        .worktree_entries(Some(tree), "vendor/sub/inner")
+        .unwrap();
     assert_eq!(
         statuses(&below),
         [("q".to_owned(), WorktreeStatus::Unchanged)]
@@ -947,12 +994,12 @@ fn an_untracked_fifo_is_never_listed_or_opened() {
     assert!(err.to_string().contains("is not a regular file"), "{err}");
 
     assert_eq!(
-        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        status_paths(&repo.worktree_status(Some(tree), 10_000).unwrap()),
         []
     );
-    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap().files;
     assert!(files.iter().all(|file| file.path != "pipe"), "{files:?}");
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert!(listing.entries.iter().all(|entry| entry.name != "pipe"));
 }
 
@@ -967,10 +1014,10 @@ fn a_fifo_replacing_a_tracked_empty_file_is_modified_without_opening_it() {
     let tree = repo.resolve_tree("HEAD").unwrap();
 
     assert_eq!(
-        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        status_paths(&repo.worktree_status(Some(tree), 10_000).unwrap()),
         [("empty".to_owned(), WorktreeStatus::Modified)]
     );
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let entry = listing
         .entries
         .iter()
@@ -981,7 +1028,7 @@ fn a_fifo_replacing_a_tracked_empty_file_is_modified_without_opening_it() {
         (EntryKind::Blob, WorktreeStatus::Modified)
     );
     assert_eq!(entry.oid.unwrap().to_hex(), fx.rev_parse("HEAD:empty"));
-    let files = repo.worktree_files(tree, 10_000).unwrap().files;
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap().files;
     assert!(files.iter().all(|file| file.path != "empty"), "{files:?}");
 }
 
@@ -994,10 +1041,10 @@ fn a_fifo_replacing_a_tracked_directory_leaves_its_files_deleted() {
     let tree = repo.resolve_tree("HEAD").unwrap();
 
     assert_eq!(
-        status_paths(&repo.worktree_status(tree, 10_000).unwrap()),
+        status_paths(&repo.worktree_status(Some(tree), 10_000).unwrap()),
         [("docs/guide.md".to_owned(), WorktreeStatus::Deleted)]
     );
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert!(listing.entries.iter().all(|entry| entry.name != "docs"));
     assert!(listing.missing.iter().any(|entry| entry.name == "docs"));
 }
@@ -1020,7 +1067,7 @@ fn worktree_status_never_enters_a_nested_repository_or_a_git_directory() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(status_paths(&report), []);
     // The root's entries, `nested` itself and `src`'s entries; nothing inside either `.git`.
     assert!(report.scanned < 15, "scanned {}", report.scanned);
@@ -1032,7 +1079,7 @@ fn worktree_files_never_enters_a_nested_repository_or_a_git_directory() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let paths = file_paths(&repo.worktree_files(tree, 10_000).unwrap());
+    let paths = file_paths(&repo.worktree_files(Some(tree), 10_000).unwrap());
     assert!(
         paths
             .iter()
@@ -1048,7 +1095,7 @@ fn worktree_entries_never_lists_a_git_directory_at_any_depth() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let root = repo.worktree_entries(tree, "").unwrap();
+    let root = repo.worktree_entries(Some(tree), "").unwrap();
     let nested = root
         .entries
         .iter()
@@ -1059,10 +1106,10 @@ fn worktree_entries_never_lists_a_git_directory_at_any_depth() {
         (EntryKind::Tree, WorktreeStatus::Untracked)
     );
     assert_eq!(
-        statuses(&repo.worktree_entries(tree, "nested").unwrap()),
+        statuses(&repo.worktree_entries(Some(tree), "nested").unwrap()),
         [("inner.txt".to_owned(), WorktreeStatus::Untracked)]
     );
-    let src = repo.worktree_entries(tree, "src").unwrap();
+    let src = repo.worktree_entries(Some(tree), "src").unwrap();
     assert!(src.entries.iter().all(|entry| entry.name != ".git"));
 }
 
@@ -1080,7 +1127,7 @@ fn a_corrupt_index_keeps_worktree_ignore_rules_and_is_reported() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
 
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(
         status_paths(&report),
         [("new.txt".to_owned(), WorktreeStatus::Untracked)]
@@ -1092,7 +1139,7 @@ fn a_corrupt_index_keeps_worktree_ignore_rules_and_is_reported() {
         report.warnings
     );
 
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     let ignored: Vec<String> = listing
         .entries
         .iter()
@@ -1102,7 +1149,7 @@ fn a_corrupt_index_keeps_worktree_ignore_rules_and_is_reported() {
     assert_eq!(ignored, ["node_modules", ".env"]);
     assert_eq!(listing.warnings, report.warnings);
 
-    let files = repo.worktree_files(tree, 10_000).unwrap();
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap();
     assert!(
         !file_paths(&files)
             .iter()
@@ -1117,14 +1164,19 @@ fn a_readable_index_reports_no_warnings() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
     assert!(
-        repo.worktree_status(tree, 10_000)
+        repo.worktree_status(Some(tree), 10_000)
             .unwrap()
             .warnings
             .is_empty()
     );
-    assert!(repo.worktree_entries(tree, "").unwrap().warnings.is_empty());
     assert!(
-        repo.worktree_files(tree, 10_000)
+        repo.worktree_entries(Some(tree), "")
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+    assert!(
+        repo.worktree_files(Some(tree), 10_000)
             .unwrap()
             .warnings
             .is_empty()
@@ -1149,10 +1201,10 @@ fn an_nfd_name_matches_its_precomposed_tree_entry() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(status_paths(&report), []);
 
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert_eq!(listing.missing, []);
     let cafe = listing
         .entries
@@ -1167,7 +1219,7 @@ fn an_nfd_name_matches_its_precomposed_tree_entry() {
             .any(|entry| entry.name == "cafe\u{301}.txt")
     );
 
-    let files = repo.worktree_files(tree, 10_000).unwrap();
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap();
     assert!(has_file(&files, "caf\u{e9}.txt"));
     assert!(!has_file(&files, "cafe\u{301}.txt"));
 }
@@ -1180,7 +1232,7 @@ fn an_nfd_name_stays_untracked_and_precomposed_when_new() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(
         status_paths(&report),
         [("caf\u{e9}.txt".to_owned(), WorktreeStatus::Untracked)]
@@ -1200,10 +1252,10 @@ fn a_case_only_rename_is_clean_under_ignore_case() {
 
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("HEAD").unwrap();
-    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
     assert_eq!(status_paths(&report), []);
 
-    let listing = repo.worktree_entries(tree, "").unwrap();
+    let listing = repo.worktree_entries(Some(tree), "").unwrap();
     assert_eq!(listing.missing, []);
     let readme = listing
         .entries
@@ -1212,7 +1264,7 @@ fn a_case_only_rename_is_clean_under_ignore_case() {
         .unwrap();
     assert_eq!(readme.status, WorktreeStatus::Unchanged);
 
-    let files = repo.worktree_files(tree, 10_000).unwrap();
+    let files = repo.worktree_files(Some(tree), 10_000).unwrap();
     assert!(has_file(&files, "README.md"));
     assert!(!has_file(&files, "readme.md"));
 }

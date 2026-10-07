@@ -483,7 +483,7 @@ fn an_index_shorter_than_its_trailer_is_read_as_unavailable() {
     for len in [0, 12, 31] {
         fx.write(".git/index", &vec![0; len]);
 
-        let report = repo.worktree_status(tree, 10_000).unwrap();
+        let report = repo.worktree_status(Some(tree), 10_000).unwrap();
         let paths: Vec<String> = report.entries.iter().map(|e| e.path.to_string()).collect();
         assert_eq!(
             paths,
@@ -491,7 +491,7 @@ fn an_index_shorter_than_its_trailer_is_read_as_unavailable() {
             "index of {len} bytes"
         );
 
-        let listing = repo.worktree_entries(tree, "newdir").unwrap();
+        let listing = repo.worktree_entries(Some(tree), "newdir").unwrap();
         let statuses: Vec<(String, WorktreeStatus)> = listing
             .entries
             .iter()
@@ -506,7 +506,7 @@ fn an_index_shorter_than_its_trailer_is_read_as_unavailable() {
             "index of {len} bytes"
         );
 
-        let files = repo.worktree_files(tree, 10_000).unwrap();
+        let files = repo.worktree_files(Some(tree), 10_000).unwrap();
         let paths: Vec<String> = files.files.iter().map(|f| f.path.to_string()).collect();
         assert!(
             paths.iter().any(|p| p == "newdir/untracked.txt"),

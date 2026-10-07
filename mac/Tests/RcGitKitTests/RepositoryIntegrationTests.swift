@@ -258,6 +258,19 @@ import Testing
         #expect(capped.truncated)
     }
 
+    @Test func scansAnUnbornBranchWithNoTree() throws {
+        let fixture = try GitFixture.emptyDirectory()
+        defer { fixture.remove() }
+        try fixture.git(["init", "-q", "-b", "main"])
+        try fixture.write("a.txt", "hi\n")
+        let repo = try Repository(path: fixture.path)
+        #expect(try repo.head().target == nil)
+
+        let report = try repo.worktreeStatus(tree: nil)
+        #expect(report.entries.map(\.path) == ["a.txt"])
+        #expect(report.entries.map(\.status) == [.untracked])
+    }
+
     @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

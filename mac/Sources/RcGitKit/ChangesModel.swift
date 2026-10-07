@@ -117,11 +117,12 @@ public final class ChangesModel {
         let repository = repository
         let showsHidden = showsHiddenFiles
         let result = await RepositoryError.run {
-            let head = try? repository.resolve("HEAD").hex
-            let tree = try repository.resolveTree("HEAD")
+            // One HEAD read feeds both the tree and the expected head, so they always agree.
+            let target = try repository.head().target
+            let tree = try target.map { try repository.treeOf($0) }
             let report = try repository.worktreeStatus(
                 tree: tree, maxScan: Repository.defaultStatusScanCap)
-            return (Self.listed(report, showsHidden: showsHidden), head)
+            return (Self.listed(report, showsHidden: showsHidden), target?.hex)
         }
         guard generation == statusGeneration else { return }
         switch result {
