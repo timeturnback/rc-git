@@ -27,7 +27,9 @@ pub(super) struct PathChange {
 ///
 /// # Errors
 /// [`ActionError::Git`] when the repository or either tree cannot be read, and for a path
-/// this cannot write: a submodule, or an unexpected directory entry.
+/// this cannot write: a submodule, an unexpected directory entry, or a path git refuses to
+/// check out (see [`workfile::validate_path`]). Every path is checked here, so a bad one
+/// refuses the whole operation before anything is written.
 pub(super) fn plan(
     repo_path: &Path,
     from: Option<ObjectId>,
@@ -56,6 +58,10 @@ pub(super) fn plan(
     for change in tree_changes {
         let path = change.path.to_string();
         let kind = entry_kind(&path, change.entry, op)?;
+        workfile::validate_path(op, &path, kind == EntryKind::Link)?;
+        if let Some(source_path) = &change.source_path {
+            workfile::validate_path(op, &source_path.to_string(), kind == EntryKind::Link)?;
+        }
         let old_blob = change
             .old
             .and_then(|oid| ObjectId::try_from(oid.as_bytes()).ok());
@@ -131,12 +137,12 @@ pub(super) fn verify_clean(
         };
         if let Some((old_blob, kind)) = change.old {
             let expected = blob_data(repo, &change.path, old_blob)?;
-            if !disk_matches(work_dir, &change.path, &expected, kind)? {
+            if !disk_matches(work_dir, &change.path, &expected, kind, op)? {
                 return Err(dirty());
             }
         } else {
             // The other side adds this path; anything already there is in the way.
-            let full = workfile::join_under(work_dir, &change.path)?;
+            let full = workfile::join_under(work_dir, &change.path, op)?;
             if std::fs::symlink_metadata(&full).is_ok() {
                 return Err(dirty());
             }
@@ -208,8 +214,14 @@ fn entry_kind(
 }
 
 /// Whether the file on disk holds exactly `data`, honoring the entry kind.
-fn disk_matches(work_dir: &Path, path: &str, data: &[u8], kind: EntryKind) -> ActionResult<bool> {
-    let full = workfile::join_under(work_dir, path)?;
+fn disk_matches(
+    work_dir: &Path,
+    path: &str,
+    data: &[u8],
+    kind: EntryKind,
+    op: &'static str,
+) -> ActionResult<bool> {
+    let full = workfile::join_under(work_dir, path, op)?;
     match kind {
         EntryKind::Link => {
             use std::os::unix::ffi::OsStrExt;

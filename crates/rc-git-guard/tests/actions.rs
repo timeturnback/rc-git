@@ -502,6 +502,169 @@ mod commit_and_discard {
         let err = discard_hunks(fx.path(), &policy, "hunky.txt", &[found[0]], None).unwrap_err();
         assert!(matches!(err, ActionError::HunkMismatch { .. }), "{err}");
     }
+
+    /// Paths git refuses: inside `.git`, or spelled with `.`, `..` or empty segments.
+    pub(super) const INVALID_PATHS: &[&str] = &[
+        ".git/config",
+        ".git/HEAD",
+        ".git/refs/heads/x",
+        "./f",
+        "./alpha.txt",
+        "a//b",
+        "/f",
+        "a/../f",
+    ];
+
+    /// Everything a refused write must leave alone: HEAD, the index, the repository config,
+    /// and the worktree files the invalid paths alias.
+    #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+    pub(super) fn untouched_state(fx: &Fixture) -> Vec<String> {
+        vec![
+            fx.rev_parse("HEAD"),
+            fx.git_output(&["ls-files", "--stage"]),
+            String::from_utf8_lossy(&std::fs::read(fx.git_dir().join("config")).unwrap())
+                .into_owned(),
+            String::from_utf8_lossy(&std::fs::read(fx.path().join("alpha.txt")).unwrap())
+                .into_owned(),
+            String::from_utf8_lossy(&std::fs::read(fx.path().join("f")).unwrap()).into_owned(),
+            porcelain(fx),
+        ]
+    }
+
+    #[test]
+    fn commit_and_discard_refuse_invalid_paths_before_writing() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("f", b"untracked f\n");
+        fx.write("alpha.txt", b"dirty alpha\n");
+        let head = fx.rev_parse("HEAD");
+        let before = untouched_state(&fx);
+
+        for path in INVALID_PATHS {
+            let err = commit(
+                fx.path(),
+                &policy,
+                "bad path",
+                Some(identity()),
+                Some(&head),
+                &[whole(path)],
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "commit", name, .. } if name == path),
+                "commit {path}: {err}"
+            );
+            let err = discard_files(fx.path(), &policy, &[(*path).to_owned()], None).unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "discard", name, .. } if name == path),
+                "discard {path}: {err}"
+            );
+            assert_eq!(untouched_state(&fx), before, "{path} changed something");
+        }
+
+        // A valid path listed first is not discarded when a later one is refused.
+        let err = discard_files(
+            fx.path(),
+            &policy,
+            &["alpha.txt".to_owned(), ".git/config".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert_eq!(untouched_state(&fx), before);
+        assert!(fx.git_dir().join("config").exists());
+    }
+
+    #[test]
+    fn discarding_the_checked_out_branch_ref_file_is_refused() {
+        let fx = Fixture::standard();
+        let main = fx.rev_parse("main");
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &[".git/refs/heads/main".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(".git/refs/heads/main"), "{err}");
+        assert_eq!(fx.rev_parse("refs/heads/main"), main, "the branch survives");
+    }
+
+    #[test]
+    fn discarding_a_head_path_under_dot_git_writes_no_hook() {
+        let fx = Fixture::standard();
+        let evil = fx.commit_raw_path(
+            ".GIT/hooks/pre-commit",
+            b"#!/bin/sh\necho hooked\n",
+            "100755",
+        );
+        fx.git(&["update-ref", "refs/heads/main", &evil]);
+
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &[".GIT/hooks/pre-commit".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ActionError::Git { op: "discard", .. }),
+            "{err}"
+        );
+        assert!(!fx.git_dir().join("hooks/pre-commit").exists());
+    }
+
+    #[test]
+    fn discard_never_deletes_a_tracked_file_named_by_another_spelling() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"edited\n");
+
+        for path in ["./alpha.txt", "ALPHA.TXT", "missing.txt"] {
+            let err = discard_files(fx.path(), &policy, &[path.to_owned()], None).unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "discard", name, .. } if name == path),
+                "{path}: {err}"
+            );
+            assert_eq!(
+                std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+                b"edited\n",
+                "{path} touched alpha.txt"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_through_a_symlinked_directory_is_refused() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        let outside = Fixture::empty_dir();
+        outside.write("secret.txt", b"secret\n");
+        fx.symlink(outside.path().to_str().unwrap(), "up");
+        let head = fx.rev_parse("HEAD");
+
+        let err =
+            discard_files(fx.path(), &policy, &["up/secret.txt".to_owned()], None).unwrap_err();
+        assert!(err.to_string().contains("symbolic link"), "{err}");
+        let err = commit(
+            fx.path(),
+            &policy,
+            "outside",
+            Some(identity()),
+            Some(&head),
+            &[whole("up/secret.txt")],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("symbolic link"), "{err}");
+
+        assert_eq!(
+            std::fs::read(outside.path().join("secret.txt")).unwrap(),
+            b"secret\n"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head);
+    }
 }
 
 mod stash {
@@ -694,6 +857,38 @@ mod stash {
         stash_pop(fx.path(), &policy, 0, None).unwrap();
         assert!(!fx.path().join("Zeta.txt").exists());
     }
+
+    #[test]
+    fn stash_push_refuses_invalid_paths_before_writing() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("f", b"untracked f\n");
+        fx.write("alpha.txt", b"dirty alpha\n");
+        let before = super::commit_and_discard::untouched_state(&fx);
+
+        for path in super::commit_and_discard::INVALID_PATHS {
+            let err = stash_push(
+                fx.path(),
+                &policy,
+                &[(*path).to_owned()],
+                None,
+                Some(identity()),
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "stash push", name, .. } if name == path),
+                "{path}: {err}"
+            );
+            assert_eq!(
+                super::commit_and_discard::untouched_state(&fx),
+                before,
+                "{path} changed something"
+            );
+        }
+        assert_eq!(stash_list(&fx), "");
+        assert!(!refs(&fx).contains("refs/stash"));
+    }
 }
 
 mod checkout {
@@ -833,6 +1028,32 @@ mod checkout {
         assert_eq!(head_branch(&fx), "feature");
         assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("feature"));
         assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn checkout_refuses_a_tree_path_under_dot_git() {
+        for path in [
+            ".git/hooks/pre-commit",
+            ".GIT/hooks/pre-commit",
+            ".git/probe.txt",
+            ".GIT/probe.txt",
+        ] {
+            let fx = Fixture::standard();
+            let head = fx.rev_parse("HEAD");
+            let evil = fx.commit_raw_path(path, b"#!/bin/sh\necho hooked\n", "100755");
+            fx.git(&["branch", "evil", &evil]);
+
+            let err = checkout_branch(fx.path(), &Policy::default(), "evil").unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "checkout", name, .. } if name == path),
+                "{path}: {err}"
+            );
+            assert!(!fx.git_dir().join("hooks/pre-commit").exists(), "{path}");
+            assert!(!fx.git_dir().join("probe.txt").exists(), "{path}");
+            assert_eq!(head_branch(&fx), "main", "{path}");
+            assert_eq!(fx.rev_parse("HEAD"), head, "{path}");
+            assert_eq!(porcelain(&fx), "", "{path}");
+        }
     }
 
     #[test]

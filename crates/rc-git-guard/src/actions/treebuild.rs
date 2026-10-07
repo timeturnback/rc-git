@@ -31,11 +31,20 @@ pub(super) enum Node {
 }
 
 /// Files a `PathEdit` for `path` into the trie rooted at `root`.
+///
+/// # Errors
+/// [`ActionError::Git`] for a path git refuses to store (see
+/// [`validate_path`](super::workfile::validate_path)) and for overlapping paths.
 pub(super) fn insert(
     root: &mut BTreeMap<BString, Node>,
     path: &str,
     edit: PathEdit,
 ) -> ActionResult<()> {
+    let symlink = match &edit {
+        PathEdit::Put { kind, .. } => *kind == EntryKind::Link,
+        PathEdit::Remove => false,
+    };
+    super::workfile::validate_path("build tree", path, symlink)?;
     let mut segments = path.split('/').filter(|s| !s.is_empty()).peekable();
     let mut current = root;
     while let Some(segment) = segments.next() {

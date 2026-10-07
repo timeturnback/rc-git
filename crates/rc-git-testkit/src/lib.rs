@@ -386,6 +386,68 @@ impl Fixture {
             &[("GIT_COMMITTER_DATE", date)],
         );
     }
+
+    /// A commit on top of `HEAD` whose tree is `HEAD`'s plus `contents` at `path` with `mode`
+    /// (`100644`, `100755`, `120000`). Built with `git mktree`, which skips the index's path
+    /// checks, so it can store what a hostile remote could send: `.git/hooks/pre-commit`,
+    /// `.GIT/config`. The first segment of `path` must not already be in `HEAD`'s tree. No ref
+    /// moves; returns the commit id.
+    ///
+    /// # Panics
+    /// When `path` is empty or any git command fails.
+    #[must_use]
+    pub fn commit_raw_path(&self, path: &str, contents: &[u8], mode: &str) -> String {
+        let blob = self.run_with_stdin(&["hash-object", "-w", "--stdin"], contents);
+        let mut segments: Vec<&str> = path.split('/').collect();
+        let leaf = segments.pop().expect("a path has a last segment");
+        let mut entry = format!("{mode} blob {blob}\t{leaf}\n");
+        for dir in segments.iter().rev() {
+            let tree = self.run_with_stdin(&["mktree"], entry.as_bytes());
+            entry = format!("040000 tree {tree}\t{dir}\n");
+        }
+        let mut root = self.git_output(&["ls-tree", "HEAD"]);
+        root.push('\n');
+        root.push_str(&entry);
+        let tree = self.run_with_stdin(&["mktree"], root.as_bytes());
+        let date = "2024-02-01T00:00:00+0000";
+        let output = self
+            .hermetic_git(&["commit-tree", &tree, "-p", "HEAD", "-m", "raw path"])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .expect("run git commit-tree");
+        assert!(output.status.success(), "git commit-tree failed");
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
+    }
+
+    fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> String {
+        use std::io::Write;
+        let mut child = self
+            .hermetic_git(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start git");
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(input)
+            .expect("write git stdin");
+        let output = child.wait_with_output().expect("wait for git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
+    }
 }
 
 /// Copies the contents of `from` into the existing directory `to`, recreating symlinks

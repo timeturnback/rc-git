@@ -533,6 +533,27 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
 }
 
 #[test]
+fn discard_refuses_a_path_through_a_symlinked_directory() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let outside = Fixture::empty_dir();
+    outside.write("outside.txt", b"keep me\n");
+    fx.symlink(outside.path().to_str().unwrap(), "up");
+
+    let out = rc_git(&["discard", path, "up/outside.txt"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("up/outside.txt"), "{}", stderr(&out));
+    assert_eq!(
+        std::fs::read(outside.path().join("outside.txt")).unwrap(),
+        b"keep me\n"
+    );
+
+    let out = rc_git(&["discard", path, ".git/config"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(fx.git_dir().join("config").exists());
+}
+
+#[test]
 fn the_stash_verbs_round_trip() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

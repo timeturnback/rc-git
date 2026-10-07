@@ -119,9 +119,19 @@ The Changes tab's write paths add their own guarantees:
   at the stash's base state, so it can never overwrite uncommitted work. Ticked untracked
   files go into the stash tree itself rather than git's third-parent scheme; `git stash pop`
   recreates them all the same.
+- **Paths are checked before anything is touched.** Every path a commit, stash, discard,
+  checkout, pull or stash apply would read, store or write passes git's own checkout rules
+  first: no empty, `.` or `..` segment (so no leading, trailing or doubled `/`), no `.git`
+  segment in any spelling HFS+ or NTFS resolve to it (`.GIT`, `GIT~1`, ignorable code
+  points), no symlinked `.gitmodules`, and no parent directory that is a symlink. A bad
+  path is refused, never normalized, and it refuses the whole operation before the first
+  byte is written — so a fetched tree carrying `.git/hooks/…` cannot plant a hook, and
+  `.git/refs/heads/main` cannot be discarded as a file.
 - **Discard** and stash restores write through one helper that removes the old file first,
   so a write never follows a stale symlink, and deleting an already-gone file is not an
-  error — a retried action lands in the state it retries from.
+  error — a retried action lands in the state it retries from. Discard deletes a path
+  missing from `HEAD` only when its directory holds an entry of exactly that name, so on a
+  case-insensitive volume `ALPHA.TXT` never deletes the tracked `alpha.txt`.
 
 - **A branch switch** applies the tree diff between the two commits to exactly the changed
   paths, through the same planner the fast-forward pull uses: any dirty or staged overlap

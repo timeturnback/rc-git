@@ -31,23 +31,128 @@ pub(super) fn resolve_identity(
     }
 }
 
-/// Joins a repository-relative path under `work_dir`, refusing traversal outside it.
-pub(super) fn join_under(work_dir: &Path, relative: &str) -> ActionResult<PathBuf> {
-    let mut joined = work_dir.to_path_buf();
-    for segment in relative.split('/') {
-        if segment.is_empty() || segment == "." {
-            continue;
-        }
-        if segment == ".." {
-            return Err(file_error(
-                "restore file",
-                relative,
-                "path may not leave the working tree".into(),
-            ));
-        }
-        joined.push(segment);
+/// The path rules git applies before it writes a tree entry to disk: `core.protectHFS` and
+/// `core.protectNTFS` both on, as git's own defaults are on macOS.
+const PATH_RULES: gix::validate::path::component::Options =
+    gix::validate::path::component::Options {
+        protect_windows: false,
+        protect_hfs: true,
+        protect_ntfs: true,
+    };
+
+/// Refuses a repository-relative path git itself refuses to check out: an empty path, an
+/// empty, `.` or `..` segment (so also a leading, trailing or doubled `/`), and a segment
+/// that is `.git` in any spelling HFS+ or NTFS resolve to it. `symlink` marks the last
+/// segment as a symlink, which also refuses a symlinked `.gitmodules`. Nothing is
+/// normalized: a path that needs it is refused.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op`, the path, and the rule it breaks.
+pub(super) fn validate_path(op: &'static str, path: &str, symlink: bool) -> ActionResult<()> {
+    use gix::bstr::ByteSlice;
+    let mut segments = path.split('/').peekable();
+    while let Some(segment) = segments.next() {
+        let mode = if symlink && segments.peek().is_none() {
+            Some(gix::validate::path::component::Mode::Symlink)
+        } else {
+            None
+        };
+        gix::validate::path::component(segment.as_bytes().as_bstr(), mode, PATH_RULES).map_err(
+            |error| file_error(op, path, format!("not a valid git path: {error}").into()),
+        )?;
     }
-    Ok(joined)
+    Ok(())
+}
+
+/// Joins a repository-relative path under `work_dir` after [`validate_path`], refusing a
+/// path that passes through a symlinked directory (git's "beyond a symbolic link" rule), so
+/// nothing outside the working tree is ever read, written, or deleted through one.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the path, for an invalid path, a symlinked parent,
+/// or a parent that cannot be inspected.
+pub(super) fn join_under(
+    work_dir: &Path,
+    relative: &str,
+    op: &'static str,
+) -> ActionResult<PathBuf> {
+    validate_path(op, relative, false)?;
+    let mut parent = work_dir.to_path_buf();
+    let mut segments = relative.split('/').peekable();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            break;
+        }
+        parent.push(segment);
+        match std::fs::symlink_metadata(&parent) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(file_error(
+                    op,
+                    relative,
+                    "a parent directory is a symbolic link".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(file_error(op, relative, Box::new(error))),
+        }
+    }
+    Ok(work_dir.join(relative))
+}
+
+/// Runs [`join_under`] over every path of a selection, so a bad one refuses the whole
+/// action before anything is read or written.
+///
+/// # Errors
+/// [`ActionError::Git`] for the first path [`join_under`] refuses.
+pub(super) fn check_paths<'a>(
+    work_dir: &Path,
+    paths: impl IntoIterator<Item = &'a str>,
+    op: &'static str,
+) -> ActionResult<()> {
+    for path in paths {
+        join_under(work_dir, path, op)?;
+    }
+    Ok(())
+}
+
+/// Refuses deleting `relative` as untracked unless its directory holds an entry whose name
+/// is byte-equal to the last segment. A case-insensitive volume would otherwise resolve
+/// `A.TXT` to the tracked `a.txt` and delete it.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the path when no entry has exactly that name, or
+/// the directory cannot be read.
+pub(super) fn require_exact_name(
+    work_dir: &Path,
+    relative: &str,
+    op: &'static str,
+) -> ActionResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let full = join_under(work_dir, relative, op)?;
+    let missing = || {
+        file_error(
+            op,
+            relative,
+            "not in HEAD and no file has exactly this name".into(),
+        )
+    };
+    let Some(parent) = full.parent() else {
+        return Err(missing());
+    };
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+        Err(error) => return Err(file_error(op, relative, Box::new(error))),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| file_error(op, relative, Box::new(error)))?;
+        if entry.file_name().as_bytes() == name.as_bytes() {
+            return Ok(());
+        }
+    }
+    Err(missing())
 }
 
 /// Writes `data` to `relative` below `work_dir` as `kind` describes: a symlink's blob holds
@@ -60,7 +165,8 @@ pub(super) fn restore_file(
     kind: EntryKind,
 ) -> ActionResult<()> {
     const OP: &str = "restore file";
-    let full = join_under(work_dir, relative)?;
+    validate_path(OP, relative, kind == EntryKind::Link)?;
+    let full = join_under(work_dir, relative, OP)?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
@@ -108,7 +214,7 @@ pub(super) fn restore_file(
 /// Deletes `relative` below `work_dir`; a file already gone is not an error, so a retried
 /// action lands in the state it retries from.
 pub(super) fn delete_file(work_dir: &Path, relative: &str) -> ActionResult<()> {
-    let full = join_under(work_dir, relative)?;
+    let full = join_under(work_dir, relative, "delete file")?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"

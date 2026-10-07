@@ -38,7 +38,9 @@ const OP: &str = "commit";
 /// # Errors
 /// [`ActionError::DetachedHead`], [`ActionError::StaleRepository`],
 /// [`ActionError::MissingIdentity`], [`ActionError::HunkMismatch`] as described, and
-/// [`ActionError::Git`] when an object cannot be read or written.
+/// [`ActionError::Git`] when an object cannot be read or written, or a selected path is one
+/// git refuses (`.git`, `.`, `..`, an empty segment, a symlinked parent) — checked for every
+/// selection before anything is read or written.
 pub fn commit(
     repo_path: &Path,
     policy: &Policy,
@@ -62,8 +64,12 @@ pub fn commit(
     if selections.is_empty() {
         return Err(git_error("nothing selected to commit"));
     }
-    let identity = workfile::resolve_identity(&repo, author)?;
     let work_dir = work_dir(&repo)?;
+    let selected = selections.iter().map(|selection| match selection {
+        FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
+    });
+    workfile::check_paths(&work_dir, selected, OP)?;
+    let identity = workfile::resolve_identity(&repo, author)?;
     let base_tree = head_commit.map(|id| tree_of(&repo, id)).transpose()?;
 
     let mut edits: BTreeMap<BString, Node> = BTreeMap::new();
@@ -196,7 +202,7 @@ pub(super) fn whole_file_edit(
     base_tree: Option<ObjectId>,
     path: &str,
 ) -> ActionResult<PathEdit> {
-    let full = workfile::join_under(work_dir, path)?;
+    let full = workfile::join_under(work_dir, path, OP)?;
     let meta = match std::fs::symlink_metadata(&full) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -214,6 +220,7 @@ pub(super) fn whole_file_edit(
         }
     };
     let (data, kind) = if meta.file_type().is_symlink() {
+        workfile::validate_path(OP, path, true)?;
         let target = std::fs::read_link(&full).map_err(|source| ActionError::Git {
             op: OP,
             name: path.to_owned(),
@@ -275,7 +282,7 @@ fn spliced_edit(
     verify_stamps(repo_path, path, entry.oid, stamps)?;
 
     let old = blob_data(repo, path, entry.oid)?;
-    let full = workfile::join_under(work_dir, path)?;
+    let full = workfile::join_under(work_dir, path, OP)?;
     let new = std::fs::read(&full).map_err(|source| ActionError::Git {
         op: OP,
         name: path.to_owned(),
@@ -469,7 +476,7 @@ pub(in crate::actions) fn update_index(
     for (path, change) in changes {
         file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
         if let Some((oid, kind)) = change {
-            let stat = workfile::join_under(work_dir, path)
+            let stat = workfile::join_under(work_dir, path, OP)
                 .ok()
                 .and_then(|full| gix::index::fs::Metadata::from_path_no_follow(&full).ok())
                 .and_then(|meta| gix::index::entry::Stat::from_fs(&meta).ok())

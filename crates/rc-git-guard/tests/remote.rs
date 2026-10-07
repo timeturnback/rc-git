@@ -444,6 +444,38 @@ fn pull_refuses_dirty_overlap_and_touches_nothing() {
 }
 
 #[test]
+fn pull_refuses_a_fetched_tree_path_under_dot_git() {
+    for path in [".git/hooks/pre-commit", ".GIT/hooks/pre-commit"] {
+        let remoted = remoted();
+        let evil = remoted
+            .origin
+            .commit_raw_path(path, b"#!/bin/sh\necho hooked\n", "100755");
+        remoted
+            .origin
+            .git(&["update-ref", "refs/heads/main", &evil]);
+        remoted.origin.push_main_to(&remoted.bare_path);
+        fetch_clone(&remoted);
+        let before_head = remoted.clone.rev_parse("main");
+
+        let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err(path);
+        assert!(
+            matches!(&err, ActionError::Git { op: "pull", name, .. } if name == path),
+            "{path}: {err}"
+        );
+        assert!(
+            !remoted.clone.git_dir().join("hooks/pre-commit").exists(),
+            "{path} planted a hook"
+        );
+        assert_eq!(remoted.clone.rev_parse("main"), before_head, "{path}");
+        assert_eq!(
+            remoted.clone.git_output(&["status", "--porcelain"]),
+            "",
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn pull_refuses_an_untracked_file_in_the_way() {
     let remoted = remoted();
     advance_origin(&remoted.origin, &remoted.bare_path); // adds news.txt upstream

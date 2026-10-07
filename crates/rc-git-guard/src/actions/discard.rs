@@ -13,11 +13,13 @@ use crate::{Action, Policy};
 const OP: &str = "discard";
 
 /// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written
-/// back to disk, an untracked path is deleted. The policy asks for a plain confirm, so
-/// `input` may be `None`.
+/// back to disk, an untracked path is deleted. Every path is checked before the first write.
+/// The policy asks for a plain confirm, so `input` may be `None`.
 ///
 /// # Errors
-/// [`ActionError::Git`] when a path can be neither restored nor deleted.
+/// [`ActionError::Git`] when a path is one git refuses (`.git`, `.`, `..`, an empty segment,
+/// a symlinked parent), names a directory, is untracked without a file of exactly that name
+/// on disk, or can be neither restored nor deleted.
 pub fn discard_files(
     repo_path: &Path,
     policy: &Policy,
@@ -28,9 +30,12 @@ pub fn discard_files(
     let decision = policy.evaluate(&Action::DiscardWorkingChanges { files: paths.len() });
     let _proof = confirm(decision, OP, "working tree", input)?;
     let work_dir = work_dir(&repo)?;
+    workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
+    let mut planned = Vec::with_capacity(paths.len());
     for path in paths {
-        match tree_entry_at(&repo, head_tree, path)? {
+        let entry = tree_entry_at(&repo, head_tree, path)?;
+        match &entry {
             Some(entry) if entry.mode.is_tree() => {
                 return Err(ActionError::Git {
                     op: OP,
@@ -38,6 +43,13 @@ pub fn discard_files(
                     source: "is a directory; select files instead".into(),
                 });
             }
+            Some(_) => {}
+            None => workfile::require_exact_name(&work_dir, path, OP)?,
+        }
+        planned.push((path, entry));
+    }
+    for (path, entry) in planned {
+        match entry {
             Some(entry) => {
                 let data = blob_data(&repo, path, entry.oid)?;
                 workfile::restore_file(&work_dir, path, &data, entry.mode.into())?;
@@ -54,7 +66,8 @@ pub fn discard_files(
 /// `None`.
 ///
 /// # Errors
-/// [`ActionError::HunkMismatch`] when the file moved under the selection.
+/// [`ActionError::HunkMismatch`] when the file moved under the selection,
+/// [`ActionError::Git`] when `path` is one git refuses or the file cannot be read or written.
 pub fn discard_hunks(
     repo_path: &Path,
     policy: &Policy,
@@ -72,6 +85,7 @@ pub fn discard_hunks(
         return Err(mismatch());
     }
     let work_dir = work_dir(&repo)?;
+    let full = workfile::join_under(&work_dir, path, OP)?;
     let entry = tree_entry_at(&repo, head_tree(&repo)?, path)?.ok_or_else(mismatch)?;
     if !entry.mode.is_blob() {
         return Err(mismatch());
@@ -95,7 +109,6 @@ pub fn discard_hunks(
         .filter(|stamp| !stamps.contains(stamp))
         .collect();
     let old = blob_data(&repo, path, entry.oid)?;
-    let full = workfile::join_under(&work_dir, path)?;
     let new = std::fs::read(&full).map_err(|source| ActionError::Git {
         op: OP,
         name: path.to_owned(),
