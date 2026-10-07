@@ -722,6 +722,14 @@ impl StatusWalk<'_> {
                 {
                     self.walk_dir(Some(tree_entry.oid), &path, &entry.path())?;
                 }
+                Some(tree_entry)
+                    if kind == EntryKind::Tree && tree_entry.kind != EntryKind::Submodule =>
+                {
+                    // A directory now sits where a tracked file was: the file is deleted and
+                    // everything in the directory is untracked, as git lists it.
+                    self.emit_deleted(tree_entry, path.clone());
+                    self.walk_untracked_dir(&path, &entry.path())?;
+                }
                 Some(tree_entry) => {
                     let disk_path = entry.path();
                     let disk = DiskFacts {
@@ -747,19 +755,9 @@ impl StatusWalk<'_> {
                     }
                 }
                 None => {
-                    if self
-                        .context
-                        .excludes
-                        .is_ignored(&path, kind == EntryKind::Tree)
-                    {
-                        continue;
-                    }
                     if kind == EntryKind::Tree {
-                        let disk_path = entry.path();
-                        if !holds_nested_repository(&disk_path) {
-                            self.walk_dir(None, &path, &disk_path)?;
-                        }
-                    } else {
+                        self.walk_untracked_dir(&path, &entry.path())?;
+                    } else if !self.context.excludes.is_ignored(&path, false) {
                         self.report.entries.push(StatusEntry {
                             path,
                             kind,
@@ -772,6 +770,15 @@ impl StatusWalk<'_> {
             }
         }
         self.walk_missing(&tree_entries, &on_disk, dir)
+    }
+
+    /// A directory the tree does not track: its files are untracked unless an ignore rule
+    /// prunes it or it holds a repository of its own.
+    fn walk_untracked_dir(&mut self, path: &BString, disk_path: &Path) -> Result<()> {
+        if self.context.excludes.is_ignored(path, true) || holds_nested_repository(disk_path) {
+            return Ok(());
+        }
+        self.walk_dir(None, path, disk_path)
     }
 
     /// The tree entries of `dir` with no counterpart on disk: deleted files and directories.

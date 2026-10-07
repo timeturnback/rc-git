@@ -523,6 +523,34 @@ fn worktree_status_reports_a_file_replacing_a_tracked_directory() {
     assert!(report.entries[0].oid.is_none());
 }
 
+#[test]
+fn worktree_status_reports_a_directory_replacing_a_tracked_file() {
+    let fx = Fixture::standard();
+    fx.remove("alpha.txt");
+    fx.write("alpha.txt/inner.txt", b"in\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(tree, 10_000).unwrap();
+    let rows: Vec<(String, WorktreeStatus)> = report
+        .entries
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.status))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("alpha.txt".to_owned(), WorktreeStatus::Deleted),
+            ("alpha.txt/inner.txt".to_owned(), WorktreeStatus::Untracked),
+        ]
+    );
+    assert_eq!(
+        report.entries[0].oid.unwrap().to_hex(),
+        fx.rev_parse("HEAD:alpha.txt")
+    );
+    assert_eq!(report.entries[0].kind, EntryKind::Blob);
+}
+
 /// The index is consulted as a stat cache to skip hashing unchanged files. It may only ever
 /// save that hash, never answer in place of one, so every way an entry can stop describing
 /// what is on disk has to fall back to reading the file.
