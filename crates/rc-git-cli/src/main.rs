@@ -1047,7 +1047,7 @@ fn status(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         records.end_with_path(out, &entry.name);
     }
     for missing in &listing.missing {
-        out.extend_from_slice(b"D\t-\t");
+        write!(out, "D\t{}\t", kind_name(missing.kind))?;
         records.end_with_path(out, &missing.name);
     }
     Ok(ExitCode::SUCCESS)

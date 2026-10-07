@@ -535,6 +535,20 @@ fn status_overlays_the_working_tree_against_head() {
 }
 
 #[test]
+fn status_prints_the_kind_of_missing_entries() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.remove("docs");
+    fx.remove("Zeta.txt");
+
+    let out = rc_git(&["status", path]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    assert!(text.contains("D\ttree\tdocs\n"), "{text}");
+    assert!(text.contains("D\tblob\tZeta.txt\n"), "{text}");
+}
+
+#[test]
 #[expect(
     clippy::disallowed_methods,
     reason = "the test arranges the fixture's working tree; the binary never mutates"
