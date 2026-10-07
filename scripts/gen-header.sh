@@ -13,13 +13,20 @@ HEADER="$ROOT/mac/Sources/CRcGit/include/rc_git.h"
 CONFIG="$ROOT/crates/rc-git-ffi/cbindgen.toml"
 RELATIVE="${HEADER#"$ROOT"/}"
 
+verify=0
+case "$#:${1:-}" in
+0:) ;;
+1:--verify) verify=1 ;;
+*)
+  echo "usage: gen-header.sh [--verify]" >&2
+  exit 2
+  ;;
+esac
+
 command -v cbindgen >/dev/null || {
   echo "error: cbindgen not found; install it with: $INSTALL_HINT" >&2
   exit 1
 }
-
-verify=0
-[[ "${1:-}" == "--verify" ]] && verify=1
 
 generated="$(mktemp)"
 trap 'rm -f "$generated"' EXIT
@@ -47,7 +54,9 @@ if [[ $status -ne 0 ]]; then
 fi
 
 if [[ $verify -eq 1 ]]; then
-  echo "error: $RELATIVE is stale; run: scripts/gen-header.sh" >&2
+  # diff exits non-zero exactly when it shows the staleness reported below.
+  diff -u "$RELATIVE" "$generated" >&2 || true
+  echo "error: $RELATIVE is stale; run scripts/gen-header.sh and commit it" >&2
   exit 1
 fi
 
