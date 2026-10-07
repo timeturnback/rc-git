@@ -602,9 +602,6 @@ fn worktree_status_reports_a_directory_replacing_a_tracked_file() {
 #[test]
 fn the_index_stat_cache_never_vouches_for_a_changed_file() {
     let fx = Fixture::standard();
-    // `git status` rewrites the index with a fresh stat for every file, which is exactly the
-    // state the cache is built to exploit: without it every case below reads the file anyway
-    // and the test cannot tell a working cache from a broken one.
     // A second must pass before the edits, so that the index written after them carries a
     // later timestamp than the stat of every file left alone. Without that gap every entry
     // is racy, the cache declines them all, and the test cannot tell it from a broken one.
@@ -614,8 +611,10 @@ fn the_index_stat_cache_never_vouches_for_a_changed_file() {
     // Rewritten with what it already held: the stat moves, the content does not.
     let readme = std::fs::read(fx.path().join("README.md")).unwrap();
     fx.write("README.md", &readme);
-    // Staged, so the index now holds the new blob and its id no longer matches the tree's.
+    // Staged with a different size, so the size check settles it before the cache is asked.
     fx.write("Zeta.txt", b"omega\n");
+    // This `git add` also rewrites the index after the sleep, which is what lets the cache
+    // answer for the untouched files.
     fx.git(&["add", "Zeta.txt"]);
 
     let repo = Repository::open(fx.path()).unwrap();
@@ -634,6 +633,106 @@ fn the_index_stat_cache_never_vouches_for_a_changed_file() {
         "a moved mtime alone is no edit"
     );
     assert_eq!(rows.get("src/main.rs"), None, "an untouched file is clean");
+}
+
+/// A clean file the index vouches for is never opened: made unreadable after the index was
+/// rewritten, it still reads as clean, where a cache that never vouches fails to hash it.
+#[test]
+fn the_stat_cache_answers_without_reading_a_clean_file() {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.trustctime", "false"]);
+    // A second must pass so the index the `git add` writes is later than every untouched file.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fx.write("Zeta.txt", b"omega\n");
+    fx.git(&["add", "Zeta.txt"]);
+    // After the `git add`: git re-reads racily clean entries whenever it writes the index.
+    fx.set_mode("README.md", 0o000);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000);
+    fx.set_mode("README.md", 0o644);
+
+    let report = report.unwrap();
+    assert!(
+        report.unreadable.is_empty(),
+        "the cache should have vouched for README.md: {:?}",
+        report.unreadable
+    );
+    assert!(
+        report.entries.iter().all(|entry| entry.path != "README.md"),
+        "{:?}",
+        report.entries
+    );
+}
+
+/// Overwrites a file in place, keeping its inode, and puts its mtime back, so only the
+/// content and the ctime differ from what the index recorded.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test edits its own fixture file behind the index's back"
+)]
+fn rewrite_keeping_mtime(fx: &Fixture, relative: &str, contents: &[u8]) -> std::io::Result<()> {
+    let path = fx.path().join(relative);
+    let mtime = std::fs::metadata(&path)?.modified()?;
+    fx.write(relative, contents);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_modified(mtime)
+}
+
+/// An entry flagged with `flag` keeps a stat that git no longer checks, so it is no evidence:
+/// a same-size edit with the mtime put back must still be read and reported.
+fn status_of_flagged_same_stat_edit(
+    flag: &str,
+) -> Result<Vec<(String, WorktreeStatus)>, Box<dyn std::error::Error>> {
+    let fx = Fixture::standard();
+    fx.git(&["config", "core.trustctime", "false"]);
+    // Without the gap the entry is racy and that check declines before the flag is looked at.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fx.git(&["update-index", flag, "alpha.txt"]);
+    rewrite_keeping_mtime(&fx, "alpha.txt", b"omega\n")?;
+
+    let repo = Repository::open(fx.path())?;
+    let tree = repo.resolve_tree("HEAD")?;
+    let report = repo.worktree_status(Some(tree), 10_000)?;
+    Ok(status_paths(&report))
+}
+
+#[test]
+fn an_assume_unchanged_entry_is_read_anyway() {
+    assert_eq!(
+        status_of_flagged_same_stat_edit("--assume-unchanged").unwrap(),
+        [("alpha.txt".to_owned(), WorktreeStatus::Modified)]
+    );
+}
+
+#[test]
+fn a_skip_worktree_entry_is_read_anyway() {
+    assert_eq!(
+        status_of_flagged_same_stat_edit("--skip-worktree").unwrap(),
+        [("alpha.txt".to_owned(), WorktreeStatus::Modified)]
+    );
+}
+
+/// A staged edit of the blob's size leaves a fresh, non-racy stat in the index, but for a
+/// different blob than the tree's, so the cache must not vouch for it against the tree.
+#[test]
+fn a_staged_same_size_edit_is_modified_against_the_tree() {
+    let fx = Fixture::standard();
+    fx.write("Zeta.txt", b"ZETA\n");
+    // Between the write and the `git add`, or the entry is racy and the id check never runs.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fx.git(&["add", "Zeta.txt"]);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
+    assert_eq!(
+        status_paths(&report),
+        [("Zeta.txt".to_owned(), WorktreeStatus::Modified)]
+    );
 }
 
 /// A file edited in the same second the index was written is indistinguishable from one
