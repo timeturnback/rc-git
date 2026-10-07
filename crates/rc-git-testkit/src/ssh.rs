@@ -60,6 +60,10 @@ impl SshGitServer {
     /// # Panics
     /// On any setup failure — a broken fixture must fail loudly.
     #[must_use]
+    #[expect(
+        clippy::print_stderr,
+        reason = "the test double's only channel into the failing test's captured output"
+    )]
     pub fn serve(git_dir: &Path) -> Self {
         let host_key = key_from_seed(&HOST_KEY_SEED);
         let allowed = vec![
@@ -88,7 +92,9 @@ impl SshGitServer {
         };
         runtime.spawn(async move {
             let running = server.run_on_socket(config, &listener);
-            let _ = running.await;
+            if let Err(error) = running.await {
+                eprintln!("ssh test server: accept loop stopped: {error}");
+            }
         });
         Self {
             addr,
@@ -241,6 +247,14 @@ impl russh::server::Server for GitSshServer {
             env: HashMap::new(),
         }
     }
+
+    #[expect(
+        clippy::print_stderr,
+        reason = "the test double's only channel into the failing test's captured output"
+    )]
+    fn handle_session_error(&mut self, error: russh::Error) {
+        eprintln!("ssh test server: session failed: {error:?}");
+    }
 }
 
 struct GitSshHandler {
@@ -319,6 +333,10 @@ impl russh::server::Handler for GitSshHandler {
 }
 
 impl GitSshHandler {
+    #[expect(
+        clippy::print_stderr,
+        reason = "the test double's only channel into the failing test's captured output"
+    )]
     fn exec(
         &mut self,
         channel_id: ChannelId,
@@ -328,9 +346,17 @@ impl GitSshHandler {
         let Some(channel) = self.channels.remove(&channel_id) else {
             return Err(russh::Error::WrongChannel);
         };
-        let command = std::str::from_utf8(data).map_err(|_| russh::Error::Inconsistent)?;
-        let subcommand =
-            parse_git_command(command, &self.git_dir).ok_or(russh::Error::Inconsistent)?;
+        let Some(subcommand) = std::str::from_utf8(data)
+            .ok()
+            .and_then(|command| parse_git_command(command, &self.git_dir))
+        else {
+            eprintln!(
+                "ssh test server: refused exec {:?}; serving {}",
+                String::from_utf8_lossy(data),
+                self.git_dir.display()
+            );
+            return Err(russh::Error::Inconsistent);
+        };
         let child = spawn_git(subcommand, &self.git_dir, self.env.remove(&channel_id));
         session.channel_success(channel_id)?;
         let handle = session.handle();
