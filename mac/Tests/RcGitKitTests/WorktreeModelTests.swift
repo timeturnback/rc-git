@@ -92,7 +92,7 @@ import Testing
     @Test func aSearchPickOpensFromDiskInTheWorkingTree() async {
         repo.workDir = "/checkout"
         await model.attach(repo)
-        let pick = PathIndexEntry(path: "new.txt", oid: Oid(bytes: []), kind: .blob, hidden: false)
+        let pick = PathIndexEntry(path: "new.txt", oid: .unhashed, kind: .blob, hidden: false)
         await model.openSearchResult(pick)
         guard case let .text(entry, document) = model.fileState else {
             Issue.record("expected text, got \(model.fileState)")

@@ -183,10 +183,10 @@ private let cleanPull = PullOutcome(
     newHead: nil, commitsAdvanced: false, filesChanged: 2, alreadyUpToDate: false)
 private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
 private let switchedToMain = CheckoutOutcome(
-    branch: "main", newHead: Oid(bytes: Array(repeating: 0, count: 20)), filesChanged: 4,
+    branch: "main", newHead: oid(0), filesChanged: 4,
     alreadyOnBranch: false)
 private let alreadyOnMain = CheckoutOutcome(
-    branch: "main", newHead: Oid(bytes: Array(repeating: 0, count: 20)), filesChanged: 0,
+    branch: "main", newHead: oid(0), filesChanged: 0,
     alreadyOnBranch: true)
 
 @MainActor

@@ -347,7 +347,7 @@ public final class BrowserModel {
             rows.append(
                 BrowseRow(
                     entry: TreeEntry(
-                        name: entry.name, oid: entry.oid ?? Oid(bytes: []), kind: entry.kind),
+                        name: entry.name, oid: entry.oid ?? .unhashed, kind: entry.kind),
                     status: entry.status,
                     missing: false
                 ))
@@ -369,7 +369,7 @@ public final class BrowserModel {
         name: String, path: String, limit: UInt64 = Repository.defaultBlobLimit
     ) async {
         guard let repository else { return }
-        let entry = TreeEntry(name: name, oid: Oid(bytes: []), kind: .blob)
+        let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob)
         fileGeneration += 1
         let generation = fileGeneration
         openedFilePath = path
@@ -1001,7 +1001,7 @@ public final class BrowserModel {
         -> [HighlightSpan]?
     {
         guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
-        let cacheable = !entry.oid.bytes.isEmpty
+        let cacheable = !entry.oid.isUnhashed
         if cacheable, let cached = highlightCache[entry.oid] {
             if let index = highlightCacheOrder.firstIndex(of: entry.oid) {
                 highlightCacheOrder.remove(at: index)
@@ -1044,7 +1044,7 @@ public final class BrowserModel {
     /// parses neither again. `nil` under the same conditions as `highlights`.
     public func importLinks(for entry: TreeEntry, document: TextDocument) async -> [ImportLink]? {
         guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
-        let cacheable = !entry.oid.bytes.isEmpty
+        let cacheable = !entry.oid.isUnhashed
         if cacheable, let cached = importLinkCache[entry.oid] { return cached }
         let name = entry.name
         let text = document.text
@@ -1122,7 +1122,7 @@ public final class BrowserModel {
                     return nil
                 }
                 return listing.entries.map {
-                    TreeEntry(name: $0.name, oid: $0.oid ?? Oid(bytes: []), kind: $0.kind)
+                    TreeEntry(name: $0.name, oid: $0.oid ?? .unhashed, kind: $0.kind)
                 }
             },
             read: { path in

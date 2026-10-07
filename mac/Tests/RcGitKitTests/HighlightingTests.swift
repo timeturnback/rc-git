@@ -112,4 +112,23 @@ import Testing
             for: TreeEntry(name: "f0.rs", oid: oid(1), kind: .blob), document: document)
         #expect(again?.isEmpty == false)
     }
+
+    @Test func unhashedWorkingTreeFilesEachGetTheirOwnSpans() async throws {
+        let model = BrowserModel()
+        await model.attach(FakeRepository())
+
+        let shortBytes = Array("fn a() {}\n".utf8)
+        let longBytes = Array("// note\nfn b() { let s = \"hi\"; }\n".utf8)
+        let short = TextDocument(bytes: shortBytes, lineStarts: [0], validUTF8: true)
+        let long = TextDocument(bytes: longBytes, lineStarts: [0, 8], validUTF8: true)
+        let first = try #require(
+            await model.highlights(
+                for: TreeEntry(name: "a.rs", oid: .unhashed, kind: .blob), document: short))
+        let second = try #require(
+            await model.highlights(
+                for: TreeEntry(name: "b.rs", oid: .unhashed, kind: .blob), document: long))
+        #expect(first == Highlighter.highlight(name: "a.rs", data: shortBytes))
+        #expect(second == Highlighter.highlight(name: "b.rs", data: longBytes))
+        #expect(first != second, "two disk files must not share one cache slot")
+    }
 }

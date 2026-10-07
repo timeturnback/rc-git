@@ -42,6 +42,13 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
 
     public var description: String { hex }
 
+    /// Stand-in id for a working-tree file, whose bytes were never hashed. Every unhashed file
+    /// shares it, so an `Oid`-keyed cache must skip any entry where `isUnhashed` is true.
+    public static let unhashed = Oid(bytes: [])
+
+    /// True for `Oid.unhashed`: the id names no object and cannot key a cache.
+    public var isUnhashed: Bool { bytes.isEmpty }
+
     func withC<T>(_ body: (UnsafePointer<RcGitOid>) throws -> T) rethrows -> T {
         var c = RcGitOid()
         withUnsafeMutableBytes(of: &c.bytes) { buffer in

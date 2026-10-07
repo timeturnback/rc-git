@@ -71,14 +71,13 @@ public struct PathIndex: Sendable {
     }
 
     /// Every file a working-tree walk found, compared against the tree `root`. Disk files
-    /// carry no blob id, so their entries hold an empty one.
+    /// carry no blob id, so their entries hold `Oid.unhashed`.
     public init(root: Oid, worktreeFiles list: WorktreeFileList) {
-        let noOid = Oid(bytes: [])
         self.init(
             root: root,
             entries: list.files.map {
                 PathIndexEntry(
-                    path: $0.path, oid: noOid, kind: $0.kind,
+                    path: $0.path, oid: .unhashed, kind: $0.kind,
                     hidden: HiddenFiles.isHidden(path: $0.path))
             },
             truncated: list.truncated)
