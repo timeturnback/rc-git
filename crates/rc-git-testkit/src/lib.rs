@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
@@ -55,8 +56,17 @@ impl Fixture {
     ///
     /// # Panics
     /// When any git command fails.
+    ///
+    /// The repository is built once per test binary and each call returns a fresh copy of it
+    /// (see [`clone_of`](Self::clone_of)). The template lives in a static, which never drops,
+    /// so each test binary leaves one small template directory in the system temp dir.
     #[must_use]
     pub fn standard() -> Self {
+        static TEMPLATE: OnceLock<Fixture> = OnceLock::new();
+        Self::clone_of(TEMPLATE.get_or_init(Self::build_standard))
+    }
+
+    fn build_standard() -> Self {
         let fixture = Self::empty_dir();
         fixture.git(&["init", "-q", "-b", "main"]);
 
@@ -80,6 +90,23 @@ impl Fixture {
         fixture.git(&["tag", "-a", "v1.0", "-m", "Release 1.0"]);
         fixture.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         fixture
+    }
+
+    /// A fresh copy of `template`, `.git` included, in a new temporary directory. Symlinks
+    /// are recreated as symlinks and file permission bits are kept, then the index's stat
+    /// data is refreshed so the copy reads as clean wherever the template did.
+    ///
+    /// Build a template once per test binary in a `static OnceLock<Fixture>` and hand each
+    /// test a copy, instead of re-running the git commands that built it.
+    ///
+    /// # Panics
+    /// On I/O failure, or when `git update-index --refresh` fails.
+    #[must_use]
+    pub fn clone_of(template: &Self) -> Self {
+        let copy = Self::empty_dir();
+        copy_tree(template.path(), copy.path());
+        copy.git(&["update-index", "-q", "--refresh"]);
+        copy
     }
 
     /// Path of the working directory.
@@ -347,5 +374,38 @@ impl Fixture {
             ],
             &[("GIT_COMMITTER_DATE", date)],
         );
+    }
+}
+
+/// Copies the contents of `from` into the existing directory `to`, recreating symlinks
+/// rather than following them.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixtures copy their own template trees"
+)]
+fn copy_tree(from: &Path, to: &Path) {
+    let entries =
+        std::fs::read_dir(from).unwrap_or_else(|e| panic!("list {}: {e}", from.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("list {}: {e}", from.display()));
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("stat {}: {e}", source.display()));
+        if kind.is_symlink() {
+            let link = std::fs::read_link(&source)
+                .unwrap_or_else(|e| panic!("read link {}: {e}", source.display()));
+            std::os::unix::fs::symlink(&link, &target)
+                .unwrap_or_else(|e| panic!("create symlink {}: {e}", target.display()));
+        } else if kind.is_dir() {
+            std::fs::create_dir(&target)
+                .unwrap_or_else(|e| panic!("create dir {}: {e}", target.display()));
+            copy_tree(&source, &target);
+        } else {
+            std::fs::copy(&source, &target).unwrap_or_else(|e| {
+                panic!("copy {} to {}: {e}", source.display(), target.display())
+            });
+        }
     }
 }

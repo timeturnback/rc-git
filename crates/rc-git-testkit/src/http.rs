@@ -6,8 +6,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 
 /// Serves one repository over git's smart HTTP protocol from a background thread.
@@ -107,13 +107,18 @@ impl Drop for HttpGitServer {
     }
 }
 
-/// Absolute path of `git-http-backend`, resolved via `git --exec-path` because it is not
-/// on `PATH`.
+/// Absolute path of `git-http-backend`, resolved once per process via `git --exec-path`
+/// because it is not on `PATH`.
+fn git_http_backend() -> PathBuf {
+    static BACKEND: OnceLock<PathBuf> = OnceLock::new();
+    BACKEND.get_or_init(resolve_git_http_backend).clone()
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "the test kit shells out to the git CLI by design"
 )]
-fn git_http_backend() -> PathBuf {
+fn resolve_git_http_backend() -> PathBuf {
     let output = Command::new("git")
         .arg("--exec-path")
         .output()

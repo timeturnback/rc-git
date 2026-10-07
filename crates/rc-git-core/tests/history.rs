@@ -1,5 +1,7 @@
 //! Path-filtered history against a purpose-built branch-and-merge fixture.
 
+use std::sync::OnceLock;
+
 use rc_git_core::{CommitFilter, CommitPage, Repository};
 use rc_git_testkit::Fixture;
 
@@ -7,7 +9,13 @@ use rc_git_testkit::Fixture;
 /// `topic`) rewrites `file.txt`; `main change` rewrites `dir/a.txt`; `clean merge` merges
 /// `topic` without touching anything itself; `hack change` (branch `hack`, from `root`) adds
 /// `other.txt`; `evil merge` merges `hack` and also rewrites `file.txt` in the merge itself.
+/// Built once per run; each test gets its own copy.
 fn merge_fixture() -> Fixture {
+    static TEMPLATE: OnceLock<Fixture> = OnceLock::new();
+    Fixture::clone_of(TEMPLATE.get_or_init(build_merge_fixture))
+}
+
+fn build_merge_fixture() -> Fixture {
     let fx = Fixture::empty_dir();
     fx.git(&["init", "-q", "-b", "main"]);
     fx.write("file.txt", b"base\n");
