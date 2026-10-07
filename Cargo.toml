@@ -66,6 +66,3 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
-
-[profile.bench]
-inherits = "release"
