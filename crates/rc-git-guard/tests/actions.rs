@@ -593,6 +593,47 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_commit_reaches_heads_reflog_so_head_at_one_is_the_previous_commit() {
+        let fx = Fixture::standard();
+        let before = fx.rev_parse("HEAD");
+        fx.write("alpha.txt", b"changed\n");
+
+        commit_whole(&fx, &["alpha.txt"]);
+        assert_eq!(
+            fx.git_output(&["log", "-g", "-1", "--format=%gs", "HEAD"]),
+            "rc-git: commit"
+        );
+        assert_eq!(fx.rev_parse("HEAD@{0}"), fx.rev_parse("HEAD"));
+        assert_eq!(
+            fx.rev_parse("HEAD@{1}"),
+            before,
+            "`git reset --hard HEAD@{{1}}` must undo exactly this commit"
+        );
+    }
+
+    #[test]
+    fn an_unwritable_head_reflog_refuses_a_commit_before_writing() {
+        let fx = Fixture::standard();
+        let head = fx.rev_parse("HEAD");
+        fx.write("alpha.txt", b"changed\n");
+        fx.set_mode(".git/logs/HEAD", 0o444);
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "refused",
+            explicit(),
+            Some(commit_id(&head)),
+            &[whole("alpha.txt")],
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(err.to_string().contains("logs/HEAD"), "{err}");
+        assert_eq!(fx.rev_parse("main"), head, "the branch must not move");
+    }
+
+    #[test]
     fn a_commit_records_the_selection_and_leaves_git_status_clean() {
         let fx = Fixture::standard();
         let policy = Policy::default();

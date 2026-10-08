@@ -384,6 +384,31 @@ fn pull_fast_forwards_files_index_and_ref() {
 }
 
 #[test]
+fn pull_reaches_heads_reflog_so_head_at_one_is_the_pre_pull_commit() {
+    let remoted = remoted();
+    let before = remoted.clone.rev_parse("HEAD");
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    fetch_clone(&remoted);
+
+    pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
+    assert_eq!(
+        remoted
+            .clone
+            .git_output(&["log", "-g", "-1", "--format=%gs", "HEAD"]),
+        "rc-git: pull --ff-only"
+    );
+    assert_eq!(
+        remoted.clone.rev_parse("HEAD@{0}"),
+        bare_rev(&remoted.bare, "main")
+    );
+    assert_eq!(
+        remoted.clone.rev_parse("HEAD@{1}"),
+        before,
+        "`git reset --hard HEAD@{{1}}` must undo exactly this pull"
+    );
+}
+
+#[test]
 fn pull_fast_forwards_from_origin_when_the_branch_names_no_upstream() {
     let remoted = remoted();
     untrack(&remoted);

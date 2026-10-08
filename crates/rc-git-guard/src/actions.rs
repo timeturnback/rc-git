@@ -158,6 +158,62 @@ fn delete_edit(
     })
 }
 
+/// Opens `logs/HEAD` for append before anything is written, so an action that moves the
+/// checked-out commit refuses up front when it could not log the move, instead of failing
+/// after the ref has moved. `None` when the log does not exist: it is appended only when it
+/// already exists, which is what `force_create_reflog: false` means on every ref edit.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `logs/HEAD` when the log exists but cannot be opened.
+fn open_head_reflog(
+    repo: &gix::Repository,
+    op: &'static str,
+) -> ActionResult<Option<std::fs::File>> {
+    let path = repo.git_dir().join("logs").join("HEAD");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+    )]
+    let opened = std::fs::OpenOptions::new().append(true).open(&path);
+    match opened {
+        Ok(file) => Ok(Some(file)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(git_err(op, "logs/HEAD")(err)),
+    }
+}
+
+/// Appends the line git writes to `logs/HEAD` whenever the checked-out commit moves. A ref
+/// transaction will not write it: a symbolic update of `HEAD` carries no object id, and a
+/// direct update of the branch logs only the branch. The line is serialized by gix's own
+/// reflog writer and carries the same synthetic `rc-git` committer as every other ref edit.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `logs/HEAD` when the line cannot be written.
+fn append_head_reflog(
+    repo: &gix::Repository,
+    mut file: std::fs::File,
+    (old, new): (Option<gix::ObjectId>, gix::ObjectId),
+    message: &str,
+    op: &'static str,
+) -> ActionResult<()> {
+    use std::io::Write;
+    let line = gix::refs::log::Line {
+        previous_oid: old.unwrap_or_else(|| gix::ObjectId::null(repo.object_hash())),
+        new_oid: new,
+        signature: gix::actor::Signature {
+            name: REFLOG_NAME.into(),
+            email: REFLOG_EMAIL.into(),
+            time: gix::date::Time::now_local_or_utc(),
+        },
+        message: message.into(),
+    };
+    let mut serialized = Vec::new();
+    line.write_to(&mut serialized)
+        .map_err(git_err(op, "logs/HEAD"))?;
+    file.write_all(&serialized)
+        .map_err(git_err(op, "logs/HEAD"))
+}
+
 /// Applies one ref edit with an explicit reflog committer. The stash uses the user's own
 /// identity here because `git stash list` shows the reflog's author; everything else goes
 /// through [`apply_edit`].

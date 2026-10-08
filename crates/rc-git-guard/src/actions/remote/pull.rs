@@ -17,6 +17,8 @@ use crate::{Action, Policy};
 use super::{count_ahead_behind, current_branch, is_ancestor, peel_ref, tracking_ref_name};
 
 const OP: &str = "pull";
+/// What the branch and `HEAD` reflogs record for a fast-forward pull.
+const REFLOG_MESSAGE: &str = "rc-git: pull --ff-only";
 
 /// What a fast-forward pull did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +92,12 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     let work_dir = work_dir(&repo, OP)?;
     let index = LockedIndex::acquire(&repo, OP)?;
     treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
+    let reflog = crate::actions::open_head_reflog(&repo, OP)?;
     treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
     advance_ref(&repo, &branch, old, new)?;
+    if let Some(file) = reflog {
+        crate::actions::append_head_reflog(&repo, file, (Some(old), new), REFLOG_MESSAGE, OP)?;
+    }
     Ok(PullOutcome {
         branch,
         old: old_id,
@@ -114,7 +120,7 @@ fn advance_ref(
         &full_name,
         PreviousValue::MustExistAndMatch(Target::Object(old)),
         Target::Object(new),
-        "rc-git: pull --ff-only",
+        REFLOG_MESSAGE,
         OP,
     )?;
     crate::actions::apply_edit(repo, edit, OP, &full_name)

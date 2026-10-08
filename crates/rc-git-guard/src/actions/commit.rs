@@ -34,6 +34,8 @@ pub struct Committed {
 }
 
 const OP: &str = "commit";
+/// What the branch and `HEAD` reflogs record for a commit.
+const REFLOG_MESSAGE: &str = "rc-git: commit";
 
 /// The repository's own `user.name`/`user.email`, as a commit would record them without an
 /// [`Author::explicit`] identity: `None` when its config sets either one empty or not at all.
@@ -85,6 +87,7 @@ pub fn commit(
         return Err(ActionError::git(OP, "HEAD", "nothing selected to commit"));
     }
     let index = LockedIndex::acquire(&repo, OP)?;
+    let reflog = super::open_head_reflog(&repo, OP)?;
     let work_dir = work_dir(&repo, OP)?;
     let selected = selections.iter().map(|selection| match selection {
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
@@ -136,13 +139,16 @@ pub fn commit(
         &branch_ref,
         expected,
         Target::Object(commit_oid),
-        "rc-git: commit",
+        REFLOG_MESSAGE,
         OP,
     )?;
     super::apply_edit(&repo, edit, OP, &branch_ref)?;
     // The branch has moved, so the commit stands whatever happens to the index: an error here
     // would read as a failed commit and a retry would be refused as stale. The flag reports it.
     let index_refreshed = update_index(index, OP, &index_changes).is_ok();
+    if let Some(file) = reflog {
+        super::append_head_reflog(&repo, file, (head_commit, commit_oid), REFLOG_MESSAGE, OP)?;
+    }
 
     Ok(Committed {
         oid,

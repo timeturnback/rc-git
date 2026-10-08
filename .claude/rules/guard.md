@@ -35,9 +35,10 @@ performs one. Branch and tag management go through here; so does everything that
   and the user's signing config sits outside the isolated open
   (`docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md`).
 - A gix ref transaction writes no reflog for a symbolic update — it has no object id to log —
-  so `checkout.rs` appends the `checkout:` line to `logs/HEAD` itself, serialized by
-  `gix::refs::log::Line` and only when the log already exists. Without it `git checkout -` and
-  `HEAD@{1}` would silently point at the wrong commit.
+  and a direct branch edit logs only the branch, so checkout, commit and pull append their
+  line to `logs/HEAD` themselves through `open_head_reflog` (before the first write) and
+  `append_head_reflog` in `actions.rs`, only when the log already exists. Without it
+  `git checkout -` and `HEAD@{1}` would silently point at the wrong commit.
 - Protected patterns default to `main`, `master`, `release/*`. Users may add patterns, never
   remove the defaults through the UI.
 - Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
