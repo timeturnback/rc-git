@@ -2891,6 +2891,45 @@ mod checkout {
         assert!(err.to_string().contains("refs/heads/master"), "{err}");
         assert_eq!(head_branch(&fx), "main");
     }
+
+    #[test]
+    fn a_switch_that_turns_a_symlink_into_a_file_succeeds() {
+        let fx = Fixture::standard();
+        fx.git(&["branch", "plain"]);
+        fx.git(&["switch", "-q", "plain"]);
+        fx.remove("link");
+        fx.write("link", b"plain file\n");
+        fx.commit("Replace link with a file", "2024-02-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+        assert_eq!(porcelain(&fx), "", "the tree is clean before the switch");
+
+        checkout_branch(fx.path(), &Policy::default(), "plain").unwrap();
+        let link = fx.path().join("link");
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_file());
+        assert_eq!(std::fs::read(&link).unwrap(), b"plain file\n");
+        assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("plain"));
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn a_switch_that_turns_a_file_into_a_symlink_succeeds() {
+        let fx = Fixture::standard();
+        fx.git(&["branch", "linked"]);
+        fx.git(&["switch", "-q", "linked"]);
+        fx.remove("alpha.txt");
+        fx.symlink("README.md", "alpha.txt");
+        fx.commit("Replace alpha with a link", "2024-02-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+        assert_eq!(porcelain(&fx), "", "the tree is clean before the switch");
+
+        checkout_branch(fx.path(), &Policy::default(), "linked").unwrap();
+        assert_eq!(
+            std::fs::read_link(fx.path().join("alpha.txt")).unwrap(),
+            std::path::Path::new("README.md")
+        );
+        assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("linked"));
+        assert_eq!(porcelain(&fx), "");
+    }
 }
 
 /// Checkout and fast-forward pull read a touched path the way git hashes it: the kind and the
