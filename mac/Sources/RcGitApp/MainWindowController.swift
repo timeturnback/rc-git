@@ -426,18 +426,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showBlame(_ sender: Any?) {
         guard model.openedFilePath != nil else { return }
-        let name = model.openedFilePath ?? ""
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let spans = try await model.blameOpenedFile()
-                blamePanel.show(spans, fileName: name, over: window)
-            } catch let error as RepositoryError {
-                presentError(error.message)
-            } catch {
-                presentError(String(describing: error))
-            }
-        }
+        Task { await model.requestBlame() }
     }
 
     @objc func searchCommits(_ sender: Any?) {
@@ -767,6 +756,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onError = { [weak self] message in
             self?.presentError(message)
+        }
+        model.onBlameChanged = { [weak self] in
+            guard let self else { return }
+            switch model.blame {
+            case .empty:
+                break
+            case let .loaded(path, spans):
+                blamePanel.show(spans, fileName: path, over: window)
+            case let .failed(message):
+                presentError(message)
+            }
         }
         model.onInputError = { [weak self] title, message in
             self?.presentError(message, title: title)

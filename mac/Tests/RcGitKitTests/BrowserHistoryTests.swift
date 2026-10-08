@@ -478,18 +478,17 @@ import Testing
 
     @Test func blameNeedsAnOpenFileWithAKnownPath() async {
         await model.attach(repo)
-        do {
-            _ = try await model.blameOpenedFile()
-            Issue.record("expected a throw")
-        } catch let error as RepositoryError {
-            #expect(error.message.contains("no file"))
-        } catch {
-            Issue.record("unexpected error \(error)")
-        }
+        await model.requestBlame()
+        #expect(model.blame == .failed("no file with a known path is open"))
 
         let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
         await model.openFile(entry, path: "a.txt")
-        let spans = (try? await model.blameOpenedFile()) ?? []
+        await model.requestBlame()
+        guard case let .loaded(path, spans) = model.blame else {
+            Issue.record("expected a loaded blame, got \(model.blame)")
+            return
+        }
+        #expect(path == "a.txt")
         #expect(spans.count == 1)
         #expect(spans[0].commit.title == "parent")
         #expect(spans[0].range.lineCount == 1)
@@ -501,14 +500,12 @@ import Testing
         repo.blames["a.txt"] = .tooLarge(size: 40, limit: 10)
         let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
         await model.openFile(entry, path: "a.txt", limit: 10)
-        do {
-            _ = try await model.blameOpenedFile()
-            Issue.record("expected a throw")
-        } catch let error as RepositoryError {
-            #expect(error.message.contains("40 bytes, over the 10 byte limit"))
-        } catch {
-            Issue.record("unexpected error \(error)")
+        await model.requestBlame()
+        guard case let .failed(message) = model.blame else {
+            Issue.record("expected a failed blame, got \(model.blame)")
+            return
         }
+        #expect(message.contains("40 bytes, over the 10 byte limit"))
         #expect(repo.blameLimits == [10])
     }
 }

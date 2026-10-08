@@ -52,6 +52,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blames: [String: Blame] = [:]
     /// The limit each `blame` call passed, in call order.
     var blameLimits: [UInt64] = []
+    /// Holds the next `blame` call, then clears itself.
+    var blameGate: CallGate?
     var worktreeListings: [String: WorktreeListing] = [:]
     var worktreeFiles: [String: BlobContent] = [:]
     /// The full-repo status walk result, replaced by tests as the "disk" changes.
@@ -254,10 +256,13 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func blame(tip: Oid, path: String, limit: UInt64) throws -> Blame {
-        let found = lock.withLock {
+        let (found, gate) = lock.withLock { () -> (Blame?, CallGate?) in
             blameLimits.append(limit)
-            return blames[path]
+            let gate = blameGate
+            blameGate = nil
+            return (blames[path], gate)
         }
+        gate?.pass()
         guard let found else {
             throw RepositoryError("blame file: '\(path)' does not exist at \(tip)")
         }

@@ -190,6 +190,14 @@ public struct BlameSpan: Sendable, Hashable {
     }
 }
 
+/// The blame the model last finished for the open file, for the blame panel to present.
+public enum BlameState: Sendable, Hashable {
+    case empty
+    /// Every range of the file at `path`, paired with its commit.
+    case loaded(path: String, spans: [BlameSpan])
+    case failed(String)
+}
+
 /// What a blame produced.
 public enum Blame: Sendable, Hashable {
     /// Every line attributed, as consecutive ranges ordered by line number.

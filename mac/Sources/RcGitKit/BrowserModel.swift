@@ -62,6 +62,8 @@ public final class BrowserModel {
     public private(set) var fileDiff: FileDiffState = .empty
     /// Full message, committer, and refs of `diffCommit`.
     public private(set) var commitDetail: CommitDetailState = .empty
+    /// The blame `requestBlame` last finished for the open file.
+    public private(set) var blame: BlameState = .empty
 
     /// Commits of the selected ref loaded so far, newest first.
     public private(set) var history: [CommitSummary] = []
@@ -99,6 +101,8 @@ public final class BrowserModel {
     public var onSearchChanged: (() -> Void)?
     /// Fired after `diffCommit`, `commitChanges`, or `fileDiff` changed.
     public var onDiffChanged: (() -> Void)?
+    /// Fired after `blame` changed.
+    public var onBlameChanged: (() -> Void)?
     /// Fired when a background operation failed with a message worth showing.
     public var onError: ((String) -> Void)?
     /// Fired when something the user typed named nothing in the repository: a title for what
@@ -114,6 +118,9 @@ public final class BrowserModel {
     private var historyGeneration = 0
     private var diffGeneration = 0
     private var searchGeneration = 0
+    private var blameGeneration = 0
+    /// The file and revision the running blame walk is for; a request for the same joins it.
+    private var blameInFlight: BlameTarget?
     /// A restore is running, and the location the next one goes to. A restore asked for
     /// meanwhile replaces `pendingRestore` and returns; the running one picks it up.
     private var isRestoring = false
@@ -124,6 +131,13 @@ public final class BrowserModel {
     private var reportedLocation = BrowserLocation()
     /// The tip whose history the history pane shows. Kept while browsing one of its commits.
     private var historyAnchor: Oid?
+    /// One blame walk's inputs, plus the file generation it was asked under.
+    private struct BlameTarget: Equatable, Sendable {
+        let path: String
+        let tip: Oid
+        let limit: UInt64
+        let file: Int
+    }
     /// The unfiltered pages of one tip plus the lane graph built alongside them.
     private struct HistoryPages {
         var commits: [CommitSummary]
@@ -841,47 +855,79 @@ public final class BrowserModel {
         onDiffChanged?()
     }
 
-    /// Blames the file in the file pane at the browsed revision. Returns the ranges paired
-    /// with their commit summaries, resolved through a cache so each commit is read once.
+    /// Blames the file in the file pane at the browsed revision and publishes the result as
+    /// `blame`, firing `onBlameChanged`. Ranges are paired with their commit summaries,
+    /// resolved through a cache so each commit is read once.
     ///
     /// The file at the tip is sized against the limit the file pane read it with, so a file
-    /// the pane declined as too large is declined here too instead of decoded whole.
-    ///
-    /// # Errors
-    /// `RepositoryError` when no file with a known path is open, the file is over the limit,
-    /// or the walk fails.
-    public func blameOpenedFile() async throws -> [BlameSpan] {
-        guard let repository else { throw RepositoryError("no repository is open") }
-        guard let path = openedFilePath else {
-            throw RepositoryError("no file with a known path is open")
+    /// the pane declined as too large is declined here too instead of decoded whole. A request
+    /// for the file and revision a walk is already running for joins that walk instead of
+    /// starting another. A result is dropped when a newer request superseded it or the open
+    /// file or revision changed while it ran. Failures publish `.failed`.
+    public func requestBlame() async {
+        guard let repository else { return publishBlame(.failed("no repository is open")) }
+        guard let target = blameTarget() else {
+            let message =
+                openedFilePath == nil
+                ? "no file with a known path is open" : "nothing is selected to blame at"
+            return publishBlame(.failed(message))
         }
-        guard let tip = selectedRef?.target ?? browsedCommit?.oid else {
-            throw RepositoryError("nothing is selected to blame at")
+        guard target != blameInFlight else { return }
+        blameGeneration += 1
+        let generation = blameGeneration
+        blameInFlight = target
+        let result = await RepositoryError.run {
+            try Self.blameSpans(repository, target: target)
         }
-        let limit = openedFileLimit
-        return try await Task.detached(priority: .userInitiated) {
-            let ranges: [BlameRange]
-            switch try repository.blame(tip: tip, path: path, limit: limit) {
-            case let .ranges(found):
-                ranges = found
-            case let .tooLarge(size, limit):
-                throw RepositoryError(
-                    "cannot blame '\(path)': it is \(size) bytes, over the \(limit) byte limit")
+        guard generation == blameGeneration else { return }
+        blameInFlight = nil
+        guard target == blameTarget() else { return }
+        switch result {
+        case let .success(spans):
+            publishBlame(.loaded(path: target.path, spans: spans))
+        case let .failure(error):
+            publishBlame(.failed(error.message))
+        }
+    }
+
+    /// What a blame asked for now would walk, or `nil` when no file with a known path is open
+    /// at a committed revision. The file generation makes a reopen count as a different file.
+    private func blameTarget() -> BlameTarget? {
+        guard let path = openedFilePath,
+            let tip = selectedRef?.target ?? browsedCommit?.oid
+        else { return nil }
+        return BlameTarget(path: path, tip: tip, limit: openedFileLimit, file: fileGeneration)
+    }
+
+    private func publishBlame(_ state: BlameState) {
+        blame = state
+        onBlameChanged?()
+    }
+
+    nonisolated private static func blameSpans(
+        _ repository: any RepositoryReading, target: BlameTarget
+    ) throws -> [BlameSpan] {
+        let ranges: [BlameRange]
+        switch try repository.blame(tip: target.tip, path: target.path, limit: target.limit) {
+        case let .ranges(found):
+            ranges = found
+        case let .tooLarge(size, limit):
+            throw RepositoryError(
+                "cannot blame '\(target.path)': it is \(size) bytes, over the \(limit) byte limit")
+        }
+        var commits: [Oid: CommitSummary] = [:]
+        var spans: [BlameSpan] = []
+        for range in ranges {
+            let commit: CommitSummary
+            if let cached = commits[range.commit] {
+                commit = cached
+            } else {
+                commit = try repository.commit(range.commit)
+                commits[range.commit] = commit
             }
-            var commits: [Oid: CommitSummary] = [:]
-            var spans: [BlameSpan] = []
-            for range in ranges {
-                let commit: CommitSummary
-                if let cached = commits[range.commit] {
-                    commit = cached
-                } else {
-                    commit = try repository.commit(range.commit)
-                    commits[range.commit] = commit
-                }
-                spans.append(BlameSpan(range: range, commit: commit))
-            }
-            return spans
-        }.value
+            spans.append(BlameSpan(range: range, commit: commit))
+        }
+        return spans
     }
 
     // MARK: Location

@@ -170,6 +170,93 @@ import Testing
             }))
     }
 
+    /// Stubs a one-range blame for `path` owned by `mainCommit`.
+    private func stubBlame(_ path: String) {
+        repo.blames[path] = .ranges([BlameRange(commit: mainCommit, startLine: 1, lineCount: 1)])
+        repo.summaries[mainCommit] = commitSummary(mainCommit, title: "main")
+    }
+
+    @Test func staleBlameIsDroppedAfterTheOpenFileChanges() async {
+        await model.attach(repo)
+        stubBlame("README.md")
+        await model.openFile(
+            TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
+        var events = 0
+        model.onBlameChanged = { events += 1 }
+        let gate = CallGate()
+        repo.blameGate = gate
+        let readmeBlame = Task { await model.requestBlame() }
+        await gate.waitUntilArrived()
+        await model.openFile(
+            TreeEntry(name: "main.rs", oid: readme, kind: .blob), path: "src/main.rs")
+        gate.open()
+        await readmeBlame.value
+
+        #expect(events == 0, "the README walk finished after the user opened another file")
+        #expect(model.blame == .empty)
+    }
+
+    @Test func aSupersededBlameLeavesTheNewerWalkInFlight() async {
+        await model.attach(repo)
+        stubBlame("README.md")
+        stubBlame("src/main.rs")
+        await model.openFile(
+            TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
+        var states: [BlameState] = []
+        model.onBlameChanged = { states.append(self.model.blame) }
+        let readmeGate = CallGate()
+        repo.blameGate = readmeGate
+        let readmeBlame = Task { await model.requestBlame() }
+        await readmeGate.waitUntilArrived()
+
+        await model.openFile(
+            TreeEntry(name: "main.rs", oid: readme, kind: .blob), path: "src/main.rs")
+        let mainGate = CallGate()
+        repo.blameGate = mainGate
+        let mainBlame = Task { await model.requestBlame() }
+        await mainGate.waitUntilArrived()
+        readmeGate.open()
+        await readmeBlame.value
+        #expect(states.isEmpty, "the README walk was superseded by the main.rs request")
+
+        await model.requestBlame()
+        mainGate.open()
+        await mainBlame.value
+        let spans = [
+            BlameSpan(
+                range: BlameRange(commit: mainCommit, startLine: 1, lineCount: 1),
+                commit: commitSummary(mainCommit, title: "main"))
+        ]
+        #expect(states == [.loaded(path: "src/main.rs", spans: spans)])
+        #expect(repo.blameLimits.count == 2, "the repeat joined the main.rs walk")
+    }
+
+    @Test func repeatedBlameRequestsShareOneWalk() async {
+        await model.attach(repo)
+        stubBlame("README.md")
+        await model.openFile(
+            TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
+        var events = 0
+        model.onBlameChanged = { events += 1 }
+        let gate = CallGate()
+        repo.blameGate = gate
+        let first = Task { await model.requestBlame() }
+        await gate.waitUntilArrived()
+        await model.requestBlame()
+        await model.requestBlame()
+        gate.open()
+        await first.value
+
+        #expect(repo.blameLimits.count == 1)
+        #expect(events == 1)
+        guard case let .loaded(path, spans) = model.blame else {
+            Issue.record("expected a loaded blame, got \(model.blame)")
+            return
+        }
+        #expect(path == "README.md")
+        #expect(spans.count == 1)
+    }
+
     @Test func staleRootLoadIsDropped() async {
         await model.attach(repo)
         let slowCommit = oid(0x60)
