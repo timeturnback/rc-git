@@ -4099,7 +4099,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
 /// and `ssh_dir` to use `~/.ssh`.
 #[repr(C)]
 pub struct RcGitRemoteAuth {
-    /// HTTPS username, or NULL.
+    /// HTTPS username, or NULL (empty when `token` is set).
     pub username: *const c_char,
     /// HTTPS token, or the ssh key passphrase, or NULL.
     pub token: *const c_char,
@@ -4154,20 +4154,21 @@ impl OwnedRemoteAuth {
     }
 }
 
-/// The caller's credentials, when both parts were given.
+/// The caller's credentials, when a token was given. A NULL username becomes empty, so an
+/// ssh passphrase passed without one still reaches the key.
 ///
 /// # Safety
 /// Both pointers are NULL or NUL-terminated strings.
 unsafe fn credentials_from(username: *const c_char, token: *const c_char) -> Option<Credentials> {
     // SAFETY: forwarded from this function's contract.
     let (username, token) = unsafe { (bytes_arg(username), bytes_arg(token)) };
-    match (username, token) {
-        (Some(username), Some(token)) => Some(Credentials {
-            username: String::from_utf8_lossy(username).into_owned(),
-            token: String::from_utf8_lossy(token).into_owned(),
-        }),
-        (Some(_) | None, Some(_) | None) => None,
-    }
+    let token = token?;
+    Some(Credentials {
+        username: username
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default(),
+        token: String::from_utf8_lossy(token).into_owned(),
+    })
 }
 
 /// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
@@ -5592,6 +5593,28 @@ mod tests {
         };
         assert_eq!(code, RCGIT_OK, "{}", take_error(&mut error));
         assert!(hostkey.is_null());
+    }
+
+    #[test]
+    fn remote_auth_keeps_a_token_given_without_a_username() {
+        let token = CString::new("passphrase").unwrap();
+        let auth = RcGitRemoteAuth {
+            username: ptr::null(),
+            token: token.as_ptr(),
+            accepted_hostkey: ptr::null(),
+            ssh_dir: ptr::null(),
+        };
+        let owned = unsafe { OwnedRemoteAuth::read(&raw const auth) };
+        let creds = owned.creds.expect("a token without a username is kept");
+        assert_eq!(creds.username, "");
+        assert_eq!(creds.token, "passphrase");
+
+        let auth = RcGitRemoteAuth {
+            token: ptr::null(),
+            ..auth
+        };
+        let owned = unsafe { OwnedRemoteAuth::read(&raw const auth) };
+        assert!(owned.creds.is_none());
     }
 
     /// Fetches `repo` through the C entry point; returns the status, the error message

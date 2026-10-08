@@ -743,7 +743,7 @@ typedef struct RcGitRemoteStatus {
 // `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
 // and `ssh_dir` to use `~/.ssh`.
 typedef struct RcGitRemoteAuth {
-  // HTTPS username, or NULL.
+  // HTTPS username, or NULL (empty when `token` is set).
   const char *username;
   // HTTPS token, or the ssh key passphrase, or NULL.
   const char *token;
