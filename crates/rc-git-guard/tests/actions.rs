@@ -1929,6 +1929,35 @@ mod stash {
     }
 
     #[test]
+    fn a_multi_line_message_logs_one_reflog_line_and_keeps_the_body_in_the_commit() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"stashed content\n");
+
+        let saved = stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned()],
+            Some("subject\n\nbody"),
+            explicit(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(saved.message, "On main: subject body");
+        assert_eq!(stash_list(&fx), "On main: subject body");
+        let core = rc_git_core::Repository::open(fx.path()).unwrap();
+        let listed = core.stash_list().unwrap();
+        let messages: Vec<&str> = listed.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, ["On main: subject body"]);
+        let reflog = std::fs::read_to_string(fx.path().join(".git/logs/refs/stash")).unwrap();
+        assert_eq!(reflog.lines().count(), 1, "{reflog}");
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%B", "refs/stash"]),
+            "On main: subject\n\nbody",
+            "the stash commit keeps the full message"
+        );
+    }
+
+    #[test]
     fn a_mode_only_change_stashes_and_pops_the_exec_bit() {
         let fx = Fixture::standard();
         let policy = Policy::default();

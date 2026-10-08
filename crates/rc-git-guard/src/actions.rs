@@ -225,6 +225,15 @@ fn apply_edit_as(
     committer_name: &str,
     committer_email: &str,
 ) -> ActionResult<()> {
+    if let Change::Update { log, .. } = &edit.change
+        && log.message.contains(&b'\n')
+    {
+        return Err(ActionError::git(
+            op,
+            name,
+            "the reflog message spans more than one line",
+        ));
+    }
     let time = gix::date::Time::now_local_or_utc()
         .format(gix::date::time::Format::Raw)
         .unwrap_or_else(|_| "0 +0000".to_owned());

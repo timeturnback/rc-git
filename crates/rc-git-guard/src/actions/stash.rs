@@ -111,6 +111,7 @@ pub fn stash_push(
         Some(text) if !text.trim().is_empty() => format!("On {branch}: {}", text.trim()),
         Some(_) | None => format!("WIP on {branch}: {short} {subject}"),
     };
+    let reflog_message = one_line(&stash_message);
     let signature = gix::actor::Signature {
         name: identity.name.clone().into(),
         email: identity.email.clone().into(),
@@ -143,14 +144,21 @@ pub fn stash_push(
         },
     )?;
 
-    write_stash_ref(&repo, stash_commit, &stash_message, &identity)?;
+    write_stash_ref(&repo, stash_commit, &reflog_message, &identity)?;
 
     // Only now that the stash records everything: put the files back to HEAD state.
     restore_paths(&repo, &work_dir, index, Some(base_tree), paths, OP)?;
     Ok(StashSaved {
         oid: stash_commit.to_string(),
-        message: stash_message,
+        message: reflog_message,
     })
+}
+
+/// `message` as one reflog line, the way git's `copy_reflog_msg` builds it: every whitespace
+/// run, newlines included, becomes one space, and the ends are trimmed. The stash commit keeps
+/// the full text; a newline in a reflog message would start a line git cannot parse.
+fn one_line(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Points `refs/stash` at `stash_commit`, adding a reflog line with `message`; the ref must
