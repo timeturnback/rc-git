@@ -145,16 +145,17 @@ import Testing
         await model.attach(repo)
         let slow = oid(0x50)
         repo.blobs[slow] = textBlob("slow")
-        // Wide margin: parallel suites can stall the 20 ms hop below well past a short delay.
-        repo.delays[slow] = 1.0
+        let gate = CallGate()
+        repo.gates[slow] = gate
         let slowEntry = TreeEntry(name: "slow.txt", oid: slow, kind: .blob)
         let fastEntry = TreeEntry(name: "README.md", oid: readme, kind: .blob)
 
         var states: [FileState] = []
         model.onFileChanged = { states.append(self.model.fileState) }
         async let slowLoad: Void = model.openFile(slowEntry)
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.openFile(fastEntry)
+        gate.open()
         await slowLoad
 
         guard case let .text(entry, _) = model.fileState else {
@@ -176,10 +177,12 @@ import Testing
         repo.treeOfMap[slowCommit] = slowTree
         repo.trees[slowTree] = []
         let slowRef = branch("slow", at: slowCommit)
-        repo.delays[slowCommit] = 0.2
+        let gate = CallGate()
+        repo.gates[slowCommit] = gate
         async let slowSelect: Void = model.select(slowRef)
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.select(model.refs.refs[0])
+        gate.open()
         await slowSelect
         #expect(model.selectedRef?.shortName == "feature")
         #expect(model.rootTree == featureTree)

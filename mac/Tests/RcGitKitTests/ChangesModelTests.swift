@@ -95,13 +95,14 @@ import Testing
     }
 
     @Test func aBurstOfRequestsCostsOneRescan() async {
-        repo.statusDelay = 1.0
+        let gate = CallGate()
+        repo.statusGate = gate
         async let inFlight: Void = model.loadStatus()
-        try? await Task.sleep(for: .milliseconds(100))
-        repo.lock.withLock { repo.statusDelay = 0 }
+        await gate.waitUntilArrived()
         for _ in 0..<20 {
             await model.loadStatus()
         }
+        gate.open()
         await inFlight
         #expect(
             repo.lock.withLock { repo.statusCalls } == 2,
@@ -113,11 +114,13 @@ import Testing
     }
 
     @Test func aCancelledScanIsDroppedAndLeavesTheListIdle() async {
-        repo.statusDelay = 1.0
+        let gate = CallGate()
+        repo.statusGate = gate
         async let inFlight: Void = model.loadStatus()
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         model.cancelScans()
         #expect(model.statusState == .idle, "the tab reloads on the next switch back")
+        gate.open()
         await inFlight
         #expect(model.statusState == .idle, "the cancelled scan's result never lands")
         #expect(

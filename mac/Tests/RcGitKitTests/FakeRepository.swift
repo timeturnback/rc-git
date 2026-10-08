@@ -1,8 +1,36 @@
 import Foundation
 import RcGitKit
 
-/// An in-memory repository for view-model tests. Each call can be delayed so tests can race
-/// two loads and check which result wins.
+/// Holds one synchronous repository call until the test opens it, and tells the test when the
+/// call has arrived, so a race between two loads is ordered by the test rather than by sleeps.
+final class CallGate: @unchecked Sendable {
+    private let arrived = DispatchSemaphore(value: 0)
+    private let opened = DispatchSemaphore(value: 0)
+
+    /// Called by the fake on the worker thread: reports arrival, then blocks until `open()`.
+    func pass() {
+        arrived.signal()
+        opened.wait()
+    }
+
+    /// Suspends until a call has reached `pass()`. The wait runs off the cooperative pool.
+    func waitUntilArrived() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                self.arrived.wait()
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Lets the held call return.
+    func open() {
+        opened.signal()
+    }
+}
+
+/// An in-memory repository for view-model tests. A call can be held at a `CallGate` so tests
+/// can race two loads and check which result wins; each gate holds only the first call it meets.
 final class FakeRepository: RepositoryReading, @unchecked Sendable {
     let lock = NSLock()
     var trees: [Oid: [TreeEntry]] = [:]
@@ -40,12 +68,14 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// The full working-tree file walk result.
     var worktreeFileList = WorktreeFileList(files: [], scanned: 0, truncated: false)
     var worktreeFilesCalls = 0
-    /// Slept inside `worktreeStatus`, for racing loads.
-    var statusDelay: TimeInterval = 0
+    /// Holds the next `worktreeStatus` call, then clears itself.
+    var statusGate: CallGate?
     var listing = RefListing(refs: [])
     var headValue = Head(refName: nil, target: nil)
     var treeOfMap: [Oid: Oid] = [:]
     var delays: [Oid: TimeInterval] = [:]
+    /// Per oid, holds the next `treeOf` or `readBlob` call for it, then clears itself.
+    var gates: [Oid: CallGate] = [:]
     var treeEntryCalls = 0
     var failNextTree = false
     var failNextRefs = false
@@ -80,7 +110,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func treeOf(_ oid: Oid) throws -> Oid {
-        let (mapped, delay) = lock.withLock { (treeOfMap[oid], delays[oid] ?? 0) }
+        let (mapped, delay, gate) = lock.withLock {
+            (treeOfMap[oid], delays[oid] ?? 0, gates.removeValue(forKey: oid))
+        }
+        gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let mapped else { throw RepositoryError("object \(oid) is a blob, expected a tree") }
         return mapped
@@ -102,7 +135,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func readBlob(_ oid: Oid, limit: UInt64) throws -> BlobContent {
-        let (content, delay) = lock.withLock { (blobs[oid], delays[oid] ?? 0) }
+        let (content, delay, gate) = lock.withLock {
+            (blobs[oid], delays[oid] ?? 0, gates.removeValue(forKey: oid))
+        }
+        gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let content else {
             throw RepositoryError("read blob: object \(oid) is missing or unreadable")
@@ -252,14 +288,16 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func worktreeStatus(tree: Oid?, maxScan: Int) throws -> StatusReport {
-        let (report, delay, fail) = lock.withLock { () -> (StatusReport, TimeInterval, Bool) in
+        let (report, gate, fail) = lock.withLock { () -> (StatusReport, CallGate?, Bool) in
             statusCalls += 1
             statusTrees.append(tree)
             let fail = failNextStatus
             failNextStatus = false
-            return (statusReport, statusDelay, fail)
+            let gate = statusGate
+            statusGate = nil
+            return (statusReport, gate, fail)
         }
-        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        gate?.pass()
         if fail { throw RepositoryError("scan working tree: transient failure") }
         return report
     }
