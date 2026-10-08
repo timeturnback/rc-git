@@ -110,9 +110,11 @@ line.write_to(&mut serialized)
 }
 ```
 
-`from` is the previous branch's short name, or the detached commit id, or the literal
-`an unborn HEAD` (`checkout.rs:76-79`). The append runs after the ref edit
-(`checkout.rs:80-81`); if it fails, the error names `logs/HEAD`, so a half-done switch is
+`from` is the previous branch's short name, or the full id of the commit `HEAD` was detached
+at, which is what `git checkout -` parses (`checkout.rs:71-75`). An unborn branch still has a
+name, so it is logged by that name with a null old id; a `HEAD` that names no branch and
+resolves to no commit is refused before anything is written. The append runs after the ref edit
+(`checkout.rs:83-87`); if it fails, the error names `logs/HEAD`, so a half-done switch is
 legible rather than silent.
 
 The write door it needed is now on the ban list (`clippy.toml:23`):

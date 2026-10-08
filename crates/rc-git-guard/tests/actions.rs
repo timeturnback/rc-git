@@ -2428,6 +2428,11 @@ mod stash {
 }
 
 mod checkout {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "tests arrange the fixture's git dir; only the guard mutates the repository"
+    )]
+
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{ActionError, checkout_branch, create_branch};
     use rc_git_testkit::Fixture;
@@ -2845,11 +2850,59 @@ mod checkout {
     fn a_detached_head_can_switch_onto_a_branch() {
         let fx = Fixture::standard();
         fx.git(&["checkout", "-q", "--detach", "HEAD"]);
+        let detached = fx.rev_parse("HEAD");
 
         checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
         assert_eq!(head_branch(&fx), "feature");
         assert_eq!(fx.rev_parse("HEAD"), fx.rev_parse("feature"));
         assert_eq!(porcelain(&fx), "");
+        assert_eq!(
+            fx.git_output(&["reflog", "show", "--format=%gs", "-1", "HEAD"]),
+            format!("checkout: moving from {detached} to feature"),
+            "a detached start is logged by its full id, which `git checkout -` parses"
+        );
+
+        fx.git(&["checkout", "-q", "-"]);
+        assert_eq!(fx.rev_parse("HEAD"), detached);
+        assert_eq!(
+            head_branch(&fx),
+            "HEAD",
+            "`git checkout -` lands detached again"
+        );
+    }
+
+    #[test]
+    fn a_switch_does_not_create_a_missing_head_reflog() {
+        let fx = Fixture::standard();
+        let reflog = fx.git_dir().join("logs/HEAD");
+        std::fs::remove_file(&reflog).unwrap();
+
+        checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert_eq!(head_branch(&fx), "feature");
+        assert!(
+            !reflog.exists(),
+            "a repository without logs/HEAD must not gain one from a switch"
+        );
+    }
+
+    #[test]
+    fn a_switch_from_an_unborn_branch_logs_its_name_and_a_null_old_id() {
+        let fx = Fixture::standard();
+        fx.git(&["checkout", "-q", "--orphan", "none"]);
+        fx.git(&["rm", "-rf", "-q", "."]);
+
+        checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+        assert_eq!(head_branch(&fx), "main");
+        assert_eq!(
+            fx.git_output(&["reflog", "show", "--format=%gs", "-1", "HEAD"]),
+            "checkout: moving from none to main"
+        );
+        let log = std::fs::read_to_string(fx.git_dir().join("logs/HEAD")).unwrap();
+        let last = log.lines().last().unwrap();
+        assert!(
+            last.starts_with(&"0".repeat(40)),
+            "an unborn start has no old commit, so the old id is null: {last}"
+        );
     }
 
     #[test]
