@@ -1,6 +1,6 @@
 [package]
 name = "rc-git-guard"
-description = "Policy engine that classifies git actions and decides what confirmation they need"
+description = "Policy engine for git actions and the one write path that runs them once confirmed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

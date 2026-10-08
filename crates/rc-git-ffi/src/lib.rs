@@ -1140,12 +1140,12 @@ impl RcGitGuardDecision {
             },
             Decision::Confirm(challenge) => Self {
                 kind: RcGitDecisionKind::Confirm,
-                risk: challenge.risk.into(),
-                summary: export_string(challenge.summary),
+                risk: challenge.risk().into(),
+                summary: export_string(challenge.summary()),
                 typed_phrase: challenge
-                    .typed_phrase
+                    .typed_phrase()
                     .map_or(ptr::null_mut(), export_string),
-                backup_ref: challenge.backup_ref,
+                backup_ref: challenge.backup_ref(),
                 reason: ptr::null_mut(),
                 merged,
             },

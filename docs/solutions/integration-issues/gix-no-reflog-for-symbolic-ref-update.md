@@ -163,9 +163,10 @@ git's own shape, `checkout: moving from <old> to <new>`, because `git checkout -
 `git reflog` parse it; a friendlier message breaks both.
 
 **The synthetic `rc-git` / `rc-git@localhost` committer** is the one every other rc-git ref
-edit uses (`apply_edit` → `apply_edit_as`, `crates/rc-git-guard/src/actions.rs:78-116`).
-Repositories open with `gix::open::Options::isolated()`, so no global config and no user
-identity is readable — there is nothing else to put in the signature.
+edit uses (`Writer::apply_edit` → `Writer::apply_edit_as`,
+`crates/rc-git-guard/src/actions/write.rs`). Repositories open with
+`gix::open::Options::isolated()`, so no global config and no user identity is readable —
+there is nothing else to put in the signature.
 
 **Appending only when `logs/HEAD` exists** matches `force_create_reflog: false` on the edit
 itself. Creating a log in a repository that has none would be a change the edit did not ask

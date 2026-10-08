@@ -12,11 +12,9 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
-use super::commit::{
-    IndexChange, LockedIndex, blob_data, disk_stat, index_mode, tree_entry_at, tree_of,
-    update_index,
-};
+use super::commit::{IndexChange, blob_data, disk_stat, index_mode, tree_entry_at, tree_of};
 use super::workfile::DiskEntry;
+use super::write::{LockedIndex, Writer};
 use super::{ActionError, ActionResult, git_err, workfile};
 
 /// One path the change touches, with its blob on each side.
@@ -145,7 +143,7 @@ fn set_old_kinds(
 }
 
 /// Refuses the whole operation when any touched path is dirty on disk or staged in `index`,
-/// before anything is written. Take `index` with [`LockedIndex::acquire`] before this call and
+/// before anything is written. Take `index` with [`Writer::lock_index`] before this call and
 /// hand the same one to [`apply`], so no other process can change the index in between.
 ///
 /// # Errors
@@ -294,7 +292,7 @@ fn deleted_files_on_disk(
 /// the plan's deletions: everything below it is a file in `deleted`, and every directory
 /// below it holds at least one, so pruning after the last deletion removes it. Any other
 /// entry, untracked or ignored, keeps it, and git refuses that switch too. An empty `dir`
-/// counts as emptied, since [`workfile::restore_file`] removes an empty directory itself.
+/// counts as emptied, since [`Writer::restore_file`] removes an empty directory itself.
 ///
 /// # Errors
 /// [`ActionError::Git`] naming `op` and the directory when it cannot be read.
@@ -372,7 +370,7 @@ fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) ->
 /// fails part way through the plan names how many paths were already written, and that
 /// neither `HEAD` nor the index was updated.
 pub(super) fn apply(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     index: LockedIndex,
     changes: &[PathChange],
@@ -384,30 +382,31 @@ pub(super) fn apply(
     };
     let mut index_changes: Vec<IndexChange> = Vec::with_capacity(total);
     for change in changes.iter().filter(|change| change.new.is_none()) {
-        workfile::delete_file(op, work_dir, &change.path)
+        writer
+            .delete_file(op, work_dir, &change.path)
             .map_err(|error| stopped(error, index_changes.len()))?;
         index_changes.push((change.path.clone(), None));
     }
     for change in changes {
         if let Some((oid, kind)) = change.new {
-            let written = write_blob(repo, work_dir, &change.path, (oid, kind), op)
+            let written = write_blob(writer, work_dir, &change.path, (oid, kind), op)
                 .map_err(|error| stopped(error, index_changes.len()))?;
             index_changes.push(written);
         }
     }
-    update_index(index, op, &index_changes)
+    writer.update_index(index, op, &index_changes)
 }
 
 /// Writes blob `oid` to `path` as `kind` and returns the index change that records it.
 fn write_blob(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     path: &str,
     (oid, kind): (ObjectId, EntryKind),
     op: &'static str,
 ) -> ActionResult<IndexChange> {
-    let data = blob_data(repo, op, path, oid)?;
-    workfile::restore_file(op, work_dir, path, &data, kind)?;
+    let data = blob_data(writer.repo(), op, path, oid)?;
+    writer.restore_file(op, work_dir, path, (&data, kind))?;
     let stat = disk_stat(work_dir, path, op);
     Ok((path.to_owned(), Some((oid, kind, stat))))
 }

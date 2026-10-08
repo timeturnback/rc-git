@@ -1,19 +1,17 @@
 //! Discard uncommitted changes: restore tracked files to their `HEAD` bytes, delete
 //! untracked files, or splice selected hunks out of one file. Destructive under the policy,
-//! so every entry point goes through [`confirm`] before touching disk. The challenge carries
+//! so every entry point goes through [`authorize`] before touching disk. The challenge carries
 //! no typed phrase: a plain confirm answers it.
 
 use std::path::Path;
 
 use gix::objs::tree::EntryKind;
 
-use super::commit::{
-    IndexChange, LockedIndex, blob_data, disk_stat, tree_entry_at, update_index, verified_hunks,
-    work_dir,
-};
+use super::commit::{IndexChange, blob_data, disk_stat, tree_entry_at, verified_hunks, work_dir};
 use super::workfile::{self, DiskEntry};
-use super::{ActionError, ActionResult, HunkStamp, confirm, open, plan_discard};
-use crate::Policy;
+use super::write::{LockedIndex, Writer};
+use super::{ActionError, ActionResult, HunkStamp, authorize, open};
+use crate::{Action, Policy};
 
 const OP: &str = "discard";
 
@@ -62,7 +60,9 @@ pub fn discard_files(
     input: Option<&str>,
 ) -> ActionResult<Vec<DiscardOutcome>> {
     let repo = open(repo_path, OP, "working tree")?;
-    let _proof = confirm(plan_discard(policy, paths.len()), OP, "working tree", input)?;
+    let action = Action::DiscardWorkingChanges { files: paths.len() };
+    let proof = authorize(policy, &action, OP, "working tree", input)?;
+    let writer = Writer::new(&repo, &proof);
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
@@ -84,7 +84,7 @@ pub fn discard_files(
         };
         plan.push((path, entry));
     }
-    let index = LockedIndex::acquire(&repo, OP)?;
+    let index = writer.lock_index(OP)?;
     let total = plan.len();
     let mut outcomes = Vec::with_capacity(total);
     let mut index_changes: Vec<IndexChange> = Vec::with_capacity(total);
@@ -92,11 +92,13 @@ pub fn discard_files(
         let (kind, change) = match entry {
             Plan::Restore(entry) => (
                 DiscardKind::Restored,
-                restore_entry(&repo, &work_dir, path, &entry, OP),
+                restore_entry(&writer, &work_dir, path, &entry, OP),
             ),
             Plan::Delete => (
                 DiscardKind::Deleted,
-                workfile::delete_file(OP, &work_dir, path).map(|()| (path.clone(), None)),
+                writer
+                    .delete_file(OP, &work_dir, path)
+                    .map(|()| (path.clone(), None)),
             ),
         };
         let change = change.map_err(|error| {
@@ -108,22 +110,22 @@ pub fn discard_files(
             kind,
         });
     }
-    update_index(index, OP, &index_changes)?;
+    writer.update_index(index, OP, &index_changes)?;
     Ok(outcomes)
 }
 
 /// Writes `entry`'s bytes and mode back to `path` and returns the index change that records
 /// it: the blob id, kind, and the stat of the file just written.
 fn restore_entry(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     path: &str,
     entry: &gix::objs::tree::Entry,
     op: &'static str,
 ) -> ActionResult<IndexChange> {
     let kind = entry.mode.into();
-    let data = blob_data(repo, op, path, entry.oid)?;
-    workfile::restore_file(op, work_dir, path, &data, kind)?;
+    let data = blob_data(writer.repo(), op, path, entry.oid)?;
+    writer.restore_file(op, work_dir, path, (&data, kind))?;
     let stat = disk_stat(work_dir, path, op);
     Ok((path.to_owned(), Some((entry.oid, kind, stat))))
 }
@@ -138,7 +140,7 @@ fn restore_entry(
 /// [`ActionError::Git`] when an entry cannot be read, a file can be neither restored nor
 /// deleted (naming how many paths were already written), or the index cannot be written.
 pub(super) fn restore_paths(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     index: LockedIndex,
     tree: Option<gix::ObjectId>,
@@ -147,9 +149,11 @@ pub(super) fn restore_paths(
 ) -> ActionResult<()> {
     let mut index_changes: Vec<IndexChange> = Vec::with_capacity(paths.len());
     for path in paths {
-        let change = match tree_entry_at(repo, op, tree, path)? {
-            Some(entry) => restore_entry(repo, work_dir, path, &entry, op),
-            None => workfile::delete_file(op, work_dir, path).map(|()| (path.clone(), None)),
+        let change = match tree_entry_at(writer.repo(), op, tree, path)? {
+            Some(entry) => restore_entry(writer, work_dir, path, &entry, op),
+            None => writer
+                .delete_file(op, work_dir, path)
+                .map(|()| (path.clone(), None)),
         };
         let change = change.map_err(|error| {
             workfile::stopped_part_way(
@@ -161,7 +165,7 @@ pub(super) fn restore_paths(
         })?;
         index_changes.push(change);
     }
-    update_index(index, op, &index_changes)
+    writer.update_index(index, op, &index_changes)
 }
 
 /// Discards only `stamps` of `path`: the diff is recomputed, every stamp must match a
@@ -180,7 +184,8 @@ pub fn discard_hunks(
     input: Option<&str>,
 ) -> ActionResult<()> {
     let repo = open(repo_path, OP, path)?;
-    let _proof = confirm(plan_discard(policy, 1), OP, path, input)?;
+    let action = Action::DiscardWorkingChanges { files: 1 };
+    let proof = authorize(policy, &action, OP, path, input)?;
     let mismatch = || ActionError::HunkMismatch {
         path: path.to_owned(),
     };
@@ -212,7 +217,7 @@ pub fn discard_hunks(
         DiskEntry::Absent => return Err(ActionError::git(OP, path, "does not exist on disk")),
     };
     let result = workfile::splice(&old, &new, &kept).map_err(|_| mismatch())?;
-    workfile::restore_file(OP, &work_dir, path, &result, kind)
+    Writer::new(&repo, &proof).restore_file(OP, &work_dir, path, (&result, kind))
 }
 
 /// The tree `HEAD` points at; `None` on an unborn branch, where everything is untracked.

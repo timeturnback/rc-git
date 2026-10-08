@@ -10,25 +10,22 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::time::Duration;
 
 use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, PreviousValue};
 
 use super::commit::{
-    LockedIndex, blob_data, checked_out_branch, refuse_case_variant_path, tree_entry_at, tree_of,
-    whole_file_edit, work_dir, write_object,
+    blob_data, checked_out_branch, refuse_case_variant_path, tree_entry_at, tree_of,
+    whole_file_edit, work_dir,
 };
 use super::discard::restore_paths;
 use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
 use super::workfile::{self, DiskEntry};
-use super::{
-    ActionError, ActionResult, Author, Deleted, Identity, confirm, git_err, open, plan_stash_apply,
-    plan_stash_drop, plan_stash_pop, plan_stash_push, write_backup_ref,
-};
-use crate::Policy;
+use super::write::Writer;
+use super::{ActionError, ActionResult, Author, Deleted, Identity, authorize, git_err, open};
+use crate::{Action, Policy};
 
 /// The reflog name git shows for the stash entry at `index`.
 pub(super) fn stash_name(index: usize) -> String {
@@ -75,12 +72,9 @@ pub fn stash_push(
     const OP: &str = "stash push";
     let repo = open(repo_path, OP, "refs/stash")?;
     super::refuse_unfinished_operation(&repo, OP)?;
-    let _proof = confirm(
-        plan_stash_push(policy, paths.len()),
-        OP,
-        "refs/stash",
-        input,
-    )?;
+    let action = Action::StashPush { files: paths.len() };
+    let proof = authorize(policy, &action, OP, "refs/stash", input)?;
+    let writer = Writer::new(&repo, &proof);
     let refused = |reason: &'static str| ActionError::git(OP, "refs/stash", reason);
     if paths.is_empty() {
         return Err(refused("nothing selected to stash"));
@@ -104,15 +98,15 @@ pub fn stash_push(
 
     let mut edits = std::collections::BTreeMap::new();
     for path in paths {
-        let edit = whole_file_edit(&repo, OP, &work_dir, Some(base_tree), path)?;
+        let edit = whole_file_edit(&writer, OP, &work_dir, Some(base_tree), path)?;
         treebuild::insert(&mut edits, path, edit)?;
     }
-    let stash_tree = treebuild::rewrite(&repo, Some(base_tree), &edits)?
+    let stash_tree = treebuild::rewrite(&writer, Some(base_tree), &edits)?
         .ok_or_else(|| refused("stashing every file would empty the tree"))?;
     if stash_tree == base_tree {
         return Err(refused("no changes to stash at the selected paths"));
     }
-    let index = LockedIndex::acquire(&repo, OP)?;
+    let index = writer.lock_index(OP)?;
 
     let branch = branch_ref
         .strip_prefix("refs/heads/")
@@ -130,9 +124,9 @@ pub fn stash_push(
         email: identity.email.clone().into(),
         time: gix::date::Time::now_local_or_utc(),
     };
-    let index_commit = write_object(
-        &repo,
+    let index_commit = writer.write_object(
         OP,
+        "object",
         &gix::objs::Commit {
             tree: base_tree,
             parents: [head].into_iter().collect(),
@@ -143,9 +137,9 @@ pub fn stash_push(
             extra_headers: Vec::new(),
         },
     )?;
-    let stash_commit = write_object(
-        &repo,
+    let stash_commit = writer.write_object(
         OP,
+        "object",
         &gix::objs::Commit {
             tree: stash_tree,
             parents: [head, index_commit].into_iter().collect(),
@@ -157,10 +151,10 @@ pub fn stash_push(
         },
     )?;
 
-    write_stash_ref(&repo, stash_commit, &reflog_message, &identity)?;
+    write_stash_ref(&writer, stash_commit, &reflog_message, &identity)?;
 
     // Only now that the stash records everything: put the files back to HEAD state.
-    restore_paths(&repo, &work_dir, index, Some(base_tree), paths, OP)?;
+    restore_paths(&writer, &work_dir, index, Some(base_tree), paths, OP)?;
     Ok(StashSaved {
         oid: stash_commit.to_string(),
         message: reflog_message,
@@ -177,13 +171,13 @@ fn one_line(message: &str) -> String {
 /// Points `refs/stash` at `stash_commit`, adding a reflog line with `message`; the ref must
 /// still be where it was read, so a concurrent push is refused rather than lost.
 fn write_stash_ref(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     stash_commit: ObjectId,
     message: &str,
     identity: &Identity,
 ) -> ActionResult<()> {
     const OP: &str = "stash push";
-    let expected = match stash_target(repo)? {
+    let expected = match stash_target(writer.repo())? {
         Some(current) => PreviousValue::MustExistAndMatch(Target::Object(current)),
         None => PreviousValue::MustNotExist,
     };
@@ -197,14 +191,7 @@ fn write_stash_ref(
     if let Change::Update { log, .. } = &mut edit.change {
         log.force_create_reflog = true;
     }
-    super::apply_edit_as(
-        repo,
-        edit,
-        OP,
-        "refs/stash",
-        &identity.name,
-        &identity.email,
-    )
+    writer.apply_edit_as(edit, OP, "refs/stash", (&identity.name, &identity.email))
 }
 
 /// Writes `stash@{index}`'s changes back to the working tree, keeping the entry. `expected`
@@ -228,8 +215,8 @@ pub fn stash_apply(
     let repo = open(repo_path, OP, "refs/stash")?;
     let target = stash_entry_at(&repo, index, expected, OP)?;
     refuse_untracked_side(&repo, index, target.oid, OP)?;
-    let _proof = confirm(plan_stash_apply(policy), OP, "refs/stash", input)?;
-    apply_inner(&repo, repo_path, target.oid, OP)
+    let proof = authorize(policy, &Action::StashApply, OP, "refs/stash", input)?;
+    apply_inner(&Writer::new(&repo, &proof), repo_path, target.oid, OP)
 }
 
 /// Applies `stash@{index}` and drops it once every file is restored. The policy writes a
@@ -252,10 +239,13 @@ pub fn stash_pop(
     let repo = open(repo_path, OP, "refs/stash")?;
     let target = stash_entry_at(&repo, index, expected, OP)?;
     refuse_untracked_side(&repo, index, target.oid, OP)?;
-    let decision = plan_stash_pop(policy, index, &target.message);
-    let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
-    apply_inner(&repo, repo_path, target.oid, OP)?;
-    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP).map_err(|error| {
+    let action = Action::StashPop {
+        name: stash_label(index, &target.message),
+    };
+    let proof = authorize(policy, &action, OP, "refs/stash", input)?;
+    let writer = Writer::new(&repo, &proof);
+    apply_inner(&writer, repo_path, target.oid, OP)?;
+    drop_inner(&writer, index, target.oid, OP).map_err(|error| {
         ActionError::git(
             "stash pop: drop",
             stash_name(index),
@@ -284,9 +274,11 @@ pub fn stash_drop(
     const OP: &str = "stash drop";
     let repo = open(repo_path, OP, "refs/stash")?;
     let target = stash_entry_at(&repo, index, expected, OP)?;
-    let decision = plan_stash_drop(policy, index, &target.message);
-    let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
-    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP)
+    let action = Action::StashDrop {
+        name: stash_label(index, &target.message),
+    };
+    let proof = authorize(policy, &action, OP, "refs/stash", input)?;
+    drop_inner(&Writer::new(&repo, &proof), index, target.oid, OP)
 }
 
 /// How many untracked paths a refusal names before it says "and more".
@@ -369,11 +361,12 @@ fn collect_paths(
 /// The restore half of apply and pop: refuse unless every touched path sits at the stash's
 /// base state, then write the stash side of every change.
 fn apply_inner(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     repo_path: &Path,
     stash_commit: ObjectId,
     op: &'static str,
 ) -> ActionResult<()> {
+    let repo = writer.repo();
     let base = repo
         .find_commit(stash_commit)
         .map_err(|source| ActionError::git(op, stash_commit.to_string(), source))?
@@ -389,7 +382,7 @@ fn apply_inner(
     let work_dir = work_dir(repo, op)?;
     let removed = removed_paths(&changes);
     check_changes(repo, &work_dir, &changes, &removed, op)?;
-    write_changes(repo, &work_dir, &changes, op)
+    write_changes(writer, &work_dir, &changes, op)
 }
 
 /// Every path the stash removes from the working tree: deletions and rename sources.
@@ -454,7 +447,7 @@ fn check_changes(
 /// first, so a file the stash turns into a directory (`x` to `x/y`), or a directory it turns
 /// into a file, is out of the way before the new entry is written.
 fn write_changes(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     changes: &[rc_git_core::TreeChange],
     op: &'static str,
@@ -462,11 +455,11 @@ fn write_changes(
     for change in changes {
         match change.kind {
             rc_git_core::ChangeKind::Deleted => {
-                workfile::delete_file(op, work_dir, &change.path.to_string())?;
+                writer.delete_file(op, work_dir, &change.path.to_string())?;
             }
             rc_git_core::ChangeKind::Renamed => {
                 if let Some(source) = &change.source_path {
-                    workfile::delete_file(op, work_dir, &source.to_string())?;
+                    writer.delete_file(op, work_dir, &source.to_string())?;
                 }
             }
             rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {}
@@ -477,7 +470,7 @@ fn write_changes(
             rc_git_core::ChangeKind::Added
             | rc_git_core::ChangeKind::Modified
             | rc_git_core::ChangeKind::Renamed => {
-                restore_change(repo, work_dir, &change.path.to_string(), change, op)?;
+                restore_change(writer, work_dir, &change.path.to_string(), change, op)?;
             }
             rc_git_core::ChangeKind::Deleted => {}
         }
@@ -486,7 +479,7 @@ fn write_changes(
 }
 
 fn restore_change(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     work_dir: &Path,
     path: &str,
     change: &rc_git_core::TreeChange,
@@ -496,9 +489,9 @@ fn restore_change(
         .new
         .ok_or_else(|| ActionError::git(op, "refs/stash", "a written change carries no blob"))?;
     let oid = gix_oid(new, op)?;
-    let data = blob_data(repo, op, path, oid)?;
+    let data = blob_data(writer.repo(), op, path, oid)?;
     let kind = entry_kind(path, change.entry, op)?;
-    workfile::restore_file(op, work_dir, path, &data, kind)
+    writer.restore_file(op, work_dir, path, (&data, kind))
 }
 
 /// The path must not exist on disk, unless it is in the way of a type change the stash makes
@@ -601,10 +594,6 @@ fn require_absent_or_base(
     }
 }
 
-/// How long a drop waits for `logs/refs/stash.lock`: gix's default ref-file lock timeout
-/// (`core.filesRefLockTimeout`), so a lock another writer holds briefly does not fail the drop.
-const LOG_LOCK_WAIT: Duration = Duration::from_millis(100);
-
 /// The reflog edit a drop makes, decided from one read of `logs/refs/stash`.
 struct DropPlan {
     /// The stash commit the removed line records.
@@ -619,10 +608,11 @@ struct DropPlan {
     kept: Vec<u8>,
 }
 
-/// Drops `stash@{index}`: backup ref, reflog line removal with re-chaining, and the
-/// `refs/stash` update or deletion. `index` counts the reflog lines git can read, newest
-/// first (see [`rc_git_core::stash_reflog_lines`]); unreadable lines stay as they are. The
-/// line removed must still record `expected`, or nothing is written.
+/// Drops `stash@{index}`: backup ref when the answered challenge asked for one, reflog line
+/// removal with re-chaining, and the `refs/stash` update or deletion. `index` counts the
+/// reflog lines git can read, newest first (see [`rc_git_core::stash_reflog_lines`]);
+/// unreadable lines stay as they are. The line removed must still record `expected`, or
+/// nothing is written.
 ///
 /// `logs/refs/stash.lock` is taken before the log is read and before anything is written, so
 /// a lock held elsewhere fails the drop with nothing changed, and `git reflog expire` or
@@ -633,24 +623,19 @@ struct DropPlan {
 /// [`ActionError::StaleRepository`]. The rewrite also erases the spurious reflog line the
 /// ref update appends.
 fn drop_inner(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     index: usize,
     expected: ObjectId,
-    write_backup: bool,
     op: &'static str,
 ) -> ActionResult<Deleted> {
+    let repo = writer.repo();
     let log_path = repo.common_dir().join("logs/refs/stash");
-    let lock = lock_log(&log_path, op)?;
+    let lock = writer.lock_stash_log(&log_path, op)?;
     let raw = std::fs::read(&log_path).map_err(git_err(op, "refs/stash"))?;
     let plan = plan_drop(&raw, index, expected, op)?;
 
-    let backup = if write_backup {
-        Some(write_backup_ref(
-            repo,
-            "stash",
-            &index.to_string(),
-            plan.removed,
-        )?)
+    let backup = if writer.backup_required() {
+        Some(writer.write_backup_ref("stash", &index.to_string(), plan.removed)?)
     } else {
         None
     };
@@ -662,7 +647,7 @@ fn drop_inner(
     let current = PreviousValue::MustExistAndMatch(Target::Object(plan.removed));
     if plan.last {
         let edit = super::delete_edit("refs/stash", current, op)?;
-        super::apply_edit(repo, edit, op, "refs/stash")?;
+        writer.apply_edit(edit, op, "refs/stash")?;
         return Ok(deleted);
     }
     if let Some(new_top) = plan.new_top {
@@ -673,10 +658,10 @@ fn drop_inner(
             "rc-git: stash drop",
             op,
         )?;
-        super::apply_edit(repo, edit, op, "refs/stash")?;
+        writer.apply_edit(edit, op, "refs/stash")?;
     }
     require_log_unchanged(repo, &log_path, &raw, &plan, op)?;
-    commit_log(lock, &plan.kept, op)?;
+    writer.commit_stash_log(lock, &plan.kept, op)?;
     Ok(deleted)
 }
 
@@ -772,36 +757,6 @@ fn is_own_drop_line(tail: &[u8], from: ObjectId, to: ObjectId) -> bool {
         return false;
     };
     !line.contains(&b'\n') && line_oids(line, "stash drop").is_ok_and(|oids| oids == (from, to))
-}
-
-/// Takes `logs/refs/stash.lock`, waiting up to [`LOG_LOCK_WAIT`] for another holder.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-)]
-fn lock_log(log_path: &Path, op: &'static str) -> ActionResult<gix::lock::File> {
-    gix::lock::File::acquire_to_update_resource(
-        log_path,
-        gix::lock::acquire::Fail::AfterDurationWithBackoff(LOG_LOCK_WAIT),
-        None,
-    )
-    .map_err(|source| ActionError::git(op, "refs/stash", source))
-}
-
-/// Replaces the stash reflog with exactly `content` by committing the held lock.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-)]
-fn commit_log(mut lock: gix::lock::File, content: &[u8], op: &'static str) -> ActionResult<()> {
-    {
-        use std::io::Write;
-        lock.write_all(content)
-            .map_err(|source| ActionError::git(op, "refs/stash", source))?;
-    }
-    lock.commit()
-        .map_err(|source| ActionError::git(op, "refs/stash", source))?;
-    Ok(())
 }
 
 /// The first two whitespace-separated fields of a reflog line: the old and new oids.

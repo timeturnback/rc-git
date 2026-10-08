@@ -10,8 +10,9 @@ use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
-use crate::actions::commit::{LockedIndex, work_dir};
-use crate::actions::{ActionError, ActionResult, confirm, open, treeapply};
+use crate::actions::commit::work_dir;
+use crate::actions::write::Writer;
+use crate::actions::{ActionError, ActionResult, authorize, open, treeapply};
 use crate::{Action, Policy};
 
 use super::{count_ahead_behind, current_branch, is_ancestor, peel_ref, tracking_ref_name};
@@ -48,10 +49,11 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     let repo = open(repo_path, OP, "repository")?;
     crate::actions::refuse_any_operation_in_progress(&repo, OP)?;
     let (branch, tip) = current_branch(&repo, OP)?;
-    let decision = policy.evaluate(&Action::PullFastForward {
+    let action = Action::PullFastForward {
         branch: branch.clone(),
-    });
-    let _proof = confirm(decision, OP, &branch, None)?;
+    };
+    let proof = authorize(policy, &action, OP, &branch, None)?;
+    let writer = Writer::new(&repo, &proof);
     let old = tip.ok_or_else(|| {
         ActionError::git(
             OP,
@@ -90,13 +92,13 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
 
     let changes = treeapply::plan(repo_path, Some(old), new, OP)?;
     let work_dir = work_dir(&repo, OP)?;
-    let index = LockedIndex::acquire(&repo, OP)?;
+    let index = writer.lock_index(OP)?;
     treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
-    let reflog = crate::actions::open_head_reflog(&repo, OP)?;
-    treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
-    advance_ref(&repo, &branch, old, new)?;
+    let reflog = writer.open_head_reflog(OP)?;
+    treeapply::apply(&writer, &work_dir, index, &changes, OP)?;
+    advance_ref(&writer, &branch, old, new)?;
     if let Some(file) = reflog {
-        crate::actions::append_head_reflog(&repo, file, (Some(old), new), REFLOG_MESSAGE, OP)?;
+        writer.append_head_reflog(file, (Some(old), new), REFLOG_MESSAGE, OP)?;
     }
     Ok(PullOutcome {
         branch,
@@ -110,7 +112,7 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
 /// Moves the branch ref from `old` to `new` through the one ref-edit funnel, insisting
 /// the branch has not moved since the pull was planned.
 fn advance_ref(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     branch: &str,
     old: ObjectId,
     new: ObjectId,
@@ -123,5 +125,5 @@ fn advance_ref(
         REFLOG_MESSAGE,
         OP,
     )?;
-    crate::actions::apply_edit(repo, edit, OP, &full_name)
+    writer.apply_edit(edit, OP, &full_name)
 }

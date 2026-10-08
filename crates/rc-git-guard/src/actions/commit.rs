@@ -1,5 +1,5 @@
 //! Commit selected working-tree changes: blobs from disk, a rewritten tree, a commit
-//! object, the branch ref through [`apply_edit`](super::apply_edit), and an index update so
+//! object, the branch ref through [`Writer::apply_edit`], and an index update so
 //! terminal `git status` agrees afterwards. Raw bytes throughout: gitattributes filters and
 //! eol conversion are not applied, matching how the core compares and diffs.
 
@@ -7,18 +7,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gix::ObjectId;
-use gix::bstr::{BStr, BString, ByteSlice};
+use gix::bstr::{BString, ByteSlice};
 use gix::index::entry::Stat;
 use gix::objs::tree::EntryKind;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
 use super::treebuild::{self, Node, PathEdit};
+use super::write::Writer;
 use super::{
-    ActionError, ActionResult, Author, FileSelection, HunkStamp, Identity, confirm, git_err, open,
-    plan_commit, treeapply, workfile,
+    ActionError, ActionResult, Author, FileSelection, HunkStamp, Identity, authorize, git_err,
+    open, treeapply, workfile,
 };
-use crate::Policy;
+use crate::{Action, Policy};
 
 /// What a completed commit produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +75,11 @@ pub fn commit(
 ) -> ActionResult<Committed> {
     let repo = open(repo_path, OP, "HEAD")?;
     super::refuse_unfinished_operation(&repo, OP)?;
-    let _proof = confirm(plan_commit(policy, selections.len()), OP, "HEAD", input)?;
+    let action = Action::Commit {
+        files: selections.len(),
+    };
+    let proof = authorize(policy, &action, OP, "HEAD", input)?;
+    let writer = Writer::new(&repo, &proof);
     let message = normalized_message(message)?;
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
     let current = head_commit
@@ -86,8 +91,8 @@ pub fn commit(
     if selections.is_empty() {
         return Err(ActionError::git(OP, "HEAD", "nothing selected to commit"));
     }
-    let index = LockedIndex::acquire(&repo, OP)?;
-    let reflog = super::open_head_reflog(&repo, OP)?;
+    let index = writer.lock_index(OP)?;
+    let reflog = writer.open_head_reflog(OP)?;
     let work_dir = work_dir(&repo, OP)?;
     let selected = selections.iter().map(|selection| match selection {
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
@@ -100,11 +105,11 @@ pub fn commit(
     }
 
     let (edits, index_changes) =
-        selection_edits(&repo, repo_path, &work_dir, base_tree, selections)?;
+        selection_edits(&writer, repo_path, &work_dir, base_tree, selections)?;
 
-    let new_tree = match treebuild::rewrite(&repo, base_tree, &edits)? {
+    let new_tree = match treebuild::rewrite(&writer, base_tree, &edits)? {
         Some(oid) => oid,
-        None => write_object(&repo, OP, &gix::objs::Tree::empty())?,
+        None => writer.write_object(OP, "object", &gix::objs::Tree::empty())?,
     };
     if Some(new_tree) == base_tree {
         return Err(ActionError::git(
@@ -128,7 +133,7 @@ pub fn commit(
         message: message.into(),
         extra_headers: Vec::new(),
     };
-    let commit_oid = write_object(&repo, OP, &commit_object)?;
+    let commit_oid = writer.write_object(OP, "object", &commit_object)?;
     let oid = treeapply::core_oid(commit_oid, OP)?;
 
     let expected = match head_commit {
@@ -142,12 +147,12 @@ pub fn commit(
         REFLOG_MESSAGE,
         OP,
     )?;
-    super::apply_edit(&repo, edit, OP, &branch_ref)?;
+    writer.apply_edit(edit, OP, &branch_ref)?;
     // The branch has moved, so the commit stands whatever happens to the index: an error here
     // would read as a failed commit and a retry would be refused as stale. The flag reports it.
-    let index_refreshed = update_index(index, OP, &index_changes).is_ok();
+    let index_refreshed = writer.update_index(index, OP, &index_changes).is_ok();
     if let Some(file) = reflog {
-        super::append_head_reflog(&repo, file, (head_commit, commit_oid), REFLOG_MESSAGE, OP)?;
+        writer.append_head_reflog(file, (head_commit, commit_oid), REFLOG_MESSAGE, OP)?;
     }
 
     Ok(Committed {
@@ -166,7 +171,7 @@ pub(in crate::actions) type IndexChange = (String, Option<(ObjectId, EntryKind, 
 /// The tree edits for every selection, and the index changes that make terminal
 /// `git status` agree once the commit lands.
 fn selection_edits(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     repo_path: &Path,
     work_dir: &Path,
     base_tree: Option<ObjectId>,
@@ -180,11 +185,11 @@ fn selection_edits(
                 // Statted before the read: an edit landing after it changes the stat, so git
                 // rehashes the file instead of trusting it to match the committed blob.
                 let stat = disk_stat(work_dir, path, OP);
-                let edit = whole_file_edit(repo, OP, work_dir, base_tree, path)?;
+                let edit = whole_file_edit(writer, OP, work_dir, base_tree, path)?;
                 (path, edit, stat)
             }
             FileSelection::Hunks { path, hunks } => {
-                let edit = spliced_edit(repo, repo_path, work_dir, base_tree, path, hunks)?;
+                let edit = spliced_edit(writer, repo_path, work_dir, (base_tree, path), hunks)?;
                 // Disk still holds the unselected hunks, so no stat of it proves the spliced
                 // blob; the zeroed stat `git apply --cached` writes makes every reader rehash.
                 (path, edit, Stat::default())
@@ -357,12 +362,13 @@ fn tree_case_variant(
 /// The edit for committing `path` exactly as disk has it: an addition or replacement from
 /// the file's bytes, or a removal when the file is gone. Errors name `op`.
 pub(super) fn whole_file_edit(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     op: &'static str,
     work_dir: &Path,
     base_tree: Option<ObjectId>,
     path: &str,
 ) -> ActionResult<PathEdit> {
+    let repo = writer.repo();
     let (data, kind) = match workfile::disk_entry(work_dir, path, op)? {
         workfile::DiskEntry::Present { data, kind } => (data, kind),
         workfile::DiskEntry::Directory => {
@@ -387,7 +393,7 @@ pub(super) fn whole_file_edit(
         workfile::validate_path(op, path, true)?;
     }
     let kind = recorded_file_kind(repo, op, base_tree, path, kind)?;
-    let oid = write_blob(repo, op, path, &data)?;
+    let oid = writer.write_blob(op, path, &data)?;
     Ok(PathEdit::Put { oid, kind })
 }
 
@@ -424,13 +430,13 @@ fn recorded_file_kind(
 /// that diff and must not change between the two, so the splice uses the bytes the stamps were
 /// checked against.
 fn spliced_edit(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     repo_path: &Path,
     work_dir: &Path,
-    base_tree: Option<ObjectId>,
-    path: &str,
+    (base_tree, path): (Option<ObjectId>, &str),
     stamps: &[HunkStamp],
 ) -> ActionResult<PathEdit> {
+    let repo = writer.repo();
     if stamps.is_empty() {
         return Err(ActionError::NoHunksSelected {
             op: OP,
@@ -461,7 +467,7 @@ fn spliced_edit(
         workfile::splice(&old, &new, &ordered).map_err(|_| ActionError::HunkMismatch {
             path: path.to_owned(),
         })?;
-    let oid = write_blob(repo, OP, path, &spliced)?;
+    let oid = writer.write_blob(OP, path, &spliced)?;
     // The partially committed file keeps HEAD's kind: the exec bit only changes when the
     // whole file is committed.
     Ok(PathEdit::Put {
@@ -590,35 +596,6 @@ pub(super) fn blob_data(
     Ok(blob.take_data())
 }
 
-fn write_blob(
-    repo: &gix::Repository,
-    op: &'static str,
-    path: &str,
-    data: &[u8],
-) -> ActionResult<ObjectId> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    repo.write_blob(data)
-        .map(gix::Id::detach)
-        .map_err(git_err(op, path))
-}
-
-pub(super) fn write_object(
-    repo: &gix::Repository,
-    op: &'static str,
-    object: &impl gix::objs::WriteTo,
-) -> ActionResult<ObjectId> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    repo.write_object(object)
-        .map(gix::Id::detach)
-        .map_err(git_err(op, "object"))
-}
-
 /// The lstat of `path` below `work_dir` as the index records it. A path that cannot be
 /// statted gets the zeroed stat, which only makes git rehash the file, never trust it.
 pub(in crate::actions) fn disk_stat(work_dir: &Path, path: &str, op: &'static str) -> Stat {
@@ -627,138 +604,6 @@ pub(in crate::actions) fn disk_stat(work_dir: &Path, path: &str, op: &'static st
         .and_then(|full| gix::index::fs::Metadata::from_path_no_follow(&full).ok())
         .and_then(|meta| Stat::from_fs(&meta).ok())
         .unwrap_or_default()
-}
-
-/// `.git/index` read while holding `index.lock`, as git does: nothing else can commit an index
-/// between this read and [`update_index`], so a concurrent `git add` is never overwritten with
-/// stale entries. Dropping it without [`update_index`] removes the lock and leaves the index as
-/// it was.
-pub(in crate::actions) struct LockedIndex {
-    lock: gix::lock::File,
-    file: gix::index::File,
-}
-
-impl LockedIndex {
-    /// Takes `index.lock`, failing at once when another process holds it, then reads the index.
-    /// Called before the action writes anything, so a held lock refuses the whole action.
-    ///
-    /// # Errors
-    /// [`ActionError::Git`] naming `op` and `index` when another git process holds the lock,
-    /// or when the lock cannot be created or the index cannot be read.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    pub(in crate::actions) fn acquire(
-        repo: &gix::Repository,
-        op: &'static str,
-    ) -> ActionResult<Self> {
-        let index_path = repo.index_path();
-        let lock = gix::lock::File::acquire_to_update_resource(
-            &index_path,
-            gix::lock::acquire::Fail::Immediately,
-            None,
-        )
-        .map_err(|source| match source {
-            gix::lock::acquire::Error::PermanentlyLocked { .. } => ActionError::git(
-                op,
-                "index",
-                "the index is locked by another git process; retry",
-            ),
-            gix::lock::acquire::Error::Io(source) => ActionError::git(op, "index", source),
-        })?;
-        let file = gix::index::File::at_or_default(
-            index_path,
-            repo.object_hash(),
-            false,
-            gix::index::decode::Options::default(),
-        )
-        .map_err(git_err(op, "index"))?;
-        Ok(Self { lock, file })
-    }
-
-    /// The index as read under the lock.
-    pub(in crate::actions) fn file(&self) -> &gix::index::File {
-        &self.file
-    }
-}
-
-/// Every strict ancestor directory of a path `changes` upserts. An index entry with one of these
-/// names is a file the new tree replaced with a directory, as git's add-with-replace drops it.
-fn file_ancestors_of_upserts<'a>(
-    changes: &BTreeMap<&'a BStr, &Option<(ObjectId, EntryKind, Stat)>>,
-) -> std::collections::BTreeSet<&'a BStr> {
-    changes
-        .iter()
-        .filter(|(_, change)| change.is_some())
-        .flat_map(|(path, _)| strict_ancestors(path))
-        .collect()
-}
-
-/// `a`, `a/b` for the path `a/b/c`: each proper prefix ending before a `/`.
-fn strict_ancestors(path: &BStr) -> impl Iterator<Item = &BStr> {
-    path.iter()
-        .enumerate()
-        .filter(|(_, byte)| **byte == b'/')
-        .map(move |(at, _)| path[..at].as_bstr())
-}
-
-/// Upserts the committed paths into `.git/index` — new blob id, mode, and the stat the caller
-/// took when it read or wrote the file — and removes deleted ones, leaving every other entry
-/// untouched. A changed path also drops the entries below it (a directory it replaced or that
-/// was removed as a whole) and an upserted one drops entries named like its ancestors (a file
-/// a directory replaced), as the rewritten tree did. Terminal `git status` then shows the
-/// committed paths as clean instead of staged reverse-modifications. The stale tree-cache extension is dropped rather than rewritten; git
-/// rebuilds it on demand. Written through the lock `index` holds, then committed over the index.
-///
-/// # Errors
-/// [`ActionError::Git`] naming `op` and `index` when the lock file cannot be written or
-/// renamed over the index.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-)]
-pub(in crate::actions) fn update_index(
-    index: LockedIndex,
-    op: &'static str,
-    changes: &[IndexChange],
-) -> ActionResult<()> {
-    let LockedIndex { lock, mut file } = index;
-    // One pass over the index for every changed path: a removal per path rescans the whole
-    // index, which costs seconds when a switch touches thousands of paths in a large one. The
-    // map keeps the last change per path, as applying them in order would.
-    let by_path: BTreeMap<&BStr, &Option<(ObjectId, EntryKind, Stat)>> = changes
-        .iter()
-        .map(|(path, change)| (path.as_bytes().as_bstr(), change))
-        .collect();
-    let replaced_files = file_ancestors_of_upserts(&by_path);
-    file.remove_entries(|_, entry_path, _| {
-        by_path.contains_key(entry_path)
-            || replaced_files.contains(entry_path)
-            || strict_ancestors(entry_path).any(|ancestor| by_path.contains_key(ancestor))
-    });
-    for (path, change) in &by_path {
-        if let Some((oid, kind, stat)) = change {
-            file.dangerously_push_entry(
-                *stat,
-                *oid,
-                gix::index::entry::Flags::empty(),
-                index_mode(*kind),
-                path,
-            );
-        }
-    }
-    file.sort_entries();
-    file.remove_tree();
-    let mut out = std::io::BufWriter::with_capacity(64 * 1024, lock);
-    file.write_to(&mut out, gix::index::write::Options::default())
-        .map_err(git_err(op, "index"))?;
-    let lock = out
-        .into_inner()
-        .map_err(|source| ActionError::git(op, "index", source.into_error()))?;
-    lock.commit()
-        .map_err(|source| ActionError::git(op, "index", source.error))?;
-    Ok(())
 }
 
 /// The index mode git records for a tree entry of `kind`.

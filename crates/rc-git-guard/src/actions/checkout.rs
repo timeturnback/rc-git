@@ -12,8 +12,9 @@ use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
-use super::commit::{LockedIndex, work_dir};
-use super::{ActionError, ActionResult, confirm, git_err, open, treeapply};
+use super::commit::work_dir;
+use super::write::Writer;
+use super::{ActionError, ActionResult, authorize, git_err, open, treeapply};
 use crate::{Action, Policy};
 
 const OP: &str = "checkout";
@@ -47,10 +48,11 @@ pub fn checkout_branch(
 ) -> ActionResult<CheckoutOutcome> {
     let repo = open(repo_path, OP, branch)?;
     super::refuse_any_operation_in_progress(&repo, OP)?;
-    let decision = policy.evaluate(&Action::Checkout {
+    let action = Action::Checkout {
         target: branch.to_owned(),
-    });
-    let _proof = confirm(decision, OP, branch, None)?;
+    };
+    let proof = authorize(policy, &action, OP, branch, None)?;
+    let writer = Writer::new(&repo, &proof);
 
     let full_name = format!("refs/heads/{branch}");
     let target = branch_tip(&repo, &full_name)?;
@@ -76,14 +78,14 @@ pub fn checkout_branch(
 
     let changes = treeapply::plan(repo_path, current, target, OP)?;
     let work_dir = work_dir(&repo, OP)?;
-    let index = LockedIndex::acquire(&repo, OP)?;
+    let index = writer.lock_index(OP)?;
     treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
-    let reflog = super::open_head_reflog(&repo, OP)?;
-    treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
-    point_head_at(&repo, &full_name, head.map(Target::Symbolic), current)?;
+    let reflog = writer.open_head_reflog(OP)?;
+    treeapply::apply(&writer, &work_dir, index, &changes, OP)?;
+    point_head_at(&writer, &full_name, head.map(Target::Symbolic), current)?;
     if let Some(file) = reflog {
         let message = format!("checkout: moving from {from} to {branch}");
-        super::append_head_reflog(&repo, file, (current, target), &message, OP)?;
+        writer.append_head_reflog(file, (current, target), &message, OP)?;
     }
     Ok(CheckoutOutcome {
         branch: branch.to_owned(),
@@ -110,7 +112,7 @@ fn branch_tip(repo: &gix::Repository, full_name: &str) -> ActionResult<ObjectId>
 /// that names a branch is covered by the symbolic expectation; with neither there is nothing
 /// to compare against, so the switch is refused.
 fn point_head_at(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     full_name: &str,
     previous_branch: Option<Target>,
     previous_commit: Option<ObjectId>,
@@ -127,7 +129,7 @@ fn point_head_at(
         &format!("rc-git: checkout: moving to {full_name}"),
         OP,
     )?;
-    super::apply_edit(repo, edit, OP, "HEAD")
+    writer.apply_edit(edit, OP, "HEAD")
 }
 
 /// A `HEAD` that names no branch and resolves to no commit: nothing to plan the switch from.

@@ -5,23 +5,30 @@ paths: crates/rc-git-guard/**
 
 # rc-git-guard
 
-The policy for every mutating action, and — in `actions.rs` — the only code in rc-git that
-performs one. Branch and tag management go through here; so does everything that comes later.
+The policy for every mutating action, and — in the `actions` module (`actions.rs` plus
+`actions/`) — the only code in rc-git that performs one. Branch and tag management go through
+here; so does everything that comes later.
 
-- Every mutation calls `Policy::evaluate` first and follows the `Decision`. The write only
-  happens while holding a `Confirmation`, and the only way to obtain one is
-  `Challenge::verify`, so the type system forces the typed-phrase step.
+- Every entry point calls `authorize` (actions.rs), which runs `Policy::authorize`: the policy
+  evaluates the `Action` itself and returns a `Confirmation` for an `Allow`, through
+  `Challenge::verify` for a `Confirm`, or the refusal. Every write is a method on
+  `actions/write.rs`'s `Writer`, built only by `Writer::new(repo, &confirmation)`, so the type
+  system forces the typed-phrase step. `Challenge` and `Confirmation` have fields private to
+  `policy.rs`; nothing else in the crate can build either one.
 - The front end renders decisions; it never classifies an action itself and never offers a
   one-click path around a challenge. The FFI passes the user's typed input through; the
   verification lives here.
 - `Deny` is final. Force-pushing, deleting, or rewriting published history on a protected
   branch is not confirmable inside rc-git; the message tells the user to use git directly.
 - A challenge with `backup_ref` writes a ref under `refs/rc-git/backup/<kind>/<name>` before
-  the action runs (numbered `-2`, `-3`, … so nothing is overwritten). `write_backup_ref` in
-  `actions.rs` is that one implementation; new destructive actions reuse it.
-- Ref edits go through `apply_edit`, which carries the `#[expect(clippy::disallowed_methods)]`
-  opt-out and a synthetic `rc-git` committer for the reflog. Do not call gix write APIs
-  anywhere else.
+  the action runs (numbered `-2`, `-3`, … so nothing is overwritten). `Writer::write_backup_ref`
+  is that one implementation, gated on `Writer::backup_required`; new destructive actions
+  reuse it.
+- Ref edits go through `Writer::apply_edit` (synthetic `rc-git` committer for the reflog).
+  Object, index, working-tree and reflog writes live beside it on the `Writer`, each behind its
+  own `#[expect(clippy::disallowed_methods, reason = ...)]`; nothing outside the `actions`
+  module writes, and `scripts/check.sh` fails on a write opt-out outside `actions/write.rs`.
+  A new write is a new `Writer` method.
 - Two hard rules live in the write path itself: never delete the checked-out branch, never
   create over an existing ref (`PreviousValue::MustNotExist`).
 - Anything that moves the working tree to another commit goes through `actions/treeapply.rs`:
@@ -36,8 +43,8 @@ performs one. Branch and tag management go through here; so does everything that
   (`docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md`).
 - A gix ref transaction writes no reflog for a symbolic update — it has no object id to log —
   and a direct branch edit logs only the branch, so checkout, commit and pull append their
-  line to `logs/HEAD` themselves through `open_head_reflog` (before the first write) and
-  `append_head_reflog` in `actions.rs`, only when the log already exists. Without it
+  line to `logs/HEAD` themselves through `Writer::open_head_reflog` (before the first write)
+  and `Writer::append_head_reflog`, only when the log already exists. Without it
   `git checkout -` and `HEAD@{1}` would silently point at the wrong commit.
 - Protected patterns default to `main`, `master`, `release/*`. Users may add patterns, never
   remove the defaults through the UI.

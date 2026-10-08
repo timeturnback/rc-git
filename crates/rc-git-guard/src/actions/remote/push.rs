@@ -11,7 +11,8 @@ use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
 use crate::actions::treeapply::core_oid;
-use crate::actions::{ActionError, ActionResult, confirm, open};
+use crate::actions::write::Writer;
+use crate::actions::{ActionError, ActionResult, authorize, open};
 use crate::{Action, Policy};
 
 use super::report::Report;
@@ -59,11 +60,11 @@ pub fn push_upstream(
     set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
     let (branch, tip) = current_branch(&repo, OP)?;
-    let decision = policy.evaluate(&Action::Push {
+    let action = Action::Push {
         branch: branch.clone(),
         force: false,
-    });
-    let _proof = confirm(decision, OP, &branch, None)?;
+    };
+    let proof = authorize(policy, &action, OP, &branch, None)?;
     bail_if_cancelled(cancel, OP)?;
     let tip = tip.ok_or_else(|| {
         ActionError::git(
@@ -127,7 +128,7 @@ pub fn push_upstream(
         &full_ref,
         &pack.bytes,
     )?;
-    update_tracking_ref(&repo, &remote_name, &branch, tip)?;
+    update_tracking_ref(&Writer::new(&repo, &proof), &remote_name, &branch, tip)?;
     Ok(PushOutcome {
         remote: remote_name,
         branch,
@@ -280,7 +281,7 @@ fn connect(
 /// Moves `refs/remotes/<remote>/<branch>` to the pushed tip so ahead/behind reads 0
 /// without another fetch.
 fn update_tracking_ref(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     remote: &str,
     branch: &str,
     tip: ObjectId,
@@ -293,5 +294,5 @@ fn update_tracking_ref(
         "rc-git: push",
         OP,
     )?;
-    crate::actions::apply_edit(repo, edit, OP, &full_name)
+    writer.apply_edit(edit, OP, &full_name)
 }

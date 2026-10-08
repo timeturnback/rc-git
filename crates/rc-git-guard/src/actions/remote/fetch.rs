@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use crate::actions::{ActionError, ActionResult, confirm, git_err, open};
+use crate::actions::write::Writer;
+use crate::actions::{ActionError, ActionResult, authorize, git_err, open};
 use crate::{Action, Policy};
 
 use super::{
@@ -46,12 +47,12 @@ pub fn fetch_upstream(
     auth: RemoteAuth<'_>,
     cancel: &Cancel,
 ) -> ActionResult<FetchOutcome> {
-    let decision = policy.evaluate(&Action::Fetch);
-    let _proof = confirm(decision, OP, "remote", None)?;
+    let proof = authorize(policy, &Action::Fetch, OP, "remote", None)?;
     bail_if_cancelled(cancel, OP)?;
     let mut repo = open(repo_path, OP, "repository")?;
     super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
+    let writer = Writer::new(&repo, &proof);
     let (branch, _tip) = current_branch(&repo, OP)?;
     let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
         op: OP,
@@ -91,7 +92,7 @@ pub fn fetch_upstream(
                 &remote_name,
                 cancel,
             )?);
-            run_fetch(connection, &remote_name, &host, cancel)?
+            run_fetch(&writer, connection, (&remote_name, &host), cancel)?
         }
         RemoteScheme::Ssh => {
             let transport = super::ssh::transport(
@@ -107,7 +108,7 @@ pub fn fetch_upstream(
                 reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
             )]
             let connection = remote.to_connection_with_transport(transport);
-            run_fetch(connection, &remote_name, &host, cancel)?
+            run_fetch(&writer, connection, (&remote_name, &host), cancel)?
         }
     };
 
@@ -150,11 +151,12 @@ fn timed_http_options(
 }
 
 /// Runs the prepared connection through negotiation and pack receive, mapping errors
-/// the same way for both transports.
+/// the same way for both transports. The receive writes the pack and the tracking refs, so it
+/// takes the action's `_writer` as proof the policy allowed it.
 fn run_fetch<T>(
+    _writer: &Writer<'_>,
     connection: gix::remote::Connection<'_, '_, '_, T>,
-    remote_name: &str,
-    host: &str,
+    (remote_name, host): (&str, &str),
     cancel: &Cancel,
 ) -> ActionResult<gix::remote::fetch::Outcome>
 where

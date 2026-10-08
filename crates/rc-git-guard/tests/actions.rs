@@ -123,9 +123,9 @@ fn deleting_a_merged_branch_needs_only_a_plain_confirm_and_no_backup() {
     let Decision::Confirm(challenge) = &plan.decision else {
         panic!("expected Confirm, got {:?}", plan.decision);
     };
-    assert_eq!(challenge.risk, Risk::Recoverable);
-    assert!(challenge.typed_phrase.is_none());
-    assert!(!challenge.backup_ref);
+    assert_eq!(challenge.risk(), Risk::Recoverable);
+    assert!(challenge.typed_phrase().is_none());
+    assert!(!challenge.backup_ref());
 
     let deleted = delete_branch(fx.path(), &policy, "old-work", None).unwrap();
     assert_eq!(deleted.full_name, "refs/heads/old-work");
@@ -144,8 +144,8 @@ fn deleting_an_unmerged_branch_demands_the_name_and_writes_a_backup() {
     let Decision::Confirm(challenge) = &plan.decision else {
         panic!("expected Confirm");
     };
-    assert_eq!(challenge.typed_phrase.as_deref(), Some("feature"));
-    assert!(challenge.backup_ref);
+    assert_eq!(challenge.typed_phrase(), Some("feature"));
+    assert!(challenge.backup_ref());
 
     let err = delete_branch(fx.path(), &policy, "feature", Some("wrong")).unwrap_err();
     assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");

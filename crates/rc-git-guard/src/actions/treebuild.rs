@@ -9,7 +9,8 @@ use gix::ObjectId;
 use gix::bstr::BString;
 use gix::objs::tree::{Entry, EntryKind};
 
-use super::{ActionError, ActionResult, git_err};
+use super::write::Writer;
+use super::{ActionError, ActionResult};
 
 /// The operation a path-insertion refusal names.
 const OP_BUILD: &str = "build tree";
@@ -106,22 +107,22 @@ fn only_removals(children: &BTreeMap<BString, Node>) -> bool {
 /// submodule's own repository, never as files of the superproject) and when a tree cannot be
 /// read or written.
 pub(super) fn rewrite(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     base: Option<ObjectId>,
     edits: &BTreeMap<BString, Node>,
 ) -> ActionResult<Option<ObjectId>> {
-    rewrite_dir(repo, base, "", edits)
+    rewrite_dir(writer, base, "", edits)
 }
 
 /// [`rewrite`] for the directory at `dir` (`""` for the root, otherwise ending in `/`).
 fn rewrite_dir(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     base: Option<ObjectId>,
     dir: &str,
     edits: &BTreeMap<BString, Node>,
 ) -> ActionResult<Option<ObjectId>> {
     let mut entries: Vec<Entry> = match base {
-        Some(id) => decode_entries(repo, id)?,
+        Some(id) => decode_entries(writer.repo(), id)?,
         None => Vec::new(),
     };
     for (name, node) in edits {
@@ -146,7 +147,7 @@ fn rewrite_dir(
                 let sub_base = existing
                     .filter(|entry| entry.mode.is_tree())
                     .map(|entry| entry.oid);
-                let rebuilt = rewrite_dir(repo, sub_base, &path, children)?;
+                let rebuilt = rewrite_dir(writer, sub_base, &path, children)?;
                 entries.retain(|entry| entry.filename != *name);
                 if let Some(oid) = rebuilt {
                     entries.push(Entry {
@@ -163,14 +164,7 @@ fn rewrite_dir(
     }
     entries.sort();
     let tree = gix::objs::Tree { entries };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    let oid = repo
-        .write_object(&tree)
-        .map_err(git_err(OP_BUILD, "tree"))?;
-    Ok(Some(oid.detach()))
+    writer.write_object(OP_BUILD, "tree", &tree).map(Some)
 }
 
 /// The refusal for an edit below the submodule at `dir` (ending in `/`), naming the first

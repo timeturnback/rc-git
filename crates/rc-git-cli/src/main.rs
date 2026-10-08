@@ -1325,12 +1325,13 @@ fn require_yes(args: &VerbArgs<'_>, action: &rc_git_guard::Action) -> Result<()>
     else {
         return Ok(());
     };
-    if challenge.typed_phrase.is_some() || args.has("--yes") {
+    if challenge.typed_phrase().is_some() || args.has("--yes") {
         return Ok(());
     }
     Err(usage_error(format!(
         "{} needs --yes to confirm: {}\n\n{USAGE}",
-        args.label, challenge.summary
+        args.label,
+        challenge.summary()
     )))
 }
 

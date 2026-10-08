@@ -123,8 +123,10 @@ a case-insensitive volume stores `MAIN` and `main` as one file, and the policy h
 repository to ask, so `Main` is protected on every volume. A `Deny` cannot be confirmed
 away inside rc-git; the message points the user at git itself. A `Confirm` produces a
 `Challenge`; only `Challenge::verify` — with the exact phrase when the challenge names one,
-which the rows above spell out — yields a `Confirmation`, and the
-write path holds one before it edits anything, so the compiler enforces the flow.
+which the rows above spell out — yields a `Confirmation` (an `Allow` yields one directly, from
+the policy's own evaluation). Every write is a method on the guard's `Writer`, which can only
+be built from a `Confirmation`, and nothing outside the policy can build one: the write path
+holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
 so no backup ever overwrites an earlier one. Two more rules live in the write path itself:

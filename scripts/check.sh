@@ -83,6 +83,14 @@ if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI
   echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
   exit 1
 fi
+step "guard write funnel"
+# Writes live on the guard's Writer (built only from a Confirmation); network I/O in remote/.
+if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |
+  grep -vE '^crates/rc-git-guard/src/actions/(write\.rs|remote\.rs|remote/)'; then
+  echo 'error: a disallowed-methods opt-out sits outside actions/write.rs and actions/remote;' \
+    'make the write a Writer method (see .claude/rules/guard.md)' >&2
+  exit 1
+fi
 step "swift line length"
 # swift-format's lineLength skips unbreakable string literals; C.UTF-8 counts characters, not bytes.
 if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \

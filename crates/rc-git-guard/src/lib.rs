@@ -1,12 +1,17 @@
-//! Decides what a user must do before rc-git runs a git action that can lose work.
+//! Decides what a user must do before rc-git runs a git action that can lose work, and runs
+//! the actions that pass.
 //!
 //! The rules live here, in one place, as data a test can enumerate. A front end asks
-//! [`Policy::evaluate`] and obeys the [`Decision`]; it never decides on its own. Nothing in
-//! rc-git mutates a repository today. When something will, its entry point takes a
-//! [`Confirmation`] for every [`Risk::Destructive`] action, and the only way to get one is
-//! [`Challenge::verify`].
+//! [`Policy::evaluate`] and obeys the [`Decision`]; it never decides on its own. [`actions`] is
+//! the one write path in rc-git: each entry point re-evaluates the policy and turns the
+//! caller's typed input into a [`Confirmation`] through [`Challenge::verify`] before anything
+//! is written, and every write primitive needs that proof. A [`Decision::Deny`] is final.
 
 pub mod actions;
+mod policy;
+
+pub(crate) use policy::Refusal;
+pub use policy::{Challenge, Confirmation, Policy};
 
 /// A git operation a user might ask for, described by what it would change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,37 +160,6 @@ impl Action {
     }
 }
 
-/// What the front end must collect before an action may run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Challenge {
-    /// Why the user is being asked.
-    pub risk: Risk,
-    /// One sentence saying what will happen.
-    pub summary: String,
-    /// Text the user must type exactly. `None` means a plain confirm button is enough.
-    pub typed_phrase: Option<String>,
-    /// Whether to record a backup ref under `refs/rc-git/backup/` before running, so the
-    /// previous state can be restored.
-    pub backup_ref: bool,
-}
-
-impl Challenge {
-    /// Checks the user's typed input. Surrounding whitespace is ignored; nothing else is.
-    #[must_use]
-    pub fn verify(&self, input: &str) -> Option<Confirmation> {
-        match &self.typed_phrase {
-            None => Some(Confirmation(())),
-            Some(phrase) if input.trim() == phrase => Some(Confirmation(())),
-            Some(_) => None,
-        }
-    }
-}
-
-/// Proof that a [`Challenge`] was answered. It cannot be built outside this crate, so a
-/// function that takes one cannot be called without going through [`Challenge::verify`].
-#[derive(Debug, PartialEq, Eq)]
-pub struct Confirmation(());
-
 /// The policy's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -198,160 +172,6 @@ pub enum Decision {
         /// Shown to the user.
         reason: String,
     },
-}
-
-/// Which branches are protected and what each action needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Policy {
-    protected: Vec<String>,
-}
-
-impl Default for Policy {
-    /// Protects `main`, `master`, and `release/*`.
-    fn default() -> Self {
-        Self::new(["main", "master", "release/*"])
-    }
-}
-
-impl Policy {
-    /// A policy protecting the given branch patterns: exact names, or `prefix/*` for a
-    /// namespace. `refs/heads/` is stripped from both patterns and queries.
-    pub fn new(patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        let mut protected = Vec::new();
-        for pattern in patterns {
-            protected.push(strip_heads(&pattern.into()).to_owned());
-        }
-        Self { protected }
-    }
-
-    /// Whether `branch` matches a protected pattern, ignoring ASCII case. A case-insensitive
-    /// volume stores `MAIN` and `main` as one file, and the policy has no repository to ask,
-    /// so it fails closed everywhere: in a repository holding both, `Main` is protected too.
-    #[must_use]
-    pub fn is_protected(&self, branch: &str) -> bool {
-        let branch = strip_heads(branch).as_bytes();
-        for pattern in &self.protected {
-            if let Some(prefix) = pattern.strip_suffix("/*") {
-                let prefix = prefix.as_bytes();
-                if branch.len() > prefix.len()
-                    && branch[..prefix.len()].eq_ignore_ascii_case(prefix)
-                    && branch[prefix.len()] == b'/'
-                {
-                    return true;
-                }
-            } else if pattern.as_bytes().eq_ignore_ascii_case(branch) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Decides what `action` needs. See `docs/safety.md` for the table this encodes.
-    #[must_use]
-    pub fn evaluate(&self, action: &Action) -> Decision {
-        let risk = action.risk();
-        match action {
-            Action::Fetch
-            | Action::CreateLocalBranch { .. }
-            | Action::CreateTag { .. }
-            | Action::Checkout { .. }
-            | Action::PullFastForward { .. }
-            | Action::Push { force: false, .. }
-            | Action::DiscardWorkingChanges { files: 0 }
-            | Action::Commit { .. }
-            | Action::StashApply => Decision::Allow,
-            Action::Push { branch, force: true } => {
-                if self.is_protected(branch) {
-                    return deny(&format!("force-pushing to protected branch '{branch}'"));
-                }
-                confirm(risk, format!("Overwrite '{branch}' on the remote with your local history."), Some(branch), false)
-            }
-            Action::DeleteLocalBranch { name, merged } => {
-                if self.is_protected(name) {
-                    return deny(&format!("deleting protected branch '{name}'"));
-                }
-                if *merged {
-                    return confirm(risk, format!("Delete branch '{name}'. Its commits stay reachable elsewhere."), None, false);
-                }
-                confirm(risk, format!("Delete branch '{name}' and its unmerged commits."), Some(name), true)
-            }
-            Action::DeleteRemoteBranch { name } => {
-                if self.is_protected(name) {
-                    return deny(&format!("deleting protected remote branch '{name}'"));
-                }
-                confirm(risk, format!("Delete '{name}' on the remote for everyone."), Some(name), true)
-            }
-            Action::DeleteTag { name } => {
-                confirm(risk, format!("Delete tag '{name}'."), Some(name), true)
-            }
-            Action::ResetHard { branch, commits_dropped } => confirm(
-                risk,
-                format!("Drop {commits_dropped} commit(s) from '{branch}' and every uncommitted change."),
-                Some(branch),
-                true,
-            ),
-            Action::RewriteHistory { branch, published } => {
-                if *published && self.is_protected(branch) {
-                    return deny(&format!("rewriting published history on protected branch '{branch}'"));
-                }
-                if *published {
-                    return confirm(risk, format!("Rewrite commits on '{branch}' that were already pushed."), Some(branch), true);
-                }
-                confirm(risk, format!("Rewrite local commits on '{branch}'. The reflog keeps the old ones."), None, true)
-            }
-            Action::DiscardWorkingChanges { files } => confirm(
-                risk,
-                format!("Discard uncommitted changes in {files} file(s). This cannot be undone."),
-                None,
-                false,
-            ),
-            Action::Prune => confirm(
-                risk,
-                "Delete unreachable objects. Nothing deleted before this can be recovered afterwards.".to_owned(),
-                Some("prune"),
-                false,
-            ),
-            Action::StashPush { files } => confirm(
-                risk,
-                format!("Stash the changes in {files} file(s) and restore them to HEAD content."),
-                None,
-                false,
-            ),
-            Action::StashPop { name } => confirm(
-                risk,
-                format!(
-                    "Apply {name} to the working tree and drop it once every file is restored."
-                ),
-                None,
-                true,
-            ),
-            Action::StashDrop { name } => confirm(
-                risk,
-                format!("Delete {name} without applying it. This cannot be undone."),
-                Some("drop"),
-                true,
-            ),
-        }
-    }
-}
-
-fn strip_heads(name: &str) -> &str {
-    name.strip_prefix("refs/heads/").unwrap_or(name)
-}
-
-fn confirm(risk: Risk, summary: String, typed_phrase: Option<&str>, backup_ref: bool) -> Decision {
-    Decision::Confirm(Challenge {
-        risk,
-        summary,
-        typed_phrase: typed_phrase.map(str::to_owned),
-        backup_ref,
-    })
-}
-
-fn deny(what: &str) -> Decision {
-    Decision::Deny {
-        reason: format!("rc-git never allows {what}. Use git directly if you are sure."),
-    }
 }
 
 #[cfg(test)]
@@ -449,7 +269,7 @@ mod tests {
         let policy = Policy::default();
         let push = challenge(policy.evaluate(&Action::StashPush { files: 2 }));
         assert_eq!(
-            (push.risk, push.typed_phrase.as_deref(), push.backup_ref),
+            (push.risk(), push.typed_phrase(), push.backup_ref()),
             (Risk::Recoverable, None, false),
             "the stash commit is the record; there is nothing else to back up"
         );
@@ -459,26 +279,26 @@ mod tests {
             name: "stash@{0} \"On main: wip\"".into(),
         }));
         assert_eq!(
-            (pop.risk, pop.typed_phrase.as_deref(), pop.backup_ref),
+            (pop.risk(), pop.typed_phrase(), pop.backup_ref()),
             (Risk::Recoverable, None, true)
         );
         assert!(
-            pop.summary.contains("stash@{0} \"On main: wip\""),
+            pop.summary().contains("stash@{0} \"On main: wip\""),
             "{}",
-            pop.summary
+            pop.summary()
         );
 
         let drop = challenge(policy.evaluate(&Action::StashDrop {
             name: "stash@{1} \"On main: wip\"".into(),
         }));
         assert_eq!(
-            (drop.risk, drop.typed_phrase.as_deref(), drop.backup_ref),
+            (drop.risk(), drop.typed_phrase(), drop.backup_ref()),
             (Risk::Destructive, Some("drop"), true)
         );
         assert!(
-            drop.summary.contains("stash@{1} \"On main: wip\""),
+            drop.summary().contains("stash@{1} \"On main: wip\""),
             "{}",
-            drop.summary
+            drop.summary()
         );
         assert!(drop.verify("drop").is_some());
         assert!(drop.verify("Drop").is_none());
@@ -491,8 +311,8 @@ mod tests {
             branch: "topic".into(),
             force: true,
         }));
-        assert_eq!(c.risk, Risk::Destructive);
-        assert_eq!(c.typed_phrase.as_deref(), Some("topic"));
+        assert_eq!(c.risk(), Risk::Destructive);
+        assert_eq!(c.typed_phrase(), Some("topic"));
         assert!(c.verify("topic").is_some());
         assert!(c.verify("  topic\n").is_some());
         assert!(c.verify("Topic").is_none());
@@ -513,11 +333,7 @@ mod tests {
             merged: true,
         }));
         assert_eq!(
-            (
-                merged.risk,
-                merged.typed_phrase.as_deref(),
-                merged.backup_ref
-            ),
+            (merged.risk(), merged.typed_phrase(), merged.backup_ref()),
             (Risk::Recoverable, None, false)
         );
         assert!(
@@ -529,9 +345,9 @@ mod tests {
             name: "topic".into(),
             merged: false,
         }));
-        assert_eq!(unmerged.risk, Risk::Destructive);
-        assert_eq!(unmerged.typed_phrase.as_deref(), Some("topic"));
-        assert!(unmerged.backup_ref);
+        assert_eq!(unmerged.risk(), Risk::Destructive);
+        assert_eq!(unmerged.typed_phrase(), Some("topic"));
+        assert!(unmerged.backup_ref());
 
         for name in ["main", "MAIN", "Release/2.0"] {
             assert!(
@@ -554,12 +370,12 @@ mod tests {
         let remote = challenge(policy.evaluate(&Action::DeleteRemoteBranch {
             name: "topic".into(),
         }));
-        assert_eq!(remote.typed_phrase.as_deref(), Some("topic"));
+        assert_eq!(remote.typed_phrase(), Some("topic"));
         let tag = challenge(policy.evaluate(&Action::DeleteTag {
             name: "v1.0".into(),
         }));
         assert_eq!(
-            (tag.risk, tag.typed_phrase.as_deref()),
+            (tag.risk(), tag.typed_phrase()),
             (Risk::Destructive, Some("v1.0"))
         );
     }
@@ -572,7 +388,7 @@ mod tests {
             published: false,
         }));
         assert_eq!(
-            (local.risk, local.typed_phrase.as_deref(), local.backup_ref),
+            (local.risk(), local.typed_phrase(), local.backup_ref()),
             (Risk::Recoverable, None, true)
         );
 
@@ -580,8 +396,8 @@ mod tests {
             branch: "topic".into(),
             published: true,
         }));
-        assert_eq!(published.risk, Risk::Destructive);
-        assert_eq!(published.typed_phrase.as_deref(), Some("topic"));
+        assert_eq!(published.risk(), Risk::Destructive);
+        assert_eq!(published.typed_phrase(), Some("topic"));
 
         assert!(matches!(
             policy.evaluate(&Action::RewriteHistory {
@@ -606,24 +422,24 @@ mod tests {
             branch: "main".into(),
             commits_dropped: 2,
         }));
-        assert_eq!(reset.typed_phrase.as_deref(), Some("main"));
-        assert!(reset.backup_ref);
-        assert!(reset.summary.contains("2 commit(s)"));
+        assert_eq!(reset.typed_phrase(), Some("main"));
+        assert!(reset.backup_ref());
+        assert!(reset.summary().contains("2 commit(s)"));
 
         let discard = challenge(policy.evaluate(&Action::DiscardWorkingChanges { files: 3 }));
         assert_eq!(
-            (discard.risk, discard.typed_phrase.as_deref()),
+            (discard.risk(), discard.typed_phrase()),
             (Risk::Destructive, None),
             "discard is destructive, but a plain confirm answers it"
         );
         assert!(
-            !discard.backup_ref,
+            !discard.backup_ref(),
             "uncommitted changes have nothing to back up into a ref"
         );
 
         let prune = challenge(policy.evaluate(&Action::Prune));
         assert_eq!(
-            (prune.risk, prune.typed_phrase.as_deref()),
+            (prune.risk(), prune.typed_phrase()),
             (Risk::Destructive, Some("prune"))
         );
     }
@@ -648,5 +464,51 @@ mod tests {
             reason,
             "rc-git never allows force-pushing to protected branch 'master'. Use git directly if you are sure."
         );
+    }
+
+    #[test]
+    fn authorize_turns_each_decision_into_proof_or_a_refusal() {
+        let policy = Policy::default();
+        let allowed = policy.authorize(&Action::Fetch, None).unwrap();
+        assert!(
+            !allowed.backup_ref(),
+            "an allowed action has nothing to back up"
+        );
+
+        let delete = Action::DeleteTag {
+            name: "v1".to_owned(),
+        };
+        assert_eq!(
+            policy.authorize(&delete, None),
+            Err(Refusal::NotConfirmed),
+            "a typed phrase is not answered by no input"
+        );
+        assert_eq!(
+            policy.authorize(&delete, Some("v2")),
+            Err(Refusal::NotConfirmed)
+        );
+        let confirmed = policy.authorize(&delete, Some(" v1\n")).unwrap();
+        assert!(
+            confirmed.backup_ref(),
+            "the proof carries the challenge's backup request"
+        );
+
+        let force = Action::Push {
+            branch: "main".to_owned(),
+            force: true,
+        };
+        let Err(Refusal::Denied(reason)) = policy.authorize(&force, Some("main")) else {
+            panic!("a denied action must stay denied whatever is typed");
+        };
+        assert!(reason.contains("Use git directly"), "{reason}");
+    }
+
+    #[test]
+    fn a_plain_confirm_needs_no_input_and_keeps_its_backup_request() {
+        let pop = Action::StashPop {
+            name: "stash@{0} \"On main: wip\"".to_owned(),
+        };
+        let proof = Policy::default().authorize(&pop, None).unwrap();
+        assert!(proof.backup_ref());
     }
 }

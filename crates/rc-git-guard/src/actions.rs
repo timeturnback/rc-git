@@ -1,7 +1,9 @@
-//! The one write path in rc-git. Every mutation here first asks [`Policy::evaluate`] and,
-//! for a destructive decision, proves the challenge was answered by constructing a
-//! [`Confirmation`] through [`Challenge::verify`]. Destructive deletions write a backup ref
-//! under `refs/rc-git/backup/` before anything is removed.
+//! The one write path in rc-git. Every entry point here re-evaluates the policy for its
+//! [`Action`] and turns the caller's input into a [`Confirmation`] (through
+//! [`Challenge::verify`](crate::Challenge::verify) when the decision is a challenge) before
+//! anything is written; every write is a method on a `Writer`, which only that proof can
+//! build. Destructive deletions write a backup ref under `refs/rc-git/backup/` before anything
+//! is removed.
 //!
 //! Repositories open isolated, exactly as the read-only core does: only the repository's own
 //! configuration is consulted.
@@ -11,7 +13,7 @@ use std::path::Path;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
-use crate::{Action, Challenge, Confirmation, Decision, Policy, Risk};
+use crate::{Action, Confirmation, Decision, Policy, Refusal};
 
 mod checkout;
 mod commit;
@@ -21,6 +23,9 @@ mod stash;
 mod treeapply;
 mod treebuild;
 mod workfile;
+mod write;
+
+use write::Writer;
 
 pub use checkout::{CheckoutOutcome, checkout_branch};
 pub use commit::{Committed, commit, configured_identity};
@@ -101,17 +106,6 @@ pub(super) const REFLOG_NAME: &str = "rc-git";
 /// Reflog committer email paired with [`REFLOG_NAME`].
 pub(super) const REFLOG_EMAIL: &str = "rc-git@localhost";
 
-/// Applies one ref edit as the synthetic `rc-git` committer, so reflog entries never depend
-/// on user configuration the isolated open refuses to read.
-fn apply_edit(
-    repo: &gix::Repository,
-    edit: RefEdit,
-    op: &'static str,
-    name: &str,
-) -> ActionResult<()> {
-    apply_edit_as(repo, edit, op, name, REFLOG_NAME, REFLOG_EMAIL)
-}
-
 /// A direct (never dereferenced) update of `full_name` to `new` that logs `message` to the
 /// ref's reflog, provided one exists.
 ///
@@ -156,99 +150,6 @@ fn delete_edit(
         name: full_name.try_into().map_err(git_err(op, full_name))?,
         deref: false,
     })
-}
-
-/// Opens `logs/HEAD` for append before anything is written, so an action that moves the
-/// checked-out commit refuses up front when it could not log the move, instead of failing
-/// after the ref has moved. `None` when the log does not exist: it is appended only when it
-/// already exists, which is what `force_create_reflog: false` means on every ref edit.
-///
-/// # Errors
-/// [`ActionError::Git`] naming `op` and `logs/HEAD` when the log exists but cannot be opened.
-fn open_head_reflog(
-    repo: &gix::Repository,
-    op: &'static str,
-) -> ActionResult<Option<std::fs::File>> {
-    let path = repo.git_dir().join("logs").join("HEAD");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    let opened = std::fs::OpenOptions::new().append(true).open(&path);
-    match opened {
-        Ok(file) => Ok(Some(file)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(git_err(op, "logs/HEAD")(err)),
-    }
-}
-
-/// Appends the line git writes to `logs/HEAD` whenever the checked-out commit moves. A ref
-/// transaction will not write it: a symbolic update of `HEAD` carries no object id, and a
-/// direct update of the branch logs only the branch. The line is serialized by gix's own
-/// reflog writer and carries the same synthetic `rc-git` committer as every other ref edit.
-///
-/// # Errors
-/// [`ActionError::Git`] naming `op` and `logs/HEAD` when the line cannot be written.
-fn append_head_reflog(
-    repo: &gix::Repository,
-    mut file: std::fs::File,
-    (old, new): (Option<gix::ObjectId>, gix::ObjectId),
-    message: &str,
-    op: &'static str,
-) -> ActionResult<()> {
-    use std::io::Write;
-    let line = gix::refs::log::Line {
-        previous_oid: old.unwrap_or_else(|| gix::ObjectId::null(repo.object_hash())),
-        new_oid: new,
-        signature: gix::actor::Signature {
-            name: REFLOG_NAME.into(),
-            email: REFLOG_EMAIL.into(),
-            time: gix::date::Time::now_local_or_utc(),
-        },
-        message: message.into(),
-    };
-    let mut serialized = Vec::new();
-    line.write_to(&mut serialized)
-        .map_err(git_err(op, "logs/HEAD"))?;
-    file.write_all(&serialized)
-        .map_err(git_err(op, "logs/HEAD"))
-}
-
-/// Applies one ref edit with an explicit reflog committer. The stash uses the user's own
-/// identity here because `git stash list` shows the reflog's author; everything else goes
-/// through [`apply_edit`].
-fn apply_edit_as(
-    repo: &gix::Repository,
-    edit: RefEdit,
-    op: &'static str,
-    name: &str,
-    committer_name: &str,
-    committer_email: &str,
-) -> ActionResult<()> {
-    if let Change::Update { log, .. } = &edit.change
-        && log.message.contains(&b'\n')
-    {
-        return Err(ActionError::git(
-            op,
-            name,
-            "the reflog message spans more than one line",
-        ));
-    }
-    let time = gix::date::Time::now_local_or_utc()
-        .format(gix::date::time::Format::Raw)
-        .unwrap_or_else(|_| "0 +0000".to_owned());
-    let committer = gix::actor::SignatureRef {
-        name: committer_name.into(),
-        email: committer_email.into(),
-        time: &time,
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    repo.edit_references_as(Some(edit), Some(committer))
-        .map_err(git_err(op, name))?;
-    Ok(())
 }
 
 /// Why a mutation was not performed.
@@ -540,12 +441,13 @@ pub fn create_branch(
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
-    let decision = policy.evaluate(&Action::CreateLocalBranch {
+    let action = Action::CreateLocalBranch {
         name: name.to_owned(),
-    });
-    let _proof = confirm(decision, "create branch", name, None)?;
+    };
+    let proof = authorize(policy, &action, "create branch", name, None)?;
     create_ref(
         repo_path,
+        &proof,
         "create branch",
         &format!("refs/heads/{name}"),
         revspec,
@@ -562,12 +464,13 @@ pub fn create_tag(
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
-    let decision = policy.evaluate(&Action::CreateTag {
+    let action = Action::CreateTag {
         name: name.to_owned(),
-    });
-    let _proof = confirm(decision, "create tag", name, None)?;
+    };
+    let proof = authorize(policy, &action, "create tag", name, None)?;
     create_ref(
         repo_path,
+        &proof,
         "create tag",
         &format!("refs/tags/{name}"),
         revspec,
@@ -619,12 +522,17 @@ pub fn delete_branch(
         });
     }
     let merged = branch_is_merged(&repo, name)?;
-    let decision = policy.evaluate(&Action::DeleteLocalBranch {
+    let action = Action::DeleteLocalBranch {
         name: name.to_owned(),
         merged,
-    });
-    let confirmation = confirm(decision, OP, name, input)?;
-    delete_ref(&repo, OP, &full_name, "branch", name, confirmation)
+    };
+    let proof = authorize(policy, &action, OP, name, input)?;
+    delete_ref(
+        &Writer::new(&repo, &proof),
+        OP,
+        &full_name,
+        ("branch", name),
+    )
 }
 
 /// Deletes a tag. Always destructive under the policy: `input` must match the tag name.
@@ -643,48 +551,35 @@ pub fn delete_tag(
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/tags/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
-    let decision = policy.evaluate(&Action::DeleteTag {
+    let action = Action::DeleteTag {
         name: name.to_owned(),
-    });
-    let confirmation = confirm(decision, OP, name, input)?;
-    delete_ref(&repo, OP, &full_name, "tag", name, confirmation)
+    };
+    let proof = authorize(policy, &action, OP, name, input)?;
+    delete_ref(&Writer::new(&repo, &proof), OP, &full_name, ("tag", name))
 }
 
-/// Turns a decision plus the user's input into proof, or the matching error.
-fn confirm(
-    decision: Decision,
+/// Asks `policy` about `action` and turns the user's `input` into the proof every write
+/// needs, or the matching error naming `op` and `name`.
+///
+/// # Errors
+/// [`ActionError::Denied`] when the policy forbids the action, [`ActionError::NotConfirmed`]
+/// when the input does not answer its challenge.
+fn authorize(
+    policy: &Policy,
+    action: &Action,
     op: &'static str,
     name: &str,
     input: Option<&str>,
-) -> ActionResult<(Challenge, Confirmation)> {
-    match decision {
-        Decision::Allow => {
-            // Allow never happens for deletions today; treat it as a no-phrase challenge so
-            // the write path still owns a Confirmation.
-            let challenge = Challenge {
-                risk: Risk::Safe,
-                summary: String::new(),
-                typed_phrase: None,
-                backup_ref: false,
-            };
-            let confirmation = challenge.verify("").ok_or(ActionError::NotConfirmed {
+) -> ActionResult<Confirmation> {
+    policy
+        .authorize(action, input)
+        .map_err(|refusal| match refusal {
+            Refusal::Denied(reason) => ActionError::Denied { reason },
+            Refusal::NotConfirmed => ActionError::NotConfirmed {
                 op,
                 name: name.to_owned(),
-            })?;
-            Ok((challenge, confirmation))
-        }
-        Decision::Confirm(challenge) => {
-            let confirmation =
-                challenge
-                    .verify(input.unwrap_or(""))
-                    .ok_or(ActionError::NotConfirmed {
-                        op,
-                        name: name.to_owned(),
-                    })?;
-            Ok((challenge, confirmation))
-        }
-        Decision::Deny { reason } => Err(ActionError::Denied { reason }),
-    }
+            },
+        })
 }
 
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {
@@ -766,6 +661,7 @@ fn refuse_in_progress(
 
 fn create_ref(
     repo_path: &Path,
+    proof: &Confirmation,
     op: &'static str,
     full_name: &str,
     revspec: &str,
@@ -783,22 +679,23 @@ fn create_ref(
         &format!("rc-git: {op}"),
         op,
     )?;
-    apply_edit(&repo, edit, op, full_name)
+    Writer::new(&repo, proof).apply_edit(edit, op, full_name)
 }
 
+/// Deletes `full_name`, first writing a backup ref under `refs/rc-git/backup/<kind>/<name>`
+/// for the `(kind, name)` given when the answered challenge asked for one.
 fn delete_ref(
-    repo: &gix::Repository,
+    writer: &Writer<'_>,
     op: &'static str,
     full_name: &str,
-    backup_kind: &str,
-    short_name: &str,
-    (challenge, _confirmation): (Challenge, Confirmation),
+    (backup_kind, short_name): (&str, &str),
 ) -> ActionResult<Deleted> {
-    let reference = repo
+    let reference = writer
+        .repo()
         .find_reference(full_name)
         .map_err(git_err(op, full_name))?;
     let target = reference.target().into_owned();
-    let backup = if challenge.backup_ref {
+    let backup = if writer.backup_required() {
         let target_id = match target.clone() {
             Target::Object(id) => id,
             Target::Symbolic(_) => reference
@@ -807,51 +704,17 @@ fn delete_ref(
                 .map_err(git_err(op, full_name))?
                 .detach(),
         };
-        Some(write_backup_ref(repo, backup_kind, short_name, target_id)?)
+        Some(writer.write_backup_ref(backup_kind, short_name, target_id)?)
     } else {
         None
     };
     drop(reference);
     let edit = delete_edit(full_name, PreviousValue::MustExistAndMatch(target), op)?;
-    apply_edit(repo, edit, op, full_name)?;
+    writer.apply_edit(edit, op, full_name)?;
     Ok(Deleted {
         full_name: full_name.to_owned(),
         backup_ref: backup,
     })
-}
-
-/// Writes `refs/rc-git/backup/<kind>/<name>` pointing at `target`, appending `-2`, `-3`, …
-/// when earlier backups of the same name exist, so nothing is ever overwritten.
-fn write_backup_ref(
-    repo: &gix::Repository,
-    kind: &str,
-    name: &str,
-    target: gix::ObjectId,
-) -> ActionResult<String> {
-    const OP: &str = "write backup ref";
-    for attempt in 1..=1000_u32 {
-        let candidate = if attempt == 1 {
-            format!("refs/rc-git/backup/{kind}/{name}")
-        } else {
-            format!("refs/rc-git/backup/{kind}/{name}-{attempt}")
-        };
-        let edit = update_edit(
-            &candidate,
-            PreviousValue::MustNotExist,
-            Target::Object(target),
-            "rc-git: backup before deletion",
-            OP,
-        )?;
-        match apply_edit(repo, edit, OP, &candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(error) => {
-                if attempt == 1000 {
-                    return Err(error);
-                }
-            }
-        }
-    }
-    unreachable!("the loop always returns")
 }
 
 /// Whether every commit of `name` is reachable from another local branch or `HEAD`.
