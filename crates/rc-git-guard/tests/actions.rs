@@ -446,6 +446,50 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_file_inside_a_checked_out_submodule_is_refused_and_the_gitlink_kept() {
+        let upstream = Fixture::standard();
+        let fx = Fixture::standard();
+        let source = upstream.path().to_string_lossy().into_owned();
+        fx.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &source,
+            "sub",
+        ]);
+        fx.git(&["commit", "-q", "-m", "add submodule"]);
+        fx.write("sub/alpha.txt", b"edited inside the submodule\n");
+        fx.write("alpha.txt", b"edited in the superproject\n");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "into a submodule",
+            explicit(),
+            Some(commit_id(&head)),
+            &[whole("alpha.txt"), whole("sub/alpha.txt")],
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(
+            err.to_string().contains("'sub/alpha.txt'")
+                && err.to_string().contains("inside submodule 'sub'"),
+            "{err}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head);
+        assert_eq!(ls_tree_mode(&fx, "sub"), "160000");
+        assert_eq!(
+            fx.git_output(&["diff", "--cached", "--name-only"]),
+            "",
+            "the index is untouched"
+        );
+    }
+
+    #[test]
     fn a_mis_cased_selection_is_refused_and_head_is_unchanged() {
         let fx = Fixture::standard();
         fx.git(&["config", "core.ignorecase", "true"]);

@@ -97,15 +97,29 @@ fn only_removals(children: &BTreeMap<BString, Node>) -> bool {
     })
 }
 
-/// Rewrites the tree at `base` with `edits`, writing each rebuilt tree object, and returns
-/// the new root; `None` when everything was removed. `base` is `None` for a directory that
-/// does not exist yet.
+/// Rewrites the root tree `base` with `edits`, writing each rebuilt tree object, and returns
+/// the new root; `None` when everything was removed. `base` is `None` for a repository with
+/// no commit yet.
+///
+/// # Errors
+/// [`ActionError::Git`] when an edit lies inside a submodule (git keeps those in the
+/// submodule's own repository, never as files of the superproject) and when a tree cannot be
+/// read or written.
 pub(super) fn rewrite(
     repo: &gix::Repository,
     base: Option<ObjectId>,
     edits: &BTreeMap<BString, Node>,
 ) -> ActionResult<Option<ObjectId>> {
-    const OP: &str = "build tree";
+    rewrite_dir(repo, base, "", edits)
+}
+
+/// [`rewrite`] for the directory at `dir` (`""` for the root, otherwise ending in `/`).
+fn rewrite_dir(
+    repo: &gix::Repository,
+    base: Option<ObjectId>,
+    dir: &str,
+    edits: &BTreeMap<BString, Node>,
+) -> ActionResult<Option<ObjectId>> {
     let mut entries: Vec<Entry> = match base {
         Some(id) => decode_entries(repo, id)?,
         None => Vec::new(),
@@ -124,11 +138,15 @@ pub(super) fn rewrite(
                 });
             }
             Node::Dir(children) => {
-                let sub_base = entries
-                    .iter()
-                    .find(|entry| entry.filename == *name && entry.mode.is_tree())
+                let path = format!("{dir}{name}/");
+                let existing = entries.iter().find(|entry| entry.filename == *name);
+                if existing.is_some_and(|entry| entry.mode.is_commit()) {
+                    return Err(inside_submodule(&path, children));
+                }
+                let sub_base = existing
+                    .filter(|entry| entry.mode.is_tree())
                     .map(|entry| entry.oid);
-                let rebuilt = rewrite(repo, sub_base, children)?;
+                let rebuilt = rewrite_dir(repo, sub_base, &path, children)?;
                 entries.retain(|entry| entry.filename != *name);
                 if let Some(oid) = rebuilt {
                     entries.push(Entry {
@@ -149,8 +167,33 @@ pub(super) fn rewrite(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
     )]
-    let oid = repo.write_object(&tree).map_err(git_err(OP, "tree"))?;
+    let oid = repo
+        .write_object(&tree)
+        .map_err(git_err(OP_BUILD, "tree"))?;
     Ok(Some(oid.detach()))
+}
+
+/// The refusal for an edit below the submodule at `dir` (ending in `/`), naming the first
+/// selected path inside it.
+fn inside_submodule(dir: &str, children: &BTreeMap<BString, Node>) -> ActionError {
+    let mut path = dir.to_owned();
+    let mut level = children;
+    while let Some((name, node)) = level.iter().next() {
+        path.push_str(&name.to_string());
+        match node {
+            Node::Leaf(_) => break,
+            Node::Dir(grandchildren) => {
+                path.push('/');
+                level = grandchildren;
+            }
+        }
+    }
+    let submodule = dir.trim_end_matches('/');
+    ActionError::git(
+        OP_BUILD,
+        path,
+        format!("is inside submodule '{submodule}'; commit it in the submodule"),
+    )
 }
 
 fn decode_entries(repo: &gix::Repository, tree: ObjectId) -> ActionResult<Vec<Entry>> {

@@ -163,7 +163,9 @@ The Changes tab's write paths add their own guarantees:
   `d/payload`) is refused from the plan, since a case-insensitive volume would resolve that
   directory to the new link. Under `core.ignoreCase`, a commit or stash refuses a selected
   path that matches a file on disk or an entry in `HEAD` only by case (`F` for `f`), naming
-  both spellings, instead of storing the bytes under a second name.
+  both spellings, instead of storing the bytes under a second name. A commit or stash of a
+  path inside a submodule (`sub/x` where `HEAD` records `sub` as a gitlink) is refused, as
+  `git add` refuses it, instead of replacing the submodule pointer with a directory.
 - **Discard** and stash restores write through one helper that re-checks every parent
   directory at write time and removes the old file first, so no write follows a symlink,
   whether at the last segment or above it, and deleting an already-gone file is not an
