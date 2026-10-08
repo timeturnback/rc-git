@@ -504,7 +504,57 @@ fn path_history_still_fails_on_a_missing_parent_outside_a_shallow_clone() {
     fx.remove(&format!(".git/objects/{}/{}", &root[..2], &root[2..]));
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    assert!(repo.path_history(tip, "file.txt", 0, 100, 1000).is_err());
+    let err = repo
+        .path_history(tip, "file.txt", 0, 100, 1000)
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Object { op: "read commit", oid, .. } if oid.to_string() == root),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn path_history_reports_an_unreadable_tree() {
+    let fx = merge_fixture();
+    let root_tree = fx.rev_parse("main~3^{tree}");
+    fx.remove(&format!(
+        ".git/objects/{}/{}",
+        &root_tree[..2],
+        &root_tree[2..]
+    ));
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let err = repo
+        .path_history(tip, "file.txt", 0, 100, 1000)
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Object { op: "read tree", oid, .. }
+            if oid.to_string() == root_tree),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains(&root_tree), "{err}");
+}
+
+#[test]
+fn search_rejects_a_non_commit_tip() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("main").unwrap();
+    let err = repo
+        .search_commits(tree, &CommitFilter::default(), 0, 100, 1000)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                op: "read commit",
+                expected: ObjectKind::Commit,
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]

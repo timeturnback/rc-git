@@ -272,6 +272,43 @@ fn a_failed_tree_diff_names_the_compared_tree() {
 }
 
 #[test]
+fn diff_and_blame_report_absent_objects() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let hex = "1".repeat(40);
+    let absent = oid(&hex);
+    let main = repo.resolve_tree("main").unwrap();
+    let errors = [
+        (
+            "read blob header",
+            repo.diff_blobs(Some(absent), None, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)
+                .unwrap_err(),
+        ),
+        (
+            "read object header",
+            repo.diff_trees(Some(absent), main).unwrap_err(),
+        ),
+        (
+            "read object header",
+            repo.diff_trees(None, absent).unwrap_err(),
+        ),
+        (
+            "read object header",
+            repo.blame(absent, "README.md", DEFAULT_BLOB_LIMIT, None)
+                .unwrap_err(),
+        ),
+    ];
+    for (op, err) in errors {
+        assert!(
+            matches!(&err, Error::Object { op: actual, oid, .. } if *actual == op && *oid == absent),
+            "{op}: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.starts_with(&format!("{op}: object {hex}: ")), "{msg}");
+    }
+}
+
+#[test]
 fn blob_diff_produces_unified_hunks() {
     let fx = diff_fixture();
     let repo = Repository::open(fx.path()).unwrap();

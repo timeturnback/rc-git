@@ -652,6 +652,17 @@ fn reads_of_an_absent_object_name_the_operation_and_oid() {
         ),
         ("read blob header", repo.blob_size(absent).unwrap_err()),
         ("read object header", repo.commit(absent).unwrap_err()),
+        (
+            "read object header",
+            repo.commit_details(absent).unwrap_err(),
+        ),
+        ("read object header", repo.log(absent, 0, 10).unwrap_err()),
+        ("read object header", repo.tree_of(absent).unwrap_err()),
+        ("read tree", repo.tree_entries(absent).unwrap_err()),
+        (
+            "read tree",
+            repo.entry_at_path(absent, "README.md").unwrap_err(),
+        ),
     ];
     for (op, err) in errors {
         assert!(
@@ -845,6 +856,20 @@ fn log_follows_an_annotated_tag_tip() {
             ..
         }
     ));
+    let tree = repo.resolve_tree("main").unwrap();
+    let err = repo.log(tree, 0, 10).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                op: "read commit",
+                expected: ObjectKind::Commit,
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]
