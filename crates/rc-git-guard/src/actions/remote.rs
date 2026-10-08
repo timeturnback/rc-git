@@ -259,7 +259,7 @@ fn current_branch(
         .map_err(git_err(op, "HEAD"))?
         .ok_or(ActionError::DetachedHead { op })?;
     let branch = head_name.shorten().to_string();
-    let tip = repo.head_id().ok().map(gix::Id::detach);
+    let tip = super::head_commit(repo, op)?;
     Ok((branch, tip))
 }
 

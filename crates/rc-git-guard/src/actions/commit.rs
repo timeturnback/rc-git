@@ -207,7 +207,7 @@ pub(super) fn checked_out_branch(
         .head_name()
         .map_err(git_err(op, "HEAD"))?
         .ok_or(ActionError::DetachedHead { op })?;
-    let commit = repo.head_id().ok().map(gix::Id::detach);
+    let commit = super::head_commit(repo, op)?;
     Ok((head_name.as_bstr().to_string(), commit))
 }
 

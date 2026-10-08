@@ -383,6 +383,17 @@ where
     move |source| ActionError::git(op, name, source)
 }
 
+/// The commit `HEAD` resolves to; `None` only on an unborn branch. A `HEAD` that cannot be
+/// read or peeled (a missing commit, a broken ref) is an error, never mistaken for unborn.
+pub(crate) fn head_commit(
+    repo: &gix::Repository,
+    op: &'static str,
+) -> ActionResult<Option<gix::ObjectId>> {
+    let head = repo.head().map_err(git_err(op, "HEAD"))?;
+    let commit = head.try_into_peeled_id().map_err(git_err(op, "HEAD"))?;
+    Ok(commit.map(gix::Id::detach))
+}
+
 /// Result alias for this module.
 pub type ActionResult<T> = Result<T, ActionError>;
 
@@ -531,7 +542,7 @@ pub fn delete_branch(
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
-    if let Ok(Some(head_name)) = repo.head_name()
+    if let Some(head_name) = repo.head_name().map_err(git_err(OP, "HEAD"))?
         && head_name
             .as_bstr()
             .eq_ignore_ascii_case(full_name.as_bytes())

@@ -13,7 +13,7 @@ use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
 use super::commit::{LockedIndex, work_dir};
-use super::{ActionResult, confirm, git_err, open, treeapply};
+use super::{ActionError, ActionResult, confirm, git_err, open, treeapply};
 use crate::{Action, Policy};
 
 const OP: &str = "checkout";
@@ -67,17 +67,18 @@ pub fn checkout_branch(
             already_on_branch: true,
         });
     }
-    let current = repo.head_id().ok().map(gix::Id::detach);
+    let current = super::head_commit(&repo, OP)?;
+    let from = match (&head, current) {
+        (Some(name), _) => name.shorten().to_string(),
+        (None, Some(commit)) => commit.to_string(),
+        (None, None) => return Err(neither_branch_nor_commit()),
+    };
 
     let changes = treeapply::plan(repo_path, current, target, OP)?;
     let work_dir = work_dir(&repo, OP)?;
     let index = LockedIndex::acquire(&repo, OP)?;
     treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
     treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
-    let from = head.as_ref().map_or_else(
-        || current.map_or_else(|| "an unborn HEAD".to_owned(), |commit| commit.to_string()),
-        |name| name.shorten().to_string(),
-    );
     point_head_at(&repo, &full_name, head.map(Target::Symbolic), current)?;
     log_head_switch(&repo, &from, branch, current, target)?;
     Ok(CheckoutOutcome {
@@ -102,8 +103,8 @@ fn branch_tip(repo: &gix::Repository, full_name: &str) -> ActionResult<ObjectId>
 
 /// Rewrites `HEAD` to point at `full_name`, insisting it still holds what the switch was
 /// planned against: the branch it was on, or the commit it was detached at. An unborn `HEAD`
-/// that names a branch is covered by the symbolic expectation; a repository with no `HEAD` at
-/// all cannot reach this.
+/// that names a branch is covered by the symbolic expectation; with neither there is nothing
+/// to compare against, so the switch is refused.
 fn point_head_at(
     repo: &gix::Repository,
     full_name: &str,
@@ -113,7 +114,7 @@ fn point_head_at(
     let expected = match (previous_branch, previous_commit) {
         (Some(branch), _) => PreviousValue::MustExistAndMatch(branch),
         (None, Some(commit)) => PreviousValue::MustExistAndMatch(Target::Object(commit)),
-        (None, None) => PreviousValue::MustExist,
+        (None, None) => return Err(neither_branch_nor_commit()),
     };
     let edit = super::update_edit(
         "HEAD",
@@ -123,6 +124,11 @@ fn point_head_at(
         OP,
     )?;
     super::apply_edit(repo, edit, OP, "HEAD")
+}
+
+/// A `HEAD` that names no branch and resolves to no commit: nothing to plan the switch from.
+fn neither_branch_nor_commit() -> ActionError {
+    ActionError::git(OP, "HEAD", "names neither a branch nor a commit")
 }
 
 /// Appends the `checkout: moving from …` line git writes to `logs/HEAD`. A ref transaction

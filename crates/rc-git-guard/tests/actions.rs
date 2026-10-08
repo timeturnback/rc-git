@@ -188,6 +188,21 @@ fn deleting_an_unmerged_branch_demands_the_name_and_writes_a_backup() {
 }
 
 #[test]
+fn an_unreadable_head_refuses_a_branch_delete() {
+    let fx = Fixture::standard();
+    fx.write(".git/HEAD", b"garbage\n");
+
+    let err = delete_branch(fx.path(), &Policy::default(), "feature", Some("feature")).unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(err.to_string().contains("HEAD"), "{err}");
+    fx.write(".git/HEAD", b"ref: refs/heads/main\n");
+    assert!(
+        refs(&fx).contains("refs/heads/feature"),
+        "nothing was deleted"
+    );
+}
+
+#[test]
 fn protected_and_checked_out_branches_cannot_be_deleted() {
     let fx = Fixture::standard();
     let policy = Policy::default();
@@ -1078,6 +1093,31 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn discard_refuses_a_head_on_a_missing_commit_instead_of_deleting() {
+        let fx = Fixture::standard();
+        fx.write(
+            ".git/refs/heads/main",
+            format!("{}\n", "1".repeat(40)).as_bytes(),
+        );
+        fx.write("alpha.txt", b"edited\n");
+
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(err.to_string().contains("HEAD"), "{err}");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"edited\n",
+            "the edit survives a refused discard"
+        );
+    }
+
+    #[test]
     fn discarding_an_untracked_file_removes_the_folders_it_leaves_empty() {
         let fx = Fixture::standard();
         fx.write("newdir/sub/a", b"junk\n");
@@ -1812,6 +1852,20 @@ mod checkout {
 
     fn head_branch(fx: &Fixture) -> String {
         fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
+    }
+
+    #[test]
+    fn a_head_on_a_missing_commit_is_reported_as_a_read_error() {
+        let fx = Fixture::standard();
+        fx.write(".git/HEAD", format!("{}\n", "1".repeat(40)).as_bytes());
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(err.to_string().contains("HEAD"), "{err}");
+        assert!(
+            fx.path().join("alpha.txt").exists(),
+            "nothing in the working tree moved"
+        );
     }
 
     #[test]

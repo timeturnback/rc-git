@@ -127,7 +127,7 @@ pub fn discard_hunks(
 
 /// The tree `HEAD` points at; `None` on an unborn branch, where everything is untracked.
 fn head_tree(repo: &gix::Repository) -> ActionResult<Option<gix::ObjectId>> {
-    let Some(head) = repo.head_id().ok().map(gix::Id::detach) else {
+    let Some(head) = super::head_commit(repo, OP)? else {
         return Ok(None);
     };
     super::commit::tree_of(repo, OP, head).map(Some)
