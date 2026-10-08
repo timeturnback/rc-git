@@ -35,7 +35,10 @@ pub(super) enum Node {
     Dir(BTreeMap<BString, Node>),
 }
 
-/// Files a `PathEdit` for `path` into the trie rooted at `root`.
+/// Files a `PathEdit` for `path` into the trie rooted at `root`. A removal beneath a path
+/// that is replaced by a file is already implied by that replacement — rewriting the parent
+/// drops the whole subtree — so it is accepted in either order and folded into it, which lets
+/// both sides of a directory-to-file change be selected together.
 ///
 /// # Errors
 /// [`ActionError::Git`] for a path git refuses to store (see
@@ -45,32 +48,53 @@ pub(super) fn insert(
     path: &str,
     edit: PathEdit,
 ) -> ActionResult<()> {
-    let symlink = match &edit {
-        PathEdit::Put { kind, .. } => *kind == EntryKind::Link,
-        PathEdit::Remove => false,
+    let removal = match &edit {
+        PathEdit::Put { kind, .. } => {
+            super::workfile::validate_path("build tree", path, *kind == EntryKind::Link)?;
+            false
+        }
+        PathEdit::Remove => {
+            super::workfile::validate_path("build tree", path, false)?;
+            true
+        }
     };
-    super::workfile::validate_path("build tree", path, symlink)?;
+    let overlap = || ActionError::git(OP_BUILD, path, OVERLAP);
     let mut segments = path.split('/').filter(|s| !s.is_empty()).peekable();
     let mut current = root;
     while let Some(segment) = segments.next() {
+        let name = BString::from(segment);
         if segments.peek().is_none() {
-            let clash = current
-                .insert(BString::from(segment), Node::Leaf(edit))
-                .is_some();
-            if clash {
-                return Err(ActionError::git(OP_BUILD, path, OVERLAP));
-            }
-            return Ok(());
+            return match current.get(&name) {
+                None => {
+                    current.insert(name, Node::Leaf(edit));
+                    Ok(())
+                }
+                Some(Node::Dir(children)) if !removal && only_removals(children) => {
+                    current.insert(name, Node::Leaf(edit));
+                    Ok(())
+                }
+                Some(_) => Err(overlap()),
+            };
         }
         let child = current
-            .entry(BString::from(segment))
+            .entry(name)
             .or_insert_with(|| Node::Dir(BTreeMap::new()));
         current = match child {
             Node::Dir(children) => children,
-            Node::Leaf(_) => return Err(ActionError::git(OP_BUILD, path, OVERLAP)),
+            Node::Leaf(PathEdit::Put { .. }) if removal => return Ok(()),
+            Node::Leaf(_) => return Err(overlap()),
         };
     }
-    Err(ActionError::git(OP_BUILD, path, OVERLAP))
+    Err(overlap())
+}
+
+/// Whether every edit below `children` is a removal.
+fn only_removals(children: &BTreeMap<BString, Node>) -> bool {
+    children.values().all(|node| match node {
+        Node::Leaf(PathEdit::Remove) => true,
+        Node::Leaf(PathEdit::Put { .. }) => false,
+        Node::Dir(grandchildren) => only_removals(grandchildren),
+    })
 }
 
 /// Rewrites the tree at `base` with `edits`, writing each rebuilt tree object, and returns

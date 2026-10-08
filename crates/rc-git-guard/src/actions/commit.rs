@@ -282,7 +282,7 @@ fn case_variant_error(
 }
 
 /// The name in `parent` that equals `segment` only by case, when no entry has exactly that
-/// name; `None` when one does, when none matches, or when `parent` does not exist.
+/// name; `None` when one does, when none matches, or when `parent` is not a directory.
 fn disk_case_variant(
     parent: &Path,
     segment: &str,
@@ -292,7 +292,15 @@ fn disk_case_variant(
     let read_error = git_err(op, path);
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // A file where `parent` was (a directory replaced by a file) has no entries either.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(error) => return Err(read_error(error)),
     };
     let folded = segment.to_lowercase();
@@ -644,10 +652,32 @@ impl LockedIndex {
     }
 }
 
+/// Every strict ancestor directory of a path `changes` upserts. An index entry with one of these
+/// names is a file the new tree replaced with a directory, as git's add-with-replace drops it.
+fn file_ancestors_of_upserts<'a>(
+    changes: &BTreeMap<&'a BStr, &Option<(ObjectId, EntryKind, Stat)>>,
+) -> std::collections::BTreeSet<&'a BStr> {
+    changes
+        .iter()
+        .filter(|(_, change)| change.is_some())
+        .flat_map(|(path, _)| strict_ancestors(path))
+        .collect()
+}
+
+/// `a`, `a/b` for the path `a/b/c`: each proper prefix ending before a `/`.
+fn strict_ancestors(path: &BStr) -> impl Iterator<Item = &BStr> {
+    path.iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'/')
+        .map(move |(at, _)| path[..at].as_bstr())
+}
+
 /// Upserts the committed paths into `.git/index` — new blob id, mode, and the stat the caller
 /// took when it read or wrote the file — and removes deleted ones, leaving every other entry
-/// untouched, so terminal `git status` shows the committed paths as clean instead of staged
-/// reverse-modifications. The stale tree-cache extension is dropped rather than rewritten; git
+/// untouched. A changed path also drops the entries below it (a directory it replaced or that
+/// was removed as a whole) and an upserted one drops entries named like its ancestors (a file
+/// a directory replaced), as the rewritten tree did. Terminal `git status` then shows the
+/// committed paths as clean instead of staged reverse-modifications. The stale tree-cache extension is dropped rather than rewritten; git
 /// rebuilds it on demand. Written through the lock `index` holds, then committed over the index.
 ///
 /// # Errors
@@ -670,7 +700,12 @@ pub(in crate::actions) fn update_index(
         .iter()
         .map(|(path, change)| (path.as_bytes().as_bstr(), change))
         .collect();
-    file.remove_entries(|_, entry_path, _| by_path.contains_key(entry_path));
+    let replaced_files = file_ancestors_of_upserts(&by_path);
+    file.remove_entries(|_, entry_path, _| {
+        by_path.contains_key(entry_path)
+            || replaced_files.contains(entry_path)
+            || strict_ancestors(entry_path).any(|ancestor| by_path.contains_key(ancestor))
+    });
     for (path, change) in &by_path {
         if let Some((oid, kind, stat)) = change {
             file.dangerously_push_entry(

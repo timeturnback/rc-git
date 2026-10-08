@@ -183,7 +183,11 @@ pub(super) fn disk_entry(
     use std::os::unix::fs::PermissionsExt;
     let full = join_under(work_dir, relative, op)?;
     let absent_or_error = |error: std::io::Error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
+        // A file where a parent directory was (`a` for `a/b`) means `a/b` is gone too.
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ) {
             Ok(DiskEntry::Absent)
         } else {
             Err(ActionError::git(op, relative, error))

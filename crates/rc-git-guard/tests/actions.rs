@@ -541,6 +541,54 @@ mod commit_and_discard {
         );
     }
 
+    /// Terminal git agrees with the commit: `git write-tree` builds a tree from the index (it
+    /// refuses `d` beside `d/x`), and `git status` shows nothing left to commit.
+    fn assert_index_matches_head(fx: &Fixture, case: &str) {
+        assert_eq!(
+            fx.git_output(&["write-tree"]),
+            fx.rev_parse("HEAD^{tree}"),
+            "{case}: the index holds exactly the committed tree"
+        );
+        assert_eq!(porcelain(fx), "", "{case}: the committed paths are clean");
+    }
+
+    #[test]
+    fn a_directory_replaced_by_a_file_commits_with_a_consistent_index() {
+        let cases: [&[&str]; 3] = [
+            &["src"],
+            &["src", "src/lib.rs", "src/main.rs"],
+            &["src/main.rs", "src/lib.rs", "src"],
+        ];
+        for selection in cases {
+            let fx = Fixture::standard();
+            fx.remove("src");
+            fx.write("src", b"now a file\n");
+            commit_whole(&fx, selection);
+            let case = selection.join(" ");
+            assert_eq!(fx.git_output(&["show", "HEAD:src"]), "now a file", "{case}");
+            assert_index_matches_head(&fx, &case);
+        }
+    }
+
+    #[test]
+    fn a_file_replaced_by_a_directory_commits_with_a_consistent_index() {
+        let fx = Fixture::standard();
+        fx.remove("alpha.txt");
+        fx.write("alpha.txt/inner", b"inner\n");
+        commit_whole(&fx, &["alpha.txt/inner"]);
+        assert_eq!(fx.git_output(&["show", "HEAD:alpha.txt/inner"]), "inner");
+        assert_index_matches_head(&fx, "alpha.txt/inner");
+    }
+
+    #[test]
+    fn a_deleted_directory_committed_by_its_own_path_leaves_no_index_entries_under_it() {
+        let fx = Fixture::standard();
+        fx.remove("src");
+        commit_whole(&fx, &["src"]);
+        assert_eq!(fx.git_output(&["ls-files", "src"]), "");
+        assert_index_matches_head(&fx, "src");
+    }
+
     #[test]
     fn a_held_index_lock_refuses_the_commit_before_the_branch_moves() {
         let fx = Fixture::standard();
