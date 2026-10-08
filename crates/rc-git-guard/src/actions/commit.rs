@@ -27,6 +27,10 @@ pub struct Committed {
     pub oid: rc_git_core::Oid,
     /// Short name of the branch that advanced.
     pub branch: String,
+    /// Whether `.git/index` was updated to the new commit. `false` when the branch moved but the
+    /// index write failed afterwards: the commit stands, and terminal `git status` shows the
+    /// committed paths as staged reverse changes until `git reset -q -- <paths>` runs.
+    pub index_refreshed: bool,
 }
 
 const OP: &str = "commit";
@@ -78,6 +82,7 @@ pub fn commit(
     if selections.is_empty() {
         return Err(ActionError::git(OP, "HEAD", "nothing selected to commit"));
     }
+    let index = LockedIndex::acquire(&repo, OP)?;
     let work_dir = work_dir(&repo, OP)?;
     let selected = selections.iter().map(|selection| match selection {
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
@@ -133,7 +138,9 @@ pub fn commit(
         OP,
     )?;
     super::apply_edit(&repo, edit, OP, &branch_ref)?;
-    update_index(&repo, OP, &index_changes)?;
+    // The branch has moved, so the commit stands whatever happens to the index: an error here
+    // would read as a failed commit and a retry would be refused as stale. The flag reports it.
+    let index_refreshed = update_index(index, OP, &index_changes).is_ok();
 
     Ok(Committed {
         oid,
@@ -141,6 +148,7 @@ pub fn commit(
             .strip_prefix("refs/heads/")
             .unwrap_or(&branch_ref)
             .to_owned(),
+        index_refreshed,
     })
 }
 
@@ -582,24 +590,79 @@ pub(in crate::actions) fn disk_stat(work_dir: &Path, path: &str, op: &'static st
         .unwrap_or_default()
 }
 
+/// `.git/index` read while holding `index.lock`, as git does: nothing else can commit an index
+/// between this read and [`update_index`], so a concurrent `git add` is never overwritten with
+/// stale entries. Dropping it without [`update_index`] removes the lock and leaves the index as
+/// it was.
+pub(in crate::actions) struct LockedIndex {
+    lock: gix::lock::File,
+    file: gix::index::File,
+}
+
+impl LockedIndex {
+    /// Takes `index.lock`, failing at once when another process holds it, then reads the index.
+    /// Called before the action writes anything, so a held lock refuses the whole action.
+    ///
+    /// # Errors
+    /// [`ActionError::Git`] naming `op` and `index` when another git process holds the lock,
+    /// or when the lock cannot be created or the index cannot be read.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+    )]
+    pub(in crate::actions) fn acquire(
+        repo: &gix::Repository,
+        op: &'static str,
+    ) -> ActionResult<Self> {
+        let index_path = repo.index_path();
+        let lock = gix::lock::File::acquire_to_update_resource(
+            &index_path,
+            gix::lock::acquire::Fail::Immediately,
+            None,
+        )
+        .map_err(|source| match source {
+            gix::lock::acquire::Error::PermanentlyLocked { .. } => ActionError::git(
+                op,
+                "index",
+                "the index is locked by another git process; retry",
+            ),
+            gix::lock::acquire::Error::Io(source) => ActionError::git(op, "index", source),
+        })?;
+        let file = gix::index::File::at_or_default(
+            index_path,
+            repo.object_hash(),
+            false,
+            gix::index::decode::Options::default(),
+        )
+        .map_err(git_err(op, "index"))?;
+        Ok(Self { lock, file })
+    }
+
+    /// The index as read under the lock.
+    pub(in crate::actions) fn file(&self) -> &gix::index::File {
+        &self.file
+    }
+}
+
 /// Upserts the committed paths into `.git/index` — new blob id, mode, and the stat the caller
 /// took when it read or wrote the file — and removes deleted ones, leaving every other entry
 /// untouched, so terminal `git status` shows the committed paths as clean instead of staged
 /// reverse-modifications. The stale tree-cache extension is dropped rather than rewritten; git
-/// rebuilds it on demand.
+/// rebuilds it on demand. Written through the lock `index` holds, then committed over the index.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `index` when the lock file cannot be written or
+/// renamed over the index.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+)]
 pub(in crate::actions) fn update_index(
-    repo: &gix::Repository,
+    index: LockedIndex,
     op: &'static str,
     changes: &[IndexChange],
 ) -> ActionResult<()> {
-    let index_path = repo.index_path();
-    let mut file = gix::index::File::at_or_default(
-        index_path,
-        repo.object_hash(),
-        false,
-        gix::index::decode::Options::default(),
-    )
-    .map_err(git_err(op, "index"))?;
+    let LockedIndex { lock, mut file } = index;
     for (path, change) in changes {
         file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
         if let Some((oid, kind, stat)) = change {
@@ -614,12 +677,14 @@ pub(in crate::actions) fn update_index(
     }
     file.sort_entries();
     file.remove_tree();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    file.write(gix::index::write::Options::default())
+    let mut out = std::io::BufWriter::with_capacity(64 * 1024, lock);
+    file.write_to(&mut out, gix::index::write::Options::default())
         .map_err(git_err(op, "index"))?;
+    let lock = out
+        .into_inner()
+        .map_err(|source| ActionError::git(op, "index", source.into_error()))?;
+    lock.commit()
+        .map_err(|source| ActionError::git(op, "index", source.error))?;
     Ok(())
 }
 

@@ -12,7 +12,7 @@ use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
-use super::commit::work_dir;
+use super::commit::{LockedIndex, work_dir};
 use super::{ActionResult, confirm, git_err, open, treeapply};
 use crate::{Action, Policy};
 
@@ -69,8 +69,9 @@ pub fn checkout_branch(
 
     let changes = treeapply::plan(repo_path, current, target, OP)?;
     let work_dir = work_dir(&repo, OP)?;
-    treeapply::verify_clean(&repo, &work_dir, &changes, OP)?;
-    treeapply::apply(&repo, &work_dir, &changes, OP)?;
+    let index = LockedIndex::acquire(&repo, OP)?;
+    treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
+    treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
     let from = head.as_ref().map_or_else(
         || current.map_or_else(|| "an unborn HEAD".to_owned(), |commit| commit.to_string()),
         |name| name.shorten().to_string(),

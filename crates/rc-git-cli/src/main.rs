@@ -1282,6 +1282,13 @@ fn commit_verb(
         args.value(&["--confirm"]),
     )?;
     writeln!(out, "{}\t{}", done.oid, done.branch)?;
+    if !done.index_refreshed {
+        writeln!(
+            io::stderr().lock(),
+            "warning: commit: .git/index was not updated; run `git reset -q -- <paths>` so \
+             git status agrees with the commit"
+        )?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 

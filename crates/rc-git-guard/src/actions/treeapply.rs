@@ -12,7 +12,9 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
-use super::commit::{IndexChange, blob_data, disk_stat, tree_entry_at, tree_of, update_index};
+use super::commit::{
+    IndexChange, LockedIndex, blob_data, disk_stat, tree_entry_at, tree_of, update_index,
+};
 use super::workfile::DiskEntry;
 use super::{ActionError, ActionResult, git_err, workfile};
 
@@ -141,26 +143,22 @@ fn set_old_kinds(
     Ok(())
 }
 
-/// Refuses the whole operation when any touched path is dirty on disk or staged in the index,
-/// before anything is written.
+/// Refuses the whole operation when any touched path is dirty on disk or staged in `index`,
+/// before anything is written. Take `index` with [`LockedIndex::acquire`] before this call and
+/// hand the same one to [`apply`], so no other process can change the index in between.
 ///
 /// # Errors
 /// [`ActionError::DirtyPath`] for the first path that does not match `HEAD`,
-/// [`ActionError::Git`] when the index or a blob cannot be read, or a path would cross a
-/// symlink (one on disk, or one this plan writes).
+/// [`ActionError::Git`] when a blob cannot be read, or a path would cross a symlink (one on
+/// disk, or one this plan writes).
 pub(super) fn verify_clean(
     repo: &gix::Repository,
     work_dir: &Path,
+    index: &LockedIndex,
     changes: &[PathChange],
     op: &'static str,
 ) -> ActionResult<()> {
-    let index = gix::index::File::at_or_default(
-        repo.index_path(),
-        repo.object_hash(),
-        false,
-        gix::index::decode::Options::default(),
-    )
-    .map_err(git_err(op, "index"))?;
+    let index = index.file();
     refuse_paths_under_written_links(changes, op)?;
     let file_mode = repo
         .config_snapshot()
@@ -253,16 +251,17 @@ fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) ->
     Ok(())
 }
 
-/// Writes every change to the working tree, then updates the index for exactly those paths.
-/// Deletions run before writes: on a case-insensitive volume a deleted `Readme.md` is the
-/// same file as an added `README.md`, and deleting it afterwards would remove the new file.
-/// Call [`verify_clean`] first.
+/// Writes every change to the working tree, then updates `index` for exactly those paths and
+/// releases its lock. Deletions run before writes: on a case-insensitive volume a deleted
+/// `Readme.md` is the same file as an added `README.md`, and deleting it afterwards would
+/// remove the new file. Call [`verify_clean`] first, with the same `index`.
 ///
 /// # Errors
 /// [`ActionError::Git`] naming `op` when a file or the index cannot be written.
 pub(super) fn apply(
     repo: &gix::Repository,
     work_dir: &Path,
+    index: LockedIndex,
     changes: &[PathChange],
     op: &'static str,
 ) -> ActionResult<()> {
@@ -279,7 +278,7 @@ pub(super) fn apply(
             index_changes.push((change.path.clone(), Some((oid, kind, stat))));
         }
     }
-    update_index(repo, op, &index_changes)
+    update_index(index, op, &index_changes)
 }
 
 pub(super) fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {

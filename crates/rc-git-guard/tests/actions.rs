@@ -542,6 +542,57 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_held_index_lock_refuses_the_commit_before_the_branch_moves() {
+        let fx = Fixture::standard();
+        let lock = fx.path().join(".git/index.lock");
+        fx.write("alpha.txt", b"changed\n");
+        fx.write(".git/index.lock", b"");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "locked",
+            explicit(),
+            Some(commit_id(&head)),
+            &[whole("alpha.txt")],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "commit", name, .. } if name == "index"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the index is locked by another git process; retry"),
+            "{err}"
+        );
+        assert!(lock.exists(), "another process's lock is never removed");
+        fx.remove(".git/index.lock");
+        assert_eq!(fx.rev_parse("HEAD"), head, "the branch did not move");
+        assert_eq!(
+            porcelain(&fx),
+            " M alpha.txt",
+            "the change is still uncommitted"
+        );
+
+        let done = commit(
+            fx.path(),
+            &Policy::default(),
+            "retried",
+            explicit(),
+            Some(commit_id(&head)),
+            &[whole("alpha.txt")],
+            None,
+        )
+        .unwrap();
+        assert!(done.index_refreshed);
+        assert!(!lock.exists(), "the commit releases the lock it took");
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
     fn a_hunk_commit_takes_only_the_selected_hunk() {
         let fx = Fixture::standard();
         let policy = Policy::default();
@@ -1975,6 +2026,47 @@ mod tree_switch_disk_reads {
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"alpha\n"
         );
+    }
+
+    fn assert_index_locked(err: &ActionError, expected_op: &str) {
+        assert!(
+            matches!(err, ActionError::Git { op, name, .. } if *op == expected_op && name == "index"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the index is locked by another git process; retry"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_held_index_lock_refuses_the_switch_and_the_pull_before_any_file_is_written() {
+        let fx = alpha_rewritten_ahead();
+        let lock = fx.path().join(".git/index.lock");
+        fx.write(".git/index.lock", b"");
+
+        let main_tip = fx.rev_parse("main");
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        assert_index_locked(&err, "checkout");
+        let err = pull_fast_forward(fx.path(), &Policy::default()).unwrap_err();
+        assert_index_locked(&err, "pull");
+        assert!(lock.exists(), "another process's lock is never removed");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD stayed put");
+        assert_eq!(
+            fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            "main"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "no file was rewritten"
+        );
+
+        fx.remove(".git/index.lock");
+        checkout_branch(fx.path(), &Policy::default(), "next").unwrap();
+        assert!(!lock.exists(), "the switch releases the lock it took");
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
     }
 
     #[test]
