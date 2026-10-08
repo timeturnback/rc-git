@@ -11,6 +11,21 @@ use crate::oid::Oid;
 use crate::repo::Repository;
 use crate::tree::lookup_path;
 
+/// What a blame produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blame {
+    /// Every line attributed, as consecutive ranges ordered by line number.
+    Ranges(Vec<BlameRange>),
+    /// The file at the tip is larger than the caller's limit; no history was walked and
+    /// nothing was decoded.
+    TooLarge {
+        /// Size of the file at the tip in bytes.
+        size: u64,
+        /// The limit that was exceeded.
+        limit: u64,
+    },
+}
+
 /// A run of consecutive lines introduced by one commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameRange {
@@ -36,6 +51,10 @@ impl Repository {
     ///
     /// An annotated tag `tip` is followed to its commit.
     ///
+    /// The file at `tip` is sized from its object header first: over `limit`, the result is
+    /// [`Blame::TooLarge`] and nothing is decoded. Only the tip is checked; the versions the
+    /// walk reaches in history are decoded whole, however large.
+    ///
     /// # Errors
     /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob,
     /// or when `path` is a directory or a submodule in it.
@@ -44,12 +63,19 @@ impl Repository {
     /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing or the
     /// walk fails; it names the object the walk could not find when there was one, `tip`
     /// otherwise.
-    pub fn blame(&self, tip: Oid, path: &str) -> Result<Vec<BlameRange>> {
+    pub fn blame(&self, tip: Oid, path: &str, limit: u64) -> Result<Blame> {
         self.with(|repo| {
             let commit = peel_to_commit(repo, tip)?;
             let tip = Oid::from_gix(commit.id);
             let tree = commit.tree_id().map_err(object("decode commit", tip))?;
-            expect_file(repo, tip, Oid::from_gix(tree.detach()), path)?;
+            let blob = expect_file(repo, tip, Oid::from_gix(tree.detach()), path)?;
+            let size = repo
+                .find_header(*blob.as_gix())
+                .map_err(object("read blob header", blob))?
+                .size();
+            if size > limit {
+                return Ok(Blame::TooLarge { size, limit });
+            }
             let odb = ShallowCut {
                 inner: &repo.objects,
                 boundary: repo.shallow_commits().map_err(git("read shallow file"))?,
@@ -89,14 +115,14 @@ impl Repository {
                 });
             }
             ranges.sort_by_key(|range| range.start_line);
-            Ok(ranges)
+            Ok(Blame::Ranges(ranges))
         })
     }
 }
 
-/// Fails unless `path` names a file in the commit `tip` whose root tree is `tree`, so a
-/// missing path or a directory is reported as such instead of as a failed blame walk.
-fn expect_file(repo: &gix::Repository, tip: Oid, tree: Oid, path: &str) -> Result<()> {
+/// The blob at `path` in the commit `tip` whose root tree is `tree`. Fails unless `path` names
+/// a file, so a missing path or a directory is reported as such instead of as a failed walk.
+fn expect_file(repo: &gix::Repository, tip: Oid, tree: Oid, path: &str) -> Result<Oid> {
     const OP: &str = "blame file";
     let segments = path
         .split('/')
@@ -114,7 +140,7 @@ fn expect_file(repo: &gix::Repository, tip: Oid, tree: Oid, path: &str) -> Resul
     } else if entry.mode.is_commit() {
         ObjectKind::Commit
     } else {
-        return Ok(());
+        return Ok(Oid::from_gix(entry.oid));
     };
     Err(Error::WrongKind {
         op: OP,

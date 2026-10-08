@@ -12,9 +12,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary, DEFAULT_BLOB_LIMIT,
-    DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository, TreeEntry,
-    UnreadableEntry, WorktreeStatus,
+    Blame, BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary,
+    DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind,
+    Repository, TreeEntry, UnreadableEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -34,7 +34,8 @@ usage: rc-git [--time] <command> <repo> [args]
                                           a root commit lists every file as added
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   diff    <repo> --worktree <path>        one working-tree file's hunks against HEAD
-  blame   <repo> <rev> <path>             which commit introduced each line
+  blame   <repo> <rev> <path>             which commit introduced each line; a file over
+                                          8 MiB at <rev> exits 4
   status  <repo> [-z] [dir]               one working-tree directory against HEAD
   changes <repo> [-z] [--max-scan N]      every changed working-tree path against HEAD
   files   <repo> [-z] [--max-scan N]      every file on disk, ignored folders skipped
@@ -1063,8 +1064,18 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     };
     let path = &canonical_path(path)?;
     let tip = repo.resolve(rev)?;
+    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT)? {
+        Blame::Ranges(ranges) => ranges,
+        Blame::TooLarge { size, limit } => {
+            writeln!(
+                io::stderr().lock(),
+                "'{path}' is {size} bytes, over the {limit} byte limit"
+            )?;
+            return Ok(ExitCode::from(EXIT_TOO_LARGE));
+        }
+    };
     let mut titles = std::collections::HashMap::new();
-    for range in repo.blame(tip, path)? {
+    for range in ranges {
         let commit = match titles.entry(range.commit) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {

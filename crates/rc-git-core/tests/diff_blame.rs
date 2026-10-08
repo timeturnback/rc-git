@@ -2,13 +2,22 @@
 #![expect(clippy::unwrap_used, reason = "test helpers panic on fixture failure")]
 
 use rc_git_core::{
-    BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLineKind,
-    EntryKind, Error, LineEnd, ObjectKind, Oid, Repository,
+    Blame, BlameRange, BlobDiff, ChangeKind, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffHunk,
+    DiffLineKind, EntryKind, Error, LineEnd, ObjectKind, Oid, Repository,
 };
 use rc_git_testkit::{BIN_DAT, Fixture, README};
 
 fn oid(hex: &str) -> Oid {
     Oid::from_hex(hex).unwrap()
+}
+
+/// The ranges of a blame under the default limit; fails the test when the file is over it.
+fn blame_ranges(repo: &Repository, tip: Oid, path: &str) -> Vec<BlameRange> {
+    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT).unwrap() {
+        Blame::Ranges(ranges) => Some(ranges),
+        Blame::TooLarge { .. } => None,
+    };
+    ranges.unwrap()
 }
 
 /// Two commits: the second modifies `a.txt`, renames `keep.txt` to `kept.txt`, and deletes
@@ -578,7 +587,7 @@ fn blame_attributes_lines_to_their_commits() {
     let first = oid(&fx.rev_parse("main~1"));
     let second = oid(&fx.rev_parse("main"));
 
-    let ranges = repo.blame(tip, "a.txt").unwrap();
+    let ranges = blame_ranges(&repo, tip, "a.txt");
     let mut lines = vec![Oid::from_hex(&"0".repeat(40)).unwrap(); 4];
     for range in &ranges {
         for line in range.start_line..range.start_line + range.line_count {
@@ -587,7 +596,7 @@ fn blame_attributes_lines_to_their_commits() {
     }
     assert_eq!(lines, [first, second, first, second]);
 
-    let renamed = repo.blame(tip, "kept.txt").unwrap();
+    let renamed = blame_ranges(&repo, tip, "kept.txt");
     assert_eq!(renamed.len(), 1);
     assert_eq!(
         renamed[0].commit, second,
@@ -596,11 +605,32 @@ fn blame_attributes_lines_to_their_commits() {
 }
 
 #[test]
+fn blame_refuses_a_file_over_the_limit() {
+    let fx = diff_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let size = repo.blob_size(oid(&fx.rev_parse("main:a.txt"))).unwrap();
+    assert_eq!(
+        repo.blame(tip, "a.txt", size - 1).unwrap(),
+        Blame::TooLarge {
+            size,
+            limit: size - 1
+        }
+    );
+    assert!(
+        matches!(repo.blame(tip, "a.txt", size).unwrap(), Blame::Ranges(ranges) if !ranges.is_empty()),
+        "a file exactly at the limit is blamed"
+    );
+}
+
+#[test]
 fn blame_reports_missing_paths_and_bad_tips() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    let err = repo.blame(tip, "no/such/file").unwrap_err();
+    let err = repo
+        .blame(tip, "no/such/file", DEFAULT_BLOB_LIMIT)
+        .unwrap_err();
     assert!(
         matches!(&err, Error::PathNotFound { path, commit, .. }
             if path == "no/such/file" && *commit == tip),
@@ -610,7 +640,7 @@ fn blame_reports_missing_paths_and_bad_tips() {
     assert!(msg.contains("no/such/file"), "{msg}");
     assert!(!msg.contains("missing or unreadable"), "{msg}");
 
-    let err = repo.blame(tip, "src").unwrap_err();
+    let err = repo.blame(tip, "src", DEFAULT_BLOB_LIMIT).unwrap_err();
     assert!(
         matches!(
             err,
@@ -627,13 +657,14 @@ fn blame_reports_missing_paths_and_bad_tips() {
     let tag = repo.resolve("v1.0").unwrap();
     assert_ne!(tag, tip, "v1.0 is an annotated tag");
     assert_eq!(
-        repo.blame(tag, "README.md").unwrap(),
-        repo.blame(repo.resolve("v1.0^{commit}").unwrap(), "README.md")
-            .unwrap()
+        blame_ranges(&repo, tag, "README.md"),
+        blame_ranges(&repo, repo.resolve("v1.0^{commit}").unwrap(), "README.md")
     );
 
     let blob = repo.resolve("main:README.md").unwrap();
-    let err = repo.blame(blob, "README.md").unwrap_err();
+    let err = repo
+        .blame(blob, "README.md", DEFAULT_BLOB_LIMIT)
+        .unwrap_err();
     assert!(
         matches!(
             err,
@@ -661,7 +692,7 @@ fn append_fixture() -> Fixture {
 }
 
 /// The commit of each line, in line order.
-fn line_owners(ranges: &[rc_git_core::BlameRange]) -> Vec<Oid> {
+fn line_owners(ranges: &[BlameRange]) -> Vec<Oid> {
     let mut owners = Vec::new();
     for range in ranges {
         owners.extend(std::iter::repeat_n(range.commit, range.line_count as usize));
@@ -679,7 +710,7 @@ fn blame_stops_at_the_shallow_boundary() {
     let tip = repo.resolve("main").unwrap();
     let boundary = oid(&clone.rev_parse("main~1"));
 
-    let ranges = repo.blame(tip, "a.txt").unwrap();
+    let ranges = blame_ranges(&repo, tip, "a.txt");
     assert_eq!(
         line_owners(&ranges),
         [boundary, boundary, tip],
@@ -695,7 +726,7 @@ fn blame_names_the_missing_commit() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let err = repo.blame(tip, "a.txt").unwrap_err();
+    let err = repo.blame(tip, "a.txt", DEFAULT_BLOB_LIMIT).unwrap_err();
     let Error::Object { oid: culprit, .. } = err else {
         panic!("expected an object error, got {err}");
     };

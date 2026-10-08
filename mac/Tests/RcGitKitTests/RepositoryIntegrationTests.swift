@@ -204,12 +204,17 @@ import Testing
             return
         }
 
-        let spans = try repo.blame(tip: new, path: "README.md")
+        guard case let .ranges(spans) = try repo.blame(tip: new, path: "README.md") else {
+            Issue.record("expected ranges")
+            return
+        }
         #expect(spans.count == 1)
         #expect(spans[0].startLine == 1)
         #expect(spans[0].lineCount == 3)
         #expect(try spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
 
+        let declined = try repo.blame(tip: new, path: "README.md", limit: 2)
+        #expect(declined == .tooLarge(size: 17, limit: 2))
         #expect(throws: RepositoryError.self) { try repo.blame(tip: new, path: "nope.txt") }
     }
 

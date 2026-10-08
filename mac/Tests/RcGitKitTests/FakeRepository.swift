@@ -21,7 +21,9 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
     var diffBlobsCalls = 0
-    var blames: [String: [BlameRange]] = [:]
+    var blames: [String: Blame] = [:]
+    /// The limit each `blame` call passed, in call order.
+    var blameLimits: [UInt64] = []
     var worktreeListings: [String: WorktreeListing] = [:]
     var worktreeFiles: [String: BlobContent] = [:]
     /// The full-repo status walk result, replaced by tests as the "disk" changes.
@@ -215,8 +217,11 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         return found
     }
 
-    func blame(tip: Oid, path: String) throws -> [BlameRange] {
-        let found = lock.withLock { blames[path] }
+    func blame(tip: Oid, path: String, limit: UInt64) throws -> Blame {
+        let found = lock.withLock {
+            blameLimits.append(limit)
+            return blames[path]
+        }
         guard let found else {
             throw RepositoryError("blame file: '\(path)' does not exist at \(tip)")
         }

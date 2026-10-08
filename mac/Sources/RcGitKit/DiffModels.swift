@@ -190,6 +190,14 @@ public struct BlameSpan: Sendable, Hashable {
     }
 }
 
+/// What a blame produced.
+public enum Blame: Sendable, Hashable {
+    /// Every line attributed, as consecutive ranges ordered by line number.
+    case ranges([BlameRange])
+    /// The file at the tip is larger than the requested limit; no history was walked.
+    case tooLarge(size: UInt64, limit: UInt64)
+}
+
 /// A run of consecutive lines introduced by one commit.
 public struct BlameRange: Sendable, Hashable {
     public let commit: Oid

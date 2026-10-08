@@ -46,6 +46,8 @@ public final class BrowserModel {
     public private(set) var fileState: FileState = .empty
     /// Repository-relative path of the file in the file pane, when the opener knew it.
     public private(set) var openedFilePath: String?
+    /// The size limit the file pane last read with, which blame honors too.
+    private var openedFileLimit = Repository.defaultBlobLimit
     public private(set) var lastError: String?
     /// Whether the file lists show entries `HiddenFiles` names. The window applies the
     /// app-wide preference; the model decides what that hides.
@@ -373,6 +375,7 @@ public final class BrowserModel {
         fileGeneration += 1
         let generation = fileGeneration
         openedFilePath = path
+        openedFileLimit = limit
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
@@ -434,6 +437,7 @@ public final class BrowserModel {
         fileGeneration += 1
         let generation = fileGeneration
         if let path { openedFilePath = path }
+        openedFileLimit = limit
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
@@ -840,8 +844,12 @@ public final class BrowserModel {
     /// Blames the file in the file pane at the browsed revision. Returns the ranges paired
     /// with their commit summaries, resolved through a cache so each commit is read once.
     ///
+    /// The file at the tip is sized against the limit the file pane read it with, so a file
+    /// the pane declined as too large is declined here too instead of decoded whole.
+    ///
     /// # Errors
-    /// `RepositoryError` when no file with a known path is open or the walk fails.
+    /// `RepositoryError` when no file with a known path is open, the file is over the limit,
+    /// or the walk fails.
     public func blameOpenedFile() async throws -> [BlameSpan] {
         guard let repository else { throw RepositoryError("no repository is open") }
         guard let path = openedFilePath else {
@@ -850,8 +858,16 @@ public final class BrowserModel {
         guard let tip = selectedRef?.target ?? browsedCommit?.oid else {
             throw RepositoryError("nothing is selected to blame at")
         }
+        let limit = openedFileLimit
         return try await Task.detached(priority: .userInitiated) {
-            let ranges = try repository.blame(tip: tip, path: path)
+            let ranges: [BlameRange]
+            switch try repository.blame(tip: tip, path: path, limit: limit) {
+            case let .ranges(found):
+                ranges = found
+            case let .tooLarge(size, limit):
+                throw RepositoryError(
+                    "cannot blame '\(path)': it is \(size) bytes, over the \(limit) byte limit")
+            }
             var commits: [Oid: CommitSummary] = [:]
             var spans: [BlameSpan] = []
             for range in ranges {

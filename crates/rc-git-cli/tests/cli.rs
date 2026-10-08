@@ -585,6 +585,25 @@ fn blame_prints_commit_per_range() {
 }
 
 #[test]
+fn blame_declines_a_file_over_the_default_limit() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    let size = 8 * 1024 * 1024 + 1;
+    fx.write("big.txt", &vec![b'x'; size]);
+    fx.commit("big", "2024-01-01T00:00:00+0000");
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["blame", path, "main", "big.txt"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(out.stdout.len(), 0);
+    assert!(
+        stderr(&out).contains(&format!("is {size} bytes, over the 8388608 byte limit")),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn status_overlays_the_working_tree_against_head() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

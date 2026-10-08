@@ -313,14 +313,20 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     }
 
     /// Attributes every line of `path` at commit `tip` to the commit that introduced it.
-    /// Walks history; call it for the file on screen, never in bulk.
-    public func blame(tip: Oid, path: String) throws -> [BlameRange] {
+    /// Walks history; call it for the file on screen, never in bulk. A file at `tip` over
+    /// `limit` bytes is `.tooLarge` after one header read.
+    public func blame(tip: Oid, path: String, limit: UInt64 = Repository.defaultBlobLimit)
+        throws -> Blame
+    {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let list = tip.withC { rcgit_blame(handle, $0, path, &error) }
+        let list = tip.withC { rcgit_blame(handle, $0, path, limit, &error) }
         guard let list else {
             throw RepositoryError.take(error, fallback: "cannot blame \(path)")
         }
         defer { rcgit_blame_list_free(list) }
+        if list.pointee.kind == RcGitBlameKind_TooLarge {
+            return .tooLarge(size: list.pointee.size, limit: list.pointee.limit)
+        }
         var ranges: [BlameRange] = []
         ranges.reserveCapacity(list.pointee.len)
         for index in 0..<list.pointee.len {
@@ -329,7 +335,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
                 BlameRange(
                     commit: Oid(c: c.commit), startLine: c.start_line, lineCount: c.line_count))
         }
-        return ranges
+        return .ranges(ranges)
     }
 
     private func withOptionalOid<T>(

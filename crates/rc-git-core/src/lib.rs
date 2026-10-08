@@ -19,7 +19,7 @@ mod stash;
 mod tree;
 mod worktree;
 
-pub use blame::BlameRange;
+pub use blame::{Blame, BlameRange};
 pub use blob::{BlobContent, DEFAULT_BLOB_LIMIT, GIT_BINARY_PROBE_BYTES, is_binary, line_starts};
 pub use diff::{
     BlobDiff, ChangeKind, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLine, DiffLineKind, LineEnd,

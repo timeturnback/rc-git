@@ -144,7 +144,7 @@ fn every_operation_leaves_the_repository_untouched() {
         .unwrap();
     }
     repo.diff_trees_without_renames(Some(old), tip).unwrap();
-    repo.blame(tip, "README.md").unwrap();
+    repo.blame(tip, "README.md", DEFAULT_BLOB_LIMIT).unwrap();
     let listing = repo.worktree_entries(Some(root), "").unwrap();
     assert_ne!(listing.entries.len(), 0);
     repo.worktree_entries(Some(root), "src").unwrap();

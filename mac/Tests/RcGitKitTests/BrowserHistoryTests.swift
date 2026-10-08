@@ -321,7 +321,9 @@ import Testing
                     DiffLine(kind: .removed, text: "zero"), DiffLine(kind: .added, text: "one"),
                 ])
         ])
-        repo.blames["a.txt"] = [BlameRange(commit: parentCommit, startLine: 1, lineCount: 1)]
+        repo.blames["a.txt"] = .ranges([
+            BlameRange(commit: parentCommit, startLine: 1, lineCount: 1)
+        ])
         repo.summaries[parentCommit] = commitSummary(parentCommit, title: "parent")
     }
 
@@ -491,5 +493,22 @@ import Testing
         #expect(spans.count == 1)
         #expect(spans[0].commit.title == "parent")
         #expect(spans[0].range.lineCount == 1)
+        #expect(repo.blameLimits == [Repository.defaultBlobLimit])
+    }
+
+    @Test func blameUsesTheFilePaneLimitAndDeclinesAFileOverIt() async {
+        await model.attach(repo)
+        repo.blames["a.txt"] = .tooLarge(size: 40, limit: 10)
+        let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
+        await model.openFile(entry, path: "a.txt", limit: 10)
+        do {
+            _ = try await model.blameOpenedFile()
+            Issue.record("expected a throw")
+        } catch let error as RepositoryError {
+            #expect(error.message.contains("40 bytes, over the 10 byte limit"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        #expect(repo.blameLimits == [10])
     }
 }

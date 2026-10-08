@@ -17,9 +17,9 @@ use std::path::Path;
 use std::ptr;
 
 use rc_git_core::{
-    BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage, CommitSummary,
-    DiffHunk, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository, TreeChange, TreeEntry,
-    WorktreeStatus,
+    Blame, BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage,
+    CommitSummary, DiffHunk, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository,
+    TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth,
@@ -701,13 +701,29 @@ pub struct RcGitBlameRange {
     pub line_count: u32,
 }
 
+/// What a blame produced.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RcGitBlameKind {
+    /// `ranges` is filled.
+    Ranges = 0,
+    /// The file is over the limit; `size` and `limit` are filled, no history was walked.
+    TooLarge = 1,
+}
+
 /// Every blame range of one file, ordered by line number.
 #[repr(C)]
 pub struct RcGitBlameList {
-    /// `len` ranges.
+    /// Which fields are meaningful.
+    pub kind: RcGitBlameKind,
+    /// `len` ranges. `Ranges` only.
     pub ranges: *mut RcGitBlameRange,
     /// Number of ranges.
     pub len: usize,
+    /// Size of the file at the tip in bytes. `TooLarge` only.
+    pub size: u64,
+    /// The limit passed to `rcgit_blame`.
+    pub limit: u64,
 }
 
 impl Drop for RcGitBlameList {
@@ -2059,8 +2075,9 @@ pub unsafe extern "C" fn rcgit_blob_diff_free(diff: *mut RcGitBlobDiff) {
 /// Attributes every line of the file at `path` in commit `tip` to the commit that introduced
 /// it. This walks history, so its cost grows with the history between `tip` and the commit
 /// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
-/// from the first commit; call it for the file on screen, never in bulk. Release with
-/// `rcgit_blame_list_free`.
+/// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
+/// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
+/// walk reaches in history are not size-checked. Release with `rcgit_blame_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -2070,6 +2087,7 @@ pub unsafe extern "C" fn rcgit_blame(
     repo: *const RcGitRepo,
     tip: *const RcGitOid,
     path: *const c_char,
+    limit: u64,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlameList {
     // SAFETY: forwarded from this function's contract.
@@ -2085,8 +2103,15 @@ pub unsafe extern "C" fn rcgit_blame(
         error.report("repo, tip, or path is NULL or malformed");
         return ptr::null_mut();
     };
-    match repo.blame(tip, &String::from_utf8_lossy(path)) {
-        Ok(ranges) => {
+    match repo.blame(tip, &String::from_utf8_lossy(path), limit) {
+        Ok(Blame::TooLarge { size, limit }) => export(RcGitBlameList {
+            kind: RcGitBlameKind::TooLarge,
+            ranges: ptr::null_mut(),
+            len: 0,
+            size,
+            limit,
+        }),
+        Ok(Blame::Ranges(ranges)) => {
             let mut exported = Vec::with_capacity(ranges.len());
             for range in ranges {
                 exported.push(RcGitBlameRange {
@@ -2096,7 +2121,13 @@ pub unsafe extern "C" fn rcgit_blame(
                 });
             }
             let (ranges, len) = export_vec(exported);
-            export(RcGitBlameList { ranges, len })
+            export(RcGitBlameList {
+                kind: RcGitBlameKind::Ranges,
+                ranges,
+                len,
+                size: 0,
+                limit,
+            })
         }
         Err(err) => {
             error.report(err);
@@ -4432,7 +4463,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_diff_blob_diff_and_blame() {
+    fn tree_diff_and_blob_diff() {
         let fx = Fixture::standard();
         let repo = open(&fx);
         let mut error = ptr::null_mut();
@@ -4492,21 +4523,6 @@ mod tests {
         assert_eq!(unsafe { &*diff }.kind, RcGitBlobDiffKind::Binary);
         unsafe { rcgit_blob_diff_free(diff) };
 
-        let path = CString::new("README.md").unwrap();
-        let blame = unsafe { rcgit_blame(repo, &raw const new, path.as_ptr(), &raw mut error) };
-        assert!(!blame.is_null(), "{}", take_error(&mut error));
-        let blame_ref = unsafe { &*blame };
-        assert_eq!(blame_ref.len, 1);
-        let range = unsafe { &*blame_ref.ranges };
-        assert_eq!((range.start_line, range.line_count), (1, 3));
-        assert_eq!(hex(&range.commit), fx.rev_parse("v0.9^{commit}"));
-        unsafe { rcgit_blame_list_free(blame) };
-
-        let missing = CString::new("nope.txt").unwrap();
-        let blame = unsafe { rcgit_blame(repo, &raw const new, missing.as_ptr(), &raw mut error) };
-        assert!(blame.is_null());
-        assert!(take_error(&mut error).contains("blame file"));
-
         let list = unsafe { rcgit_diff_trees(repo, ptr::null(), &raw const old, &raw mut error) };
         assert!(!list.is_null(), "NULL from means the empty tree");
         assert_eq!(
@@ -4536,6 +4552,49 @@ mod tests {
         };
         assert!(diff.is_null(), "a malformed oid is not an absent side");
         assert!(take_error(&mut error).contains("malformed"));
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn blame_reports_ranges_and_a_file_over_the_limit() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let new = resolve(repo, "main");
+
+        let path = CString::new("README.md").unwrap();
+        let blame =
+            unsafe { rcgit_blame(repo, &raw const new, path.as_ptr(), 1 << 20, &raw mut error) };
+        assert!(!blame.is_null(), "{}", take_error(&mut error));
+        let blame_ref = unsafe { &*blame };
+        assert_eq!(blame_ref.kind, RcGitBlameKind::Ranges);
+        assert_eq!(blame_ref.len, 1);
+        let range = unsafe { &*blame_ref.ranges };
+        assert_eq!((range.start_line, range.line_count), (1, 3));
+        assert_eq!(hex(&range.commit), fx.rev_parse("v0.9^{commit}"));
+        unsafe { rcgit_blame_list_free(blame) };
+
+        let blame = unsafe { rcgit_blame(repo, &raw const new, path.as_ptr(), 4, &raw mut error) };
+        assert!(!blame.is_null(), "{}", take_error(&mut error));
+        let blame_ref = unsafe { &*blame };
+        assert_eq!(blame_ref.kind, RcGitBlameKind::TooLarge);
+        assert_eq!((blame_ref.len, blame_ref.limit), (0, 4));
+        assert!(blame_ref.ranges.is_null());
+        assert_eq!(blame_ref.size, README.len() as u64);
+        unsafe { rcgit_blame_list_free(blame) };
+
+        let missing = CString::new("nope.txt").unwrap();
+        let blame = unsafe {
+            rcgit_blame(
+                repo,
+                &raw const new,
+                missing.as_ptr(),
+                1 << 20,
+                &raw mut error,
+            )
+        };
+        assert!(blame.is_null());
+        assert!(take_error(&mut error).contains("blame file"));
         unsafe { rcgit_repo_free(repo) };
     }
 

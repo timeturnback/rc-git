@@ -107,6 +107,14 @@ typedef enum RcGitLineEnd {
   RcGitLineEnd_None = 2,
 } RcGitLineEnd;
 
+// What a blame produced.
+typedef enum RcGitBlameKind {
+  // `ranges` is filled.
+  RcGitBlameKind_Ranges = 0,
+  // The file is over the limit; `size` and `limit` are filled, no history was walked.
+  RcGitBlameKind_TooLarge = 1,
+} RcGitBlameKind;
+
 // How a file on disk relates to the same path in the compared tree.
 typedef enum RcGitWorktreeStatus {
   // Content and kind match the tree entry.
@@ -417,10 +425,16 @@ typedef struct RcGitBlameRange {
 
 // Every blame range of one file, ordered by line number.
 typedef struct RcGitBlameList {
-  // `len` ranges.
+  // Which fields are meaningful.
+  enum RcGitBlameKind kind;
+  // `len` ranges. `Ranges` only.
   struct RcGitBlameRange *ranges;
   // Number of ranges.
   size_t len;
+  // Size of the file at the tip in bytes. `TooLarge` only.
+  uint64_t size;
+  // The limit passed to `rcgit_blame`.
+  uint64_t limit;
 } RcGitBlameList;
 
 // One entry of a working-tree directory listing.
@@ -943,8 +957,9 @@ void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 // Attributes every line of the file at `path` in commit `tip` to the commit that introduced
 // it. This walks history, so its cost grows with the history between `tip` and the commit
 // that introduced the oldest surviving line — up to the whole ancestry for a file with a line
-// from the first commit; call it for the file on screen, never in bulk. Release with
-// `rcgit_blame_list_free`.
+// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
+// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
+// walk reaches in history are not size-checked. Release with `rcgit_blame_list_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -952,6 +967,7 @@ void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 struct RcGitBlameList *rcgit_blame(const struct RcGitRepo *repo,
                                    const struct RcGitOid *tip,
                                    const char *path,
+                                   uint64_t limit,
                                    char **error);
 
 // Releases a value from `rcgit_blame`.
