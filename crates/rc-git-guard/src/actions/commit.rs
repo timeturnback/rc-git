@@ -414,7 +414,9 @@ fn recorded_file_kind(
 
 /// The edit for committing only `stamps` of `path`: the diff is recomputed with the same
 /// code that built the UI's hunks, every stamp must match a current hunk exactly, and the
-/// selected new-side ranges are spliced onto the HEAD blob.
+/// selected new-side ranges are spliced onto the HEAD blob. The file is read before and after
+/// that diff and must not change between the two, so the splice uses the bytes the stamps were
+/// checked against.
 fn spliced_edit(
     repo: &gix::Repository,
     repo_path: &Path,
@@ -438,11 +440,15 @@ fn spliced_edit(
             path: path.to_owned(),
         });
     }
+    let new = regular_file_bytes(work_dir, path)?;
     verified_hunks(repo_path, OP, path, entry.oid, stamps)?;
+    if regular_file_bytes(work_dir, path)? != new {
+        return Err(ActionError::HunkMismatch {
+            path: path.to_owned(),
+        });
+    }
 
     let old = blob_data(repo, OP, path, entry.oid)?;
-    let full = workfile::join_under(work_dir, path, OP)?;
-    let new = std::fs::read(&full).map_err(git_err(OP, path))?;
     let mut ordered = stamps.to_vec();
     ordered.sort_by_key(|stamp| (stamp.old_start, stamp.old_lines));
     let spliced =
@@ -456,6 +462,23 @@ fn spliced_edit(
         oid,
         kind: entry.mode.into(),
     })
+}
+
+/// The bytes of `path` on disk, read without following a symlink. Only a regular file can be
+/// committed by hunk: a symlink, directory or missing file is a type change that has to be
+/// committed whole, so it reports a mismatch.
+fn regular_file_bytes(work_dir: &Path, path: &str) -> ActionResult<Vec<u8>> {
+    match workfile::disk_entry(work_dir, path, OP)? {
+        workfile::DiskEntry::Present {
+            data,
+            kind: EntryKind::Blob | EntryKind::BlobExecutable,
+        } => Ok(data),
+        workfile::DiskEntry::Present { .. }
+        | workfile::DiskEntry::Directory
+        | workfile::DiskEntry::Absent => Err(ActionError::HunkMismatch {
+            path: path.to_owned(),
+        }),
+    }
 }
 
 /// The current hunks of `path`'s worktree diff against the blob `old`, computed by the same

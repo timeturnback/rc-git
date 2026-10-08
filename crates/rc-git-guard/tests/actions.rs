@@ -948,6 +948,42 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_hunk_commit_of_a_file_replaced_by_a_symlink_is_refused() {
+        let fx = Fixture::standard();
+        let outside = Fixture::empty_dir();
+        outside.write("outside.txt", b"SECRET-LINE-1\nline 2\n");
+        let target = outside.path().join("outside.txt");
+        fx.remove("alpha.txt");
+        fx.symlink(target.to_str().unwrap(), "alpha.txt");
+        let found = stamps(&fx, "alpha.txt");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "first hunk",
+            explicit(),
+            Some(commit_id(&head)),
+            &[FileSelection::Hunks {
+                path: "alpha.txt".to_owned(),
+                hunks: found,
+            }],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::HunkMismatch { path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+        assert!(
+            !fx.git_output(&["cat-file", "-p", "HEAD:alpha.txt"])
+                .contains("SECRET"),
+            "the link target's bytes never reach a commit"
+        );
+    }
+
+    #[test]
     fn an_empty_hunk_list_refuses_the_commit_and_names_the_path() {
         let fx = Fixture::standard();
         let policy = Policy::default();
