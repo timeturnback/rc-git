@@ -161,13 +161,17 @@ pub enum ActionError {
         /// The policy's message, ready to show.
         reason: String,
     },
-    /// The action needs a typed confirmation and the input did not match.
-    #[error("{op} '{name}': the typed confirmation did not match")]
+    /// The action needs a typed confirmation and the input was missing or did not match.
+    #[error("{op} '{name}': {}; type '{phrase}' to confirm", confirmation_problem(*.given))]
     NotConfirmed {
         /// What was being done.
         op: &'static str,
         /// The ref involved.
         name: String,
+        /// The text the user must type.
+        phrase: String,
+        /// Whether any input was given; empty or whitespace-only input counts as none.
+        given: bool,
     },
     /// The branch is checked out; deleting it would strand `HEAD`.
     #[error("cannot delete '{name}': it is the checked-out branch")]
@@ -575,11 +579,21 @@ fn authorize(
         .authorize(action, input)
         .map_err(|refusal| match refusal {
             Refusal::Denied(reason) => ActionError::Denied { reason },
-            Refusal::NotConfirmed => ActionError::NotConfirmed {
+            Refusal::NotConfirmed { phrase } => ActionError::NotConfirmed {
                 op,
                 name: name.to_owned(),
+                phrase,
+                given: input.is_some_and(|typed| !typed.trim().is_empty()),
             },
         })
+}
+
+fn confirmation_problem(given: bool) -> &'static str {
+    if given {
+        "the typed confirmation did not match"
+    } else {
+        "no typed confirmation was given"
+    }
 }
 
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {

@@ -395,12 +395,26 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
 }
 
 /// What the command line can do about `err` that the guard's message cannot name: the guard
-/// says "pass an identity", the CLI knows that is `--author`.
-fn cli_hint(err: &anyhow::Error) -> &'static str {
+/// says "pass an identity", the CLI knows that is `--author`; it says what to type, the CLI
+/// knows that is `--confirm`.
+fn cli_hint(err: &anyhow::Error) -> String {
     match err.downcast_ref::<ActionError>() {
-        Some(ActionError::MissingIdentity) => " (--author \"Name <email>\")",
-        Some(_) | None => "",
+        Some(ActionError::MissingIdentity) => " (--author \"Name <email>\")".to_owned(),
+        Some(ActionError::NotConfirmed { phrase, .. }) => {
+            format!(" (rerun with --confirm {})", shell_word(phrase))
+        }
+        Some(_) | None => String::new(),
     }
+}
+
+/// `word` as one shell word: bare when it holds only characters no shell treats specially,
+/// single-quoted otherwise.
+fn shell_word(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./@+:,%".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// One cancel flag for every remote step of the command, set by SIGINT or SIGTERM so the guard
@@ -1764,5 +1778,12 @@ mod tests {
     #[test]
     fn bytes_that_are_not_utf8_print_in_octal() {
         assert_eq!(quoted(b"caf\xe9\xff"), br#""caf\351\377""#);
+    }
+    #[test]
+    fn confirm_hint_quotes_a_phrase_only_when_the_shell_would_split_it() {
+        assert_eq!(crate::shell_word("feature/x-1.2"), "feature/x-1.2");
+        assert_eq!(crate::shell_word("a$b"), "'a$b'");
+        assert_eq!(crate::shell_word("it's"), r"'it'\''s'");
+        assert_eq!(crate::shell_word(""), "''");
     }
 }

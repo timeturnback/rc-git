@@ -149,6 +149,11 @@ fn deleting_an_unmerged_branch_demands_the_name_and_writes_a_backup() {
 
     let err = delete_branch(fx.path(), &policy, "feature", Some("wrong")).unwrap_err();
     assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "delete branch 'feature': the typed confirmation did not match; \
+         type 'feature' to confirm"
+    );
     let listing = refs(&fx);
     assert!(listing.contains("refs/heads/feature"), "nothing happened");
     assert!(!listing.contains("refs/rc-git/backup"), "no backup either");
@@ -228,6 +233,16 @@ fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
 
     let err = delete_tag(fx.path(), &policy, "v1.0", None).unwrap_err();
     assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "delete tag 'v1.0': no typed confirmation was given; type 'v1.0' to confirm"
+    );
+    let blank = delete_tag(fx.path(), &policy, "v1.0", Some("  ")).unwrap_err();
+    assert_eq!(
+        blank.to_string(),
+        err.to_string(),
+        "blank input counts as none"
+    );
 
     let deleted = delete_tag(fx.path(), &policy, "v1.0", Some(" v1.0 ")).unwrap();
     assert_eq!(

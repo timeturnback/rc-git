@@ -1233,6 +1233,18 @@ fn the_stash_verbs_round_trip() {
 
     let out = rc_git(&["stash-drop", path, "0"]);
     assert_eq!(out.status.code(), Some(1), "drop needs --confirm drop");
+    assert_eq!(
+        stderr(&out),
+        "error: stash drop 'refs/stash': no typed confirmation was given; \
+         type 'drop' to confirm (rerun with --confirm drop)\n"
+    );
+    let out = rc_git(&["stash-drop", path, "0", "--confirm", "drpo"]);
+    assert_eq!(out.status.code(), Some(1), "a wrong phrase is refused");
+    assert!(
+        stderr(&out).contains("did not match; type 'drop' to confirm (rerun with --confirm drop)"),
+        "{}",
+        stderr(&out)
+    );
     let out = rc_git(&["stash-drop", path, "0", "--confirm", "drop"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "refs/rc-git/backup/stash/0\n");

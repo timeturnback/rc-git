@@ -74,7 +74,10 @@ pub(crate) enum Refusal {
     /// The policy denies the action outright; the reason is ready to show.
     Denied(String),
     /// The action needs a confirmation and the input did not answer it.
-    NotConfirmed,
+    NotConfirmed {
+        /// The text the challenge asks the user to type.
+        phrase: String,
+    },
 }
 
 /// Which branches are protected and what each action needs.
@@ -222,9 +225,14 @@ impl Policy {
     ) -> Result<Confirmation, Refusal> {
         match self.evaluate(action) {
             Decision::Allow => Ok(Confirmation { backup_ref: false }),
-            Decision::Confirm(challenge) => challenge
-                .verify(input.unwrap_or(""))
-                .ok_or(Refusal::NotConfirmed),
+            Decision::Confirm(challenge) => {
+                challenge
+                    .verify(input.unwrap_or(""))
+                    .ok_or_else(|| Refusal::NotConfirmed {
+                        // A challenge without a phrase verifies any input, so it never gets here.
+                        phrase: challenge.typed_phrase().unwrap_or_default().to_owned(),
+                    })
+            }
             Decision::Deny { reason } => Err(Refusal::Denied(reason)),
         }
     }

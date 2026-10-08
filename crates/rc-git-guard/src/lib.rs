@@ -480,12 +480,16 @@ mod tests {
         };
         assert_eq!(
             policy.authorize(&delete, None),
-            Err(Refusal::NotConfirmed),
+            Err(Refusal::NotConfirmed {
+                phrase: "v1".to_owned()
+            }),
             "a typed phrase is not answered by no input"
         );
         assert_eq!(
             policy.authorize(&delete, Some("v2")),
-            Err(Refusal::NotConfirmed)
+            Err(Refusal::NotConfirmed {
+                phrase: "v1".to_owned()
+            })
         );
         let confirmed = policy.authorize(&delete, Some(" v1\n")).unwrap();
         assert!(
