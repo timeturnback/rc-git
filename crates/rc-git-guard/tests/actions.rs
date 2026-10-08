@@ -687,6 +687,77 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_nested_edit_rewrites_its_folder_and_keeps_the_sibling_tree() {
+        let fx = Fixture::standard();
+        fx.write("src/lib.rs", b"pub fn two() -> u32 {\n    2\n}\n");
+        commit_whole(&fx, &["src/lib.rs"]);
+        assert_eq!(
+            fx.git_output(&["show", "HEAD:src/lib.rs"]),
+            "pub fn two() -> u32 {\n    2\n}"
+        );
+        assert_eq!(
+            fx.git_output(&["show", "HEAD:src/main.rs"]),
+            fx.git_output(&["show", "HEAD~1:src/main.rs"]),
+            "the untouched file in the rewritten folder is kept"
+        );
+        assert_eq!(
+            fx.rev_parse("HEAD:docs"),
+            fx.rev_parse("HEAD~1:docs"),
+            "an untouched sibling folder keeps its tree id"
+        );
+        assert_index_matches_head(&fx, "src/lib.rs");
+    }
+
+    #[test]
+    fn removing_the_last_file_of_a_folder_drops_the_folder() {
+        let fx = Fixture::standard();
+        fx.remove("docs/guide.md");
+        commit_whole(&fx, &["docs/guide.md"]);
+        assert_eq!(fx.git_output(&["ls-tree", "HEAD", "docs"]), "");
+        fx.git(&["fsck", "--strict", "--no-dangling"]);
+        assert_index_matches_head(&fx, "docs/guide.md");
+    }
+
+    #[test]
+    fn overlapping_and_duplicate_selections_are_refused_and_head_is_unchanged() {
+        let fx = Fixture::standard();
+        fx.remove("src");
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+        let cases: [&[&str]; 3] = [
+            &["src", "src/lib.rs"],
+            &["src/lib.rs", "src"],
+            &["alpha.txt", "alpha.txt"],
+        ];
+        for selection in cases {
+            let case = selection.join(" ");
+            let selections: Vec<FileSelection> = selection.iter().map(|path| whole(path)).collect();
+            let err = commit(
+                fx.path(),
+                &Policy::default(),
+                "overlap",
+                explicit(),
+                Some(commit_id(&head)),
+                &selections,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ActionError::Git {
+                        op: "build tree",
+                        ..
+                    }
+                ),
+                "{case}: {err}"
+            );
+            assert!(err.to_string().contains("overlap"), "{case}: {err}");
+            assert_eq!(fx.rev_parse("HEAD"), head, "{case}: nothing moved");
+        }
+    }
+
+    #[test]
     fn a_held_index_lock_refuses_the_commit_before_the_branch_moves() {
         let fx = Fixture::standard();
         let lock = fx.path().join(".git/index.lock");
@@ -1649,6 +1720,43 @@ mod stash {
             std::fs::read(fx.path().join("brand-new.txt")).unwrap(),
             b"untracked goes in too\n"
         );
+    }
+
+    #[test]
+    fn a_nested_path_stashes_and_pops_with_real_git() {
+        let fx = Fixture::standard();
+        fx.write("src/lib.rs", b"pub fn two() -> u32 {\n    2\n}\n");
+
+        stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["src/lib.rs".to_owned()],
+            None,
+            explicit(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fx.git_output(&["show", "stash@{0}:src/lib.rs"]),
+            "pub fn two() -> u32 {\n    2\n}"
+        );
+        assert_eq!(
+            fx.rev_parse("stash@{0}:docs"),
+            fx.rev_parse("HEAD:docs"),
+            "an untouched sibling folder keeps its tree id"
+        );
+        assert_eq!(
+            fx.rev_parse("stash@{0}:src/main.rs"),
+            fx.rev_parse("HEAD:src/main.rs")
+        );
+        assert_eq!(porcelain(&fx), "");
+
+        fx.git(&["stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read(fx.path().join("src/lib.rs")).unwrap(),
+            b"pub fn two() -> u32 {\n    2\n}\n"
+        );
+        assert_eq!(porcelain(&fx), " M src/lib.rs");
     }
 
     #[test]
