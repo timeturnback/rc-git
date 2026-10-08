@@ -1196,6 +1196,75 @@ impl Out<*mut c_char> {
         }
         self.set(export_string(message.to_string()));
     }
+
+    /// The value of the required argument `arg` of `op`, or `None` after reporting it NULL.
+    fn required<T>(&self, op: &str, arg: &str, value: Option<T>) -> Option<T> {
+        if value.is_none() {
+            self.report(bad_arg(op, arg, &Fault::Null));
+        }
+        value
+    }
+
+    /// The value of the argument `arg` of `op`, or `None` after reporting why it was refused.
+    fn valid<T>(&self, op: &str, arg: &str, value: Result<T, Fault>) -> Option<T> {
+        self.read(op, value.map_err(|fault| BadArg::new(arg, fault)))
+    }
+
+    /// The value read from a nested argument of `op`, or `None` after reporting the part of
+    /// it that was refused.
+    fn read<T>(&self, op: &str, value: Result<T, BadArg>) -> Option<T> {
+        match value {
+            Ok(value) => Some(value),
+            Err(bad) => {
+                self.report(bad_arg(op, &bad.arg, &bad.fault));
+                None
+            }
+        }
+    }
+}
+
+/// Why a caller's argument was refused.
+#[derive(Debug)]
+enum Fault {
+    /// A required pointer was NULL.
+    Null,
+    /// An `RcGitOid` whose `len` names no supported hash.
+    Malformed { len: usize },
+    /// A list that must hold at least one entry held none.
+    Empty,
+}
+
+impl Display for Fault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => f.write_str("NULL"),
+            Self::Malformed { len } => write!(f, "malformed (len {len})"),
+            Self::Empty => f.write_str("empty"),
+        }
+    }
+}
+
+/// A refused part of a nested argument, named by its path from the parameter
+/// (`request.files[2].path`).
+#[derive(Debug)]
+struct BadArg {
+    arg: String,
+    fault: Fault,
+}
+
+impl BadArg {
+    fn new(arg: impl Into<String>, fault: Fault) -> Self {
+        Self {
+            arg: arg.into(),
+            fault,
+        }
+    }
+}
+
+/// The message for an argument the caller got wrong: the function, the argument, and why,
+/// as in `rcgit_blob_read: oid is malformed (len 33)`.
+fn bad_arg(op: &str, arg: &str, fault: &Fault) -> String {
+    format!("{op}: {arg} is {fault}")
 }
 
 /// # Safety
@@ -1220,25 +1289,29 @@ unsafe fn repo_arg<'a>(repo: *const RcGitRepo) -> Option<&'a Repository> {
 
 /// # Safety
 /// `oid` is NULL or points to a readable `RcGitOid`.
-unsafe fn oid_arg(oid: *const RcGitOid) -> Option<Oid> {
+unsafe fn oid_arg(oid: *const RcGitOid) -> Result<Oid, Fault> {
     if oid.is_null() {
-        return None;
+        return Err(Fault::Null);
     }
     // SAFETY: forwarded from this function's contract.
-    unsafe { *oid }.to_oid()
+    let oid = unsafe { *oid };
+    oid.to_oid().ok_or(Fault::Malformed {
+        len: usize::from(oid.len),
+    })
 }
 
 /// Distinguishes an intentionally absent id from a malformed one: NULL means "no blob here"
-/// and yields `Ok(None)`; a readable id yields `Ok(Some(_))`; a malformed id yields `Err(())`.
+/// and yields `Ok(None)`; a readable id yields `Ok(Some(_))`; a malformed id yields
+/// `Err(Fault::Malformed)`.
 ///
 /// # Safety
 /// `oid` is NULL or points to a readable `RcGitOid`.
-unsafe fn optional_oid_arg(oid: *const RcGitOid) -> Result<Option<Oid>, ()> {
+unsafe fn optional_oid_arg(oid: *const RcGitOid) -> Result<Option<Oid>, Fault> {
     if oid.is_null() {
         return Ok(None);
     }
     // SAFETY: forwarded from this function's contract.
-    unsafe { oid_arg(oid) }.map(Some).ok_or(())
+    unsafe { oid_arg(oid) }.map(Some)
 }
 
 fn export_string(bytes: impl Into<Vec<u8>>) -> *mut c_char {
@@ -1324,8 +1397,7 @@ pub unsafe extern "C" fn rcgit_repo_open(
 ) -> *mut RcGitRepo {
     // SAFETY: forwarded from this function's contract.
     let (path, error) = unsafe { (bytes_arg(path), Out::new(error)) };
-    let Some(path) = path else {
-        error.report("path is NULL");
+    let Some(path) = error.required("rcgit_repo_open", "path", path) else {
         return ptr::null_mut();
     };
     match Repository::open(Path::new(OsStr::from_bytes(path))) {
@@ -1386,8 +1458,7 @@ pub unsafe extern "C" fn rcgit_head(
 ) -> *mut RcGitHead {
     // SAFETY: forwarded from this function's contract.
     let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
-    let Some(repo) = repo else {
-        error.report("repo is NULL");
+    let Some(repo) = error.required("rcgit_head", "repo", repo) else {
         return ptr::null_mut();
     };
     match repo.head() {
@@ -1416,8 +1487,7 @@ pub unsafe extern "C" fn rcgit_default_branch(
 ) -> *mut c_char {
     // SAFETY: forwarded from this function's contract.
     let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
-    let Some(repo) = repo else {
-        error.report("repo is NULL");
+    let Some(repo) = error.required("rcgit_default_branch", "repo", repo) else {
         return ptr::null_mut();
     };
     match repo.default_branch() {
@@ -1451,8 +1521,7 @@ pub unsafe extern "C" fn rcgit_refs(
 ) -> *mut RcGitRefList {
     // SAFETY: forwarded from this function's contract.
     let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
-    let Some(repo) = repo else {
-        error.report("repo is NULL");
+    let Some(repo) = error.required("rcgit_refs", "repo", repo) else {
         return ptr::null_mut();
     };
     let listing = match repo.refs() {
@@ -1510,10 +1579,13 @@ pub unsafe extern "C" fn rcgit_tree_entries(
     tree: *const RcGitOid,
     error: *mut *mut c_char,
 ) -> *mut RcGitTreeList {
+    const OP: &str = "rcgit_tree_entries";
     // SAFETY: forwarded from this function's contract.
     let (repo, tree, error) = unsafe { (repo_arg(repo), oid_arg(tree), Out::new(error)) };
-    let (Some(repo), Some(tree)) = (repo, tree) else {
-        error.report("repo or tree is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tree) = error.valid(OP, "tree", tree) else {
         return ptr::null_mut();
     };
     match repo.tree_entries(tree) {
@@ -1556,6 +1628,7 @@ pub unsafe extern "C" fn rcgit_entry_at_path(
     path: *const c_char,
     error: *mut *mut c_char,
 ) -> *mut RcGitTreeEntry {
+    const OP: &str = "rcgit_entry_at_path";
     // SAFETY: forwarded from this function's contract.
     let (repo, root, path, error) = unsafe {
         (
@@ -1565,8 +1638,13 @@ pub unsafe extern "C" fn rcgit_entry_at_path(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(root), Some(path)) = (repo, root, path) else {
-        error.report("repo, root, or path is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(root) = error.valid(OP, "root", root) else {
+        return ptr::null_mut();
+    };
+    let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
     let path = String::from_utf8_lossy(path);
@@ -1603,10 +1681,13 @@ pub unsafe extern "C" fn rcgit_blob_read(
     limit: u64,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlob {
+    const OP: &str = "rcgit_blob_read";
     // SAFETY: forwarded from this function's contract.
     let (repo, oid, error) = unsafe { (repo_arg(repo), oid_arg(oid), Out::new(error)) };
-    let (Some(repo), Some(oid)) = (repo, oid) else {
-        error.report("repo or oid is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(oid) = error.valid(OP, "oid", oid) else {
         return ptr::null_mut();
     };
     let limit = limit.min(u64::from(u32::MAX));
@@ -1690,11 +1771,14 @@ pub unsafe extern "C" fn rcgit_blob_size(
     out: *mut u64,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_blob_size";
     // SAFETY: forwarded from this function's contract.
     let (repo, oid, out, error) =
         unsafe { (repo_arg(repo), oid_arg(oid), Out::new(out), Out::new(error)) };
-    let (Some(repo), Some(oid)) = (repo, oid) else {
-        error.report("repo or oid is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return RCGIT_ERROR;
+    };
+    let Some(oid) = error.valid(OP, "oid", oid) else {
         return RCGIT_ERROR;
     };
     match repo.blob_size(oid) {
@@ -1723,10 +1807,13 @@ pub unsafe extern "C" fn rcgit_log(
     limit: usize,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitList {
+    const OP: &str = "rcgit_log";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, error) = unsafe { (repo_arg(repo), oid_arg(tip), Out::new(error)) };
-    let (Some(repo), Some(tip)) = (repo, tip) else {
-        error.report("repo or tip is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tip) = error.valid(OP, "tip", tip) else {
         return ptr::null_mut();
     };
     match repo.log(tip, skip, limit) {
@@ -1766,10 +1853,13 @@ pub unsafe extern "C" fn rcgit_commit(
     oid: *const RcGitOid,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommit {
+    const OP: &str = "rcgit_commit";
     // SAFETY: forwarded from this function's contract.
     let (repo, oid, error) = unsafe { (repo_arg(repo), oid_arg(oid), Out::new(error)) };
-    let (Some(repo), Some(oid)) = (repo, oid) else {
-        error.report("repo or oid is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(oid) = error.valid(OP, "oid", oid) else {
         return ptr::null_mut();
     };
     match repo.commit(oid) {
@@ -1803,10 +1893,13 @@ pub unsafe extern "C" fn rcgit_commit_details(
     oid: *const RcGitOid,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitDetail {
+    const OP: &str = "rcgit_commit_details";
     // SAFETY: forwarded from this function's contract.
     let (repo, oid, error) = unsafe { (repo_arg(repo), oid_arg(oid), Out::new(error)) };
-    let (Some(repo), Some(oid)) = (repo, oid) else {
-        error.report("repo or oid is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(oid) = error.valid(OP, "oid", oid) else {
         return ptr::null_mut();
     };
     match repo.commit_details(oid) {
@@ -1857,6 +1950,7 @@ pub unsafe extern "C" fn rcgit_path_history(
     page: RcGitScanPage,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitPage {
+    const OP: &str = "rcgit_path_history";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, path, error) = unsafe {
         (
@@ -1866,8 +1960,13 @@ pub unsafe extern "C" fn rcgit_path_history(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(tip), Some(path)) = (repo, tip, path) else {
-        error.report("repo, tip, or path is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tip) = error.valid(OP, "tip", tip) else {
+        return ptr::null_mut();
+    };
+    let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
     match repo.path_history(
@@ -1928,6 +2027,7 @@ pub unsafe extern "C" fn rcgit_search_commits(
     page: RcGitScanPage,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitPage {
+    const OP: &str = "rcgit_search_commits";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, message, author, error) = unsafe {
         (
@@ -1938,8 +2038,10 @@ pub unsafe extern "C" fn rcgit_search_commits(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(tip)) = (repo, tip) else {
-        error.report("repo or tip is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tip) = error.valid(OP, "tip", tip) else {
         return ptr::null_mut();
     };
     let core_filter = CommitFilter {
@@ -1972,6 +2074,7 @@ pub unsafe extern "C" fn rcgit_diff_trees(
     to: *const RcGitOid,
     error: *mut *mut c_char,
 ) -> *mut RcGitTreeChangeList {
+    const OP: &str = "rcgit_diff_trees";
     // SAFETY: forwarded from this function's contract.
     let (repo, from, to, error) = unsafe {
         (
@@ -1981,8 +2084,13 @@ pub unsafe extern "C" fn rcgit_diff_trees(
             Out::new(error),
         )
     };
-    let (Some(repo), Ok(from), Some(to)) = (repo, from, to) else {
-        error.report("repo or to is NULL, or an oid is malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(from) = error.valid(OP, "from", from) else {
+        return ptr::null_mut();
+    };
+    let Some(to) = error.valid(OP, "to", to) else {
         return ptr::null_mut();
     };
     match repo.diff_trees(from, to) {
@@ -2028,6 +2136,7 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
     context: u32,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlobDiff {
+    const OP: &str = "rcgit_diff_blobs";
     // SAFETY: forwarded from this function's contract.
     let (repo, old, new, error) = unsafe {
         (
@@ -2037,8 +2146,13 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
             Out::new(error),
         )
     };
-    let (Some(repo), Ok(old), Ok(new)) = (repo, old, new) else {
-        error.report("repo is NULL or an oid is malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(old) = error.valid(OP, "old", old) else {
+        return ptr::null_mut();
+    };
+    let Some(new) = error.valid(OP, "new", new) else {
         return ptr::null_mut();
     };
     match repo.diff_blobs(old, new, limit, context) {
@@ -2122,6 +2236,7 @@ pub unsafe extern "C" fn rcgit_blame(
     since: i64,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlameList {
+    const OP: &str = "rcgit_blame";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, path, error) = unsafe {
         (
@@ -2131,8 +2246,13 @@ pub unsafe extern "C" fn rcgit_blame(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(tip), Some(path)) = (repo, tip, path) else {
-        error.report("repo, tip, or path is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tip) = error.valid(OP, "tip", tip) else {
+        return ptr::null_mut();
+    };
+    let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
     let since = (since != i64::MIN).then_some(since);
@@ -2194,6 +2314,7 @@ pub unsafe extern "C" fn rcgit_worktree_entries(
     dir: *const c_char,
     error: *mut *mut c_char,
 ) -> *mut RcGitWorktreeList {
+    const OP: &str = "rcgit_worktree_entries";
     // SAFETY: forwarded from this function's contract.
     let (repo, tree, dir, error) = unsafe {
         (
@@ -2203,8 +2324,13 @@ pub unsafe extern "C" fn rcgit_worktree_entries(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(tree), Some(dir)) = (repo, tree, dir) else {
-        error.report("repo, tree, or dir is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tree) = error.valid(OP, "tree", tree) else {
+        return ptr::null_mut();
+    };
+    let Some(dir) = error.required(OP, "dir", dir) else {
         return ptr::null_mut();
     };
     match repo.worktree_entries(Some(tree), &String::from_utf8_lossy(dir)) {
@@ -2263,10 +2389,13 @@ pub unsafe extern "C" fn rcgit_worktree_read(
     limit: u64,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlob {
+    const OP: &str = "rcgit_worktree_read";
     // SAFETY: forwarded from this function's contract.
     let (repo, path, error) = unsafe { (repo_arg(repo), bytes_arg(path), Out::new(error)) };
-    let (Some(repo), Some(path)) = (repo, path) else {
-        error.report("repo or path is NULL");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
     let limit = limit.min(u64::from(u32::MAX));
@@ -2294,10 +2423,13 @@ pub unsafe extern "C" fn rcgit_worktree_status(
     max_scan: usize,
     error: *mut *mut c_char,
 ) -> *mut RcGitStatusList {
+    const OP: &str = "rcgit_worktree_status";
     // SAFETY: forwarded from this function's contract.
     let (repo, tree, error) = unsafe { (repo_arg(repo), optional_oid_arg(tree), Out::new(error)) };
-    let (Some(repo), Ok(tree)) = (repo, tree) else {
-        error.report("repo is NULL or tree is malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tree) = error.valid(OP, "tree", tree) else {
         return ptr::null_mut();
     };
     match repo.worktree_status(tree, max_scan) {
@@ -2353,10 +2485,13 @@ pub unsafe extern "C" fn rcgit_worktree_files(
     max_scan: usize,
     error: *mut *mut c_char,
 ) -> *mut RcGitWorktreeFileList {
+    const OP: &str = "rcgit_worktree_files";
     // SAFETY: forwarded from this function's contract.
     let (repo, tree, error) = unsafe { (repo_arg(repo), oid_arg(tree), Out::new(error)) };
-    let (Some(repo), Some(tree)) = (repo, tree) else {
-        error.report("repo or tree is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(tree) = error.valid(OP, "tree", tree) else {
         return ptr::null_mut();
     };
     match repo.worktree_files(Some(tree), max_scan) {
@@ -2409,6 +2544,7 @@ pub unsafe extern "C" fn rcgit_diff_worktree_file(
     context: u32,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlobDiff {
+    const OP: &str = "rcgit_diff_worktree_file";
     // SAFETY: forwarded from this function's contract.
     let (repo, old, path, error) = unsafe {
         (
@@ -2418,8 +2554,13 @@ pub unsafe extern "C" fn rcgit_diff_worktree_file(
             Out::new(error),
         )
     };
-    let (Some(repo), Ok(old), Some(path)) = (repo, old, path) else {
-        error.report("repo or path is NULL, or the oid is malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(old) = error.valid(OP, "old", old) else {
+        return ptr::null_mut();
+    };
+    let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
     match repo.diff_worktree_file(old, &String::from_utf8_lossy(path), limit, context) {
@@ -2443,8 +2584,7 @@ pub unsafe extern "C" fn rcgit_stash_list(
 ) -> *mut RcGitStashList {
     // SAFETY: forwarded from this function's contract.
     let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
-    let Some(repo) = repo else {
-        error.report("repo is NULL");
+    let Some(repo) = error.required("rcgit_stash_list", "repo", repo) else {
         return ptr::null_mut();
     };
     match repo.stash_list() {
@@ -2495,8 +2635,7 @@ pub unsafe extern "C" fn rcgit_highlight(
 ) -> *mut RcGitHighlightList {
     // SAFETY: forwarded from this function's contract.
     let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
-    let Some(name) = name else {
-        error.report("name is NULL");
+    let Some(name) = error.required("rcgit_highlight", "name", name) else {
         return ptr::null_mut();
     };
     let data: &[u8] = if data.is_null() || len == 0 {
@@ -2559,8 +2698,7 @@ pub unsafe extern "C" fn rcgit_import_links(
 ) -> *mut RcGitImportLinkList {
     // SAFETY: forwarded from this function's contract.
     let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
-    let Some(name) = name else {
-        error.report("name is NULL");
+    let Some(name) = error.required("rcgit_import_links", "name", name) else {
         return ptr::null_mut();
     };
     let data: &[u8] = if data.is_null() || len == 0 {
@@ -2622,11 +2760,14 @@ pub unsafe extern "C" fn rcgit_guard_plan_branch_delete(
     name: *const c_char,
     error: *mut *mut c_char,
 ) -> *mut RcGitGuardDecision {
+    const OP: &str = "rcgit_guard_plan_branch_delete";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, name, error) =
         unsafe { (bytes_arg(repo_path), bytes_arg(name), Out::new(error)) };
-    let (Some(repo_path), Some(name)) = (repo_path, name) else {
-        error.report("repo_path or name is NULL");
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return ptr::null_mut();
+    };
+    let Some(name) = error.required(OP, "name", name) else {
         return ptr::null_mut();
     };
     let path = Path::new(OsStr::from_bytes(repo_path));
@@ -2679,6 +2820,7 @@ pub unsafe extern "C" fn rcgit_guard_branch_create(
     revspec: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_branch_create";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, name, revspec, error) = unsafe {
         (
@@ -2687,6 +2829,15 @@ pub unsafe extern "C" fn rcgit_guard_branch_create(
             bytes_arg(revspec),
             Out::new(error),
         )
+    };
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(name) = error.required(OP, "name", name) else {
+        return RCGIT_ERROR;
+    };
+    let Some(revspec) = error.required(OP, "revspec", revspec) else {
+        return RCGIT_ERROR;
     };
     create_ref_with(create_branch, repo_path, name, revspec, &error)
 }
@@ -2717,6 +2868,7 @@ pub unsafe extern "C" fn rcgit_guard_checkout(
     out: *mut RcGitCheckoutOutcome,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_checkout";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, branch, out, error) = unsafe {
         (
@@ -2726,8 +2878,10 @@ pub unsafe extern "C" fn rcgit_guard_checkout(
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(branch)) = (repo_path, branch) else {
-        error.report("repo_path or branch is NULL");
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(branch) = error.required(OP, "branch", branch) else {
         return RCGIT_ERROR;
     };
     match checkout_branch(
@@ -2762,6 +2916,7 @@ pub unsafe extern "C" fn rcgit_guard_tag_create(
     revspec: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_tag_create";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, name, revspec, error) = unsafe {
         (
@@ -2770,6 +2925,15 @@ pub unsafe extern "C" fn rcgit_guard_tag_create(
             bytes_arg(revspec),
             Out::new(error),
         )
+    };
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(name) = error.required(OP, "name", name) else {
+        return RCGIT_ERROR;
+    };
+    let Some(revspec) = error.required(OP, "revspec", revspec) else {
+        return RCGIT_ERROR;
     };
     create_ref_with(create_tag, repo_path, name, revspec, &error)
 }
@@ -2790,6 +2954,7 @@ pub unsafe extern "C" fn rcgit_guard_branch_delete(
     backup: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_branch_delete";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, name, input, outs) = unsafe {
         (
@@ -2801,6 +2966,12 @@ pub unsafe extern "C" fn rcgit_guard_branch_delete(
                 error: Out::new(error),
             },
         )
+    };
+    let Some(repo_path) = outs.error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(name) = outs.error.required(OP, "name", name) else {
+        return RCGIT_ERROR;
     };
     delete_ref_with(delete_branch, repo_path, name, input, &outs)
 }
@@ -2817,6 +2988,7 @@ pub unsafe extern "C" fn rcgit_guard_tag_delete(
     backup: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_tag_delete";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, name, input, outs) = unsafe {
         (
@@ -2828,6 +3000,12 @@ pub unsafe extern "C" fn rcgit_guard_tag_delete(
                 error: Out::new(error),
             },
         )
+    };
+    let Some(repo_path) = outs.error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(name) = outs.error.required(OP, "name", name) else {
+        return RCGIT_ERROR;
     };
     delete_ref_with(delete_tag, repo_path, name, input, &outs)
 }
@@ -2881,18 +3059,14 @@ type DeleteRef = fn(&Path, &Policy, &str, Option<&str>) -> ActionResult<Deleted>
 /// The guard call behind `rcgit_guard_stash_pop` and `rcgit_guard_stash_drop`.
 type RemoveStash = fn(&Path, &Policy, usize, Option<&str>) -> ActionResult<Deleted>;
 
-/// Runs `create` on the converted arguments of a ref-creating entry point.
+/// Runs `create` on the checked arguments of a ref-creating entry point.
 fn create_ref_with(
     create: CreateRef,
-    repo_path: Option<&[u8]>,
-    name: Option<&[u8]>,
-    revspec: Option<&[u8]>,
+    repo_path: &[u8],
+    name: &[u8],
+    revspec: &[u8],
     error: &Out<*mut c_char>,
 ) -> i32 {
-    let (Some(repo_path), Some(name), Some(revspec)) = (repo_path, name, revspec) else {
-        error.report("repo_path, name, or revspec is NULL");
-        return RCGIT_ERROR;
-    };
     finish_action(
         create(
             Path::new(OsStr::from_bytes(repo_path)),
@@ -2904,18 +3078,14 @@ fn create_ref_with(
     )
 }
 
-/// Runs `delete` on the converted arguments of a ref-deleting entry point.
+/// Runs `delete` on the checked arguments of a ref-deleting entry point.
 fn delete_ref_with(
     delete: DeleteRef,
-    repo_path: Option<&[u8]>,
-    name: Option<&[u8]>,
+    repo_path: &[u8],
+    name: &[u8],
     input: Option<&[u8]>,
     outs: &DeletedOuts,
 ) -> i32 {
-    let (Some(repo_path), Some(name)) = (repo_path, name) else {
-        outs.error.report("repo_path or name is NULL");
-        return RCGIT_ERROR;
-    };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     finish_deleted(
         delete(
@@ -2929,18 +3099,14 @@ fn delete_ref_with(
     )
 }
 
-/// Runs `remove` on the converted arguments of a stash-removing entry point.
+/// Runs `remove` on the checked arguments of a stash-removing entry point.
 fn remove_stash_with(
     remove: RemoveStash,
-    repo_path: Option<&[u8]>,
+    repo_path: &[u8],
     index: usize,
     input: Option<&[u8]>,
     outs: &DeletedOuts,
 ) -> i32 {
-    let Some(repo_path) = repo_path else {
-        outs.error.report("repo_path is NULL");
-        return RCGIT_ERROR;
-    };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     finish_deleted(
         remove(
@@ -3044,54 +3210,68 @@ pub extern "C" fn rcgit_guard_plan_discard(files: usize) -> *mut RcGitGuardDecis
     export(RcGitGuardDecision::export(decision, false))
 }
 
-/// Reads a caller-owned array of NUL-terminated strings into owned lossy strings.
+/// Reads a caller-owned array of NUL-terminated strings into owned lossy strings. `arg` names
+/// the array in the error: `paths` NULL with a nonzero `len`, or `paths[2]` NULL.
 ///
 /// # Safety
 /// `ptr` is NULL (with `len` 0) or points to `len` readable, non-NULL `char *`s.
-unsafe fn read_string_array(ptr: *const *const c_char, len: usize) -> Option<Vec<String>> {
+unsafe fn read_string_array(
+    arg: &str,
+    ptr: *const *const c_char,
+    len: usize,
+) -> Result<Vec<String>, BadArg> {
     if len == 0 {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
     if ptr.is_null() {
-        return None;
+        return Err(BadArg::new(arg, Fault::Null));
     }
     // SAFETY: forwarded from this function's contract.
     let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
     let mut strings = Vec::with_capacity(len);
-    for item in raw {
+    for (index, item) in raw.iter().enumerate() {
         // SAFETY: forwarded from this function's contract.
-        let bytes = unsafe { bytes_arg(*item) }?;
+        let Some(bytes) = (unsafe { bytes_arg(*item) }) else {
+            return Err(BadArg::new(format!("{arg}[{index}]"), Fault::Null));
+        };
         strings.push(String::from_utf8_lossy(bytes).into_owned());
     }
-    Some(strings)
+    Ok(strings)
 }
 
-/// Reads a caller-owned array of `RcGitCommitFile` into owned selections. `None` when a path
-/// is NULL, or when `hunks` is NULL with a nonzero `hunk_count`.
+/// Reads a caller-owned array of `RcGitCommitFile` into owned selections. Refused when the
+/// array or a path is NULL, or when `hunks` is NULL with a nonzero `hunk_count`; `arg` names
+/// the array in the error, as in `request.files[2].path`.
 ///
 /// # Safety
 /// `ptr` points to `len` readable `RcGitCommitFile`s whose inner pointers honor that
 /// struct's contract.
-unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec<FileSelection>> {
+unsafe fn read_selections(
+    arg: &str,
+    ptr: *const RcGitCommitFile,
+    len: usize,
+) -> Result<Vec<FileSelection>, BadArg> {
     if len == 0 {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
     if ptr.is_null() {
-        return None;
+        return Err(BadArg::new(arg, Fault::Null));
     }
     // SAFETY: forwarded from this function's contract.
     let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
     let mut selections = Vec::with_capacity(len);
-    for file in raw {
+    for (index, file) in raw.iter().enumerate() {
         // SAFETY: forwarded from this function's contract.
-        let path_bytes = unsafe { bytes_arg(file.path) }?;
+        let Some(path_bytes) = (unsafe { bytes_arg(file.path) }) else {
+            return Err(BadArg::new(format!("{arg}[{index}].path"), Fault::Null));
+        };
         let path = String::from_utf8_lossy(path_bytes).into_owned();
         let stamps: &[RcGitHunkStamp] = match (file.hunks.is_null(), file.hunk_count) {
             (true, 0) => {
                 selections.push(FileSelection::Whole { path });
                 continue;
             }
-            (true, _) => return None,
+            (true, _) => return Err(BadArg::new(format!("{arg}[{index}].hunks"), Fault::Null)),
             (false, 0) => &[],
             // SAFETY: forwarded from this function's contract.
             (false, count) => unsafe { std::slice::from_raw_parts(file.hunks, count) },
@@ -3109,21 +3289,25 @@ unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec
                 .collect(),
         });
     }
-    Some(selections)
+    Ok(selections)
 }
 
 /// The fallback identity when both halves were given. It is recorded only when the
 /// repository's own config sets no `user.name`/`user.email`, so the identity the app remembered
 /// never overrides one the repository chose.
 /// The author a commit or stash records: the caller's fallback, if any, behind the
-/// repository's own config. `None` when `fallback` is set but a field of it is NULL.
+/// repository's own config. Refused when `fallback` is set but a field of it is NULL; `arg`
+/// names the struct in the error, as in `request.fallback.email`.
 ///
 /// # Safety
 /// `fallback` is NULL or points to a readable `RcGitFallbackIdentity` whose fields are NULL
 /// or NUL-terminated strings.
-unsafe fn fallback_author(fallback: *const RcGitFallbackIdentity) -> Option<Author> {
+unsafe fn fallback_author(
+    arg: &str,
+    fallback: *const RcGitFallbackIdentity,
+) -> Result<Author, BadArg> {
     if fallback.is_null() {
-        return Some(Author {
+        return Ok(Author {
             explicit: None,
             fallback: None,
         });
@@ -3131,9 +3315,15 @@ unsafe fn fallback_author(fallback: *const RcGitFallbackIdentity) -> Option<Auth
     // SAFETY: forwarded from this function's contract.
     let (name, email) = unsafe {
         let fallback = &*fallback;
-        (bytes_arg(fallback.name)?, bytes_arg(fallback.email)?)
+        (bytes_arg(fallback.name), bytes_arg(fallback.email))
     };
-    Some(Author {
+    let Some(name) = name else {
+        return Err(BadArg::new(format!("{arg}.name"), Fault::Null));
+    };
+    let Some(email) = email else {
+        return Err(BadArg::new(format!("{arg}.email"), Fault::Null));
+    };
+    Ok(Author {
         explicit: None,
         fallback: Some(Identity {
             name: String::from_utf8_lossy(name).into_owned(),
@@ -3176,28 +3366,33 @@ struct OwnedCommitRequest {
 }
 
 impl OwnedCommitRequest {
-    /// Reads the caller's request. `None` when it, its message, a selection path, a counted
-    /// hunk list, or a field of a set fallback is NULL, or when a set `expected_head` is not
-    /// a valid id.
+    /// Reads the caller's request. Refused, naming the part, when it, its message, a
+    /// selection path, a counted hunk list, or a field of a set fallback is NULL, or when a
+    /// set `expected_head` is malformed.
     ///
     /// # Safety
     /// `request` is NULL or points to a readable `RcGitCommitRequest` per that struct's
     /// contract.
-    unsafe fn read(request: *const RcGitCommitRequest) -> Option<Self> {
+    unsafe fn read(request: *const RcGitCommitRequest) -> Result<Self, BadArg> {
         if request.is_null() {
-            return None;
+            return Err(BadArg::new("request", Fault::Null));
         }
         // SAFETY: forwarded from this function's contract.
         let (message, author, expected_head, selections) = unsafe {
             let request = &*request;
             (
-                bytes_arg(request.message)?,
-                fallback_author(request.fallback)?,
-                optional_oid_arg(request.expected_head).ok()?,
-                read_selections(request.files, request.file_count)?,
+                bytes_arg(request.message),
+                fallback_author("request.fallback", request.fallback)?,
+                optional_oid_arg(request.expected_head),
+                read_selections("request.files", request.files, request.file_count)?,
             )
         };
-        Some(Self {
+        let Some(message) = message else {
+            return Err(BadArg::new("request.message", Fault::Null));
+        };
+        let expected_head =
+            expected_head.map_err(|fault| BadArg::new("request.expected_head", fault))?;
+        Ok(Self {
             message: String::from_utf8_lossy(message).into_owned(),
             author,
             expected_head,
@@ -3228,26 +3423,26 @@ struct OwnedStashRequest {
 }
 
 impl OwnedStashRequest {
-    /// Reads the caller's request. `None` when it, a path, or a field of a set fallback is
-    /// NULL.
+    /// Reads the caller's request. Refused, naming the part, when it, a path, or a field of a
+    /// set fallback is NULL.
     ///
     /// # Safety
     /// `request` is NULL or points to a readable `RcGitStashRequest` per that struct's
     /// contract.
-    unsafe fn read(request: *const RcGitStashRequest) -> Option<Self> {
+    unsafe fn read(request: *const RcGitStashRequest) -> Result<Self, BadArg> {
         if request.is_null() {
-            return None;
+            return Err(BadArg::new("request", Fault::Null));
         }
         // SAFETY: forwarded from this function's contract.
         let (paths, message, author) = unsafe {
             let request = &*request;
             (
-                read_string_array(request.paths, request.path_count)?,
+                read_string_array("request.paths", request.paths, request.path_count)?,
                 bytes_arg(request.message),
-                fallback_author(request.fallback)?,
+                fallback_author("request.fallback", request.fallback)?,
             )
         };
-        Some(Self {
+        Ok(Self {
             paths,
             message: message.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
             author,
@@ -3287,8 +3482,8 @@ pub unsafe extern "C" fn rcgit_guard_configured_identity(
 ) -> *mut RcGitIdentity {
     // SAFETY: forwarded from this function's contract.
     let (repo_path, error) = unsafe { (bytes_arg(repo_path), Out::new(error)) };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_configured_identity", "repo_path", repo_path)
+    else {
         return ptr::null_mut();
     };
     match configured_identity(Path::new(OsStr::from_bytes(repo_path))) {
@@ -3333,6 +3528,7 @@ pub unsafe extern "C" fn rcgit_guard_commit(
     out: *mut *mut RcGitCommitResult,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_commit";
     let out_missing = out.is_null();
     // SAFETY: forwarded from this function's contract.
     let (repo_path, request, input, out, error) = unsafe {
@@ -3344,13 +3540,16 @@ pub unsafe extern "C" fn rcgit_guard_commit(
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(request), false) = (repo_path, request, out_missing) else {
-        error.report(
-            "repo_path, request, its message, out, a selection path, a counted hunk list, or a \
-             fallback name or email is NULL, or expected_head is not a valid id",
-        );
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
+    let Some(request) = error.read(OP, request) else {
+        return RCGIT_ERROR;
+    };
+    if out_missing {
+        error.report(bad_arg(OP, "out", &Fault::Null));
+        return RCGIT_ERROR;
+    }
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     match commit(
         Path::new(OsStr::from_bytes(repo_path)),
@@ -3401,6 +3600,7 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_stash_push";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, request, input, error) = unsafe {
         (
@@ -3410,8 +3610,10 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(request)) = (repo_path, request) else {
-        error.report("repo_path, request, a path, or a fallback name or email is NULL");
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(request) = error.read(OP, request) else {
         return RCGIT_ERROR;
     };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3469,8 +3671,7 @@ pub unsafe extern "C" fn rcgit_guard_stash_apply(
     // SAFETY: forwarded from this function's contract.
     let (repo_path, input, error) =
         unsafe { (bytes_arg(repo_path), bytes_arg(input), Out::new(error)) };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_stash_apply", "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3510,6 +3711,12 @@ pub unsafe extern "C" fn rcgit_guard_stash_pop(
             },
         )
     };
+    let Some(repo_path) = outs
+        .error
+        .required("rcgit_guard_stash_pop", "repo_path", repo_path)
+    else {
+        return RCGIT_ERROR;
+    };
     remove_stash_with(stash_pop, repo_path, index, input, &outs)
 }
 
@@ -3536,6 +3743,12 @@ pub unsafe extern "C" fn rcgit_guard_stash_drop(
             },
         )
     };
+    let Some(repo_path) = outs
+        .error
+        .required("rcgit_guard_stash_drop", "repo_path", repo_path)
+    else {
+        return RCGIT_ERROR;
+    };
     remove_stash_with(stash_drop, repo_path, index, input, &outs)
 }
 
@@ -3554,17 +3767,20 @@ pub unsafe extern "C" fn rcgit_guard_discard(
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_discard";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, paths, input, error) = unsafe {
         (
             bytes_arg(repo_path),
-            read_string_array(paths, len),
+            read_string_array("paths", paths, len),
             bytes_arg(input),
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(paths)) = (repo_path, paths) else {
-        error.report("repo_path or a path is NULL");
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(paths) = error.read(OP, paths) else {
         return RCGIT_ERROR;
     };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3595,19 +3811,28 @@ pub unsafe extern "C" fn rcgit_guard_discard_hunks(
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_discard_hunks";
     // SAFETY: forwarded from this function's contract.
     let (repo_path, path, stamps, input, error) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(path),
-            (!stamps.is_null() && len > 0)
-                .then(|| std::slice::from_raw_parts(stamps, len).to_vec()),
+            match (stamps.is_null(), len) {
+                (_, 0) => Err(Fault::Empty),
+                (true, _) => Err(Fault::Null),
+                (false, len) => Ok(std::slice::from_raw_parts(stamps, len).to_vec()),
+            },
             bytes_arg(input),
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(path), Some(stamps)) = (repo_path, path, stamps) else {
-        error.report("repo_path, path, or stamps is NULL");
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(path) = error.required(OP, "path", path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(stamps) = error.valid(OP, "stamps", stamps) else {
         return RCGIT_ERROR;
     };
     let stamps: Vec<HunkStamp> = stamps
@@ -3645,6 +3870,7 @@ pub unsafe extern "C" fn rcgit_resolve(
     out: *mut RcGitOid,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_resolve";
     // SAFETY: forwarded from this function's contract.
     let (repo, spec, out, error) = unsafe {
         (
@@ -3654,8 +3880,10 @@ pub unsafe extern "C" fn rcgit_resolve(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(spec)) = (repo, spec) else {
-        error.report("repo or spec is NULL");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return RCGIT_ERROR;
+    };
+    let Some(spec) = error.required(OP, "spec", spec) else {
         return RCGIT_ERROR;
     };
     finish_oid(repo.resolve(&String::from_utf8_lossy(spec)), &out, &error)
@@ -3672,6 +3900,7 @@ pub unsafe extern "C" fn rcgit_resolve_tree(
     out: *mut RcGitOid,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_resolve_tree";
     // SAFETY: forwarded from this function's contract.
     let (repo, spec, out, error) = unsafe {
         (
@@ -3681,8 +3910,10 @@ pub unsafe extern "C" fn rcgit_resolve_tree(
             Out::new(error),
         )
     };
-    let (Some(repo), Some(spec)) = (repo, spec) else {
-        error.report("repo or spec is NULL");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return RCGIT_ERROR;
+    };
+    let Some(spec) = error.required(OP, "spec", spec) else {
         return RCGIT_ERROR;
     };
     finish_oid(
@@ -3704,11 +3935,14 @@ pub unsafe extern "C" fn rcgit_tree_of(
     out: *mut RcGitOid,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_tree_of";
     // SAFETY: forwarded from this function's contract.
     let (repo, oid, out, error) =
         unsafe { (repo_arg(repo), oid_arg(oid), Out::new(out), Out::new(error)) };
-    let (Some(repo), Some(oid)) = (repo, oid) else {
-        error.report("repo or oid is NULL or malformed");
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return RCGIT_ERROR;
+    };
+    let Some(oid) = error.valid(OP, "oid", oid) else {
         return RCGIT_ERROR;
     };
     finish_oid(repo.tree_of(oid), &out, &error)
@@ -3738,7 +3972,7 @@ fn finish_oid(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_oid_hex(oid: *const RcGitOid) -> *mut c_char {
     // SAFETY: forwarded from this function's contract.
-    let Some(oid) = (unsafe { oid_arg(oid) }) else {
+    let Ok(oid) = (unsafe { oid_arg(oid) }) else {
         return ptr::null_mut();
     };
     export_string(oid.to_hex())
@@ -3938,8 +4172,8 @@ pub unsafe extern "C" fn rcgit_guard_remote_preflight(
 ) -> *mut RcGitRemoteStatus {
     // SAFETY: forwarded from this function's contract.
     let (repo_path, error) = unsafe { (bytes_arg(repo_path), Out::new(error)) };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_remote_preflight", "repo_path", repo_path)
+    else {
         return ptr::null_mut();
     };
     match upstream_status(Path::new(OsStr::from_bytes(repo_path))) {
@@ -4048,8 +4282,7 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
             Out::new(error),
         )
     };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_fetch", "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
     let repo_path = Path::new(OsStr::from_bytes(repo_path));
@@ -4087,8 +4320,7 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
             Out::new(error),
         )
     };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_pull_ff", "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
     match pull_fast_forward(Path::new(OsStr::from_bytes(repo_path)), &Policy::default()) {
@@ -4136,8 +4368,7 @@ pub unsafe extern "C" fn rcgit_guard_push(
             Out::new(error),
         )
     };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
+    let Some(repo_path) = error.required("rcgit_guard_push", "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
     let never = Cancel::new();
@@ -4230,7 +4461,7 @@ mod tests {
     fn open_reports_null_and_bad_paths() {
         let mut error = ptr::null_mut();
         assert!(unsafe { rcgit_repo_open(ptr::null(), &raw mut error) }.is_null());
-        assert_eq!(take_error(&mut error), "path is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_repo_open: path is NULL");
 
         let fx = Fixture::empty_dir();
         let path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
@@ -4273,7 +4504,7 @@ mod tests {
         unsafe { rcgit_head_free(head) };
 
         assert!(unsafe { rcgit_head(ptr::null(), &raw mut error) }.is_null());
-        assert_eq!(take_error(&mut error), "repo is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_head: repo is NULL");
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4381,7 +4612,7 @@ mod tests {
         let entry =
             unsafe { rcgit_entry_at_path(repo, ptr::null(), path.as_ptr(), &raw mut error) };
         assert!(entry.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_entry_at_path: root is NULL");
 
         let blob = resolve(repo, "main:README.md");
         let list = unsafe { rcgit_tree_entries(repo, &raw const blob, &raw mut error) };
@@ -4442,6 +4673,20 @@ mod tests {
             unsafe { rcgit_blob_size(repo, &raw const tree, &raw mut size, &raw mut error) };
         assert_eq!(status, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("expected a blob"));
+
+        let blob = unsafe { rcgit_blob_read(repo, ptr::null(), 1 << 20, &raw mut error) };
+        assert!(blob.is_null());
+        assert_eq!(take_error(&mut error), "rcgit_blob_read: oid is NULL");
+        let malformed = RcGitOid {
+            bytes: [0; 32],
+            len: 33,
+        };
+        let blob = unsafe { rcgit_blob_read(repo, &raw const malformed, 1 << 20, &raw mut error) };
+        assert!(blob.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_blob_read: oid is malformed (len 33)"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4572,7 +4817,7 @@ mod tests {
             )
         };
         assert!(null.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_path_history: path is NULL");
         unsafe { rcgit_commit_page_free(ptr::null_mut()) };
         unsafe { rcgit_repo_free(repo) };
     }
@@ -4642,7 +4887,7 @@ mod tests {
             )
         };
         assert!(null.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_search_commits: repo is NULL");
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4709,7 +4954,7 @@ mod tests {
         let status =
             unsafe { rcgit_resolve(ptr::null(), spec.as_ptr(), &raw mut out, &raw mut error) };
         assert_eq!(status, RCGIT_ERROR);
-        assert_eq!(take_error(&mut error), "repo or spec is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_resolve: repo is NULL");
 
         let malformed = RcGitOid {
             bytes: [0; 32],
@@ -4718,7 +4963,10 @@ mod tests {
         let status =
             unsafe { rcgit_tree_of(repo, &raw const malformed, &raw mut out, &raw mut error) };
         assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("malformed"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_tree_of: oid is malformed (len 33)"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4818,7 +5066,7 @@ mod tests {
 
         let list = unsafe { rcgit_diff_trees(repo, &raw const old, ptr::null(), &raw mut error) };
         assert!(list.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_diff_trees: to is NULL");
 
         let malformed = RcGitOid {
             bytes: [0; 32],
@@ -4835,7 +5083,10 @@ mod tests {
             )
         };
         assert!(diff.is_null(), "a malformed oid is not an absent side");
-        assert!(take_error(&mut error).contains("malformed"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_diff_blobs: old is malformed (len 33)"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4951,7 +5202,10 @@ mod tests {
         let list =
             unsafe { rcgit_worktree_entries(repo, ptr::null(), dir.as_ptr(), &raw mut error) };
         assert!(list.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_worktree_entries: tree is NULL"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -5037,15 +5291,21 @@ mod tests {
         let list =
             unsafe { rcgit_worktree_status(ptr::null(), ptr::null(), 100_000, &raw mut error) };
         assert!(list.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_worktree_status: repo is NULL"
+        );
         let diff = unsafe {
             rcgit_diff_worktree_file(repo, ptr::null(), ptr::null(), 1 << 20, 3, &raw mut error)
         };
         assert!(diff.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_diff_worktree_file: path is NULL"
+        );
         let stashes = unsafe { rcgit_stash_list(ptr::null(), &raw mut error) };
         assert!(stashes.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_stash_list: repo is NULL");
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -5075,7 +5335,7 @@ mod tests {
 
         let list = unsafe { rcgit_worktree_files(repo, ptr::null(), 100_000, &raw mut error) };
         assert!(list.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_worktree_files: tree is NULL");
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -5129,7 +5389,10 @@ mod tests {
 
         let status = unsafe { rcgit_guard_remote_preflight(ptr::null(), &raw mut error) };
         assert!(status.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_remote_preflight: repo_path is NULL"
+        );
     }
 
     #[test]
@@ -5147,7 +5410,10 @@ mod tests {
             )
         };
         assert_eq!(code, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_fetch: repo_path is NULL"
+        );
 
         let mut pull_out = RcGitPullOutcome {
             new_head: RcGitOid::empty(),
@@ -5156,7 +5422,10 @@ mod tests {
         };
         let code = unsafe { rcgit_guard_pull_ff(ptr::null(), &raw mut pull_out, &raw mut error) };
         assert_eq!(code, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_pull_ff: repo_path is NULL"
+        );
 
         let mut push_out = RcGitPushOutcome {
             pushed_commits: 0,
@@ -5173,7 +5442,10 @@ mod tests {
             )
         };
         assert_eq!(code, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_push: repo_path is NULL"
+        );
 
         // A git:// remote is refused with RCGIT_ERROR before any connection is made.
         let fx = Fixture::standard();
@@ -5688,7 +5960,10 @@ mod tests {
 
         let missing = unsafe { rcgit_guard_configured_identity(ptr::null(), &raw mut error) };
         assert!(missing.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_configured_identity: repo_path is NULL"
+        );
     }
 
     #[test]
@@ -5765,7 +6040,7 @@ mod tests {
             )
         };
         assert_eq!(status, RCGIT_ERROR, "a NULL out is an argument error");
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(take_error(&mut error), "rcgit_guard_commit: out is NULL");
     }
 
     #[test]
@@ -5814,14 +6089,14 @@ mod tests {
         };
         let (status, message) = commit_against(&truncated);
         assert_eq!(status, RCGIT_ERROR);
-        assert!(
-            message.contains("expected_head is not a valid id"),
-            "{message}"
+        assert_eq!(
+            message,
+            "rcgit_guard_commit: request.expected_head is malformed (len 3)"
         );
 
         let (status, message) = commit_against(&commit_id(&fx.rev_parse("HEAD~1")));
         assert_eq!(status, RCGIT_ERROR);
-        assert!(!message.contains("not a valid id"), "{message}");
+        assert!(!message.contains("malformed"), "{message}");
         assert_eq!(
             fx.rev_parse("HEAD"),
             head,
@@ -5854,7 +6129,10 @@ mod tests {
         };
         assert_eq!(status, RCGIT_ERROR);
         assert!(result.is_null());
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_commit: repo_path is NULL"
+        );
 
         let status = unsafe {
             rcgit_guard_commit(
@@ -5866,7 +6144,10 @@ mod tests {
             )
         };
         assert_eq!(status, RCGIT_ERROR, "a NULL request is an argument error");
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_commit: request is NULL"
+        );
 
         let status = unsafe {
             rcgit_guard_discard_hunks(
@@ -5879,7 +6160,42 @@ mod tests {
             )
         };
         assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_discard_hunks: stamps is empty"
+        );
+
+        let status = unsafe {
+            rcgit_guard_discard_hunks(
+                repo_path.as_ptr(),
+                path.as_ptr(),
+                ptr::null(),
+                2,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_discard_hunks: stamps is NULL"
+        );
+
+        let paths = [path.as_ptr(), ptr::null()];
+        let status = unsafe {
+            rcgit_guard_discard(
+                repo_path.as_ptr(),
+                paths.as_ptr(),
+                paths.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_discard: paths[1] is NULL"
+        );
     }
 
     #[test]
@@ -5923,7 +6239,10 @@ mod tests {
             status, RCGIT_ERROR,
             "half a fallback is refused, not dropped"
         );
-        assert!(take_error(&mut error).contains("fallback name or email is NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_commit: request.fallback.email is NULL"
+        );
         assert_eq!(
             fx.rev_parse("HEAD"),
             head,
@@ -5945,12 +6264,18 @@ mod tests {
             )
         };
         assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("fallback name or email is NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_stash_push: request.fallback.email is NULL"
+        );
         let status = unsafe {
             rcgit_guard_stash_push(repo_path.as_ptr(), ptr::null(), ptr::null(), &raw mut error)
         };
         assert_eq!(status, RCGIT_ERROR, "a NULL request is an argument error");
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_stash_push: request is NULL"
+        );
         assert_eq!(fx.git_output(&["stash", "list"]), "");
     }
 
@@ -6109,7 +6434,7 @@ mod tests {
             hunk_count: 1,
         };
         let err = guarded_commit(&fx, &[uncounted]).unwrap_err();
-        assert!(err.contains("NULL"), "{err}");
+        assert_eq!(err, "rcgit_guard_commit: request.files[0].hunks is NULL");
         assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
@@ -6152,7 +6477,7 @@ mod tests {
 
         let list = unsafe { rcgit_highlight(ptr::null(), data.as_ptr(), 0, &raw mut error) };
         assert!(list.is_null());
-        assert_eq!(take_error(&mut error), "name is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_highlight: name is NULL");
     }
 
     #[test]
@@ -6199,7 +6524,7 @@ mod tests {
 
         let list = unsafe { rcgit_import_links(ptr::null(), data.as_ptr(), 0, &raw mut error) };
         assert!(list.is_null());
-        assert_eq!(take_error(&mut error), "name is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_import_links: name is NULL");
     }
 
     #[test]
@@ -6289,7 +6614,10 @@ mod tests {
             rcgit_guard_branch_create(ptr::null(), name.as_ptr(), rev.as_ptr(), &raw mut error)
         };
         assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_branch_create: repo_path is NULL"
+        );
     }
 
     #[test]
@@ -6311,7 +6639,7 @@ mod tests {
         unsafe { rcgit_repo_free(repo) };
 
         assert!(unsafe { rcgit_default_branch(ptr::null(), &raw mut error) }.is_null());
-        assert_eq!(take_error(&mut error), "repo is NULL");
+        assert_eq!(take_error(&mut error), "rcgit_default_branch: repo is NULL");
     }
 
     #[test]
@@ -6362,7 +6690,10 @@ mod tests {
             rcgit_guard_checkout(ptr::null(), branch.as_ptr(), &raw mut out, &raw mut error)
         };
         assert_eq!(status, RCGIT_ERROR);
-        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_checkout: repo_path is NULL"
+        );
     }
 
     #[test]
