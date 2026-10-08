@@ -2406,6 +2406,31 @@ mod stash {
     }
 
     #[test]
+    fn a_drop_while_the_stash_log_is_locked_changes_nothing() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let top = fx.rev_parse("refs/stash");
+        let log_before = std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap();
+        let refs_before = refs(&fx);
+        fx.write(".git/logs/refs/stash.lock", b"");
+
+        let err = stash_drop(fx.path(), &policy, 0, stash_oid(&fx, 0), Some("drop")).unwrap_err();
+        assert!(err.to_string().contains("stash drop"), "{err}");
+        assert_eq!(fx.rev_parse("refs/stash"), top, "the ref did not move");
+        assert_eq!(
+            std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap(),
+            log_before,
+            "no reflog line was appended or removed"
+        );
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+        assert_eq!(stash_list(&fx), "On main: two\nOn main: one");
+    }
+
+    #[test]
     fn dropping_past_a_junk_reflog_line_drops_the_entry_git_lists() {
         let fx = Fixture::standard();
         let policy = Policy::default();

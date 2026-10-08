@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
 use gix::ObjectId;
 use gix::refs::Target;
@@ -600,12 +601,37 @@ fn require_absent_or_base(
     }
 }
 
+/// How long a drop waits for `logs/refs/stash.lock`: gix's default ref-file lock timeout
+/// (`core.filesRefLockTimeout`), so a lock another writer holds briefly does not fail the drop.
+const LOG_LOCK_WAIT: Duration = Duration::from_millis(100);
+
+/// The reflog edit a drop makes, decided from one read of `logs/refs/stash`.
+struct DropPlan {
+    /// The stash commit the removed line records.
+    removed: ObjectId,
+    /// The commit `refs/stash` moves to when the newest entry is dropped.
+    new_top: Option<ObjectId>,
+    /// The commit `refs/stash` names once the ref update, if any, is done.
+    top: ObjectId,
+    /// The dropped entry is the only one: `refs/stash` and its log are deleted.
+    last: bool,
+    /// The reflog without the removed line, its newer neighbor re-chained.
+    kept: Vec<u8>,
+}
+
 /// Drops `stash@{index}`: backup ref, reflog line removal with re-chaining, and the
 /// `refs/stash` update or deletion. `index` counts the reflog lines git can read, newest
 /// first (see [`rc_git_core::stash_reflog_lines`]); unreadable lines stay as they are. The
-/// line removed must still record `expected`, or nothing is written. The log file is
-/// rewritten last, under a lock, so the spurious reflog line the ref update appends is erased
-/// again.
+/// line removed must still record `expected`, or nothing is written.
+///
+/// `logs/refs/stash.lock` is taken before the log is read and before anything is written, so
+/// a lock held elsewhere fails the drop with nothing changed, and `git reflog expire` or
+/// `git stash drop` (which take that lock) cannot interleave. `git stash push` appends while
+/// holding `refs/stash.lock` instead, which a gix transaction cannot share across the read
+/// and the rewrite, so it is not excluded: the log is re-read before the rewrite and a drop
+/// that would erase a line it did not plan from refuses with
+/// [`ActionError::StaleRepository`]. The rewrite also erases the spurious reflog line the
+/// ref update appends.
 fn drop_inner(
     repo: &gix::Repository,
     index: usize,
@@ -614,8 +640,54 @@ fn drop_inner(
     op: &'static str,
 ) -> ActionResult<Deleted> {
     let log_path = repo.common_dir().join("logs/refs/stash");
+    let lock = lock_log(&log_path, op)?;
     let raw = std::fs::read(&log_path).map_err(git_err(op, "refs/stash"))?;
-    let valid = rc_git_core::stash_reflog_lines(&raw);
+    let plan = plan_drop(&raw, index, expected, op)?;
+
+    let backup = if write_backup {
+        Some(write_backup_ref(
+            repo,
+            "stash",
+            &index.to_string(),
+            plan.removed,
+        )?)
+    } else {
+        None
+    };
+    let deleted = Deleted {
+        full_name: stash_name(index),
+        backup_ref: backup,
+    };
+
+    let current = PreviousValue::MustExistAndMatch(Target::Object(plan.removed));
+    if plan.last {
+        let edit = super::delete_edit("refs/stash", current, op)?;
+        super::apply_edit(repo, edit, op, "refs/stash")?;
+        return Ok(deleted);
+    }
+    if let Some(new_top) = plan.new_top {
+        let edit = super::update_edit(
+            "refs/stash",
+            current,
+            Target::Object(new_top),
+            "rc-git: stash drop",
+            op,
+        )?;
+        super::apply_edit(repo, edit, op, "refs/stash")?;
+    }
+    require_log_unchanged(repo, &log_path, &raw, &plan, op)?;
+    commit_log(lock, &plan.kept, op)?;
+    Ok(deleted)
+}
+
+/// Finds the line `stash@{index}` names in `raw` and builds the log without it.
+fn plan_drop(
+    raw: &[u8],
+    index: usize,
+    expected: ObjectId,
+    op: &'static str,
+) -> ActionResult<DropPlan> {
+    let valid = rc_git_core::stash_reflog_lines(raw);
     let Some(target) = index
         .checked_add(1)
         .and_then(|from_end| valid.len().checked_sub(from_end))
@@ -624,33 +696,20 @@ fn drop_inner(
     };
     let pieces: Vec<&[u8]> = raw.split(|byte| *byte == b'\n').collect();
     let position = valid[target].line;
-    let (removed_old, removed_new) = line_oids(pieces[position], op)?;
-    if removed_new != expected {
+    let (removed_old, removed) = line_oids(pieces[position], op)?;
+    if removed != expected {
         return Err(ActionError::StaleRepository { op });
     }
     let newer = valid.get(target + 1).map(|line| line.line);
-
-    let backup = if write_backup {
-        Some(write_backup_ref(
-            repo,
-            "stash",
-            &index.to_string(),
-            removed_new,
-        )?)
-    } else {
-        None
+    let new_top = match (newer, target.checked_sub(1)) {
+        (None, Some(below)) => Some(gix_oid(valid[below].oid, op)?),
+        (Some(_), _) | (None, None) => None,
     };
-
-    let full_name = stash_name(index);
-    if valid.len() == 1 {
-        let expected = PreviousValue::MustExistAndMatch(Target::Object(removed_new));
-        let edit = super::delete_edit("refs/stash", expected, op)?;
-        super::apply_edit(repo, edit, op, "refs/stash")?;
-        return Ok(Deleted {
-            full_name,
-            backup_ref: backup,
-        });
-    }
+    let top = match (new_top, valid.last()) {
+        (Some(new_top), _) => new_top,
+        (None, Some(newest)) => gix_oid(newest.oid, op)?,
+        (None, None) => return Err(ActionError::StaleRepository { op }),
+    };
 
     let mut kept: Vec<Vec<u8>> = Vec::with_capacity(pieces.len() - 1);
     for (current, line) in pieces.iter().enumerate() {
@@ -668,48 +727,80 @@ fn drop_inner(
             kept.push((*line).to_vec());
         }
     }
-
-    if newer.is_none() {
-        let new_top = gix_oid(valid[target - 1].oid, op)?;
-        let edit = super::update_edit(
-            "refs/stash",
-            PreviousValue::MustExistAndMatch(Target::Object(removed_new)),
-            Target::Object(new_top),
-            "rc-git: stash drop",
-            op,
-        )?;
-        super::apply_edit(repo, edit, op, "refs/stash")?;
-    }
-
-    rewrite_log(&log_path, &kept.join(&b'\n'), op)?;
-    Ok(Deleted {
-        full_name,
-        backup_ref: backup,
+    Ok(DropPlan {
+        removed,
+        new_top,
+        top,
+        last: valid.len() == 1,
+        kept: kept.join(&b'\n'),
     })
 }
 
-/// Replaces the stash reflog with exactly `content`, under a lock so nothing races git itself.
+/// The log must still be the `raw` bytes the drop was planned from, plus at most the one line
+/// the drop's own ref update appended, and `refs/stash` must name the top the drop expects:
+/// anything else is a writer the log lock does not exclude, whose line the rewrite would erase.
+fn require_log_unchanged(
+    repo: &gix::Repository,
+    log_path: &Path,
+    raw: &[u8],
+    plan: &DropPlan,
+    op: &'static str,
+) -> ActionResult<()> {
+    let stale = || ActionError::StaleRepository { op };
+    let now = std::fs::read(log_path).map_err(git_err(op, "refs/stash"))?;
+    let tail = now.strip_prefix(raw).ok_or_else(stale)?;
+    let own_line = match plan.new_top {
+        None => tail.is_empty(),
+        Some(new_top) => is_own_drop_line(tail, plan.removed, new_top),
+    };
+    if !own_line {
+        return Err(stale());
+    }
+    let reference = repo
+        .try_find_reference("refs/stash")
+        .map_err(git_err(op, "refs/stash"))?
+        .ok_or_else(stale)?;
+    if reference.target().try_id() != Some(plan.top.as_ref()) {
+        return Err(stale());
+    }
+    Ok(())
+}
+
+/// `tail` is exactly one reflog line moving `refs/stash` from `from` to `to`.
+fn is_own_drop_line(tail: &[u8], from: ObjectId, to: ObjectId) -> bool {
+    let Some(line) = tail.strip_suffix(b"\n") else {
+        return false;
+    };
+    !line.contains(&b'\n') && line_oids(line, "stash drop").is_ok_and(|oids| oids == (from, to))
+}
+
+/// Takes `logs/refs/stash.lock`, waiting up to [`LOG_LOCK_WAIT`] for another holder.
 #[expect(
     clippy::disallowed_methods,
     reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
 )]
-fn rewrite_log(log_path: &Path, content: &[u8], op: &'static str) -> ActionResult<()> {
-    let log_error = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
-        ActionError::git(op, "refs/stash", source)
-    };
-    let mut lock = gix::lock::File::acquire_to_update_resource(
+fn lock_log(log_path: &Path, op: &'static str) -> ActionResult<gix::lock::File> {
+    gix::lock::File::acquire_to_update_resource(
         log_path,
-        gix::lock::acquire::Fail::Immediately,
+        gix::lock::acquire::Fail::AfterDurationWithBackoff(LOG_LOCK_WAIT),
         None,
     )
-    .map_err(|source| log_error(Box::new(source)))?;
+    .map_err(|source| ActionError::git(op, "refs/stash", source))
+}
+
+/// Replaces the stash reflog with exactly `content` by committing the held lock.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+)]
+fn commit_log(mut lock: gix::lock::File, content: &[u8], op: &'static str) -> ActionResult<()> {
     {
         use std::io::Write;
         lock.write_all(content)
-            .map_err(|source| log_error(Box::new(source)))?;
+            .map_err(|source| ActionError::git(op, "refs/stash", source))?;
     }
     lock.commit()
-        .map_err(|source| log_error(Box::new(source)))?;
+        .map_err(|source| ActionError::git(op, "refs/stash", source))?;
     Ok(())
 }
 
