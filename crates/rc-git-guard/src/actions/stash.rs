@@ -212,7 +212,9 @@ fn write_stash_ref(
 /// # Errors
 /// [`ActionError::StaleRepository`] when `stash@{index}` is gone or is no longer `expected`;
 /// [`ActionError::DirtyPath`] when any touched path is not exactly at the stash's base
-/// state — nothing is written in either case.
+/// state; [`ActionError::Git`] naming the untracked files when the entry was made with
+/// `git stash -u` or `-a`, whose untracked side rc-git does not restore — nothing is written
+/// in any of these cases.
 pub fn stash_apply(
     repo_path: &Path,
     policy: &Policy,
@@ -223,6 +225,7 @@ pub fn stash_apply(
     const OP: &str = "stash apply";
     let repo = open(repo_path, OP, "refs/stash")?;
     let target = stash_entry_at(&repo, index, expected, OP)?;
+    refuse_untracked_side(&repo, index, target.oid, OP)?;
     let _proof = confirm(plan_stash_apply(policy), OP, "refs/stash", input)?;
     apply_inner(&repo, repo_path, target.oid, OP)
 }
@@ -232,7 +235,8 @@ pub fn stash_apply(
 /// [`stash_apply`] checks it, and again against the reflog line the drop removes.
 ///
 /// # Errors
-/// As [`stash_apply`]; a failed apply leaves the stash entry untouched. When the apply
+/// As [`stash_apply`], untracked files included; a failed apply leaves the stash entry
+/// untouched. When the apply
 /// succeeds but the drop fails, [`ActionError::Git`] with op `"stash pop: drop"` says the
 /// changes are already in the working tree, so the entry should be dropped, not popped again.
 pub fn stash_pop(
@@ -245,6 +249,7 @@ pub fn stash_pop(
     const OP: &str = "stash pop";
     let repo = open(repo_path, OP, "refs/stash")?;
     let target = stash_entry_at(&repo, index, expected, OP)?;
+    refuse_untracked_side(&repo, index, target.oid, OP)?;
     let decision = plan_stash_pop(policy, index, &target.message);
     let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
     apply_inner(&repo, repo_path, target.oid, OP)?;
@@ -280,6 +285,83 @@ pub fn stash_drop(
     let decision = plan_stash_drop(policy, index, &target.message);
     let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
     drop_inner(&repo, index, target.oid, challenge.backup_ref, OP)
+}
+
+/// How many untracked paths a refusal names before it says "and more".
+const UNTRACKED_SHOWN: usize = 5;
+
+/// Refuses an entry made with `git stash -u` or `-a`: its untracked files live in a third
+/// parent commit that apply does not restore, so applying it would bring back only part of
+/// the stash, and popping it would then drop the rest. The refusal names the files and hands
+/// the entry to git; at most [`UNTRACKED_SHOWN`] paths are read, so a stash of a whole
+/// ignored tree costs a few tree objects.
+fn refuse_untracked_side(
+    repo: &gix::Repository,
+    index: usize,
+    stash_commit: ObjectId,
+    op: &'static str,
+) -> ActionResult<()> {
+    let name = stash_name(index);
+    let commit = repo
+        .find_commit(stash_commit)
+        .map_err(|source| ActionError::git(op, stash_commit.to_string(), source))?;
+    let Some(untracked) = commit.parent_ids().nth(2).map(gix::Id::detach) else {
+        return Ok(());
+    };
+    let tree = tree_of(repo, op, untracked)?;
+    let mut paths = Vec::new();
+    collect_paths(repo, tree, "", &mut paths, op)?;
+    let mut listed = paths
+        .iter()
+        .take(UNTRACKED_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > UNTRACKED_SHOWN {
+        listed.push_str(" and more");
+    }
+    let (verb, done) = if op == "stash pop" {
+        ("pop", "popped")
+    } else {
+        ("apply", "applied")
+    };
+    Err(ActionError::git(
+        op,
+        name.clone(),
+        format!(
+            "it also holds untracked files ({listed}) that rc-git cannot restore, so nothing \
+             was {done}; run `git stash {verb} {name}` in a terminal"
+        ),
+    ))
+}
+
+/// Appends the file paths under `tree` to `paths`, depth first in tree order, until it holds
+/// one more than [`UNTRACKED_SHOWN`].
+fn collect_paths(
+    repo: &gix::Repository,
+    tree: ObjectId,
+    prefix: &str,
+    paths: &mut Vec<String>,
+    op: &'static str,
+) -> ActionResult<()> {
+    let found = repo
+        .find_tree(tree)
+        .map_err(|source| ActionError::git(op, tree.to_string(), source))?;
+    let decoded = found
+        .decode()
+        .map_err(|source| ActionError::git(op, tree.to_string(), source))?;
+    for entry in &decoded.entries {
+        if paths.len() > UNTRACKED_SHOWN {
+            break;
+        }
+        let path = format!("{prefix}{}", entry.filename);
+        if entry.mode.is_tree() {
+            collect_paths(repo, entry.oid.to_owned(), &format!("{path}/"), paths, op)?;
+        } else {
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// The restore half of apply and pop: refuse unless every touched path sits at the stash's

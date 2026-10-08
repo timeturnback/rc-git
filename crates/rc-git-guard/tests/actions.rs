@@ -1961,6 +1961,75 @@ mod stash {
     }
 
     #[test]
+    fn an_entry_with_untracked_files_is_refused_and_left_for_git() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"edited\n");
+        fx.write("precious.txt", b"precious\n");
+        fx.write("notes/draft.md", b"draft\n");
+        fx.git(&["stash", "push", "-u", "-q", "-m", "with untracked"]);
+        let shown = stash_oid(&fx, 0);
+        let refs_before = refs(&fx);
+
+        let err = stash_pop(fx.path(), &policy, 0, shown, None).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "stash pop", name, .. } if name == "stash@{0}"),
+            "{err}"
+        );
+        let message = err.to_string();
+        for expected in ["notes/draft.md", "precious.txt", "git stash pop stash@{0}"] {
+            assert!(message.contains(expected), "{message}");
+        }
+        let err = stash_apply(fx.path(), &policy, 0, shown, None).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ActionError::Git {
+                    op: "stash apply",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("git stash apply stash@{0}"),
+            "{err}"
+        );
+
+        assert_eq!(porcelain(&fx), "", "nothing was applied");
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+        assert_eq!(stash_list(&fx), "On main: with untracked");
+
+        fx.git(&["stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read(fx.path().join("precious.txt")).unwrap(),
+            b"precious\n",
+            "the entry git was handed still restores the untracked file"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"edited\n"
+        );
+    }
+
+    #[test]
+    fn an_untracked_refusal_names_a_few_files_and_says_there_are_more() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for n in 0..8 {
+            fx.write(&format!("new/{n}.txt"), b"x\n");
+        }
+        fx.git(&["stash", "push", "-u", "-q"]);
+
+        let err = stash_apply(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("(new/0.txt, new/1.txt, new/2.txt, new/3.txt, new/4.txt and more)"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn a_stash_push_also_unstages_the_stashed_paths() {
         let fx = Fixture::standard();
         fx.write("alpha.txt", b"staged\n");

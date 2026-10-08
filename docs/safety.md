@@ -152,7 +152,10 @@ The Changes tab's write paths add their own guarantees:
   name the entry by position and by the stash commit the list showed there, and refuse when
   that position now holds another entry; the pop and drop challenges name the entry and its
   message. Ticked untracked files go into the stash tree itself rather than git's
-  third-parent scheme; `git stash pop` recreates them all the same.
+  third-parent scheme; `git stash pop` recreates them all the same. An entry made with
+  `git stash -u` or `-a` carries that third parent, which rc-git does not restore, so apply
+  and pop refuse it before writing anything, name its untracked files, and hand it to
+  `git stash apply` or `git stash pop`; the entry stays in the list.
 - **Paths are checked before anything is touched.** Every path a commit, stash, discard,
   checkout, pull or stash apply would read, store or write passes git's own checkout rules
   first: no empty, `.` or `..` segment (so no leading, trailing or doubled `/`), no `.git`
