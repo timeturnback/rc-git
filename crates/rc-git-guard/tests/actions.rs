@@ -1696,6 +1696,53 @@ mod checkout {
     }
 
     #[test]
+    fn switching_thousands_of_paths_leaves_an_index_that_matches_the_target_tree() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        for i in 0..3000 {
+            fx.write(
+                &format!("d{:02}/f{i:05}.txt", i % 50),
+                format!("base {i}\n").as_bytes(),
+            );
+        }
+        fx.commit("base", "2024-01-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "other"]);
+        for i in (0..3000).step_by(3) {
+            fx.write(
+                &format!("d{:02}/f{i:05}.txt", i % 50),
+                format!("other {i}\n").as_bytes(),
+            );
+        }
+        for i in (1..750).step_by(3) {
+            fx.remove(&format!("d{:02}/f{i:05}.txt", i % 50));
+        }
+        for i in 3000..3250 {
+            fx.write(&format!("new/f{i:05}.txt"), format!("new {i}\n").as_bytes());
+        }
+        fx.commit("other", "2024-01-02T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "other").unwrap();
+
+        assert_eq!(outcome.files_changed, 1000 + 250 + 250);
+        assert_eq!(
+            fx.git_output(&["ls-files", "--stage"]).lines().count(),
+            3000 - 250 + 250,
+            "every entry appears once: no stale or duplicate entries survive"
+        );
+        assert_eq!(
+            fx.git_output(&["write-tree"]),
+            fx.rev_parse("other^{tree}"),
+            "the index content must be exactly the target tree"
+        );
+        assert_eq!(
+            porcelain(&fx),
+            "",
+            "the index stats must agree with the disk"
+        );
+    }
+
+    #[test]
     fn ref_edits_and_the_head_switch_line_share_one_reflog_identity() {
         let fx = Fixture::standard();
         create_branch(fx.path(), &Policy::default(), "topic", "main").unwrap();

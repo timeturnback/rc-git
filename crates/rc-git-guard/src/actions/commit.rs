@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gix::ObjectId;
-use gix::bstr::{BString, ByteSlice};
+use gix::bstr::{BStr, BString, ByteSlice};
 use gix::index::entry::Stat;
 use gix::objs::tree::EntryKind;
 use gix::refs::Target;
@@ -663,15 +663,22 @@ pub(in crate::actions) fn update_index(
     changes: &[IndexChange],
 ) -> ActionResult<()> {
     let LockedIndex { lock, mut file } = index;
-    for (path, change) in changes {
-        file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
+    // One pass over the index for every changed path: a removal per path rescans the whole
+    // index, which costs seconds when a switch touches thousands of paths in a large one. The
+    // map keeps the last change per path, as applying them in order would.
+    let by_path: BTreeMap<&BStr, &Option<(ObjectId, EntryKind, Stat)>> = changes
+        .iter()
+        .map(|(path, change)| (path.as_bytes().as_bstr(), change))
+        .collect();
+    file.remove_entries(|_, entry_path, _| by_path.contains_key(entry_path));
+    for (path, change) in &by_path {
         if let Some((oid, kind, stat)) = change {
             file.dangerously_push_entry(
                 *stat,
                 *oid,
                 gix::index::entry::Flags::empty(),
                 index_mode(*kind),
-                path.as_bytes().as_bstr(),
+                path,
             );
         }
     }
