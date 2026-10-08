@@ -12,7 +12,7 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
-use super::commit::{blob_data, tree_entry_at, tree_of, update_index};
+use super::commit::{IndexChange, blob_data, disk_stat, tree_entry_at, tree_of, update_index};
 use super::workfile::DiskEntry;
 use super::{ActionError, ActionResult, git_err, workfile};
 
@@ -266,7 +266,7 @@ pub(super) fn apply(
     changes: &[PathChange],
     op: &'static str,
 ) -> ActionResult<()> {
-    let mut index_changes: Vec<(String, Option<(ObjectId, EntryKind)>)> = Vec::new();
+    let mut index_changes: Vec<IndexChange> = Vec::new();
     for change in changes.iter().filter(|change| change.new.is_none()) {
         workfile::delete_file(op, work_dir, &change.path)?;
         index_changes.push((change.path.clone(), None));
@@ -275,10 +275,11 @@ pub(super) fn apply(
         if let Some((oid, kind)) = change.new {
             let data = blob_data(repo, op, &change.path, oid)?;
             workfile::restore_file(op, work_dir, &change.path, &data, kind)?;
-            index_changes.push((change.path.clone(), Some((oid, kind))));
+            let stat = disk_stat(work_dir, &change.path, op);
+            index_changes.push((change.path.clone(), Some((oid, kind, stat))));
         }
     }
-    update_index(repo, op, work_dir, &index_changes)
+    update_index(repo, op, &index_changes)
 }
 
 pub(super) fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {

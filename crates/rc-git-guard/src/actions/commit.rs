@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use gix::ObjectId;
 use gix::bstr::{BString, ByteSlice};
+use gix::index::entry::Stat;
 use gix::objs::tree::EntryKind;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
@@ -120,7 +121,7 @@ pub fn commit(
         OP,
     )?;
     super::apply_edit(&repo, edit, OP, &branch_ref)?;
-    update_index(&repo, OP, &work_dir, &index_changes)?;
+    update_index(&repo, OP, &index_changes)?;
 
     Ok(Committed {
         oid: commit_oid.to_string(),
@@ -131,8 +132,8 @@ pub fn commit(
     })
 }
 
-/// A path and the blob and kind the index records for it; `None` removes its entry.
-type IndexChange = (String, Option<(ObjectId, EntryKind)>);
+/// A path and the blob, kind and stat the index records for it; `None` removes its entry.
+pub(in crate::actions) type IndexChange = (String, Option<(ObjectId, EntryKind, Stat)>);
 
 /// The tree edits for every selection, and the index changes that make terminal
 /// `git status` agree once the commit lands.
@@ -146,19 +147,25 @@ fn selection_edits(
     let mut edits: BTreeMap<BString, Node> = BTreeMap::new();
     let mut index_changes: Vec<IndexChange> = Vec::new();
     for selection in selections {
-        let (path, edit) = match selection {
+        let (path, edit, stat) = match selection {
             FileSelection::Whole { path } => {
-                (path, whole_file_edit(repo, OP, work_dir, base_tree, path)?)
+                // Statted before the read: an edit landing after it changes the stat, so git
+                // rehashes the file instead of trusting it to match the committed blob.
+                let stat = disk_stat(work_dir, path, OP);
+                let edit = whole_file_edit(repo, OP, work_dir, base_tree, path)?;
+                (path, edit, stat)
             }
-            FileSelection::Hunks { path, hunks } => (
-                path,
-                spliced_edit(repo, repo_path, work_dir, base_tree, path, hunks)?,
-            ),
+            FileSelection::Hunks { path, hunks } => {
+                let edit = spliced_edit(repo, repo_path, work_dir, base_tree, path, hunks)?;
+                // Disk still holds the unselected hunks, so no stat of it proves the spliced
+                // blob; the zeroed stat `git apply --cached` writes makes every reader rehash.
+                (path, edit, Stat::default())
+            }
         };
         index_changes.push((
             path.clone(),
             match &edit {
-                PathEdit::Put { oid, kind } => Some((*oid, *kind)),
+                PathEdit::Put { oid, kind } => Some((*oid, *kind, stat)),
                 PathEdit::Remove => None,
             },
         ));
@@ -552,15 +559,25 @@ pub(super) fn write_object(
         .map_err(git_err(op, "object"))
 }
 
-/// Upserts the committed paths into `.git/index` — new blob id, mode, and a fresh stat — and
-/// removes deleted ones, leaving every other entry untouched, so terminal `git status` shows
-/// the committed paths as clean instead of staged reverse-modifications. The stale
-/// tree-cache extension is dropped rather than rewritten; git rebuilds it on demand.
+/// The lstat of `path` below `work_dir` as the index records it. A path that cannot be
+/// statted gets the zeroed stat, which only makes git rehash the file, never trust it.
+pub(in crate::actions) fn disk_stat(work_dir: &Path, path: &str, op: &'static str) -> Stat {
+    workfile::join_under(work_dir, path, op)
+        .ok()
+        .and_then(|full| gix::index::fs::Metadata::from_path_no_follow(&full).ok())
+        .and_then(|meta| Stat::from_fs(&meta).ok())
+        .unwrap_or_default()
+}
+
+/// Upserts the committed paths into `.git/index` — new blob id, mode, and the stat the caller
+/// took when it read or wrote the file — and removes deleted ones, leaving every other entry
+/// untouched, so terminal `git status` shows the committed paths as clean instead of staged
+/// reverse-modifications. The stale tree-cache extension is dropped rather than rewritten; git
+/// rebuilds it on demand.
 pub(in crate::actions) fn update_index(
     repo: &gix::Repository,
     op: &'static str,
-    work_dir: &Path,
-    changes: &[(String, Option<(ObjectId, EntryKind)>)],
+    changes: &[IndexChange],
 ) -> ActionResult<()> {
     let index_path = repo.index_path();
     let mut file = gix::index::File::at_or_default(
@@ -572,14 +589,9 @@ pub(in crate::actions) fn update_index(
     .map_err(git_err(op, "index"))?;
     for (path, change) in changes {
         file.remove_entries(|_, entry_path, _| entry_path == path.as_bytes().as_bstr());
-        if let Some((oid, kind)) = change {
-            let stat = workfile::join_under(work_dir, path, op)
-                .ok()
-                .and_then(|full| gix::index::fs::Metadata::from_path_no_follow(&full).ok())
-                .and_then(|meta| gix::index::entry::Stat::from_fs(&meta).ok())
-                .unwrap_or_default();
+        if let Some((oid, kind, stat)) = change {
             file.dangerously_push_entry(
-                stat,
+                *stat,
                 *oid,
                 gix::index::entry::Flags::empty(),
                 index_mode(*kind),

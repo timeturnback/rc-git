@@ -533,6 +533,17 @@ mod commit_and_discard {
             "hunky.txt",
             b"l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nAPPENDED\n",
         );
+        // Backdated to 2020-01-01: an mtime older than the index write keeps git from rehashing
+        // the file as racily clean, so `git diff` below trusts the stat the commit recorded.
+        let backdated = std::time::UNIX_EPOCH + std::time::Duration::from_hours(438_288);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test backdates its own fixture file"
+        )]
+        std::fs::File::open(fx.path().join("hunky.txt"))
+            .unwrap()
+            .set_modified(backdated)
+            .unwrap();
 
         let found = stamps(&fx, "hunky.txt");
         assert_eq!(found.len(), 2, "two separated edits make two hunks");
