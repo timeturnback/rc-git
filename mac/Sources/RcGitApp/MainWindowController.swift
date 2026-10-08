@@ -27,6 +27,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let historyController = HistoryViewController()
     private let changesController = ChangesViewController()
     private var changesModel: ChangesModel?
+    private var authorModel: CommitAuthorModel?
     private var syncModel: SyncModel?
     private var syncButton: NSButton?
     private var syncSpinner: NSProgressIndicator?
@@ -136,6 +137,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             repository: repository, showsHiddenFiles: model.showsHiddenFiles)
         changesModel = changes
         wireChanges(changes)
+        let author = CommitAuthorModel(repoPath: path)
+        authorModel = author
+        author.onChange = { [weak self, weak author] in
+            self?.changesController.showAuthor(author?.author)
+        }
+        changesController.showAuthor(nil)
+        Task { await author.refresh() }
         let sync = SyncModel(
             repoPath: path, performer: GuardSyncPerformer(), store: KeychainCredentialStore())
         syncModel = sync
@@ -202,6 +210,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
             // The sync row shows commit counts; re-read them on every switch to the tab.
             Task { await syncModel?.refreshStatus() }
+            // The author line reads .git/config, which no watcher covers.
+            refreshAuthor()
         } else {
             // Nothing is watching the change list any more, and the watcher will mark the tab
             // dirty for the next switch back, so a scan still running is work for no one.
@@ -462,6 +472,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         if menuItem.action == #selector(goToFile(_:)) {
             return !isEmpty
+        }
+        if menuItem.action == #selector(editCommitIdentity(_:)) {
+            return authorModel != nil
         }
         if menuItem.action == #selector(chooseRef(_:)) {
             return !isEmpty && mode != .changes && refPicker == nil
@@ -952,8 +965,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    private func performCommit(_ message: String, identity: CommitIdentity? = nil) {
-        guard let path = repositoryPath, let changes = changesModel else { return }
+    /// Commits the ticked selection. With no identity anywhere — the repository's config sets
+    /// none and none is saved for it — it asks first, and saves the answer for this repository
+    /// only once the commit it was asked for succeeds.
+    private func performCommit(_ message: String, prompted: CommitIdentity? = nil) {
+        guard let path = repositoryPath, let changes = changesModel, let authorModel else {
+            return
+        }
         let selections = changes.selections
         guard !selections.isEmpty else { return }
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -961,54 +979,56 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return
         }
         guard let decision = RepositoryGuard.planCommit(files: selections.count) else { return }
+        if prompted == nil, authorModel.author == .unset {
+            askForIdentity { [weak self] identity in
+                self?.performCommit(message, prompted: identity)
+            }
+            return
+        }
         let expectedHead = changes.expectedHead
-        let author = identity ?? Self.savedIdentity()
+        let fallback = prompted ?? authorModel.saved
         followDecision(decision, verb: "Commit") { input in
             _ = try RepositoryGuard.commit(
-                repoPath: path, message: message, author: author,
+                repoPath: path, message: message, fallback: fallback,
                 expectedHead: expectedHead, selections: selections, input: input)
         } onSuccess: { [weak self] in
             self?.changesController.clearMessage()
             self?.refreshChanges()
+            self?.remember(prompted)
         } onFailure: { [weak self] failure in
-            guard let self else { return }
-            if failure.contains("user.name and user.email") {
-                promptForIdentity { [weak self] identity in
-                    Self.saveIdentity(identity)
-                    self?.performCommit(message, identity: identity)
-                }
-            } else {
-                presentError(failure)
-            }
+            self?.refreshAuthor()
+            self?.presentError(failure)
         }
     }
 
-    private func performStashPush() {
-        guard let path = repositoryPath, let changes = changesModel else { return }
+    private func performStashPush(prompted: CommitIdentity? = nil) {
+        guard let path = repositoryPath, let changes = changesModel, let authorModel else {
+            return
+        }
         let paths = changes.tickedPaths
         guard !paths.isEmpty,
             let decision = RepositoryGuard.planStashPush(files: paths.count)
         else { return }
+        if prompted == nil, authorModel.author == .unset {
+            askForIdentity { [weak self] identity in
+                self?.performStashPush(prompted: identity)
+            }
+            return
+        }
         let message = changesController.commitMessage
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let author = Self.savedIdentity()
+        let fallback = prompted ?? authorModel.saved
         followDecision(decision, verb: "Stash") { input in
             try RepositoryGuard.stashPush(
                 repoPath: path, paths: paths, message: message.isEmpty ? nil : message,
-                author: author, input: input)
+                fallback: fallback, input: input)
         } onSuccess: { [weak self] in
             self?.changesController.clearMessage()
             self?.refreshChanges()
+            self?.remember(prompted)
         } onFailure: { [weak self] failure in
-            guard let self else { return }
-            if failure.contains("user.name and user.email") {
-                promptForIdentity { [weak self] identity in
-                    Self.saveIdentity(identity)
-                    self?.performStashPush()
-                }
-            } else {
-                presentError(failure)
-            }
+            self?.refreshAuthor()
+            self?.presentError(failure)
         }
     }
 
@@ -1030,49 +1050,50 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Task { await changesModel.refresh() }
     }
 
-    private static let identityNameKey = "rc-git.identity.name"
-    private static let identityEmailKey = "rc-git.identity.email"
-
-    private static func savedIdentity() -> CommitIdentity? {
-        let defaults = UserDefaults.standard
-        guard let name = defaults.string(forKey: identityNameKey),
-            let email = defaults.string(forKey: identityEmailKey),
-            !name.isEmpty, !email.isEmpty
-        else { return nil }
-        return CommitIdentity(name: name, email: email)
+    private func refreshAuthor() {
+        guard let authorModel else { return }
+        Task { await authorModel.refresh() }
     }
 
-    private static func saveIdentity(_ identity: CommitIdentity) {
-        UserDefaults.standard.set(identity.name, forKey: identityNameKey)
-        UserDefaults.standard.set(identity.email, forKey: identityEmailKey)
+    /// Saves an identity the user typed for a commit or stash that has now succeeded.
+    private func remember(_ prompted: CommitIdentity?) {
+        guard let prompted, let authorModel else { return }
+        Task { await authorModel.save(prompted) }
     }
 
-    /// Asks for a commit identity once: the repository's own config sets none, and the
-    /// isolated open never reads the global one. The answer persists in app defaults.
-    private func promptForIdentity(completion: @escaping (CommitIdentity) -> Void) {
+    /// Asks for an identity before the first commit or stash in a repository that has none.
+    private func askForIdentity(completion: @escaping (CommitIdentity) -> Void) {
         guard let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "Who is committing?"
-        alert.informativeText =
-            "This repository's own config sets no user.name/user.email. rc-git never reads "
-            + "your global git config, so enter the identity to record; it is remembered."
-        let nameField = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
-        nameField.placeholderString = "Name"
-        let emailField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        emailField.placeholderString = "email@example.com"
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
-        box.addSubview(nameField)
-        box.addSubview(emailField)
-        alert.accessoryView = box
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-            let email = emailField.stringValue.trimmingCharacters(in: .whitespaces)
-            guard response == .alertFirstButtonReturn, !name.isEmpty, !email.isEmpty else {
-                return
+        IdentitySheet.present(
+            on: window, title: "Who is committing?",
+            message: "This repository’s own config sets no user.name/user.email, and rc-git "
+                + "never reads your global git config. Enter the identity to record; it is "
+                + "saved for this repository only, and only once the commit succeeds.",
+            initial: nil, allowsClear: false
+        ) { outcome in
+            if case let .save(identity) = outcome { completion(identity) }
+        }
+    }
+
+    /// Repository > Commit Identity…: shows, edits, or clears the identity saved for this
+    /// repository. It is a fallback: the repository's own config wins whenever it sets one.
+    @objc func editCommitIdentity(_ sender: Any?) {
+        guard let window, let authorModel else { return }
+        var message = "Saved for this repository only, and used only when its own config sets "
+        message += "no user.name/user.email."
+        if case let .configured(identity) = authorModel.author {
+            message += "\nIts config sets \(identity.display) now, so commits use that."
+        }
+        IdentitySheet.present(
+            on: window, title: "Commit Identity", message: message,
+            initial: authorModel.saved, allowsClear: authorModel.saved != nil
+        ) { outcome in
+            Task {
+                switch outcome {
+                case let .save(identity): await authorModel.save(identity)
+                case .clear: await authorModel.clear()
+                }
             }
-            completion(CommitIdentity(name: name, email: email))
         }
     }
 
@@ -1357,7 +1378,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     /// As above, with hooks: `onSuccess` refreshes what the action changed, `onFailure`
-    /// replaces the default error alert (the commit path uses it to ask for an identity).
+    /// replaces the default error alert.
     private func followDecision(
         _ decision: GuardDecision, verb: String,
         perform: @escaping @Sendable (String?) throws -> Void,

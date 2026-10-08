@@ -76,6 +76,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let filesPlaceholder = NSTextField(labelWithString: "No changes")
     private let groupingControl = NSSegmentedControl()
     private let truncationLabel = NSTextField(labelWithString: "")
+    private let authorLabel = NSTextField(labelWithString: "")
     private let stashTable = NSTableView()
     private let stashScroll = NSScrollView()
     private let stashGroup = NSStackView()
@@ -262,6 +263,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
         summaryLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         summaryLabel.textColor = .secondaryLabelColor
+        authorLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        authorLabel.textColor = .secondaryLabelColor
+        authorLabel.lineBreakMode = .byTruncatingMiddle
+        authorLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         commitButton.target = self
         commitButton.action = #selector(commitClicked(_:))
         commitButton.bezelStyle = .rounded
@@ -276,7 +281,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         actionRow.spacing = 6
 
         let stack = NSStackView(views: [
-            syncRow, listRow, filesScroll, truncationLabel, stashGroup, messageScroll, actionRow,
+            syncRow, listRow, filesScroll, truncationLabel, stashGroup, messageScroll, authorLabel,
+            actionRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -313,6 +319,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 equalTo: stack.widthAnchor, constant: -2 * inset),
             messageScroll.widthAnchor.constraint(
                 equalTo: stack.widthAnchor, constant: -2 * inset),
+            authorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             filesFloor,
             stashScroll.heightAnchor.constraint(equalToConstant: 96),
@@ -516,6 +523,16 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     var commitMessage: String {
         messageText.string
+    }
+
+    /// Shows who the next commit or stash is recorded as; `nil` while that is still being read.
+    func showAuthor(_ author: CommitAuthor?) {
+        authorLabel.stringValue = author?.label ?? ""
+        if case let .unreadable(reason) = author {
+            authorLabel.toolTip = reason
+        } else {
+            authorLabel.toolTip = authorLabel.stringValue
+        }
     }
 
     func clearMessage() {

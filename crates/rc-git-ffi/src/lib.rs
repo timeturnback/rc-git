@@ -22,10 +22,11 @@ use rc_git_core::{
     TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth,
-    checkout_branch, commit, create_branch, create_tag, delete_branch, delete_tag, discard_files,
-    discard_hunks, fetch_upstream, plan_branch_delete, plan_tag_delete, pull_fast_forward,
-    push_upstream, stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
+    ActionError, Author, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth,
+    checkout_branch, commit, configured_identity, create_branch, create_tag, delete_branch,
+    delete_tag, discard_files, discard_hunks, fetch_upstream, plan_branch_delete, plan_tag_delete,
+    pull_fast_forward, push_upstream, stash_apply, stash_drop, stash_pop, stash_push,
+    upstream_status,
 };
 use rc_git_guard::{Action, Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
@@ -3042,24 +3043,90 @@ unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec
     Some(selections)
 }
 
-/// An identity when both halves were given; `None` to fall back to the repository's config.
-fn identity_from(name: Option<&[u8]>, email: Option<&[u8]>) -> Option<Identity> {
-    match (name, email) {
+/// The fallback identity when both halves were given. It is recorded only when the
+/// repository's own config sets no `user.name`/`user.email`, so the identity the app remembered
+/// never overrides one the repository chose.
+fn fallback_author(name: Option<&[u8]>, email: Option<&[u8]>) -> Author {
+    let fallback = match (name, email) {
         (Some(name), Some(email)) => Some(Identity {
             name: String::from_utf8_lossy(name).into_owned(),
             email: String::from_utf8_lossy(email).into_owned(),
         }),
         (Some(_) | None, Some(_) | None) => None,
+    };
+    Author {
+        explicit: None,
+        fallback,
     }
+}
+
+/// A commit identity: `user.name` and `user.email`.
+#[repr(C)]
+pub struct RcGitIdentity {
+    /// `user.name`.
+    pub name: *mut c_char,
+    /// `user.email`.
+    pub email: *mut c_char,
+}
+
+impl Drop for RcGitIdentity {
+    fn drop(&mut self) {
+        // SAFETY: both strings were produced by `export_string` and are released once here.
+        unsafe {
+            release_string(self.name);
+            release_string(self.email);
+        }
+    }
+}
+
+/// The repository's own `user.name`/`user.email`, read fresh from its config: the identity a
+/// commit records ahead of any fallback. Returns NULL without setting `error` when the config
+/// sets either one empty or not at all. Release with `rcgit_identity_free`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_guard_configured_identity(
+    repo_path: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut RcGitIdentity {
+    // SAFETY: forwarded from this function's contract.
+    let (repo_path, error) = unsafe { (bytes_arg(repo_path), Out::new(error)) };
+    let Some(repo_path) = repo_path else {
+        error.report("repo_path is NULL");
+        return ptr::null_mut();
+    };
+    match configured_identity(Path::new(OsStr::from_bytes(repo_path))) {
+        Ok(Some(identity)) => export(RcGitIdentity {
+            name: export_string(identity.name.into_bytes()),
+            email: export_string(identity.email.into_bytes()),
+        }),
+        Ok(None) => ptr::null_mut(),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a value from `rcgit_guard_configured_identity`.
+///
+/// # Safety
+/// `identity` is NULL or came from `rcgit_guard_configured_identity` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_identity_free(identity: *mut RcGitIdentity) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(identity) };
 }
 
 /// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
 /// hex commit the change list was built against, or NULL on an unborn branch; the commit is
-/// refused when `HEAD` moved. `author_name`/`author_email` override the repository's own
-/// `user.name`/`user.email` (pass both or neither). Release with `rcgit_commit_result_free`.
+/// refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
+/// repository's own config sets no `user.name`/`user.email` (pass both or neither); without
+/// either the commit is refused. Release with `rcgit_commit_result_free`.
 ///
 /// # Safety
-/// `repo_path` and `message` are NUL-terminated strings; `author_name`, `author_email`,
+/// `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
 /// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
 /// `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
 /// `char *`.
@@ -3067,8 +3134,8 @@ fn identity_from(name: Option<&[u8]>, email: Option<&[u8]>) -> Option<Identity> 
 pub unsafe extern "C" fn rcgit_guard_commit(
     repo_path: *const c_char,
     message: *const c_char,
-    author_name: *const c_char,
-    author_email: *const c_char,
+    fallback_name: *const c_char,
+    fallback_email: *const c_char,
     expected_head: *const c_char,
     files: *const RcGitCommitFile,
     len: usize,
@@ -3080,7 +3147,7 @@ pub unsafe extern "C" fn rcgit_guard_commit(
         (
             bytes_arg(repo_path),
             bytes_arg(message),
-            identity_from(bytes_arg(author_name), bytes_arg(author_email)),
+            fallback_author(bytes_arg(fallback_name), bytes_arg(fallback_email)),
             bytes_arg(expected_head),
             read_selections(files, len),
             bytes_arg(input),
@@ -3125,11 +3192,12 @@ pub unsafe extern "C" fn rcgit_commit_result_free(result: *mut RcGitCommitResult
 }
 
 /// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
-/// `HEAD` state. `message` is the optional stash message. Returns `RCGIT_OK` or
-/// `RCGIT_ERROR`.
+/// `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
+/// are recorded only when the repository's own config sets no identity, as for
+/// `rcgit_guard_commit`. Returns `RCGIT_OK` or `RCGIT_ERROR`.
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated string; `message`, `author_name`, `author_email`, and
+/// `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and
 /// `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
 /// strings. `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
@@ -3138,8 +3206,8 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
     paths: *const *const c_char,
     len: usize,
     message: *const c_char,
-    author_name: *const c_char,
-    author_email: *const c_char,
+    fallback_name: *const c_char,
+    fallback_email: *const c_char,
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
@@ -3149,7 +3217,7 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
             bytes_arg(repo_path),
             read_string_array(paths, len),
             bytes_arg(message),
-            identity_from(bytes_arg(author_name), bytes_arg(author_email)),
+            fallback_author(bytes_arg(fallback_name), bytes_arg(fallback_email)),
             bytes_arg(input),
             Out::new(error),
         )
@@ -5147,6 +5215,62 @@ mod tests {
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"via ffi\n"
         );
+    }
+
+    #[test]
+    fn the_fallback_identity_never_overrides_the_repository_config() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+
+        let none = unsafe { rcgit_guard_configured_identity(repo_path.as_ptr(), &raw mut error) };
+        assert!(none.is_null());
+        assert!(error.is_null(), "an unset identity is not an error");
+
+        fx.git(&["config", "user.name", "Repo Owner"]);
+        fx.git(&["config", "user.email", "repo@example.com"]);
+        let identity =
+            unsafe { rcgit_guard_configured_identity(repo_path.as_ptr(), &raw mut error) };
+        assert!(!identity.is_null(), "{}", take_error(&mut error));
+        let identity_ref = unsafe { &*identity };
+        assert_eq!(text(identity_ref.name), "Repo Owner");
+        assert_eq!(text(identity_ref.email), "repo@example.com");
+        unsafe { rcgit_identity_free(identity) };
+
+        fx.write("alpha.txt", b"fallback loses\n");
+        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let message = CString::new("Repo identity wins").unwrap();
+        let name = CString::new("Saved Fallback").unwrap();
+        let email = CString::new("saved@example.com").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        let result = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                message.as_ptr(),
+                name.as_ptr(),
+                email.as_ptr(),
+                head.as_ptr(),
+                &raw const file,
+                1,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert!(!result.is_null(), "{}", take_error(&mut error));
+        unsafe { rcgit_commit_result_free(result) };
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%ae|%ce"]),
+            "repo@example.com|repo@example.com"
+        );
+
+        let missing = unsafe { rcgit_guard_configured_identity(ptr::null(), &raw mut error) };
+        assert!(missing.is_null());
+        assert!(take_error(&mut error).contains("NULL"));
     }
 
     #[test]

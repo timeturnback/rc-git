@@ -1213,8 +1213,14 @@ fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
     })
 }
 
-fn author(args: &VerbArgs<'_>) -> Result<Option<rc_git_guard::actions::Identity>> {
-    args.value(&["--author"]).map(parse_author).transpose()
+/// `--author` is recorded as given, ahead of the repository's own `user.name`/`user.email`,
+/// as `git commit --author` is; without it the repository's config decides.
+fn author(args: &VerbArgs<'_>) -> Result<rc_git_guard::actions::Author> {
+    let explicit = args.value(&["--author"]).map(parse_author).transpose()?;
+    Ok(rc_git_guard::actions::Author {
+        explicit,
+        fallback: None,
+    })
 }
 
 const MESSAGE_FLAGS: [&str; 4] = ["-m", "--message", "--author", "--confirm"];

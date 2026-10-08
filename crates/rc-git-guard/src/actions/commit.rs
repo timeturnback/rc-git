@@ -16,7 +16,7 @@ use gix::refs::transaction::PreviousValue;
 use super::treebuild::{self, Node, PathEdit};
 use super::workfile;
 use super::{
-    ActionError, ActionResult, FileSelection, HunkStamp, Identity, confirm, git_err, open,
+    ActionError, ActionResult, Author, FileSelection, HunkStamp, Identity, confirm, git_err, open,
 };
 use crate::{Action, Policy};
 
@@ -31,10 +31,21 @@ pub struct Committed {
 
 const OP: &str = "commit";
 
+/// The repository's own `user.name`/`user.email`, as a commit would record them without an
+/// [`Author::explicit`] identity: `None` when its config sets either one empty or not at all.
+/// Read fresh from disk, so an edit to `.git/config` is seen on the next call.
+///
+/// # Errors
+/// [`ActionError::Git`] when the repository cannot be opened.
+pub fn configured_identity(repo_path: &Path) -> ActionResult<Option<Identity>> {
+    let repo = open(repo_path, "read commit identity", "config")?;
+    Ok(workfile::repository_identity(&repo))
+}
+
 /// Commits `selections` to the checked-out branch with `message`. `expected_head` is the
 /// commit the change list was built against — `None` for an unborn branch — and the commit
-/// is refused when `HEAD` moved away from it. `author` overrides the repository's own
-/// `user.name`/`user.email`; without either the commit is refused. Whole-file selections
+/// is refused when `HEAD` moved away from it. `author` decides who is recorded, as
+/// [`Author`] describes; without any identity the commit is refused. Whole-file selections
 /// commit the bytes on disk; hunk selections are re-validated against a fresh diff and
 /// spliced onto the tree side.
 ///
@@ -48,7 +59,7 @@ pub fn commit(
     repo_path: &Path,
     policy: &Policy,
     message: &str,
-    author: Option<Identity>,
+    author: Author,
     expected_head: Option<&str>,
     selections: &[FileSelection],
     input: Option<&str>,

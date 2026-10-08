@@ -23,7 +23,7 @@ use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
 use super::workfile::{self, DiskEntry};
 use super::{
-    ActionError, ActionResult, Deleted, Identity, confirm, git_err, open, write_backup_ref,
+    ActionError, ActionResult, Author, Deleted, Identity, confirm, git_err, open, write_backup_ref,
 };
 use crate::{Action, Policy};
 
@@ -37,8 +37,8 @@ pub struct StashSaved {
 }
 
 /// Records the changes at `paths` as a git-compatible stash entry, then restores those
-/// files to their `HEAD` state on disk. `author` overrides the repository's own
-/// `user.name`/`user.email`.
+/// files to their `HEAD` state on disk. `author` decides who is recorded, as [`Author`]
+/// describes.
 ///
 /// # Errors
 /// [`ActionError::NotConfirmed`] when the plain confirm is missing,
@@ -49,7 +49,7 @@ pub fn stash_push(
     policy: &Policy,
     paths: &[String],
     message: Option<&str>,
-    author: Option<Identity>,
+    author: Author,
     input: Option<&str>,
 ) -> ActionResult<StashSaved> {
     const OP: &str = "stash push";

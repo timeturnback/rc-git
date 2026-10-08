@@ -23,3 +23,22 @@ func withScratchDefaults(_ body: (UserDefaults) throws -> Void) throws {
     defer { defaults.removePersistentDomain(forName: path) }
     try body(defaults)
 }
+
+/// `withScratchDefaults` for a body that awaits, run on the caller's actor.
+func withScratchDefaults(
+    isolation: isolated (any Actor)? = #isolation, _ body: (UserDefaults) async throws -> Void
+) async throws {
+    let folder = URL.temporaryDirectory.appending(path: "rc-git-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer {
+        do {
+            try FileManager.default.removeItem(at: folder)
+        } catch {
+            Issue.record("could not remove scratch defaults folder \(folder.path): \(error)")
+        }
+    }
+    let path = folder.appending(path: "defaults").path(percentEncoded: false)
+    let defaults = try #require(UserDefaults(suiteName: path))
+    defer { defaults.removePersistentDomain(forName: path) }
+    try await body(defaults)
+}

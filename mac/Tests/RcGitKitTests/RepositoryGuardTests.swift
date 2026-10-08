@@ -68,7 +68,7 @@ import Testing
         let head = try fixture.revParse("HEAD")
 
         let outcome = try RepositoryGuard.commit(
-            repoPath: fixture.path, message: "Bridge commit", author: author,
+            repoPath: fixture.path, message: "Bridge commit", fallback: author,
             expectedHead: head, selections: [.whole(path: "alpha.txt")], input: nil)
         #expect(outcome.branch == "main")
         #expect(try outcome.oid == fixture.revParse("HEAD"))
@@ -79,13 +79,47 @@ import Testing
         try fixture.write("alpha.txt", "stash via bridge\n")
         try RepositoryGuard.stashPush(
             repoPath: fixture.path, paths: ["alpha.txt"], message: "bridged",
-            author: author, input: nil)
+            fallback: author, input: nil)
         #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, index: 0, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
 
         try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+    }
+
+    @Test func aSavedFallbackNeverOverridesTheRepositoryEmail() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        #expect(try RepositoryGuard.configuredIdentity(repoPath: fixture.path) == nil)
+        try fixture.git(["config", "user.name", "Work Me"])
+        try fixture.git(["config", "user.email", "work@example.com"])
+        #expect(
+            try RepositoryGuard.configuredIdentity(repoPath: fixture.path)
+                == CommitIdentity(name: "Work Me", email: "work@example.com"))
+
+        let saved = CommitIdentity(name: "Saved Me", email: "saved@example.com")
+        try fixture.write("alpha.txt", "work edit\n")
+        _ = try RepositoryGuard.commit(
+            repoPath: fixture.path, message: "Work commit", fallback: saved,
+            expectedHead: try fixture.revParse("HEAD"), selections: [.whole(path: "alpha.txt")],
+            input: nil)
+        #expect(
+            try fixture.gitOutput(["log", "-1", "--format=%ae|%ce"])
+                == "work@example.com|work@example.com")
+
+        try fixture.write("alpha.txt", "stash edit\n")
+        try RepositoryGuard.stashPush(
+            repoPath: fixture.path, paths: ["alpha.txt"], message: nil, fallback: saved,
+            input: nil)
+        #expect(
+            try fixture.gitOutput(["log", "-1", "--format=%ae", "stash@{0}"]) == "work@example.com")
+    }
+
+    @Test func configuredIdentityNamesAMissingRepository() throws {
+        #expect(throws: RepositoryError.self) {
+            try RepositoryGuard.configuredIdentity(repoPath: "/nonexistent/rc-git-repo")
+        }
     }
 
     @Test func checkoutSwitchesBranchesAndRefusesADirtyPath() throws {

@@ -23,7 +23,7 @@ mod treebuild;
 mod workfile;
 
 pub use checkout::{CheckoutOutcome, checkout_branch};
-pub use commit::{Committed, commit};
+pub use commit::{Committed, commit, configured_identity};
 pub use discard::{discard_files, discard_hunks};
 pub use remote::{
     Cancel, Credentials, FetchOutcome, PullOutcome, PushOutcome, RefUpdate, RemoteAuth,
@@ -39,6 +39,18 @@ pub struct Identity {
     pub name: String,
     /// `user.email`.
     pub email: String,
+}
+
+/// Where a commit or stash takes its identity from, in order: `explicit` as given, else the
+/// repository's own `user.name`/`user.email`, else `fallback`, else
+/// [`ActionError::MissingIdentity`]. The app passes the identity it remembered for the
+/// repository as `fallback`, so a repository that sets its own identity always keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Author {
+    /// Recorded ahead of the repository's config, as `git commit --author` is.
+    pub explicit: Option<Identity>,
+    /// Recorded only when the repository's own config sets no identity.
+    pub fallback: Option<Identity>,
 }
 
 /// One hunk of a worktree diff, identified by its unified header ranges. The write path

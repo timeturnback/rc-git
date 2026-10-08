@@ -8,27 +8,31 @@ use std::path::{Path, PathBuf};
 
 use gix::objs::tree::EntryKind;
 
-use super::{ActionError, ActionResult, HunkStamp, Identity, git_err};
+use super::{ActionError, ActionResult, Author, HunkStamp, Identity, git_err};
 
-/// The author to record: the explicit one when given, else the repository's own
-/// `user.name`/`user.email` (the isolated open reads exactly that file).
-pub(super) fn resolve_identity(
-    repo: &gix::Repository,
-    explicit: Option<Identity>,
-) -> ActionResult<Identity> {
-    if let Some(identity) = explicit {
-        return Ok(identity);
-    }
+/// The identity to record: [`Author::explicit`], else the repository's own
+/// `user.name`/`user.email` (the isolated open reads exactly that file), else
+/// [`Author::fallback`].
+pub(super) fn resolve_identity(repo: &gix::Repository, author: Author) -> ActionResult<Identity> {
+    author
+        .explicit
+        .or_else(|| repository_identity(repo))
+        .or(author.fallback)
+        .ok_or(ActionError::MissingIdentity)
+}
+
+/// The repository's own `user.name`/`user.email`, when both are set and non-empty.
+pub(super) fn repository_identity(repo: &gix::Repository) -> Option<Identity> {
     let config = repo.config_snapshot();
-    let name = config.string("user.name");
-    let email = config.string("user.email");
-    match (name, email) {
-        (Some(name), Some(email)) if !name.is_empty() && !email.is_empty() => Ok(Identity {
-            name: name.to_string(),
-            email: email.to_string(),
-        }),
-        (Some(_) | None, Some(_) | None) => Err(ActionError::MissingIdentity),
+    let name = config.string("user.name")?;
+    let email = config.string("user.email")?;
+    if name.is_empty() || email.is_empty() {
+        return None;
     }
+    Some(Identity {
+        name: name.to_string(),
+        email: email.to_string(),
+    })
 }
 
 /// The path rules git applies before it writes a tree entry to disk: `core.protectHFS` and

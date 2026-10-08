@@ -604,6 +604,14 @@ typedef struct RcGitCheckoutOutcome {
   bool already_on_branch;
 } RcGitCheckoutOutcome;
 
+// A commit identity: `user.name` and `user.email`.
+typedef struct RcGitIdentity {
+  // `user.name`.
+  char *name;
+  // `user.email`.
+  char *email;
+} RcGitIdentity;
+
 // What a completed commit produced.
 typedef struct RcGitCommitResult {
   // Hex id of the new commit.
@@ -1223,20 +1231,35 @@ struct RcGitGuardDecision *rcgit_guard_plan_stash_drop(size_t index);
 // `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_discard(size_t files);
 
-// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
-// hex commit the change list was built against, or NULL on an unborn branch; the commit is
-// refused when `HEAD` moved. `author_name`/`author_email` override the repository's own
-// `user.name`/`user.email` (pass both or neither). Release with `rcgit_commit_result_free`.
+// The repository's own `user.name`/`user.email`, read fresh from its config: the identity a
+// commit records ahead of any fallback. Returns NULL without setting `error` when the config
+// sets either one empty or not at all. Release with `rcgit_identity_free`.
 //
 // # Safety
-// `repo_path` and `message` are NUL-terminated strings; `author_name`, `author_email`,
+// `repo_path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+struct RcGitIdentity *rcgit_guard_configured_identity(const char *repo_path, char **error);
+
+// Releases a value from `rcgit_guard_configured_identity`.
+//
+// # Safety
+// `identity` is NULL or came from `rcgit_guard_configured_identity` and is not freed twice.
+void rcgit_identity_free(struct RcGitIdentity *identity);
+
+// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
+// hex commit the change list was built against, or NULL on an unborn branch; the commit is
+// refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
+// repository's own config sets no `user.name`/`user.email` (pass both or neither); without
+// either the commit is refused. Release with `rcgit_commit_result_free`.
+//
+// # Safety
+// `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
 // `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
 // `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
 // `char *`.
 struct RcGitCommitResult *rcgit_guard_commit(const char *repo_path,
                                              const char *message,
-                                             const char *author_name,
-                                             const char *author_email,
+                                             const char *fallback_name,
+                                             const char *fallback_email,
                                              const char *expected_head,
                                              const struct RcGitCommitFile *files,
                                              size_t len,
@@ -1250,19 +1273,20 @@ struct RcGitCommitResult *rcgit_guard_commit(const char *repo_path,
 void rcgit_commit_result_free(struct RcGitCommitResult *result);
 
 // Stashes the changes at `paths` as a git-compatible entry, then restores those files to
-// `HEAD` state. `message` is the optional stash message. Returns `RCGIT_OK` or
-// `RCGIT_ERROR`.
+// `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
+// are recorded only when the repository's own config sets no identity, as for
+// `rcgit_guard_commit`. Returns `RCGIT_OK` or `RCGIT_ERROR`.
 //
 // # Safety
-// `repo_path` is a NUL-terminated string; `message`, `author_name`, `author_email`, and
+// `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and
 // `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
 // strings. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_stash_push(const char *repo_path,
                                const char *const *paths,
                                size_t len,
                                const char *message,
-                               const char *author_name,
-                               const char *author_email,
+                               const char *fallback_name,
+                               const char *fallback_email,
                                const char *input,
                                char **error);
 

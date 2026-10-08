@@ -51,17 +51,6 @@ public struct GuardDecision: Sendable, Hashable {
     }
 }
 
-/// Who a commit or stash is recorded as, when the repository's own config sets no identity.
-public struct CommitIdentity: Sendable, Hashable {
-    public let name: String
-    public let email: String
-
-    public init(name: String, email: String) {
-        self.name = name
-        self.email = email
-    }
-}
-
 /// One hunk of a worktree diff, named by its unified header ranges.
 public struct HunkStamp: Sendable, Hashable {
     public let oldStart: UInt32
@@ -196,11 +185,29 @@ public enum RepositoryGuard {
         decision(rcgit_guard_plan_discard(files))
     }
 
+    /// The repository's own `user.name`/`user.email`, read fresh from its config; `nil` when
+    /// it sets either one empty or not at all. This is the identity a commit records ahead of
+    /// any fallback.
+    public static func configuredIdentity(repoPath: String) throws -> CommitIdentity? {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let identity = rcgit_guard_configured_identity(repoPath, &error) else {
+            if let error {
+                throw RepositoryError.take(error, fallback: "cannot read the commit identity")
+            }
+            return nil
+        }
+        defer { rcgit_identity_free(identity) }
+        return CommitIdentity(
+            name: String(cString: identity.pointee.name),
+            email: String(cString: identity.pointee.email))
+    }
+
     /// Commits `selections` to the checked-out branch. `expectedHead` is the commit the
     /// change list was built against, `nil` on an unborn branch; the commit is refused when
-    /// `HEAD` moved. `author` fills in when the repository's own config has no identity.
+    /// `HEAD` moved. `fallback` is recorded only when the repository's own config sets no
+    /// identity; it never overrides one the repository sets.
     public static func commit(
-        repoPath: String, message: String, author: CommitIdentity?, expectedHead: String?,
+        repoPath: String, message: String, fallback: CommitIdentity?, expectedHead: String?,
         selections: [CommitSelection], input: String?
     ) throws -> CommitOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
@@ -229,8 +236,9 @@ public enum RepositoryGuard {
                         path: ownedPaths[index], hunks: buffer, hunk_count: stamps.count))
             }
         }
-        let result = withOwnedCStrings([message, author?.name, author?.email, expectedHead, input])
-        { strings in
+        let result = withOwnedCStrings([
+            message, fallback?.name, fallback?.email, expectedHead, input,
+        ]) { strings in
             files.withUnsafeBufferPointer { buffer in
                 rcgit_guard_commit(
                     repoPath, strings[0], strings[1], strings[2], strings[3],
@@ -246,14 +254,15 @@ public enum RepositoryGuard {
             branch: String(cString: result.pointee.branch))
     }
 
-    /// Stashes the changes at `paths` and restores those files to `HEAD` state.
+    /// Stashes the changes at `paths` and restores those files to `HEAD` state. `fallback` is
+    /// recorded only when the repository's own config sets no identity.
     public static func stashPush(
-        repoPath: String, paths: [String], message: String?, author: CommitIdentity?,
+        repoPath: String, paths: [String], message: String?, fallback: CommitIdentity?,
         input: String?
     ) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = withOwnedCStrings(paths) { pathPointers in
-            withOwnedCStrings([message, author?.name, author?.email, input]) { strings in
+            withOwnedCStrings([message, fallback?.name, fallback?.email, input]) { strings in
                 pathPointers.withUnsafeBufferPointer { buffer in
                     rcgit_guard_stash_push(
                         repoPath, buffer.baseAddress, paths.count, strings[0], strings[1],

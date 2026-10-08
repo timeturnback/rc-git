@@ -185,6 +185,9 @@ enum MainMenu {
             item(
                 "Cancel Sync", #selector(MainWindowController.cancelSync(_:)), ".",
                 [.command]))
+        menu.addItem(.separator())
+        menu.addItem(
+            item("Commit Identity…", #selector(MainWindowController.editCommitIdentity(_:)), ""))
         return menu
     }
 

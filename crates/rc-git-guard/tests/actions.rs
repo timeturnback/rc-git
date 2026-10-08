@@ -2,7 +2,8 @@
 //! refs proving the safety net works.
 
 use rc_git_guard::actions::{
-    ActionError, Identity, create_branch, create_tag, delete_branch, delete_tag, plan_branch_delete,
+    ActionError, Author, Identity, create_branch, create_tag, delete_branch, delete_tag,
+    plan_branch_delete,
 };
 use rc_git_guard::{Decision, Policy, Risk};
 use rc_git_testkit::Fixture;
@@ -19,6 +20,14 @@ fn identity() -> Identity {
     Identity {
         name: "Test User".to_owned(),
         email: "test@example.com".to_owned(),
+    }
+}
+
+/// The test identity, recorded ahead of whatever the repository's config sets.
+fn explicit() -> Author {
+    Author {
+        explicit: Some(identity()),
+        fallback: None,
     }
 }
 
@@ -318,11 +327,12 @@ mod commit_and_discard {
     use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Repository};
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, FileSelection, HunkStamp, commit, discard_files, discard_hunks,
+        ActionError, Author, FileSelection, HunkStamp, Identity, commit, configured_identity,
+        discard_files, discard_hunks,
     };
     use rc_git_testkit::Fixture;
 
-    use super::{identity, porcelain};
+    use super::{explicit, identity, porcelain};
 
     fn whole(path: &str) -> FileSelection {
         FileSelection::Whole {
@@ -367,7 +377,7 @@ mod commit_and_discard {
             fx.path(),
             &Policy::default(),
             "modes",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &selections,
             None,
@@ -413,7 +423,7 @@ mod commit_and_discard {
             fx.path(),
             &Policy::default(),
             "under a gitlink",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("sub/x.c")],
             None,
@@ -441,7 +451,7 @@ mod commit_and_discard {
             fx.path(),
             &Policy::default(),
             "case",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("ALPHA.TXT")],
             None,
@@ -464,7 +474,7 @@ mod commit_and_discard {
             fx.path(),
             &Policy::default(),
             "case",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("docs/guide.md")],
             None,
@@ -491,7 +501,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "  Commit from rc-git  ",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[
                 whole("alpha.txt"),
@@ -552,7 +562,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "Take the first hunk",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[FileSelection::Hunks {
                 path: "hunky.txt".to_owned(),
@@ -593,7 +603,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "First commit",
-            Some(identity()),
+            explicit(),
             None,
             &[whole("first.txt")],
             None,
@@ -615,7 +625,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "msg",
-            Some(identity()),
+            explicit(),
             Some(&fx.rev_parse("HEAD~1")),
             &[whole("alpha.txt")],
             None,
@@ -627,7 +637,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "msg",
-            None,
+            Author::default(),
             Some(&head),
             &[whole("alpha.txt")],
             None,
@@ -639,7 +649,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "   ",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("alpha.txt")],
             None,
@@ -652,7 +662,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "msg",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("alpha.txt")],
             None,
@@ -692,7 +702,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "Identity from config",
-            None,
+            Author::default(),
             Some(&head),
             &[whole("alpha.txt")],
             None,
@@ -702,6 +712,98 @@ mod commit_and_discard {
             fx.git_output(&["log", "-1", "--format=%an|%ae"]),
             "Local Config|local@example.com"
         );
+    }
+
+    fn saved() -> Identity {
+        Identity {
+            name: "Saved Fallback".to_owned(),
+            email: "saved@example.com".to_owned(),
+        }
+    }
+
+    fn commit_alpha(fx: &Fixture, author: Author) -> Result<(), ActionError> {
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+        commit(
+            fx.path(),
+            &Policy::default(),
+            "Who wrote this",
+            author,
+            Some(&head),
+            &[whole("alpha.txt")],
+            None,
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn repo_config_beats_the_fallback() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "user.name", "Repo Owner"]);
+        fx.git(&["config", "user.email", "repo@example.com"]);
+
+        let author = Author {
+            explicit: None,
+            fallback: Some(saved()),
+        };
+        commit_alpha(&fx, author).unwrap();
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%an|%ae|%cn|%ce"]),
+            "Repo Owner|repo@example.com|Repo Owner|repo@example.com"
+        );
+    }
+
+    #[test]
+    fn the_fallback_fills_in_only_when_the_config_sets_no_identity() {
+        let fx = Fixture::standard();
+        assert_eq!(configured_identity(fx.path()).unwrap(), None);
+        fx.git(&["config", "user.name", "Name Only"]);
+        assert_eq!(
+            configured_identity(fx.path()).unwrap(),
+            None,
+            "a name without an email is no identity"
+        );
+
+        let author = Author {
+            explicit: None,
+            fallback: Some(saved()),
+        };
+        commit_alpha(&fx, author).unwrap();
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%an|%ae|%cn|%ce"]),
+            "Saved Fallback|saved@example.com|Saved Fallback|saved@example.com"
+        );
+    }
+
+    #[test]
+    fn an_explicit_identity_beats_the_repo_config() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "user.name", "Repo Owner"]);
+        fx.git(&["config", "user.email", "repo@example.com"]);
+        assert_eq!(
+            configured_identity(fx.path()).unwrap(),
+            Some(Identity {
+                name: "Repo Owner".to_owned(),
+                email: "repo@example.com".to_owned(),
+            })
+        );
+
+        let author = Author {
+            explicit: Some(identity()),
+            fallback: Some(saved()),
+        };
+        commit_alpha(&fx, author).unwrap();
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%ae"]),
+            "test@example.com"
+        );
+    }
+
+    #[test]
+    fn configured_identity_names_a_path_that_is_no_repository() {
+        let fx = Fixture::standard();
+        let err = configured_identity(&fx.path().join("missing")).unwrap_err();
+        assert!(err.to_string().contains("read commit identity"), "{err}");
     }
 
     #[test]
@@ -715,7 +817,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "msg",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[FileSelection::Hunks {
                 path: "alpha.txt".to_owned(),
@@ -836,7 +938,7 @@ mod commit_and_discard {
                 fx.path(),
                 &policy,
                 "bad path",
-                Some(identity()),
+                explicit(),
                 Some(&head),
                 &[whole(path)],
                 None,
@@ -942,7 +1044,7 @@ mod commit_and_discard {
             fx.path(),
             &policy,
             "outside",
-            Some(identity()),
+            explicit(),
             Some(&head),
             &[whole("up/secret.txt")],
             None,
@@ -1048,10 +1150,12 @@ mod stash {
     )]
 
     use rc_git_guard::Policy;
-    use rc_git_guard::actions::{ActionError, stash_apply, stash_drop, stash_pop, stash_push};
+    use rc_git_guard::actions::{
+        ActionError, Author, Identity, stash_apply, stash_drop, stash_pop, stash_push,
+    };
     use rc_git_testkit::Fixture;
 
-    use super::{identity, porcelain, refs};
+    use super::{explicit, porcelain, refs};
 
     fn stash_list(fx: &Fixture) -> String {
         fx.git_output(&["stash", "list", "--format=%gs"])
@@ -1069,7 +1173,7 @@ mod stash {
             &policy,
             &["alpha.txt".to_owned(), "brand-new.txt".to_owned()],
             Some("half-done work"),
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap();
@@ -1097,6 +1201,35 @@ mod stash {
     }
 
     #[test]
+    fn a_stash_records_the_repo_identity_over_the_fallback() {
+        let fx = Fixture::standard();
+        fx.git(&["config", "user.name", "Repo Owner"]);
+        fx.git(&["config", "user.email", "repo@example.com"]);
+        fx.write("alpha.txt", b"stash me\n");
+
+        let author = Author {
+            explicit: None,
+            fallback: Some(Identity {
+                name: "Saved Fallback".to_owned(),
+                email: "saved@example.com".to_owned(),
+            }),
+        };
+        stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned()],
+            None,
+            author,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fx.git_output(&["log", "-1", "--format=%ae|%ce", "stash@{0}"]),
+            "repo@example.com|repo@example.com"
+        );
+    }
+
+    #[test]
     fn push_refuses_a_head_directory_before_writing_anything() {
         let fx = Fixture::standard();
         let policy = Policy::default();
@@ -1108,7 +1241,7 @@ mod stash {
             &policy,
             &["alpha.txt".to_owned(), "src".to_owned()],
             None,
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap_err();
@@ -1321,7 +1454,7 @@ mod stash {
             &policy,
             &["Zeta.txt".to_owned()],
             None,
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap();
@@ -1346,7 +1479,7 @@ mod stash {
             &Policy::default(),
             &["alpha.txt".to_owned()],
             None,
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap_err();
@@ -1371,7 +1504,7 @@ mod stash {
                 &policy,
                 &[(*path).to_owned()],
                 None,
-                Some(identity()),
+                explicit(),
                 None,
             )
             .unwrap_err();
@@ -1400,7 +1533,7 @@ mod stash {
             &policy,
             &["docs/guide.md".to_owned()],
             None,
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap();
@@ -1412,7 +1545,7 @@ mod stash {
             &policy,
             &["docs/guide.md".to_owned()],
             None,
-            Some(identity()),
+            explicit(),
             None,
         )
         .unwrap_err();
