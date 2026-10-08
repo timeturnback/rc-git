@@ -1350,15 +1350,123 @@ mod commit_and_discard {
     fn discard_restores_a_symlink_and_the_exec_bit() {
         let fx = Fixture::standard();
         let policy = Policy::default();
+        fx.write("tool.sh", b"#!/bin/sh\n");
+        fx.set_mode("tool.sh", 0o755);
+        fx.commit("Add tool", "2024-01-05T00:00:00+0000");
+        fx.set_mode("tool.sh", 0o644);
         std::fs::remove_file(fx.path().join("link")).unwrap();
         fx.write("link", b"now a plain file\n");
 
-        discard_files(fx.path(), &policy, &["link".to_owned()], None).unwrap();
+        discard_files(
+            fx.path(),
+            &policy,
+            &["link".to_owned(), "tool.sh".to_owned()],
+            None,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_link(fx.path().join("link")).unwrap().to_str(),
             Some("README.md")
         );
+        assert_eq!(file_mode(&fx, "tool.sh"), 0o755);
         assert_eq!(porcelain(&fx), "");
+    }
+
+    #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+    fn file_mode(fx: &Fixture, path: &str) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(fx.path().join(path))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn discarding_a_hunk_keeps_the_exec_bit() {
+        let fx = Fixture::standard();
+        fx.write("hunky.txt", b"l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+        fx.set_mode("hunky.txt", 0o755);
+        fx.commit("Add hunky", "2024-01-05T00:00:00+0000");
+        fx.write(
+            "hunky.txt",
+            b"l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nAPPENDED\n",
+        );
+        fx.set_mode("hunky.txt", 0o755);
+
+        let found = stamps(&fx, "hunky.txt");
+        assert_eq!(found.len(), 2);
+        discard_hunks(
+            fx.path(),
+            &Policy::default(),
+            "hunky.txt",
+            &[found[0]],
+            None,
+        )
+        .unwrap();
+        assert_eq!(file_mode(&fx, "hunky.txt") & 0o111, 0o111);
+        assert!(
+            fx.git_output(&["diff", "--raw", "--", "hunky.txt"])
+                .starts_with(":100755 100755 "),
+            "git sees a content change only, no mode change"
+        );
+    }
+
+    #[test]
+    fn discard_on_an_unborn_branch_deletes_untracked_files() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("first.txt", b"first\n");
+        fx.write("staged.txt", b"staged\n");
+        fx.git(&["add", "staged.txt"]);
+
+        let outcomes = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["first.txt".to_owned(), "staged.txt".to_owned()],
+            None,
+        )
+        .unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .all(|done| done.kind == DiscardKind::Deleted),
+            "{outcomes:?}"
+        );
+        assert!(!fx.path().join("first.txt").exists());
+        assert!(!fx.path().join("staged.txt").exists());
+        assert_eq!(fx.git_output(&["ls-files"]), "", "the index is empty again");
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn discard_hunks_refuses_bad_selections() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"edited\n");
+        fx.write("untracked.txt", b"junk\n");
+        let stamp = stamps(&fx, "alpha.txt")[0];
+
+        for (path, selection) in [
+            ("alpha.txt", &[][..]),
+            ("untracked.txt", &[stamp][..]),
+            ("link", &[stamp][..]),
+        ] {
+            let err = discard_hunks(fx.path(), &policy, path, selection, None).unwrap_err();
+            assert!(
+                matches!(&err, ActionError::HunkMismatch { path: named } if named == path),
+                "{path}: {err}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"edited\n"
+        );
+        assert!(fx.path().join("untracked.txt").exists());
+        assert_eq!(
+            std::fs::read_link(fx.path().join("link")).unwrap().to_str(),
+            Some("README.md")
+        );
     }
 
     #[test]
