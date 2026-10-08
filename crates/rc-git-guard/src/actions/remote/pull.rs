@@ -40,9 +40,11 @@ pub struct PullOutcome {
 /// [`ActionError::Diverged`] when both sides moved, [`ActionError::DirtyPath`] when a
 /// changed path has uncommitted work (nothing is written), [`ActionError::NoUpstream`]
 /// when the branch has no tracking ref, [`ActionError::DetachedHead`], and
-/// [`ActionError::Git`] for everything else.
+/// [`ActionError::Git`] for everything else, including a git operation in progress (merge,
+/// rebase, cherry-pick, revert, bisect) and an unresolved conflict in the index.
 pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<PullOutcome> {
     let repo = open(repo_path, OP, "repository")?;
+    crate::actions::refuse_any_operation_in_progress(&repo, OP)?;
     let (branch, tip) = current_branch(&repo, OP)?;
     let decision = policy.evaluate(&Action::PullFastForward {
         branch: branch.clone(),

@@ -159,6 +159,7 @@ pub(super) fn verify_clean(
     op: &'static str,
 ) -> ActionResult<()> {
     let index = index.file();
+    refuse_unmerged_entries(index, op)?;
     refuse_paths_under_written_links(changes, op)?;
     let file_mode = repo
         .config_snapshot()
@@ -193,6 +194,22 @@ pub(super) fn verify_clean(
         }
     }
     Ok(())
+}
+
+/// Refuses the operation when `index` holds a conflicted path (an entry at a non-zero stage), as
+/// git does: a lookup by path returns only one stage, so the per-path checks would miss it.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the first conflicted path.
+fn refuse_unmerged_entries(index: &gix::index::File, op: &'static str) -> ActionResult<()> {
+    let Some(entry) = index.entries().iter().find(|entry| entry.stage_raw() != 0) else {
+        return Ok(());
+    };
+    Err(ActionError::git(
+        op,
+        entry.path(index).to_string(),
+        "has unresolved conflicts; resolve them in git first",
+    ))
 }
 
 /// The device and inode of a file on disk: two spellings that a case-insensitive or

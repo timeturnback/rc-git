@@ -59,7 +59,8 @@ pub fn configured_identity(repo_path: &Path) -> ActionResult<Option<Identity>> {
 /// [`ActionError::NoHunksSelected`] for a hunk selection with no hunks, and
 /// [`ActionError::Git`] when an object cannot be read or written, or a selected path is one
 /// git refuses (`.git`, `.`, `..`, an empty segment, a symlinked parent) — checked for every
-/// selection before anything is read or written.
+/// selection before anything is read or written. Also [`ActionError::Git`] while a merge,
+/// cherry-pick, revert or rebase is in progress, before anything is written.
 pub fn commit(
     repo_path: &Path,
     policy: &Policy,
@@ -70,6 +71,7 @@ pub fn commit(
     input: Option<&str>,
 ) -> ActionResult<Committed> {
     let repo = open(repo_path, OP, "HEAD")?;
+    super::refuse_unfinished_operation(&repo, OP)?;
     let _proof = confirm(plan_commit(policy, selections.len()), OP, "HEAD", input)?;
     let message = normalized_message(message)?;
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;

@@ -584,6 +584,50 @@ fn pull_refuses_a_staged_change_on_a_touched_path() {
     );
 }
 
+/// A clone one fetched commit behind its upstream, with `README.md` conflicted by a merge
+/// that stopped, and `main` moved back to its tip so the pull would otherwise fast-forward.
+fn conflicted_clone_behind_origin() -> (Remoted, String) {
+    let remoted = remoted();
+    advance_origin(&remoted.origin, &remoted.bare_path); // adds news.txt upstream
+    fetch_clone(&remoted);
+    let tip = remoted.clone.rev_parse("main");
+    remoted.clone.conflicted_merge("README.md");
+    remoted
+        .clone
+        .git(&["update-ref", "refs/heads/main", tip.as_str()]);
+    (remoted, tip)
+}
+
+#[test]
+fn pull_refuses_during_a_conflicted_merge_and_leaves_head() {
+    let (remoted, tip) = conflicted_clone_behind_origin();
+
+    let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("merging");
+    assert!(matches!(&err, ActionError::Git { op: "pull", .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("a merge is in progress; finish or abort it in git"),
+        "{err}"
+    );
+    assert_eq!(remoted.clone.rev_parse("main"), tip);
+    assert!(!remoted.clone.path().join("news.txt").exists());
+}
+
+#[test]
+fn pull_refuses_a_conflicted_index_on_a_path_it_does_not_touch() {
+    let (remoted, tip) = conflicted_clone_behind_origin();
+    remoted.clone.remove(".git/MERGE_HEAD");
+
+    let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("conflict");
+    assert!(
+        matches!(&err, ActionError::Git { op: "pull", name, .. } if name == "README.md"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("unresolved conflicts"), "{err}");
+    assert_eq!(remoted.clone.rev_parse("main"), tip);
+    assert!(!remoted.clone.path().join("news.txt").exists());
+}
+
 #[test]
 fn pull_refuses_a_detached_head() {
     let remoted = remoted();

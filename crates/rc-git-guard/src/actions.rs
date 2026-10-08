@@ -634,6 +634,58 @@ fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Rep
     Ok(repo)
 }
 
+/// Whether a bisect may stay in progress while `op` runs. A commit records work on the bisected
+/// commit as git allows; anything that moves `HEAD` would desynchronize the bisect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bisect {
+    Allowed,
+    Refused,
+}
+
+/// Refuses `op` while a merge, cherry-pick, revert, rebase or mailbox apply is in progress:
+/// its pending state (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, …) would survive the action and be
+/// finished on top of it. A bisect in progress is allowed. Errors name `op`.
+///
+/// # Errors
+/// [`ActionError::Git`] naming the operation in progress.
+fn refuse_unfinished_operation(repo: &gix::Repository, op: &'static str) -> ActionResult<()> {
+    refuse_in_progress(repo, op, Bisect::Allowed)
+}
+
+/// Refuses `op`, which moves `HEAD` to another commit, while any git operation is in progress,
+/// a bisect included.
+///
+/// # Errors
+/// [`ActionError::Git`] naming the operation in progress.
+fn refuse_any_operation_in_progress(repo: &gix::Repository, op: &'static str) -> ActionResult<()> {
+    refuse_in_progress(repo, op, Bisect::Refused)
+}
+
+fn refuse_in_progress(
+    repo: &gix::Repository,
+    op: &'static str,
+    bisect: Bisect,
+) -> ActionResult<()> {
+    use gix::state::InProgress;
+    let name = match repo.state() {
+        None => return Ok(()),
+        Some(InProgress::Bisect) if bisect == Bisect::Allowed => return Ok(()),
+        Some(InProgress::Bisect) => "bisect",
+        Some(InProgress::Merge) => "merge",
+        Some(InProgress::CherryPick | InProgress::CherryPickSequence) => "cherry-pick",
+        Some(InProgress::Revert | InProgress::RevertSequence) => "revert",
+        Some(
+            InProgress::Rebase | InProgress::RebaseInteractive | InProgress::ApplyMailboxRebase,
+        ) => "rebase",
+        Some(InProgress::ApplyMailbox) => "mailbox apply (git am)",
+    };
+    Err(ActionError::git(
+        op,
+        "HEAD",
+        format!("a {name} is in progress; finish or abort it in git first"),
+    ))
+}
+
 fn create_ref(
     repo_path: &Path,
     op: &'static str,

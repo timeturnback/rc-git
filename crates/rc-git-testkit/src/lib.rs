@@ -241,6 +241,24 @@ impl Fixture {
         command
     }
 
+    /// Leaves `path` conflicted by a merge that stopped, with `MERGE_HEAD` in place: a branch
+    /// `clash` and one commit on the checked-out branch each rewrite `path`, then `git merge
+    /// clash` fails on the conflict. The checked-out branch ends one commit past where it was.
+    ///
+    /// # Panics
+    /// When a git command fails, or the merge does not stop on a conflict.
+    pub fn conflicted_merge(&self, path: &str) {
+        self.git(&["branch", "clash"]);
+        self.write(path, b"ours\n");
+        self.commit("Ours", "2024-02-01T00:00:00+0000");
+        self.git(&["checkout", "-q", "clash"]);
+        self.write(path, b"theirs\n");
+        self.commit("Theirs", "2024-02-02T00:00:00+0000");
+        self.git(&["checkout", "-q", "-"]);
+        let report = self.git_expect_failure(&["merge", "clash"]);
+        assert!(report.contains("CONFLICT"), "{report}");
+    }
+
     /// `git rev-parse <spec>`.
     #[must_use]
     pub fn rev_parse(&self, spec: &str) -> String {

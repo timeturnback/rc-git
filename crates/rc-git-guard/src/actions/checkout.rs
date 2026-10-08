@@ -37,14 +37,16 @@ pub struct CheckoutOutcome {
 /// # Errors
 /// [`ActionError::DirtyPath`](super::ActionError::DirtyPath) when a path the switch touches
 /// has uncommitted work (nothing is written), [`ActionError::Git`](super::ActionError::Git)
-/// when the branch does not exist, has no commit, or the repository cannot be read or
-/// written.
+/// when the branch does not exist, has no commit, the repository cannot be read or written,
+/// a git operation (merge, rebase, cherry-pick, revert, bisect) is in progress, or the index
+/// holds an unresolved conflict.
 pub fn checkout_branch(
     repo_path: &Path,
     policy: &Policy,
     branch: &str,
 ) -> ActionResult<CheckoutOutcome> {
     let repo = open(repo_path, OP, branch)?;
+    super::refuse_any_operation_in_progress(&repo, OP)?;
     let decision = policy.evaluate(&Action::Checkout {
         target: branch.to_owned(),
     });

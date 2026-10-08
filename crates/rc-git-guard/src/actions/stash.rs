@@ -49,7 +49,8 @@ pub struct StashSaved {
 /// # Errors
 /// [`ActionError::NotConfirmed`] when the plain confirm is missing,
 /// [`ActionError::MissingIdentity`] without an identity, [`ActionError::Git`] when there is
-/// no commit yet, nothing changed at `paths`, or an object cannot be written.
+/// no commit yet, nothing changed at `paths`, an object cannot be written, or a merge,
+/// cherry-pick, revert or rebase is in progress.
 pub fn stash_push(
     repo_path: &Path,
     policy: &Policy,
@@ -60,6 +61,7 @@ pub fn stash_push(
 ) -> ActionResult<StashSaved> {
     const OP: &str = "stash push";
     let repo = open(repo_path, OP, "refs/stash")?;
+    super::refuse_unfinished_operation(&repo, OP)?;
     let _proof = confirm(
         plan_stash_push(policy, paths.len()),
         OP,

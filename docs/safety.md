@@ -171,6 +171,12 @@ The Changes tab's write paths add their own guarantees:
   missing from `HEAD` only when its directory holds an entry of exactly that name, so on a
   case-insensitive volume `ALPHA.TXT` never deletes the tracked `alpha.txt`.
 
+- **A git operation left in progress** (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, a
+  rebase or `git am` directory) refuses commit and stash push, which would otherwise record
+  work on top of it and lose the merge ancestry; a bisect is allowed there. Checkout and
+  fast-forward pull refuse every one, a bisect included, and also refuse an index holding an
+  unresolved conflict at any path, before a byte is written.
+
 - **A branch switch** applies the tree diff between the two commits to exactly the changed
   paths, through the same planner the fast-forward pull uses: any dirty or staged overlap
   refuses the whole switch, named by path, before a byte is written, and paths the switch does

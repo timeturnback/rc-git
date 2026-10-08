@@ -2245,3 +2245,156 @@ mod tree_switch_disk_reads {
         assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
     }
 }
+
+/// A merge, cherry-pick or other git operation left in progress refuses every action that would
+/// build on it or move `HEAD`, and a conflicted index refuses a switch on its own.
+mod in_progress {
+    use rc_git_guard::Policy;
+    use rc_git_guard::actions::{ActionError, FileSelection, checkout_branch, commit, stash_push};
+    use rc_git_testkit::Fixture;
+
+    use super::explicit;
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper panics on a malformed HEAD id"
+    )]
+    fn head_oid(fx: &Fixture) -> rc_git_core::Oid {
+        rc_git_core::Oid::from_hex(&fx.rev_parse("HEAD")).unwrap()
+    }
+
+    fn commit_readme(fx: &Fixture) -> Result<rc_git_guard::actions::Committed, ActionError> {
+        commit(
+            fx.path(),
+            &Policy::default(),
+            "resolved",
+            explicit(),
+            Some(head_oid(fx)),
+            &[FileSelection::Whole {
+                path: "README.md".to_owned(),
+            }],
+            None,
+        )
+    }
+
+    fn assert_refused(err: &ActionError, op: &str, what: &str) {
+        assert!(
+            matches!(err, ActionError::Git { op: actual, .. } if *actual == op),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains(&format!(
+                "a {what} is in progress; finish or abort it in git"
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_commit_during_a_conflicted_merge_is_refused_and_head_stays() {
+        let fx = Fixture::standard();
+        fx.conflicted_merge("README.md");
+        let head = fx.rev_parse("HEAD");
+        fx.write("README.md", b"resolved\n");
+
+        let err = commit_readme(&fx).unwrap_err();
+        assert_refused(&err, "commit", "merge");
+        assert_eq!(fx.rev_parse("HEAD"), head);
+        assert!(fx.git_dir().join("MERGE_HEAD").is_file());
+    }
+
+    #[test]
+    fn a_commit_during_a_cherry_pick_is_refused() {
+        let fx = Fixture::standard();
+        fx.conflicted_merge("README.md");
+        fx.git(&["merge", "--abort"]);
+        let report = fx.git_expect_failure(&["cherry-pick", "clash"]);
+        assert!(report.contains("CONFLICT"), "{report}");
+        let head = fx.rev_parse("HEAD");
+        fx.write("README.md", b"resolved\n");
+
+        let err = commit_readme(&fx).unwrap_err();
+        assert_refused(&err, "commit", "cherry-pick");
+        assert_eq!(fx.rev_parse("HEAD"), head);
+    }
+
+    #[test]
+    fn a_commit_during_a_bisect_goes_through() {
+        let fx = Fixture::standard();
+        fx.git(&["bisect", "start"]);
+        assert!(fx.git_dir().join("BISECT_LOG").is_file());
+        fx.write("README.md", b"found it\n");
+
+        let done = commit_readme(&fx).unwrap();
+        assert_eq!(done.oid.to_hex(), fx.rev_parse("HEAD"));
+    }
+
+    #[test]
+    fn a_stash_during_a_conflicted_merge_is_refused() {
+        let fx = Fixture::standard();
+        fx.conflicted_merge("README.md");
+        fx.write("alpha.txt", b"side work\n");
+
+        let err = stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned()],
+            None,
+            explicit(),
+            None,
+        )
+        .unwrap_err();
+        assert_refused(&err, "stash push", "merge");
+        assert_eq!(fx.git_output(&["stash", "list"]), "");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"side work\n"
+        );
+    }
+
+    #[test]
+    fn a_checkout_during_a_conflicted_merge_is_refused_and_head_stays() {
+        let fx = Fixture::standard();
+        fx.conflicted_merge("README.md");
+        let head = fx.rev_parse("HEAD");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert_refused(&err, "checkout", "merge");
+        assert_eq!(fx.git_output(&["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(fx.rev_parse("HEAD"), head);
+        assert!(
+            !fx.path().join("feature.txt").exists(),
+            "nothing was written"
+        );
+    }
+
+    #[test]
+    fn a_checkout_during_a_bisect_is_refused() {
+        let fx = Fixture::standard();
+        fx.git(&["bisect", "start"]);
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert_refused(&err, "checkout", "bisect");
+        assert_eq!(fx.git_output(&["symbolic-ref", "--short", "HEAD"]), "main");
+    }
+
+    #[test]
+    fn a_conflicted_path_the_switch_does_not_touch_still_refuses_it() {
+        let fx = Fixture::standard();
+        // README.md is identical on main and feature, so only the index stages show the conflict.
+        fx.conflicted_merge("README.md");
+        fx.remove(".git/MERGE_HEAD");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "checkout", name, .. } if name == "README.md"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("unresolved conflicts"), "{err}");
+        assert_eq!(fx.git_output(&["symbolic-ref", "--short", "HEAD"]), "main");
+        assert!(
+            !fx.path().join("feature.txt").exists(),
+            "nothing was written"
+        );
+    }
+}
