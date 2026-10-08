@@ -166,6 +166,11 @@ pub(super) fn verify_clean(
         .boolean("core.fileMode")
         .unwrap_or(true);
     let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
+    let deleted_paths: HashSet<&str> = changes
+        .iter()
+        .filter(|change| change.new.is_none())
+        .map(|change| change.path.as_str())
+        .collect();
     for change in changes {
         let dirty = || ActionError::DirtyPath {
             op,
@@ -177,10 +182,12 @@ pub(super) fn verify_clean(
                 return Err(dirty());
             }
         } else {
-            // The other side adds this path; anything already there is in the way.
+            // The other side adds this path; anything already there is in the way, except a
+            // file the plan deletes first or a directory the deletions empty.
             let full = workfile::join_under(work_dir, &change.path, op)?;
             if let Ok(meta) = std::fs::symlink_metadata(&full)
                 && !deleted_files.contains(&file_id(&meta))
+                && !(meta.is_dir() && emptied_by_plan(&full, &change.path, &deleted_paths, op)?)
             {
                 return Err(dirty());
             }
@@ -239,6 +246,51 @@ fn deleted_files_on_disk(
         }
     }
     Ok(files)
+}
+
+/// Whether the directory `dir` (the repository path `relative`) is gone once [`apply`] has run
+/// the plan's deletions: everything below it is a file in `deleted`, and every directory
+/// below it holds at least one, so pruning after the last deletion removes it. Any other
+/// entry, untracked or ignored, keeps it, and git refuses that switch too. An empty `dir`
+/// counts as emptied, since [`workfile::restore_file`] removes an empty directory itself.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the directory when it cannot be read.
+fn emptied_by_plan(
+    dir: &Path,
+    relative: &str,
+    deleted: &HashSet<&str>,
+    op: &'static str,
+) -> ActionResult<bool> {
+    let entries = std::fs::read_dir(dir).map_err(git_err(op, relative))?;
+    for entry in entries {
+        let entry = entry.map_err(git_err(op, relative))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return Ok(false);
+        };
+        let path = format!("{relative}/{name}");
+        let is_dir = entry.file_type().map_err(git_err(op, &path))?.is_dir();
+        let gone = if is_dir {
+            directory_holds_entries(&entry.path(), &path, op)?
+                && emptied_by_plan(&entry.path(), &path, deleted, op)?
+        } else {
+            deleted.contains(path.as_str())
+        };
+        if !gone {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `dir` holds any entry. An empty subdirectory is never pruned, so it keeps its
+/// parent in place.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `relative` when the directory cannot be read.
+fn directory_holds_entries(dir: &Path, relative: &str, op: &'static str) -> ActionResult<bool> {
+    let mut entries = std::fs::read_dir(dir).map_err(git_err(op, relative))?;
+    Ok(entries.next().is_some())
 }
 
 /// Refuses a plan that writes a symlink and also writes a path below a directory spelled like

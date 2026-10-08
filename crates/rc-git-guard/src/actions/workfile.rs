@@ -222,8 +222,9 @@ pub(super) fn disk_entry(
 }
 
 /// Writes `data` to `relative` below `work_dir` as `kind` describes: a symlink's blob holds
-/// its target, and the executable bit follows the mode. Any existing file is removed first,
-/// so writing never follows a stale symlink. Errors name `op`, the action the write is for.
+/// its target, and the executable bit follows the mode. Any existing file, or an empty
+/// directory, is removed first, so writing never follows a stale symlink. Errors name `op`,
+/// the action the write is for.
 pub(super) fn restore_file(
     op: &'static str,
     work_dir: &Path,
@@ -241,7 +242,12 @@ pub(super) fn restore_file(
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).map_err(git_err(op, relative))?;
         }
-        match std::fs::remove_file(&full) {
+        let removed = match std::fs::symlink_metadata(&full) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir(&full),
+            Ok(_) => std::fs::remove_file(&full),
+            Err(error) => Err(error),
+        };
+        match removed {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(ActionError::git(op, relative, error)),
@@ -274,8 +280,9 @@ pub(super) fn restore_file(
     Ok(())
 }
 
-/// Deletes `relative` below `work_dir`; a file already gone is not an error, so a retried
-/// action lands in the state it retries from. Errors name `op`, the action the delete is for.
+/// Deletes `relative` below `work_dir`, then removes each parent directory the deletion left
+/// empty, as git does; a file already gone is not an error, so a retried action lands in the
+/// state it retries from. Errors name `op`, the action the delete is for.
 pub(super) fn delete_file(op: &'static str, work_dir: &Path, relative: &str) -> ActionResult<()> {
     let full = join_under(work_dir, relative, op)?;
     #[expect(
@@ -283,9 +290,28 @@ pub(super) fn delete_file(op: &'static str, work_dir: &Path, relative: &str) -> 
         reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
     )]
     match std::fs::remove_file(&full) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(ActionError::git(op, relative, error)),
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ActionError::git(op, relative, error)),
+    }
+    prune_empty_parents(work_dir, relative);
+    Ok(())
+}
+
+/// Removes the parent directories of `relative`, deepest first and never `work_dir` itself,
+/// stopping at the first one that cannot be removed. Like git's `schedule_dir_for_removal`,
+/// a failure here means "still in use" (not empty, or already gone), never an error: the
+/// file the caller deleted is gone either way.
+fn prune_empty_parents(work_dir: &Path, relative: &str) {
+    for (end, _) in relative.rmatch_indices('/') {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+        )]
+        let removed = std::fs::remove_dir(work_dir.join(&relative[..end]));
+        if removed.is_err() {
+            break;
+        }
     }
 }
 

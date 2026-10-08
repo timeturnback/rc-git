@@ -1078,6 +1078,27 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn discarding_an_untracked_file_removes_the_folders_it_leaves_empty() {
+        let fx = Fixture::standard();
+        fx.write("newdir/sub/a", b"junk\n");
+        fx.write("newdir/keep", b"stays\n");
+
+        discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["newdir/sub/a".to_owned()],
+            None,
+        )
+        .unwrap();
+
+        assert!(!fx.path().join("newdir/sub").exists());
+        assert!(
+            fx.path().join("newdir/keep").exists(),
+            "pruning stops at the first folder that still holds something"
+        );
+    }
+
+    #[test]
     fn discard_restores_a_symlink_and_the_exec_bit() {
         let fx = Fixture::standard();
         let policy = Policy::default();
@@ -1987,6 +2008,135 @@ mod checkout {
             std::fs::read(fx.path().join("feature.txt")).unwrap(),
             b"mine, not the branch's\n"
         );
+    }
+
+    /// `main` has `docs/guide.md`, `nodocs` (from `main`) deletes it, and `docsfile` (from
+    /// `nodocs`) adds a file named `docs`. Checked out on `main`.
+    fn docs_fixture() -> Fixture {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("keep", b"x\n");
+        fx.write("docs/guide.md", b"g\n");
+        fx.commit("base", "2024-01-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "nodocs"]);
+        fx.remove("docs");
+        fx.commit("rm", "2024-01-02T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "docsfile"]);
+        fx.write("docs", b"f\n");
+        fx.commit("file", "2024-01-03T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+        fx
+    }
+
+    #[test]
+    fn switching_away_removes_an_emptied_folder() {
+        let fx = docs_fixture();
+
+        checkout_branch(fx.path(), &Policy::default(), "nodocs").unwrap();
+
+        assert!(
+            !fx.path().join("docs").exists(),
+            "a folder the switch empties is removed, as git removes it"
+        );
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn switching_away_removes_every_emptied_level_and_keeps_the_work_dir() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("top", b"t\n");
+        fx.commit("base", "2024-01-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "deep"]);
+        fx.write("sub/deep/x", b"x\n");
+        fx.write("other/y", b"y\n");
+        fx.commit("deep", "2024-01-02T00:00:00+0000");
+        fx.write("other/untracked", b"mine\n");
+
+        checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+
+        assert!(
+            !fx.path().join("sub").exists(),
+            "sub/deep and sub both emptied"
+        );
+        assert!(
+            fx.path().join("other/untracked").exists(),
+            "a folder still holding an untracked file stays"
+        );
+        assert!(fx.path().join("top").exists());
+    }
+
+    #[test]
+    fn a_folder_can_become_a_file() {
+        let fx = docs_fixture();
+        checkout_branch(fx.path(), &Policy::default(), "nodocs").unwrap();
+        checkout_branch(fx.path(), &Policy::default(), "docsfile").unwrap();
+        assert_eq!(std::fs::read(fx.path().join("docs")).unwrap(), b"f\n");
+        assert_eq!(porcelain(&fx), "");
+
+        let direct = docs_fixture();
+        let outcome = checkout_branch(direct.path(), &Policy::default(), "docsfile").unwrap();
+        assert_eq!(
+            outcome.files_changed, 2,
+            "docs/guide.md deleted, docs added"
+        );
+        assert_eq!(std::fs::read(direct.path().join("docs")).unwrap(), b"f\n");
+        assert_eq!(
+            porcelain(&direct),
+            "",
+            "the index must agree with the new tree"
+        );
+
+        checkout_branch(direct.path(), &Policy::default(), "main").unwrap();
+        assert_eq!(
+            std::fs::read(direct.path().join("docs/guide.md")).unwrap(),
+            b"g\n",
+            "and the file becomes a folder again"
+        );
+        assert_eq!(porcelain(&direct), "");
+    }
+
+    #[test]
+    fn a_leftover_empty_folder_gives_way_to_a_file() {
+        let fx = docs_fixture();
+        fx.git(&["switch", "-q", "nodocs"]);
+        fx.write("docs/placeholder", b"");
+        fx.remove("docs/placeholder");
+
+        checkout_branch(fx.path(), &Policy::default(), "docsfile").unwrap();
+
+        assert_eq!(std::fs::read(fx.path().join("docs")).unwrap(), b"f\n");
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn a_folder_holding_untracked_work_is_not_replaced_by_a_file() {
+        for extra in ["docs/notes.txt", "docs/empty/"] {
+            let fx = docs_fixture();
+            if let Some(dir) = extra.strip_suffix('/') {
+                let placeholder = format!("{dir}/placeholder");
+                fx.write(&placeholder, b"");
+                fx.remove(&placeholder);
+            } else {
+                fx.write(extra, b"mine\n");
+            }
+
+            let err = checkout_branch(fx.path(), &Policy::default(), "docsfile").unwrap_err();
+
+            assert!(
+                matches!(&err, ActionError::DirtyPath { op: "checkout", path } if path == "docs"),
+                "{extra}: {err}"
+            );
+            assert_eq!(head_branch(&fx), "main", "{extra}: HEAD stayed put");
+            assert!(
+                fx.path().join("docs/guide.md").exists(),
+                "{extra}: nothing was deleted"
+            );
+            assert!(
+                fx.path().join(extra).exists(),
+                "{extra}: the untracked work stays"
+            );
+        }
     }
 
     #[test]
