@@ -1856,6 +1856,76 @@ mod stash {
         fx.git_output(&["stash", "list", "--format=%gs"])
     }
 
+    /// The stash commit git calls `stash@{index}`, as the app shows it next to the entry.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper panics on a malformed stash id"
+    )]
+    fn stash_oid(fx: &Fixture, index: usize) -> rc_git_core::Oid {
+        rc_git_core::Oid::from_hex(&fx.rev_parse(&format!("stash@{{{index}}}"))).unwrap()
+    }
+
+    #[test]
+    fn drop_refuses_an_entry_that_is_not_the_one_shown() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let log_before = std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap();
+        let refs_before = refs(&fx);
+
+        let err = stash_drop(fx.path(), &policy, 1, stash_oid(&fx, 0), Some("drop")).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash drop" }),
+            "{err}"
+        );
+        let err = stash_drop(fx.path(), &policy, 2, stash_oid(&fx, 0), Some("drop")).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { .. }),
+            "a position past the list: {err}"
+        );
+
+        assert_eq!(stash_list(&fx), "On main: two\nOn main: one");
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+        assert_eq!(
+            std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap(),
+            log_before
+        );
+    }
+
+    #[test]
+    fn pop_refuses_after_a_push_shifts_the_entry_it_was_shown() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"shown\n");
+        fx.git(&["stash", "push", "-q", "-m", "shown"]);
+        let shown = stash_oid(&fx, 0);
+        fx.write("alpha.txt", b"pushed from a terminal\n");
+        fx.git(&["stash", "push", "-q", "-m", "terminal"]);
+
+        let err = stash_pop(fx.path(), &policy, 0, shown, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash pop" }),
+            "{err}"
+        );
+        let err = stash_apply(fx.path(), &policy, 0, shown, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash apply" }),
+            "{err}"
+        );
+        assert_eq!(porcelain(&fx), "", "nothing was applied");
+        assert_eq!(stash_list(&fx), "On main: terminal\nOn main: shown");
+
+        stash_pop(fx.path(), &policy, 1, shown, None).unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"shown\n"
+        );
+        assert_eq!(stash_list(&fx), "On main: terminal");
+    }
+
     #[test]
     fn a_stash_push_also_unstages_the_stashed_paths() {
         let fx = Fixture::standard();
@@ -1979,7 +2049,7 @@ mod stash {
         );
         assert_eq!(porcelain(&fx), "");
 
-        stash_pop(fx.path(), &policy, 0, None).unwrap();
+        stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
         assert_eq!(
             file_mode(&fx, "alpha.txt"),
             0o755,
@@ -2096,7 +2166,7 @@ mod stash {
         fx.write("alpha.txt", b"from real git\n");
         fx.git(&["stash", "push", "-q", "-m", "real one"]);
 
-        let deleted = stash_pop(fx.path(), &policy, 0, None).unwrap();
+        let deleted = stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
         assert_eq!(deleted.full_name, "stash@{0}");
         assert_eq!(
             deleted.backup_ref.as_deref(),
@@ -2128,14 +2198,14 @@ mod stash {
         );
         let two = fx.rev_parse("stash@{1}");
 
-        let err = stash_drop(fx.path(), &policy, 1, Some("wrong")).unwrap_err();
+        let err = stash_drop(fx.path(), &policy, 1, stash_oid(&fx, 1), Some("wrong")).unwrap_err();
         assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
         assert_eq!(
             stash_list(&fx),
             "On main: three\nOn main: two\nOn main: one"
         );
 
-        let deleted = stash_drop(fx.path(), &policy, 1, Some("drop")).unwrap();
+        let deleted = stash_drop(fx.path(), &policy, 1, stash_oid(&fx, 1), Some("drop")).unwrap();
         assert_eq!(deleted.full_name, "stash@{1}");
         assert_eq!(
             deleted.backup_ref.as_deref(),
@@ -2162,11 +2232,11 @@ mod stash {
         }
         let one = fx.rev_parse("stash@{1}");
 
-        stash_drop(fx.path(), &policy, 0, Some("drop")).unwrap();
+        stash_drop(fx.path(), &policy, 0, stash_oid(&fx, 0), Some("drop")).unwrap();
         assert_eq!(stash_list(&fx), "On main: one");
         assert_eq!(fx.rev_parse("refs/stash"), one);
 
-        stash_drop(fx.path(), &policy, 0, Some("drop")).unwrap();
+        stash_drop(fx.path(), &policy, 0, stash_oid(&fx, 0), Some("drop")).unwrap();
         assert_eq!(stash_list(&fx), "");
         assert!(!refs(&fx).contains("refs/stash"));
     }
@@ -2184,7 +2254,7 @@ mod stash {
         log.extend_from_slice(b"junk\n");
         fx.write(".git/logs/refs/stash", &log);
 
-        stash_drop(fx.path(), &policy, 1, Some("drop")).unwrap();
+        stash_drop(fx.path(), &policy, 1, stash_oid(&fx, 1), Some("drop")).unwrap();
         assert_eq!(stash_list(&fx), "On main: second");
         assert_eq!(
             fx.rev_parse("refs/rc-git/backup/stash/1"),
@@ -2210,7 +2280,7 @@ mod stash {
             b"alpha\n"
         );
 
-        let err = stash_apply(fx.path(), &policy, 0, None).unwrap_err();
+        let err = stash_apply(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap_err();
         assert!(matches!(err, ActionError::Git { .. }), "{err}");
         assert!(
             err.to_string().contains("'sub'") && err.to_string().contains("submodule"),
@@ -2236,7 +2306,7 @@ mod stash {
         fx.git(&["stash", "push", "-q", "-m", "kept"]);
         fx.write("alpha.txt", b"conflicting edit\n");
 
-        let err = stash_apply(fx.path(), &policy, 0, None).unwrap_err();
+        let err = stash_apply(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap_err();
         assert!(
             matches!(&err, ActionError::DirtyPath { op: "stash apply", path } if path == "alpha.txt"),
             "{err}"
@@ -2245,7 +2315,7 @@ mod stash {
             err.to_string().starts_with("stash apply: 'alpha.txt'"),
             "{err}"
         );
-        let err = stash_pop(fx.path(), &policy, 0, None).unwrap_err();
+        let err = stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap_err();
         assert!(
             matches!(
                 &err,
@@ -2265,7 +2335,7 @@ mod stash {
 
         // Clean state again: apply works and keeps the entry.
         fx.git(&["checkout", "-q", "--", "alpha.txt"]);
-        stash_apply(fx.path(), &policy, 0, None).unwrap();
+        stash_apply(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"stash me\n"
@@ -2295,7 +2365,7 @@ mod stash {
         );
         assert!(stash_list(&fx).starts_with("WIP on main:"));
 
-        stash_pop(fx.path(), &policy, 0, None).unwrap();
+        stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
         assert!(!fx.path().join("Zeta.txt").exists());
     }
 
@@ -2445,7 +2515,7 @@ mod stash {
         )
         .unwrap_err();
         assert!(err.to_string().contains(CROSSES_LINK), "push: {err}");
-        let err = stash_pop(fx.path(), &policy, 0, None).unwrap_err();
+        let err = stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap_err();
         assert!(err.to_string().contains(CROSSES_LINK), "pop: {err}");
 
         assert_eq!(

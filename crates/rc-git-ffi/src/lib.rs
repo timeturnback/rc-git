@@ -3077,7 +3077,7 @@ type CreateRef = fn(&Path, &Policy, &str, &str) -> ActionResult<()>;
 type DeleteRef = fn(&Path, &Policy, &str, Option<&str>) -> ActionResult<Deleted>;
 
 /// The guard call behind `rcgit_guard_stash_pop` and `rcgit_guard_stash_drop`.
-type RemoveStash = fn(&Path, &Policy, usize, Option<&str>) -> ActionResult<Deleted>;
+type RemoveStash = fn(&Path, &Policy, usize, Oid, Option<&str>) -> ActionResult<Deleted>;
 
 /// Runs `create` on the checked arguments of a ref-creating entry point.
 fn create_ref_with(
@@ -3123,16 +3123,18 @@ fn delete_ref_with(
 fn remove_stash_with(
     remove: RemoveStash,
     repo_path: &[u8],
-    index: usize,
+    entry: (usize, Oid),
     input: Option<&[u8]>,
     outs: &DeletedOuts,
 ) -> i32 {
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    let (index, expected) = entry;
     finish_deleted(
         remove(
             Path::new(OsStr::from_bytes(repo_path)),
             &Policy::default(),
             index,
+            expected,
             input.as_deref(),
         ),
         &outs.backup,
@@ -3206,19 +3208,41 @@ pub extern "C" fn rcgit_guard_plan_stash_apply() -> *mut RcGitGuardDecision {
     export(RcGitGuardDecision::export(decision, false))
 }
 
-/// The policy's decision for popping a stash entry. Pure; release with
+/// The policy's decision for popping `stash@{index}`, whose reflog message is `message`; the
+/// challenge names both. Pure; NULL when `message` is NULL. Release with
 /// `rcgit_guard_decision_free`.
+///
+/// # Safety
+/// `message` is a NUL-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn rcgit_guard_plan_stash_pop() -> *mut RcGitGuardDecision {
-    let decision = plan_stash_pop(&Policy::default());
+pub unsafe extern "C" fn rcgit_guard_plan_stash_pop(
+    index: usize,
+    message: *const c_char,
+) -> *mut RcGitGuardDecision {
+    // SAFETY: forwarded from this function's contract.
+    let Some(message) = (unsafe { bytes_arg(message) }) else {
+        return ptr::null_mut();
+    };
+    let decision = plan_stash_pop(&Policy::default(), index, &String::from_utf8_lossy(message));
     export(RcGitGuardDecision::export(decision, false))
 }
 
-/// The policy's decision for dropping `stash@{index}`. Pure; release with
+/// The policy's decision for dropping `stash@{index}`, whose reflog message is `message`; the
+/// challenge names both. Pure; NULL when `message` is NULL. Release with
 /// `rcgit_guard_decision_free`.
+///
+/// # Safety
+/// `message` is a NUL-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn rcgit_guard_plan_stash_drop(index: usize) -> *mut RcGitGuardDecision {
-    let decision = plan_stash_drop(&Policy::default(), index);
+pub unsafe extern "C" fn rcgit_guard_plan_stash_drop(
+    index: usize,
+    message: *const c_char,
+) -> *mut RcGitGuardDecision {
+    // SAFETY: forwarded from this function's contract.
+    let Some(message) = (unsafe { bytes_arg(message) }) else {
+        return ptr::null_mut();
+    };
+    let decision = plan_stash_drop(&Policy::default(), index, &String::from_utf8_lossy(message));
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -3675,23 +3699,37 @@ fn action_status(err: &ActionError) -> i32 {
     }
 }
 
-/// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
-/// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// Writes `stash@{index}` back to the working tree, keeping the entry. `expected` is the
+/// stash commit the caller showed at that position; refused when the entry there is now
+/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK` or
+/// `RCGIT_ERROR`.
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
-/// for writing a `char *`.
+/// `repo_path` is a NUL-terminated string; `expected` points to a readable `RcGitOid`;
+/// `input` is NULL or a NUL-terminated string. `error` is NULL or valid for writing a
+/// `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_stash_apply(
     repo_path: *const c_char,
     index: usize,
+    expected: *const RcGitOid,
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_stash_apply";
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, input, error) =
-        unsafe { (bytes_arg(repo_path), bytes_arg(input), Out::new(error)) };
-    let Some(repo_path) = error.required("rcgit_guard_stash_apply", "repo_path", repo_path) else {
+    let (repo_path, expected, input, error) = unsafe {
+        (
+            bytes_arg(repo_path),
+            oid_arg(expected),
+            bytes_arg(input),
+            Out::new(error),
+        )
+    };
+    let Some(repo_path) = error.required(OP, "repo_path", repo_path) else {
+        return RCGIT_ERROR;
+    };
+    let Some(expected) = error.valid(OP, "expected", expected) else {
         return RCGIT_ERROR;
     };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3700,15 +3738,17 @@ pub unsafe extern "C" fn rcgit_guard_stash_apply(
             Path::new(OsStr::from_bytes(repo_path)),
             &Policy::default(),
             index,
+            expected,
             input.as_deref(),
         ),
         &error,
     )
 }
 
-/// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
-/// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
-/// `RCGIT_OK` or `RCGIT_ERROR`.
+/// Applies `stash@{index}` and drops it once every file is restored, refusing as
+/// `rcgit_guard_stash_apply` does when the entry there is no longer `expected`. On success,
+/// the backup ref's full name is stored into `backup` (release with `rcgit_string_free`).
+/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
@@ -3716,14 +3756,17 @@ pub unsafe extern "C" fn rcgit_guard_stash_apply(
 pub unsafe extern "C" fn rcgit_guard_stash_pop(
     repo_path: *const c_char,
     index: usize,
+    expected: *const RcGitOid,
     input: *const c_char,
     backup: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_stash_pop";
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, input, outs) = unsafe {
+    let (repo_path, expected, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
+            oid_arg(expected),
             bytes_arg(input),
             DeletedOuts {
                 backup: Out::new(backup),
@@ -3731,13 +3774,13 @@ pub unsafe extern "C" fn rcgit_guard_stash_pop(
             },
         )
     };
-    let Some(repo_path) = outs
-        .error
-        .required("rcgit_guard_stash_pop", "repo_path", repo_path)
-    else {
+    let Some(repo_path) = outs.error.required(OP, "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
-    remove_stash_with(stash_pop, repo_path, index, input, &outs)
+    let Some(expected) = outs.error.valid(OP, "expected", expected) else {
+        return RCGIT_ERROR;
+    };
+    remove_stash_with(stash_pop, repo_path, (index, expected), input, &outs)
 }
 
 /// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
@@ -3748,14 +3791,17 @@ pub unsafe extern "C" fn rcgit_guard_stash_pop(
 pub unsafe extern "C" fn rcgit_guard_stash_drop(
     repo_path: *const c_char,
     index: usize,
+    expected: *const RcGitOid,
     input: *const c_char,
     backup: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
+    const OP: &str = "rcgit_guard_stash_drop";
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, input, outs) = unsafe {
+    let (repo_path, expected, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
+            oid_arg(expected),
             bytes_arg(input),
             DeletedOuts {
                 backup: Out::new(backup),
@@ -3763,13 +3809,13 @@ pub unsafe extern "C" fn rcgit_guard_stash_drop(
             },
         )
     };
-    let Some(repo_path) = outs
-        .error
-        .required("rcgit_guard_stash_drop", "repo_path", repo_path)
-    else {
+    let Some(repo_path) = outs.error.required(OP, "repo_path", repo_path) else {
         return RCGIT_ERROR;
     };
-    remove_stash_with(stash_drop, repo_path, index, input, &outs)
+    let Some(expected) = outs.error.valid(OP, "expected", expected) else {
+        return RCGIT_ERROR;
+    };
+    remove_stash_with(stash_drop, repo_path, (index, expected), input, &outs)
 }
 
 /// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files
@@ -5867,23 +5913,87 @@ mod tests {
             "discard is answered by a plain confirm"
         );
         unsafe { rcgit_guard_decision_free(plan) };
-        let plan = rcgit_guard_plan_stash_drop(1);
+        let message = CString::new("On main: wip").unwrap();
+        let plan = unsafe { rcgit_guard_plan_stash_drop(1, message.as_ptr()) };
         let plan_ref = unsafe { &*plan };
         assert_eq!(text(plan_ref.typed_phrase), "drop");
         assert!(plan_ref.backup_ref);
+        assert!(
+            text(plan_ref.summary).contains("stash@{1} \"On main: wip\""),
+            "the challenge names the entry"
+        );
         unsafe { rcgit_guard_decision_free(plan) };
+        assert!(unsafe { rcgit_guard_plan_stash_drop(1, ptr::null()) }.is_null());
         let plan = rcgit_guard_plan_stash_push(2);
         assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Confirm);
         unsafe { rcgit_guard_decision_free(plan) };
         let plan = rcgit_guard_plan_stash_apply();
         assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Allow);
         unsafe { rcgit_guard_decision_free(plan) };
-        let plan = rcgit_guard_plan_stash_pop();
+        let plan = unsafe { rcgit_guard_plan_stash_pop(0, message.as_ptr()) };
         assert!(unsafe { &*plan }.backup_ref);
+        assert!(text(unsafe { &*plan }.summary).contains("stash@{0} \"On main: wip\""));
         unsafe { rcgit_guard_decision_free(plan) };
+        assert!(unsafe { rcgit_guard_plan_stash_pop(0, ptr::null()) }.is_null());
         let plan = rcgit_guard_plan_commit(2);
         assert_eq!(unsafe { &*plan }.kind, RcGitDecisionKind::Allow);
         unsafe { rcgit_guard_decision_free(plan) };
+    }
+
+    #[test]
+    fn stash_actions_refuse_an_entry_other_than_the_one_shown() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"stashed\n");
+        fx.git(&["stash", "push", "-q", "-m", "shown"]);
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let other = commit_id(&fx.rev_parse("HEAD"));
+        let drop = CString::new("drop").unwrap();
+        let mut backup = ptr::null_mut();
+        let mut error = ptr::null_mut();
+
+        let status = unsafe {
+            rcgit_guard_stash_apply(
+                repo_path.as_ptr(),
+                0,
+                &raw const other,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("changed since the list was built"));
+        let status = unsafe {
+            rcgit_guard_stash_drop(
+                repo_path.as_ptr(),
+                0,
+                &raw const other,
+                drop.as_ptr(),
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("changed since the list was built"));
+        let status = unsafe {
+            rcgit_guard_stash_pop(
+                repo_path.as_ptr(),
+                0,
+                ptr::null(),
+                ptr::null(),
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_stash_pop: expected is NULL"
+        );
+        assert!(backup.is_null());
+        assert_eq!(
+            fx.git_output(&["stash", "list", "--format=%gs"]),
+            "On main: shown"
+        );
     }
 
     #[test]
@@ -5955,10 +6065,12 @@ mod tests {
             b"via ffi\n"
         );
         let mut backup = ptr::null_mut();
+        let shown = commit_id(&fx.rev_parse("stash@{0}"));
         let status = unsafe {
             rcgit_guard_stash_pop(
                 repo_path.as_ptr(),
                 0,
+                &raw const shown,
                 ptr::null(),
                 &raw mut backup,
                 &raw mut error,

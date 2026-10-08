@@ -148,9 +148,11 @@ The Changes tab's write paths add their own guarantees:
   terminal `git status` agrees; entries staged from the terminal for other paths survive.
 - **Stash** entries are written in git's own format — `git stash list`, `apply`, `pop`, and
   `drop` all accept them — and rc-git's apply refuses to touch any file that is not exactly
-  at the stash's base state, so it can never overwrite uncommitted work. Ticked untracked
-  files go into the stash tree itself rather than git's third-parent scheme; `git stash pop`
-  recreates them all the same.
+  at the stash's base state, so it can never overwrite uncommitted work. Apply, pop and drop
+  name the entry by position and by the stash commit the list showed there, and refuse when
+  that position now holds another entry; the pop and drop challenges name the entry and its
+  message. Ticked untracked files go into the stash tree itself rather than git's
+  third-parent scheme; `git stash pop` recreates them all the same.
 - **Paths are checked before anything is touched.** Every path a commit, stash, discard,
   checkout, pull or stash apply would read, store or write passes git's own checkout rules
   first: no empty, `.` or `..` segment (so no leading, trailing or doubled `/`), no `.git`

@@ -1286,13 +1286,21 @@ struct RcGitGuardDecision *rcgit_guard_plan_stash_push(size_t files);
 /// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_stash_apply(void);
 
-/// The policy's decision for popping a stash entry. Pure; release with
+/// The policy's decision for popping `stash@{index}`, whose reflog message is `message`; the
+/// challenge names both. Pure; NULL when `message` is NULL. Release with
 /// `rcgit_guard_decision_free`.
-struct RcGitGuardDecision *rcgit_guard_plan_stash_pop(void);
+///
+/// # Safety
+/// `message` is a NUL-terminated string.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_pop(size_t index, const char *message);
 
-/// The policy's decision for dropping `stash@{index}`. Pure; release with
+/// The policy's decision for dropping `stash@{index}`, whose reflog message is `message`; the
+/// challenge names both. Pure; NULL when `message` is NULL. Release with
 /// `rcgit_guard_decision_free`.
-struct RcGitGuardDecision *rcgit_guard_plan_stash_drop(size_t index);
+///
+/// # Safety
+/// `message` is a NUL-terminated string.
+struct RcGitGuardDecision *rcgit_guard_plan_stash_drop(size_t index, const char *message);
 
 /// The policy's decision for discarding changes in `files` files. Pure; release with
 /// `rcgit_guard_decision_free`.
@@ -1349,25 +1357,31 @@ int32_t rcgit_guard_stash_push(const char *repo_path,
                                const char *input,
                                char **error);
 
-/// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
-/// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// Writes `stash@{index}` back to the working tree, keeping the entry. `expected` is the
+/// stash commit the caller showed at that position; refused when the entry there is now
+/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK` or
+/// `RCGIT_ERROR`.
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
-/// for writing a `char *`.
+/// `repo_path` is a NUL-terminated string; `expected` points to a readable `RcGitOid`;
+/// `input` is NULL or a NUL-terminated string. `error` is NULL or valid for writing a
+/// `char *`.
 int32_t rcgit_guard_stash_apply(const char *repo_path,
                                 size_t index,
+                                const struct RcGitOid *expected,
                                 const char *input,
                                 char **error);
 
-/// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
-/// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
-/// `RCGIT_OK` or `RCGIT_ERROR`.
+/// Applies `stash@{index}` and drops it once every file is restored, refusing as
+/// `rcgit_guard_stash_apply` does when the entry there is no longer `expected`. On success,
+/// the backup ref's full name is stored into `backup` (release with `rcgit_string_free`).
+/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_stash_pop(const char *repo_path,
                               size_t index,
+                              const struct RcGitOid *expected,
                               const char *input,
                               char **backup,
                               char **error);
@@ -1378,6 +1392,7 @@ int32_t rcgit_guard_stash_pop(const char *repo_path,
 /// As `rcgit_guard_stash_pop`.
 int32_t rcgit_guard_stash_drop(const char *repo_path,
                                size_t index,
+                               const struct RcGitOid *expected,
                                const char *input,
                                char **backup,
                                char **error);

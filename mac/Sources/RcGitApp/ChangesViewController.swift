@@ -53,9 +53,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var onToggleHunk: ((String, HunkStamp, [HunkStamp]) -> Void)?
     var onCommit: ((String) -> Void)?
     var onStashPush: (() -> Void)?
-    var onStashApply: ((Int) -> Void)?
-    var onStashPop: ((Int) -> Void)?
-    var onStashDrop: ((Int) -> Void)?
+    var onStashApply: ((StashEntry) -> Void)?
+    var onStashPop: ((StashEntry) -> Void)?
+    var onStashDrop: ((StashEntry) -> Void)?
     var onDiscard: (([String]) -> Void)?
     var onDiscardHunk: ((String, HunkStamp) -> Void)?
     var onRefresh: (() -> Void)?
@@ -466,8 +466,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func renderStashes(_ stashes: [StashEntry]) {
+        let selected = selectedStash?.oid
         self.stashes = stashes
-        reloadPreservingSelection(stashTable)
+        isReloading = true
+        stashTable.reloadData()
+        // Re-select by commit, not row: a push from elsewhere shifts every entry down a row.
+        let row = selected.flatMap { oid in stashes.firstIndex { $0.oid == oid } }
+        stashTable.selectRowIndexes(
+            row.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
+        isReloading = false
         updateStashButtons()
         show(stashGroup, visible: !stashes.isEmpty, width: &stashWidth)
     }
@@ -584,14 +591,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         diffScroll.isHidden = true
     }
 
-    private func reloadPreservingSelection(_ table: NSTableView) {
-        isReloading = true
-        let selected = table.selectedRowIndexes
-        table.reloadData()
-        table.selectRowIndexes(selected, byExtendingSelection: false)
-        isReloading = false
-    }
-
     private static func stamp(of hunk: DiffHunk) -> HunkStamp {
         HunkStamp(
             oldStart: hunk.oldStart, oldLines: hunk.oldLines,
@@ -621,18 +620,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func applyClicked(_ sender: Any?) {
-        guard let index = selectedStashIndex else { return }
-        onStashApply?(index)
+        guard let entry = selectedStash else { return }
+        onStashApply?(entry)
     }
 
     @objc private func popClicked(_ sender: Any?) {
-        guard let index = selectedStashIndex else { return }
-        onStashPop?(index)
+        guard let entry = selectedStash else { return }
+        onStashPop?(entry)
     }
 
     @objc private func dropClicked(_ sender: Any?) {
-        guard let index = selectedStashIndex else { return }
-        onStashDrop?(index)
+        guard let entry = selectedStash else { return }
+        onStashDrop?(entry)
     }
 
     @objc private func discardClicked(_ sender: Any?) {
@@ -699,13 +698,14 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         onToggleHunk?(diffPath, stamp, all)
     }
 
-    private var selectedStashIndex: Int? {
+    /// The selected entry with the commit it showed, so an action names that exact stash.
+    private var selectedStash: StashEntry? {
         let row = stashTable.selectedRow
-        return stashes.indices.contains(row) ? stashes[row].index : nil
+        return stashes.indices.contains(row) ? stashes[row] : nil
     }
 
     private func updateStashButtons() {
-        let hasSelection = selectedStashIndex != nil
+        let hasSelection = selectedStash != nil
         applyButton.isEnabled = hasSelection
         popButton.isEnabled = hasSelection
         dropButton.isEnabled = hasSelection

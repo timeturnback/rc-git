@@ -98,10 +98,13 @@ pub enum Action {
     StashApply,
     /// Apply a stash and drop it once every file is restored. The reflog line goes away,
     /// but the restored changes are the content it held.
-    StashPop,
+    StashPop {
+        /// The entry being popped and its message, e.g. `stash@{1} "On main: wip"`.
+        name: String,
+    },
     /// Delete a stash entry without applying it. Nothing else remembers those changes.
     StashDrop {
-        /// The entry being dropped, e.g. `stash@{1}`.
+        /// The entry being dropped and its message, e.g. `stash@{1} "On main: wip"`.
         name: String,
     },
 }
@@ -136,7 +139,7 @@ impl Action {
                 published: false, ..
             }
             | Action::StashPush { .. }
-            | Action::StashPop => Risk::Recoverable,
+            | Action::StashPop { .. } => Risk::Recoverable,
             Action::Push { force: true, .. }
             | Action::DeleteLocalBranch { merged: false, .. }
             | Action::DeleteRemoteBranch { .. }
@@ -314,10 +317,11 @@ impl Policy {
                 None,
                 false,
             ),
-            Action::StashPop => confirm(
+            Action::StashPop { name } => confirm(
                 risk,
-                "Apply the stash to the working tree and drop it once every file is restored."
-                    .to_owned(),
+                format!(
+                    "Apply {name} to the working tree and drop it once every file is restored."
+                ),
                 None,
                 true,
             ),
@@ -451,20 +455,31 @@ mod tests {
         );
         assert!(push.verify("").is_some(), "no phrase means a plain confirm");
 
-        let pop = challenge(policy.evaluate(&Action::StashPop));
+        let pop = challenge(policy.evaluate(&Action::StashPop {
+            name: "stash@{0} \"On main: wip\"".into(),
+        }));
         assert_eq!(
             (pop.risk, pop.typed_phrase.as_deref(), pop.backup_ref),
             (Risk::Recoverable, None, true)
         );
+        assert!(
+            pop.summary.contains("stash@{0} \"On main: wip\""),
+            "{}",
+            pop.summary
+        );
 
         let drop = challenge(policy.evaluate(&Action::StashDrop {
-            name: "stash@{1}".into(),
+            name: "stash@{1} \"On main: wip\"".into(),
         }));
         assert_eq!(
             (drop.risk, drop.typed_phrase.as_deref(), drop.backup_ref),
             (Risk::Destructive, Some("drop"), true)
         );
-        assert!(drop.summary.contains("stash@{1}"), "{}", drop.summary);
+        assert!(
+            drop.summary.contains("stash@{1} \"On main: wip\""),
+            "{}",
+            drop.summary
+        );
         assert!(drop.verify("drop").is_some());
         assert!(drop.verify("Drop").is_none());
     }

@@ -507,17 +507,19 @@ pub fn plan_stash_apply(policy: &Policy) -> Decision {
     policy.evaluate(&Action::StashApply)
 }
 
-/// What popping a stash entry would need. Pure.
+/// What popping `stash@{index}`, whose reflog message is `message`, would need. Pure.
 #[must_use]
-pub fn plan_stash_pop(policy: &Policy) -> Decision {
-    policy.evaluate(&Action::StashPop)
+pub fn plan_stash_pop(policy: &Policy, index: usize, message: &str) -> Decision {
+    policy.evaluate(&Action::StashPop {
+        name: stash::stash_label(index, message),
+    })
 }
 
-/// What dropping `stash@{index}` would need. Pure.
+/// What dropping `stash@{index}`, whose reflog message is `message`, would need. Pure.
 #[must_use]
-pub fn plan_stash_drop(policy: &Policy, index: usize) -> Decision {
+pub fn plan_stash_drop(policy: &Policy, index: usize, message: &str) -> Decision {
     policy.evaluate(&Action::StashDrop {
-        name: stash::stash_name(index),
+        name: stash::stash_label(index, message),
     })
 }
 

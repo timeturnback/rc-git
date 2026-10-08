@@ -33,6 +33,17 @@ pub(super) fn stash_name(index: usize) -> String {
     format!("stash@{{{index}}}")
 }
 
+/// How a challenge names the stash entry at `index`: its reflog name and its message.
+pub(super) fn stash_label(index: usize, message: &str) -> String {
+    format!("{} \"{message}\"", stash_name(index))
+}
+
+/// The stash entry an apply, pop or drop acts on, read from the reflog.
+struct StashTarget {
+    oid: ObjectId,
+    message: String,
+}
+
 /// What a completed stash push produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashSaved {
@@ -194,25 +205,31 @@ fn write_stash_ref(
     )
 }
 
-/// Writes `stash@{index}`'s changes back to the working tree, keeping the entry.
+/// Writes `stash@{index}`'s changes back to the working tree, keeping the entry. `expected`
+/// is the stash commit the caller showed as `stash@{index}`; the apply is refused when the
+/// entry at that position is now another one.
 ///
 /// # Errors
+/// [`ActionError::StaleRepository`] when `stash@{index}` is gone or is no longer `expected`;
 /// [`ActionError::DirtyPath`] when any touched path is not exactly at the stash's base
-/// state — nothing is written then; [`ActionError::Git`] when the entry does not exist.
+/// state — nothing is written in either case.
 pub fn stash_apply(
     repo_path: &Path,
     policy: &Policy,
     index: usize,
+    expected: rc_git_core::Oid,
     input: Option<&str>,
 ) -> ActionResult<()> {
     const OP: &str = "stash apply";
     let repo = open(repo_path, OP, "refs/stash")?;
+    let target = stash_entry_at(&repo, index, expected, OP)?;
     let _proof = confirm(plan_stash_apply(policy), OP, "refs/stash", input)?;
-    apply_inner(&repo, repo_path, index, OP)
+    apply_inner(&repo, repo_path, target.oid, OP)
 }
 
 /// Applies `stash@{index}` and drops it once every file is restored. The policy writes a
-/// backup ref first, so even a popped stash can be brought back.
+/// backup ref first, so even a popped stash can be brought back. `expected` is checked as
+/// [`stash_apply`] checks it, and again against the reflog line the drop removes.
 ///
 /// # Errors
 /// As [`stash_apply`]; a failed apply leaves the stash entry untouched.
@@ -220,32 +237,38 @@ pub fn stash_pop(
     repo_path: &Path,
     policy: &Policy,
     index: usize,
+    expected: rc_git_core::Oid,
     input: Option<&str>,
 ) -> ActionResult<Deleted> {
     const OP: &str = "stash pop";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let (challenge, _confirmation) = confirm(plan_stash_pop(policy), OP, "refs/stash", input)?;
-    apply_inner(&repo, repo_path, index, OP)?;
-    drop_inner(&repo, index, challenge.backup_ref, OP)
+    let target = stash_entry_at(&repo, index, expected, OP)?;
+    let decision = plan_stash_pop(policy, index, &target.message);
+    let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
+    apply_inner(&repo, repo_path, target.oid, OP)?;
+    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP)
 }
 
 /// Deletes `stash@{index}` without applying it, behind the typed phrase `drop`, with a
-/// backup ref under `refs/rc-git/backup/stash/`.
+/// backup ref under `refs/rc-git/backup/stash/`. `expected` is checked as [`stash_apply`]
+/// checks it.
 ///
 /// # Errors
-/// [`ActionError::NotConfirmed`] when the typed input does not match,
-/// [`ActionError::Git`] when the entry does not exist.
+/// [`ActionError::StaleRepository`] when `stash@{index}` is gone or is no longer `expected`,
+/// [`ActionError::NotConfirmed`] when the typed input does not match.
 pub fn stash_drop(
     repo_path: &Path,
     policy: &Policy,
     index: usize,
+    expected: rc_git_core::Oid,
     input: Option<&str>,
 ) -> ActionResult<Deleted> {
     const OP: &str = "stash drop";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let decision = plan_stash_drop(policy, index);
+    let target = stash_entry_at(&repo, index, expected, OP)?;
+    let decision = plan_stash_drop(policy, index, &target.message);
     let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
-    drop_inner(&repo, index, challenge.backup_ref, OP)
+    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP)
 }
 
 /// The restore half of apply and pop: refuse unless every touched path sits at the stash's
@@ -253,10 +276,9 @@ pub fn stash_drop(
 fn apply_inner(
     repo: &gix::Repository,
     repo_path: &Path,
-    index: usize,
+    stash_commit: ObjectId,
     op: &'static str,
 ) -> ActionResult<()> {
-    let stash_commit = stash_oid_at(repo, index, op)?;
     let base = repo
         .find_commit(stash_commit)
         .map_err(|source| ActionError::git(op, stash_commit.to_string(), source))?
@@ -388,12 +410,14 @@ fn require_absent_or_base(
 
 /// Drops `stash@{index}`: backup ref, reflog line removal with re-chaining, and the
 /// `refs/stash` update or deletion. `index` counts the reflog lines git can read, newest
-/// first (see [`rc_git_core::stash_reflog_lines`]); unreadable lines stay as they are. The log
-/// file is rewritten last, under a lock, so the spurious reflog line the ref update appends is
-/// erased again.
+/// first (see [`rc_git_core::stash_reflog_lines`]); unreadable lines stay as they are. The
+/// line removed must still record `expected`, or nothing is written. The log file is
+/// rewritten last, under a lock, so the spurious reflog line the ref update appends is erased
+/// again.
 fn drop_inner(
     repo: &gix::Repository,
     index: usize,
+    expected: ObjectId,
     write_backup: bool,
     op: &'static str,
 ) -> ActionResult<Deleted> {
@@ -404,15 +428,14 @@ fn drop_inner(
         .checked_add(1)
         .and_then(|from_end| valid.len().checked_sub(from_end))
     else {
-        return Err(ActionError::git(
-            op,
-            "refs/stash",
-            "no stash entry at that position",
-        ));
+        return Err(ActionError::StaleRepository { op });
     };
     let pieces: Vec<&[u8]> = raw.split(|byte| *byte == b'\n').collect();
     let position = valid[target].line;
     let (removed_old, removed_new) = line_oids(pieces[position], op)?;
+    if removed_new != expected {
+        return Err(ActionError::StaleRepository { op });
+    }
     let newer = valid.get(target + 1).map(|line| line.line);
 
     let backup = if write_backup {
@@ -512,27 +535,37 @@ fn line_oids(line: &[u8], op: &'static str) -> ActionResult<(ObjectId, ObjectId)
     Ok((old, new))
 }
 
-/// The stash commit `stash@{index}` names, read from the reflog like git does.
-fn stash_oid_at(repo: &gix::Repository, index: usize, op: &'static str) -> ActionResult<ObjectId> {
+/// The entry `stash@{index}` names, read from the reflog like git does. The caller showed
+/// `expected` at that position, so a missing entry or a different commit there means the
+/// stash changed since the list was built: [`ActionError::StaleRepository`].
+fn stash_entry_at(
+    repo: &gix::Repository,
+    index: usize,
+    expected: rc_git_core::Oid,
+    op: &'static str,
+) -> ActionResult<StashTarget> {
+    let stale = || ActionError::StaleRepository { op };
     let reference = repo
         .try_find_reference("refs/stash")
         .map_err(git_err(op, "refs/stash"))?
-        .ok_or_else(|| ActionError::git(op, "refs/stash", "the repository has no stash"))?;
+        .ok_or_else(stale)?;
     let mut platform = reference.log_iter();
     if platform.all().map_err(git_err(op, "refs/stash"))?.is_none() {
-        return Err(ActionError::git(
-            op,
-            "refs/stash",
-            "the repository has no stash",
-        ));
+        return Err(stale());
     }
     let valid = rc_git_core::stash_reflog_lines(&platform.buf);
     let line = index
         .checked_add(1)
         .and_then(|from_end| valid.len().checked_sub(from_end))
         .and_then(|position| valid.get(position))
-        .ok_or_else(|| ActionError::git(op, "refs/stash", "no stash entry at that position"))?;
-    gix_oid(line.oid, op)
+        .ok_or_else(stale)?;
+    if line.oid != expected {
+        return Err(stale());
+    }
+    Ok(StashTarget {
+        oid: gix_oid(line.oid, op)?,
+        message: line.message.clone(),
+    })
 }
 
 fn stash_target(repo: &gix::Repository) -> ActionResult<Option<ObjectId>> {

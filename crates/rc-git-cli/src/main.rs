@@ -1358,35 +1358,50 @@ fn stash_index_verb(
     };
     let args = split_args(label, args, &["--confirm"], switches)?;
     args.expect(0, 1, "[n]")?;
-    if let StashVerb::Pop = verb {
-        require_yes(&args, &rc_git_guard::Action::StashPop)?;
-    }
     let index = match args.positional(0) {
         Some(raw) => raw
             .parse()
             .map_err(|_| usage_error(format!("'{raw}' is not a stash index")))?,
         None => 0,
     };
+    if let StashVerb::Pop = verb {
+        let name = format!("stash@{{{index}}}");
+        require_yes(&args, &rc_git_guard::Action::StashPop { name })?;
+    }
+    let expected = stash_oid_at(repo_path, index)?;
     let policy = rc_git_guard::Policy::default();
     let input = args.value(&["--confirm"]);
     match verb {
         StashVerb::Apply => {
-            rc_git_guard::actions::stash_apply(repo_path, &policy, index, input)?;
+            rc_git_guard::actions::stash_apply(repo_path, &policy, index, expected, input)?;
         }
         StashVerb::Pop => {
-            let deleted = rc_git_guard::actions::stash_pop(repo_path, &policy, index, input)?;
+            let deleted =
+                rc_git_guard::actions::stash_pop(repo_path, &policy, index, expected, input)?;
             if let Some(backup) = deleted.backup_ref {
                 writeln!(out, "{backup}")?;
             }
         }
         StashVerb::Drop => {
-            let deleted = rc_git_guard::actions::stash_drop(repo_path, &policy, index, input)?;
+            let deleted =
+                rc_git_guard::actions::stash_drop(repo_path, &policy, index, expected, input)?;
             if let Some(backup) = deleted.backup_ref {
                 writeln!(out, "{backup}")?;
             }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The stash commit at `stash@{index}` now. The CLI names an entry by position alone, so the
+/// commit it read is the one the guard is told to expect.
+fn stash_oid_at(repo_path: &std::path::Path, index: usize) -> Result<Oid> {
+    Repository::open(repo_path)?
+        .stash_list()?
+        .into_iter()
+        .find(|entry| entry.index == index)
+        .map(|entry| entry.oid)
+        .ok_or_else(|| anyhow::anyhow!("no stash entry at stash@{{{index}}}"))
 }
 
 /// Discarding cannot be undone and the guard asks no typed phrase for it, so the CLI's form of

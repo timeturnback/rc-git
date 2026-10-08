@@ -171,14 +171,16 @@ public enum RepositoryGuard {
         decision(rcgit_guard_plan_stash_apply())
     }
 
-    /// What popping a stash entry would need. Pure policy.
-    public static func planStashPop() -> GuardDecision? {
-        decision(rcgit_guard_plan_stash_pop())
+    /// What popping `entry` would need; the challenge names its position and message. Pure
+    /// policy.
+    public static func planStashPop(_ entry: StashEntry) -> GuardDecision? {
+        decision(rcgit_guard_plan_stash_pop(entry.index, entry.message))
     }
 
-    /// What dropping `stash@{index}` would need. Pure policy.
-    public static func planStashDrop(index: Int) -> GuardDecision? {
-        decision(rcgit_guard_plan_stash_drop(index))
+    /// What dropping `entry` would need; the challenge names its position and message. Pure
+    /// policy.
+    public static func planStashDrop(_ entry: StashEntry) -> GuardDecision? {
+        decision(rcgit_guard_plan_stash_drop(entry.index, entry.message))
     }
 
     /// What discarding changes in `files` files would need. Pure policy.
@@ -286,31 +288,47 @@ public enum RepositoryGuard {
         }
     }
 
-    /// Writes `stash@{index}` back to the working tree, keeping the entry.
-    public static func stashApply(repoPath: String, index: Int, input: String?) throws {
+    /// Writes `entry` back to the working tree, keeping it. Refused when the stash at
+    /// `entry.index` is no longer `entry.oid`.
+    public static func stashApply(repoPath: String, entry: StashEntry, input: String?) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
-        guard rcgit_guard_stash_apply(repoPath, index, input, &error) == RCGIT_OK else {
+        let status = entry.oid.withC { expected in
+            rcgit_guard_stash_apply(repoPath, entry.index, expected, input, &error)
+        }
+        guard status == RCGIT_OK else {
             throw RepositoryError.take(error, fallback: "cannot apply the stash")
         }
     }
 
-    /// Applies `stash@{index}` and drops it. Returns the backup ref, if written.
+    /// Applies `entry` and drops it, refused as `stashApply` is. Returns the backup ref, if
+    /// written.
     @discardableResult
-    public static func stashPop(repoPath: String, index: Int, input: String?) throws -> String? {
+    public static func stashPop(repoPath: String, entry: StashEntry, input: String?) throws
+        -> String?
+    {
         var backup: UnsafeMutablePointer<CChar>? = nil
         var error: UnsafeMutablePointer<CChar>? = nil
-        guard rcgit_guard_stash_pop(repoPath, index, input, &backup, &error) == RCGIT_OK else {
+        let status = entry.oid.withC { expected in
+            rcgit_guard_stash_pop(repoPath, entry.index, expected, input, &backup, &error)
+        }
+        guard status == RCGIT_OK else {
             throw RepositoryError.take(error, fallback: "cannot pop the stash")
         }
         return RepositoryError.takeString(backup)
     }
 
-    /// Deletes `stash@{index}` without applying it. Returns the backup ref, if written.
+    /// Deletes `entry` without applying it, refused as `stashApply` is. Returns the backup
+    /// ref, if written.
     @discardableResult
-    public static func stashDrop(repoPath: String, index: Int, input: String?) throws -> String? {
+    public static func stashDrop(repoPath: String, entry: StashEntry, input: String?) throws
+        -> String?
+    {
         var backup: UnsafeMutablePointer<CChar>? = nil
         var error: UnsafeMutablePointer<CChar>? = nil
-        guard rcgit_guard_stash_drop(repoPath, index, input, &backup, &error) == RCGIT_OK else {
+        let status = entry.oid.withC { expected in
+            rcgit_guard_stash_drop(repoPath, entry.index, expected, input, &backup, &error)
+        }
+        guard status == RCGIT_OK else {
             throw RepositoryError.take(error, fallback: "cannot drop the stash")
         }
         return RepositoryError.takeString(backup)

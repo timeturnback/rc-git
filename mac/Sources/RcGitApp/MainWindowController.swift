@@ -934,25 +934,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changesController.onStashPush = { [weak self] in
             self?.performStashPush()
         }
-        changesController.onStashApply = { [weak self] index in
+        changesController.onStashApply = { [weak self] entry in
             self?.performStashAction(
                 verb: "Apply Stash", decision: RepositoryGuard.planStashApply()
             ) { path, input in
-                try RepositoryGuard.stashApply(repoPath: path, index: index, input: input)
+                try RepositoryGuard.stashApply(repoPath: path, entry: entry, input: input)
             }
         }
-        changesController.onStashPop = { [weak self] index in
+        changesController.onStashPop = { [weak self] entry in
             self?.performStashAction(
-                verb: "Pop Stash", decision: RepositoryGuard.planStashPop()
+                verb: "Pop Stash", decision: RepositoryGuard.planStashPop(entry)
             ) { path, input in
-                _ = try RepositoryGuard.stashPop(repoPath: path, index: index, input: input)
+                _ = try RepositoryGuard.stashPop(repoPath: path, entry: entry, input: input)
             }
         }
-        changesController.onStashDrop = { [weak self] index in
+        changesController.onStashDrop = { [weak self] entry in
             self?.performStashAction(
-                verb: "Drop Stash", decision: RepositoryGuard.planStashDrop(index: index)
+                verb: "Drop Stash", decision: RepositoryGuard.planStashDrop(entry)
             ) { path, input in
-                _ = try RepositoryGuard.stashDrop(repoPath: path, index: index, input: input)
+                _ = try RepositoryGuard.stashDrop(repoPath: path, entry: entry, input: input)
             }
         }
         changesController.isActionable = { [weak self] path in

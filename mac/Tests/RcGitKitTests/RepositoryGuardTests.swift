@@ -48,12 +48,14 @@ import Testing
         let push = RepositoryGuard.planStashPush(files: 3)
         #expect(push?.kind == .confirm)
         #expect(push?.typedPhrase == nil)
-        let pop = RepositoryGuard.planStashPop()
+        let entry = StashEntry(index: 1, oid: .unhashed, message: "On main: wip")
+        let pop = RepositoryGuard.planStashPop(entry)
         #expect(pop?.kind == .confirm)
         #expect(pop?.backupRef == true)
-        let drop = RepositoryGuard.planStashDrop(index: 1)
+        #expect(pop?.summary.contains("stash@{1} \"On main: wip\"") == true)
+        let drop = RepositoryGuard.planStashDrop(entry)
         #expect(drop?.typedPhrase == "drop")
-        #expect(drop?.summary.contains("stash@{1}") == true)
+        #expect(drop?.summary.contains("stash@{1} \"On main: wip\"") == true)
         let discard = RepositoryGuard.planDiscard(files: 4)
         #expect(discard?.kind == .confirm)
         #expect(discard?.typedPhrase == nil)
@@ -85,7 +87,13 @@ import Testing
         #expect(
             try fixture.gitOutput(["log", "-1", "--format=%an|%ae", "refs/stash"])
                 == "Bridge User|bridge@example.com")
-        let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, index: 0, input: nil)
+        let shown = try #require(try Repository(path: fixture.path).stashList().first)
+        let elsewhere = StashEntry(index: 0, oid: try commitID(head), message: shown.message)
+        #expect(throws: RepositoryError.self) {
+            try RepositoryGuard.stashDrop(repoPath: fixture.path, entry: elsewhere, input: "drop")
+        }
+        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, entry: shown, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
 
         try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
