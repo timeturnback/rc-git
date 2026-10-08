@@ -76,6 +76,13 @@ impl From<Oid> for RcGitOid {
 }
 
 impl RcGitOid {
+    const fn empty() -> Self {
+        Self {
+            bytes: [0; 32],
+            len: 0,
+        }
+    }
+
     fn to_oid(self) -> Option<Oid> {
         let len = usize::from(self.len);
         if len > self.bytes.len() {
@@ -1159,15 +1166,6 @@ impl Drop for RcGitGuardDecision {
     }
 }
 
-impl RcGitOid {
-    fn empty() -> Self {
-        Self {
-            bytes: [0; 32],
-            len: 0,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Pointer helpers. Each `unsafe fn` states the contract the extern functions forward to callers.
 // ---------------------------------------------------------------------------------------------
@@ -1396,13 +1394,7 @@ pub unsafe extern "C" fn rcgit_head(
         Ok(head) => export(RcGitHead {
             ref_name: head.ref_name.map_or(ptr::null_mut(), export_string),
             has_target: head.target.is_some(),
-            target: head.target.map_or(
-                RcGitOid {
-                    bytes: [0; 32],
-                    len: 0,
-                },
-                RcGitOid::from,
-            ),
+            target: head.target.map_or_else(RcGitOid::empty, RcGitOid::from),
         }),
         Err(err) => {
             error.report(err);
@@ -4214,10 +4206,7 @@ mod tests {
 
     fn resolve(repo: *const RcGitRepo, spec: &str) -> RcGitOid {
         let spec = CString::new(spec).unwrap();
-        let mut out = RcGitOid {
-            bytes: [0; 32],
-            len: 0,
-        };
+        let mut out = RcGitOid::empty();
         let mut error = ptr::null_mut();
         let status = unsafe { rcgit_resolve(repo, spec.as_ptr(), &raw mut out, &raw mut error) };
         assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
@@ -4696,10 +4685,7 @@ mod tests {
         assert_eq!(hex(&resolve(repo, "v1.0")), fx.rev_parse("v1.0"));
 
         let spec = CString::new("v1.0").unwrap();
-        let mut out = RcGitOid {
-            bytes: [0; 32],
-            len: 0,
-        };
+        let mut out = RcGitOid::empty();
         let mut error = ptr::null_mut();
         let status =
             unsafe { rcgit_resolve_tree(repo, spec.as_ptr(), &raw mut out, &raw mut error) };
@@ -5164,10 +5150,7 @@ mod tests {
         assert!(take_error(&mut error).contains("NULL"));
 
         let mut pull_out = RcGitPullOutcome {
-            new_head: RcGitOid {
-                bytes: [0; 32],
-                len: 0,
-            },
+            new_head: RcGitOid::empty(),
             files_changed: 0,
             already_up_to_date: false,
         };
@@ -5437,10 +5420,7 @@ mod tests {
 
     fn ffi_pull(repo: &CString) -> RcGitPullOutcome {
         let mut out = RcGitPullOutcome {
-            new_head: RcGitOid {
-                bytes: [0; 32],
-                len: 0,
-            },
+            new_head: RcGitOid::empty(),
             files_changed: 0,
             already_up_to_date: false,
         };
@@ -6340,10 +6320,7 @@ mod tests {
         let path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
         let branch = CString::new("feature").unwrap();
         let mut out = RcGitCheckoutOutcome {
-            new_head: RcGitOid {
-                bytes: [0; 32],
-                len: 0,
-            },
+            new_head: RcGitOid::empty(),
             files_changed: 0,
             already_on_branch: false,
         };
