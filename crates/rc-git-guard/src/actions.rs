@@ -173,11 +173,14 @@ pub enum ActionError {
         /// Whether any input was given; empty or whitespace-only input counts as none.
         given: bool,
     },
-    /// The branch is checked out; deleting it would strand `HEAD`.
-    #[error("cannot delete '{name}': it is the checked-out branch")]
+    /// The branch is checked out, here or in another worktree; deleting it would strand that
+    /// worktree's `HEAD`.
+    #[error("cannot delete '{name}': {}", checked_out_where(.worktree.as_deref()))]
     CheckedOut {
         /// The branch involved.
         name: String,
+        /// The other worktree that has it checked out; `None` for the opened one.
+        worktree: Option<String>,
     },
     /// `HEAD` is detached; the operation needs a checked-out branch.
     #[error("cannot {op}: HEAD is detached; check out a branch first")]
@@ -506,8 +509,8 @@ fn refuse_leading_dash(op: &'static str, name: &str) -> ActionResult<()> {
 }
 
 /// What deleting `name` would need: the merged-ness the policy keys on, and its decision.
-/// A checked-out branch the policy would not already deny gets a `Deny` naming the checkout,
-/// since the delete would refuse it.
+/// A branch checked out in any worktree, which the policy would not already deny, gets a
+/// `Deny` naming the checkout, since the delete would refuse it.
 ///
 /// # Errors
 /// [`ActionError::Git`] when the repository or branch cannot be read.
@@ -526,15 +529,90 @@ pub fn plan_branch_delete(
         merged,
     }) {
         Decision::Deny { reason } => Decision::Deny { reason },
-        _ if head_is_on(&repo, OP, &full_name)? => Decision::Deny {
-            reason: ActionError::CheckedOut {
-                name: name.to_owned(),
-            }
-            .to_string(),
+        decision => match refuse_checked_out(&repo, OP, name, &full_name) {
+            Ok(()) => decision,
+            Err(err @ ActionError::CheckedOut { .. }) => Decision::Deny {
+                reason: err.to_string(),
+            },
+            Err(err) => return Err(err),
         },
-        decision => decision,
     };
     Ok(BranchDeletePlan { merged, decision })
+}
+
+/// Refuses deleting `name` while any worktree has it checked out: the opened one, or another
+/// worktree of the same repository.
+///
+/// # Errors
+/// [`ActionError::CheckedOut`] naming the worktree that holds the branch,
+/// [`ActionError::Git`] naming `op` when a worktree's `HEAD` cannot be read.
+fn refuse_checked_out(
+    repo: &gix::Repository,
+    op: &'static str,
+    name: &str,
+    full_name: &str,
+) -> ActionResult<()> {
+    let worktree = if head_is_on(repo, op, full_name)? {
+        None
+    } else if let Some(path) = branch_checked_out_at(repo, op, full_name)? {
+        Some(path)
+    } else {
+        return Ok(());
+    };
+    Err(ActionError::CheckedOut {
+        name: name.to_owned(),
+        worktree,
+    })
+}
+
+/// The path of a worktree other than the opened one whose `HEAD` names `full_name`: the main
+/// worktree when the opened one is linked (unless the main repository is bare), or any linked
+/// worktree. Compared ignoring case, as [`head_is_on`] does. Fails closed: a worktree whose
+/// `HEAD` cannot be read refuses rather than counts as elsewhere.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` when the worktree list, a worktree repository, its `HEAD`,
+/// or its location cannot be read.
+pub(crate) fn branch_checked_out_at(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<Option<String>> {
+    let linked = repo.kind() == gix::repository::Kind::LinkedWorkTree;
+    let own_id = linked.then(|| repo.git_dir().file_name()).flatten();
+    if linked {
+        let main = repo.main_repo().map_err(git_err(op, "main worktree"))?;
+        if !main.is_bare()
+            && head_is_on(&main, op, full_name)?
+            && let Some(path) = main.workdir()
+        {
+            return Ok(Some(path.display().to_string()));
+        }
+    }
+    let proxies = repo.worktrees().map_err(git_err(op, "worktrees"))?;
+    for proxy in proxies {
+        if own_id.is_some() && proxy.git_dir().file_name() == own_id {
+            continue;
+        }
+        let git_dir = proxy.git_dir().display().to_string();
+        let base = proxy.base();
+        let other = proxy
+            .into_repo_with_possibly_inaccessible_worktree()
+            .map_err(git_err(op, &git_dir))?;
+        if head_is_on(&other, op, full_name)? {
+            let path = base.map_err(git_err(op, &git_dir))?;
+            return Ok(Some(path.display().to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// Where a branch that cannot be deleted is checked out.
+fn checked_out_where(worktree: Option<&str>) -> String {
+    match worktree {
+        Some(path) => format!("it is checked out in the worktree at '{path}'"),
+        None => "it is the checked-out branch".to_owned(),
+    }
 }
 
 /// Whether `HEAD` is a symbolic ref to `full_name`, compared ignoring case so a case variant
@@ -552,8 +630,8 @@ fn head_is_on(repo: &gix::Repository, op: &'static str, full_name: &str) -> Acti
 /// deletion writes `refs/rc-git/backup/branch/<name>` first and reports it.
 ///
 /// # Errors
-/// [`ActionError::Denied`] for protected branches, [`ActionError::CheckedOut`] for the
-/// branch `HEAD` is on, [`ActionError::NotConfirmed`] when the typed input does not match.
+/// [`ActionError::Denied`] for protected branches, [`ActionError::CheckedOut`] for a branch
+/// the `HEAD` of this or another worktree is on, [`ActionError::NotConfirmed`] when the typed input does not match.
 pub fn delete_branch(
     repo_path: &Path,
     policy: &Policy,
@@ -564,11 +642,7 @@ pub fn delete_branch(
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
-    if head_is_on(&repo, OP, &full_name)? {
-        return Err(ActionError::CheckedOut {
-            name: name.to_owned(),
-        });
-    }
+    refuse_checked_out(&repo, OP, name, &full_name)?;
     let merged = branch_is_merged(&repo, name)?;
     let action = Action::DeleteLocalBranch {
         name: name.to_owned(),

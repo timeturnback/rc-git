@@ -99,7 +99,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | Action | Protected branch | Elsewhere |
 |---|---|---|
 | fetch, plain push | allow | allow |
-| checkout | allow (the write path refuses dirty files) | same |
+| checkout | allow (the write path refuses dirty files, and a branch another worktree has checked out) | same |
 | pull (fast-forward) | allow (the write path refuses dirty files) | same |
 | create branch, create tag | allow (never overwrites) | allow (never overwrites) |
 | force push | **deny** | type the branch name |
@@ -130,10 +130,13 @@ holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
 so no backup ever overwrites an earlier one. Two more rules live in the write path itself:
-the checked-out branch cannot be deleted (compared ignoring case; its delete plan is a `Deny`
-naming the checkout unless the policy already denies it, and the merged check never counts
-`HEAD` on the branch itself as another home for its commits), and a ref is never created over
-an existing one. Every name a delete, a checkout or the merged check acts on must appear
+a branch checked out in any worktree — the opened one, the main worktree, or any linked one —
+cannot be deleted (compared ignoring case; its delete plan is a `Deny` naming the checkout and
+the worktree's path unless the policy already denies it, a worktree whose `HEAD` cannot be read
+refuses rather than counts as elsewhere, and the merged check never counts `HEAD` on the branch
+itself as another home for its commits), and a ref is never created over an existing one.
+Checkout likewise refuses a branch another worktree has checked out, naming that worktree as
+git does. Every name a delete, a checkout or the merged check acts on must appear
 byte for byte in the repository's own branch or tag listing, so `MAIN` never reaches `main`
 through filesystem case folding. Under `core.ignoreCase`, creating or deleting a name that
 another ref matches except for case is refused, since both names are one file on disk.

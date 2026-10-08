@@ -279,6 +279,104 @@ fn the_checked_out_branch_plans_a_deny_and_counts_head_as_itself() {
     );
 }
 
+/// `fx` with `feature` checked out in a linked worktree under `holder`; returns its path as
+/// git recorded it.
+#[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+fn feature_in_linked_worktree(fx: &Fixture, holder: &Fixture) -> std::path::PathBuf {
+    let wt = holder.path().join("wt");
+    fx.git(&["worktree", "add", "-q", wt.to_str().unwrap(), "feature"]);
+    wt.canonicalize().unwrap()
+}
+
+#[test]
+fn a_branch_checked_out_in_a_linked_worktree_cannot_be_deleted() {
+    let fx = Fixture::standard();
+    let holder = Fixture::empty_dir();
+    let wt = feature_in_linked_worktree(&fx, &holder);
+    let policy = Policy::default();
+    let expected = format!(
+        "cannot delete 'feature': it is checked out in the worktree at '{}'",
+        wt.display()
+    );
+
+    let plan = plan_branch_delete(fx.path(), &policy, "feature").unwrap();
+    let Decision::Deny { reason } = &plan.decision else {
+        panic!("expected a deny, got {:?}", plan.decision);
+    };
+    assert_eq!(*reason, expected);
+
+    let err = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap_err();
+    let ActionError::CheckedOut { worktree, .. } = &err else {
+        panic!("expected CheckedOut, got {err}");
+    };
+    assert_eq!(worktree.as_deref(), Some(wt.to_str().unwrap()));
+    assert_eq!(err.to_string(), expected, "plan and delete refuse alike");
+    let after = refs(&fx);
+    assert!(after.contains("refs/heads/feature"), "{after}");
+    assert!(!after.contains("refs/rc-git/backup"), "{after}");
+}
+
+#[test]
+fn a_linked_worktree_sees_the_main_worktree_branch_and_its_own() {
+    let fx = Fixture::standard();
+    let holder = Fixture::empty_dir();
+    let wt = feature_in_linked_worktree(&fx, &holder);
+    let policy = Policy::default();
+    fx.git(&["branch", "topic", "main"]);
+
+    let err = delete_branch(&wt, &policy, "main", Some("main")).unwrap_err();
+    let ActionError::CheckedOut { worktree, .. } = &err else {
+        panic!("expected CheckedOut, got {err}");
+    };
+    let main_wt = fx.path().canonicalize().unwrap();
+    assert_eq!(worktree.as_deref(), Some(main_wt.to_str().unwrap()));
+
+    let err = delete_branch(&wt, &policy, "feature", Some("feature")).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "cannot delete 'feature': it is the checked-out branch"
+    );
+
+    delete_branch(&wt, &policy, "topic", None).unwrap();
+    assert!(!refs(&fx).contains("refs/heads/topic"));
+}
+
+#[test]
+fn checkout_refuses_a_branch_another_worktree_has_checked_out() {
+    let fx = Fixture::standard();
+    let holder = Fixture::empty_dir();
+    let wt = feature_in_linked_worktree(&fx, &holder);
+    let policy = Policy::default();
+
+    let err = rc_git_guard::actions::checkout_branch(fx.path(), &policy, "feature").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "checkout 'feature': already used by worktree at '{}'",
+            wt.display()
+        )
+    );
+    assert_eq!(fx.git_output(&["symbolic-ref", "--short", "HEAD"]), "main");
+    assert!(
+        !fx.path().join("feature.txt").exists(),
+        "nothing was written"
+    );
+
+    let err = rc_git_guard::actions::checkout_branch(&wt, &policy, "main").unwrap_err();
+    assert!(
+        err.to_string().contains("already used by worktree at"),
+        "{err}"
+    );
+    let wt_head = fx.git_output(&[
+        "-C",
+        wt.to_str().unwrap(),
+        "symbolic-ref",
+        "--short",
+        "HEAD",
+    ]);
+    assert_eq!(wt_head, "feature");
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

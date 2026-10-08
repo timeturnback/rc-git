@@ -38,7 +38,8 @@ pub struct CheckoutOutcome {
 /// # Errors
 /// [`ActionError::DirtyPath`](super::ActionError::DirtyPath) when a path the switch touches
 /// has uncommitted work (nothing is written), [`ActionError::Git`](super::ActionError::Git)
-/// when the branch does not exist, has no commit, the repository cannot be read or written,
+/// when the branch does not exist, has no commit, is checked out in another worktree, the
+/// repository cannot be read or written,
 /// a git operation (merge, rebase, cherry-pick, revert, bisect) is in progress, or the index
 /// holds an unresolved conflict.
 pub fn checkout_branch(
@@ -68,6 +69,13 @@ pub fn checkout_branch(
             files_changed: 0,
             already_on_branch: true,
         });
+    }
+    if let Some(path) = super::branch_checked_out_at(&repo, OP, &full_name)? {
+        return Err(ActionError::git(
+            OP,
+            branch,
+            format!("already used by worktree at '{path}'"),
+        ));
     }
     let current = super::head_commit(&repo, OP)?;
     let from = match (&head, current) {
