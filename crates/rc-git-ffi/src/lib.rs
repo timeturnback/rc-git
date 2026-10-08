@@ -45,6 +45,10 @@ pub const RCGIT_HOSTKEY_UNKNOWN: i32 = -4;
 /// Status for remote functions: the caller signalled the `RcGitCancel` it passed in.
 /// Nothing was left half-applied; the operation stopped between steps.
 pub const RCGIT_CANCELLED: i32 = -5;
+/// Status for commit and stash push: no author identity, since the repository's own config
+/// sets no `user.name`/`user.email` and the call passed no fallback; see `error`. Ask the user
+/// for one and retry with it as the fallback.
+pub const RCGIT_IDENTITY_REQUIRED: i32 = -6;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -2876,12 +2880,14 @@ pub unsafe extern "C" fn rcgit_guard_tag_delete(
     }
 }
 
+/// The status of a local guarded mutation (branch, tag, stash, discard), reporting the
+/// message on failure.
 fn finish_action(result: Result<(), ActionError>, error: &Out<*mut c_char>) -> i32 {
     match result {
         Ok(()) => RCGIT_OK,
         Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
+            error.report(&err);
+            action_status(&err)
         }
     }
 }
@@ -3129,13 +3135,15 @@ pub unsafe extern "C" fn rcgit_identity_free(identity: *mut RcGitIdentity) {
 /// hex commit the change list was built against, or NULL on an unborn branch; the commit is
 /// refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
 /// repository's own config sets no `user.name`/`user.email` (pass both or neither); without
-/// either the commit is refused. Release with `rcgit_commit_result_free`.
+/// either the commit is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the
+/// result; release it with `rcgit_commit_result_free`. Returns `RCGIT_OK`,
+/// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
 /// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
-/// `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
-/// `char *`.
+/// `RcGitCommitFile`s per that struct's contract. `out` is valid for writing a
+/// `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_commit(
     repo_path: *const c_char,
@@ -3146,10 +3154,12 @@ pub unsafe extern "C" fn rcgit_guard_commit(
     files: *const RcGitCommitFile,
     len: usize,
     input: *const c_char,
+    out: *mut *mut RcGitCommitResult,
     error: *mut *mut c_char,
-) -> *mut RcGitCommitResult {
+) -> i32 {
+    let out_missing = out.is_null();
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, message, author, expected_head, selections, input, error) = unsafe {
+    let (repo_path, message, author, expected_head, selections, input, out, error) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(message),
@@ -3157,13 +3167,15 @@ pub unsafe extern "C" fn rcgit_guard_commit(
             bytes_arg(expected_head),
             read_selections(files, len),
             bytes_arg(input),
+            Out::new(out),
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(message), Some(selections)) = (repo_path, message, selections)
+    let (Some(repo_path), Some(message), Some(selections), false) =
+        (repo_path, message, selections, out_missing)
     else {
-        error.report("repo_path, message, a selection path, or a counted hunk list is NULL");
-        return ptr::null_mut();
+        error.report("repo_path, message, out, a selection path, or a counted hunk list is NULL");
+        return RCGIT_ERROR;
     };
     let expected_head = expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3176,13 +3188,16 @@ pub unsafe extern "C" fn rcgit_guard_commit(
         &selections,
         input.as_deref(),
     ) {
-        Ok(committed) => export(RcGitCommitResult {
-            oid: export_string(committed.oid.into_bytes()),
-            branch: export_string(committed.branch.into_bytes()),
-        }),
+        Ok(committed) => {
+            out.set(export(RcGitCommitResult {
+                oid: export_string(committed.oid.into_bytes()),
+                branch: export_string(committed.branch.into_bytes()),
+            }));
+            RCGIT_OK
+        }
         Err(err) => {
-            error.report(err);
-            ptr::null_mut()
+            error.report(&err);
+            action_status(&err)
         }
     }
 }
@@ -3200,7 +3215,7 @@ pub unsafe extern "C" fn rcgit_commit_result_free(result: *mut RcGitCommitResult
 /// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
 /// `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
 /// are recorded only when the repository's own config sets no identity, as for
-/// `rcgit_guard_commit`. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// `rcgit_guard_commit`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and
@@ -3234,19 +3249,41 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
     };
     let message = message.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match stash_push(
+    let pushed = stash_push(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
         &paths,
         message.as_deref(),
         author,
         input.as_deref(),
-    ) {
-        Ok(_) => RCGIT_OK,
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
+    );
+    finish_action(pushed.map(|_| ()), &error)
+}
+
+/// The status code of a local guarded mutation's error (commit, stash, discard, branch, tag).
+/// Exhaustive, so a new variant the app must branch on gets a status here rather than
+/// reaching Swift only as text.
+fn action_status(err: &ActionError) -> i32 {
+    match err {
+        ActionError::MissingIdentity => RCGIT_IDENTITY_REQUIRED,
+        ActionError::Denied { .. }
+        | ActionError::NotConfirmed { .. }
+        | ActionError::CheckedOut { .. }
+        | ActionError::DetachedHead { .. }
+        | ActionError::StaleRepository { .. }
+        | ActionError::HunkMismatch { .. }
+        | ActionError::NoHunksSelected { .. }
+        | ActionError::DirtyPath { .. }
+        | ActionError::AuthRequired { .. }
+        | ActionError::PassphraseRequired { .. }
+        | ActionError::Diverged { .. }
+        | ActionError::PushRejected { .. }
+        | ActionError::UnknownHostKey { .. }
+        | ActionError::UnsupportedRemote { .. }
+        | ActionError::HostKeyMismatch { .. }
+        | ActionError::NoUpstream { .. }
+        | ActionError::Cancelled { .. }
+        | ActionError::Git { .. } => RCGIT_ERROR,
     }
 }
 
@@ -3675,12 +3712,12 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::HunkMismatch { .. }
         | ActionError::NoHunksSelected { .. }
         | ActionError::DirtyPath { .. }
-        | ActionError::MissingIdentity
         | ActionError::UnsupportedRemote { .. }
         | ActionError::HostKeyMismatch { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
         ActionError::Cancelled { .. } => RCGIT_CANCELLED,
+        ActionError::MissingIdentity => RCGIT_IDENTITY_REQUIRED,
     }
 }
 
@@ -5150,7 +5187,8 @@ mod tests {
             hunks: ptr::null(),
             hunk_count: 0,
         };
-        let result = unsafe {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
                 message.as_ptr(),
@@ -5160,10 +5198,11 @@ mod tests {
                 &raw const file,
                 1,
                 ptr::null(),
+                &raw mut result,
                 &raw mut error,
             )
         };
-        assert!(!result.is_null(), "{}", take_error(&mut error));
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
         let result_ref = unsafe { &*result };
         assert_eq!(text(result_ref.branch), "main");
         assert_eq!(text(result_ref.oid), fx.rev_parse("HEAD"));
@@ -5255,7 +5294,8 @@ mod tests {
             hunks: ptr::null(),
             hunk_count: 0,
         };
-        let result = unsafe {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
                 message.as_ptr(),
@@ -5265,10 +5305,11 @@ mod tests {
                 &raw const file,
                 1,
                 ptr::null(),
+                &raw mut result,
                 &raw mut error,
             )
         };
-        assert!(!result.is_null(), "{}", take_error(&mut error));
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
         unsafe { rcgit_commit_result_free(result) };
         assert_eq!(
             fx.git_output(&["log", "-1", "--format=%ae|%ce"]),
@@ -5281,13 +5322,88 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_identity_crosses_as_its_own_status() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let head = fx.rev_parse("HEAD");
+        let head_c = CString::new(head.clone()).unwrap();
+        let message = CString::new("nobody").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        fx.write("alpha.txt", b"no identity\n");
+        let mut error = ptr::null_mut();
+        let mut result = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                message.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                head_c.as_ptr(),
+                &raw const file,
+                1,
+                ptr::null(),
+                &raw mut result,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_IDENTITY_REQUIRED);
+        assert!(result.is_null());
+        assert!(take_error(&mut error).contains("no author identity"));
+        assert_eq!(
+            fx.rev_parse("HEAD"),
+            head,
+            "a refused commit writes nothing"
+        );
+
+        let paths = [path.as_ptr()];
+        let status = unsafe {
+            rcgit_guard_stash_push(
+                repo_path.as_ptr(),
+                paths.as_ptr(),
+                1,
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_IDENTITY_REQUIRED);
+        assert!(take_error(&mut error).contains("no author identity"));
+        assert_eq!(fx.git_output(&["stash", "list"]), "");
+
+        let status = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                message.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                head_c.as_ptr(),
+                &raw const file,
+                1,
+                ptr::null(),
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR, "a NULL out is an argument error");
+        assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    #[test]
     fn guarded_mutations_report_null_arguments() {
         let fx = Fixture::standard();
         let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
         let message = CString::new("msg").unwrap();
         let path = CString::new("alpha.txt").unwrap();
         let mut error = ptr::null_mut();
-        let result = unsafe {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
             rcgit_guard_commit(
                 ptr::null(),
                 message.as_ptr(),
@@ -5297,9 +5413,11 @@ mod tests {
                 ptr::null(),
                 0,
                 ptr::null(),
+                &raw mut result,
                 &raw mut error,
             )
         };
+        assert_eq!(status, RCGIT_ERROR);
         assert!(result.is_null());
         assert!(take_error(&mut error).contains("NULL"));
         let status = unsafe {
@@ -5358,7 +5476,8 @@ mod tests {
         let name = CString::new("FFI User").unwrap();
         let email = CString::new("ffi@example.com").unwrap();
         let mut error = ptr::null_mut();
-        let result = unsafe {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
                 message.as_ptr(),
@@ -5368,10 +5487,11 @@ mod tests {
                 files.as_ptr(),
                 files.len(),
                 ptr::null(),
+                &raw mut result,
                 &raw mut error,
             )
         };
-        if result.is_null() {
+        if status != RCGIT_OK {
             return Err(take_error(&mut error));
         }
         let oid = text(unsafe { &*result }.oid);

@@ -246,7 +246,10 @@ pub enum ActionError {
     },
     /// No author identity is available: the repository's own config sets no
     /// `user.name`/`user.email` and none was passed in.
-    #[error("cannot commit: set user.name and user.email, or provide an identity")]
+    #[error(
+        "no author identity: rc-git reads only this repository's .git/config (not \
+         ~/.gitconfig); set user.name/user.email there, or pass an identity"
+    )]
     MissingIdentity,
     /// The remote wants credentials rc-git does not have, or rejected the ones given.
     #[error("{op}: '{host}' requires authentication or rejected the credentials")]

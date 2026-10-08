@@ -644,6 +644,11 @@ mod commit_and_discard {
         )
         .unwrap_err();
         assert!(matches!(err, ActionError::MissingIdentity), "{err}");
+        assert!(
+            err.to_string()
+                .contains("reads only this repository's .git/config (not ~/.gitconfig)"),
+            "{err}"
+        );
 
         let err = commit(
             fx.path(),

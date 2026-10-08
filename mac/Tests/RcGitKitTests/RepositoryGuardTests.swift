@@ -179,6 +179,28 @@ import Testing
             try fixture.gitOutput(["log", "-1", "--format=%ae", "stash@{0}"]) == "work@example.com")
     }
 
+    @Test func aMissingIdentityThrowsItsOwnTypedError() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("alpha.txt", "nobody's edit\n")
+        let head = try fixture.revParse("HEAD")
+
+        let commitError = #expect(throws: IdentityRequiredError.self) {
+            _ = try RepositoryGuard.commit(
+                repoPath: fixture.path, message: "Nobody", fallback: nil, expectedHead: head,
+                selections: [.whole(path: "alpha.txt")], input: nil)
+        }
+        #expect(commitError?.message.contains("no author identity") == true)
+        #expect(try fixture.revParse("HEAD") == head)
+
+        #expect(throws: IdentityRequiredError.self) {
+            try RepositoryGuard.stashPush(
+                repoPath: fixture.path, paths: ["alpha.txt"], message: nil, fallback: nil,
+                input: nil)
+        }
+        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
+    }
+
     @Test func configuredIdentityNamesAMissingRepository() throws {
         #expect(throws: RepositoryError.self) {
             try RepositoryGuard.configuredIdentity(repoPath: "/nonexistent/rc-git-repo")

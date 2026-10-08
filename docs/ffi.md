@@ -20,7 +20,10 @@ in Swift value types.
   `RCGIT_HOSTKEY_UNKNOWN` (-4, ssh only: the `hostkey` out parameter holds
   `"<key type> <SHA256 fingerprint>"` to show the user, released with
   `rcgit_string_free`), and `RCGIT_CANCELLED` (-5). Their inputs travel in one
-  `RcGitRemoteAuth` struct whose fields may all be `NULL`.
+  `RcGitRemoteAuth` struct whose fields may all be `NULL`. Commit and stash push add
+  `RCGIT_IDENTITY_REQUIRED` (-6): no author identity, so the app asks for one and retries.
+- A status the app branches on is a named code from an exhaustive match on the error, never
+  text the app searches for in the message.
 - `RcGitCancel` is the one handle meant to be touched from a second thread: the thread
   inside a transfer cannot ask itself to stop. `rcgit_cancel_new` before the call,
   `rcgit_cancel_signal` from the UI thread while it runs, `rcgit_cancel_free` after it

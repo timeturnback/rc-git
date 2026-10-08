@@ -366,7 +366,12 @@ fn main() -> ExitCode {
     match run(&invocation) {
         Ok(code) => code,
         Err(err) => {
-            let _ = writeln!(io::stderr().lock(), "error: {}", error_line(&err));
+            let _ = writeln!(
+                io::stderr().lock(),
+                "error: {}{}",
+                error_line(&err),
+                cli_hint(&err)
+            );
             ExitCode::from(exit_code_for(&err))
         }
     }
@@ -385,6 +390,15 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
         Some(ActionError::Diverged { .. } | ActionError::PushRejected { .. }) => EXIT_DIVERGED,
         Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
         Some(_) | None => EXIT_ERROR,
+    }
+}
+
+/// What the command line can do about `err` that the guard's message cannot name: the guard
+/// says "pass an identity", the CLI knows that is `--author`.
+fn cli_hint(err: &anyhow::Error) -> &'static str {
+    match err.downcast_ref::<ActionError>() {
+        Some(ActionError::MissingIdentity) => " (--author \"Name <email>\")",
+        Some(_) | None => "",
     }
 }
 

@@ -206,7 +206,8 @@ public enum RepositoryGuard {
     /// Commits `selections` to the checked-out branch. `expectedHead` is the commit the
     /// change list was built against, `nil` on an unborn branch; the commit is refused when
     /// `HEAD` moved. `fallback` is recorded only when the repository's own config sets no
-    /// identity; it never overrides one the repository sets.
+    /// identity; it never overrides one the repository sets. Throws `IdentityRequiredError`
+    /// when neither gives an identity, `RepositoryError` for every other failure.
     public static func commit(
         repoPath: String, message: String, fallback: CommitIdentity?, expectedHead: String?,
         selections: [CommitSelection], input: String?
@@ -238,17 +239,18 @@ public enum RepositoryGuard {
                         path: ownedPaths[index], hunks: buffer, hunk_count: stamps.count))
             }
         }
-        let result = withOwnedCStrings([
+        var out: UnsafeMutablePointer<RcGitCommitResult>? = nil
+        let status = withOwnedCStrings([
             message, fallback?.name, fallback?.email, expectedHead, input,
         ]) { strings in
             files.withUnsafeBufferPointer { buffer in
                 rcgit_guard_commit(
                     repoPath, strings[0], strings[1], strings[2], strings[3],
-                    buffer.baseAddress, files.count, strings[4], &error)
+                    buffer.baseAddress, files.count, strings[4], &out, &error)
             }
         }
-        guard let result else {
-            throw RepositoryError.take(error, fallback: "cannot commit")
+        guard status == RCGIT_OK, let result = out else {
+            throw actionError(status, error, fallback: "cannot commit")
         }
         defer { rcgit_commit_result_free(result) }
         return CommitOutcome(
@@ -257,7 +259,8 @@ public enum RepositoryGuard {
     }
 
     /// Stashes the changes at `paths` and restores those files to `HEAD` state. `fallback` is
-    /// recorded only when the repository's own config sets no identity.
+    /// recorded only when the repository's own config sets no identity. Throws
+    /// `IdentityRequiredError` when neither gives one, `RepositoryError` otherwise.
     public static func stashPush(
         repoPath: String, paths: [String], message: String?, fallback: CommitIdentity?,
         input: String?
@@ -273,7 +276,7 @@ public enum RepositoryGuard {
             }
         }
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot stash")
+            throw actionError(status, error, fallback: "cannot stash")
         }
     }
 
@@ -431,6 +434,15 @@ public final class CancelToken: @unchecked Sendable {
 extension Optional where Wrapped == CancelToken {
     /// The C flag, or NULL when the caller passed none.
     fileprivate var pointer: OpaquePointer? { self?.handle }
+}
+
+/// A commit or stash refused because it has no author identity: the repository's own config
+/// sets no `user.name`/`user.email` and no fallback was passed. Ask for one and retry with it
+/// as the fallback.
+public struct IdentityRequiredError: Error, Sendable, Hashable, CustomStringConvertible {
+    public let message: String
+
+    public var description: String { message }
 }
 
 /// How a remote operation failed, typed so the caller can prompt or explain.
@@ -597,6 +609,18 @@ extension RepositoryGuard {
         }
         return PushOutcome(
             pushedCommits: out.pushed_commits, alreadyUpToDate: out.already_up_to_date)
+    }
+
+    /// The typed error for a failed commit or stash push: `IdentityRequiredError` for
+    /// `RCGIT_IDENTITY_REQUIRED`, else `RepositoryError`.
+    private static func actionError(
+        _ status: Int32, _ error: UnsafeMutablePointer<CChar>?, fallback: String
+    ) -> any Error {
+        let failure = RepositoryError.take(error, fallback: fallback)
+        if status == RCGIT_IDENTITY_REQUIRED {
+            return IdentityRequiredError(message: failure.message)
+        }
+        return failure
     }
 
     private static func syncError(

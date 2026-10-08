@@ -975,6 +975,37 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
 }
 
 #[test]
+fn commit_without_identity_names_the_repository_config_and_author_flag() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let head = fx.rev_parse("HEAD");
+    fx.write("alpha.txt", b"no identity\n");
+
+    let out = rc_git(&["commit", path, "-m", "nobody", "alpha.txt"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let message = stderr(&out);
+    assert!(
+        message.starts_with("error: no author identity"),
+        "{message}"
+    );
+    assert!(
+        message.contains(".git/config (not ~/.gitconfig)"),
+        "{message}"
+    );
+    assert!(
+        message
+            .trim_end()
+            .ends_with("or pass an identity (--author \"Name <email>\")"),
+        "{message}"
+    );
+    assert_eq!(
+        fx.rev_parse("HEAD"),
+        head,
+        "a refused commit writes nothing"
+    );
+}
+
+#[test]
 fn commit_expect_head_refuses_when_head_moved() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

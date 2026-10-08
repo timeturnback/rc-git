@@ -29,6 +29,11 @@
 // Nothing was left half-applied; the operation stopped between steps.
 #define RCGIT_CANCELLED -5
 
+// Status for commit and stash push: no author identity, since the repository's own config
+// sets no `user.name`/`user.email` and the call passed no fallback; see `error`. Ask the user
+// for one and retry with it as the fallback.
+#define RCGIT_IDENTITY_REQUIRED -6
+
 // Namespace of a reference.
 typedef enum RcGitRefKind {
   // `refs/heads/*`
@@ -612,14 +617,6 @@ typedef struct RcGitIdentity {
   char *email;
 } RcGitIdentity;
 
-// What a completed commit produced.
-typedef struct RcGitCommitResult {
-  // Hex id of the new commit.
-  char *oid;
-  // Short name of the branch that advanced.
-  char *branch;
-} RcGitCommitResult;
-
 // One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
 typedef struct RcGitHunkStamp {
   // 1-based first line of the hunk on the tree side.
@@ -642,6 +639,14 @@ typedef struct RcGitCommitFile {
   // Number of entries behind `hunks`.
   size_t hunk_count;
 } RcGitCommitFile;
+
+// What a completed commit produced.
+typedef struct RcGitCommitResult {
+  // Hex id of the new commit.
+  char *oid;
+  // Short name of the branch that advanced.
+  char *branch;
+} RcGitCommitResult;
 
 // Where the checked-out branch pushes and pulls, as of the last fetch. Free with
 // `rcgit_remote_status_free`.
@@ -1250,22 +1255,25 @@ void rcgit_identity_free(struct RcGitIdentity *identity);
 // hex commit the change list was built against, or NULL on an unborn branch; the commit is
 // refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
 // repository's own config sets no `user.name`/`user.email` (pass both or neither); without
-// either the commit is refused. Release with `rcgit_commit_result_free`.
+// either the commit is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the
+// result; release it with `rcgit_commit_result_free`. Returns `RCGIT_OK`,
+// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 //
 // # Safety
 // `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
 // `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
-// `RcGitCommitFile`s per that struct's contract. `error` is NULL or valid for writing a
-// `char *`.
-struct RcGitCommitResult *rcgit_guard_commit(const char *repo_path,
-                                             const char *message,
-                                             const char *fallback_name,
-                                             const char *fallback_email,
-                                             const char *expected_head,
-                                             const struct RcGitCommitFile *files,
-                                             size_t len,
-                                             const char *input,
-                                             char **error);
+// `RcGitCommitFile`s per that struct's contract. `out` is valid for writing a
+// `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
+int32_t rcgit_guard_commit(const char *repo_path,
+                           const char *message,
+                           const char *fallback_name,
+                           const char *fallback_email,
+                           const char *expected_head,
+                           const struct RcGitCommitFile *files,
+                           size_t len,
+                           const char *input,
+                           struct RcGitCommitResult **out,
+                           char **error);
 
 // Releases a value from `rcgit_guard_commit`.
 //
@@ -1276,7 +1284,7 @@ void rcgit_commit_result_free(struct RcGitCommitResult *result);
 // Stashes the changes at `paths` as a git-compatible entry, then restores those files to
 // `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
 // are recorded only when the repository's own config sets no identity, as for
-// `rcgit_guard_commit`. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+// `rcgit_guard_commit`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 //
 // # Safety
 // `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and

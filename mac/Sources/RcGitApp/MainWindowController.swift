@@ -995,9 +995,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.changesController.clearMessage()
             self?.refreshChanges()
             self?.remember(prompted)
-        } onFailure: { [weak self] failure in
+        } onFailure: { [weak self] error in
             self?.refreshAuthor()
-            self?.presentError(failure)
+            if prompted == nil, error is IdentityRequiredError {
+                self?.askForIdentity { identity in
+                    self?.performCommit(message, prompted: identity)
+                }
+            } else {
+                self?.presentError(Self.failureMessage(error))
+            }
         }
     }
 
@@ -1026,9 +1032,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.changesController.clearMessage()
             self?.refreshChanges()
             self?.remember(prompted)
-        } onFailure: { [weak self] failure in
+        } onFailure: { [weak self] error in
             self?.refreshAuthor()
-            self?.presentError(failure)
+            if prompted == nil, error is IdentityRequiredError {
+                self?.askForIdentity { identity in
+                    self?.performStashPush(prompted: identity)
+                }
+            } else {
+                self?.presentError(Self.failureMessage(error))
+            }
         }
     }
 
@@ -1383,7 +1395,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         _ decision: GuardDecision, verb: String,
         perform: @escaping @Sendable (String?) throws -> Void,
         onSuccess: (() -> Void)?,
-        onFailure: ((String) -> Void)?
+        onFailure: ((any Error) -> Void)?
     ) {
         switch decision.kind {
         case .allow:
@@ -1459,7 +1471,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func runGuarded(
         _ work: @escaping @Sendable () throws -> Void,
         onSuccess: (() -> Void)? = nil,
-        onFailure: ((String) -> Void)? = nil
+        onFailure: ((any Error) -> Void)? = nil
     ) {
         Task { [weak self] in
             let outcome = await Task.detached { Result { try work() } }.value
@@ -1467,14 +1479,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             case .success:
                 onSuccess?()
             case let .failure(error):
-                let message = (error as? RepositoryError)?.message ?? String(describing: error)
                 if let onFailure {
-                    onFailure(message)
+                    onFailure(error)
                 } else {
-                    self?.presentError(message)
+                    self?.presentError(Self.failureMessage(error))
                 }
             }
         }
+    }
+
+    /// The text to show for a failed guarded action.
+    private static func failureMessage(_ error: any Error) -> String {
+        (error as? RepositoryError)?.message ?? String(describing: error)
     }
 
     private func presentError(
