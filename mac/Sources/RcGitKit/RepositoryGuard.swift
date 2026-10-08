@@ -375,12 +375,9 @@ public struct RemoteStatus: Sendable, Hashable {
     public let ahead: Int
     public let behind: Int
     public let hasUpstream: Bool
-
-    /// Whether the upstream is an ssh remote (`ssh://` or the scp-like `git@host:path`).
-    public var usesSsh: Bool {
-        if url.hasPrefix("ssh://") { return true }
-        return !url.contains("://") && url.contains("@") && url.contains(":")
-    }
+    /// Whether the upstream is an ssh remote, as the guard parsed it. `url` cannot say:
+    /// with the user removed, an scp-like `git@host:path` displays as `host:path`.
+    public let usesSsh: Bool
 }
 
 /// A per-host username and token. Deliberately not `CustomStringConvertible`; never log it.
@@ -522,7 +519,8 @@ extension RepositoryGuard {
             branch: value.branch.map { String(cString: $0) } ?? "",
             ahead: value.ahead,
             behind: value.behind,
-            hasUpstream: value.has_upstream
+            hasUpstream: value.has_upstream,
+            usesSsh: value.uses_ssh
         )
     }
 

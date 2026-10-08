@@ -250,9 +250,23 @@ import Testing
         #expect(status.remote == "origin")
         #expect(status.host == "example.com:8443")
         #expect(status.url == "https://example.com:8443/repo.git")
+        #expect(!status.usesSsh)
         // The fixture's refs/remotes/origin/main sits at HEAD, so nothing is ahead or behind.
         #expect(status.ahead == 0)
         #expect(status.behind == 0)
+    }
+
+    @Test func anScpLikeOriginReportsSshThoughItsUrlLostTheUser() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.git(["remote", "add", "origin", "git@example.com:x/y.git"])
+        try fixture.git(["config", "branch.main.remote", "origin"])
+        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+
+        let status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
+        #expect(status.usesSsh)
+        #expect(status.url == "example.com:x/y.git")
+        #expect(status.host == "example.com")
     }
 
     @Test func aSignalledTokenStopsAFetchBeforeItReachesTheNetwork() throws {

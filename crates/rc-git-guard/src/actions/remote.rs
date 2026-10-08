@@ -192,6 +192,11 @@ pub struct UpstreamStatus {
     pub behind: usize,
     /// Whether the branch has a configured upstream at all.
     pub has_upstream: bool,
+    /// Whether the remote URL parses as ssh (`ssh://` or scp-like `user@host:path`), the
+    /// transport that takes a key passphrase rather than an HTTPS token. False without an
+    /// upstream. Read from the parsed scheme, since `url` drops the user an scp-like
+    /// display form would need.
+    pub uses_ssh: bool,
 }
 
 /// The checked-out branch's upstream configuration and ahead/behind counts. Local only:
@@ -213,6 +218,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
         ahead: 0,
         behind: 0,
         has_upstream: false,
+        uses_ssh: false,
     };
     let Some(remote_name) = configured_remote_name(&repo, &branch) else {
         return Ok(no_upstream(&branch));
@@ -233,6 +239,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
         remote: remote_name,
         upstream_ref: upstream_ref.unwrap_or_default(),
         host: host_of(&url),
+        uses_ssh: url.scheme == gix::url::Scheme::Ssh,
         url: redacted(&url),
         ahead,
         behind,

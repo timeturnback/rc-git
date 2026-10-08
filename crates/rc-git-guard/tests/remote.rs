@@ -100,6 +100,33 @@ fn upstream_status_reads_the_clone_configuration_and_counts() {
     assert_eq!((status.ahead, status.behind), (1, 0));
 }
 
+#[test]
+fn upstream_status_reports_the_ssh_transport_from_the_parsed_scheme() {
+    let fixture = Fixture::standard();
+    assert!(!upstream_status(fixture.path()).expect("status").uses_ssh);
+    fixture.git(&["remote", "add", "origin", "https://host/x"]);
+    fixture.git(&["config", "branch.main.remote", "origin"]);
+    fixture.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    for (url, uses_ssh) in [
+        ("git@host:x/y.git", true),
+        ("host:x/y.git", true),
+        ("ssh://git@host/x", true),
+        ("https://host/x", false),
+    ] {
+        fixture.git(&["remote", "set-url", "origin", url]);
+        let status = upstream_status(fixture.path()).expect("status");
+        assert_eq!(status.uses_ssh, uses_ssh, "{url}");
+    }
+
+    // The display URL drops the user, so an scp-like origin loses its `@`: the flag, not
+    // the string, is what tells a caller the transport.
+    fixture.git(&["remote", "set-url", "origin", "git@example.com:x/y.git"]);
+    let status = upstream_status(fixture.path()).expect("status");
+    assert!(status.uses_ssh);
+    assert_eq!(status.url, "example.com:x/y.git");
+    assert_eq!(status.host, "example.com");
+}
+
 /// Drops `branch.main.remote` and `branch.main.merge`, the state of a branch made with
 /// `git init` and pushed without `-u`: `origin` exists, but nothing names it the upstream.
 fn untrack(remoted: &Remoted) {

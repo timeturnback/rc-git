@@ -665,6 +665,9 @@ typedef struct RcGitRemoteStatus {
   size_t behind;
   // Whether the branch has a configured upstream at all.
   bool has_upstream;
+  // Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
+  // rather than an HTTPS token. False without an upstream.
+  bool uses_ssh;
 } RcGitRemoteStatus;
 
 // Authentication inputs for the remote functions. Every field may be NULL: `username`

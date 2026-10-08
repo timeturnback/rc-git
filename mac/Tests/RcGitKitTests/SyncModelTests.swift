@@ -40,7 +40,8 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
             branch: "main",
             ahead: ahead,
             behind: behind,
-            hasUpstream: true
+            hasUpstream: true,
+            usesSsh: false
         )
     }
 
@@ -319,7 +320,7 @@ private let alreadyOnMain = CheckoutOutcome(
     @Test func noUpstreamFailsFastWithoutNetwork() async {
         let status = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false)
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
         let (model, performer, _) = model(.init(preflights: [status]))
         await model.refreshStatus()
         await model.sync()
@@ -387,12 +388,13 @@ private let alreadyOnMain = CheckoutOutcome(
     private static func sshUpstream(host: String = "git.example.com") -> RemoteStatus {
         RemoteStatus(
             remote: "origin",
-            url: "ssh://git@\(host)/repo.git",
+            url: "\(host):repo.git",
             host: host,
             branch: "main",
             ahead: 0,
             behind: 0,
-            hasUpstream: true
+            hasUpstream: true,
+            usesSsh: true
         )
     }
 
@@ -495,6 +497,36 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.fetchCredentials.last??.token == "opensesame")
         #expect(store.stored["git.example.com#ssh"]?.token == "opensesame")
         #expect(store.stored["git.example.com"] == nil)
+    }
+
+    @Test func anScpLikeRemoteAsksForThePassphraseAndLeavesTheHttpsTokenAlone() async {
+        let httpsToken = Credentials(username: "me", token: "pat-for-https")
+        let store = InMemoryCredentialStore(["example.com": httpsToken])
+        let scpLike = RemoteStatus(
+            remote: "origin", url: "example.com:x/y.git", host: "example.com",
+            branch: "main", ahead: 0, behind: 0, hasUpstream: true, usesSsh: true)
+        let (model, performer, _) = model(
+            .init(
+                preflights: [scpLike],
+                fetches: [
+                    .failure(.authRequired(message: "key is encrypted")),
+                    .success(cleanFetch),
+                ]
+            ), store: store)
+        var promptedKind: CredentialKind?
+        model.onCredentialsNeeded = { _, kind, resume in
+            promptedKind = kind
+            resume(Credentials(username: "", token: "opensesame"))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(promptedKind == .sshPassphrase)
+        #expect(
+            performer.fetchCredentials.allSatisfy { $0?.token != "pat-for-https" },
+            "the HTTPS token must never be offered as the key passphrase")
+        #expect(store.stored["example.com#ssh"]?.token == "opensesame")
+        #expect(store.stored["example.com"]?.token == "pat-for-https")
     }
 
     @Test func cancellingMidStepEndsIdleWithoutAnErrorOrTheRemainingSteps() async {
@@ -654,7 +686,7 @@ private let alreadyOnMain = CheckoutOutcome(
     @Test func theBranchSwitchedToWithoutAnUpstreamStopsBeforeTheFetch() async {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false)
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
         let (model, performer, _) = model(
             .init(
                 preflights: [StubSyncPerformer.upstream(), noUpstream],

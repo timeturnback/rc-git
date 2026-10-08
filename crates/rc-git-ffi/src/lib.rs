@@ -3639,6 +3639,9 @@ pub struct RcGitRemoteStatus {
     pub behind: usize,
     /// Whether the branch has a configured upstream at all.
     pub has_upstream: bool,
+    /// Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
+    /// rather than an HTTPS token. False without an upstream.
+    pub uses_ssh: bool,
 }
 
 impl Drop for RcGitRemoteStatus {
@@ -3823,6 +3826,7 @@ pub unsafe extern "C" fn rcgit_guard_remote_preflight(
             ahead: status.ahead,
             behind: status.behind,
             has_upstream: status.has_upstream,
+            uses_ssh: status.uses_ssh,
         }),
         Err(err) => {
             error.report(err);
@@ -4938,6 +4942,15 @@ mod tests {
         assert_eq!(text(status_ref.remote), "origin");
         assert_eq!(text(status_ref.host), "example.com");
         assert_eq!(text(status_ref.url), "https://example.com/repo.git");
+        assert!(!status_ref.uses_ssh);
+        unsafe { rcgit_remote_status_free(status) };
+
+        fx.git(&["remote", "set-url", "origin", "git@example.com:x/y.git"]);
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert!(status_ref.uses_ssh);
+        assert_eq!(text(status_ref.url), "example.com:x/y.git");
         unsafe { rcgit_remote_status_free(status) };
 
         let status = unsafe { rcgit_guard_remote_preflight(ptr::null(), &raw mut error) };
