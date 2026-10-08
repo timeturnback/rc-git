@@ -88,6 +88,69 @@ import Testing
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 
+    @Test func hunkSelectionsCommitAndDiscardThroughTheBridge() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let author = CommitIdentity(name: "Bridge User", email: "bridge@example.com")
+        let lines = (1...20).map { "l\($0)\n" }
+        try fixture.write("hunky.txt", lines.joined())
+        try fixture.commit("Add hunky", date: "2024-01-05T00:00:00+0000")
+        var edited = lines
+        edited[17] = "L18a\nL18b\n"
+        edited[0] = "l1\nTOP1\nTOP2\n"
+        try fixture.write("hunky.txt", edited.joined())
+
+        let stamps = try worktreeStamps(fixture, "hunky.txt")
+        try #require(stamps.count == 2)
+        #expect(stamps[1] == HunkStamp(oldStart: 15, oldLines: 6, newStart: 17, newLines: 7))
+        _ = try RepositoryGuard.commit(
+            repoPath: fixture.path, message: "Second hunk", fallback: author,
+            expectedHead: try fixture.revParse("HEAD"),
+            selections: [.hunks(path: "hunky.txt", stamps: [stamps[1]])], input: nil)
+        let committed = try fixture.gitOutput(["show", "HEAD:hunky.txt"])
+        #expect(committed.contains("L18a\nL18b"))
+        #expect(!committed.contains("TOP1"))
+
+        let remaining = try worktreeStamps(fixture, "hunky.txt")
+        try #require(remaining.count == 1)
+        try RepositoryGuard.discardHunks(
+            repoPath: fixture.path, path: "hunky.txt", stamps: remaining, input: nil)
+        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+    }
+
+    @Test func anEmptyHunkSelectionThrowsAndCommitsNothing() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("alpha.txt", "never committed\n")
+        let head = try fixture.revParse("HEAD")
+
+        do {
+            _ = try RepositoryGuard.commit(
+                repoPath: fixture.path, message: "Nothing",
+                fallback: CommitIdentity(name: "Bridge User", email: "bridge@example.com"),
+                expectedHead: head,
+                selections: [.hunks(path: "alpha.txt", stamps: [])], input: nil)
+            Issue.record("expected an empty hunk selection to be refused")
+        } catch let error as RepositoryError {
+            #expect(error.message.contains("no hunks selected for 'alpha.txt'"))
+        }
+        #expect(try fixture.revParse("HEAD") == head)
+        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+    }
+
+    private func worktreeStamps(_ fixture: GitFixture, _ path: String) throws -> [HunkStamp] {
+        let repository = try Repository(path: fixture.path)
+        let old = try repository.resolve("HEAD:\(path)")
+        guard case let .text(hunks) = try repository.diffWorktreeFile(path: path, old: old) else {
+            throw RepositoryError("expected a text diff of '\(path)'")
+        }
+        return hunks.map {
+            HunkStamp(
+                oldStart: $0.oldStart, oldLines: $0.oldLines, newStart: $0.newStart,
+                newLines: $0.newLines)
+        }
+    }
+
     @Test func aSavedFallbackNeverOverridesTheRepositoryEmail() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

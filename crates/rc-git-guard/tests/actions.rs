@@ -836,6 +836,34 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn an_empty_hunk_list_refuses_the_commit_and_names_the_path() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &policy,
+            "msg",
+            explicit(),
+            Some(&head),
+            &[FileSelection::Hunks {
+                path: "alpha.txt".to_owned(),
+                hunks: vec![],
+            }],
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::NoHunksSelected { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "commit: no hunks selected for 'alpha.txt'; select a hunk or the whole file"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+    }
+
+    #[test]
     fn discard_restores_tracked_files_and_deletes_untracked() {
         let fx = Fixture::standard();
         let policy = Policy::default();

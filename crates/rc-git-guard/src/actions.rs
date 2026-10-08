@@ -227,6 +227,15 @@ pub enum ActionError {
         /// The file involved.
         path: String,
     },
+    /// A hunk selection lists no hunks. A whole-file selection is a different request, so an
+    /// empty list is refused rather than read as one.
+    #[error("{op}: no hunks selected for '{path}'; select a hunk or the whole file")]
+    NoHunksSelected {
+        /// What was being done.
+        op: &'static str,
+        /// The file involved.
+        path: String,
+    },
     /// A path the operation would write has uncommitted changes.
     #[error("{op}: '{path}' has uncommitted changes; commit, stash, or discard it first")]
     DirtyPath {

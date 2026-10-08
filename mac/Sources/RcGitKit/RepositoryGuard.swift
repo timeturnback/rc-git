@@ -75,7 +75,8 @@ public struct HunkStamp: Sendable, Hashable {
 public enum CommitSelection: Sendable, Hashable {
     /// The whole file as it is on disk; addition, modification, or deletion is inferred.
     case whole(path: String)
-    /// Only the given hunks of a tracked, modified text file.
+    /// Only the given hunks of a tracked, modified text file. An empty list is refused, never
+    /// read as the whole file.
     case hunks(path: String, stamps: [HunkStamp])
 
     var path: String {
@@ -225,6 +226,7 @@ public enum RepositoryGuard {
                 files.append(
                     RcGitCommitFile(path: ownedPaths[index], hunks: nil, hunk_count: 0))
             case let .hunks(_, stamps):
+                // Never NULL, even for no stamps: NULL asks the core for the whole file.
                 let buffer = UnsafeMutablePointer<RcGitHunkStamp>.allocate(
                     capacity: max(stamps.count, 1))
                 for (offset, stamp) in stamps.enumerated() {

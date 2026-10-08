@@ -636,7 +636,8 @@ typedef struct RcGitHunkStamp {
 typedef struct RcGitCommitFile {
   // Repository-relative path, NUL-terminated.
   const char *path;
-  // NULL (with `hunk_count` 0) commits the whole file; otherwise only these hunks.
+  // NULL with `hunk_count` 0 commits the whole file; non-NULL commits only these hunks, and
+  // an empty list is refused. NULL with a nonzero count is an error.
   const struct RcGitHunkStamp *hunks;
   // Number of entries behind `hunks`.
   size_t hunk_count;

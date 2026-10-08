@@ -51,7 +51,8 @@ pub fn configured_identity(repo_path: &Path) -> ActionResult<Option<Identity>> {
 ///
 /// # Errors
 /// [`ActionError::DetachedHead`], [`ActionError::StaleRepository`],
-/// [`ActionError::MissingIdentity`], [`ActionError::HunkMismatch`] as described, and
+/// [`ActionError::MissingIdentity`], [`ActionError::HunkMismatch`] as described,
+/// [`ActionError::NoHunksSelected`] for a hunk selection with no hunks, and
 /// [`ActionError::Git`] when an object cannot be read or written, or a selected path is one
 /// git refuses (`.git`, `.`, `..`, an empty segment, a symlinked parent) — checked for every
 /// selection before anything is read or written.
@@ -405,7 +406,8 @@ fn spliced_edit(
     stamps: &[HunkStamp],
 ) -> ActionResult<PathEdit> {
     if stamps.is_empty() {
-        return Err(ActionError::HunkMismatch {
+        return Err(ActionError::NoHunksSelected {
+            op: OP,
             path: path.to_owned(),
         });
     }

@@ -2905,7 +2905,8 @@ pub struct RcGitHunkStamp {
 pub struct RcGitCommitFile {
     /// Repository-relative path, NUL-terminated.
     pub path: *const c_char,
-    /// NULL (with `hunk_count` 0) commits the whole file; otherwise only these hunks.
+    /// NULL with `hunk_count` 0 commits the whole file; non-NULL commits only these hunks, and
+    /// an empty list is refused. NULL with a nonzero count is an error.
     pub hunks: *const RcGitHunkStamp,
     /// Number of entries behind `hunks`.
     pub hunk_count: usize,
@@ -3002,7 +3003,8 @@ unsafe fn read_string_array(ptr: *const *const c_char, len: usize) -> Option<Vec
     Some(strings)
 }
 
-/// Reads a caller-owned array of `RcGitCommitFile` into owned selections.
+/// Reads a caller-owned array of `RcGitCommitFile` into owned selections. `None` when a path
+/// is NULL, or when `hunks` is NULL with a nonzero `hunk_count`.
 ///
 /// # Safety
 /// `ptr` points to `len` readable `RcGitCommitFile`s whose inner pointers honor that
@@ -3021,12 +3023,16 @@ unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec
         // SAFETY: forwarded from this function's contract.
         let path_bytes = unsafe { bytes_arg(file.path) }?;
         let path = String::from_utf8_lossy(path_bytes).into_owned();
-        if file.hunks.is_null() || file.hunk_count == 0 {
-            selections.push(FileSelection::Whole { path });
-            continue;
-        }
-        // SAFETY: forwarded from this function's contract.
-        let stamps = unsafe { std::slice::from_raw_parts(file.hunks, file.hunk_count) };
+        let stamps: &[RcGitHunkStamp] = match (file.hunks.is_null(), file.hunk_count) {
+            (true, 0) => {
+                selections.push(FileSelection::Whole { path });
+                continue;
+            }
+            (true, _) => return None,
+            (false, 0) => &[],
+            // SAFETY: forwarded from this function's contract.
+            (false, count) => unsafe { std::slice::from_raw_parts(file.hunks, count) },
+        };
         selections.push(FileSelection::Hunks {
             path,
             hunks: stamps
@@ -3156,7 +3162,7 @@ pub unsafe extern "C" fn rcgit_guard_commit(
     };
     let (Some(repo_path), Some(message), Some(selections)) = (repo_path, message, selections)
     else {
-        error.report("repo_path, message, or a selection path is NULL");
+        error.report("repo_path, message, a selection path, or a counted hunk list is NULL");
         return ptr::null_mut();
     };
     let expected_head = expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -3667,6 +3673,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::DetachedHead { .. }
         | ActionError::StaleRepository { .. }
         | ActionError::HunkMismatch { .. }
+        | ActionError::NoHunksSelected { .. }
         | ActionError::DirtyPath { .. }
         | ActionError::MissingIdentity
         | ActionError::UnsupportedRemote { .. }
@@ -5307,6 +5314,163 @@ mod tests {
         };
         assert_eq!(status, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    /// The worktree hunks of `path` against `HEAD`, as stamps, read through the FFI.
+    fn worktree_stamps(fx: &Fixture, path: &str) -> Vec<RcGitHunkStamp> {
+        let repo = open(fx);
+        let old = resolve(repo, &format!("HEAD:{path}"));
+        let c_path = CString::new(path).unwrap();
+        let mut error = ptr::null_mut();
+        let diff = unsafe {
+            rcgit_diff_worktree_file(
+                repo,
+                &raw const old,
+                c_path.as_ptr(),
+                1 << 20,
+                3,
+                &raw mut error,
+            )
+        };
+        assert!(!diff.is_null(), "{}", take_error(&mut error));
+        let diff_ref = unsafe { &*diff };
+        assert_eq!(diff_ref.kind, RcGitBlobDiffKind::Text);
+        let hunks = unsafe { std::slice::from_raw_parts(diff_ref.hunks, diff_ref.hunk_count) };
+        let stamps = hunks
+            .iter()
+            .map(|hunk| RcGitHunkStamp {
+                old_start: hunk.old_start,
+                old_lines: hunk.old_lines,
+                new_start: hunk.new_start,
+                new_lines: hunk.new_lines,
+            })
+            .collect();
+        unsafe { rcgit_blob_diff_free(diff) };
+        unsafe { rcgit_repo_free(repo) };
+        stamps
+    }
+
+    /// Commits `files` through `rcgit_guard_commit` against the current `HEAD`.
+    fn guarded_commit(fx: &Fixture, files: &[RcGitCommitFile]) -> Result<String, String> {
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let message = CString::new("FFI hunks").unwrap();
+        let name = CString::new("FFI User").unwrap();
+        let email = CString::new("ffi@example.com").unwrap();
+        let mut error = ptr::null_mut();
+        let result = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                message.as_ptr(),
+                name.as_ptr(),
+                email.as_ptr(),
+                head.as_ptr(),
+                files.as_ptr(),
+                files.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        if result.is_null() {
+            return Err(take_error(&mut error));
+        }
+        let oid = text(unsafe { &*result }.oid);
+        unsafe { rcgit_commit_result_free(result) };
+        Ok(oid)
+    }
+
+    #[test]
+    fn hunk_selections_cross_the_boundary() {
+        let fx = Fixture::standard();
+        let original: String = (1..=20)
+            .map(|n| ["l", &n.to_string(), "\n"].concat())
+            .collect();
+        fx.write("hunky.txt", original.as_bytes());
+        fx.commit("Add hunky", "2024-01-05T00:00:00+0000");
+        let edited =
+            original
+                .replacen("l1\n", "l1\nTOP1\nTOP2\n", 1)
+                .replacen("l18\n", "L18a\nL18b\n", 1);
+        fx.write("hunky.txt", edited.as_bytes());
+
+        let stamps = worktree_stamps(&fx, "hunky.txt");
+        assert_eq!(stamps.len(), 2);
+        let second = &stamps[1];
+        assert_eq!(
+            [
+                second.old_start,
+                second.old_lines,
+                second.new_start,
+                second.new_lines
+            ],
+            [15, 6, 17, 7],
+            "every field differs, so a swap across the boundary is a mismatch"
+        );
+        let path = CString::new("hunky.txt").unwrap();
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: second,
+            hunk_count: 1,
+        };
+        let oid = guarded_commit(&fx, &[file]).unwrap();
+        assert_eq!(oid, fx.rev_parse("HEAD"));
+        let committed = fx.git_output(&["show", "HEAD:hunky.txt"]);
+        assert!(committed.contains("L18a\nL18b"), "{committed}");
+        assert!(!committed.contains("TOP1"), "{committed}");
+
+        let remaining = worktree_stamps(&fx, "hunky.txt");
+        assert_eq!(remaining.len(), 1);
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_discard_hunks(
+                repo_path.as_ptr(),
+                path.as_ptr(),
+                remaining.as_ptr(),
+                remaining.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        let on_disk = std::fs::read_to_string(fx.path().join("hunky.txt")).unwrap();
+        assert_eq!(on_disk.trim_end(), committed);
+    }
+
+    #[test]
+    fn an_empty_or_uncounted_hunk_list_never_commits_the_whole_file() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+        let path = CString::new("alpha.txt").unwrap();
+        let stamp = RcGitHunkStamp {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+        };
+
+        let empty = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: &raw const stamp,
+            hunk_count: 0,
+        };
+        let err = guarded_commit(&fx, &[empty]).unwrap_err();
+        assert!(err.contains("no hunks selected for 'alpha.txt'"), "{err}");
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+
+        let uncounted = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 1,
+        };
+        let err = guarded_commit(&fx, &[uncounted]).unwrap_err();
+        assert!(err.contains("NULL"), "{err}");
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"changed\n"
+        );
     }
 
     #[test]
