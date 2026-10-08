@@ -59,7 +59,8 @@ usage: rc-git [--time] <command> <repo> [args]
   stash-pop   <repo> --yes [n] [--confirm <phrase>]  apply stash@{n}, then drop it
   stash-drop  <repo> [n] --confirm drop   delete stash@{n} without applying
   discard     <repo> --yes <path>...      restore files to HEAD, delete untracked; no undo
-                                          (--confirm discard works in place of --yes)
+                                          (--confirm discard works in place of --yes);
+                                          prints restored|deleted<TAB>path per path
   checkout    <repo> <branch>             switch the working tree and HEAD to a local branch
 
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
@@ -536,7 +537,7 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
             StashVerb::Drop,
             &mut out,
         )?,
-        Verb::Discard => discard_verb(&invocation.repo, &invocation.args)?,
+        Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, &mut out)?,
         Verb::Fetch | Verb::Pull | Verb::Push | Verb::Sync => remote_verb(invocation, &mut out)?,
     };
@@ -1389,8 +1390,13 @@ fn stash_index_verb(
 }
 
 /// Discarding cannot be undone and the guard asks no typed phrase for it, so the CLI's form of
-/// the confirm button is an explicit `--yes` or `--confirm discard`.
-fn discard_verb(repo_path: &std::path::Path, args: &[String]) -> Result<ExitCode> {
+/// the confirm button is an explicit `--yes` or `--confirm discard`. Prints one
+/// `restored|deleted<TAB>path` line per path.
+fn discard_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
     let args = split_args("discard", args, &["--confirm"], &["--yes"])?;
     args.expect(1, usize::MAX, "at least one <path>")?;
     let confirm = args.value(&["--confirm"]);
@@ -1404,12 +1410,21 @@ fn discard_verb(repo_path: &std::path::Path, args: &[String]) -> Result<ExitCode
              {USAGE}"
         )));
     }
-    rc_git_guard::actions::discard_files(
+    let outcomes = rc_git_guard::actions::discard_files(
         repo_path,
         &rc_git_guard::Policy::default(),
         &canonical_paths(&args.positionals)?,
         confirm,
     )?;
+    for outcome in outcomes {
+        let kind = match outcome.kind {
+            rc_git_guard::actions::DiscardKind::Restored => "restored",
+            rc_git_guard::actions::DiscardKind::Deleted => "deleted",
+        };
+        write!(out, "{kind}\t")?;
+        write_path(out, outcome.path.as_bytes());
+        out.push(b'\n');
+    }
     Ok(ExitCode::SUCCESS)
 }
 

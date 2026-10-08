@@ -24,7 +24,7 @@ mod workfile;
 
 pub use checkout::{CheckoutOutcome, checkout_branch};
 pub use commit::{Committed, commit, configured_identity};
-pub use discard::{discard_files, discard_hunks};
+pub use discard::{DiscardKind, DiscardOutcome, discard_files, discard_hunks};
 pub use remote::{
     Cancel, Credentials, FetchOutcome, PullOutcome, PushOutcome, RefUpdate, RemoteAuth,
     SyncOutcome, UpstreamStatus, fetch_upstream, pull_fast_forward, push_upstream, sync,

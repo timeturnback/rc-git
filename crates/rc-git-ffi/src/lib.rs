@@ -3805,12 +3805,14 @@ pub unsafe extern "C" fn rcgit_guard_discard(
     };
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     finish_action(
+        // The app refreshes the changes list afterwards, so the per-path outcomes are dropped.
         discard_files(
             Path::new(OsStr::from_bytes(repo_path)),
             &Policy::default(),
             &paths,
             input.as_deref(),
-        ),
+        )
+        .map(|_| ()),
         &error,
     )
 }

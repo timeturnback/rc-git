@@ -969,9 +969,18 @@ fn commit_and_discard_drive_the_guard_from_the_command_line() {
     assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
 
     fx.write("alpha.txt", b"dirty again\n");
-    let out = rc_git(&["discard", path, "--yes", "alpha.txt"]);
+    fx.write("notes.txt", b"untracked\n");
+    let out = rc_git(&["discard", path, "--yes", "alpha.txt", "notes.txt"]);
     assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "restored\talpha.txt\ndeleted\tnotes.txt\n");
     assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+
+    fx.write("alpha.txt", b"precious\n");
+    let out = rc_git(&["discard", path, "--yes", "alpha.txt", "docs"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(stderr(&out).contains("'docs'"), "{}", stderr(&out));
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), " M alpha.txt");
 }
 
 #[test]

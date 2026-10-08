@@ -14,27 +14,56 @@ use crate::Policy;
 
 const OP: &str = "discard";
 
+/// What discarding did to one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscardKind {
+    /// The path is tracked in `HEAD`; its blob bytes and mode were written back.
+    Restored,
+    /// The path was untracked; the file was deleted (or was already gone).
+    Deleted,
+}
+
+/// What [`discard_files`] will do to one path, decided before the first write.
+enum Plan {
+    /// Write this `HEAD` entry's bytes and mode back.
+    Restore(gix::objs::tree::Entry),
+    /// Delete the untracked file.
+    Delete,
+}
+
+/// One path [`discard_files`] handled, in the order the caller listed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscardOutcome {
+    /// The repository-relative path as the caller passed it.
+    pub path: String,
+    /// What happened to it.
+    pub kind: DiscardKind,
+}
+
 /// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written
-/// back to disk, an untracked path is deleted. Every path is checked before the first write.
-/// The policy asks for a plain confirm, so `input` may be `None`.
+/// back to disk, an untracked path is deleted. Every path is checked before the first write,
+/// so a refused path leaves every other one untouched. The policy asks for a plain confirm,
+/// so `input` may be `None`. Returns one outcome per path, in order.
 ///
 /// # Errors
 /// [`ActionError::Git`] when a path is one git refuses (`.git`, `.`, `..`, an empty segment,
-/// a symlinked parent), names a directory, is untracked without a file of exactly that name
-/// on disk, or can be neither restored nor deleted.
+/// a symlinked parent), names a directory in `HEAD` or on disk, is untracked without a file
+/// of exactly that name on disk, or can be neither restored nor deleted. Only that last
+/// failure can stop the run part-way, after the paths before it were handled.
 pub fn discard_files(
     repo_path: &Path,
     policy: &Policy,
     paths: &[String],
     input: Option<&str>,
-) -> ActionResult<()> {
+) -> ActionResult<Vec<DiscardOutcome>> {
     let repo = open(repo_path, OP, "working tree")?;
     let _proof = confirm(plan_discard(policy, paths.len()), OP, "working tree", input)?;
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
+    let mut plan = Vec::with_capacity(paths.len());
     for path in paths {
-        match tree_entry_at(&repo, OP, head_tree, path)? {
+        let entry = match tree_entry_at(&repo, OP, head_tree, path)? {
             Some(entry) if entry.mode.is_tree() => {
                 return Err(ActionError::git(
                     OP,
@@ -42,11 +71,33 @@ pub fn discard_files(
                     "is a directory; select files instead",
                 ));
             }
-            Some(_) => {}
-            None => workfile::require_exact_name(&work_dir, path, OP)?,
-        }
+            Some(entry) => Plan::Restore(entry),
+            None => {
+                workfile::require_exact_file_name(&work_dir, path, OP)?;
+                Plan::Delete
+            }
+        };
+        plan.push((path, entry));
     }
-    restore_paths(&repo, &work_dir, head_tree, paths, OP)
+    let mut outcomes = Vec::with_capacity(plan.len());
+    for (path, entry) in plan {
+        let kind = match entry {
+            Plan::Restore(entry) => {
+                let data = blob_data(&repo, OP, path, entry.oid)?;
+                workfile::restore_file(OP, &work_dir, path, &data, entry.mode.into())?;
+                DiscardKind::Restored
+            }
+            Plan::Delete => {
+                workfile::delete_file(OP, &work_dir, path)?;
+                DiscardKind::Deleted
+            }
+        };
+        outcomes.push(DiscardOutcome {
+            path: path.clone(),
+            kind,
+        });
+    }
+    Ok(outcomes)
 }
 
 /// Puts each of `paths` back to its state in `tree`: a tracked file gets its blob bytes and

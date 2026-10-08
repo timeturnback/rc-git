@@ -118,14 +118,15 @@ pub(super) fn check_paths<'a>(
     Ok(())
 }
 
-/// Refuses deleting `relative` as untracked unless its directory holds an entry whose name
-/// is byte-equal to the last segment. A case-insensitive volume would otherwise resolve
-/// `A.TXT` to the tracked `a.txt` and delete it.
+/// Refuses deleting `relative` as untracked unless its directory holds a non-directory entry
+/// whose name is byte-equal to the last segment. A case-insensitive volume would otherwise
+/// resolve `A.TXT` to the tracked `a.txt` and delete it, and a directory is refused here so
+/// the delete never meets it.
 ///
 /// # Errors
-/// [`ActionError::Git`] naming `op` and the path when no entry has exactly that name, or
-/// the directory cannot be read.
-pub(super) fn require_exact_name(
+/// [`ActionError::Git`] naming `op` and the path when no entry has exactly that name, the
+/// entry is a directory, or the directory cannot be read.
+pub(super) fn require_exact_file_name(
     work_dir: &Path,
     relative: &str,
     op: &'static str,
@@ -151,6 +152,14 @@ pub(super) fn require_exact_name(
     for entry in entries {
         let entry = entry.map_err(git_err(op, relative))?;
         if entry.file_name().as_bytes() == name.as_bytes() {
+            let file_type = entry.file_type().map_err(git_err(op, relative))?;
+            if file_type.is_dir() {
+                return Err(ActionError::git(
+                    op,
+                    relative,
+                    "is a directory; select files instead",
+                ));
+            }
             return Ok(());
         }
     }

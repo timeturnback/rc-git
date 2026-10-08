@@ -342,8 +342,8 @@ mod commit_and_discard {
     use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, Repository};
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, Author, FileSelection, HunkStamp, Identity, commit, configured_identity,
-        discard_files, discard_hunks,
+        ActionError, Author, DiscardKind, DiscardOutcome, FileSelection, HunkStamp, Identity,
+        commit, configured_identity, discard_files, discard_hunks,
     };
     use rc_git_testkit::Fixture;
 
@@ -1077,7 +1077,7 @@ mod commit_and_discard {
         fx.write("alpha.txt", b"dirty\n");
         fx.write("untracked.txt", b"junk\n");
 
-        discard_files(
+        let outcomes = discard_files(
             fx.path(),
             &policy,
             &["alpha.txt".to_owned(), "untracked.txt".to_owned()],
@@ -1085,11 +1085,82 @@ mod commit_and_discard {
         )
         .unwrap();
         assert_eq!(
+            outcomes,
+            [
+                DiscardOutcome {
+                    path: "alpha.txt".to_owned(),
+                    kind: DiscardKind::Restored,
+                },
+                DiscardOutcome {
+                    path: "untracked.txt".to_owned(),
+                    kind: DiscardKind::Deleted,
+                },
+            ]
+        );
+        assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"alpha\n"
         );
         assert!(!fx.path().join("untracked.txt").exists());
         assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn discard_refuses_a_tracked_directory_before_restoring_earlier_files() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"precious\n");
+
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned(), "docs".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "discard", name, .. } if name == "docs"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"precious\n",
+            "the edit survives a refused discard"
+        );
+    }
+
+    #[test]
+    fn discard_refuses_an_untracked_directory_listed_last_before_any_write() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"precious\n");
+        fx.write("notes.txt", b"untracked\n");
+        fx.write("newdir/inside.txt", b"untracked\n");
+
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &[
+                "notes.txt".to_owned(),
+                "alpha.txt".to_owned(),
+                "newdir".to_owned(),
+            ],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "discard", name, .. } if name == "newdir"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"precious\n"
+        );
+        assert!(
+            fx.path().join("notes.txt").exists(),
+            "notes.txt was deleted"
+        );
+        assert!(fx.path().join("newdir/inside.txt").exists());
     }
 
     #[test]
