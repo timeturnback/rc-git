@@ -363,6 +363,26 @@ pub(super) fn delete_file(op: &'static str, work_dir: &Path, relative: &str) -> 
     Ok(())
 }
 
+/// Adds a write loop's progress to the error that stopped it, so the user learns that the
+/// operation stopped part way: `written` of `total` paths were already changed on disk, and
+/// `unchanged` says what the action never reached (the index, a ref). Only an
+/// [`ActionError::Git`] gets the context; any other variant is returned as it is.
+pub(super) fn stopped_part_way(
+    error: ActionError,
+    written: usize,
+    total: usize,
+    unchanged: &str,
+) -> ActionError {
+    match error {
+        ActionError::Git { op, name, source } => ActionError::git(
+            op,
+            name,
+            format!("{source:#}; stopped after writing {written} of {total} paths; {unchanged}"),
+        ),
+        other => other,
+    }
+}
+
 /// Removes the parent directories of `relative`, deepest first and never `work_dir` itself,
 /// stopping at the first one that cannot be removed. Like git's `schedule_dir_for_removal`,
 /// a failure here means "still in use" (not empty, or already gone), never an error: the

@@ -368,7 +368,9 @@ fn refuse_paths_under_written_links(changes: &[PathChange], op: &'static str) ->
 /// remove the new file. Call [`verify_clean`] first, with the same `index`.
 ///
 /// # Errors
-/// [`ActionError::Git`] naming `op` when a file or the index cannot be written.
+/// [`ActionError::Git`] naming `op` when a file or the index cannot be written. A file that
+/// fails part way through the plan names how many paths were already written, and that
+/// neither `HEAD` nor the index was updated.
 pub(super) fn apply(
     repo: &gix::Repository,
     work_dir: &Path,
@@ -376,20 +378,38 @@ pub(super) fn apply(
     changes: &[PathChange],
     op: &'static str,
 ) -> ActionResult<()> {
-    let mut index_changes: Vec<IndexChange> = Vec::new();
+    let total = changes.len();
+    let stopped = |error, written| {
+        workfile::stopped_part_way(error, written, total, "HEAD and the index were not updated")
+    };
+    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(total);
     for change in changes.iter().filter(|change| change.new.is_none()) {
-        workfile::delete_file(op, work_dir, &change.path)?;
+        workfile::delete_file(op, work_dir, &change.path)
+            .map_err(|error| stopped(error, index_changes.len()))?;
         index_changes.push((change.path.clone(), None));
     }
     for change in changes {
         if let Some((oid, kind)) = change.new {
-            let data = blob_data(repo, op, &change.path, oid)?;
-            workfile::restore_file(op, work_dir, &change.path, &data, kind)?;
-            let stat = disk_stat(work_dir, &change.path, op);
-            index_changes.push((change.path.clone(), Some((oid, kind, stat))));
+            let written = write_blob(repo, work_dir, &change.path, (oid, kind), op)
+                .map_err(|error| stopped(error, index_changes.len()))?;
+            index_changes.push(written);
         }
     }
     update_index(index, op, &index_changes)
+}
+
+/// Writes blob `oid` to `path` as `kind` and returns the index change that records it.
+fn write_blob(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    path: &str,
+    (oid, kind): (ObjectId, EntryKind),
+    op: &'static str,
+) -> ActionResult<IndexChange> {
+    let data = blob_data(repo, op, path, oid)?;
+    workfile::restore_file(op, work_dir, path, &data, kind)?;
+    let stat = disk_stat(work_dir, path, op);
+    Ok((path.to_owned(), Some((oid, kind, stat))))
 }
 
 pub(super) fn core_oid(oid: ObjectId, op: &'static str) -> ActionResult<rc_git_core::Oid> {

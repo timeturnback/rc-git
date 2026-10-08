@@ -85,19 +85,23 @@ pub fn discard_files(
         plan.push((path, entry));
     }
     let index = LockedIndex::acquire(&repo, OP)?;
-    let mut outcomes = Vec::with_capacity(plan.len());
-    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(plan.len());
+    let total = plan.len();
+    let mut outcomes = Vec::with_capacity(total);
+    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(total);
     for (path, entry) in plan {
         let (kind, change) = match entry {
             Plan::Restore(entry) => (
                 DiscardKind::Restored,
-                restore_entry(&repo, &work_dir, path, &entry, OP)?,
+                restore_entry(&repo, &work_dir, path, &entry, OP),
             ),
-            Plan::Delete => {
-                workfile::delete_file(OP, &work_dir, path)?;
-                (DiscardKind::Deleted, (path.clone(), None))
-            }
+            Plan::Delete => (
+                DiscardKind::Deleted,
+                workfile::delete_file(OP, &work_dir, path).map(|()| (path.clone(), None)),
+            ),
         };
+        let change = change.map_err(|error| {
+            workfile::stopped_part_way(error, outcomes.len(), total, "the index was not updated")
+        })?;
         index_changes.push(change);
         outcomes.push(DiscardOutcome {
             path: path.clone(),
@@ -127,11 +131,12 @@ fn restore_entry(
 /// Puts each of `paths` back to its state in `tree`, on disk and in `index`: a tracked file
 /// gets its blob bytes and mode written back and its index entry set to that blob, an
 /// untracked one is deleted and its index entry removed. Entries for other paths are kept.
-/// Callers refuse directory entries first.
+/// Callers refuse directory entries first. `stash push` is the one caller, so a write that fails
+/// part way says the stash already holds every change.
 ///
 /// # Errors
 /// [`ActionError::Git`] when an entry cannot be read, a file can be neither restored nor
-/// deleted, or the index cannot be written.
+/// deleted (naming how many paths were already written), or the index cannot be written.
 pub(super) fn restore_paths(
     repo: &gix::Repository,
     work_dir: &Path,
@@ -142,12 +147,19 @@ pub(super) fn restore_paths(
 ) -> ActionResult<()> {
     let mut index_changes: Vec<IndexChange> = Vec::with_capacity(paths.len());
     for path in paths {
-        if let Some(entry) = tree_entry_at(repo, op, tree, path)? {
-            index_changes.push(restore_entry(repo, work_dir, path, &entry, op)?);
-        } else {
-            workfile::delete_file(op, work_dir, path)?;
-            index_changes.push((path.clone(), None));
-        }
+        let change = match tree_entry_at(repo, op, tree, path)? {
+            Some(entry) => restore_entry(repo, work_dir, path, &entry, op),
+            None => workfile::delete_file(op, work_dir, path).map(|()| (path.clone(), None)),
+        };
+        let change = change.map_err(|error| {
+            workfile::stopped_part_way(
+                error,
+                index_changes.len(),
+                paths.len(),
+                "the stash holds every change, but the index was not updated",
+            )
+        })?;
+        index_changes.push(change);
     }
     update_index(index, op, &index_changes)
 }

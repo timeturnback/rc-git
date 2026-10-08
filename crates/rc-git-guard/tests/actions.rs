@@ -3314,3 +3314,125 @@ mod in_progress {
         );
     }
 }
+
+mod partial_writes {
+    //! A write that fails part way through a multi-path action names how far it got, so the
+    //! user learns which earlier paths already changed and what was never updated.
+
+    use rc_git_guard::Policy;
+    use rc_git_guard::actions::{ActionError, checkout_branch, discard_files, stash_push};
+    use rc_git_testkit::Fixture;
+
+    use super::explicit;
+
+    /// Makes `src` read-only, so a write to `alpha.txt` succeeds and one to `src/lib.rs`
+    /// fails. False when running as root, where the mode does not stop the write.
+    fn make_src_read_only(fx: &Fixture) -> bool {
+        fx.set_mode("src", 0o555);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "probes whether the read-only folder stops a write in this environment"
+        )]
+        let probe = std::fs::write(fx.path().join("src/probe"), b"");
+        if probe.is_ok() {
+            fx.set_mode("src", 0o755);
+            return false;
+        }
+        true
+    }
+
+    fn dirty_both(fx: &Fixture) {
+        fx.write("alpha.txt", b"dirty\n");
+        fx.write("src/lib.rs", b"dirty\n");
+    }
+
+    fn paths() -> Vec<String> {
+        vec!["alpha.txt".to_owned(), "src/lib.rs".to_owned()]
+    }
+
+    fn assert_stopped(err: &ActionError, op: &str, unchanged: &str) {
+        assert!(
+            matches!(err, ActionError::Git { op: got, name, .. } if *got == op && name == "src/lib.rs"),
+            "{err}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("ermission denied"), "{message}");
+        assert!(
+            message.contains(&format!("stopped after writing 1 of 2 paths; {unchanged}")),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_discard_that_fails_part_way_says_what_it_already_wrote() {
+        let fx = Fixture::standard();
+        dirty_both(&fx);
+        if !make_src_read_only(&fx) {
+            return;
+        }
+        let err = discard_files(fx.path(), &Policy::default(), &paths(), None).unwrap_err();
+        fx.set_mode("src", 0o755);
+
+        assert_stopped(&err, "discard", "the index was not updated");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "the first path was already restored"
+        );
+    }
+
+    #[test]
+    fn a_stash_push_that_fails_part_way_says_the_stash_was_saved() {
+        let fx = Fixture::standard();
+        dirty_both(&fx);
+        if !make_src_read_only(&fx) {
+            return;
+        }
+        let err = stash_push(
+            fx.path(),
+            &Policy::default(),
+            &paths(),
+            None,
+            explicit(),
+            None,
+        )
+        .unwrap_err();
+        fx.set_mode("src", 0o755);
+
+        assert_stopped(
+            &err,
+            "stash push",
+            "the stash holds every change, but the index was not updated",
+        );
+        assert_eq!(
+            fx.git_output(&["show", "stash@{0}:src/lib.rs"]),
+            "dirty",
+            "the stash was recorded before the restore"
+        );
+    }
+
+    #[test]
+    fn a_switch_that_fails_part_way_says_head_and_the_index_stayed() {
+        let fx = Fixture::standard();
+        let main_tip = fx.rev_parse("HEAD");
+        fx.write("alpha.txt", b"next\n");
+        fx.write("src/lib.rs", b"next\n");
+        fx.commit("Rewrite two files", "2024-02-01T00:00:00+0000");
+        fx.git(&["branch", "next"]);
+        fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        if !make_src_read_only(&fx) {
+            return;
+        }
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        fx.set_mode("src", 0o755);
+
+        assert_stopped(&err, "checkout", "HEAD and the index were not updated");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD stayed put");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"next\n",
+            "the first path was already written"
+        );
+    }
+}
