@@ -391,6 +391,9 @@ public struct RemoteStatus: Sendable, Hashable {
     public let branch: String
     public let ahead: Int
     public let behind: Int
+    /// Whether a remote with a fetch URL was resolved for the branch: `branch.<name>.remote`,
+    /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
+    /// `behind` are then 0.
     public let hasUpstream: Bool
     /// Whether the upstream is an ssh remote, as the guard parsed it. `url` cannot say:
     /// with the user removed, an scp-like `git@host:path` displays as `host:path`.

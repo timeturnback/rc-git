@@ -6,7 +6,7 @@ cpp_compat = true
 usize_is_size_t = true
 style = "both"
 documentation = true
-documentation_style = "c99"
+documentation_style = "c++"
 
 [enum]
 prefix_with_name = true

@@ -190,7 +190,9 @@ pub struct UpstreamStatus {
     pub ahead: usize,
     /// Commits on the tracking ref that the branch does not have.
     pub behind: usize,
-    /// Whether the branch has a configured upstream at all.
+    /// Whether a remote with a fetch URL was resolved for the branch: `branch.<name>.remote`,
+    /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
+    /// `behind` are then 0.
     pub has_upstream: bool,
     /// Whether the remote URL parses as ssh (`ssh://` or scp-like `user@host:path`), the
     /// transport that takes a key passphrase rather than an HTTPS token. False without an

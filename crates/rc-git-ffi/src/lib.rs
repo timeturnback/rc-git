@@ -268,7 +268,8 @@ impl Drop for RcGitTreeEntry {
     }
 }
 
-/// Children of one tree, ordered for display: directories first, then names case-insensitively.
+/// Children of one tree, ordered for display: directories first, then names
+/// ASCII-case-insensitively.
 #[repr(C)]
 pub struct RcGitTreeList {
     /// `len` entries.
@@ -2020,9 +2021,9 @@ pub unsafe extern "C" fn rcgit_commit_page_free(page: *mut RcGitCommitPage) {
 /// passed by value; mirrors the core's `CommitFilter`.
 #[repr(C)]
 pub struct RcGitCommitFilter {
-    /// Case-insensitive substring of the full message, or NULL for any.
+    /// Case-insensitive (ASCII) substring of the full message, or NULL for any.
     pub message: *const c_char,
-    /// Case-insensitive substring of the author name or email, or NULL for any.
+    /// Case-insensitive (ASCII) substring of the author name or email, or NULL for any.
     pub author: *const c_char,
     /// Whether `after` applies.
     pub has_after: bool,
@@ -4018,7 +4019,9 @@ pub struct RcGitRemoteStatus {
     pub ahead: usize,
     /// Commits on the tracking ref that the branch does not have.
     pub behind: usize,
-    /// Whether the branch has a configured upstream at all.
+    /// Whether a remote with a fetch URL was resolved for the branch: `branch.<name>.remote`,
+    /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
+    /// `behind` are then 0.
     pub has_upstream: bool,
     /// Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
     /// rather than an HTTPS token. False without an upstream.

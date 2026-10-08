@@ -9,771 +9,774 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-// Status for functions that fill an out parameter: success.
+/// Status for functions that fill an out parameter: success.
 #define RCGIT_OK 0
 
-// Status for functions that fill an out parameter: failure, see `error`.
+/// Status for functions that fill an out parameter: failure, see `error`.
 #define RCGIT_ERROR -1
 
-// Status for remote functions: the host wants credentials it did not get; see `error`.
+/// Status for remote functions: the host wants credentials it did not get; see `error`.
 #define RCGIT_AUTH_REQUIRED -2
 
-// Status for remote functions: local and remote history diverged; see `error`.
+/// Status for remote functions: local and remote history diverged; see `error`.
 #define RCGIT_DIVERGED -3
 
-// Status for remote functions over ssh: the host's key is not known; `hostkey` holds
-// `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
+/// Status for remote functions over ssh: the host's key is not known; `hostkey` holds
+/// `"<key type> <SHA256 fingerprint>"` for the user to verify, `error` the message.
 #define RCGIT_HOSTKEY_UNKNOWN -4
 
-// Status for remote functions: the caller signalled the `RcGitCancel` it passed in.
-// Nothing was left half-applied; the operation stopped between steps.
+/// Status for remote functions: the caller signalled the `RcGitCancel` it passed in.
+/// Nothing was left half-applied; the operation stopped between steps.
 #define RCGIT_CANCELLED -5
 
-// Status for commit and stash push: no author identity, since the repository's own config
-// sets no `user.name`/`user.email` and the call passed no fallback; see `error`. Ask the user
-// for one and retry with it as the fallback.
+/// Status for commit and stash push: no author identity, since the repository's own config
+/// sets no `user.name`/`user.email` and the call passed no fallback; see `error`. Ask the user
+/// for one and retry with it as the fallback.
 #define RCGIT_IDENTITY_REQUIRED -6
 
-// Namespace of a reference.
+/// Namespace of a reference.
 typedef enum RcGitRefKind {
-  // `refs/heads/*`
+  /// `refs/heads/*`
   RcGitRefKind_LocalBranch = 0,
-  // `refs/remotes/*`
+  /// `refs/remotes/*`
   RcGitRefKind_RemoteBranch = 1,
-  // `refs/tags/*`
+  /// `refs/tags/*`
   RcGitRefKind_Tag = 2,
-  // Anything else.
+  /// Anything else.
   RcGitRefKind_Other = 3,
 } RcGitRefKind;
 
-// What a tree entry points at.
+/// What a tree entry points at.
 typedef enum RcGitEntryKind {
-  // A directory.
+  /// A directory.
   RcGitEntryKind_Tree = 0,
-  // A regular file.
+  /// A regular file.
   RcGitEntryKind_Blob = 1,
-  // A file with the executable bit.
+  /// A file with the executable bit.
   RcGitEntryKind_ExecutableBlob = 2,
-  // A symbolic link; the blob holds the target path.
+  /// A symbolic link; the blob holds the target path.
   RcGitEntryKind_Symlink = 3,
-  // A submodule; the id is a commit in another repository.
+  /// A submodule; the id is a commit in another repository.
   RcGitEntryKind_Submodule = 4,
 } RcGitEntryKind;
 
-// What a blob read produced.
+/// What a blob read produced.
 typedef enum RcGitBlobKind {
-  // `data` and `line_starts` are filled.
+  /// `data` and `line_starts` are filled.
   RcGitBlobKind_Text = 0,
-  // Binary; only `size` is filled.
+  /// Binary; only `size` is filled.
   RcGitBlobKind_Binary = 1,
-  // Over the limit; `size` and `limit` are filled, nothing was decoded.
+  /// Over the limit; `size` and `limit` are filled, nothing was decoded.
   RcGitBlobKind_TooLarge = 2,
 } RcGitBlobKind;
 
-// What happened to one path between two trees.
+/// What happened to one path between two trees.
 typedef enum RcGitChangeKind {
-  // Exists only in the new tree.
+  /// Exists only in the new tree.
   RcGitChangeKind_Added = 0,
-  // Exists only in the old tree.
+  /// Exists only in the old tree.
   RcGitChangeKind_Deleted = 1,
-  // Exists in both trees with different content or mode.
+  /// Exists in both trees with different content or mode.
   RcGitChangeKind_Modified = 2,
-  // Content moved from `source_path`.
+  /// Content moved from `source_path`.
   RcGitChangeKind_Renamed = 3,
 } RcGitChangeKind;
 
-// What a blob diff produced.
+/// What a blob diff produced.
 typedef enum RcGitBlobDiffKind {
-  // `hunks` is filled; empty means the blobs are identical.
+  /// `hunks` is filled; empty means the blobs are identical.
   RcGitBlobDiffKind_Text = 0,
-  // One side is binary; `old_size` and `new_size` are filled.
+  /// One side is binary; `old_size` and `new_size` are filled.
   RcGitBlobDiffKind_Binary = 1,
-  // One side is over the limit; `size` and `limit` are filled.
+  /// One side is over the limit; `size` and `limit` are filled.
   RcGitBlobDiffKind_TooLarge = 2,
 } RcGitBlobDiffKind;
 
-// The role of one line in a diff hunk.
+/// The role of one line in a diff hunk.
 typedef enum RcGitDiffLineKind {
-  // Unchanged, shown for context.
+  /// Unchanged, shown for context.
   RcGitDiffLineKind_Context = 0,
-  // Present only in the new blob.
+  /// Present only in the new blob.
   RcGitDiffLineKind_Added = 1,
-  // Present only in the old blob.
+  /// Present only in the old blob.
   RcGitDiffLineKind_Removed = 2,
 } RcGitDiffLineKind;
 
-// The terminator a diff line had before it was stripped.
+/// The terminator a diff line had before it was stripped.
 typedef enum RcGitLineEnd {
-  // `\n`.
+  /// `\n`.
   RcGitLineEnd_Lf = 0,
-  // `\r\n`.
+  /// `\r\n`.
   RcGitLineEnd_CrLf = 1,
-  // None: the last line of a blob that does not end in a newline.
+  /// None: the last line of a blob that does not end in a newline.
   RcGitLineEnd_None = 2,
 } RcGitLineEnd;
 
-// What a blame produced.
+/// What a blame produced.
 typedef enum RcGitBlameKind {
-  // `ranges` is filled.
+  /// `ranges` is filled.
   RcGitBlameKind_Ranges = 0,
-  // The file is over the limit; `size` and `limit` are filled, no history was walked.
+  /// The file is over the limit; `size` and `limit` are filled, no history was walked.
   RcGitBlameKind_TooLarge = 1,
 } RcGitBlameKind;
 
-// How a file on disk relates to the same path in the compared tree.
+/// How a file on disk relates to the same path in the compared tree.
 typedef enum RcGitWorktreeStatus {
-  // Content and kind match the tree entry.
+  /// Content and kind match the tree entry.
   RcGitWorktreeStatus_Unchanged = 0,
-  // The path exists in both but content or kind differs.
+  /// The path exists in both but content or kind differs.
   RcGitWorktreeStatus_Modified = 1,
-  // The path exists only on disk.
+  /// The path exists only on disk.
   RcGitWorktreeStatus_Untracked = 2,
-  // The path exists only on disk and matches an ignore rule.
+  /// The path exists only on disk and matches an ignore rule.
   RcGitWorktreeStatus_Ignored = 3,
-  // The path exists only in the compared tree; the file was deleted from disk.
+  /// The path exists only in the compared tree; the file was deleted from disk.
   RcGitWorktreeStatus_Deleted = 4,
 } RcGitWorktreeStatus;
 
-// What a highlighted region means, for the view to color.
+/// What a highlighted region means, for the view to color.
 typedef enum RcGitHighlightClass {
-  // `@attribute`, decorators, derives.
+  /// `@attribute`, decorators, derives.
   RcGitHighlightClass_Attribute = 0,
-  // Comments.
+  /// Comments.
   RcGitHighlightClass_Comment = 1,
-  // Named constants and enum cases.
+  /// Named constants and enum cases.
   RcGitHighlightClass_Constant = 2,
-  // Emphasized prose in markdown.
+  /// Emphasized prose in markdown.
   RcGitHighlightClass_Emphasis = 3,
-  // Function and method names.
+  /// Function and method names.
   RcGitHighlightClass_Function = 4,
-  // Markdown headings.
+  /// Markdown headings.
   RcGitHighlightClass_Heading = 5,
-  // Language keywords.
+  /// Language keywords.
   RcGitHighlightClass_Keyword = 6,
-  // Link destinations and references.
+  /// Link destinations and references.
   RcGitHighlightClass_Link = 7,
-  // Numeric literals.
+  /// Numeric literals.
   RcGitHighlightClass_Number = 8,
-  // Operators.
+  /// Operators.
   RcGitHighlightClass_Operator = 9,
-  // Object keys and struct fields.
+  /// Object keys and struct fields.
   RcGitHighlightClass_Property = 10,
-  // Brackets and delimiters.
+  /// Brackets and delimiters.
   RcGitHighlightClass_Punctuation = 11,
-  // String and character literals.
+  /// String and character literals.
   RcGitHighlightClass_String = 12,
-  // Strongly emphasized prose in markdown.
+  /// Strongly emphasized prose in markdown.
   RcGitHighlightClass_Strong = 13,
-  // Type names.
+  /// Type names.
   RcGitHighlightClass_Type = 14,
-  // Variables and parameters.
+  /// Variables and parameters.
   RcGitHighlightClass_Variable = 15,
 } RcGitHighlightClass;
 
-// The policy's answer for a proposed action.
+/// The policy's answer for a proposed action.
 typedef enum RcGitDecisionKind {
-  // Run it; no challenge.
+  /// Run it; no challenge.
   RcGitDecisionKind_Allow = 0,
-  // Run it after the user answers the challenge.
+  /// Run it after the user answers the challenge.
   RcGitDecisionKind_Confirm = 1,
-  // Never run it from rc-git; `reason` says why.
+  /// Never run it from rc-git; `reason` says why.
   RcGitDecisionKind_Deny = 2,
 } RcGitDecisionKind;
 
-// How much an action can lose.
+/// How much an action can lose.
 typedef enum RcGitRisk {
-  // Cannot lose work.
+  /// Cannot lose work.
   RcGitRisk_Safe = 0,
-  // Loses something git still remembers.
+  /// Loses something git still remembers.
   RcGitRisk_Recoverable = 1,
-  // Loses something nothing remembers.
+  /// Loses something nothing remembers.
   RcGitRisk_Destructive = 2,
 } RcGitRisk;
 
-// A cancellation flag for one remote operation. Opaque: create with
-// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
-// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
-// once the operation has returned.
+/// A cancellation flag for one remote operation. Opaque: create with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
+/// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
+/// once the operation has returned.
 typedef struct RcGitCancel RcGitCancel;
 
-// An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
+/// An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
 typedef struct RcGitRepo RcGitRepo;
 
-// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
+/// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 typedef struct RcGitOid {
-  // Hash bytes, zero-padded.
+  /// Hash bytes, zero-padded.
   uint8_t bytes[32];
-  // Number of meaningful bytes.
+  /// Number of meaningful bytes.
   uint8_t len;
 } RcGitOid;
 
-// Where `HEAD` points.
+/// Where `HEAD` points.
 typedef struct RcGitHead {
-  // Full branch name such as `refs/heads/main`, or NULL when detached.
+  /// Full branch name such as `refs/heads/main`, or NULL when detached.
   char *ref_name;
-  // False on an unborn branch, in which case `target` is meaningless.
+  /// False on an unborn branch, in which case `target` is meaningless.
   bool has_target;
-  // The commit `HEAD` resolves to.
+  /// The commit `HEAD` resolves to.
   struct RcGitOid target;
 } RcGitHead;
 
-// A reference and the object it finally points to.
+/// A reference and the object it finally points to.
 typedef struct RcGitRef {
-  // Full name, e.g. `refs/heads/main`.
+  /// Full name, e.g. `refs/heads/main`.
   char *full_name;
-  // Name without the namespace, e.g. `main`, `origin/main`, `v1.0`.
+  /// Name without the namespace, e.g. `main`, `origin/main`, `v1.0`.
   char *short_name;
-  // Namespace classification.
+  /// Namespace classification.
   enum RcGitRefKind kind;
-  // Peeled target object.
+  /// Peeled target object.
   struct RcGitOid target;
-  // Whether the stored name is valid UTF-8. The core repairs a name that is not, so both
-  // names arrive valid, with U+FFFD replacements, and must not be passed back as a ref.
+  /// Whether the stored name is valid UTF-8. The core repairs a name that is not, so both
+  /// names arrive valid, with U+FFFD replacements, and must not be passed back as a ref.
   bool has_exact_name;
 } RcGitRef;
 
-// A reference whose target could not be read.
+/// A reference whose target could not be read.
 typedef struct RcGitBrokenRef {
-  // Full name of the reference.
+  /// Full name of the reference.
   char *full_name;
-  // Why it could not be resolved.
+  /// Why it could not be resolved.
   char *error;
 } RcGitBrokenRef;
 
-// Every reference in the repository.
+/// Every reference in the repository.
 typedef struct RcGitRefList {
-  // `len` resolved references.
+  /// `len` resolved references.
   struct RcGitRef *refs;
-  // Number of entries in `refs`.
+  /// Number of entries in `refs`.
   size_t len;
-  // `broken_len` references that failed to resolve; normally none.
+  /// `broken_len` references that failed to resolve; normally none.
   struct RcGitBrokenRef *broken;
-  // Number of entries in `broken`.
+  /// Number of entries in `broken`.
   size_t broken_len;
 } RcGitRefList;
 
-// One child of a tree.
+/// One child of a tree.
 typedef struct RcGitTreeEntry {
-  // File name as stored; may be non-UTF-8.
+  /// File name as stored; may be non-UTF-8.
   char *name;
-  // Id of the child object.
+  /// Id of the child object.
   struct RcGitOid oid;
-  // What the child is.
+  /// What the child is.
   enum RcGitEntryKind kind;
 } RcGitTreeEntry;
 
-// Children of one tree, ordered for display: directories first, then names case-insensitively.
+/// Children of one tree, ordered for display: directories first, then names
+/// ASCII-case-insensitively.
 typedef struct RcGitTreeList {
-  // `len` entries.
+  /// `len` entries.
   struct RcGitTreeEntry *entries;
-  // Number of entries.
+  /// Number of entries.
   size_t len;
 } RcGitTreeList;
 
-// File contents.
+/// File contents.
 typedef struct RcGitBlob {
-  // Which fields are meaningful.
+  /// Which fields are meaningful.
   enum RcGitBlobKind kind;
-  // Size of the blob in bytes.
+  /// Size of the blob in bytes.
   uint64_t size;
-  // The limit passed to `rcgit_blob_read`.
+  /// The limit passed to `rcgit_blob_read`.
   uint64_t limit;
-  // `data_len` bytes of content, not NUL-terminated. Text only.
+  /// `data_len` bytes of content, not NUL-terminated. Text only.
   uint8_t *data;
-  // Length of `data`.
+  /// Length of `data`.
   size_t data_len;
-  // `line_count` byte offsets where lines begin. Text only.
+  /// `line_count` byte offsets where lines begin. Text only.
   uint32_t *line_starts;
-  // Length of `line_starts`.
+  /// Length of `line_starts`.
   size_t line_count;
-  // Whether `data` is valid UTF-8, so decoding it is lossless. Text only; checked in the
-  // core so no caller re-scans the bytes.
+  /// Whether `data` is valid UTF-8, so decoding it is lossless. Text only; checked in the
+  /// core so no caller re-scans the bytes.
   bool valid_utf8;
 } RcGitBlob;
 
-// The parts of a commit a list shows.
+/// The parts of a commit a list shows.
 typedef struct RcGitCommit {
-  // The commit id.
+  /// The commit id.
   struct RcGitOid oid;
-  // `parent_count` parent ids, first parent first.
+  /// `parent_count` parent ids, first parent first.
   struct RcGitOid *parents;
-  // Number of parents.
+  /// Number of parents.
   size_t parent_count;
-  // Author name.
+  /// Author name.
   char *author_name;
-  // Author email.
+  /// Author email.
   char *author_email;
-  // Author time, seconds since the Unix epoch.
+  /// Author time, seconds since the Unix epoch.
   int64_t author_time;
-  // Author timezone, seconds east of UTC.
+  /// Author timezone, seconds east of UTC.
   int32_t author_offset;
-  // First paragraph of the message.
+  /// First paragraph of the message.
   char *title;
 } RcGitCommit;
 
-// A page of commits.
+/// A page of commits.
 typedef struct RcGitCommitList {
-  // `len` commits, newest first.
+  /// `len` commits, newest first.
   struct RcGitCommit *commits;
-  // Number of commits.
+  /// Number of commits.
   size_t len;
 } RcGitCommitList;
 
-// Everything a commit detail view shows beyond the summary.
+/// Everything a commit detail view shows beyond the summary.
 typedef struct RcGitCommitDetail {
-  // The list-view parts of the commit. Owned by this struct; never freed separately.
+  /// The list-view parts of the commit. Owned by this struct; never freed separately.
   struct RcGitCommit summary;
-  // Message body after the title. Empty when the message is only a title.
+  /// Message body after the title. Empty when the message is only a title.
   char *body;
-  // Committer name.
+  /// Committer name.
   char *committer_name;
-  // Committer email.
+  /// Committer email.
   char *committer_email;
-  // Committer time, seconds since the Unix epoch.
+  /// Committer time, seconds since the Unix epoch.
   int64_t committer_time;
-  // Committer timezone, seconds east of UTC.
+  /// Committer timezone, seconds east of UTC.
   int32_t committer_offset;
-  // The root tree of the commit.
+  /// The root tree of the commit.
   struct RcGitOid tree;
 } RcGitCommitDetail;
 
-// One page of a filtered history walk.
+/// One page of a filtered history walk.
 typedef struct RcGitCommitPage {
-  // `len` matching commits, newest first.
+  /// `len` matching commits, newest first.
   struct RcGitCommit *commits;
-  // Number of matching commits.
+  /// Number of matching commits.
   size_t len;
-  // How many commits the call examined past its `scan_skip`.
+  /// How many commits the call examined past its `scan_skip`.
   size_t scanned;
-  // True when the walk reached the end of history within this call.
+  /// True when the walk reached the end of history within this call.
   bool complete;
 } RcGitCommitPage;
 
-// One page of a filtered history walk. Caller-owned input, passed by value.
+/// One page of a filtered history walk. Caller-owned input, passed by value.
 typedef struct RcGitScanPage {
-  // Commits of the walk to pass over before this page: the previous pages' `scanned`
-  // summed, never a match count.
+  /// Commits of the walk to pass over before this page: the previous pages' `scanned`
+  /// summed, never a match count.
   size_t scan_skip;
-  // Most matches the page returns.
+  /// Most matches the page returns.
   size_t limit;
-  // Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
-  // page advances.
+  /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
+  /// page advances.
   size_t max_scan;
 } RcGitScanPage;
 
-// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
-// passed by value; mirrors the core's `CommitFilter`.
+/// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
+/// passed by value; mirrors the core's `CommitFilter`.
 typedef struct RcGitCommitFilter {
-  // Case-insensitive substring of the full message, or NULL for any.
+  /// Case-insensitive (ASCII) substring of the full message, or NULL for any.
   const char *message;
-  // Case-insensitive substring of the author name or email, or NULL for any.
+  /// Case-insensitive (ASCII) substring of the author name or email, or NULL for any.
   const char *author;
-  // Whether `after` applies.
+  /// Whether `after` applies.
   bool has_after;
-  // Earliest committer time, seconds since the Unix epoch. Also terminates the walk.
+  /// Earliest committer time, seconds since the Unix epoch. Also terminates the walk.
   int64_t after;
-  // Whether `before` applies.
+  /// Whether `before` applies.
   bool has_before;
-  // Latest committer time, seconds since the Unix epoch.
+  /// Latest committer time, seconds since the Unix epoch.
   int64_t before;
 } RcGitCommitFilter;
 
-// One changed file between two trees.
+/// One changed file between two trees.
 typedef struct RcGitTreeChange {
-  // What happened.
+  /// What happened.
   enum RcGitChangeKind kind;
-  // Path in the new tree, or in the old tree for a deletion.
+  /// Path in the new tree, or in the old tree for a deletion.
   char *path;
-  // Where the content came from; NULL unless renamed.
+  /// Where the content came from; NULL unless renamed.
   char *source_path;
-  // False for additions, in which case `old_id` is meaningless.
+  /// False for additions, in which case `old_id` is meaningless.
   bool has_old;
-  // The blob before the change.
+  /// The blob before the change.
   struct RcGitOid old_id;
-  // False for deletions, in which case `new_id` is meaningless.
+  /// False for deletions, in which case `new_id` is meaningless.
   bool has_new;
-  // The blob after the change.
+  /// The blob after the change.
   struct RcGitOid new_id;
-  // What the entry is after the change, or was before it for deletions.
+  /// What the entry is after the change, or was before it for deletions.
   enum RcGitEntryKind entry;
 } RcGitTreeChange;
 
-// Every changed file between two trees, sorted by path.
+/// Every changed file between two trees, sorted by path.
 typedef struct RcGitTreeChangeList {
-  // `len` changes.
+  /// `len` changes.
   struct RcGitTreeChange *changes;
-  // Number of changes.
+  /// Number of changes.
   size_t len;
 } RcGitTreeChangeList;
 
-// A line of a diff hunk, without its line terminator.
+/// A line of a diff hunk, without its line terminator.
 typedef struct RcGitDiffLine {
-  // Context, added, or removed.
+  /// Context, added, or removed.
   enum RcGitDiffLineKind kind;
-  // The bytes of the line.
+  /// The bytes of the line.
   char *text;
-  // How the line ended in its blob.
+  /// How the line ended in its blob.
   enum RcGitLineEnd eol;
 } RcGitDiffLine;
 
-// A run of changed lines with its surrounding context.
+/// A run of changed lines with its surrounding context.
 typedef struct RcGitDiffHunk {
-  // 1-based first line of the hunk in the old blob.
+  /// 1-based first line of the hunk in the old blob.
   uint32_t old_start;
-  // Number of old-blob lines the hunk covers.
+  /// Number of old-blob lines the hunk covers.
   uint32_t old_lines;
-  // 1-based first line of the hunk in the new blob.
+  /// 1-based first line of the hunk in the new blob.
   uint32_t new_start;
-  // Number of new-blob lines the hunk covers.
+  /// Number of new-blob lines the hunk covers.
   uint32_t new_lines;
-  // `line_count` lines, old and new interleaved.
+  /// `line_count` lines, old and new interleaved.
   struct RcGitDiffLine *lines;
-  // Number of lines.
+  /// Number of lines.
   size_t line_count;
 } RcGitDiffHunk;
 
-// Line diff between two blobs.
+/// Line diff between two blobs.
 typedef struct RcGitBlobDiff {
-  // Which fields are meaningful.
+  /// Which fields are meaningful.
   enum RcGitBlobDiffKind kind;
-  // `hunk_count` hunks. Text only.
+  /// `hunk_count` hunks. Text only.
   struct RcGitDiffHunk *hunks;
-  // Number of hunks.
+  /// Number of hunks.
   size_t hunk_count;
-  // Size of the old blob, 0 when absent. Binary only.
+  /// Size of the old blob, 0 when absent. Binary only.
   uint64_t old_size;
-  // Size of the new blob, 0 when absent. Binary only.
+  /// Size of the new blob, 0 when absent. Binary only.
   uint64_t new_size;
-  // Size of the side that exceeded the limit. `TooLarge` only.
+  /// Size of the side that exceeded the limit. `TooLarge` only.
   uint64_t size;
-  // The limit that was exceeded. `TooLarge` only.
+  /// The limit that was exceeded. `TooLarge` only.
   uint64_t limit;
 } RcGitBlobDiff;
 
-// A run of consecutive lines introduced by one commit.
+/// A run of consecutive lines introduced by one commit.
 typedef struct RcGitBlameRange {
-  // The commit that introduced the lines.
+  /// The commit that introduced the lines.
   struct RcGitOid commit;
-  // 1-based first line of the run in the blamed file.
+  /// 1-based first line of the run in the blamed file.
   uint32_t start_line;
-  // Number of lines in the run.
+  /// Number of lines in the run.
   uint32_t line_count;
-  // The walk stopped at the `since` floor before finding where these lines came from:
-  // `commit` is the first commit older than the floor, and the lines are at least that old.
+  /// The walk stopped at the `since` floor before finding where these lines came from:
+  /// `commit` is the first commit older than the floor, and the lines are at least that old.
   bool boundary;
 } RcGitBlameRange;
 
-// Every blame range of one file, ordered by line number.
+/// Every blame range of one file, ordered by line number.
 typedef struct RcGitBlameList {
-  // Which fields are meaningful.
+  /// Which fields are meaningful.
   enum RcGitBlameKind kind;
-  // `len` ranges. `Ranges` only.
+  /// `len` ranges. `Ranges` only.
   struct RcGitBlameRange *ranges;
-  // Number of ranges.
+  /// Number of ranges.
   size_t len;
-  // Size of the file at the tip in bytes. `TooLarge` only.
+  /// Size of the file at the tip in bytes. `TooLarge` only.
   uint64_t size;
-  // The limit passed to `rcgit_blame`.
+  /// The limit passed to `rcgit_blame`.
   uint64_t limit;
 } RcGitBlameList;
 
-// One entry of a working-tree directory listing.
+/// One entry of a working-tree directory listing.
 typedef struct RcGitWorktreeEntry {
-  // File name as stored on disk; may be non-UTF-8.
+  /// File name as stored on disk; may be non-UTF-8.
   char *name;
-  // What the entry is on disk.
+  /// What the entry is on disk.
   enum RcGitEntryKind kind;
-  // How it relates to the compared tree.
+  /// How it relates to the compared tree.
   enum RcGitWorktreeStatus status;
-  // False when the compared tree has no blob at this path.
+  /// False when the compared tree has no blob at this path.
   bool has_oid;
-  // The blob at the same path in the compared tree.
+  /// The blob at the same path in the compared tree.
   struct RcGitOid oid;
-  // Size in bytes; 0 for directories.
+  /// Size in bytes; 0 for directories.
   uint64_t size;
 } RcGitWorktreeEntry;
 
-// A working-tree directory: entries on disk plus tree entries missing from disk.
+/// A working-tree directory: entries on disk plus tree entries missing from disk.
 typedef struct RcGitWorktreeList {
-  // `len` entries on disk, ordered for display.
+  /// `len` entries on disk, ordered for display.
   struct RcGitWorktreeEntry *entries;
-  // Number of entries.
+  /// Number of entries.
   size_t len;
-  // `missing_len` tree entries with no counterpart on disk: deleted files.
+  /// `missing_len` tree entries with no counterpart on disk: deleted files.
   struct RcGitTreeEntry *missing;
-  // Number of missing entries.
+  /// Number of missing entries.
   size_t missing_len;
 } RcGitWorktreeList;
 
-// One changed path from a full working-tree scan.
+/// One changed path from a full working-tree scan.
 typedef struct RcGitStatusEntry {
-  // Repository-relative path with `/` separators; may be non-UTF-8.
+  /// Repository-relative path with `/` separators; may be non-UTF-8.
   char *path;
-  // The kind on disk; the tree's kind for a deleted path.
+  /// The kind on disk; the tree's kind for a deleted path.
   enum RcGitEntryKind kind;
-  // Always modified, untracked, or deleted; clean and ignored paths are not listed.
+  /// Always modified, untracked, or deleted; clean and ignored paths are not listed.
   enum RcGitWorktreeStatus status;
-  // False when the compared tree has no blob at this path.
+  /// False when the compared tree has no blob at this path.
   bool has_oid;
-  // The blob at the same path in the compared tree.
+  /// The blob at the same path in the compared tree.
   struct RcGitOid oid;
-  // Size on disk in bytes; 0 for deleted files.
+  /// Size on disk in bytes; 0 for deleted files.
   uint64_t size;
 } RcGitStatusEntry;
 
-// Every changed path in the working tree, with the walk's own cost accounting.
+/// Every changed path in the working tree, with the walk's own cost accounting.
 typedef struct RcGitStatusList {
-  // `len` changed paths, sorted by path.
+  /// `len` changed paths, sorted by path.
   struct RcGitStatusEntry *entries;
-  // Number of entries.
+  /// Number of entries.
   size_t len;
-  // Entries visited before the walk finished or hit its cap.
+  /// Entries visited before the walk finished or hit its cap.
   size_t scanned;
-  // True when the walk stopped at the cap before covering the whole tree.
+  /// True when the walk stopped at the cap before covering the whole tree.
   bool truncated;
 } RcGitStatusList;
 
-// One file on disk from a full working-tree listing.
+/// One file on disk from a full working-tree listing.
 typedef struct RcGitWorktreeFile {
-  // Repository-relative path with `/` separators; may be non-UTF-8.
+  /// Repository-relative path with `/` separators; may be non-UTF-8.
   char *path;
-  // What the file is on disk: a blob, an executable blob, or a symlink.
+  /// What the file is on disk: a blob, an executable blob, or a symlink.
   enum RcGitEntryKind kind;
 } RcGitWorktreeFile;
 
-// Every file on disk, with the walk's own cost accounting.
+/// Every file on disk, with the walk's own cost accounting.
 typedef struct RcGitWorktreeFileList {
-  // `len` files, sorted by path.
+  /// `len` files, sorted by path.
   struct RcGitWorktreeFile *files;
-  // Number of files.
+  /// Number of files.
   size_t len;
-  // Entries visited before the walk finished or hit its cap.
+  /// Entries visited before the walk finished or hit its cap.
   size_t scanned;
-  // True when the walk stopped at the cap before covering the whole tree.
+  /// True when the walk stopped at the cap before covering the whole tree.
   bool truncated;
 } RcGitWorktreeFileList;
 
-// One stashed change set, as `git stash list` shows it.
+/// One stashed change set, as `git stash list` shows it.
 typedef struct RcGitStashEntry {
-  // Position in the stash, so 0 is `stash@{0}`, the newest.
+  /// Position in the stash, so 0 is `stash@{0}`, the newest.
   size_t index;
-  // The stash commit.
+  /// The stash commit.
   struct RcGitOid oid;
-  // The reflog message, e.g. `WIP on main: 1a2b3c4 Subject`.
+  /// The reflog message, e.g. `WIP on main: 1a2b3c4 Subject`.
   char *message;
 } RcGitStashEntry;
 
-// Every stash entry, newest first.
+/// Every stash entry, newest first.
 typedef struct RcGitStashList {
-  // `len` stash entries, newest first.
+  /// `len` stash entries, newest first.
   struct RcGitStashEntry *entries;
-  // Number of entries.
+  /// Number of entries.
   size_t len;
 } RcGitStashList;
 
-// One highlighted region: byte offsets into the highlighted data, half-open.
+/// One highlighted region: byte offsets into the highlighted data, half-open.
 typedef struct RcGitHighlightSpan {
-  // First byte of the region.
+  /// First byte of the region.
   uint32_t start;
-  // One past the last byte.
+  /// One past the last byte.
   uint32_t end;
-  // What to color it as.
+  /// What to color it as.
   enum RcGitHighlightClass kind;
 } RcGitHighlightSpan;
 
-// Every highlight span of one file, ordered by start.
+/// Every highlight span of one file, ordered by start.
 typedef struct RcGitHighlightList {
-  // `len` spans.
+  /// `len` spans.
   struct RcGitHighlightSpan *spans;
-  // Number of spans.
+  /// Number of spans.
   size_t len;
 } RcGitHighlightList;
 
-// One clickable region of a source file and the module it leads to: byte offsets into the
-// data that was read, half-open. The specifier is a range of that same data, so no string
-// crosses the boundary.
+/// One clickable region of a source file and the module it leads to: byte offsets into the
+/// data that was read, half-open. The specifier is a range of that same data, so no string
+/// crosses the boundary.
 typedef struct RcGitImportLink {
-  // First byte of the clickable region.
+  /// First byte of the clickable region.
   uint32_t start;
-  // One past its last byte.
+  /// One past its last byte.
   uint32_t end;
-  // First byte of the module specifier, as written between the quotes.
+  /// First byte of the module specifier, as written between the quotes.
   uint32_t specifier_start;
-  // One past the specifier's last byte.
+  /// One past the specifier's last byte.
   uint32_t specifier_end;
 } RcGitImportLink;
 
-// Every import link of one file, ordered by start and never overlapping.
+/// Every import link of one file, ordered by start and never overlapping.
 typedef struct RcGitImportLinkList {
-  // `len` links.
+  /// `len` links.
   struct RcGitImportLink *links;
-  // Number of links.
+  /// Number of links.
   size_t len;
 } RcGitImportLinkList;
 
-// What the front end must collect before an action may run. Fields beyond `kind` are
-// meaningful only for the kinds their comments name.
+/// What the front end must collect before an action may run. Fields beyond `kind` are
+/// meaningful only for the kinds their comments name.
 typedef struct RcGitGuardDecision {
-  // Allow, Confirm, or Deny.
+  /// Allow, Confirm, or Deny.
   enum RcGitDecisionKind kind;
-  // How much the action can lose. Confirm only.
+  /// How much the action can lose. Confirm only.
   enum RcGitRisk risk;
-  // One sentence saying what will happen. Confirm only.
+  /// One sentence saying what will happen. Confirm only.
   char *summary;
-  // Text the user must type exactly, or NULL when a plain confirm button is enough.
-  // Confirm only.
+  /// Text the user must type exactly, or NULL when a plain confirm button is enough.
+  /// Confirm only.
   char *typed_phrase;
-  // Whether a backup ref is written before the action runs. Confirm only.
+  /// Whether a backup ref is written before the action runs. Confirm only.
   bool backup_ref;
-  // Why the action is refused. Deny only.
+  /// Why the action is refused. Deny only.
   char *reason;
-  // Whether every commit of the branch is reachable elsewhere. Branch deletion only.
+  /// Whether every commit of the branch is reachable elsewhere. Branch deletion only.
   bool merged;
 } RcGitGuardDecision;
 
-// What a branch switch did. Plain data, no free function.
+/// What a branch switch did. Plain data, no free function.
 typedef struct RcGitCheckoutOutcome {
-  // The commit `HEAD` resolves to afterwards.
+  /// The commit `HEAD` resolves to afterwards.
   struct RcGitOid new_head;
-  // Files the working tree changed.
+  /// Files the working tree changed.
   size_t files_changed;
-  // Whether `HEAD` was already on this branch, so nothing was written.
+  /// Whether `HEAD` was already on this branch, so nothing was written.
   bool already_on_branch;
 } RcGitCheckoutOutcome;
 
-// A commit identity: `user.name` and `user.email`.
+/// A commit identity: `user.name` and `user.email`.
 typedef struct RcGitIdentity {
-  // `user.name`.
+  /// `user.name`.
   char *name;
-  // `user.email`.
+  /// `user.email`.
   char *email;
 } RcGitIdentity;
 
-// The identity a commit or stash records when the repository's own config sets none.
-// Caller-owned input: nothing here is freed by rc-git.
+/// The identity a commit or stash records when the repository's own config sets none.
+/// Caller-owned input: nothing here is freed by rc-git.
 typedef struct RcGitFallbackIdentity {
-  // `user.name`, NUL-terminated.
+  /// `user.name`, NUL-terminated.
   const char *name;
-  // `user.email`, NUL-terminated.
+  /// `user.email`, NUL-terminated.
   const char *email;
 } RcGitFallbackIdentity;
 
-// One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
+/// One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
 typedef struct RcGitHunkStamp {
-  // 1-based first line of the hunk on the tree side.
+  /// 1-based first line of the hunk on the tree side.
   uint32_t old_start;
-  // Lines the hunk covers on the tree side, context included.
+  /// Lines the hunk covers on the tree side, context included.
   uint32_t old_lines;
-  // 1-based first line of the hunk on the disk side.
+  /// 1-based first line of the hunk on the disk side.
   uint32_t new_start;
-  // Lines the hunk covers on the disk side, context included.
+  /// Lines the hunk covers on the disk side, context included.
   uint32_t new_lines;
 } RcGitHunkStamp;
 
-// One file of a commit selection. Caller-owned input: nothing here is freed by rc-git.
+/// One file of a commit selection. Caller-owned input: nothing here is freed by rc-git.
 typedef struct RcGitCommitFile {
-  // Repository-relative path, NUL-terminated.
+  /// Repository-relative path, NUL-terminated.
   const char *path;
-  // NULL with `hunk_count` 0 commits the whole file; non-NULL commits only these hunks, and
-  // an empty list is refused. NULL with a nonzero count is an error.
+  /// NULL with `hunk_count` 0 commits the whole file; non-NULL commits only these hunks, and
+  /// an empty list is refused. NULL with a nonzero count is an error.
   const struct RcGitHunkStamp *hunks;
-  // Number of entries behind `hunks`.
+  /// Number of entries behind `hunks`.
   size_t hunk_count;
 } RcGitCommitFile;
 
-// What `rcgit_guard_commit` commits. Caller-owned input: nothing here is freed by rc-git.
+/// What `rcgit_guard_commit` commits. Caller-owned input: nothing here is freed by rc-git.
 typedef struct RcGitCommitRequest {
-  // The commit message, NUL-terminated.
+  /// The commit message, NUL-terminated.
   const char *message;
-  // Recorded only when the repository's own config sets no identity, or NULL for none.
+  /// Recorded only when the repository's own config sets no identity, or NULL for none.
   const struct RcGitFallbackIdentity *fallback;
-  // The commit the change list was built against, or NULL on an unborn branch.
+  /// The commit the change list was built against, or NULL on an unborn branch.
   const struct RcGitOid *expected_head;
-  // The selected files.
+  /// The selected files.
   const struct RcGitCommitFile *files;
-  // Number of entries behind `files`.
+  /// Number of entries behind `files`.
   size_t file_count;
 } RcGitCommitRequest;
 
-// What a completed commit produced.
+/// What a completed commit produced.
 typedef struct RcGitCommitResult {
-  // The new commit.
+  /// The new commit.
   struct RcGitOid oid;
-  // Short name of the branch that advanced.
+  /// Short name of the branch that advanced.
   char *branch;
 } RcGitCommitResult;
 
-// What `rcgit_guard_stash_push` stashes. Caller-owned input: nothing here is freed by
-// rc-git.
+/// What `rcgit_guard_stash_push` stashes. Caller-owned input: nothing here is freed by
+/// rc-git.
 typedef struct RcGitStashRequest {
-  // Repository-relative paths, each NUL-terminated and non-NULL.
+  /// Repository-relative paths, each NUL-terminated and non-NULL.
   const char *const *paths;
-  // Number of entries behind `paths`.
+  /// Number of entries behind `paths`.
   size_t path_count;
-  // The stash message, or NULL for git's default.
+  /// The stash message, or NULL for git's default.
   const char *message;
-  // Recorded only when the repository's own config sets no identity, or NULL for none.
+  /// Recorded only when the repository's own config sets no identity, or NULL for none.
   const struct RcGitFallbackIdentity *fallback;
 } RcGitStashRequest;
 
-// Where the checked-out branch pushes and pulls, as of the last fetch. Free with
-// `rcgit_remote_status_free`.
+/// Where the checked-out branch pushes and pulls, as of the last fetch. Free with
+/// `rcgit_remote_status_free`.
 typedef struct RcGitRemoteStatus {
-  // Upstream remote name, e.g. `origin`. Empty when `has_upstream` is false.
+  /// Upstream remote name, e.g. `origin`. Empty when `has_upstream` is false.
   char *remote;
-  // Fetch URL of that remote, userinfo removed.
+  /// Fetch URL of that remote, userinfo removed.
   char *url;
-  // Host (with port when present) parsed from the URL — the credential key.
+  /// Host (with port when present) parsed from the URL — the credential key.
   char *host;
-  // Short name of the checked-out branch.
+  /// Short name of the checked-out branch.
   char *branch;
-  // Commits on the branch that the tracking ref does not have.
+  /// Commits on the branch that the tracking ref does not have.
   size_t ahead;
-  // Commits on the tracking ref that the branch does not have.
+  /// Commits on the tracking ref that the branch does not have.
   size_t behind;
-  // Whether the branch has a configured upstream at all.
+  /// Whether a remote with a fetch URL was resolved for the branch: `branch.<name>.remote`,
+  /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
+  /// `behind` are then 0.
   bool has_upstream;
-  // Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
-  // rather than an HTTPS token. False without an upstream.
+  /// Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
+  /// rather than an HTTPS token. False without an upstream.
   bool uses_ssh;
 } RcGitRemoteStatus;
 
-// Authentication inputs for the remote functions. Every field may be NULL: `username`
-// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
-// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
-// and `ssh_dir` to use `~/.ssh`.
+/// Authentication inputs for the remote functions. Every field may be NULL: `username`
+/// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
+/// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
+/// and `ssh_dir` to use `~/.ssh`.
 typedef struct RcGitRemoteAuth {
-  // HTTPS username, or NULL (empty when `token` is set).
+  /// HTTPS username, or NULL (empty when `token` is set).
   const char *username;
-  // HTTPS token, or the ssh key passphrase, or NULL.
+  /// HTTPS token, or the ssh key passphrase, or NULL.
   const char *token;
-  // An approved `SHA256:...` host-key fingerprint, or NULL.
+  /// An approved `SHA256:...` host-key fingerprint, or NULL.
   const char *accepted_hostkey;
-  // Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.
+  /// Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.
   const char *ssh_dir;
 } RcGitRemoteAuth;
 
-// What a fetch changed. Plain data, no free function.
+/// What a fetch changed. Plain data, no free function.
 typedef struct RcGitFetchOutcome {
-  // Remote-tracking refs created or moved.
+  /// Remote-tracking refs created or moved.
   size_t updated_refs;
 } RcGitFetchOutcome;
 
-// What a fast-forward pull did. Plain data, no free function.
+/// What a fast-forward pull did. Plain data, no free function.
 typedef struct RcGitPullOutcome {
-  // The commit the branch now points at.
+  /// The commit the branch now points at.
   struct RcGitOid new_head;
-  // Files the working tree changed.
+  /// Files the working tree changed.
   size_t files_changed;
-  // Whether there was nothing to pull.
+  /// Whether there was nothing to pull.
   bool already_up_to_date;
 } RcGitPullOutcome;
 
-// What a push did. Plain data, no free function.
+/// What a push did. Plain data, no free function.
 typedef struct RcGitPushOutcome {
-  // Commits uploaded.
+  /// Commits uploaded.
   size_t pushed_commits;
-  // Whether there was nothing to push.
+  /// Whether there was nothing to push.
   bool already_up_to_date;
 } RcGitPushOutcome;
 
@@ -781,240 +784,240 @@ typedef struct RcGitPushOutcome {
 extern "C" {
 #endif // __cplusplus
 
-// Version of the library, as a static string. Do not free.
+/// Version of the library, as a static string. Do not free.
 const char *rcgit_version(void);
 
-// Releases a string returned by any `rcgit_*` function or stored into an `error` parameter.
-//
-// # Safety
-// `s` is NULL or a string this library returned, not yet freed.
+/// Releases a string returned by any `rcgit_*` function or stored into an `error` parameter.
+///
+/// # Safety
+/// `s` is NULL or a string this library returned, not yet freed.
 void rcgit_string_free(char *s);
 
-// Opens the repository at `path`, a working directory or a `.git` directory. Only the
-// repository's own config is read; see `docs/safety.md`.
-//
-// # Safety
-// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Opens the repository at `path`, a working directory or a `.git` directory. Only the
+/// repository's own config is read; see `docs/safety.md`.
+///
+/// # Safety
+/// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitRepo *rcgit_repo_open(const char *path, char **error);
 
-// Releases a repository. Every value derived from it stays valid; they own their memory.
-//
-// # Safety
-// `repo` is NULL or came from `rcgit_repo_open` and is not freed twice or used afterwards.
+/// Releases a repository. Every value derived from it stays valid; they own their memory.
+///
+/// # Safety
+/// `repo` is NULL or came from `rcgit_repo_open` and is not freed twice or used afterwards.
 void rcgit_repo_free(struct RcGitRepo *repo);
 
-// The `.git` directory. Release with `rcgit_string_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`.
+/// The `.git` directory. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`.
 char *rcgit_repo_git_dir(const struct RcGitRepo *repo);
 
-// The working directory, or NULL for a bare repository. Release with `rcgit_string_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`.
+/// The working directory, or NULL for a bare repository. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`.
 char *rcgit_repo_work_dir(const struct RcGitRepo *repo);
 
-// Reads `HEAD`. Release with `rcgit_head_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+/// Reads `HEAD`. Release with `rcgit_head_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
 struct RcGitHead *rcgit_head(const struct RcGitRepo *repo, char **error);
 
-// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
-// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
-// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+/// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
+/// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
+/// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
 char *rcgit_default_branch(const struct RcGitRepo *repo, char **error);
 
-// Releases a value from `rcgit_head`.
-//
-// # Safety
-// `head` is NULL or came from `rcgit_head` and is not freed twice.
+/// Releases a value from `rcgit_head`.
+///
+/// # Safety
+/// `head` is NULL or came from `rcgit_head` and is not freed twice.
 void rcgit_head_free(struct RcGitHead *head);
 
-// Lists every reference. Release with `rcgit_ref_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+/// Lists every reference. Release with `rcgit_ref_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
 struct RcGitRefList *rcgit_refs(const struct RcGitRepo *repo, char **error);
 
-// Releases a value from `rcgit_refs`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_refs` and is not freed twice.
+/// Releases a value from `rcgit_refs`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_refs` and is not freed twice.
 void rcgit_ref_list_free(struct RcGitRefList *list);
 
-// Lists the direct children of `tree`. Release with `rcgit_tree_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is NULL
-// or valid for writing a `char *`.
+/// Lists the direct children of `tree`. Release with `rcgit_tree_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitTreeList *rcgit_tree_entries(const struct RcGitRepo *repo,
                                          const struct RcGitOid *tree,
                                          char **error);
 
-// Releases a value from `rcgit_tree_entries`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_tree_entries` and is not freed twice.
+/// Releases a value from `rcgit_tree_entries`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_tree_entries` and is not freed twice.
 void rcgit_tree_list_free(struct RcGitTreeList *list);
 
-// Finds the entry at a `/`-separated `path` below `root`. Returns NULL with `*error` untouched
-// when the path does not exist, NULL with `*error` set on failure. Release with
-// `rcgit_tree_entry_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `root` points to a readable `RcGitOid`. `path` is a
-// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Finds the entry at a `/`-separated `path` below `root`. Returns NULL with `*error` untouched
+/// when the path does not exist, NULL with `*error` set on failure. Release with
+/// `rcgit_tree_entry_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `root` points to a readable `RcGitOid`. `path` is a
+/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitTreeEntry *rcgit_entry_at_path(const struct RcGitRepo *repo,
                                            const struct RcGitOid *root,
                                            const char *path,
                                            char **error);
 
-// Releases a value from `rcgit_entry_at_path`.
-//
-// # Safety
-// `entry` is NULL or came from `rcgit_entry_at_path` and is not freed twice.
+/// Releases a value from `rcgit_entry_at_path`.
+///
+/// # Safety
+/// `entry` is NULL or came from `rcgit_entry_at_path` and is not freed twice.
 void rcgit_tree_entry_free(struct RcGitTreeEntry *entry);
 
-// Reads a blob for display, refusing to decode anything larger than `limit` bytes. `limit` is
-// capped at 4 GiB so line offsets fit in 32 bits. Release with `rcgit_blob_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
-// or valid for writing a `char *`.
+/// Reads a blob for display, refusing to decode anything larger than `limit` bytes. `limit` is
+/// capped at 4 GiB so line offsets fit in 32 bits. Release with `rcgit_blob_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitBlob *rcgit_blob_read(const struct RcGitRepo *repo,
                                   const struct RcGitOid *oid,
                                   uint64_t limit,
                                   char **error);
 
-// Releases a value from `rcgit_blob_read`.
-//
-// # Safety
-// `blob` is NULL or came from `rcgit_blob_read` and is not freed twice.
+/// Releases a value from `rcgit_blob_read`.
+///
+/// # Safety
+/// `blob` is NULL or came from `rcgit_blob_read` and is not freed twice.
 void rcgit_blob_free(struct RcGitBlob *blob);
 
-// Size of a blob without decoding it. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
-// for writing a `uint64_t`. `error` is NULL or valid for writing a `char *`.
+/// Size of a blob without decoding it. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
+/// for writing a `uint64_t`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_blob_size(const struct RcGitRepo *repo,
                         const struct RcGitOid *oid,
                         uint64_t *out,
                         char **error);
 
-// Commits reachable from `tip`, newest first, skipping `skip` and returning at most `limit`.
-// Release with `rcgit_commit_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `error` is NULL
-// or valid for writing a `char *`.
+/// Commits reachable from `tip`, newest first, skipping `skip` and returning at most `limit`.
+/// Release with `rcgit_commit_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitCommitList *rcgit_log(const struct RcGitRepo *repo,
                                   const struct RcGitOid *tip,
                                   size_t skip,
                                   size_t limit,
                                   char **error);
 
-// Releases a value from `rcgit_log`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_log` and is not freed twice.
+/// Releases a value from `rcgit_log`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_log` and is not freed twice.
 void rcgit_commit_list_free(struct RcGitCommitList *list);
 
-// One commit. Release with `rcgit_commit_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
-// or valid for writing a `char *`.
+/// One commit. Release with `rcgit_commit_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitCommit *rcgit_commit(const struct RcGitRepo *repo,
                                  const struct RcGitOid *oid,
                                  char **error);
 
-// Releases a value from `rcgit_commit`.
-//
-// # Safety
-// `commit` is NULL or came from `rcgit_commit` and is not freed twice.
+/// Releases a value from `rcgit_commit`.
+///
+/// # Safety
+/// `commit` is NULL or came from `rcgit_commit` and is not freed twice.
 void rcgit_commit_free(struct RcGitCommit *commit);
 
-// One commit with its full message, committer, and root tree. Release with
-// `rcgit_commit_detail_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
-// or valid for writing a `char *`.
+/// One commit with its full message, committer, and root tree. Release with
+/// `rcgit_commit_detail_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitCommitDetail *rcgit_commit_details(const struct RcGitRepo *repo,
                                                const struct RcGitOid *oid,
                                                char **error);
 
-// Releases a value from `rcgit_commit_details`.
-//
-// # Safety
-// `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
+/// Releases a value from `rcgit_commit_details`.
+///
+/// # Safety
+/// `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
 void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
 
-// Commits reachable from `tip` that changed `path`, newest first. Examines at most
-// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
-// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
-// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Commits reachable from `tip` that changed `path`, newest first. Examines at most
+/// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
+/// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
+/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
                                            const struct RcGitOid *tip,
                                            const char *path,
                                            struct RcGitScanPage page,
                                            char **error);
 
-// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
-//
-// # Safety
-// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
+/// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
+///
+/// # Safety
+/// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
 void rcgit_commit_page_free(struct RcGitCommitPage *page);
 
-// Commits reachable from `tip` that match `filter`, newest first. Pages like
-// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
-// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
-// or valid for writing a `char *`.
+/// Commits reachable from `tip` that match `filter`, newest first. Pages like
+/// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
+/// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
+/// or valid for writing a `char *`.
 struct RcGitCommitPage *rcgit_search_commits(const struct RcGitRepo *repo,
                                              const struct RcGitOid *tip,
                                              struct RcGitCommitFilter filter,
                                              struct RcGitScanPage page,
                                              char **error);
 
-// Lists every file that differs between two trees, renames detected, sorted by path. `from`
-// and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,
-// which turns a root commit's diff into pure additions. Release with
-// `rcgit_tree_change_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `from` is NULL or points to a readable `RcGitOid`;
-// `to` points to one. `error` is NULL or valid for writing a `char *`.
+/// Lists every file that differs between two trees, renames detected, sorted by path. `from`
+/// and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,
+/// which turns a root commit's diff into pure additions. Release with
+/// `rcgit_tree_change_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `from` is NULL or points to a readable `RcGitOid`;
+/// `to` points to one. `error` is NULL or valid for writing a `char *`.
 struct RcGitTreeChangeList *rcgit_diff_trees(const struct RcGitRepo *repo,
                                              const struct RcGitOid *from,
                                              const struct RcGitOid *to,
                                              char **error);
 
-// Releases a value from `rcgit_diff_trees`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_diff_trees` and is not freed twice.
+/// Releases a value from `rcgit_diff_trees`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_diff_trees` and is not freed twice.
 void rcgit_tree_change_list_free(struct RcGitTreeChangeList *list);
 
-// Line diff between two blobs. A NULL `old` or `new` stands for an absent side, as in an
-// added or deleted file; passing both as NULL yields an empty text diff. Each side's size
-// is checked against `limit`, capped at 4 GiB, before decoding. `context` is the number of
-// unchanged lines around each hunk. Release with `rcgit_blob_diff_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `old` and `new` are each NULL or point to a readable
-// `RcGitOid`. `error` is NULL or valid for writing a `char *`.
+/// Line diff between two blobs. A NULL `old` or `new` stands for an absent side, as in an
+/// added or deleted file; passing both as NULL yields an empty text diff. Each side's size
+/// is checked against `limit`, capped at 4 GiB, before decoding. `context` is the number of
+/// unchanged lines around each hunk. Release with `rcgit_blob_diff_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `old` and `new` are each NULL or point to a readable
+/// `RcGitOid`. `error` is NULL or valid for writing a `char *`.
 struct RcGitBlobDiff *rcgit_diff_blobs(const struct RcGitRepo *repo,
                                        const struct RcGitOid *old,
                                        const struct RcGitOid *new_,
@@ -1022,25 +1025,25 @@ struct RcGitBlobDiff *rcgit_diff_blobs(const struct RcGitRepo *repo,
                                        uint32_t context,
                                        char **error);
 
-// Releases a value from `rcgit_diff_blobs`.
-//
-// # Safety
-// `diff` is NULL or came from `rcgit_diff_blobs` and is not freed twice.
+/// Releases a value from `rcgit_diff_blobs`.
+///
+/// # Safety
+/// `diff` is NULL or came from `rcgit_diff_blobs` and is not freed twice.
 void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 
-// Attributes every line of the file at `path` in commit `tip` to the commit that introduced
-// it. This walks history, so its cost grows with the history between `tip` and the commit
-// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
-// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
-// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
-// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
-// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
-// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
-// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
-// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Attributes every line of the file at `path` in commit `tip` to the commit that introduced
+/// it. This walks history, so its cost grows with the history between `tip` and the commit
+/// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
+/// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
+/// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
+/// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
+/// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
+/// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
+/// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
+/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitBlameList *rcgit_blame(const struct RcGitRepo *repo,
                                    const struct RcGitOid *tip,
                                    const char *path,
@@ -1048,87 +1051,87 @@ struct RcGitBlameList *rcgit_blame(const struct RcGitRepo *repo,
                                    int64_t since,
                                    char **error);
 
-// Releases a value from `rcgit_blame`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_blame` and is not freed twice.
+/// Releases a value from `rcgit_blame`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_blame` and is not freed twice.
 void rcgit_blame_list_free(struct RcGitBlameList *list);
 
-// Lists one directory of the working tree with a status overlay against the tree at the
-// same path below `tree`. `dir` is repository-relative; empty or "/" for the root. Release
-// with `rcgit_worktree_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `dir` is a
-// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Lists one directory of the working tree with a status overlay against the tree at the
+/// same path below `tree`. `dir` is repository-relative; empty or "/" for the root. Release
+/// with `rcgit_worktree_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `dir` is a
+/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitWorktreeList *rcgit_worktree_entries(const struct RcGitRepo *repo,
                                                  const struct RcGitOid *tree,
                                                  const char *dir,
                                                  char **error);
 
-// Releases a value from `rcgit_worktree_entries`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_worktree_entries` and is not freed twice.
+/// Releases a value from `rcgit_worktree_entries`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_worktree_entries` and is not freed twice.
 void rcgit_worktree_list_free(struct RcGitWorktreeList *list);
 
-// Reads one working-tree file for display, with the same size cap and binary probe as
-// `rcgit_blob_read`. A symlink yields its target as text. Release with `rcgit_blob_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `path` is a NUL-terminated string. `error` is NULL or
-// valid for writing a `char *`.
+/// Reads one working-tree file for display, with the same size cap and binary probe as
+/// `rcgit_blob_read`. A symlink yields its target as text. Release with `rcgit_blob_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `path` is a NUL-terminated string. `error` is NULL or
+/// valid for writing a `char *`.
 struct RcGitBlob *rcgit_worktree_read(const struct RcGitRepo *repo,
                                       const char *path,
                                       uint64_t limit,
                                       char **error);
 
-// Walks the whole working tree against `tree` and returns every changed path: modified,
-// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
-// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
-// reports the truncation. Release with `rcgit_status_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.
-// `error` is NULL or valid for writing a `char *`.
+/// Walks the whole working tree against `tree` and returns every changed path: modified,
+/// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
+/// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
+/// reports the truncation. Release with `rcgit_status_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.
+/// `error` is NULL or valid for writing a `char *`.
 struct RcGitStatusList *rcgit_worktree_status(const struct RcGitRepo *repo,
                                               const struct RcGitOid *tree,
                                               size_t max_scan,
                                               char **error);
 
-// Releases a value from `rcgit_worktree_status`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
+/// Releases a value from `rcgit_worktree_status`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_worktree_status` and is not freed twice.
 void rcgit_status_list_free(struct RcGitStatusList *list);
 
-// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
-// untracked, and ignored files alike. An ignored directory that `tree` does not track is
-// pruned without reading it. The walk stops after visiting `max_scan` entries and reports
-// the truncation. Release with `rcgit_worktree_file_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
-// NULL or valid for writing a `char *`.
+/// Walks the whole working tree and returns every file on disk, sorted by path: tracked,
+/// untracked, and ignored files alike. An ignored directory that `tree` does not track is
+/// pruned without reading it. The walk stops after visiting `max_scan` entries and reports
+/// the truncation. Release with `rcgit_worktree_file_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `tree` points to a readable `RcGitOid`. `error` is
+/// NULL or valid for writing a `char *`.
 struct RcGitWorktreeFileList *rcgit_worktree_files(const struct RcGitRepo *repo,
                                                    const struct RcGitOid *tree,
                                                    size_t max_scan,
                                                    char **error);
 
-// Releases a value from `rcgit_worktree_files`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_worktree_files` and is not freed twice.
+/// Releases a value from `rcgit_worktree_files`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_worktree_files` and is not freed twice.
 void rcgit_worktree_file_list_free(struct RcGitWorktreeFileList *list);
 
-// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
-// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Each
-// side's size is checked against `limit`, capped at 4 GiB, before decoding. Release with
-// `rcgit_blob_diff_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
-// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
+/// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Each
+/// side's size is checked against `limit`, capped at 4 GiB, before decoding. Release with
+/// `rcgit_blob_diff_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
+/// `path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitBlobDiff *rcgit_diff_worktree_file(const struct RcGitRepo *repo,
                                                const struct RcGitOid *old,
                                                const char *path,
@@ -1136,269 +1139,269 @@ struct RcGitBlobDiff *rcgit_diff_worktree_file(const struct RcGitRepo *repo,
                                                uint32_t context,
                                                char **error);
 
-// Lists every stash entry, newest first, from the `refs/stash` reflog. A repository with no
-// stash returns an empty list. Release with `rcgit_stash_list_free`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
+/// Lists every stash entry, newest first, from the `refs/stash` reflog. A repository with no
+/// stash returns an empty list. Release with `rcgit_stash_list_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
 struct RcGitStashList *rcgit_stash_list(const struct RcGitRepo *repo, char **error);
 
-// Releases a value from `rcgit_stash_list`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
+/// Releases a value from `rcgit_stash_list`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
 void rcgit_stash_list_free(struct RcGitStashList *list);
 
-// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
-// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
-// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
-// repository. Release with `rcgit_highlight_list_free`.
-//
-// # Safety
-// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
-// `error` is NULL or valid for writing a `char *`.
+/// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
+/// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
+/// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
+/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
+/// repository. Release with `rcgit_highlight_list_free`.
+///
+/// # Safety
+/// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `error` is NULL or valid for writing a `char *`.
 struct RcGitHighlightList *rcgit_highlight(const char *name,
                                            const uint8_t *data,
                                            size_t len,
                                            char **error);
 
-// Releases a value from `rcgit_highlight`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
+/// Releases a value from `rcgit_highlight`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
 void rcgit_highlight_list_free(struct RcGitHighlightList *list);
 
-// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
-// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
-// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
-// `name` maps to no known language; an empty list when the language has no links or the
-// file has none; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
-// fails. Needs no repository. Release with `rcgit_import_link_list_free`.
-//
-// # Safety
-// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
-// `error` is NULL or valid for writing a `char *`.
+/// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
+/// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
+/// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
+/// `name` maps to no known language; an empty list when the language has no links or the
+/// file has none; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
+/// fails. Needs no repository. Release with `rcgit_import_link_list_free`.
+///
+/// # Safety
+/// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `error` is NULL or valid for writing a `char *`.
 struct RcGitImportLinkList *rcgit_import_links(const char *name,
                                                const uint8_t *data,
                                                size_t len,
                                                char **error);
 
-// Releases a value from `rcgit_import_links`.
-//
-// # Safety
-// `list` is NULL or came from `rcgit_import_links` and is not freed twice.
+/// Releases a value from `rcgit_import_links`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_import_links` and is not freed twice.
 void rcgit_import_link_list_free(struct RcGitImportLinkList *list);
 
-// What deleting the branch `name` would need: the policy's decision plus whether the branch
-// is merged. `repo_path` is the repository's path, as given to `rcgit_repo_open`. Release
-// with `rcgit_guard_decision_free`.
-//
-// # Safety
-// `repo_path` and `name` are NUL-terminated strings. `error` is NULL or valid for writing
-// a `char *`.
+/// What deleting the branch `name` would need: the policy's decision plus whether the branch
+/// is merged. `repo_path` is the repository's path, as given to `rcgit_repo_open`. Release
+/// with `rcgit_guard_decision_free`.
+///
+/// # Safety
+/// `repo_path` and `name` are NUL-terminated strings. `error` is NULL or valid for writing
+/// a `char *`.
 struct RcGitGuardDecision *rcgit_guard_plan_branch_delete(const char *repo_path,
                                                           const char *name,
                                                           char **error);
 
-// What deleting the tag `name` would need. Pure policy; no repository read. Release with
-// `rcgit_guard_decision_free`.
-//
-// # Safety
-// `name` is a NUL-terminated string.
+/// What deleting the tag `name` would need. Pure policy; no repository read. Release with
+/// `rcgit_guard_decision_free`.
+///
+/// # Safety
+/// `name` is a NUL-terminated string.
 struct RcGitGuardDecision *rcgit_guard_plan_tag_delete(const char *name);
 
-// Releases a value from a `rcgit_guard_plan_*` function.
-//
-// # Safety
-// `decision` is NULL or came from a plan function and is not freed twice.
+/// Releases a value from a `rcgit_guard_plan_*` function.
+///
+/// # Safety
+/// `decision` is NULL or came from a plan function and is not freed twice.
 void rcgit_guard_decision_free(struct RcGitGuardDecision *decision);
 
-// Creates a local branch named `name` at `revspec`, never overwriting an existing one.
-// Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path`, `name`, and `revspec` are NUL-terminated strings. `error` is NULL or valid
-// for writing a `char *`.
+/// Creates a local branch named `name` at `revspec`, never overwriting an existing one.
+/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path`, `name`, and `revspec` are NUL-terminated strings. `error` is NULL or valid
+/// for writing a `char *`.
 int32_t rcgit_guard_branch_create(const char *repo_path,
                                   const char *name,
                                   const char *revspec,
                                   char **error);
 
-// Checks out the existing local branch `branch`: the working tree, the index, and then
-// `HEAD`. Refuses the whole switch when a path it touches has uncommitted work, and creates
-// nothing. Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` and `branch` are NUL-terminated strings; `out` is NULL or valid for writing;
-// `error` is NULL or valid for writing a `char *`.
+/// Checks out the existing local branch `branch`: the working tree, the index, and then
+/// `HEAD`. Refuses the whole switch when a path it touches has uncommitted work, and creates
+/// nothing. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` and `branch` are NUL-terminated strings; `out` is NULL or valid for writing;
+/// `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_checkout(const char *repo_path,
                              const char *branch,
                              struct RcGitCheckoutOutcome *out,
                              char **error);
 
-// Creates a lightweight tag named `name` at `revspec`, never overwriting an existing one.
-// Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// As `rcgit_guard_branch_create`.
+/// Creates a lightweight tag named `name` at `revspec`, never overwriting an existing one.
+/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// As `rcgit_guard_branch_create`.
 int32_t rcgit_guard_tag_create(const char *repo_path,
                                const char *name,
                                const char *revspec,
                                char **error);
 
-// Deletes the local branch `name`. `input` is what the user typed to answer the challenge,
-// or NULL when the decision needed only a plain confirm; it is verified inside the guard.
-// On success, when a backup ref was written its full name is stored into `backup` (release
-// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` and `name` are NUL-terminated strings; `input` is NULL or one. `backup` is
-// NULL or valid for writing a `char *`. `error` is NULL or valid for writing a `char *`.
+/// Deletes the local branch `name`. `input` is what the user typed to answer the challenge,
+/// or NULL when the decision needed only a plain confirm; it is verified inside the guard.
+/// On success, when a backup ref was written its full name is stored into `backup` (release
+/// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` and `name` are NUL-terminated strings; `input` is NULL or one. `backup` is
+/// NULL or valid for writing a `char *`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_branch_delete(const char *repo_path,
                                   const char *name,
                                   const char *input,
                                   char **backup,
                                   char **error);
 
-// Deletes the tag `name`. Same contract as `rcgit_guard_branch_delete`.
-//
-// # Safety
-// As `rcgit_guard_branch_delete`.
+/// Deletes the tag `name`. Same contract as `rcgit_guard_branch_delete`.
+///
+/// # Safety
+/// As `rcgit_guard_branch_delete`.
 int32_t rcgit_guard_tag_delete(const char *repo_path,
                                const char *name,
                                const char *input,
                                char **backup,
                                char **error);
 
-// The policy's decision for committing `files` selected files. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for committing `files` selected files. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_commit(size_t files);
 
-// The policy's decision for stashing `files` selected files. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for stashing `files` selected files. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_stash_push(size_t files);
 
-// The policy's decision for applying a stash entry. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for applying a stash entry. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_stash_apply(void);
 
-// The policy's decision for popping a stash entry. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for popping a stash entry. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_stash_pop(void);
 
-// The policy's decision for dropping `stash@{index}`. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for dropping `stash@{index}`. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_stash_drop(size_t index);
 
-// The policy's decision for discarding changes in `files` files. Pure; release with
-// `rcgit_guard_decision_free`.
+/// The policy's decision for discarding changes in `files` files. Pure; release with
+/// `rcgit_guard_decision_free`.
 struct RcGitGuardDecision *rcgit_guard_plan_discard(size_t files);
 
-// The repository's own `user.name`/`user.email`, read fresh from its config: the identity a
-// commit records ahead of any fallback. Returns NULL without setting `error` when the config
-// sets either one empty or not at all. Release with `rcgit_identity_free`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+/// The repository's own `user.name`/`user.email`, read fresh from its config: the identity a
+/// commit records ahead of any fallback. Returns NULL without setting `error` when the config
+/// sets either one empty or not at all. Release with `rcgit_identity_free`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
 struct RcGitIdentity *rcgit_guard_configured_identity(const char *repo_path, char **error);
 
-// Releases a value from `rcgit_guard_configured_identity`.
-//
-// # Safety
-// `identity` is NULL or came from `rcgit_guard_configured_identity` and is not freed twice.
+/// Releases a value from `rcgit_guard_configured_identity`.
+///
+/// # Safety
+/// `identity` is NULL or came from `rcgit_guard_configured_identity` and is not freed twice.
 void rcgit_identity_free(struct RcGitIdentity *identity);
 
-// Commits the selected files (or hunks) to the checked-out branch. The commit is refused
-// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
-// the repository's own config sets no `user.name`/`user.email`; without either the commit
-// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
-// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
-// `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
-// points to a readable `RcGitCommitRequest` per that struct's contract. `out` is valid for
-// writing a `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
+/// Commits the selected files (or hunks) to the checked-out branch. The commit is refused
+/// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
+/// the repository's own config sets no `user.name`/`user.email`; without either the commit
+/// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
+/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
+/// `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+/// points to a readable `RcGitCommitRequest` per that struct's contract. `out` is valid for
+/// writing a `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_commit(const char *repo_path,
                            const struct RcGitCommitRequest *request,
                            const char *input,
                            struct RcGitCommitResult **out,
                            char **error);
 
-// Releases a value from `rcgit_guard_commit`.
-//
-// # Safety
-// `result` is NULL or came from `rcgit_guard_commit` and is not freed twice.
+/// Releases a value from `rcgit_guard_commit`.
+///
+/// # Safety
+/// `result` is NULL or came from `rcgit_guard_commit` and is not freed twice.
 void rcgit_commit_result_free(struct RcGitCommitResult *result);
 
-// Stashes the changes at `request.paths` as a git-compatible entry, then restores those
-// files to `HEAD` state. `request.fallback` is recorded only when the repository's own
-// config sets no identity, as for `rcgit_guard_commit`. Returns `RCGIT_OK`,
-// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
-// points to a readable `RcGitStashRequest` per that struct's contract. `error` is NULL or
-// valid for writing a `char *`.
+/// Stashes the changes at `request.paths` as a git-compatible entry, then restores those
+/// files to `HEAD` state. `request.fallback` is recorded only when the repository's own
+/// config sets no identity, as for `rcgit_guard_commit`. Returns `RCGIT_OK`,
+/// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+/// points to a readable `RcGitStashRequest` per that struct's contract. `error` is NULL or
+/// valid for writing a `char *`.
 int32_t rcgit_guard_stash_push(const char *repo_path,
                                const struct RcGitStashRequest *request,
                                const char *input,
                                char **error);
 
-// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
-// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
-// for writing a `char *`.
+/// Writes `stash@{index}` back to the working tree, keeping the entry. Refused when any
+/// touched path has uncommitted changes. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `error` is NULL or valid
+/// for writing a `char *`.
 int32_t rcgit_guard_stash_apply(const char *repo_path,
                                 size_t index,
                                 const char *input,
                                 char **error);
 
-// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
-// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
-// `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
+/// Applies `stash@{index}` and drops it once every file is restored. On success, the backup
+/// ref's full name is stored into `backup` (release with `rcgit_string_free`). Returns
+/// `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_stash_pop(const char *repo_path,
                               size_t index,
                               const char *input,
                               char **backup,
                               char **error);
 
-// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
-//
-// # Safety
-// As `rcgit_guard_stash_pop`.
+/// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
+///
+/// # Safety
+/// As `rcgit_guard_stash_pop`.
 int32_t rcgit_guard_stash_drop(const char *repo_path,
                                size_t index,
                                const char *input,
                                char **backup,
                                char **error);
 
-// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files
-// are deleted. Returns `RCGIT_OK` or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated string; `input` is NULL or one. `paths` points to `len`
-// readable, non-NULL NUL-terminated strings. `error` is NULL or valid for writing a
-// `char *`.
+/// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files
+/// are deleted. Returns `RCGIT_OK` or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated string; `input` is NULL or one. `paths` points to `len`
+/// readable, non-NULL NUL-terminated strings. `error` is NULL or valid for writing a
+/// `char *`.
 int32_t rcgit_guard_discard(const char *repo_path,
                             const char *const *paths,
                             size_t len,
                             const char *input,
                             char **error);
 
-// Discards only the given hunks of one file, keeping its other changes. Returns `RCGIT_OK`
-// or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo_path` and `path` are NUL-terminated strings; `input` is NULL or one. `stamps`
-// points to `len` readable `RcGitHunkStamp`s. `error` is NULL or valid for writing a
-// `char *`.
+/// Discards only the given hunks of one file, keeping its other changes. Returns `RCGIT_OK`
+/// or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo_path` and `path` are NUL-terminated strings; `input` is NULL or one. `stamps`
+/// points to `len` readable `RcGitHunkStamp`s. `error` is NULL or valid for writing a
+/// `char *`.
 int32_t rcgit_guard_discard_hunks(const char *repo_path,
                                   const char *path,
                                   const struct RcGitHunkStamp *stamps,
@@ -1406,84 +1409,84 @@ int32_t rcgit_guard_discard_hunks(const char *repo_path,
                                   const char *input,
                                   char **error);
 
-// Resolves a revision expression (`main`, `v1.0`, `HEAD~2`, an abbreviated hash) to the object
-// it names. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `spec` is a NUL-terminated string. `out` is valid for
-// writing an `RcGitOid`. `error` is NULL or valid for writing a `char *`.
+/// Resolves a revision expression (`main`, `v1.0`, `HEAD~2`, an abbreviated hash) to the object
+/// it names. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `spec` is a NUL-terminated string. `out` is valid for
+/// writing an `RcGitOid`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_resolve(const struct RcGitRepo *repo,
                       const char *spec,
                       struct RcGitOid *out,
                       char **error);
 
-// Resolves a revision expression and peels it to the tree it contains.
-//
-// # Safety
-// As `rcgit_resolve`.
+/// Resolves a revision expression and peels it to the tree it contains.
+///
+/// # Safety
+/// As `rcgit_resolve`.
 int32_t rcgit_resolve_tree(const struct RcGitRepo *repo,
                            const char *spec,
                            struct RcGitOid *out,
                            char **error);
 
-// Peels any object to its tree: a tag to its commit, a commit to its tree, a tree to itself.
-//
-// # Safety
-// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
-// for writing an `RcGitOid`. `error` is NULL or valid for writing a `char *`.
+/// Peels any object to its tree: a tag to its commit, a commit to its tree, a tree to itself.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
+/// for writing an `RcGitOid`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_tree_of(const struct RcGitRepo *repo,
                       const struct RcGitOid *oid,
                       struct RcGitOid *out,
                       char **error);
 
-// Lowercase hexadecimal form of an id. Release with `rcgit_string_free`.
-//
-// # Safety
-// `oid` points to a readable `RcGitOid`.
+/// Lowercase hexadecimal form of an id. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `oid` points to a readable `RcGitOid`.
 char *rcgit_oid_hex(const struct RcGitOid *oid);
 
-// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
-// Returns NULL on failure, with the message in `error`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated path; `error` is NULL or valid for writing a `char *`.
+/// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
+/// Returns NULL on failure, with the message in `error`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `error` is NULL or valid for writing a `char *`.
 struct RcGitRemoteStatus *rcgit_guard_remote_preflight(const char *repo_path, char **error);
 
-// Releases a status returned by `rcgit_guard_remote_preflight`.
-//
-// # Safety
-// `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
+/// Releases a status returned by `rcgit_guard_remote_preflight`.
+///
+/// # Safety
+/// `status` is NULL or came from `rcgit_guard_remote_preflight` and is not freed twice.
 void rcgit_remote_status_free(struct RcGitRemoteStatus *status);
 
-// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
+/// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
 struct RcGitCancel *rcgit_cancel_new(void);
 
-// Asks the operation holding `cancel` to stop. Safe to call from a thread other than
-// the one inside the operation, which is the point: that thread is blocked in it.
-// The operation then fails with `RCGIT_CANCELLED`. NULL is a no-op.
-//
-// # Safety
-// `cancel` is NULL or came from `rcgit_cancel_new` and has not been freed.
+/// Asks the operation holding `cancel` to stop. Safe to call from a thread other than
+/// the one inside the operation, which is the point: that thread is blocked in it.
+/// The operation then fails with `RCGIT_CANCELLED`. NULL is a no-op.
+///
+/// # Safety
+/// `cancel` is NULL or came from `rcgit_cancel_new` and has not been freed.
 void rcgit_cancel_signal(const struct RcGitCancel *cancel);
 
-// Releases a flag. Free it only after the operation it was passed to has returned.
-//
-// # Safety
-// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
-// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
+/// Releases a flag. Free it only after the operation it was passed to has returned.
+///
+/// # Safety
+/// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
+/// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
 void rcgit_cancel_free(struct RcGitCancel *cancel);
 
-// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
-// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
-// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
-// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
-// then holds the offered key for the user to verify).
-//
-// # Safety
-// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
-// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
-// `error` are each NULL or valid for writing a `char *`.
+/// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
+/// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
+/// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
+/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
+/// then holds the offered key for the user to verify).
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+/// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+/// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+/// `error` are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_fetch(const char *repo_path,
                           const struct RcGitRemoteAuth *auth,
                           const struct RcGitCancel *cancel,
@@ -1491,25 +1494,25 @@ int32_t rcgit_guard_fetch(const char *repo_path,
                           char **hostkey,
                           char **error);
 
-// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
-// Returns `RCGIT_OK`, `RCGIT_ERROR`, or `RCGIT_DIVERGED`.
-//
-// # Safety
-// `repo_path` is a NUL-terminated path; `out` is NULL or valid for writing; `error` is
-// NULL or valid for writing a `char *`.
+/// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.
+/// Returns `RCGIT_OK`, `RCGIT_ERROR`, or `RCGIT_DIVERGED`.
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `out` is NULL or valid for writing; `error` is
+/// NULL or valid for writing a `char *`.
 int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out, char **error);
 
-// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
-// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
-// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
-// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or
-// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
-//
-// # Safety
-// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
-// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
-// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
-// `error` are each NULL or valid for writing a `char *`.
+/// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
+/// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
+/// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
+/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or
+/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
+///
+/// # Safety
+/// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
+/// NUL-terminated fields; `cancel` is NULL or came from `rcgit_cancel_new` and is not
+/// freed before this returns; `out` is NULL or valid for writing; `hostkey` and
+/// `error` are each NULL or valid for writing a `char *`.
 int32_t rcgit_guard_push(const char *repo_path,
                          const struct RcGitRemoteAuth *auth,
                          const struct RcGitCancel *cancel,
