@@ -240,13 +240,14 @@ public enum RepositoryGuard {
             }
         }
         var out: UnsafeMutablePointer<RcGitCommitResult>? = nil
-        let status = withOwnedCStrings([
-            message, fallback?.name, fallback?.email, expectedHead, input,
-        ]) { strings in
-            files.withUnsafeBufferPointer { buffer in
-                rcgit_guard_commit(
-                    repoPath, strings[0], strings[1], strings[2], strings[3],
-                    buffer.baseAddress, files.count, strings[4], &out, &error)
+        let status = withOwnedCStrings([message, expectedHead, input]) { strings in
+            withFallback(fallback) { fallbackPtr in
+                files.withUnsafeBufferPointer { buffer in
+                    var request = RcGitCommitRequest(
+                        message: strings[0], fallback: fallbackPtr, expected_head: strings[1],
+                        files: buffer.baseAddress, file_count: files.count)
+                    return rcgit_guard_commit(repoPath, &request, strings[2], &out, &error)
+                }
             }
         }
         guard status == RCGIT_OK, let result = out else {
@@ -267,11 +268,14 @@ public enum RepositoryGuard {
     ) throws {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = withOwnedCStrings(paths) { pathPointers in
-            withOwnedCStrings([message, fallback?.name, fallback?.email, input]) { strings in
-                pathPointers.withUnsafeBufferPointer { buffer in
-                    rcgit_guard_stash_push(
-                        repoPath, buffer.baseAddress, paths.count, strings[0], strings[1],
-                        strings[2], strings[3], &error)
+            withOwnedCStrings([message, input]) { strings in
+                withFallback(fallback) { fallbackPtr in
+                    pathPointers.withUnsafeBufferPointer { buffer in
+                        var request = RcGitStashRequest(
+                            paths: buffer.baseAddress, path_count: paths.count,
+                            message: strings[0], fallback: fallbackPtr)
+                        return rcgit_guard_stash_push(repoPath, &request, strings[1], &error)
+                    }
                 }
             }
         }
@@ -349,6 +353,17 @@ public enum RepositoryGuard {
         guard let pointer else { return nil }
         defer { rcgit_guard_decision_free(pointer) }
         return GuardDecision(c: pointer)
+    }
+
+    /// Runs `body` with `fallback` as a C identity, or with NULL when there is none.
+    private static func withFallback<T>(
+        _ fallback: CommitIdentity?, _ body: (UnsafePointer<RcGitFallbackIdentity>?) -> T
+    ) -> T {
+        guard let fallback else { return body(nil) }
+        return withOwnedCStrings([fallback.name, fallback.email]) { strings in
+            var identity = RcGitFallbackIdentity(name: strings[0], email: strings[1])
+            return withUnsafePointer(to: &identity) { body($0) }
+        }
     }
 
     /// Runs `body` with each optional string duplicated as a C string (`nil` stays NULL),

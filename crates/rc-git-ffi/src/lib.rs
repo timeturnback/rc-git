@@ -1835,10 +1835,23 @@ pub unsafe extern "C" fn rcgit_commit_detail_free(detail: *mut RcGitCommitDetail
     unsafe { release(detail) };
 }
 
+/// One page of a filtered history walk. Caller-owned input, passed by value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RcGitScanPage {
+    /// Commits of the walk to pass over before this page: the previous pages' `scanned`
+    /// summed, never a match count.
+    pub scan_skip: usize,
+    /// Most matches the page returns.
+    pub limit: usize,
+    /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
+    /// page advances.
+    pub max_scan: usize,
+}
+
 /// Commits reachable from `tip` that changed `path`, newest first. Examines at most
-/// `max_scan` commits past `scan_skip` and reports how many it examined, so the caller loops
-/// pages until `complete`. A `max_scan` of 0 counts as 1, so every incomplete page advances.
-/// Release with `rcgit_commit_page_free`.
+/// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
+/// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -1848,9 +1861,7 @@ pub unsafe extern "C" fn rcgit_path_history(
     repo: *const RcGitRepo,
     tip: *const RcGitOid,
     path: *const c_char,
-    scan_skip: usize,
-    limit: usize,
-    max_scan: usize,
+    page: RcGitScanPage,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitPage {
     // SAFETY: forwarded from this function's contract.
@@ -1869,9 +1880,9 @@ pub unsafe extern "C" fn rcgit_path_history(
     match repo.path_history(
         tip,
         &String::from_utf8_lossy(path),
-        scan_skip,
-        limit,
-        max_scan,
+        page.scan_skip,
+        page.limit,
+        page.max_scan,
     ) {
         Ok(page) => export(RcGitCommitPage::export(page)),
         Err(err) => {
@@ -1891,36 +1902,46 @@ pub unsafe extern "C" fn rcgit_commit_page_free(page: *mut RcGitCommitPage) {
     unsafe { release(page) };
 }
 
-/// Commits reachable from `tip` that match the filter, newest first. `message` and `author`
-/// are nullable case-insensitive substrings; `after` and `before` bound the commit time and
-/// are ignored when `i64::MIN` and `i64::MAX` respectively. `after` also terminates the
-/// walk. Pages like `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+/// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
+/// passed by value; mirrors the core's `CommitFilter`.
+#[repr(C)]
+pub struct RcGitCommitFilter {
+    /// Case-insensitive substring of the full message, or NULL for any.
+    pub message: *const c_char,
+    /// Case-insensitive substring of the author name or email, or NULL for any.
+    pub author: *const c_char,
+    /// Whether `after` applies.
+    pub has_after: bool,
+    /// Earliest committer time, seconds since the Unix epoch. Also terminates the walk.
+    pub after: i64,
+    /// Whether `before` applies.
+    pub has_before: bool,
+    /// Latest committer time, seconds since the Unix epoch.
+    pub before: i64,
+}
+
+/// Commits reachable from `tip` that match `filter`, newest first. Pages like
+/// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
 ///
 /// # Safety
-/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `message` and
-/// `author` are NULL or NUL-terminated strings. `error` is NULL or valid for writing a
-/// `char *`.
+/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
+/// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
+/// or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_search_commits(
     repo: *const RcGitRepo,
     tip: *const RcGitOid,
-    message: *const c_char,
-    author: *const c_char,
-    after: i64,
-    before: i64,
-    scan_skip: usize,
-    limit: usize,
-    max_scan: usize,
+    filter: RcGitCommitFilter,
+    page: RcGitScanPage,
     error: *mut *mut c_char,
 ) -> *mut RcGitCommitPage {
-    // SAFETY: forwarded from this function's contract; `message` and `author` are read only
-    // when non-NULL.
+    // SAFETY: forwarded from this function's contract.
     let (repo, tip, message, author, error) = unsafe {
         (
             repo_arg(repo),
             oid_arg(tip),
-            (!message.is_null()).then(|| bytes_arg(message)).flatten(),
-            (!author.is_null()).then(|| bytes_arg(author)).flatten(),
+            bytes_arg(filter.message),
+            bytes_arg(filter.author),
             Out::new(error),
         )
     };
@@ -1928,13 +1949,13 @@ pub unsafe extern "C" fn rcgit_search_commits(
         error.report("repo or tip is NULL or malformed");
         return ptr::null_mut();
     };
-    let filter = CommitFilter {
+    let core_filter = CommitFilter {
         message: message.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
         author: author.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
-        after: (after != i64::MIN).then_some(after),
-        before: (before != i64::MAX).then_some(before),
+        after: filter.has_after.then_some(filter.after),
+        before: filter.has_before.then_some(filter.before),
     };
-    match repo.search_commits(tip, &filter, scan_skip, limit, max_scan) {
+    match repo.search_commits(tip, &core_filter, page.scan_skip, page.limit, page.max_scan) {
         Ok(page) => export(RcGitCommitPage::export(page)),
         Err(err) => {
             error.report(err);
@@ -3064,17 +3085,142 @@ unsafe fn read_selections(ptr: *const RcGitCommitFile, len: usize) -> Option<Vec
 /// The fallback identity when both halves were given. It is recorded only when the
 /// repository's own config sets no `user.name`/`user.email`, so the identity the app remembered
 /// never overrides one the repository chose.
-fn fallback_author(name: Option<&[u8]>, email: Option<&[u8]>) -> Author {
-    let fallback = match (name, email) {
-        (Some(name), Some(email)) => Some(Identity {
+/// The author a commit or stash records: the caller's fallback, if any, behind the
+/// repository's own config. `None` when `fallback` is set but a field of it is NULL.
+///
+/// # Safety
+/// `fallback` is NULL or points to a readable `RcGitFallbackIdentity` whose fields are NULL
+/// or NUL-terminated strings.
+unsafe fn fallback_author(fallback: *const RcGitFallbackIdentity) -> Option<Author> {
+    if fallback.is_null() {
+        return Some(Author {
+            explicit: None,
+            fallback: None,
+        });
+    }
+    // SAFETY: forwarded from this function's contract.
+    let (name, email) = unsafe {
+        let fallback = &*fallback;
+        (bytes_arg(fallback.name)?, bytes_arg(fallback.email)?)
+    };
+    Some(Author {
+        explicit: None,
+        fallback: Some(Identity {
             name: String::from_utf8_lossy(name).into_owned(),
             email: String::from_utf8_lossy(email).into_owned(),
         }),
-        (Some(_) | None, Some(_) | None) => None,
-    };
-    Author {
-        explicit: None,
-        fallback,
+    })
+}
+
+/// The identity a commit or stash records when the repository's own config sets none.
+/// Caller-owned input: nothing here is freed by rc-git.
+#[repr(C)]
+pub struct RcGitFallbackIdentity {
+    /// `user.name`, NUL-terminated.
+    pub name: *const c_char,
+    /// `user.email`, NUL-terminated.
+    pub email: *const c_char,
+}
+
+/// What `rcgit_guard_commit` commits. Caller-owned input: nothing here is freed by rc-git.
+#[repr(C)]
+pub struct RcGitCommitRequest {
+    /// The commit message, NUL-terminated.
+    pub message: *const c_char,
+    /// Recorded only when the repository's own config sets no identity, or NULL for none.
+    pub fallback: *const RcGitFallbackIdentity,
+    /// Hex commit the change list was built against, or NULL on an unborn branch.
+    pub expected_head: *const c_char,
+    /// The selected files.
+    pub files: *const RcGitCommitFile,
+    /// Number of entries behind `files`.
+    pub file_count: usize,
+}
+
+/// A commit request read into owned values.
+struct OwnedCommitRequest {
+    message: String,
+    author: Author,
+    expected_head: Option<String>,
+    selections: Vec<FileSelection>,
+}
+
+impl OwnedCommitRequest {
+    /// Reads the caller's request. `None` when it, its message, a selection path, a counted
+    /// hunk list, or a field of a set fallback is NULL.
+    ///
+    /// # Safety
+    /// `request` is NULL or points to a readable `RcGitCommitRequest` per that struct's
+    /// contract.
+    unsafe fn read(request: *const RcGitCommitRequest) -> Option<Self> {
+        if request.is_null() {
+            return None;
+        }
+        // SAFETY: forwarded from this function's contract.
+        let (message, author, expected_head, selections) = unsafe {
+            let request = &*request;
+            (
+                bytes_arg(request.message)?,
+                fallback_author(request.fallback)?,
+                bytes_arg(request.expected_head),
+                read_selections(request.files, request.file_count)?,
+            )
+        };
+        Some(Self {
+            message: String::from_utf8_lossy(message).into_owned(),
+            author,
+            expected_head: expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+            selections,
+        })
+    }
+}
+
+/// What `rcgit_guard_stash_push` stashes. Caller-owned input: nothing here is freed by
+/// rc-git.
+#[repr(C)]
+pub struct RcGitStashRequest {
+    /// Repository-relative paths, each NUL-terminated and non-NULL.
+    pub paths: *const *const c_char,
+    /// Number of entries behind `paths`.
+    pub path_count: usize,
+    /// The stash message, or NULL for git's default.
+    pub message: *const c_char,
+    /// Recorded only when the repository's own config sets no identity, or NULL for none.
+    pub fallback: *const RcGitFallbackIdentity,
+}
+
+/// A stash request read into owned values.
+struct OwnedStashRequest {
+    paths: Vec<String>,
+    message: Option<String>,
+    author: Author,
+}
+
+impl OwnedStashRequest {
+    /// Reads the caller's request. `None` when it, a path, or a field of a set fallback is
+    /// NULL.
+    ///
+    /// # Safety
+    /// `request` is NULL or points to a readable `RcGitStashRequest` per that struct's
+    /// contract.
+    unsafe fn read(request: *const RcGitStashRequest) -> Option<Self> {
+        if request.is_null() {
+            return None;
+        }
+        // SAFETY: forwarded from this function's contract.
+        let (paths, message, author) = unsafe {
+            let request = &*request;
+            (
+                read_string_array(request.paths, request.path_count)?,
+                bytes_arg(request.message),
+                fallback_author(request.fallback)?,
+            )
+        };
+        Some(Self {
+            paths,
+            message: message.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+            author,
+        })
     }
 }
 
@@ -3137,61 +3283,51 @@ pub unsafe extern "C" fn rcgit_identity_free(identity: *mut RcGitIdentity) {
     unsafe { release(identity) };
 }
 
-/// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
-/// hex commit the change list was built against, or NULL on an unborn branch; the commit is
-/// refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
-/// repository's own config sets no `user.name`/`user.email` (pass both or neither); without
-/// either the commit is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the
-/// result; release it with `rcgit_commit_result_free`. Returns `RCGIT_OK`,
-/// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
+/// Commits the selected files (or hunks) to the checked-out branch. The commit is refused
+/// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
+/// the repository's own config sets no `user.name`/`user.email`; without either the commit
+/// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
+/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
+/// `RCGIT_ERROR`.
 ///
 /// # Safety
-/// `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
-/// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
-/// `RcGitCommitFile`s per that struct's contract. `out` is valid for writing a
-/// `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
+/// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+/// points to a readable `RcGitCommitRequest` per that struct's contract. `out` is valid for
+/// writing a `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_commit(
     repo_path: *const c_char,
-    message: *const c_char,
-    fallback_name: *const c_char,
-    fallback_email: *const c_char,
-    expected_head: *const c_char,
-    files: *const RcGitCommitFile,
-    len: usize,
+    request: *const RcGitCommitRequest,
     input: *const c_char,
     out: *mut *mut RcGitCommitResult,
     error: *mut *mut c_char,
 ) -> i32 {
     let out_missing = out.is_null();
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, message, author, expected_head, selections, input, out, error) = unsafe {
+    let (repo_path, request, input, out, error) = unsafe {
         (
             bytes_arg(repo_path),
-            bytes_arg(message),
-            fallback_author(bytes_arg(fallback_name), bytes_arg(fallback_email)),
-            bytes_arg(expected_head),
-            read_selections(files, len),
+            OwnedCommitRequest::read(request),
             bytes_arg(input),
             Out::new(out),
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(message), Some(selections), false) =
-        (repo_path, message, selections, out_missing)
-    else {
-        error.report("repo_path, message, out, a selection path, or a counted hunk list is NULL");
+    let (Some(repo_path), Some(request), false) = (repo_path, request, out_missing) else {
+        error.report(
+            "repo_path, request, its message, out, a selection path, a counted hunk list, or a \
+             fallback name or email is NULL",
+        );
         return RCGIT_ERROR;
     };
-    let expected_head = expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     match commit(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        &String::from_utf8_lossy(message),
-        author,
-        expected_head.as_deref(),
-        &selections,
+        &request.message,
+        request.author,
+        request.expected_head.as_deref(),
+        &request.selections,
         input.as_deref(),
     ) {
         Ok(committed) => {
@@ -3218,49 +3354,42 @@ pub unsafe extern "C" fn rcgit_commit_result_free(result: *mut RcGitCommitResult
     unsafe { release(result) };
 }
 
-/// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
-/// `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
-/// are recorded only when the repository's own config sets no identity, as for
-/// `rcgit_guard_commit`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
+/// Stashes the changes at `request.paths` as a git-compatible entry, then restores those
+/// files to `HEAD` state. `request.fallback` is recorded only when the repository's own
+/// config sets no identity, as for `rcgit_guard_commit`. Returns `RCGIT_OK`,
+/// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 ///
 /// # Safety
-/// `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and
-/// `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
-/// strings. `error` is NULL or valid for writing a `char *`.
+/// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+/// points to a readable `RcGitStashRequest` per that struct's contract. `error` is NULL or
+/// valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_stash_push(
     repo_path: *const c_char,
-    paths: *const *const c_char,
-    len: usize,
-    message: *const c_char,
-    fallback_name: *const c_char,
-    fallback_email: *const c_char,
+    request: *const RcGitStashRequest,
     input: *const c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, paths, message, author, input, error) = unsafe {
+    let (repo_path, request, input, error) = unsafe {
         (
             bytes_arg(repo_path),
-            read_string_array(paths, len),
-            bytes_arg(message),
-            fallback_author(bytes_arg(fallback_name), bytes_arg(fallback_email)),
+            OwnedStashRequest::read(request),
             bytes_arg(input),
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(paths)) = (repo_path, paths) else {
-        error.report("repo_path or a path is NULL");
+    let (Some(repo_path), Some(request)) = (repo_path, request) else {
+        error.report("repo_path, request, a path, or a fallback name or email is NULL");
         return RCGIT_ERROR;
     };
-    let message = message.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     let pushed = stash_push(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        &paths,
-        message.as_deref(),
-        author,
+        &request.paths,
+        request.message.as_deref(),
+        request.author,
         input.as_deref(),
     );
     finish_action(pushed.map(|_| ()), &error)
@@ -4385,6 +4514,26 @@ mod tests {
         unsafe { rcgit_repo_free(repo) };
     }
 
+    fn scan_page(scan_skip: usize, limit: usize, max_scan: usize) -> RcGitScanPage {
+        RcGitScanPage {
+            scan_skip,
+            limit,
+            max_scan,
+        }
+    }
+
+    /// A filter on message and author substrings with no time bounds.
+    fn text_filter(message: *const c_char, author: *const c_char) -> RcGitCommitFilter {
+        RcGitCommitFilter {
+            message,
+            author,
+            has_after: false,
+            after: 0,
+            has_before: false,
+            before: 0,
+        }
+    }
+
     #[test]
     fn path_history_pages_with_a_scan_cursor() {
         let fx = Fixture::standard();
@@ -4398,9 +4547,7 @@ mod tests {
                 repo,
                 &raw const tip,
                 file.as_ptr(),
-                0,
-                10,
-                100,
+                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
@@ -4418,9 +4565,7 @@ mod tests {
                 repo,
                 &raw const tip,
                 file.as_ptr(),
-                0,
-                10,
-                1,
+                scan_page(0, 10, 1),
                 &raw mut error,
             )
         };
@@ -4434,9 +4579,7 @@ mod tests {
                 repo,
                 &raw const tip,
                 ptr::null(),
-                0,
-                10,
-                100,
+                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
@@ -4458,13 +4601,8 @@ mod tests {
             rcgit_search_commits(
                 repo,
                 &raw const tip,
-                needle.as_ptr(),
-                ptr::null(),
-                i64::MIN,
-                i64::MAX,
-                0,
-                10,
-                100,
+                text_filter(needle.as_ptr(), ptr::null()),
+                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
@@ -4481,30 +4619,37 @@ mod tests {
             rcgit_search_commits(
                 repo,
                 &raw const tip,
-                ptr::null(),
-                ptr::null(),
-                i64::MIN,
-                i64::MAX,
-                0,
-                10,
-                100,
+                text_filter(ptr::null(), ptr::null()),
+                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
         assert_eq!(unsafe { &*all }.len, 2, "NULL filters match everything");
         unsafe { rcgit_commit_page_free(all) };
 
+        let before_epoch = RcGitCommitFilter {
+            has_before: true,
+            ..text_filter(ptr::null(), ptr::null())
+        };
+        let none = unsafe {
+            rcgit_search_commits(
+                repo,
+                &raw const tip,
+                before_epoch,
+                scan_page(0, 10, 100),
+                &raw mut error,
+            )
+        };
+        assert!(!none.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { &*none }.len, 0, "a set bound applies even at 0");
+        unsafe { rcgit_commit_page_free(none) };
+
         let null = unsafe {
             rcgit_search_commits(
                 ptr::null(),
                 &raw const tip,
-                ptr::null(),
-                ptr::null(),
-                i64::MIN,
-                i64::MAX,
-                0,
-                10,
-                100,
+                text_filter(ptr::null(), ptr::null()),
+                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
@@ -5425,12 +5570,16 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
-                message.as_ptr(),
-                name.as_ptr(),
-                email.as_ptr(),
-                head.as_ptr(),
-                &raw const file,
-                1,
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: &RcGitFallbackIdentity {
+                        name: name.as_ptr(),
+                        email: email.as_ptr(),
+                    },
+                    expected_head: head.as_ptr(),
+                    files: &raw const file,
+                    file_count: 1,
+                },
                 ptr::null(),
                 &raw mut result,
                 &raw mut error,
@@ -5449,11 +5598,15 @@ mod tests {
         let status = unsafe {
             rcgit_guard_stash_push(
                 repo_path.as_ptr(),
-                paths.as_ptr(),
-                1,
-                ptr::null(),
-                name.as_ptr(),
-                email.as_ptr(),
+                &RcGitStashRequest {
+                    paths: paths.as_ptr(),
+                    path_count: 1,
+                    message: ptr::null(),
+                    fallback: &RcGitFallbackIdentity {
+                        name: name.as_ptr(),
+                        email: email.as_ptr(),
+                    },
+                },
                 ptr::null(),
                 &raw mut error,
             )
@@ -5532,12 +5685,16 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
-                message.as_ptr(),
-                name.as_ptr(),
-                email.as_ptr(),
-                head.as_ptr(),
-                &raw const file,
-                1,
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: &RcGitFallbackIdentity {
+                        name: name.as_ptr(),
+                        email: email.as_ptr(),
+                    },
+                    expected_head: head.as_ptr(),
+                    files: &raw const file,
+                    file_count: 1,
+                },
                 ptr::null(),
                 &raw mut result,
                 &raw mut error,
@@ -5574,12 +5731,13 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
-                message.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                head_c.as_ptr(),
-                &raw const file,
-                1,
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: ptr::null(),
+                    expected_head: head_c.as_ptr(),
+                    files: &raw const file,
+                    file_count: 1,
+                },
                 ptr::null(),
                 &raw mut result,
                 &raw mut error,
@@ -5598,11 +5756,12 @@ mod tests {
         let status = unsafe {
             rcgit_guard_stash_push(
                 repo_path.as_ptr(),
-                paths.as_ptr(),
-                1,
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
+                &RcGitStashRequest {
+                    paths: paths.as_ptr(),
+                    path_count: 1,
+                    message: ptr::null(),
+                    fallback: ptr::null(),
+                },
                 ptr::null(),
                 &raw mut error,
             )
@@ -5614,12 +5773,13 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
-                message.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                head_c.as_ptr(),
-                &raw const file,
-                1,
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: ptr::null(),
+                    expected_head: head_c.as_ptr(),
+                    files: &raw const file,
+                    file_count: 1,
+                },
                 ptr::null(),
                 ptr::null_mut(),
                 &raw mut error,
@@ -5640,12 +5800,13 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 ptr::null(),
-                message.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                0,
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: ptr::null(),
+                    expected_head: ptr::null(),
+                    files: ptr::null(),
+                    file_count: 0,
+                },
                 ptr::null(),
                 &raw mut result,
                 &raw mut error,
@@ -5654,6 +5815,19 @@ mod tests {
         assert_eq!(status, RCGIT_ERROR);
         assert!(result.is_null());
         assert!(take_error(&mut error).contains("NULL"));
+
+        let status = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut result,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR, "a NULL request is an argument error");
+        assert!(take_error(&mut error).contains("NULL"));
+
         let status = unsafe {
             rcgit_guard_discard_hunks(
                 repo_path.as_ptr(),
@@ -5666,6 +5840,78 @@ mod tests {
         };
         assert_eq!(status, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    #[test]
+    fn a_half_filled_fallback_identity_is_refused() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let message = CString::new("msg").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let mut error = ptr::null_mut();
+        let mut result = ptr::null_mut();
+
+        fx.write("alpha.txt", b"half an identity\n");
+        let head = fx.rev_parse("HEAD");
+        let head_c = CString::new(head.clone()).unwrap();
+        let name = CString::new("Only A Name").unwrap();
+        let half = RcGitFallbackIdentity {
+            name: name.as_ptr(),
+            email: ptr::null(),
+        };
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        let status = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: &raw const half,
+                    expected_head: head_c.as_ptr(),
+                    files: &raw const file,
+                    file_count: 1,
+                },
+                ptr::null(),
+                &raw mut result,
+                &raw mut error,
+            )
+        };
+        assert_eq!(
+            status, RCGIT_ERROR,
+            "half a fallback is refused, not dropped"
+        );
+        assert!(take_error(&mut error).contains("fallback name or email is NULL"));
+        assert_eq!(
+            fx.rev_parse("HEAD"),
+            head,
+            "a refused commit writes nothing"
+        );
+
+        let paths = [path.as_ptr()];
+        let status = unsafe {
+            rcgit_guard_stash_push(
+                repo_path.as_ptr(),
+                &RcGitStashRequest {
+                    paths: paths.as_ptr(),
+                    path_count: 1,
+                    message: ptr::null(),
+                    fallback: &raw const half,
+                },
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(take_error(&mut error).contains("fallback name or email is NULL"));
+        let status = unsafe {
+            rcgit_guard_stash_push(repo_path.as_ptr(), ptr::null(), ptr::null(), &raw mut error)
+        };
+        assert_eq!(status, RCGIT_ERROR, "a NULL request is an argument error");
+        assert!(take_error(&mut error).contains("NULL"));
+        assert_eq!(fx.git_output(&["stash", "list"]), "");
     }
 
     /// The worktree hunks of `path` against `HEAD`, as stamps, read through the FFI.
@@ -5714,12 +5960,16 @@ mod tests {
         let status = unsafe {
             rcgit_guard_commit(
                 repo_path.as_ptr(),
-                message.as_ptr(),
-                name.as_ptr(),
-                email.as_ptr(),
-                head.as_ptr(),
-                files.as_ptr(),
-                files.len(),
+                &RcGitCommitRequest {
+                    message: message.as_ptr(),
+                    fallback: &RcGitFallbackIdentity {
+                        name: name.as_ptr(),
+                        email: email.as_ptr(),
+                    },
+                    expected_head: head.as_ptr(),
+                    files: files.as_ptr(),
+                    file_count: files.len(),
+                },
                 ptr::null(),
                 &raw mut result,
                 &raw mut error,

@@ -349,6 +349,35 @@ typedef struct RcGitCommitPage {
   bool complete;
 } RcGitCommitPage;
 
+// One page of a filtered history walk. Caller-owned input, passed by value.
+typedef struct RcGitScanPage {
+  // Commits of the walk to pass over before this page: the previous pages' `scanned`
+  // summed, never a match count.
+  size_t scan_skip;
+  // Most matches the page returns.
+  size_t limit;
+  // Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
+  // page advances.
+  size_t max_scan;
+} RcGitScanPage;
+
+// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
+// passed by value; mirrors the core's `CommitFilter`.
+typedef struct RcGitCommitFilter {
+  // Case-insensitive substring of the full message, or NULL for any.
+  const char *message;
+  // Case-insensitive substring of the author name or email, or NULL for any.
+  const char *author;
+  // Whether `after` applies.
+  bool has_after;
+  // Earliest committer time, seconds since the Unix epoch. Also terminates the walk.
+  int64_t after;
+  // Whether `before` applies.
+  bool has_before;
+  // Latest committer time, seconds since the Unix epoch.
+  int64_t before;
+} RcGitCommitFilter;
+
 // One changed file between two trees.
 typedef struct RcGitTreeChange {
   // What happened.
@@ -620,6 +649,15 @@ typedef struct RcGitIdentity {
   char *email;
 } RcGitIdentity;
 
+// The identity a commit or stash records when the repository's own config sets none.
+// Caller-owned input: nothing here is freed by rc-git.
+typedef struct RcGitFallbackIdentity {
+  // `user.name`, NUL-terminated.
+  const char *name;
+  // `user.email`, NUL-terminated.
+  const char *email;
+} RcGitFallbackIdentity;
+
 // One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
 typedef struct RcGitHunkStamp {
   // 1-based first line of the hunk on the tree side.
@@ -643,6 +681,20 @@ typedef struct RcGitCommitFile {
   size_t hunk_count;
 } RcGitCommitFile;
 
+// What `rcgit_guard_commit` commits. Caller-owned input: nothing here is freed by rc-git.
+typedef struct RcGitCommitRequest {
+  // The commit message, NUL-terminated.
+  const char *message;
+  // Recorded only when the repository's own config sets no identity, or NULL for none.
+  const struct RcGitFallbackIdentity *fallback;
+  // Hex commit the change list was built against, or NULL on an unborn branch.
+  const char *expected_head;
+  // The selected files.
+  const struct RcGitCommitFile *files;
+  // Number of entries behind `files`.
+  size_t file_count;
+} RcGitCommitRequest;
+
 // What a completed commit produced.
 typedef struct RcGitCommitResult {
   // Hex id of the new commit.
@@ -650,6 +702,19 @@ typedef struct RcGitCommitResult {
   // Short name of the branch that advanced.
   char *branch;
 } RcGitCommitResult;
+
+// What `rcgit_guard_stash_push` stashes. Caller-owned input: nothing here is freed by
+// rc-git.
+typedef struct RcGitStashRequest {
+  // Repository-relative paths, each NUL-terminated and non-NULL.
+  const char *const *paths;
+  // Number of entries behind `paths`.
+  size_t path_count;
+  // The stash message, or NULL for git's default.
+  const char *message;
+  // Recorded only when the repository's own config sets no identity, or NULL for none.
+  const struct RcGitFallbackIdentity *fallback;
+} RcGitStashRequest;
 
 // Where the checked-out branch pushes and pulls, as of the last fetch. Free with
 // `rcgit_remote_status_free`.
@@ -892,9 +957,8 @@ struct RcGitCommitDetail *rcgit_commit_details(const struct RcGitRepo *repo,
 void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
 
 // Commits reachable from `tip` that changed `path`, newest first. Examines at most
-// `max_scan` commits past `scan_skip` and reports how many it examined, so the caller loops
-// pages until `complete`. A `max_scan` of 0 counts as 1, so every incomplete page advances.
-// Release with `rcgit_commit_page_free`.
+// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
+// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -902,9 +966,7 @@ void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
 struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
                                            const struct RcGitOid *tip,
                                            const char *path,
-                                           size_t scan_skip,
-                                           size_t limit,
-                                           size_t max_scan,
+                                           struct RcGitScanPage page,
                                            char **error);
 
 // Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
@@ -913,24 +975,17 @@ struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
 // `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
 void rcgit_commit_page_free(struct RcGitCommitPage *page);
 
-// Commits reachable from `tip` that match the filter, newest first. `message` and `author`
-// are nullable case-insensitive substrings; `after` and `before` bound the commit time and
-// are ignored when `i64::MIN` and `i64::MAX` respectively. `after` also terminates the
-// walk. Pages like `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+// Commits reachable from `tip` that match `filter`, newest first. Pages like
+// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
 //
 // # Safety
-// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `message` and
-// `author` are NULL or NUL-terminated strings. `error` is NULL or valid for writing a
-// `char *`.
+// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
+// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
+// or valid for writing a `char *`.
 struct RcGitCommitPage *rcgit_search_commits(const struct RcGitRepo *repo,
                                              const struct RcGitOid *tip,
-                                             const char *message,
-                                             const char *author,
-                                             int64_t after,
-                                             int64_t before,
-                                             size_t scan_skip,
-                                             size_t limit,
-                                             size_t max_scan,
+                                             struct RcGitCommitFilter filter,
+                                             struct RcGitScanPage page,
                                              char **error);
 
 // Lists every file that differs between two trees, renames detected, sorted by path. `from`
@@ -1253,26 +1308,19 @@ struct RcGitIdentity *rcgit_guard_configured_identity(const char *repo_path, cha
 // `identity` is NULL or came from `rcgit_guard_configured_identity` and is not freed twice.
 void rcgit_identity_free(struct RcGitIdentity *identity);
 
-// Commits the selected files (or hunks) to the checked-out branch. `expected_head` is the
-// hex commit the change list was built against, or NULL on an unborn branch; the commit is
-// refused when `HEAD` moved. `fallback_name`/`fallback_email` are recorded only when the
-// repository's own config sets no `user.name`/`user.email` (pass both or neither); without
-// either the commit is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the
-// result; release it with `rcgit_commit_result_free`. Returns `RCGIT_OK`,
-// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
+// Commits the selected files (or hunks) to the checked-out branch. The commit is refused
+// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
+// the repository's own config sets no `user.name`/`user.email`; without either the commit
+// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
+// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
+// `RCGIT_ERROR`.
 //
 // # Safety
-// `repo_path` and `message` are NUL-terminated strings; `fallback_name`, `fallback_email`,
-// `expected_head`, and `input` are each NULL or one. `files` points to `len` readable
-// `RcGitCommitFile`s per that struct's contract. `out` is valid for writing a
-// `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
+// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+// points to a readable `RcGitCommitRequest` per that struct's contract. `out` is valid for
+// writing a `RcGitCommitResult *`. `error` is NULL or valid for writing a `char *`.
 int32_t rcgit_guard_commit(const char *repo_path,
-                           const char *message,
-                           const char *fallback_name,
-                           const char *fallback_email,
-                           const char *expected_head,
-                           const struct RcGitCommitFile *files,
-                           size_t len,
+                           const struct RcGitCommitRequest *request,
                            const char *input,
                            struct RcGitCommitResult **out,
                            char **error);
@@ -1283,21 +1331,17 @@ int32_t rcgit_guard_commit(const char *repo_path,
 // `result` is NULL or came from `rcgit_guard_commit` and is not freed twice.
 void rcgit_commit_result_free(struct RcGitCommitResult *result);
 
-// Stashes the changes at `paths` as a git-compatible entry, then restores those files to
-// `HEAD` state. `message` is the optional stash message. `fallback_name`/`fallback_email`
-// are recorded only when the repository's own config sets no identity, as for
-// `rcgit_guard_commit`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
+// Stashes the changes at `request.paths` as a git-compatible entry, then restores those
+// files to `HEAD` state. `request.fallback` is recorded only when the repository's own
+// config sets no identity, as for `rcgit_guard_commit`. Returns `RCGIT_OK`,
+// `RCGIT_IDENTITY_REQUIRED`, or `RCGIT_ERROR`.
 //
 // # Safety
-// `repo_path` is a NUL-terminated string; `message`, `fallback_name`, `fallback_email`, and
-// `input` are each NULL or one. `paths` points to `len` readable, non-NULL NUL-terminated
-// strings. `error` is NULL or valid for writing a `char *`.
+// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
+// points to a readable `RcGitStashRequest` per that struct's contract. `error` is NULL or
+// valid for writing a `char *`.
 int32_t rcgit_guard_stash_push(const char *repo_path,
-                               const char *const *paths,
-                               size_t len,
-                               const char *message,
-                               const char *fallback_name,
-                               const char *fallback_email,
+                               const struct RcGitStashRequest *request,
                                const char *input,
                                char **error);
 

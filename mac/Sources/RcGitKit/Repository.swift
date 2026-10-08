@@ -195,7 +195,9 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         var error: UnsafeMutablePointer<CChar>? = nil
         let page = tip.withC { tipPtr in
             path.withCString { pathPtr in
-                rcgit_path_history(handle, tipPtr, pathPtr, scanSkip, limit, maxScan, &error)
+                rcgit_path_history(
+                    handle, tipPtr, pathPtr,
+                    RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan), &error)
             }
         }
         guard let page else {
@@ -214,10 +216,14 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         let page = tip.withC { tipPtr in
             Repository.withOptionalCString(filter.message) { messagePtr in
                 Repository.withOptionalCString(filter.author) { authorPtr in
-                    rcgit_search_commits(
-                        handle, tipPtr, messagePtr, authorPtr,
-                        filter.after ?? Int64.min, filter.before ?? Int64.max,
-                        scanSkip, limit, maxScan, &error)
+                    let cFilter = RcGitCommitFilter(
+                        message: messagePtr, author: authorPtr,
+                        has_after: filter.after != nil, after: filter.after ?? 0,
+                        has_before: filter.before != nil, before: filter.before ?? 0)
+                    return rcgit_search_commits(
+                        handle, tipPtr, cFilter,
+                        RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan),
+                        &error)
                 }
             }
         }

@@ -73,7 +73,8 @@ import Testing
         #expect(outcome.branch == "main")
         #expect(try outcome.oid == fixture.revParse("HEAD"))
         #expect(
-            try fixture.gitOutput(["log", "-1", "--format=%an|%s"]) == "Bridge User|Bridge commit")
+            try fixture.gitOutput(["log", "-1", "--format=%an|%ae|%s"])
+                == "Bridge User|bridge@example.com|Bridge commit")
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
 
         try fixture.write("alpha.txt", "stash via bridge\n")
@@ -81,6 +82,9 @@ import Testing
             repoPath: fixture.path, paths: ["alpha.txt"], message: "bridged",
             fallback: author, input: nil)
         #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        #expect(
+            try fixture.gitOutput(["log", "-1", "--format=%an|%ae", "refs/stash"])
+                == "Bridge User|bridge@example.com")
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, index: 0, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
 
