@@ -232,7 +232,9 @@ pub fn stash_apply(
 /// [`stash_apply`] checks it, and again against the reflog line the drop removes.
 ///
 /// # Errors
-/// As [`stash_apply`]; a failed apply leaves the stash entry untouched.
+/// As [`stash_apply`]; a failed apply leaves the stash entry untouched. When the apply
+/// succeeds but the drop fails, [`ActionError::Git`] with op `"stash pop: drop"` says the
+/// changes are already in the working tree, so the entry should be dropped, not popped again.
 pub fn stash_pop(
     repo_path: &Path,
     policy: &Policy,
@@ -246,7 +248,16 @@ pub fn stash_pop(
     let decision = plan_stash_pop(policy, index, &target.message);
     let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
     apply_inner(&repo, repo_path, target.oid, OP)?;
-    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP)
+    drop_inner(&repo, index, target.oid, challenge.backup_ref, OP).map_err(|error| {
+        ActionError::git(
+            "stash pop: drop",
+            stash_name(index),
+            format!(
+                "the changes were applied, but the entry was not dropped; drop it instead of \
+                 popping again: {error}"
+            ),
+        )
+    })
 }
 
 /// Deletes `stash@{index}` without applying it, behind the typed phrase `drop`, with a
