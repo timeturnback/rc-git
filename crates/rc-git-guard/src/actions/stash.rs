@@ -8,6 +8,7 @@
 //! `reflog delete --updateref --rewrite` by hand: the kept reflog lines re-chain and are
 //! rewritten byte-identically otherwise.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use gix::ObjectId;
@@ -385,10 +386,40 @@ fn apply_inner(
         .diff_trees_without_renames(core_oid(base, op)?.into(), core_oid(stash_commit, op)?)
         .map_err(git_err(op, "stash"))?;
     let work_dir = work_dir(repo, op)?;
+    let removed = removed_paths(&changes);
+    check_changes(repo, &work_dir, &changes, &removed, op)?;
+    write_changes(repo, &work_dir, &changes, op)
+}
 
-    // Pass 1: every touched path must be valid and exactly at the base state; refuse before
-    // any write.
-    for change in &changes {
+/// Every path the stash removes from the working tree: deletions and rename sources.
+fn removed_paths(changes: &[rc_git_core::TreeChange]) -> BTreeSet<String> {
+    let mut removed = BTreeSet::new();
+    for change in changes {
+        match change.kind {
+            rc_git_core::ChangeKind::Deleted => {
+                removed.insert(change.path.to_string());
+            }
+            rc_git_core::ChangeKind::Renamed => {
+                if let Some(source) = &change.source_path {
+                    removed.insert(source.to_string());
+                }
+            }
+            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {}
+        }
+    }
+    removed
+}
+
+/// Pass 1: every touched path must be valid and exactly at the base state; refuse before
+/// any write.
+fn check_changes(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    changes: &[rc_git_core::TreeChange],
+    removed: &BTreeSet<String>,
+    op: &'static str,
+) -> ActionResult<()> {
+    for change in changes {
         let path = change.path.to_string();
         let source_path = change.source_path.as_ref().map(ToString::to_string);
         let symlink = entry_kind(&path, change.entry, op)? == gix::objs::tree::EntryKind::Link;
@@ -398,38 +429,56 @@ fn apply_inner(
         }
         match change.kind {
             rc_git_core::ChangeKind::Added => {
-                require_absent(&work_dir, &path, op)?;
+                require_absent(work_dir, &path, removed, op)?;
             }
             rc_git_core::ChangeKind::Modified => {
-                require_base_content(repo, &work_dir, &path, change.old, op)?;
+                require_base_content(repo, work_dir, &path, change.old, op)?;
             }
             rc_git_core::ChangeKind::Deleted => {
-                require_absent_or_base(repo, &work_dir, &path, change.old, op)?;
+                require_absent_or_base(repo, work_dir, &path, change.old, op)?;
             }
             rc_git_core::ChangeKind::Renamed => {
                 let source = source_path.as_deref().ok_or_else(|| {
                     ActionError::git(op, "refs/stash", "a rename without a source path")
                 })?;
-                require_absent_or_base(repo, &work_dir, source, change.old, op)?;
-                require_absent(&work_dir, &path, op)?;
+                require_absent_or_base(repo, work_dir, source, change.old, op)?;
+                require_absent(work_dir, &path, removed, op)?;
             }
         }
     }
+    Ok(())
+}
 
-    // Pass 2: write. Every check passed, so this only replays recorded state.
-    for change in &changes {
-        let path = change.path.to_string();
+/// Pass 2: write. Every check passed, so this only replays recorded state. Removals run
+/// first, so a file the stash turns into a directory (`x` to `x/y`), or a directory it turns
+/// into a file, is out of the way before the new entry is written.
+fn write_changes(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    changes: &[rc_git_core::TreeChange],
+    op: &'static str,
+) -> ActionResult<()> {
+    for change in changes {
         match change.kind {
-            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {
-                restore_change(repo, &work_dir, &path, change, op)?;
+            rc_git_core::ChangeKind::Deleted => {
+                workfile::delete_file(op, work_dir, &change.path.to_string())?;
             }
-            rc_git_core::ChangeKind::Deleted => workfile::delete_file(op, &work_dir, &path)?,
             rc_git_core::ChangeKind::Renamed => {
                 if let Some(source) = &change.source_path {
-                    workfile::delete_file(op, &work_dir, &source.to_string())?;
+                    workfile::delete_file(op, work_dir, &source.to_string())?;
                 }
-                restore_change(repo, &work_dir, &path, change, op)?;
             }
+            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {}
+        }
+    }
+    for change in changes {
+        match change.kind {
+            rc_git_core::ChangeKind::Added
+            | rc_git_core::ChangeKind::Modified
+            | rc_git_core::ChangeKind::Renamed => {
+                restore_change(repo, work_dir, &change.path.to_string(), change, op)?;
+            }
+            rc_git_core::ChangeKind::Deleted => {}
         }
     }
     Ok(())
@@ -451,17 +500,67 @@ fn restore_change(
     workfile::restore_file(op, work_dir, path, &data, kind)
 }
 
-/// The path must not exist on disk at all.
-fn require_absent(work_dir: &Path, path: &str, op: &'static str) -> ActionResult<()> {
+/// The path must not exist on disk, unless it is in the way of a type change the stash makes
+/// and the apply removes it first: a parent that is a `removed` file (`x` for `x/y`), or a
+/// directory holding nothing but `removed` files (`x/y` for `x`). Each removed file is
+/// checked against the base by its own deletion.
+fn require_absent(
+    work_dir: &Path,
+    path: &str,
+    removed: &BTreeSet<String>,
+    op: &'static str,
+) -> ActionResult<()> {
     let full = workfile::join_under(work_dir, path, op)?;
     match std::fs::symlink_metadata(&full) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                && has_removed_parent(path, removed) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(ActionError::git(op, path, error)),
+        Ok(meta) if meta.is_dir() => require_only_removed(work_dir, path, removed, op),
         Ok(_) => Err(ActionError::DirtyPath {
             op,
             path: path.to_owned(),
         }),
     }
+}
+
+fn has_removed_parent(path: &str, removed: &BTreeSet<String>) -> bool {
+    path.rmatch_indices('/')
+        .any(|(end, _)| removed.contains(&path[..end]))
+}
+
+/// The directory `dir` must hold only files in `removed`, so deleting them empties it. The
+/// walk stops at the first other entry, so it reads at most one entry per removed file.
+fn require_only_removed(
+    work_dir: &Path,
+    dir: &str,
+    removed: &BTreeSet<String>,
+    op: &'static str,
+) -> ActionResult<()> {
+    let full = workfile::join_under(work_dir, dir, op)?;
+    let entries = std::fs::read_dir(&full).map_err(git_err(op, dir))?;
+    for entry in entries {
+        let entry = entry.map_err(git_err(op, dir))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(ActionError::DirtyPath {
+                op,
+                path: dir.to_owned(),
+            });
+        };
+        let child = format!("{dir}/{name}");
+        let file_type = entry.file_type().map_err(git_err(op, &child))?;
+        if file_type.is_dir() {
+            require_only_removed(work_dir, &child, removed, op)?;
+        } else if !removed.contains(&child) {
+            return Err(ActionError::DirtyPath { op, path: child });
+        }
+    }
+    Ok(())
 }
 
 /// The path's bytes on disk must equal the blob the stash recorded as its base. A missing

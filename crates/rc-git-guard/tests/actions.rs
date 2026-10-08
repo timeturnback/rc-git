@@ -2167,6 +2167,67 @@ mod stash {
     }
 
     #[test]
+    fn apply_turns_a_file_into_a_directory() {
+        let fx = Fixture::standard();
+        fx.git(&["rm", "-q", "alpha.txt"]);
+        fx.write("alpha.txt/y", b"y\n");
+        fx.git(&["add", "alpha.txt/y"]);
+        fx.git(&["stash", "push", "-q"]);
+        assert_eq!(porcelain(&fx), "");
+
+        stash_apply(fx.path(), &Policy::default(), 0, stash_oid(&fx, 0), None).unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt/y")).unwrap(),
+            b"y\n"
+        );
+        assert_eq!(
+            porcelain(&fx),
+            " D alpha.txt",
+            "git hides alpha.txt/ behind the index entry"
+        );
+    }
+
+    #[test]
+    fn apply_turns_a_directory_into_a_file() {
+        let fx = Fixture::standard();
+        fx.git(&["rm", "-rq", "docs"]);
+        fx.write("docs", b"now a file\n");
+        fx.git(&["add", "docs"]);
+        fx.git(&["stash", "push", "-q"]);
+        assert_eq!(porcelain(&fx), "");
+
+        stash_apply(fx.path(), &Policy::default(), 0, stash_oid(&fx, 0), None).unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("docs")).unwrap(),
+            b"now a file\n"
+        );
+        assert_eq!(porcelain(&fx), " D docs/guide.md\n?? docs");
+    }
+
+    #[test]
+    fn apply_refuses_a_directory_to_file_change_over_an_untracked_file() {
+        let fx = Fixture::standard();
+        fx.git(&["rm", "-rq", "docs"]);
+        fx.write("docs", b"now a file\n");
+        fx.git(&["add", "docs"]);
+        fx.git(&["stash", "push", "-q"]);
+        fx.write("docs/notes.md", b"mine\n");
+
+        let err =
+            stash_apply(fx.path(), &Policy::default(), 0, stash_oid(&fx, 0), None).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::DirtyPath { path, .. } if path == "docs/notes.md"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("docs/guide.md")).unwrap(),
+            b"guide\n",
+            "nothing was written"
+        );
+        assert_eq!(porcelain(&fx), "?? docs/notes.md");
+    }
+
+    #[test]
     fn a_nested_path_stashes_and_pops_with_real_git() {
         let fx = Fixture::standard();
         fx.write("src/lib.rs", b"pub fn two() -> u32 {\n    2\n}\n");
