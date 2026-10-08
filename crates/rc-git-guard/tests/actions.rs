@@ -2406,6 +2406,148 @@ mod stash {
     }
 
     #[test]
+    fn dropping_the_oldest_of_three_rechains_the_new_oldest_to_the_null_oid() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two", "three"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let top = fx.rev_parse("refs/stash");
+        let one = fx.rev_parse("stash@{2}");
+
+        let deleted = stash_drop(fx.path(), &policy, 2, stash_oid(&fx, 2), Some("drop")).unwrap();
+        assert_eq!(deleted.full_name, "stash@{2}");
+        assert_eq!(fx.rev_parse("refs/rc-git/backup/stash/2"), one);
+        assert_eq!(
+            fx.rev_parse("refs/stash"),
+            top,
+            "the newest entry stays on top"
+        );
+        assert_eq!(stash_list(&fx), "On main: three\nOn main: two");
+        assert_eq!(
+            fx.git_output(&["reflog", "show", "--format=%gs", "refs/stash"]),
+            "On main: three\nOn main: two"
+        );
+        let log = std::fs::read_to_string(fx.path().join(".git/logs/refs/stash")).unwrap();
+        let oldest = log.lines().next().unwrap();
+        assert!(
+            oldest.starts_with(&format!("{} {}", "0".repeat(40), fx.rev_parse("stash@{1}"))),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_stash_index_past_the_end_is_refused_and_writes_nothing() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stashed\n");
+        fx.git(&["stash", "push", "-q", "-m", "only"]);
+        let shown = stash_oid(&fx, 0);
+        let refs_before = refs(&fx);
+
+        let err = stash_apply(fx.path(), &policy, 1, shown, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash apply" }),
+            "{err}"
+        );
+        let err = stash_pop(fx.path(), &policy, 1, shown, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash pop" }),
+            "{err}"
+        );
+        let err = stash_drop(fx.path(), &policy, 1, shown, Some("drop")).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash drop" }),
+            "{err}"
+        );
+
+        assert_eq!(stash_list(&fx), "On main: only");
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "nothing was applied"
+        );
+    }
+
+    #[test]
+    fn stash_actions_on_a_repository_without_a_stash_are_refused() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        let any = rc_git_core::Oid::from_hex(&fx.rev_parse("HEAD")).unwrap();
+        let refs_before = refs(&fx);
+
+        let err = stash_apply(fx.path(), &policy, 0, any, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash apply" }),
+            "{err}"
+        );
+        let err = stash_pop(fx.path(), &policy, 0, any, None).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash pop" }),
+            "{err}"
+        );
+        let err = stash_drop(fx.path(), &policy, 0, any, Some("drop")).unwrap_err();
+        assert!(
+            matches!(err, ActionError::StaleRepository { op: "stash drop" }),
+            "{err}"
+        );
+
+        assert_eq!(refs(&fx), refs_before, "no stash or backup ref was written");
+        assert!(!fx.path().join(".git/logs/refs/stash").exists());
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn popping_a_stashed_rename_restores_the_new_path_and_removes_the_old() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.git(&["mv", "alpha.txt", "renamed.txt"]);
+        fx.git(&["stash", "push", "-q", "-m", "moved"]);
+        assert_eq!(porcelain(&fx), "");
+
+        stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
+        assert!(!fx.path().join("alpha.txt").exists());
+        assert_eq!(
+            std::fs::read(fx.path().join("renamed.txt")).unwrap(),
+            b"alpha\n"
+        );
+        assert_eq!(stash_list(&fx), "");
+    }
+
+    #[test]
+    fn popping_a_stashed_symlink_and_executable_restores_their_modes() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.symlink("alpha.txt", "stashed-link");
+        fx.write("run.sh", b"#!/bin/sh\n");
+        fx.set_mode("run.sh", 0o755);
+        fx.git(&["add", "stashed-link", "run.sh"]);
+        fx.git(&["stash", "push", "-q", "-m", "modes"]);
+        assert!(std::fs::symlink_metadata(fx.path().join("stashed-link")).is_err());
+
+        stash_pop(fx.path(), &policy, 0, stash_oid(&fx, 0), None).unwrap();
+        let link = fx.path().join("stashed-link");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::Path::new("alpha.txt")
+        );
+        assert_eq!(file_mode(&fx, "run.sh"), 0o755);
+        assert_eq!(
+            std::fs::read(fx.path().join("run.sh")).unwrap(),
+            b"#!/bin/sh\n"
+        );
+        assert_eq!(stash_list(&fx), "");
+    }
+
+    #[test]
     fn a_drop_while_the_stash_log_is_locked_changes_nothing() {
         let fx = Fixture::standard();
         let policy = Policy::default();
