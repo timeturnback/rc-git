@@ -438,13 +438,22 @@ pub fn plan_discard(policy: &Policy, files: usize) -> Decision {
 /// loses nothing, so the policy allows it without a challenge.
 ///
 /// # Errors
-/// [`ActionError::Git`] when the revision does not resolve or the branch exists.
+/// [`ActionError::Git`] when `name` is `HEAD` or starts with `-` (names git refuses), the
+/// revision does not resolve, or the branch exists.
 pub fn create_branch(
     repo_path: &Path,
     policy: &Policy,
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
+    if name == "HEAD" {
+        return Err(ActionError::git(
+            "create branch",
+            name,
+            "'HEAD' is not a valid branch name; git reserves it",
+        ));
+    }
+    refuse_leading_dash("create branch", name)?;
     let action = Action::CreateLocalBranch {
         name: name.to_owned(),
     };
@@ -461,13 +470,15 @@ pub fn create_branch(
 /// Creates a lightweight tag at `revspec`, refusing to overwrite an existing one.
 ///
 /// # Errors
-/// [`ActionError::Git`] when the revision does not resolve or the tag exists.
+/// [`ActionError::Git`] when `name` starts with `-`, the revision does not resolve, or the
+/// tag exists.
 pub fn create_tag(
     repo_path: &Path,
     policy: &Policy,
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
+    refuse_leading_dash("create tag", name)?;
     let action = Action::CreateTag {
         name: name.to_owned(),
     };
@@ -479,6 +490,18 @@ pub fn create_tag(
         &format!("refs/tags/{name}"),
         revspec,
     )
+}
+
+/// Refuses a ref name git refuses: a leading `-` would read as an option on its command line.
+fn refuse_leading_dash(op: &'static str, name: &str) -> ActionResult<()> {
+    if name.starts_with('-') {
+        return Err(ActionError::git(
+            op,
+            name,
+            "a name may not start with '-'; git would read it as an option",
+        ));
+    }
+    Ok(())
 }
 
 /// What deleting `name` would need: the merged-ness the policy keys on, and its decision.

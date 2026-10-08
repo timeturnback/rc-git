@@ -113,6 +113,26 @@ fn branches_and_tags_are_created_at_the_named_revision_and_never_overwritten() {
 }
 
 #[test]
+fn an_invalid_branch_name_is_refused_before_any_write() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let before = refs(&fx);
+
+    for name in ["HEAD", "-dash", "a..b"] {
+        let err = create_branch(fx.path(), &policy, name, "HEAD").unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{name}: {err}");
+        let message = err.to_string();
+        assert!(message.contains("create branch"), "names the op: {message}");
+        assert!(message.contains(name), "names the branch: {message}");
+    }
+    let err = create_tag(fx.path(), &policy, "-dash", "HEAD").unwrap_err();
+    assert!(err.to_string().contains("create tag '-dash'"), "{err}");
+
+    assert_eq!(refs(&fx), before, "no ref was written");
+    fx.git(&["checkout", "-q", "-b", "x"]);
+}
+
+#[test]
 fn deleting_a_merged_branch_needs_only_a_plain_confirm_and_no_backup() {
     let fx = Fixture::standard();
     let policy = Policy::default();
