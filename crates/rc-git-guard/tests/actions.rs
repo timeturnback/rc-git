@@ -956,6 +956,62 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn empty_unchanged_missing_and_directory_selections_are_refused() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        let head = fx.rev_parse("HEAD");
+        let cases: [(&[FileSelection], &str, &str); 4] = [
+            (&[], "HEAD", "nothing selected to commit"),
+            (
+                &[whole("README.md")],
+                "HEAD",
+                "the selection matches HEAD; nothing to commit",
+            ),
+            (
+                &[whole("nope.txt")],
+                "nope.txt",
+                "does not exist on disk or in HEAD",
+            ),
+            (
+                &[whole("src")],
+                "src",
+                "is a directory; select files instead",
+            ),
+        ];
+
+        for (selections, expected_name, message) in cases {
+            let err = commit(
+                fx.path(),
+                &policy,
+                "msg",
+                explicit(),
+                Some(commit_id(&head)),
+                selections,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: "commit", name, .. } if name == expected_name),
+                "{err}"
+            );
+            assert!(err.to_string().contains(message), "{err}");
+            assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved: {message}");
+        }
+
+        let err = discard_files(fx.path(), &policy, &["src".to_owned()], None).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "discard", name, .. } if name == "src"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("is a directory; select files instead"),
+            "{err}"
+        );
+        assert_eq!(porcelain(&fx), "", "nothing was written");
+    }
+
+    #[test]
     fn discard_in_a_bare_repository_names_discard() {
         let fx = Fixture::standard();
         let (_holder, bare) = fx.bare_copy();
@@ -2155,6 +2211,71 @@ mod stash {
             "{err}"
         );
         assert_eq!(stash_list(&fx), "");
+    }
+
+    #[expect(clippy::unwrap_used, reason = "test helper panics on a failed push")]
+    fn refused_push(fx: &Fixture, paths: &[&str], author: Author) -> ActionError {
+        let paths: Vec<String> = paths.iter().map(|path| (*path).to_owned()).collect();
+        stash_push(fx.path(), &Policy::default(), &paths, None, author, None).unwrap_err()
+    }
+
+    fn assert_refused(err: &ActionError, name: &str, message: &str) {
+        assert!(
+            matches!(err, ActionError::Git { op: "stash push", name: n, .. } if n == name),
+            "{err}"
+        );
+        assert!(err.to_string().contains(message), "{err}");
+    }
+
+    #[test]
+    fn stash_push_refuses_empty_unchanged_unborn_and_identityless() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"changed\n");
+
+        let err = refused_push(&fx, &[], explicit());
+        assert_refused(&err, "refs/stash", "nothing selected to stash");
+        let err = refused_push(&fx, &["README.md"], explicit());
+        assert_refused(
+            &err,
+            "refs/stash",
+            "no changes to stash at the selected paths",
+        );
+        let err = refused_push(&fx, &["alpha.txt"], Author::default());
+        assert!(matches!(err, ActionError::MissingIdentity), "{err}");
+        assert_eq!(stash_list(&fx), "");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"changed\n",
+            "the edit survives every refused push"
+        );
+
+        let unborn = Fixture::empty_dir();
+        unborn.git(&["init", "-q", "-b", "main"]);
+        unborn.write("first.txt", b"first\n");
+        let err = refused_push(&unborn, &["first.txt"], explicit());
+        assert_refused(&err, "refs/stash", "cannot stash before the first commit");
+        assert_eq!(
+            std::fs::read(unborn.path().join("first.txt")).unwrap(),
+            b"first\n"
+        );
+    }
+
+    #[test]
+    fn stashing_the_deletion_of_every_file_is_refused() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("only.txt", b"only\n");
+        fx.commit("Only file", "2024-01-05T00:00:00+0000");
+        fx.remove("only.txt");
+
+        let err = refused_push(&fx, &["only.txt"], explicit());
+        assert_refused(
+            &err,
+            "refs/stash",
+            "stashing every file would empty the tree",
+        );
+        assert_eq!(stash_list(&fx), "");
+        assert!(!fx.path().join("only.txt").exists(), "the deletion stays");
     }
 
     #[test]
