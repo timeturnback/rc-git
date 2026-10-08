@@ -2608,6 +2608,35 @@ mod checkout {
         );
     }
 
+    #[test]
+    fn an_untracked_file_where_the_target_needs_a_folder_refuses_the_switch() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("0.txt", b"main\n");
+        fx.commit("base", "2024-01-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "nested"]);
+        fx.write("0.txt", b"nested\n");
+        fx.write("a/b", b"b\n");
+        fx.commit("nested", "2024-01-02T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+        fx.write("a", b"untracked\n");
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "nested").unwrap_err();
+
+        assert!(
+            matches!(&err, ActionError::DirtyPath { op: "checkout", path } if path == "a"),
+            "{err}"
+        );
+        assert_eq!(head_branch(&fx), "main", "HEAD stayed put");
+        assert_eq!(
+            std::fs::read(fx.path().join("0.txt")).unwrap(),
+            b"main\n",
+            "a path sorting before the blocked one was not written"
+        );
+        assert_eq!(std::fs::read(fx.path().join("a")).unwrap(), b"untracked\n");
+        assert_eq!(porcelain(&fx), "?? a");
+    }
+
     /// `main` has `docs/guide.md`, `nodocs` (from `main`) deletes it, and `docsfile` (from
     /// `nodocs`) adds a file named `docs`. Checked out on `main`.
     fn docs_fixture() -> Fixture {

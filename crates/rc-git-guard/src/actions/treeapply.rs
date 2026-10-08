@@ -148,7 +148,8 @@ fn set_old_kinds(
 /// hand the same one to [`apply`], so no other process can change the index in between.
 ///
 /// # Errors
-/// [`ActionError::DirtyPath`] for the first path that does not match `HEAD`,
+/// [`ActionError::DirtyPath`] for the first path that does not match `HEAD`, or for a file or
+/// symlink standing where an added path needs a parent directory;
 /// [`ActionError::Git`] when a blob cannot be read, or a path would cross a symlink (one on
 /// disk, or one this plan writes).
 pub(super) fn verify_clean(
@@ -184,6 +185,7 @@ pub(super) fn verify_clean(
         } else {
             // The other side adds this path; anything already there is in the way, except a
             // file the plan deletes first or a directory the deletions empty.
+            refuse_blocked_ancestors(work_dir, &change.path, &deleted_files, op)?;
             let full = workfile::join_under(work_dir, &change.path, op)?;
             if let Ok(meta) = std::fs::symlink_metadata(&full)
                 && !deleted_files.contains(&file_id(&meta))
@@ -217,6 +219,44 @@ fn refuse_unmerged_entries(index: &gix::index::File, op: &'static str) -> Action
         entry.path(index).to_string(),
         "has unresolved conflicts; resolve them in git first",
     ))
+}
+
+/// Refuses an added `path` when one of its parent directories is something else on disk: an
+/// untracked file or symlink standing where the plan needs a directory. A lstat of the leaf
+/// alone reads that case as absent, and the write would then fail halfway through the plan.
+/// An ancestor the plan deletes first is not in the way; nothing below it exists yet.
+///
+/// # Errors
+/// [`ActionError::DirtyPath`] naming a blocking file, [`ActionError::Git`] for a blocking
+/// symlink (the write would cross it) or an ancestor that cannot be inspected.
+fn refuse_blocked_ancestors(
+    work_dir: &Path,
+    path: &str,
+    deleted_files: &HashSet<(u64, u64)>,
+    op: &'static str,
+) -> ActionResult<()> {
+    for (end, _) in path.match_indices('/') {
+        let ancestor = &path[..end];
+        let meta = match std::fs::symlink_metadata(work_dir.join(ancestor)) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(ActionError::git(op, ancestor, error)),
+        };
+        if meta.is_dir() {
+            continue;
+        }
+        if deleted_files.contains(&file_id(&meta)) {
+            return Ok(());
+        }
+        if meta.file_type().is_symlink() {
+            return Err(workfile::crosses_link(op, path, ancestor));
+        }
+        return Err(ActionError::DirtyPath {
+            op,
+            path: ancestor.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// The device and inode of a file on disk: two spellings that a case-insensitive or
