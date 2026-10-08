@@ -191,6 +191,22 @@ fn worktree_file_reads_text_binary_symlink_and_limits() {
     };
     assert_eq!((size, limit), (rc_git_testkit::README.len() as u64, 3));
 
+    let exact = rc_git_testkit::README.len() as u64;
+    assert!(
+        matches!(
+            repo.worktree_file("README.md", exact).unwrap(),
+            BlobContent::Text { .. }
+        ),
+        "a file of exactly the limit is decoded"
+    );
+    assert_eq!(
+        repo.worktree_file("README.md", exact - 1).unwrap(),
+        BlobContent::TooLarge {
+            size: 17,
+            limit: 16
+        }
+    );
+
     let BlobContent::Text { data, .. } = repo.worktree_file("link", DEFAULT_BLOB_LIMIT).unwrap()
     else {
         panic!("expected symlink target as text");

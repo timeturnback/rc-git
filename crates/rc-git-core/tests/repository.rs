@@ -699,6 +699,24 @@ fn entry_at_path_walks_segments() {
 }
 
 #[test]
+fn an_empty_blob_is_text_under_a_zero_limit() {
+    let fx = Fixture::standard();
+    fx.write("empty.txt", b"");
+    fx.commit("Add an empty file", "2024-01-05T00:00:00Z");
+    let repo = Repository::open(fx.path()).unwrap();
+    let empty = oid(&fx.rev_parse("HEAD:empty.txt"));
+
+    assert_eq!(
+        repo.read_blob(empty, 0).unwrap(),
+        BlobContent::Text {
+            data: vec![],
+            line_starts: vec![],
+            valid_utf8: true,
+        }
+    );
+}
+
+#[test]
 fn read_blob_distinguishes_text_binary_and_oversize() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
@@ -725,6 +743,21 @@ fn read_blob_distinguishes_text_binary_and_oversize() {
         BlobContent::TooLarge {
             size: README.len() as u64,
             limit: 3
+        }
+    );
+    let exact = README.len() as u64;
+    assert!(
+        matches!(
+            repo.read_blob(readme, exact).unwrap(),
+            BlobContent::Text { .. }
+        ),
+        "a blob of exactly the limit is decoded"
+    );
+    assert_eq!(
+        repo.read_blob(readme, exact - 1).unwrap(),
+        BlobContent::TooLarge {
+            size: 17,
+            limit: 16
         }
     );
     assert_eq!(repo.blob_size(readme).unwrap(), README.len() as u64);

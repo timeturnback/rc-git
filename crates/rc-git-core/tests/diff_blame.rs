@@ -549,6 +549,29 @@ fn blob_diff_handles_absent_sides_binary_and_limits() {
 }
 
 #[test]
+fn a_blob_diff_at_exactly_the_limit_is_decoded() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let readme = oid(&fx.rev_parse("main:README.md"));
+
+    let exact = README.len() as u64;
+    assert_eq!(
+        repo.diff_blobs(Some(readme), Some(readme), exact, DEFAULT_DIFF_CONTEXT)
+            .unwrap(),
+        BlobDiff::Text { hunks: vec![] },
+        "blobs of exactly the limit are diffed"
+    );
+    assert_eq!(
+        repo.diff_blobs(Some(readme), Some(readme), exact - 1, DEFAULT_DIFF_CONTEXT)
+            .unwrap(),
+        BlobDiff::TooLarge {
+            size: 17,
+            limit: 16
+        }
+    );
+}
+
+#[test]
 fn a_diff_over_the_limit_reports_the_larger_side_from_the_headers() {
     let fx = Fixture::standard();
     fx.write("big.txt", &[b'x'; 40]);
