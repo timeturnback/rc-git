@@ -40,6 +40,11 @@ public final class ChangesModel {
     public private(set) var expectedHead: String?
 
     private var untickedPaths: Set<String> = []
+    /// Paths some status entry carries with U+FFFD replacements. The core reads a path
+    /// argument as UTF-8, so such a path would act on a twin with the valid spelling, and the
+    /// twin shares the string: every entry with one of these paths stays out of commit, stash
+    /// and discard.
+    private var inexactPaths: Set<String> = []
     private var tickedHunks: [String: Set<HunkStamp>] = [:]
 
     private var statusGeneration = 0
@@ -129,6 +134,7 @@ public final class ChangesModel {
         case let .success((report, head)):
             statusState = .loaded(report)
             expectedHead = head
+            inexactPaths = Set(report.entries.filter { !$0.hasExactPath }.map(\.path))
             let current = Set(report.entries.map(\.path))
             untickedPaths.formIntersection(current)
             tickedHunks = tickedHunks.filter { current.contains($0.key) }
@@ -173,7 +179,8 @@ public final class ChangesModel {
         }
     }
 
-    /// Shows `entry`'s diff against `HEAD` in the detail pane.
+    /// Shows `entry`'s diff against `HEAD` in the detail pane. A file on disk whose path is
+    /// not exact is not read, since the read goes by path.
     public func select(_ entry: StatusEntry) async {
         selectedPath = entry.path
         diffGeneration += 1
@@ -186,6 +193,9 @@ public final class ChangesModel {
                 return try repository.diffBlobs(
                     old: entry.oid, new: nil,
                     limit: Repository.defaultBlobLimit, context: 3)
+            }
+            guard entry.hasExactPath else {
+                throw RepositoryError(InexactName.pathRefusal("diff", entry.path))
             }
             return try repository.diffWorktreeFile(
                 path: entry.path, old: entry.oid,
@@ -203,9 +213,22 @@ public final class ChangesModel {
 
     // MARK: - Tick state
 
-    /// Whether the whole file is in the selection. Partially ticked files count as ticked.
+    /// Whether `path` may be committed, stashed or discarded: `false` when a status entry
+    /// carries it with U+FFFD replacements.
+    public func isActionable(_ path: String) -> Bool {
+        !inexactPaths.contains(path)
+    }
+
+    /// The refusal to show for discarding `paths`, or `nil` when every one is actionable.
+    public func discardRefusal(_ paths: [String]) -> String? {
+        guard let path = paths.first(where: { !isActionable($0) }) else { return nil }
+        return InexactName.pathRefusal("discard", path)
+    }
+
+    /// Whether the whole file is in the selection. Partially ticked files count as ticked;
+    /// a path that is not actionable never is.
     public func isTicked(_ path: String) -> Bool {
-        !untickedPaths.contains(path)
+        isActionable(path) && !untickedPaths.contains(path)
     }
 
     /// Whether only some hunks of `path` are selected.
@@ -239,6 +262,7 @@ public final class ChangesModel {
     /// missing hunk collapses back to a whole-file tick and unticking the last one unticks
     /// the file.
     public func toggleHunk(_ path: String, _ stamp: HunkStamp, all: [HunkStamp]) {
+        guard isActionable(path) else { return }
         var stamps = tickedHunks[path] ?? (isTicked(path) ? Set(all) : [])
         if stamps.contains(stamp) {
             stamps.remove(stamp)

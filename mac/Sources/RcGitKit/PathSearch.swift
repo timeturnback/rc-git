@@ -7,12 +7,16 @@ public struct PathIndexEntry: Sendable, Hashable {
     public let kind: EntryKind
     /// Whether the path is under `HiddenFiles`, so search can leave it out.
     public let hidden: Bool
+    /// Whether every component of `path` is the stored name byte for byte; see
+    /// `TreeEntry.hasExactName`.
+    public let hasExactPath: Bool
 
-    public init(path: String, oid: Oid, kind: EntryKind, hidden: Bool) {
+    public init(path: String, oid: Oid, kind: EntryKind, hidden: Bool, hasExactPath: Bool = true) {
         self.path = path
         self.oid = oid
         self.kind = kind
         self.hidden = hidden
+        self.hasExactPath = hasExactPath
     }
 
     /// The file name after the last `/`.
@@ -46,19 +50,23 @@ public struct PathIndex: Sendable {
         root: Oid, children: (Oid) throws -> [TreeEntry]
     ) throws -> PathIndex {
         var entries: [PathIndexEntry] = []
-        var pending: [(tree: Oid, prefix: String, hidden: Bool)] = [(root, "", false)]
-        while let (tree, prefix, parentHidden) = pending.popLast() {
+        var pending: [(tree: Oid, prefix: String, hidden: Bool, exact: Bool)] = [
+            (root, "", false, true)
+        ]
+        while let (tree, prefix, parentHidden, parentExact) = pending.popLast() {
             try Task.checkCancellation()
             for entry in try children(tree) {
                 let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
                 let hidden = parentHidden || HiddenFiles.isHidden(name: entry.name)
+                let exact = parentExact && entry.hasExactName
                 switch entry.kind {
                 case .tree:
-                    pending.append((entry.oid, path, hidden))
+                    pending.append((entry.oid, path, hidden, exact))
                 case .blob, .executableBlob, .symlink:
                     entries.append(
-                        PathIndexEntry(path: path, oid: entry.oid, kind: entry.kind, hidden: hidden)
-                    )
+                        PathIndexEntry(
+                            path: path, oid: entry.oid, kind: entry.kind, hidden: hidden,
+                            hasExactPath: exact))
                     if entries.count >= maxEntries {
                         return PathIndex(root: root, entries: entries, truncated: true)
                     }
@@ -78,7 +86,7 @@ public struct PathIndex: Sendable {
             entries: list.files.map {
                 PathIndexEntry(
                     path: $0.path, oid: .unhashed, kind: $0.kind,
-                    hidden: HiddenFiles.isHidden(path: $0.path))
+                    hidden: HiddenFiles.isHidden(path: $0.path), hasExactPath: $0.hasExactPath)
             },
             truncated: list.truncated)
     }

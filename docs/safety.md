@@ -64,8 +64,13 @@ Opening a repository someone else produced must be harmless.
   4 MiB: the global file and `info/exclude` by rc-git itself, each directory's `.gitignore`
   checked before gix reads it. A FIFO, device or oversized file is skipped with a warning and
   its rules do not apply, so it can neither block a scan nor grow memory.
-- File names are bytes, not strings. Non-UTF-8 names display with replacement characters; the
-  UI navigates by object id, so a hostile name cannot redirect a lookup.
+- File names are bytes, not strings, but paths and ref names cross the FFI back to the core
+  as UTF-8 only. Non-UTF-8 names display with replacement characters, and a file with one is
+  still reachable by object id in tree browsing. By path it is not: blame, path history,
+  worktree reads and guard actions would resolve the U+FFFD spelling, which can name a
+  different object. So the app refuses blame, file history, Copy Path and reveal on such a
+  path, leaves such a status row out of commit, stash and discard, and offers no delete or
+  create on such a ref.
 - Blob reads are capped. The header is checked before decoding; the default cap is 8 MiB, the
   FFI clamps any cap to 4 GiB, and the app refuses "Load anyway" above 512 MiB.
 - Binary detection follows git: a NUL in the first 8000 bytes. Binary content is never handed

@@ -26,14 +26,21 @@ public struct RefEntry: Sendable, Hashable, Identifiable {
     public let kind: RefKind
     /// The object after following symbolic refs and peeling annotated tags.
     public let target: Oid
+    /// Whether the stored name is valid UTF-8. When it is not, both names carry U+FFFD
+    /// replacements and sending one back would name a different ref, so the ref menu offers
+    /// no delete or create.
+    public let hasExactName: Bool
 
     public var id: String { fullName }
 
-    public init(fullName: String, shortName: String, kind: RefKind, target: Oid) {
+    public init(
+        fullName: String, shortName: String, kind: RefKind, target: Oid, hasExactName: Bool = true
+    ) {
         self.fullName = fullName
         self.shortName = shortName
         self.kind = kind
         self.target = target
+        self.hasExactName = hasExactName
     }
 }
 
@@ -100,13 +107,27 @@ public struct TreeEntry: Sendable, Hashable, Identifiable {
     public let name: String
     public let oid: Oid
     public let kind: EntryKind
+    /// Whether `name` is the stored name byte for byte. A path built from an inexact name
+    /// can name a different object, so nothing that reads by path accepts one.
+    public let hasExactName: Bool
 
     public var id: String { name }
 
-    public init(name: String, oid: Oid, kind: EntryKind) {
+    public init(name: String, oid: Oid, kind: EntryKind, hasExactName: Bool = true) {
         self.name = name
         self.oid = oid
         self.kind = kind
+        self.hasExactName = hasExactName
+    }
+}
+
+/// Why an action is refused on a path that crossed the FFI with U+FFFD replacements: the
+/// core reads path arguments as UTF-8, so the repaired spelling would act on whatever has
+/// that name, possibly another object.
+public enum InexactName {
+    /// The refusal for `action` (a verb phrase, such as "blame") on `path`.
+    public static func pathRefusal(_ action: String, _ path: String) -> String {
+        "cannot \(action) '\(path)': the path is not valid UTF-8"
     }
 }
 

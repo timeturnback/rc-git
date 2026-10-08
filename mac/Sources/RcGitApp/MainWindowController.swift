@@ -447,12 +447,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showFileHistory(_ sender: Any?) {
         guard let path = model.openedFilePath else { return }
-        showHistory(ofPath: path)
+        showHistory(ofPath: path, pathIsExact: model.openedPathIsExact)
     }
 
     /// Scopes History to one path and shows it. The scope is reported as soon as it is set;
-    /// the record after the page covers a path that was already the scope.
-    private func showHistory(ofPath path: String) {
+    /// the record after the page covers a path that was already the scope. An inexact path
+    /// is refused by the model and leaves the pane where it is.
+    private func showHistory(ofPath path: String, pathIsExact: Bool) {
+        guard pathIsExact else {
+            Task { await model.showPathHistory(path, pathIsExact: false) }
+            return
+        }
         setMode(.history)
         Task { [weak self] in
             await self?.model.showPathHistory(path)
@@ -698,8 +703,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         historyController.onClearScope = { [weak self] in
             self?.model.clearHistoryScope()
         }
-        treeController.onShowHistory = { [weak self] path in
-            self?.showHistory(ofPath: path)
+        treeController.onShowHistory = { [weak self] path, pathIsExact in
+            self?.showHistory(ofPath: path, pathIsExact: pathIsExact)
+        }
+        treeController.onCopyPath = { [weak self] path, pathIsExact in
+            guard let text = self?.model.copyablePath(path, pathIsExact: pathIsExact) else {
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
         }
         model.onSearchChanged = { [weak self] in
             guard let self else { return }
@@ -765,7 +777,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             fileController.repositoryPath = model.openedFilePath
             fileController.render(model.fileState)
-            treeController.showOpenFile(model.openedFilePath)
+            treeController.showOpenFile(
+                model.openedFilePath, pathIsExact: model.openedPathIsExact)
         }
         model.onError = { [weak self] message in
             self?.presentError(message)
@@ -794,12 +807,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
             return try await model.children(of: tree).map { BrowseRow(entry: $0) }
         }
-        treeController.onOpenFile = { [weak self] row, path in
+        treeController.onOpenFile = { [weak self] row, path, pathIsExact in
             guard let self else { return }
             if model.browsingWorkingTree, !row.missing {
-                Task { await self.model.openWorktreeFile(name: row.entry.name, path: path) }
+                Task {
+                    await self.model.openWorktreeFile(
+                        name: row.entry.name, path: path, pathIsExact: pathIsExact)
+                }
             } else {
-                Task { await self.model.openFile(row.entry, path: path) }
+                Task { await self.model.openFile(row.entry, path: path, pathIsExact: pathIsExact) }
             }
         }
         treeController.isRowVisible = { [weak self] row in
@@ -939,7 +955,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 _ = try RepositoryGuard.stashDrop(repoPath: path, index: index, input: input)
             }
         }
+        changesController.isActionable = { [weak self] path in
+            self?.changesModel?.isActionable(path) ?? true
+        }
         changesController.onDiscard = { [weak self] paths in
+            if let refusal = self?.changesModel?.discardRefusal(paths) {
+                self?.presentError(refusal)
+                return
+            }
             self?.performStashAction(
                 verb: "Discard Changes", decision: RepositoryGuard.planDiscard(files: paths.count)
             ) { path, input in
@@ -956,6 +979,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.pushRemote(nil)
         }
         changesController.onDiscardHunk = { [weak self] filePath, stamp in
+            if let refusal = self?.changesModel?.discardRefusal([filePath]) {
+                self?.presentError(refusal)
+                return
+            }
             self?.performStashAction(
                 verb: "Discard Hunk", decision: RepositoryGuard.planDiscard(files: 1)
             ) { path, input in

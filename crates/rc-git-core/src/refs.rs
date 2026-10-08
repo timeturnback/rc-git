@@ -32,6 +32,9 @@ pub struct RefEntry {
     pub kind: RefKind,
     /// The object after following symbolic refs and peeling annotated tags.
     pub target: Oid,
+    /// Whether the stored name is valid UTF-8. When it is not, both names carry U+FFFD
+    /// replacements, and passing either back as a ref name would name a different ref.
+    pub exact_name: bool,
 }
 
 /// A reference whose target could not be read. Reported, not hidden.
@@ -93,6 +96,7 @@ impl Repository {
             let packed = packed.as_ref().map(|snapshot| &***snapshot);
             for mut reference in collected {
                 let full_name = lossy(reference.name.as_bstr());
+                let exact_name = reference.name.as_bstr().to_str().is_ok();
                 let (kind, short_name) = classify(reference.name.as_ref());
                 match reference.peel_to_id_packed(&repo.refs, &repo.objects, packed) {
                     Ok(id) => listing.refs.push(RefEntry {
@@ -100,6 +104,7 @@ impl Repository {
                         short_name,
                         kind,
                         target: Oid::from_gix(id),
+                        exact_name,
                     }),
                     Err(error) => {
                         listing.broken.push(BrokenRef {

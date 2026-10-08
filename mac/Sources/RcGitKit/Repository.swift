@@ -75,12 +75,15 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         refs.reserveCapacity(list.pointee.len)
         for index in 0..<list.pointee.len {
             let c = list.pointee.refs[index]
+            let fullName = ExactName(c.full_name)
+            let shortName = ExactName(c.short_name)
             refs.append(
                 RefEntry(
-                    fullName: String(cString: c.full_name),
-                    shortName: String(cString: c.short_name),
+                    fullName: fullName.text,
+                    shortName: shortName.text,
                     kind: RefKind(c: c.kind),
-                    target: Oid(c: c.target)
+                    target: Oid(c: c.target),
+                    hasExactName: c.has_exact_name && fullName.exact && shortName.exact
                 ))
         }
         var broken: [BrokenRef] = []
@@ -361,13 +364,15 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         entries.reserveCapacity(list.pointee.len)
         for index in 0..<list.pointee.len {
             let c = list.pointee.entries[index]
+            let name = ExactName(c.name)
             entries.append(
                 WorktreeEntry(
-                    name: String(cString: c.name),
+                    name: name.text,
                     kind: EntryKind(c: c.kind),
                     status: WorktreeStatus(c: c.status),
                     oid: c.has_oid ? Oid(c: c.oid) : nil,
-                    size: c.size
+                    size: c.size,
+                    hasExactName: name.exact
                 ))
         }
         var missing: [TreeEntry] = []
@@ -394,13 +399,15 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         entries.reserveCapacity(list.pointee.len)
         for index in 0..<list.pointee.len {
             let c = list.pointee.entries[index]
+            let path = ExactName(c.path)
             entries.append(
                 StatusEntry(
-                    path: String(cString: c.path),
+                    path: path.text,
                     kind: EntryKind(c: c.kind),
                     status: WorktreeStatus(c: c.status),
                     oid: c.has_oid ? Oid(c: c.oid) : nil,
-                    size: c.size
+                    size: c.size,
+                    hasExactPath: path.exact
                 ))
         }
         return StatusReport(
@@ -423,7 +430,9 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         files.reserveCapacity(list.pointee.len)
         for index in 0..<list.pointee.len {
             let c = list.pointee.files[index]
-            files.append(WorktreeFile(path: String(cString: c.path), kind: EntryKind(c: c.kind)))
+            let path = ExactName(c.path)
+            files.append(
+                WorktreeFile(path: path.text, kind: EntryKind(c: c.kind), hasExactPath: path.exact))
         }
         return WorktreeFileList(
             files: files, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
@@ -506,7 +515,28 @@ extension BlobContent {
 
 extension TreeEntry {
     init(c: RcGitTreeEntry) {
-        self.init(name: String(cString: c.name), oid: Oid(c: c.oid), kind: EntryKind(c: c.kind))
+        let name = ExactName(c.name)
+        self.init(
+            name: name.text, oid: Oid(c: c.oid), kind: EntryKind(c: c.kind),
+            hasExactName: name.exact)
+    }
+}
+
+/// A name the core sent, decoded for display, and whether its bytes were valid UTF-8. Only an
+/// exact name may go back to the core: the core reads path and ref arguments as UTF-8, so a
+/// name repaired with U+FFFD would act on whatever carries the repaired spelling.
+struct ExactName {
+    let text: String
+    let exact: Bool
+
+    init(_ pointer: UnsafePointer<CChar>) {
+        if let text = String(validatingCString: pointer) {
+            self.text = text
+            exact = true
+        } else {
+            text = String(cString: pointer)
+            exact = false
+        }
     }
 }
 

@@ -357,6 +357,36 @@ fn packed_refs_list_and_peel_like_loose_ones() {
 }
 
 #[test]
+fn a_non_utf8_ref_name_is_listed_as_inexact() {
+    let fx = Fixture::standard();
+    fx.git(&["pack-refs", "--all"]);
+    let mut packed = std::fs::read(fx.git_dir().join("packed-refs")).unwrap();
+    packed.extend_from_slice(format!("{} refs/tags/v", fx.rev_parse("main")).as_bytes());
+    packed.extend_from_slice(b"\xe9\n");
+    fx.write(".git/packed-refs", &packed);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    let raw = listing
+        .refs
+        .iter()
+        .find(|r| r.full_name == "refs/tags/v\u{fffd}")
+        .unwrap();
+    assert!(
+        !raw.exact_name,
+        "the repaired name must not go back as a ref name"
+    );
+    assert_eq!(raw.short_name, "v\u{fffd}");
+    assert!(
+        listing
+            .refs
+            .iter()
+            .filter(|r| r.full_name != raw.full_name)
+            .all(|r| r.exact_name)
+    );
+}
+
+#[test]
 fn refs_list_stash_and_notes_as_other_and_follow_remote_head() {
     let fx = Fixture::standard();
     fx.write("README.md", b"changed\n");

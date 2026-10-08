@@ -64,6 +64,20 @@ import Testing
         #expect(index.entries.first { $0.path == "src/main.rs" }?.name == "main.rs")
     }
 
+    @Test func inexactNameMarksItsPathAndEveryPathBelowIt() throws {
+        var fixed = trees()
+        fixed[root]?[0] = TreeEntry(name: "s\u{FFFD}c", oid: sub, kind: .tree, hasExactName: false)
+        fixed[root]?.append(
+            TreeEntry(name: "f\u{FFFD}o", oid: oid(0x14), kind: .blob, hasExactName: false))
+        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let inexact = index.entries.filter { !$0.hasExactPath }.map(\.path).sorted()
+        #expect(
+            inexact == [
+                "f\u{FFFD}o", "s\u{FFFD}c/main.rs", "s\u{FFFD}c/nested/link", "s\u{FFFD}c/run.sh",
+            ])
+        #expect(index.entries.first { $0.path == "README.md" }?.hasExactPath == true)
+    }
+
     @Test func searchRanksAndLimits() throws {
         let fixed = trees()
         let index = try PathIndex.build(root: root) { fixed[$0]! }

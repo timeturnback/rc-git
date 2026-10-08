@@ -24,6 +24,32 @@ import Testing
         model = ChangesModel(repository: repo)
     }
 
+    @Test func inexactNameStaysOutOfCommitStashAndDiscard() async {
+        let spelling = "f\u{FFFD}o"
+        repo.statusReport = StatusReport(
+            entries: [
+                StatusEntry(
+                    path: "a.txt", kind: .blob, status: .modified, oid: oid(0x01), size: 3),
+                StatusEntry(
+                    path: spelling, kind: .blob, status: .deleted, oid: oid(0x02), size: 0,
+                    hasExactPath: false),
+                StatusEntry(
+                    path: spelling, kind: .blob, status: .untracked, oid: nil, size: 1),
+            ], scanned: 4, truncated: false)
+        await model.loadStatus()
+        #expect(!model.isActionable(spelling), "the valid twin shares the spelling")
+        #expect(!model.isTicked(spelling))
+        model.setTicked([spelling], true)
+        let stamp = HunkStamp(oldStart: 1, oldLines: 1, newStart: 1, newLines: 1)
+        model.toggleHunk(spelling, stamp, all: [stamp])
+        #expect(model.tickedPaths == ["a.txt"])
+        #expect(model.selections == [.whole(path: "a.txt")])
+        #expect(model.discardRefusal(["a.txt"]) == nil)
+        #expect(
+            model.discardRefusal(["a.txt", spelling])
+                == "cannot discard 'f\u{FFFD}o': the path is not valid UTF-8")
+    }
+
     @Test func loadsStatusAndCapturesExpectedHead() async {
         var statusCallbacks = 0
         model.onStatusChanged = { statusCallbacks += 1 }

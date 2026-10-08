@@ -46,6 +46,10 @@ public final class BrowserModel {
     public private(set) var fileState: FileState = .empty
     /// Repository-relative path of the file in the file pane, when the opener knew it.
     public private(set) var openedFilePath: String?
+    /// Whether every component of `openedFilePath` is the stored name byte for byte. When it
+    /// is not, the path carries U+FFFD replacements and the core would resolve it to whatever
+    /// has that spelling, so blame and file history refuse it.
+    public private(set) var openedPathIsExact = true
     /// The size limit the file pane last read with, which blame honors too.
     private var openedFileLimit = Repository.defaultBlobLimit
     public private(set) var lastError: String?
@@ -363,7 +367,8 @@ public final class BrowserModel {
             rows.append(
                 BrowseRow(
                     entry: TreeEntry(
-                        name: entry.name, oid: entry.oid ?? .unhashed, kind: entry.kind),
+                        name: entry.name, oid: entry.oid ?? .unhashed, kind: entry.kind,
+                        hasExactName: entry.hasExactName),
                     status: entry.status,
                     missing: false
                 ))
@@ -380,20 +385,27 @@ public final class BrowserModel {
         return rows
     }
 
-    /// Opens a file straight from the working directory into the file pane.
+    /// Opens a file straight from the working directory into the file pane. `pathIsExact` is
+    /// false when a component of `path` arrived with U+FFFD replacements; such a file is not
+    /// read, since the read goes by path and could land on another file.
     public func openWorktreeFile(
-        name: String, path: String, limit: UInt64 = Repository.defaultBlobLimit
+        name: String, path: String, pathIsExact: Bool = true,
+        limit: UInt64 = Repository.defaultBlobLimit
     ) async {
         guard let repository else { return }
-        let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob)
+        let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob, hasExactName: pathIsExact)
         fileGeneration += 1
         let generation = fileGeneration
         openedFilePath = path
+        openedPathIsExact = pathIsExact
         openedFileLimit = limit
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
         let result = await RepositoryError.run {
+            guard pathIsExact else {
+                throw RepositoryError(InexactName.pathRefusal("read", path))
+            }
             let content = try repository.worktreeFile(path: path, limit: limit)
             return Self.state(for: entry, content: content)
         }
@@ -443,14 +455,19 @@ public final class BrowserModel {
 
     /// Loads a file into the file pane. `limit` caps how much is decoded; pass a larger value
     /// to load a file the default limit rejected. `path` is the repository-relative location,
-    /// kept for blame; pass `nil` when it is unknown.
+    /// kept for blame; pass `nil` when it is unknown. `pathIsExact` is false when a folder on
+    /// the way to the file arrived with U+FFFD replacements; the entry's own name counts too.
     public func openFile(
-        _ entry: TreeEntry, path: String? = nil, limit: UInt64 = Repository.defaultBlobLimit
+        _ entry: TreeEntry, path: String? = nil, pathIsExact: Bool = true,
+        limit: UInt64 = Repository.defaultBlobLimit
     ) async {
         guard let repository, !entry.kind.isDirectory else { return }
         fileGeneration += 1
         let generation = fileGeneration
-        if let path { openedFilePath = path }
+        if let path {
+            openedFilePath = path
+            openedPathIsExact = pathIsExact && entry.hasExactName
+        }
         openedFileLimit = limit
         fileState = .loading(entry)
         onFileChanged?()
@@ -499,7 +516,9 @@ public final class BrowserModel {
         var current = tree
         for (offset, component) in components.enumerated() {
             let entries = try await children(of: current)
-            guard let match = entries.first(where: { $0.name == component }) else { return nil }
+            // An inexact name only looks like `component`; the stored name differs.
+            guard let match = entries.first(where: { $0.hasExactName && $0.name == component })
+            else { return nil }
             if offset == components.count - 1 {
                 return match.kind.isDirectory ? nil : match
             }
@@ -599,8 +618,14 @@ public final class BrowserModel {
     }
 
     /// Scopes the history pane to the commits that changed `path`, keeping the current
-    /// anchor. Cached pages for the same tip and path come back without a walk.
-    public func showPathHistory(_ path: String) async {
+    /// anchor. Cached pages for the same tip and path come back without a walk. A path whose
+    /// `pathIsExact` is false is refused through `onError`: the walk matches by path, so it
+    /// would show another file's history.
+    public func showPathHistory(_ path: String, pathIsExact: Bool = true) async {
+        guard pathIsExact else {
+            onError?(InexactName.pathRefusal("show the history of", path))
+            return
+        }
         guard scopeHistory(to: path), !historyComplete else { return }
         await loadMoreHistory()
     }
@@ -624,6 +649,16 @@ public final class BrowserModel {
         onHistoryChanged?()
         noteLocation()
         return true
+    }
+
+    /// The text Copy Path puts on the pasteboard, or `nil` after refusing an inexact path
+    /// through `onError`: its U+FFFD spelling names a different file, or none.
+    public func copyablePath(_ path: String, pathIsExact: Bool) -> String? {
+        guard pathIsExact else {
+            onError?(InexactName.pathRefusal("copy the path of", path))
+            return nil
+        }
+        return path
     }
 
     /// Returns the history pane to the unfiltered list of the current anchor.
@@ -875,6 +910,9 @@ public final class BrowserModel {
                 openedFilePath == nil
                 ? "no file with a known path is open" : "nothing is selected to blame at"
             return publishBlame(.failed(message))
+        }
+        guard openedPathIsExact else {
+            return publishBlame(.failed(InexactName.pathRefusal("blame", target.path)))
         }
         guard target != blameInFlight else { return }
         blameGeneration += 1
@@ -1301,10 +1339,11 @@ public final class BrowserModel {
     /// Opens a path-search pick: from disk while browsing the working tree, else the blob.
     public func openSearchResult(_ entry: PathIndexEntry) async {
         if browsingWorkingTree {
-            await openWorktreeFile(name: entry.name, path: entry.path)
+            await openWorktreeFile(
+                name: entry.name, path: entry.path, pathIsExact: entry.hasExactPath)
         } else {
             let treeEntry = TreeEntry(name: entry.name, oid: entry.oid, kind: entry.kind)
-            await openFile(treeEntry, path: entry.path)
+            await openFile(treeEntry, path: entry.path, pathIsExact: entry.hasExactPath)
         }
     }
 

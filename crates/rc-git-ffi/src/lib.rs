@@ -4,7 +4,9 @@
 //!
 //! - A pointer returned by an `rcgit_*` function belongs to the caller until it is passed to the
 //!   matching `rcgit_*_free`. Freeing NULL is a no-op.
-//! - A `char *` is NUL-terminated. Names that are not UTF-8 pass through as raw bytes.
+//! - A `char *` is NUL-terminated. Outbound tree entry names and paths that are not UTF-8 pass
+//!   through as raw bytes; ref names are repaired, flagged by `RcGitRef::has_exact_name`.
+//!   Inbound path and ref-name arguments are read as UTF-8, lossily.
 //! - A function that can fail takes `char **error`. On failure it returns NULL (or `RCGIT_ERROR`)
 //!   and, when `error` is not NULL, stores a message to release with `rcgit_string_free`. On
 //!   success `*error` is left untouched.
@@ -139,6 +141,9 @@ pub struct RcGitRef {
     pub kind: RcGitRefKind,
     /// Peeled target object.
     pub target: RcGitOid,
+    /// Whether the stored name is valid UTF-8. The core repairs a name that is not, so both
+    /// names arrive valid, with U+FFFD replacements, and must not be passed back as a ref.
+    pub has_exact_name: bool,
 }
 
 impl Drop for RcGitRef {
@@ -1471,6 +1476,7 @@ pub unsafe extern "C" fn rcgit_refs(
             short_name: export_string(entry.short_name),
             kind: entry.kind.into(),
             target: entry.target.into(),
+            has_exact_name: entry.exact_name,
         });
     }
     let mut broken = Vec::with_capacity(listing.broken.len());
@@ -4177,6 +4183,36 @@ mod tests {
         assert_eq!(hex(&tag.target), fx.rev_parse("v1.0^{commit}"));
         assert!(refs.iter().any(|r| r.kind == RcGitRefKind::RemoteBranch));
         unsafe { rcgit_ref_list_free(list) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn export_string_strips_interior_nuls() {
+        assert_eq!(take_string(export_string(b"a\0b".to_vec())), "ab");
+        let empty = export_string(b"\0\0".to_vec());
+        assert!(!empty.is_null(), "an all-NUL string is empty, not NULL");
+        assert_eq!(take_string(empty), "");
+    }
+
+    #[test]
+    fn a_non_utf8_tree_entry_name_crosses_byte_exact() {
+        let fx = Fixture::standard();
+        let blob = fx.hash_blob(b"raw\n");
+        let mut listing = format!("100644 blob {blob}\t").into_bytes();
+        listing.extend_from_slice(b"f\xffo\n");
+        let tree = fx.mktree(&listing);
+        let repo = open(&fx);
+        let tree = resolve(repo, &tree);
+        let mut error = ptr::null_mut();
+        let list = unsafe { rcgit_tree_entries(repo, &raw const tree, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let entries = unsafe { std::slice::from_raw_parts(list_ref.entries, list_ref.len) };
+        assert_eq!(entries.len(), 1);
+        let name = unsafe { CStr::from_ptr(entries[0].name) }.to_bytes();
+        assert_eq!(name, b"f\xffo", "no U+FFFD repair on the way out");
+        assert_eq!(hex(&entries[0].oid), blob);
+        unsafe { rcgit_tree_list_free(list) };
         unsafe { rcgit_repo_free(repo) };
     }
 

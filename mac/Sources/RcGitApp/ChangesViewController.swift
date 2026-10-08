@@ -65,6 +65,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The model's tick state, injected so rendering never duplicates it.
     var isTicked: ((String) -> Bool)?
     var isHunkTicked: ((String, HunkStamp) -> Bool)?
+    /// Whether a path may be ticked at all; the model holds inexact paths out.
+    var isActionable: ((String) -> Bool)?
 
     private enum DiffRow {
         case header(stamp: HunkStamp, all: [HunkStamp])
@@ -756,6 +758,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             }()
         cell.tick.allowsMixedState = node.isFolder
         cell.tick.state = tickState(of: node)
+        cell.tick.isEnabled = node.filePaths.contains { isActionable?($0) ?? true }
         cell.label.attributedStringValue = Self.label(for: node)
         cell.toolTip = node.path
         return cell

@@ -8,7 +8,12 @@ in Swift value types.
 
 - A pointer returned by an `rcgit_*` function belongs to the caller until it is passed to the
   matching `rcgit_*_free`. Freeing `NULL` is a no-op.
-- A `char *` is NUL-terminated. Names that are not UTF-8 pass through as raw bytes.
+- A `char *` is NUL-terminated, with interior NULs stripped. Outbound tree entry names and
+  paths that are not UTF-8 pass through as raw bytes. Ref names are repaired with U+FFFD in
+  the core, and `RcGitRef.has_exact_name` says whether that happened. Inbound path and
+  ref-name arguments are read as UTF-8, lossily: an invalid byte becomes U+FFFD, so a
+  non-UTF-8 name cannot be sent back. The Swift side records which names arrived intact and
+  refuses path and ref actions on the rest.
 - A function that can fail takes `char **error`. On failure it returns `NULL` (or
   `RCGIT_ERROR`) and, when `error` is not `NULL`, stores a message to release with
   `rcgit_string_free`. On success `*error` is untouched, which is why the Swift side

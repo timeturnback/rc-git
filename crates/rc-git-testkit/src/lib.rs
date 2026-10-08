@@ -491,6 +491,26 @@ impl Fixture {
         )
     }
 
+    /// Writes a tree object from `git mktree` input given as raw bytes, so an entry name can
+    /// hold bytes that are not UTF-8 — a name no file on an APFS volume can carry. Returns the
+    /// tree id.
+    ///
+    /// # Panics
+    /// When `git mktree` fails.
+    #[must_use]
+    pub fn mktree(&self, listing: &[u8]) -> String {
+        self.run_with_stdin(&["mktree"], listing)
+    }
+
+    /// Writes `contents` as a blob and returns its id.
+    ///
+    /// # Panics
+    /// When `git hash-object` fails.
+    #[must_use]
+    pub fn hash_blob(&self, contents: &[u8]) -> String {
+        self.run_with_stdin(&["hash-object", "-w", "--stdin"], contents)
+    }
+
     fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> String {
         use std::io::Write;
         let mut child = self

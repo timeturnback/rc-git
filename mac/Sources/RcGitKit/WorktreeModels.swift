@@ -42,13 +42,19 @@ public struct StatusEntry: Sendable, Hashable {
     public let oid: Oid?
     /// Size on disk in bytes; 0 for deleted files.
     public let size: UInt64
+    /// Whether `path` is the stored path byte for byte; see `TreeEntry.hasExactName`.
+    public let hasExactPath: Bool
 
-    public init(path: String, kind: EntryKind, status: WorktreeStatus, oid: Oid?, size: UInt64) {
+    public init(
+        path: String, kind: EntryKind, status: WorktreeStatus, oid: Oid?, size: UInt64,
+        hasExactPath: Bool = true
+    ) {
         self.path = path
         self.kind = kind
         self.status = status
         self.oid = oid
         self.size = size
+        self.hasExactPath = hasExactPath
     }
 }
 
@@ -74,10 +80,13 @@ public struct WorktreeFile: Sendable, Hashable {
     public let path: String
     /// What the file is on disk: a blob, an executable blob, or a symlink.
     public let kind: EntryKind
+    /// Whether `path` is the stored path byte for byte; see `TreeEntry.hasExactName`.
+    public let hasExactPath: Bool
 
-    public init(path: String, kind: EntryKind) {
+    public init(path: String, kind: EntryKind, hasExactPath: Bool = true) {
         self.path = path
         self.kind = kind
+        self.hasExactPath = hasExactPath
     }
 }
 
@@ -125,13 +134,19 @@ public struct WorktreeEntry: Sendable, Hashable {
     public let oid: Oid?
     /// Size in bytes; 0 for directories.
     public let size: UInt64
+    /// Whether `name` is the stored name byte for byte; see `TreeEntry.hasExactName`.
+    public let hasExactName: Bool
 
-    public init(name: String, kind: EntryKind, status: WorktreeStatus, oid: Oid?, size: UInt64) {
+    public init(
+        name: String, kind: EntryKind, status: WorktreeStatus, oid: Oid?, size: UInt64,
+        hasExactName: Bool = true
+    ) {
         self.name = name
         self.kind = kind
         self.status = status
         self.oid = oid
         self.size = size
+        self.hasExactName = hasExactName
     }
 }
 

@@ -296,6 +296,15 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let ref = clickedRef else { return }
+        // A ref whose name is not valid UTF-8 shows a U+FFFD spelling that could name another
+        // ref, so nothing that takes the name is offered.
+        guard ref.hasExactName else {
+            let note = NSMenuItem(
+                title: "Name Is Not Valid UTF-8", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+            return
+        }
         menu.addItem(
             menuItem(
                 "New Branch from “\(ref.shortName)”…", #selector(newBranchClicked(_:))))

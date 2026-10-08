@@ -88,6 +88,36 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs.oid) }
     }
 
+    /// Names git stores as bytes that are not UTF-8 arrive flagged, so nothing sends their
+    /// U+FFFD spelling back as a path or ref name.
+    @Test func inexactNameTreeEntriesAndRefsArriveFlagged() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let blob = try #require(Oid(hex: try fixture.revParse("main:README.md")))
+        let raw = Array("100644 f".utf8) + [0xFF] + Array("o".utf8) + [0] + blob.bytes
+        try fixture.writeBytes("raw-tree", raw)
+        let treeHex = try fixture.gitOutput(["hash-object", "-w", "-t", "tree", "raw-tree"])
+        let packed = URL(fileURLWithPath: fixture.path).appendingPathComponent(".git/packed-refs")
+        var refs = (try? Data(contentsOf: packed)) ?? Data()
+        let main = try fixture.revParse("main")
+        refs.append(contentsOf: Array("\(main) refs/tags/v".utf8) + [0xE9, 0x0A])
+        try refs.write(to: packed)
+
+        let repo = try Repository(path: fixture.path)
+        let tree = try #require(Oid(hex: treeHex))
+        let entries = try repo.treeEntries(tree)
+        #expect(entries.map(\.name) == ["f\u{FFFD}o"])
+        #expect(entries.map(\.hasExactName) == [false])
+        let mainEntries = try repo.treeEntries(repo.resolveTree("main"))
+        #expect(mainEntries.allSatisfy { $0.hasExactName })
+
+        let listing = try repo.refs()
+        let tag = try #require(listing.refs.first { $0.shortName == "v\u{FFFD}" })
+        #expect(!tag.hasExactName)
+        let others = listing.refs.filter { $0.shortName != "v\u{FFFD}" }
+        #expect(others.allSatisfy { $0.hasExactName })
+    }
+
     @Test func walksPathHistoryWithAScanCursor() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

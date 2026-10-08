@@ -227,6 +227,9 @@ typedef struct RcGitRef {
   enum RcGitRefKind kind;
   // Peeled target object.
   struct RcGitOid target;
+  // Whether the stored name is valid UTF-8. The core repairs a name that is not, so both
+  // names arrive valid, with U+FFFD replacements, and must not be passed back as a ref.
+  bool has_exact_name;
 } RcGitRef;
 
 // A reference whose target could not be read.

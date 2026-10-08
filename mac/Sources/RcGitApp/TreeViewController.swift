@@ -7,8 +7,11 @@ import RcGitKit
 @MainActor
 final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     var childrenProvider: ((Oid, String) async throws -> [BrowseRow])?
-    var onOpenFile: ((BrowseRow, String) -> Void)?
-    var onShowHistory: ((String) -> Void)?
+    /// The row, its path, and whether every component of that path is exact
+    /// (`TreeEntry.hasExactName`); the model refuses path actions on an inexact one.
+    var onOpenFile: ((BrowseRow, String, Bool) -> Void)?
+    var onShowHistory: ((String, Bool) -> Void)?
+    var onCopyPath: ((String, Bool) -> Void)?
     var onError: ((String) -> Void)?
     /// Fires with `contentWidth` whenever the visible rows change, so the pane can hug them.
     var onContentWidthChanged: ((CGFloat) -> Void)?
@@ -18,6 +21,8 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     final class Node {
         let row: BrowseRow
         let path: String
+        /// Whether every component of `path` is the stored name byte for byte.
+        let pathIsExact: Bool
         /// Every child read from the repository, hidden ones included.
         var children: [Node]?
         /// The children on screen, kept beside `children` so showing hidden files needs no read.
@@ -26,9 +31,11 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
         var entry: TreeEntry { row.entry }
 
-        init(row: BrowseRow, parentPath: String) {
+        init(row: BrowseRow, parent: Node?) {
             self.row = row
+            let parentPath = parent?.path ?? ""
             self.path = parentPath.isEmpty ? row.entry.name : parentPath + "/" + row.entry.name
+            self.pathIsExact = (parent?.pathIsExact ?? true) && row.entry.hasExactName
         }
     }
 
@@ -41,8 +48,9 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// Set while the selection is moved from here rather than by a click, so re-selecting
     /// the open file does not open it again.
     private var restoringSelection = false
-    /// The path `showOpenFile` last matched the selection to.
+    /// The path `showOpenFile` last matched the selection to, and whether it is exact.
     private var shownFilePath: String?
+    private var shownPathIsExact = true
 
     override func loadView() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
@@ -136,7 +144,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
             do {
                 let rows = try await childrenProvider(tree, path)
                 guard generation == self.generation else { return }
-                let nodes = rows.map { Node(row: $0, parentPath: parent?.path ?? "") }
+                let nodes = rows.map { Node(row: $0, parent: parent) }
                 if let parent {
                     parent.children = nodes
                     parent.visibleChildren = visible(nodes)
@@ -199,9 +207,11 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     /// Keeps the selection from naming a file the pane has left — a link followed, a step
     /// back — because a row that is still selected cannot be clicked to open it again.
-    func showOpenFile(_ path: String?) {
-        guard path != shownFilePath else { return }
+    /// An inexact path is never matched: its spelling may be a different row's.
+    func showOpenFile(_ path: String?, pathIsExact: Bool) {
+        guard path != shownFilePath || pathIsExact != shownPathIsExact else { return }
         shownFilePath = path
+        shownPathIsExact = pathIsExact
         matchSelectionToShownFile()
     }
 
@@ -209,10 +219,14 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// is not the open file. Reads nothing and expands nothing; a selected folder stays
     /// unless the open file has a row to move to.
     private func matchSelectionToShownFile() {
+        guard shownPathIsExact else { return }
         let selected = outline.item(atRow: outline.selectedRow) as? Node
-        guard selected?.path != shownFilePath else { return }
+        guard selected?.path != shownFilePath || selected?.pathIsExact == false else { return }
         let row = shownFilePath.flatMap { path in
-            (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? Node)?.path == path }
+            (0..<outline.numberOfRows).first {
+                guard let node = outline.item(atRow: $0) as? Node else { return false }
+                return node.pathIsExact && node.path == path
+            }
         }
         restoringSelection = true
         if let row {
@@ -244,13 +258,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     @objc private func showHistoryClicked(_ sender: Any?) {
         guard let node = actedNode else { return }
-        onShowHistory?(node.path)
+        onShowHistory?(node.path, node.pathIsExact)
     }
 
     @objc private func copyPath(_ sender: Any?) {
         guard let node = actedNode else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(node.path, forType: .string)
+        onCopyPath?(node.path, node.pathIsExact)
     }
 
     @objc private func toggleSelected(_ sender: Any?) {
@@ -262,7 +275,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 outline.expandItem(node)
             }
         } else {
-            onOpenFile?(node.row, node.path)
+            onOpenFile?(node.row, node.path, node.pathIsExact)
         }
     }
 
@@ -343,6 +356,6 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
             let node = outline.item(atRow: outline.selectedRow) as? Node,
             !node.entry.kind.isDirectory
         else { return }
-        onOpenFile?(node.row, node.path)
+        onOpenFile?(node.row, node.path, node.pathIsExact)
     }
 }

@@ -176,6 +176,64 @@ import Testing
         repo.summaries[mainCommit] = commitSummary(mainCommit, title: "main")
     }
 
+    /// A name that arrived with U+FFFD replacements, and its valid twin's spelling.
+    private let inexact = "f\u{FFFD}o"
+
+    @Test func inexactNameBlameIsRefusedInsteadOfWalkingTheTwin() async {
+        await model.attach(repo)
+        stubBlame(inexact)
+        await model.openFile(
+            TreeEntry(name: inexact, oid: readme, kind: .blob, hasExactName: false),
+            path: inexact)
+        await model.requestBlame()
+        #expect(model.blame == .failed("cannot blame 'f\u{FFFD}o': the path is not valid UTF-8"))
+        #expect(repo.blameLimits.isEmpty, "the twin's ranges were never read")
+    }
+
+    @Test func inexactNameInAFolderRefusesBlameForEveryFileBelow() async {
+        await model.attach(repo)
+        stubBlame("\(inexact)/main.rs")
+        await model.openFile(
+            TreeEntry(name: "main.rs", oid: readme, kind: .blob), path: "\(inexact)/main.rs",
+            pathIsExact: false)
+        #expect(!model.openedPathIsExact)
+        await model.requestBlame()
+        guard case let .failed(message) = model.blame else {
+            Issue.record("expected a refusal, got \(model.blame)")
+            return
+        }
+        #expect(message.hasSuffix("the path is not valid UTF-8"))
+        #expect(repo.blameLimits.isEmpty)
+
+        await model.openFile(
+            TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
+        #expect(model.openedPathIsExact, "an exact file opened later is blamed again")
+    }
+
+    @Test func inexactNameHistoryAndCopyAreRefused() async {
+        await model.attach(repo)
+        var errors: [String] = []
+        model.onError = { errors.append($0) }
+        await model.showPathHistory(inexact, pathIsExact: false)
+        #expect(model.historyScope == .all, "the scope never moved to the twin's path")
+        #expect(model.copyablePath(inexact, pathIsExact: false) == nil)
+        #expect(model.copyablePath("README.md", pathIsExact: true) == "README.md")
+        #expect(
+            errors == [
+                "cannot show the history of 'f\u{FFFD}o': the path is not valid UTF-8",
+                "cannot copy the path of 'f\u{FFFD}o': the path is not valid UTF-8",
+            ])
+    }
+
+    @Test func inexactNameNeverAnswersALinkByPath() async {
+        repo.trees[mainTree] = [
+            TreeEntry(name: inexact, oid: binary, kind: .blob, hasExactName: false),
+            TreeEntry(name: "README.md", oid: readme, kind: .blob),
+        ]
+        await model.attach(repo)
+        #expect(await !model.openPath(inexact), "the U+FFFD spelling names no stored file")
+    }
+
     @Test func staleBlameIsDroppedAfterTheOpenFileChanges() async {
         await model.attach(repo)
         stubBlame("README.md")
