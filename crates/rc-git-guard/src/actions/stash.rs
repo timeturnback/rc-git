@@ -23,9 +23,15 @@ use super::treeapply::{core_oid, entry_kind};
 use super::treebuild;
 use super::workfile::{self, DiskEntry};
 use super::{
-    ActionError, ActionResult, Author, Deleted, Identity, confirm, git_err, open, write_backup_ref,
+    ActionError, ActionResult, Author, Deleted, Identity, confirm, git_err, open, plan_stash_apply,
+    plan_stash_drop, plan_stash_pop, plan_stash_push, write_backup_ref,
 };
-use crate::{Action, Policy};
+use crate::Policy;
+
+/// The reflog name git shows for the stash entry at `index`.
+pub(super) fn stash_name(index: usize) -> String {
+    format!("stash@{{{index}}}")
+}
 
 /// What a completed stash push produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +60,12 @@ pub fn stash_push(
 ) -> ActionResult<StashSaved> {
     const OP: &str = "stash push";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let decision = policy.evaluate(&Action::StashPush { files: paths.len() });
-    let _proof = confirm(decision, OP, "refs/stash", input)?;
+    let _proof = confirm(
+        plan_stash_push(policy, paths.len()),
+        OP,
+        "refs/stash",
+        input,
+    )?;
     let refused = |reason: &'static str| ActionError::git(OP, "refs/stash", reason);
     if paths.is_empty() {
         return Err(refused("nothing selected to stash"));
@@ -186,12 +196,7 @@ pub fn stash_apply(
 ) -> ActionResult<()> {
     const OP: &str = "stash apply";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let _proof = confirm(
-        policy.evaluate(&Action::StashApply),
-        OP,
-        "refs/stash",
-        input,
-    )?;
+    let _proof = confirm(plan_stash_apply(policy), OP, "refs/stash", input)?;
     apply_inner(&repo, repo_path, index, OP)
 }
 
@@ -208,8 +213,7 @@ pub fn stash_pop(
 ) -> ActionResult<Deleted> {
     const OP: &str = "stash pop";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let (challenge, _confirmation) =
-        confirm(policy.evaluate(&Action::StashPop), OP, "refs/stash", input)?;
+    let (challenge, _confirmation) = confirm(plan_stash_pop(policy), OP, "refs/stash", input)?;
     apply_inner(&repo, repo_path, index, OP)?;
     drop_inner(&repo, index, challenge.backup_ref, OP)
 }
@@ -228,9 +232,7 @@ pub fn stash_drop(
 ) -> ActionResult<Deleted> {
     const OP: &str = "stash drop";
     let repo = open(repo_path, OP, "refs/stash")?;
-    let decision = policy.evaluate(&Action::StashDrop {
-        name: format!("stash@{{{index}}}"),
-    });
+    let decision = plan_stash_drop(policy, index);
     let (challenge, _confirmation) = confirm(decision, OP, "refs/stash", input)?;
     drop_inner(&repo, index, challenge.backup_ref, OP)
 }
@@ -413,7 +415,7 @@ fn drop_inner(
         None
     };
 
-    let full_name = format!("stash@{{{index}}}");
+    let full_name = stash_name(index);
     if valid.len() == 1 {
         let expected = PreviousValue::MustExistAndMatch(Target::Object(removed_new));
         let edit = super::delete_edit("refs/stash", expected, op)?;

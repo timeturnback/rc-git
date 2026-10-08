@@ -16,9 +16,9 @@ use gix::refs::transaction::PreviousValue;
 use super::treebuild::{self, Node, PathEdit};
 use super::{
     ActionError, ActionResult, Author, FileSelection, HunkStamp, Identity, confirm, git_err, open,
-    treeapply, workfile,
+    plan_commit, treeapply, workfile,
 };
-use crate::{Action, Policy};
+use crate::Policy;
 
 /// What a completed commit produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,10 +66,7 @@ pub fn commit(
     input: Option<&str>,
 ) -> ActionResult<Committed> {
     let repo = open(repo_path, OP, "HEAD")?;
-    let decision = policy.evaluate(&Action::Commit {
-        files: selections.len(),
-    });
-    let _proof = confirm(decision, OP, "HEAD", input)?;
+    let _proof = confirm(plan_commit(policy, selections.len()), OP, "HEAD", input)?;
     let message = normalized_message(message)?;
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
     let current = head_commit

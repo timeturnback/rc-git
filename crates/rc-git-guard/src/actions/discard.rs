@@ -9,8 +9,8 @@ use gix::objs::tree::EntryKind;
 
 use super::commit::{blob_data, tree_entry_at, verified_hunks, work_dir};
 use super::workfile::{self, DiskEntry};
-use super::{ActionError, ActionResult, HunkStamp, confirm, open};
-use crate::{Action, Policy};
+use super::{ActionError, ActionResult, HunkStamp, confirm, open, plan_discard};
+use crate::Policy;
 
 const OP: &str = "discard";
 
@@ -29,8 +29,7 @@ pub fn discard_files(
     input: Option<&str>,
 ) -> ActionResult<()> {
     let repo = open(repo_path, OP, "working tree")?;
-    let decision = policy.evaluate(&Action::DiscardWorkingChanges { files: paths.len() });
-    let _proof = confirm(decision, OP, "working tree", input)?;
+    let _proof = confirm(plan_discard(policy, paths.len()), OP, "working tree", input)?;
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let head_tree = head_tree(&repo)?;
@@ -91,8 +90,7 @@ pub fn discard_hunks(
     input: Option<&str>,
 ) -> ActionResult<()> {
     let repo = open(repo_path, OP, path)?;
-    let decision = policy.evaluate(&Action::DiscardWorkingChanges { files: 1 });
-    let _proof = confirm(decision, OP, path, input)?;
+    let _proof = confirm(plan_discard(policy, 1), OP, path, input)?;
     let mismatch = || ActionError::HunkMismatch {
         path: path.to_owned(),
     };

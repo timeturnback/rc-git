@@ -24,13 +24,14 @@ use rc_git_core::{
     TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, Author, Cancel, Credentials, FileSelection, HunkStamp, Identity, RemoteAuth,
-    checkout_branch, commit, configured_identity, create_branch, create_tag, delete_branch,
-    delete_tag, discard_files, discard_hunks, fetch_upstream, plan_branch_delete, plan_tag_delete,
-    pull_fast_forward, push_upstream, stash_apply, stash_drop, stash_pop, stash_push,
-    upstream_status,
+    ActionError, ActionResult, Author, Cancel, Credentials, Deleted, FileSelection, HunkStamp,
+    Identity, RemoteAuth, checkout_branch, commit, configured_identity, create_branch, create_tag,
+    delete_branch, delete_tag, discard_files, discard_hunks, fetch_upstream, plan_branch_delete,
+    plan_commit, plan_discard, plan_stash_apply, plan_stash_drop, plan_stash_pop, plan_stash_push,
+    plan_tag_delete, pull_fast_forward, push_upstream, stash_apply, stash_drop, stash_pop,
+    stash_push, upstream_status,
 };
-use rc_git_guard::{Action, Decision, Policy, Risk};
+use rc_git_guard::{Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
 
 /// Status for functions that fill an out parameter: success.
@@ -2695,19 +2696,7 @@ pub unsafe extern "C" fn rcgit_guard_branch_create(
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(name), Some(revspec)) = (repo_path, name, revspec) else {
-        error.report("repo_path, name, or revspec is NULL");
-        return RCGIT_ERROR;
-    };
-    finish_action(
-        create_branch(
-            Path::new(OsStr::from_bytes(repo_path)),
-            &Policy::default(),
-            &String::from_utf8_lossy(name),
-            &String::from_utf8_lossy(revspec),
-        ),
-        &error,
-    )
+    create_ref_with(create_branch, repo_path, name, revspec, &error)
 }
 
 /// What a branch switch did. Plain data, no free function.
@@ -2790,19 +2779,7 @@ pub unsafe extern "C" fn rcgit_guard_tag_create(
             Out::new(error),
         )
     };
-    let (Some(repo_path), Some(name), Some(revspec)) = (repo_path, name, revspec) else {
-        error.report("repo_path, name, or revspec is NULL");
-        return RCGIT_ERROR;
-    };
-    finish_action(
-        create_tag(
-            Path::new(OsStr::from_bytes(repo_path)),
-            &Policy::default(),
-            &String::from_utf8_lossy(name),
-            &String::from_utf8_lossy(revspec),
-        ),
-        &error,
-    )
+    create_ref_with(create_tag, repo_path, name, revspec, &error)
 }
 
 /// Deletes the local branch `name`. `input` is what the user typed to answer the challenge,
@@ -2822,37 +2799,18 @@ pub unsafe extern "C" fn rcgit_guard_branch_delete(
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, name, input, backup, error) = unsafe {
+    let (repo_path, name, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(name),
             bytes_arg(input),
-            Out::new(backup),
-            Out::new(error),
+            DeletedOuts {
+                backup: Out::new(backup),
+                error: Out::new(error),
+            },
         )
     };
-    let (Some(repo_path), Some(name)) = (repo_path, name) else {
-        error.report("repo_path or name is NULL");
-        return RCGIT_ERROR;
-    };
-    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match delete_branch(
-        Path::new(OsStr::from_bytes(repo_path)),
-        &Policy::default(),
-        &String::from_utf8_lossy(name),
-        input.as_deref(),
-    ) {
-        Ok(deleted) => {
-            if let Some(backup_ref) = deleted.backup_ref {
-                backup.set(export_string(backup_ref));
-            }
-            RCGIT_OK
-        }
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
-    }
+    delete_ref_with(delete_branch, repo_path, name, input, &outs)
 }
 
 /// Deletes the tag `name`. Same contract as `rcgit_guard_branch_delete`.
@@ -2868,37 +2826,18 @@ pub unsafe extern "C" fn rcgit_guard_tag_delete(
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, name, input, backup, error) = unsafe {
+    let (repo_path, name, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(name),
             bytes_arg(input),
-            Out::new(backup),
-            Out::new(error),
+            DeletedOuts {
+                backup: Out::new(backup),
+                error: Out::new(error),
+            },
         )
     };
-    let (Some(repo_path), Some(name)) = (repo_path, name) else {
-        error.report("repo_path or name is NULL");
-        return RCGIT_ERROR;
-    };
-    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match delete_tag(
-        Path::new(OsStr::from_bytes(repo_path)),
-        &Policy::default(),
-        &String::from_utf8_lossy(name),
-        input.as_deref(),
-    ) {
-        Ok(deleted) => {
-            if let Some(backup_ref) = deleted.backup_ref {
-                backup.set(export_string(backup_ref));
-            }
-            RCGIT_OK
-        }
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
-    }
+    delete_ref_with(delete_tag, repo_path, name, input, &outs)
 }
 
 /// The status of a local guarded mutation (branch, tag, stash, discard), reporting the
@@ -2911,6 +2850,116 @@ fn finish_action(result: Result<(), ActionError>, error: &Out<*mut c_char>) -> i
             action_status(&err)
         }
     }
+}
+
+/// The status of a guarded deletion (branch, tag, stash pop or drop). On success the backup
+/// ref's full name, when one was written, goes to `backup`; on failure the message goes to
+/// `error`.
+fn finish_deleted(
+    result: ActionResult<Deleted>,
+    backup: &Out<*mut c_char>,
+    error: &Out<*mut c_char>,
+) -> i32 {
+    match result {
+        Ok(deleted) => {
+            if let Some(backup_ref) = deleted.backup_ref {
+                backup.set(export_string(backup_ref));
+            }
+            RCGIT_OK
+        }
+        Err(err) => {
+            error.report(&err);
+            action_status(&err)
+        }
+    }
+}
+
+/// The out parameters of a guarded deletion.
+struct DeletedOuts {
+    backup: Out<*mut c_char>,
+    error: Out<*mut c_char>,
+}
+
+/// The guard call behind `rcgit_guard_branch_create` and `rcgit_guard_tag_create`.
+type CreateRef = fn(&Path, &Policy, &str, &str) -> ActionResult<()>;
+
+/// The guard call behind `rcgit_guard_branch_delete` and `rcgit_guard_tag_delete`.
+type DeleteRef = fn(&Path, &Policy, &str, Option<&str>) -> ActionResult<Deleted>;
+
+/// The guard call behind `rcgit_guard_stash_pop` and `rcgit_guard_stash_drop`.
+type RemoveStash = fn(&Path, &Policy, usize, Option<&str>) -> ActionResult<Deleted>;
+
+/// Runs `create` on the converted arguments of a ref-creating entry point.
+fn create_ref_with(
+    create: CreateRef,
+    repo_path: Option<&[u8]>,
+    name: Option<&[u8]>,
+    revspec: Option<&[u8]>,
+    error: &Out<*mut c_char>,
+) -> i32 {
+    let (Some(repo_path), Some(name), Some(revspec)) = (repo_path, name, revspec) else {
+        error.report("repo_path, name, or revspec is NULL");
+        return RCGIT_ERROR;
+    };
+    finish_action(
+        create(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            &String::from_utf8_lossy(name),
+            &String::from_utf8_lossy(revspec),
+        ),
+        error,
+    )
+}
+
+/// Runs `delete` on the converted arguments of a ref-deleting entry point.
+fn delete_ref_with(
+    delete: DeleteRef,
+    repo_path: Option<&[u8]>,
+    name: Option<&[u8]>,
+    input: Option<&[u8]>,
+    outs: &DeletedOuts,
+) -> i32 {
+    let (Some(repo_path), Some(name)) = (repo_path, name) else {
+        outs.error.report("repo_path or name is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    finish_deleted(
+        delete(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            &String::from_utf8_lossy(name),
+            input.as_deref(),
+        ),
+        &outs.backup,
+        &outs.error,
+    )
+}
+
+/// Runs `remove` on the converted arguments of a stash-removing entry point.
+fn remove_stash_with(
+    remove: RemoveStash,
+    repo_path: Option<&[u8]>,
+    index: usize,
+    input: Option<&[u8]>,
+    outs: &DeletedOuts,
+) -> i32 {
+    let Some(repo_path) = repo_path else {
+        outs.error.report("repo_path is NULL");
+        return RCGIT_ERROR;
+    };
+    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    finish_deleted(
+        remove(
+            Path::new(OsStr::from_bytes(repo_path)),
+            &Policy::default(),
+            index,
+            input.as_deref(),
+        ),
+        &outs.backup,
+        &outs.error,
+    )
 }
 
 /// One hunk of a worktree diff, named by its unified header ranges. Caller-owned input.
@@ -2959,7 +3008,7 @@ impl Drop for RcGitCommitResult {
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_commit(files: usize) -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::Commit { files });
+    let decision = plan_commit(&Policy::default(), files);
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -2967,7 +3016,7 @@ pub extern "C" fn rcgit_guard_plan_commit(files: usize) -> *mut RcGitGuardDecisi
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_stash_push(files: usize) -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::StashPush { files });
+    let decision = plan_stash_push(&Policy::default(), files);
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -2975,7 +3024,7 @@ pub extern "C" fn rcgit_guard_plan_stash_push(files: usize) -> *mut RcGitGuardDe
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_stash_apply() -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::StashApply);
+    let decision = plan_stash_apply(&Policy::default());
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -2983,7 +3032,7 @@ pub extern "C" fn rcgit_guard_plan_stash_apply() -> *mut RcGitGuardDecision {
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_stash_pop() -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::StashPop);
+    let decision = plan_stash_pop(&Policy::default());
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -2991,9 +3040,7 @@ pub extern "C" fn rcgit_guard_plan_stash_pop() -> *mut RcGitGuardDecision {
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_stash_drop(index: usize) -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::StashDrop {
-        name: format!("stash@{{{index}}}"),
-    });
+    let decision = plan_stash_drop(&Policy::default(), index);
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -3001,7 +3048,7 @@ pub extern "C" fn rcgit_guard_plan_stash_drop(index: usize) -> *mut RcGitGuardDe
 /// `rcgit_guard_decision_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_guard_plan_discard(files: usize) -> *mut RcGitGuardDecision {
-    let decision = Policy::default().evaluate(&Action::DiscardWorkingChanges { files });
+    let decision = plan_discard(&Policy::default(), files);
     export(RcGitGuardDecision::export(decision, false))
 }
 
@@ -3461,36 +3508,17 @@ pub unsafe extern "C" fn rcgit_guard_stash_pop(
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, input, backup, error) = unsafe {
+    let (repo_path, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(input),
-            Out::new(backup),
-            Out::new(error),
+            DeletedOuts {
+                backup: Out::new(backup),
+                error: Out::new(error),
+            },
         )
     };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
-        return RCGIT_ERROR;
-    };
-    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match stash_pop(
-        Path::new(OsStr::from_bytes(repo_path)),
-        &Policy::default(),
-        index,
-        input.as_deref(),
-    ) {
-        Ok(deleted) => {
-            if let Some(backup_ref) = deleted.backup_ref {
-                backup.set(export_string(backup_ref));
-            }
-            RCGIT_OK
-        }
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
-    }
+    remove_stash_with(stash_pop, repo_path, index, input, &outs)
 }
 
 /// Deletes `stash@{index}` without applying it. Same contract as `rcgit_guard_stash_pop`.
@@ -3506,36 +3534,17 @@ pub unsafe extern "C" fn rcgit_guard_stash_drop(
     error: *mut *mut c_char,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, input, backup, error) = unsafe {
+    let (repo_path, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(input),
-            Out::new(backup),
-            Out::new(error),
+            DeletedOuts {
+                backup: Out::new(backup),
+                error: Out::new(error),
+            },
         )
     };
-    let Some(repo_path) = repo_path else {
-        error.report("repo_path is NULL");
-        return RCGIT_ERROR;
-    };
-    let input = input.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-    match stash_drop(
-        Path::new(OsStr::from_bytes(repo_path)),
-        &Policy::default(),
-        index,
-        input.as_deref(),
-    ) {
-        Ok(deleted) => {
-            if let Some(backup_ref) = deleted.backup_ref {
-                backup.set(export_string(backup_ref));
-            }
-            RCGIT_OK
-        }
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
-    }
+    remove_stash_with(stash_drop, repo_path, index, input, &outs)
 }
 
 /// Discards every change at `paths`: tracked files return to `HEAD` bytes, untracked files

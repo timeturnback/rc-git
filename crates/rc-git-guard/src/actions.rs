@@ -413,6 +413,44 @@ pub fn plan_tag_delete(policy: &Policy, name: &str) -> Decision {
     })
 }
 
+/// What committing `files` selected files would need. Pure.
+#[must_use]
+pub fn plan_commit(policy: &Policy, files: usize) -> Decision {
+    policy.evaluate(&Action::Commit { files })
+}
+
+/// What stashing `files` selected files would need. Pure.
+#[must_use]
+pub fn plan_stash_push(policy: &Policy, files: usize) -> Decision {
+    policy.evaluate(&Action::StashPush { files })
+}
+
+/// What applying a stash entry would need. Pure.
+#[must_use]
+pub fn plan_stash_apply(policy: &Policy) -> Decision {
+    policy.evaluate(&Action::StashApply)
+}
+
+/// What popping a stash entry would need. Pure.
+#[must_use]
+pub fn plan_stash_pop(policy: &Policy) -> Decision {
+    policy.evaluate(&Action::StashPop)
+}
+
+/// What dropping `stash@{index}` would need. Pure.
+#[must_use]
+pub fn plan_stash_drop(policy: &Policy, index: usize) -> Decision {
+    policy.evaluate(&Action::StashDrop {
+        name: stash::stash_name(index),
+    })
+}
+
+/// What discarding the changes in `files` files would need. Pure.
+#[must_use]
+pub fn plan_discard(policy: &Policy, files: usize) -> Decision {
+    policy.evaluate(&Action::DiscardWorkingChanges { files })
+}
+
 /// Creates a local branch at `revspec`, refusing to overwrite an existing one. Creation
 /// loses nothing, so the policy allows it without a challenge.
 ///
