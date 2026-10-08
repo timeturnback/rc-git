@@ -1457,8 +1457,8 @@ int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out,
 
 // Pushes the checked-out branch to its upstream. Plain push only; a force push is not
 // offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
-// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
-// `RCGIT_DIVERGED` (the remote has commits the branch lacks), or
+// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
+// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or
 // `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
 //
 // # Safety
