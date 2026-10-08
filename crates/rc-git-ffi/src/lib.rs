@@ -95,6 +95,12 @@ impl RcGitOid {
 /// An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
 pub struct RcGitRepo(Repository);
 
+/// Fails the build when `T` stops being shareable across threads. Raw pointers skip the
+/// auto-trait checks, so the opaque handles Swift uses from any thread assert it here.
+const fn assert_send_sync<T: Send + Sync>() {}
+
+const _: () = assert_send_sync::<RcGitRepo>();
+
 /// Where `HEAD` points.
 #[repr(C)]
 pub struct RcGitHead {
@@ -4220,6 +4226,8 @@ pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus
 /// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
 /// once the operation has returned.
 pub struct RcGitCancel(Cancel);
+
+const _: () = assert_send_sync::<RcGitCancel>();
 
 /// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
 #[unsafe(no_mangle)]
