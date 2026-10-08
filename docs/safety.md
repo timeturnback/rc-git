@@ -71,8 +71,8 @@ Opening a repository someone else produced must be harmless.
   different object. So the app refuses blame, file history, Copy Path and reveal on such a
   path, leaves such a status row out of commit, stash and discard, and offers no delete or
   create on such a ref.
-- Blob reads are capped. The header is checked before decoding; the default cap is 8 MiB, the
-  FFI clamps any cap to 4 GiB, and the app refuses "Load anyway" above 512 MiB.
+- Blob reads and diffs are capped. The header is checked before decoding; the default cap is
+  8 MiB, the FFI clamps any cap to 4 GiB, and the app refuses "Load anyway" above 512 MiB.
 - Binary detection follows git: a NUL in the first 8000 bytes. Binary content is never handed
   to the text view.
 - Errors are messages, never panics. Clippy denies `unwrap`, `expect`, `panic`, `todo`, and

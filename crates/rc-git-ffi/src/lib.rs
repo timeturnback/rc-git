@@ -2143,8 +2143,8 @@ pub unsafe extern "C" fn rcgit_tree_change_list_free(list: *mut RcGitTreeChangeL
 
 /// Line diff between two blobs. A NULL `old` or `new` stands for an absent side, as in an
 /// added or deleted file; passing both as NULL yields an empty text diff. Each side's size
-/// is checked against `limit` before decoding. `context` is the number of unchanged lines
-/// around each hunk. Release with `rcgit_blob_diff_free`.
+/// is checked against `limit`, capped at 4 GiB, before decoding. `context` is the number of
+/// unchanged lines around each hunk. Release with `rcgit_blob_diff_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `old` and `new` are each NULL or point to a readable
@@ -2177,6 +2177,7 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
     let Some(new) = error.valid(OP, "new", new) else {
         return ptr::null_mut();
     };
+    let limit = limit.min(u64::from(u32::MAX));
     match repo.diff_blobs(old, new, limit, context) {
         Ok(diff) => export_blob_diff(diff, limit),
         Err(err) => {
@@ -2551,8 +2552,9 @@ pub unsafe extern "C" fn rcgit_worktree_file_list_free(list: *mut RcGitWorktreeF
 }
 
 /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
-/// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Release
-/// with `rcgit_blob_diff_free`.
+/// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Each
+/// side's size is checked against `limit`, capped at 4 GiB, before decoding. Release with
+/// `rcgit_blob_diff_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
@@ -2585,6 +2587,7 @@ pub unsafe extern "C" fn rcgit_diff_worktree_file(
     let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
+    let limit = limit.min(u64::from(u32::MAX));
     match repo.diff_worktree_file(old, &String::from_utf8_lossy(path), limit, context) {
         Ok(diff) => export_blob_diff(diff, limit),
         Err(err) => {
@@ -5225,6 +5228,44 @@ mod tests {
             take_error(&mut error),
             "rcgit_worktree_entries: tree is NULL"
         );
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn diff_limits_are_clamped_to_4_gib() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let old = resolve(repo, "HEAD:alpha.txt");
+        let path = CString::new("alpha.txt").unwrap();
+
+        let diff = unsafe {
+            rcgit_diff_blobs(
+                repo,
+                ptr::null(),
+                &raw const old,
+                u64::MAX,
+                3,
+                &raw mut error,
+            )
+        };
+        assert!(!diff.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { &*diff }.limit, u64::from(u32::MAX));
+        unsafe { rcgit_blob_diff_free(diff) };
+
+        let diff = unsafe {
+            rcgit_diff_worktree_file(
+                repo,
+                &raw const old,
+                path.as_ptr(),
+                u64::MAX,
+                3,
+                &raw mut error,
+            )
+        };
+        assert!(!diff.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { &*diff }.limit, u64::from(u32::MAX));
+        unsafe { rcgit_blob_diff_free(diff) };
         unsafe { rcgit_repo_free(repo) };
     }
 

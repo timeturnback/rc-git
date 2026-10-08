@@ -1009,8 +1009,8 @@ void rcgit_tree_change_list_free(struct RcGitTreeChangeList *list);
 
 // Line diff between two blobs. A NULL `old` or `new` stands for an absent side, as in an
 // added or deleted file; passing both as NULL yields an empty text diff. Each side's size
-// is checked against `limit` before decoding. `context` is the number of unchanged lines
-// around each hunk. Release with `rcgit_blob_diff_free`.
+// is checked against `limit`, capped at 4 GiB, before decoding. `context` is the number of
+// unchanged lines around each hunk. Release with `rcgit_blob_diff_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `old` and `new` are each NULL or point to a readable
@@ -1122,8 +1122,9 @@ struct RcGitWorktreeFileList *rcgit_worktree_files(const struct RcGitRepo *repo,
 void rcgit_worktree_file_list_free(struct RcGitWorktreeFileList *list);
 
 // Line diff between the blob at `old` and the working-tree file at `path`, both as raw
-// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Release
-// with `rcgit_blob_diff_free`.
+// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Each
+// side's size is checked against `limit`, capped at 4 GiB, before decoding. Release with
+// `rcgit_blob_diff_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `old` is NULL or points to a readable `RcGitOid`.
