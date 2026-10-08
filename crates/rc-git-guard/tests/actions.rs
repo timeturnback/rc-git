@@ -2443,6 +2443,25 @@ mod checkout {
     }
 
     #[test]
+    fn an_unwritable_head_reflog_refuses_before_writing() {
+        let fx = Fixture::standard();
+        fx.set_mode(".git/logs/HEAD", 0o444);
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        assert!(err.to_string().contains("logs/HEAD"), "{err}");
+        assert_eq!(head_branch(&fx), "main", "HEAD must not move");
+        assert!(
+            fx.path().join("alpha.txt").exists(),
+            "the working tree must not change"
+        );
+        assert!(
+            !fx.path().join("feature.txt").exists(),
+            "the working tree must not change"
+        );
+    }
+
+    #[test]
     fn switching_thousands_of_paths_leaves_an_index_that_matches_the_target_tree() {
         let fx = Fixture::empty_dir();
         fx.git(&["init", "-q", "-b", "main"]);

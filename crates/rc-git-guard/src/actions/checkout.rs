@@ -78,9 +78,12 @@ pub fn checkout_branch(
     let work_dir = work_dir(&repo, OP)?;
     let index = LockedIndex::acquire(&repo, OP)?;
     treeapply::verify_clean(&repo, &work_dir, &index, &changes, OP)?;
+    let reflog = open_head_reflog(&repo)?;
     treeapply::apply(&repo, &work_dir, index, &changes, OP)?;
     point_head_at(&repo, &full_name, head.map(Target::Symbolic), current)?;
-    log_head_switch(&repo, &from, branch, current, target)?;
+    if let Some(file) = reflog {
+        log_head_switch(&repo, file, &from, branch, (current, target))?;
+    }
     Ok(CheckoutOutcome {
         branch: branch.to_owned(),
         new_head,
@@ -131,22 +134,36 @@ fn neither_branch_nor_commit() -> ActionError {
     ActionError::git(OP, "HEAD", "names neither a branch nor a commit")
 }
 
+/// Opens `logs/HEAD` for append before anything is written, so a log the switch cannot
+/// extend refuses the whole operation instead of failing after `HEAD` has moved. `None` when
+/// the log does not exist: it is appended only when it already exists, which is what
+/// `force_create_reflog: false` means on the edit itself.
+fn open_head_reflog(repo: &gix::Repository) -> ActionResult<Option<std::fs::File>> {
+    let path = repo.git_dir().join("logs").join("HEAD");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
+    )]
+    let opened = std::fs::OpenOptions::new().append(true).open(&path);
+    match opened {
+        Ok(file) => Ok(Some(file)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(git_err(OP, "logs/HEAD")(err)),
+    }
+}
+
 /// Appends the `checkout: moving from …` line git writes to `logs/HEAD`. A ref transaction
 /// will not write it: a symbolic update carries no object id, so gix skips the reflog for it
 /// by design. The line is serialized by gix's own reflog writer and carries the same
-/// synthetic `rc-git` committer as every other ref edit. Appended only when the log already
-/// exists, which is what `force_create_reflog: false` means on the edit itself.
+/// synthetic `rc-git` committer as every other ref edit.
 fn log_head_switch(
     repo: &gix::Repository,
+    mut file: std::fs::File,
     from: &str,
     to: &str,
-    old: Option<ObjectId>,
-    new: ObjectId,
+    (old, new): (Option<ObjectId>, ObjectId),
 ) -> ActionResult<()> {
-    let path = repo.git_dir().join("logs").join("HEAD");
-    if !path.exists() {
-        return Ok(());
-    }
+    use std::io::Write;
     let line = gix::refs::log::Line {
         previous_oid: old.unwrap_or_else(|| ObjectId::null(repo.object_hash())),
         new_oid: new,
@@ -160,18 +177,6 @@ fn log_head_switch(
     let mut serialized = Vec::new();
     line.write_to(&mut serialized)
         .map_err(git_err(OP, "logs/HEAD"))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned write path; see docs/safety.md"
-    )]
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .map_err(git_err(OP, "logs/HEAD"))?;
-        file.write_all(&serialized)
-            .map_err(git_err(OP, "logs/HEAD"))?;
-    }
-    Ok(())
+    file.write_all(&serialized)
+        .map_err(git_err(OP, "logs/HEAD"))
 }
