@@ -755,7 +755,8 @@ pub(in crate::actions) fn update_index(
     Ok(())
 }
 
-fn index_mode(kind: EntryKind) -> gix::index::entry::Mode {
+/// The index mode git records for a tree entry of `kind`.
+pub(super) fn index_mode(kind: EntryKind) -> gix::index::entry::Mode {
     match kind {
         EntryKind::Link => gix::index::entry::Mode::SYMLINK,
         EntryKind::BlobExecutable => gix::index::entry::Mode::FILE_EXECUTABLE,

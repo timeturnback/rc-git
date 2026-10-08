@@ -13,7 +13,8 @@ use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
 use super::commit::{
-    IndexChange, LockedIndex, blob_data, disk_stat, tree_entry_at, tree_of, update_index,
+    IndexChange, LockedIndex, blob_data, disk_stat, index_mode, tree_entry_at, tree_of,
+    update_index,
 };
 use super::workfile::DiskEntry;
 use super::{ActionError, ActionResult, git_err, workfile};
@@ -148,7 +149,8 @@ fn set_old_kinds(
 /// hand the same one to [`apply`], so no other process can change the index in between.
 ///
 /// # Errors
-/// [`ActionError::DirtyPath`] for the first path that does not match `HEAD`, or for a file or
+/// [`ActionError::DirtyPath`] for the first path that does not match `HEAD` on disk or in the
+/// index (blob id and mode), or for a file or
 /// symlink standing where an added path needs a parent directory;
 /// [`ActionError::Git`] when a blob cannot be read, or a path would cross a symlink (one on
 /// disk, or one this plan writes).
@@ -196,8 +198,8 @@ pub(super) fn verify_clean(
         }
         let staged = index
             .entry_by_path(change.path.as_bytes().into())
-            .map(|entry| entry.id);
-        let expected = change.old.map(|(oid, _)| oid);
+            .map(|entry| (entry.id, entry.mode));
+        let expected = change.old.map(|(oid, kind)| (oid, index_mode(kind)));
         if staged != expected {
             return Err(dirty());
         }

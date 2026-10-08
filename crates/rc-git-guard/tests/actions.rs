@@ -3076,6 +3076,26 @@ mod tree_switch_disk_reads {
     }
 
     #[test]
+    fn a_staged_chmod_on_a_touched_path_refuses_the_switch_and_the_pull() {
+        let fx = alpha_rewritten_ahead();
+        fx.git(&["config", "core.fileMode", "false"]);
+        fx.git(&["update-index", "--chmod=+x", "alpha.txt"]);
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "M  alpha.txt");
+
+        let main_tip = fx.rev_parse("main");
+        let err = checkout_branch(fx.path(), &Policy::default(), "next").unwrap_err();
+        assert_alpha_dirty(&err, "checkout");
+        let err = pull_fast_forward(fx.path(), &Policy::default()).unwrap_err();
+        assert_alpha_dirty(&err, "pull");
+        assert_eq!(fx.rev_parse("HEAD"), main_tip, "HEAD stayed put");
+        assert!(
+            fx.git_output(&["ls-files", "-s", "alpha.txt"])
+                .starts_with("100755 "),
+            "the staged mode survives"
+        );
+    }
+
+    #[test]
     fn a_file_swapped_for_a_symlink_to_identical_bytes_refuses_the_switch_and_the_pull() {
         let fx = alpha_rewritten_ahead();
         fx.write("copy.txt", b"alpha\n");
