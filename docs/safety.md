@@ -130,8 +130,10 @@ holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
 so no backup ever overwrites an earlier one. Two more rules live in the write path itself:
-the checked-out branch cannot be deleted (compared ignoring case), and a ref is never created
-over an existing one. Every name a delete, a checkout or the merged check acts on must appear
+the checked-out branch cannot be deleted (compared ignoring case; its delete plan is a `Deny`
+naming the checkout unless the policy already denies it, and the merged check never counts
+`HEAD` on the branch itself as another home for its commits), and a ref is never created over
+an existing one. Every name a delete, a checkout or the merged check acts on must appear
 byte for byte in the repository's own branch or tag listing, so `MAIN` never reaches `main`
 through filesystem case folding. Under `core.ignoreCase`, creating or deleting a name that
 another ref matches except for case is refused, since both names are one file on disk.

@@ -379,7 +379,8 @@ pub struct Deleted {
 /// The decision for deleting a branch, with the facts the policy needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchDeletePlan {
-    /// Whether every commit of the branch is reachable from another local branch or `HEAD`.
+    /// Whether every commit of the branch is reachable from another local branch, or from
+    /// `HEAD` when `HEAD` is not on the branch itself.
     pub merged: bool,
     /// What the front end must collect.
     pub decision: Decision,
@@ -505,6 +506,8 @@ fn refuse_leading_dash(op: &'static str, name: &str) -> ActionResult<()> {
 }
 
 /// What deleting `name` would need: the merged-ness the policy keys on, and its decision.
+/// A checked-out branch the policy would not already deny gets a `Deny` naming the checkout,
+/// since the delete would refuse it.
 ///
 /// # Errors
 /// [`ActionError::Git`] when the repository or branch cannot be read.
@@ -513,13 +516,35 @@ pub fn plan_branch_delete(
     policy: &Policy,
     name: &str,
 ) -> ActionResult<BranchDeletePlan> {
-    let repo = open(repo_path, "delete branch", name)?;
+    const OP: &str = "delete branch";
+    let repo = open(repo_path, OP, name)?;
+    let full_name = format!("refs/heads/{name}");
+    require_listed_ref(&repo, OP, &full_name)?;
     let merged = branch_is_merged(&repo, name)?;
-    let decision = policy.evaluate(&Action::DeleteLocalBranch {
+    let decision = match policy.evaluate(&Action::DeleteLocalBranch {
         name: name.to_owned(),
         merged,
-    });
+    }) {
+        Decision::Deny { reason } => Decision::Deny { reason },
+        _ if head_is_on(&repo, OP, &full_name)? => Decision::Deny {
+            reason: ActionError::CheckedOut {
+                name: name.to_owned(),
+            }
+            .to_string(),
+        },
+        decision => decision,
+    };
     Ok(BranchDeletePlan { merged, decision })
+}
+
+/// Whether `HEAD` is a symbolic ref to `full_name`, compared ignoring case so a case variant
+/// cannot strand `HEAD` on a case-folding volume.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` when `HEAD` cannot be read.
+fn head_is_on(repo: &gix::Repository, op: &'static str, full_name: &str) -> ActionResult<bool> {
+    let head_name = repo.head_name().map_err(git_err(op, "HEAD"))?;
+    Ok(head_name.is_some_and(|head| head.as_bstr().eq_ignore_ascii_case(full_name.as_bytes())))
 }
 
 /// Deletes a local branch. `input` answers the challenge when the policy demands one; pass
@@ -539,11 +564,7 @@ pub fn delete_branch(
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
-    if let Some(head_name) = repo.head_name().map_err(git_err(OP, "HEAD"))?
-        && head_name
-            .as_bstr()
-            .eq_ignore_ascii_case(full_name.as_bytes())
-    {
+    if head_is_on(&repo, OP, &full_name)? {
         return Err(ActionError::CheckedOut {
             name: name.to_owned(),
         });
@@ -754,7 +775,8 @@ fn delete_ref(
     })
 }
 
-/// Whether every commit of `name` is reachable from another local branch or `HEAD`.
+/// Whether every commit of `name` is reachable from another local branch or from `HEAD`
+/// when `HEAD` is not on `name` itself.
 fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
     const OP: &str = "check branch reachability";
     let full_name = format!("refs/heads/{name}");
@@ -767,7 +789,9 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
         .map_err(git_err(OP, &full_name))?
         .detach();
     let mut others: Vec<gix::ObjectId> = Vec::new();
-    if let Ok(head) = repo.head_id() {
+    if !head_is_on(repo, OP, &full_name)?
+        && let Ok(head) = repo.head_id()
+    {
         others.push(head.detach());
     }
     let references = repo.references().map_err(git_err(OP, &full_name))?;

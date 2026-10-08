@@ -246,6 +246,40 @@ fn protected_and_checked_out_branches_cannot_be_deleted() {
 }
 
 #[test]
+fn the_checked_out_branch_plans_a_deny_and_counts_head_as_itself() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    fx.git(&["checkout", "-q", "feature"]);
+
+    let plan = plan_branch_delete(fx.path(), &policy, "feature").unwrap();
+    assert!(
+        !plan.merged,
+        "HEAD on the branch is not another place its commits live"
+    );
+    let Decision::Deny { reason } = &plan.decision else {
+        panic!("expected a deny, got {:?}", plan.decision);
+    };
+    assert_eq!(
+        reason,
+        "cannot delete 'feature': it is the checked-out branch"
+    );
+    let err = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap_err();
+    assert_eq!(err.to_string(), *reason, "plan and delete refuse alike");
+
+    fx.git(&["checkout", "-q", "--detach", "feature"]);
+    let plan = plan_branch_delete(fx.path(), &policy, "feature").unwrap();
+    assert!(
+        plan.merged,
+        "a detached HEAD at the tip still keeps its commits"
+    );
+    assert!(
+        matches!(plan.decision, Decision::Confirm(_)),
+        "{:?}",
+        plan.decision
+    );
+}
+
+#[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();
     let policy = Policy::default();
