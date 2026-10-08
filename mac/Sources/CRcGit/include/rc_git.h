@@ -421,6 +421,9 @@ typedef struct RcGitBlameRange {
   uint32_t start_line;
   // Number of lines in the run.
   uint32_t line_count;
+  // The walk stopped at the `since` floor before finding where these lines came from:
+  // `commit` is the first commit older than the floor, and the lines are at least that old.
+  bool boundary;
 } RcGitBlameRange;
 
 // Every blame range of one file, ordered by line number.
@@ -959,7 +962,10 @@ void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 // that introduced the oldest surviving line — up to the whole ancestry for a file with a line
 // from the first commit; call it for the file on screen, never in bulk. A file at `tip`
 // larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
-// walk reaches in history are not size-checked. Release with `rcgit_blame_list_free`.
+// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
+// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
+// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
+// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
 //
 // # Safety
 // `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -968,6 +974,7 @@ struct RcGitBlameList *rcgit_blame(const struct RcGitRepo *repo,
                                    const struct RcGitOid *tip,
                                    const char *path,
                                    uint64_t limit,
+                                   int64_t since,
                                    char **error);
 
 // Releases a value from `rcgit_blame`.

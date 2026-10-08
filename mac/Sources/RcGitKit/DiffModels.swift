@@ -183,10 +183,15 @@ public enum FileDiffState: Sendable {
 public struct BlameSpan: Sendable, Hashable {
     public let range: BlameRange
     public let commit: CommitSummary
+    /// For a boundary range, the floor the walk stopped at, in seconds since the Unix epoch:
+    /// the lines are older than it, and `commit` is only where the walk gave up. `nil` when
+    /// the range was traced to the commit that introduced it.
+    public let olderThan: Int64?
 
-    public init(range: BlameRange, commit: CommitSummary) {
+    public init(range: BlameRange, commit: CommitSummary, olderThan: Int64? = nil) {
         self.range = range
         self.commit = commit
+        self.olderThan = olderThan
     }
 }
 
@@ -212,10 +217,14 @@ public struct BlameRange: Sendable, Hashable {
     /// 1-based first line of the run in the blamed file.
     public let startLine: UInt32
     public let lineCount: UInt32
+    /// The walk stopped at the `since` floor before finding where these lines came from:
+    /// `commit` is the first commit older than the floor, and the lines are at least that old.
+    public let boundary: Bool
 
-    public init(commit: Oid, startLine: UInt32, lineCount: UInt32) {
+    public init(commit: Oid, startLine: UInt32, lineCount: UInt32, boundary: Bool = false) {
         self.commit = commit
         self.startLine = startLine
         self.lineCount = lineCount
+        self.boundary = boundary
     }
 }

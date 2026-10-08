@@ -859,6 +859,10 @@ public final class BrowserModel {
     /// `blame`, firing `onBlameChanged`. Ranges are paired with their commit summaries,
     /// resolved through a cache so each commit is read once.
     ///
+    /// The walk stops at `blameFloor(tipTime:)` of the tip's committer time, so a line older
+    /// than that comes back as a span with `olderThan` set instead of costing a walk of the
+    /// whole ancestry; the walk itself cannot be cancelled.
+    ///
     /// The file at the tip is sized against the limit the file pane read it with, so a file
     /// the pane declined as too large is declined here too instead of decoded whole. A request
     /// for the file and revision a walk is already running for joins that walk instead of
@@ -899,6 +903,15 @@ public final class BrowserModel {
         return BlameTarget(path: path, tip: tip, limit: openedFileLimit, file: fileGeneration)
     }
 
+    /// How far back blame walks: two years (730 days), in seconds.
+    public nonisolated static let blameWindow: Int64 = 730 * 86_400
+
+    /// The `since` floor blame walks to from a tip committed at `tipTime` (seconds since the
+    /// Unix epoch): `blameWindow` before it.
+    public nonisolated static func blameFloor(tipTime: Int64) -> Int64 {
+        tipTime - blameWindow
+    }
+
     private func publishBlame(_ state: BlameState) {
         blame = state
         onBlameChanged?()
@@ -907,8 +920,11 @@ public final class BrowserModel {
     nonisolated private static func blameSpans(
         _ repository: any RepositoryReading, target: BlameTarget
     ) throws -> [BlameSpan] {
+        let since = blameFloor(tipTime: try repository.commitDetails(target.tip).committerTime)
         let ranges: [BlameRange]
-        switch try repository.blame(tip: target.tip, path: target.path, limit: target.limit) {
+        switch try repository.blame(
+            tip: target.tip, path: target.path, limit: target.limit, since: since)
+        {
         case let .ranges(found):
             ranges = found
         case let .tooLarge(size, limit):
@@ -925,7 +941,8 @@ public final class BrowserModel {
                 commit = try repository.commit(range.commit)
                 commits[range.commit] = commit
             }
-            spans.append(BlameSpan(range: range, commit: commit))
+            spans.append(
+                BlameSpan(range: range, commit: commit, olderThan: range.boundary ? since : nil))
         }
         return spans
     }

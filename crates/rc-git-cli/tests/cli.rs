@@ -585,6 +585,41 @@ fn blame_prints_commit_per_range() {
 }
 
 #[test]
+fn blame_since_marks_lines_older_than_the_floor() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let unbounded = stdout(&rc_git(&["blame", path, "main", "README.md"]));
+    let out = rc_git(&["blame", path, "main", "README.md", "--since", "0"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        unbounded,
+        "a floor below every commit changes nothing"
+    );
+
+    let out = rc_git(&[
+        "blame",
+        path,
+        "main",
+        "README.md",
+        "--since",
+        &i64::MAX.to_string(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let marked = format!("^{}\t1\t3\t", fx.rev_parse("main"));
+    assert!(stdout(&out).starts_with(&marked), "{}", stdout(&out));
+    assert_eq!(stdout(&out).lines().count(), 1);
+
+    let out = rc_git(&["blame", path, "main", "README.md", "--since", "yesterday"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("--since value 'yesterday'"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn blame_declines_a_file_over_the_default_limit() {
     let fx = Fixture::empty_dir();
     fx.git(&["init", "-q", "-b", "main"]);

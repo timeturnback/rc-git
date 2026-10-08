@@ -115,8 +115,13 @@ final class BlamePanelController: NSObject, NSTableViewDataSource, NSTableViewDe
         case "author":
             cell.textField?.stringValue = span.commit.authorName
         case "date":
-            let date = Date(timeIntervalSince1970: TimeInterval(span.commit.authorTime))
-            cell.textField?.stringValue = Self.dateFormatter.string(from: date)
+            if let olderThan = span.olderThan {
+                let floor = Date(timeIntervalSince1970: TimeInterval(olderThan))
+                cell.textField?.stringValue = "older than \(Self.dateFormatter.string(from: floor))"
+            } else {
+                let date = Date(timeIntervalSince1970: TimeInterval(span.commit.authorTime))
+                cell.textField?.stringValue = Self.dateFormatter.string(from: date)
+            }
         default:
             cell.textField?.stringValue = span.commit.title
             cell.toolTip = span.commit.title

@@ -13,7 +13,7 @@ fn oid(hex: &str) -> Oid {
 
 /// The ranges of a blame under the default limit; fails the test when the file is over it.
 fn blame_ranges(repo: &Repository, tip: Oid, path: &str) -> Vec<BlameRange> {
-    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT).unwrap() {
+    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT, None).unwrap() {
         Blame::Ranges(ranges) => Some(ranges),
         Blame::TooLarge { .. } => None,
     };
@@ -611,14 +611,14 @@ fn blame_refuses_a_file_over_the_limit() {
     let tip = repo.resolve("main").unwrap();
     let size = repo.blob_size(oid(&fx.rev_parse("main:a.txt"))).unwrap();
     assert_eq!(
-        repo.blame(tip, "a.txt", size - 1).unwrap(),
+        repo.blame(tip, "a.txt", size - 1, None).unwrap(),
         Blame::TooLarge {
             size,
             limit: size - 1
         }
     );
     assert!(
-        matches!(repo.blame(tip, "a.txt", size).unwrap(), Blame::Ranges(ranges) if !ranges.is_empty()),
+        matches!(repo.blame(tip, "a.txt", size, None).unwrap(), Blame::Ranges(ranges) if !ranges.is_empty()),
         "a file exactly at the limit is blamed"
     );
 }
@@ -629,7 +629,7 @@ fn blame_reports_missing_paths_and_bad_tips() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
     let err = repo
-        .blame(tip, "no/such/file", DEFAULT_BLOB_LIMIT)
+        .blame(tip, "no/such/file", DEFAULT_BLOB_LIMIT, None)
         .unwrap_err();
     assert!(
         matches!(&err, Error::PathNotFound { path, commit, .. }
@@ -640,7 +640,9 @@ fn blame_reports_missing_paths_and_bad_tips() {
     assert!(msg.contains("no/such/file"), "{msg}");
     assert!(!msg.contains("missing or unreadable"), "{msg}");
 
-    let err = repo.blame(tip, "src", DEFAULT_BLOB_LIMIT).unwrap_err();
+    let err = repo
+        .blame(tip, "src", DEFAULT_BLOB_LIMIT, None)
+        .unwrap_err();
     assert!(
         matches!(
             err,
@@ -663,7 +665,7 @@ fn blame_reports_missing_paths_and_bad_tips() {
 
     let blob = repo.resolve("main:README.md").unwrap();
     let err = repo
-        .blame(blob, "README.md", DEFAULT_BLOB_LIMIT)
+        .blame(blob, "README.md", DEFAULT_BLOB_LIMIT, None)
         .unwrap_err();
     assert!(
         matches!(
@@ -718,6 +720,47 @@ fn blame_stops_at_the_shallow_boundary() {
     );
 }
 
+/// Seconds since the Unix epoch of `2024-01-02T00:00:00+0000`, when `append_fixture` commits
+/// `two`.
+const JAN_2: i64 = 1_704_153_600;
+
+#[test]
+fn blame_stops_at_the_since_floor_and_marks_the_boundary() {
+    let fx = append_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let one = oid(&fx.rev_parse("main~2"));
+    let two = oid(&fx.rev_parse("main~1"));
+    let marks = |since| match repo.blame(tip, "a.txt", DEFAULT_BLOB_LIMIT, since).unwrap() {
+        Blame::Ranges(ranges) => ranges
+            .iter()
+            .map(|range| (range.commit, range.boundary))
+            .collect::<Vec<_>>(),
+        Blame::TooLarge { .. } => panic!("a.txt is under the default limit"),
+    };
+
+    assert_eq!(
+        marks(None),
+        [(one, false), (two, false), (tip, false)],
+        "without a floor nothing is a boundary"
+    );
+    assert_eq!(
+        marks(Some(JAN_2)),
+        [(one, true), (two, false), (tip, false)],
+        "a commit at the floor is walked; the older one keeps line 1 as a boundary"
+    );
+    assert_eq!(
+        marks(Some(JAN_2 + 1)),
+        [(two, true), (tip, false)],
+        "lines 1 and 2 stop at `two`, which owns only line 2, and are marked"
+    );
+    assert_eq!(
+        marks(Some(i64::MAX)),
+        [(tip, true)],
+        "a floor past the tip stops at the tip with every line unattributed"
+    );
+}
+
 #[test]
 fn blame_names_the_missing_commit() {
     let fx = append_fixture();
@@ -726,7 +769,9 @@ fn blame_names_the_missing_commit() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let err = repo.blame(tip, "a.txt", DEFAULT_BLOB_LIMIT).unwrap_err();
+    let err = repo
+        .blame(tip, "a.txt", DEFAULT_BLOB_LIMIT, None)
+        .unwrap_err();
     let Error::Object { oid: culprit, .. } = err else {
         panic!("expected an object error, got {err}");
     };

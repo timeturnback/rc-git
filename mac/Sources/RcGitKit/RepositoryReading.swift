@@ -19,7 +19,7 @@ public protocol RepositoryReading: Sendable {
         throws -> CommitPage
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange]
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff
-    func blame(tip: Oid, path: String, limit: UInt64) throws -> Blame
+    func blame(tip: Oid, path: String, limit: UInt64, since: Int64?) throws -> Blame
     func worktreeEntries(tree: Oid, dir: String) throws -> WorktreeListing
     func worktreeFile(path: String, limit: UInt64) throws -> BlobContent
     func worktreeStatus(tree: Oid?, maxScan: Int) throws -> StatusReport

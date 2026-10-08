@@ -492,7 +492,32 @@ import Testing
         #expect(spans.count == 1)
         #expect(spans[0].commit.title == "parent")
         #expect(spans[0].range.lineCount == 1)
+        #expect(spans[0].olderThan == nil, "a traced range is not older than the floor")
         #expect(repo.blameLimits == [Repository.defaultBlobLimit])
+    }
+
+    @Test func blameWalksTwoYearsBackFromTheTipAndMarksOlderLines() async throws {
+        await model.attach(repo)
+        let tipTime: Int64 = 1_700_000_000
+        let detail = CommitDetail(
+            summary: commitSummary(mainCommit), body: "", committerName: "Test Committer",
+            committerEmail: "committer@example.com", committerTime: tipTime, committerOffset: 0,
+            tree: mainTree)
+        repo.lock.withLock { repo.details[mainCommit] = detail }
+        repo.blames["a.txt"] = .ranges([
+            BlameRange(commit: parentCommit, startLine: 1, lineCount: 1, boundary: true)
+        ])
+        let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
+        await model.openFile(entry, path: "a.txt")
+        await model.requestBlame()
+        guard case let .loaded(_, spans) = model.blame else {
+            Issue.record("expected a loaded blame, got \(model.blame)")
+            return
+        }
+        let floor = tipTime - 730 * 86_400
+        #expect(repo.blameFloors == [floor], "the floor is two years before the tip's commit")
+        let span = try #require(spans.first)
+        #expect(span.olderThan == floor, "a boundary range is shown as older than the floor")
     }
 
     @Test func blameUsesTheFilePaneLimitAndDeclinesAFileOverIt() async {

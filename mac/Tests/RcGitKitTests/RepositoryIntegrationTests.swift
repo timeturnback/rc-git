@@ -212,6 +212,16 @@ import Testing
         #expect(spans[0].startLine == 1)
         #expect(spans[0].lineCount == 3)
         #expect(try spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
+        #expect(!spans[0].boundary)
+
+        guard case let .ranges(stopped) = try repo.blame(tip: new, path: "README.md", since: .max)
+        else {
+            Issue.record("expected ranges")
+            return
+        }
+        let marked = try #require(stopped.first)
+        #expect(try marked.commit.hex == fixture.revParse("main"))
+        #expect(marked.boundary, "a floor past the tip leaves every line at the tip, marked")
 
         let declined = try repo.blame(tip: new, path: "README.md", limit: 2)
         #expect(declined == .tooLarge(size: 17, limit: 2))

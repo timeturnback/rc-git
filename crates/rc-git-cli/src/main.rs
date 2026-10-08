@@ -34,8 +34,10 @@ usage: rc-git [--time] <command> <repo> [args]
                                           a root commit lists every file as added
   diff    <repo> <old> <new> [path]       changed files between two revisions, or one file's hunks
   diff    <repo> --worktree <path>        one working-tree file's hunks against HEAD
-  blame   <repo> <rev> <path>             which commit introduced each line; a file over
-                                          8 MiB at <rev> exits 4
+  blame   <repo> <rev> <path> [--since EPOCH]  which commit introduced each line; a file over
+                                          8 MiB at <rev> exits 4. --since stops the walk at
+                                          commits older than EPOCH and prefixes the commit of
+                                          lines it could not trace further with '^', like git
   status  <repo> [-z] [dir]               one working-tree directory against HEAD
   changes <repo> [-z] [--max-scan N]      every changed working-tree path against HEAD
   files   <repo> [-z] [--max-scan N]      every file on disk, ignored folders skipped
@@ -1057,14 +1059,15 @@ fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<Exi
 }
 
 fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let args = split_args("blame", args, &[], &[])?;
+    let args = split_args("blame", args, &["--since"], &[])?;
     args.expect(2, 2, "<rev> <path>")?;
     let [rev, path] = args.positionals[..] else {
         bail!("blame needs <rev> <path>\n\n{USAGE}");
     };
     let path = &canonical_path(path)?;
+    let since = epoch(&args, "--since")?;
     let tip = repo.resolve(rev)?;
-    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT)? {
+    let ranges = match repo.blame(tip, path, DEFAULT_BLOB_LIMIT, since)? {
         Blame::Ranges(ranges) => ranges,
         Blame::TooLarge { size, limit } => {
             writeln!(
@@ -1084,7 +1087,8 @@ fn blame(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
         };
         writeln!(
             out,
-            "{}\t{}\t{}\t{}\t{}",
+            "{}{}\t{}\t{}\t{}\t{}",
+            if range.boundary { "^" } else { "" },
             range.commit,
             range.start_line,
             range.line_count,

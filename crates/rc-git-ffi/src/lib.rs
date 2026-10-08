@@ -699,6 +699,9 @@ pub struct RcGitBlameRange {
     pub start_line: u32,
     /// Number of lines in the run.
     pub line_count: u32,
+    /// The walk stopped at the `since` floor before finding where these lines came from:
+    /// `commit` is the first commit older than the floor, and the lines are at least that old.
+    pub boundary: bool,
 }
 
 /// What a blame produced.
@@ -2077,7 +2080,10 @@ pub unsafe extern "C" fn rcgit_blob_diff_free(diff: *mut RcGitBlobDiff) {
 /// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
 /// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
 /// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
-/// walk reaches in history are not size-checked. Release with `rcgit_blame_list_free`.
+/// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
+/// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
+/// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
+/// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -2088,6 +2094,7 @@ pub unsafe extern "C" fn rcgit_blame(
     tip: *const RcGitOid,
     path: *const c_char,
     limit: u64,
+    since: i64,
     error: *mut *mut c_char,
 ) -> *mut RcGitBlameList {
     // SAFETY: forwarded from this function's contract.
@@ -2103,7 +2110,8 @@ pub unsafe extern "C" fn rcgit_blame(
         error.report("repo, tip, or path is NULL or malformed");
         return ptr::null_mut();
     };
-    match repo.blame(tip, &String::from_utf8_lossy(path), limit) {
+    let since = (since != i64::MIN).then_some(since);
+    match repo.blame(tip, &String::from_utf8_lossy(path), limit, since) {
         Ok(Blame::TooLarge { size, limit }) => export(RcGitBlameList {
             kind: RcGitBlameKind::TooLarge,
             ranges: ptr::null_mut(),
@@ -2118,6 +2126,7 @@ pub unsafe extern "C" fn rcgit_blame(
                     commit: range.commit.into(),
                     start_line: range.start_line,
                     line_count: range.line_count,
+                    boundary: range.boundary,
                 });
             }
             let (ranges, len) = export_vec(exported);
@@ -4563,8 +4572,10 @@ mod tests {
         let new = resolve(repo, "main");
 
         let path = CString::new("README.md").unwrap();
-        let blame =
-            unsafe { rcgit_blame(repo, &raw const new, path.as_ptr(), 1 << 20, &raw mut error) };
+        let blame_at = |since: i64, error: &mut *mut c_char| unsafe {
+            rcgit_blame(repo, &raw const new, path.as_ptr(), 1 << 20, since, error)
+        };
+        let blame = blame_at(i64::MIN, &mut error);
         assert!(!blame.is_null(), "{}", take_error(&mut error));
         let blame_ref = unsafe { &*blame };
         assert_eq!(blame_ref.kind, RcGitBlameKind::Ranges);
@@ -4572,9 +4583,26 @@ mod tests {
         let range = unsafe { &*blame_ref.ranges };
         assert_eq!((range.start_line, range.line_count), (1, 3));
         assert_eq!(hex(&range.commit), fx.rev_parse("v0.9^{commit}"));
+        assert!(!range.boundary, "i64::MIN is no floor");
         unsafe { rcgit_blame_list_free(blame) };
 
-        let blame = unsafe { rcgit_blame(repo, &raw const new, path.as_ptr(), 4, &raw mut error) };
+        let blame = blame_at(i64::MAX, &mut error);
+        assert!(!blame.is_null(), "{}", take_error(&mut error));
+        let range = unsafe { &*(*blame).ranges };
+        assert_eq!(hex(&range.commit), fx.rev_parse("main"));
+        assert!(range.boundary, "a floor past the tip marks every line");
+        unsafe { rcgit_blame_list_free(blame) };
+
+        let blame = unsafe {
+            rcgit_blame(
+                repo,
+                &raw const new,
+                path.as_ptr(),
+                4,
+                i64::MIN,
+                &raw mut error,
+            )
+        };
         assert!(!blame.is_null(), "{}", take_error(&mut error));
         let blame_ref = unsafe { &*blame };
         assert_eq!(blame_ref.kind, RcGitBlameKind::TooLarge);
@@ -4590,6 +4618,7 @@ mod tests {
                 &raw const new,
                 missing.as_ptr(),
                 1 << 20,
+                i64::MIN,
                 &raw mut error,
             )
         };

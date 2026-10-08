@@ -52,6 +52,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blames: [String: Blame] = [:]
     /// The limit each `blame` call passed, in call order.
     var blameLimits: [UInt64] = []
+    /// The `since` floor each `blame` call passed, in call order.
+    var blameFloors: [Int64?] = []
     /// Holds the next `blame` call, then clears itself.
     var blameGate: CallGate?
     var worktreeListings: [String: WorktreeListing] = [:]
@@ -255,9 +257,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         return found
     }
 
-    func blame(tip: Oid, path: String, limit: UInt64) throws -> Blame {
+    func blame(tip: Oid, path: String, limit: UInt64, since: Int64?) throws -> Blame {
         let (found, gate) = lock.withLock { () -> (Blame?, CallGate?) in
             blameLimits.append(limit)
+            blameFloors.append(since)
             let gate = blameGate
             blameGate = nil
             return (blames[path], gate)

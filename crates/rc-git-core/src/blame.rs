@@ -1,6 +1,7 @@
 //! Line-by-line attribution of a file to the commits that introduced its lines.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 
 use gix::ObjectId;
 use gix::objs::{Find, FindHeader};
@@ -35,6 +36,10 @@ pub struct BlameRange {
     pub start_line: u32,
     /// Number of lines in the run.
     pub line_count: u32,
+    /// The walk stopped at the caller's `since` floor before finding where these lines came
+    /// from: `commit` is the first commit older than the floor, and the lines are at least that
+    /// old — git's `^` marker. Never set without a floor.
+    pub boundary: bool,
 }
 
 impl Repository {
@@ -45,6 +50,12 @@ impl Repository {
     /// and the commit that introduced the oldest surviving line — up to the whole ancestry for
     /// a file with a line from the first commit — so call it on demand for the file on screen,
     /// never in bulk.
+    ///
+    /// `since` (seconds since the Unix epoch) is the one budget the walk takes: it never
+    /// reads past a commit whose committer time is older, and the lines still unattributed
+    /// there go to that commit as [`BlameRange::boundary`] ranges. `None` walks the whole
+    /// ancestry. There is no cancel: gix-blame takes no interrupt flag, so once started the
+    /// walk runs to the floor while holding a pool handle; a real cancel needs upstream support.
     ///
     /// In a shallow clone the walk stops at the boundary, like `git blame`: a boundary commit
     /// is judged like a root and keeps every line still unattributed when the walk reaches it.
@@ -62,8 +73,8 @@ impl Repository {
     /// [`Error::Git`](crate::Error::Git) when the shallow file, diff settings or commit-graph
     /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing or the
     /// walk fails; it names the object the walk could not find when there was one, `tip`
-    /// otherwise.
-    pub fn blame(&self, tip: Oid, path: &str, limit: u64) -> Result<Blame> {
+    /// otherwise, or the commit whose time could not be read to mark a boundary range.
+    pub fn blame(&self, tip: Oid, path: &str, limit: u64, since: Option<i64>) -> Result<Blame> {
         self.with(|repo| {
             let commit = peel_to_commit(repo, tip)?;
             let tip = Oid::from_gix(commit.id);
@@ -90,7 +101,7 @@ impl Repository {
             let options = gix::blame::Options {
                 diff_algorithm: repo.diff_algorithm().map_err(git("read diff algorithm"))?,
                 ranges: gix::blame::BlameRanges::default(),
-                since: None,
+                since: since.map(|seconds| gix::date::Time::new(seconds, 0)),
                 rewrites: None,
                 debug_track_path: false,
             };
@@ -106,18 +117,56 @@ impl Repository {
                 let culprit = odb.missing.get().map_or(tip, Oid::from_gix);
                 object("blame file", culprit)(source)
             })?;
-            let mut ranges: Vec<BlameRange> = Vec::with_capacity(outcome.entries.len());
-            for entry in outcome.entries {
-                ranges.push(BlameRange {
-                    commit: Oid::from_gix(entry.commit_id),
-                    start_line: entry.start_in_blamed_file + 1,
-                    line_count: entry.len.get(),
-                });
-            }
-            ranges.sort_by_key(|range| range.start_line);
-            Ok(Blame::Ranges(ranges))
+            to_ranges(repo, outcome.entries, since).map(Blame::Ranges)
         })
     }
+}
+
+/// The walk's entries as ranges ordered by line number. With a floor, a range whose commit is
+/// older than it is a boundary: gix-blame only attributes lines to such a commit when it stops
+/// there, since it never diffs one. Each distinct commit's time is read once.
+fn to_ranges(
+    repo: &gix::Repository,
+    entries: Vec<gix::blame::BlameEntry>,
+    since: Option<i64>,
+) -> Result<Vec<BlameRange>> {
+    let mut older: HashMap<ObjectId, bool> = HashMap::new();
+    let mut ranges: Vec<BlameRange> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let commit = Oid::from_gix(entry.commit_id);
+        let boundary = since
+            .map(|floor| is_older(repo, &mut older, commit, floor))
+            .transpose()?
+            .unwrap_or(false);
+        ranges.push(BlameRange {
+            commit,
+            start_line: entry.start_in_blamed_file + 1,
+            line_count: entry.len.get(),
+            boundary,
+        });
+    }
+    ranges.sort_by_key(|range| range.start_line);
+    Ok(ranges)
+}
+
+/// Whether `commit` was committed before `floor`, remembered in `known` so each is read once.
+fn is_older(
+    repo: &gix::Repository,
+    known: &mut HashMap<ObjectId, bool>,
+    commit: Oid,
+    floor: i64,
+) -> Result<bool> {
+    if let Some(older) = known.get(commit.as_gix()) {
+        return Ok(*older);
+    }
+    let time = repo
+        .find_commit(*commit.as_gix())
+        .map_err(object("read commit", commit))?
+        .time()
+        .map_err(object("decode committer", commit))?;
+    let older = time.seconds < floor;
+    known.insert(*commit.as_gix(), older);
+    Ok(older)
 }
 
 /// The blob at `path` in the commit `tip` whose root tree is `tree`. Fails unless `path` names

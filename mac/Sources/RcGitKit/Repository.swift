@@ -314,12 +314,14 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
 
     /// Attributes every line of `path` at commit `tip` to the commit that introduced it.
     /// Walks history; call it for the file on screen, never in bulk. A file at `tip` over
-    /// `limit` bytes is `.tooLarge` after one header read.
-    public func blame(tip: Oid, path: String, limit: UInt64 = Repository.defaultBlobLimit)
-        throws -> Blame
-    {
+    /// `limit` bytes is `.tooLarge` after one header read. `since` (seconds since the Unix
+    /// epoch) stops the walk at commits older than it; lines still untraced there come back as
+    /// `boundary` ranges. `nil` walks the whole ancestry. The walk cannot be cancelled.
+    public func blame(
+        tip: Oid, path: String, limit: UInt64 = Repository.defaultBlobLimit, since: Int64? = nil
+    ) throws -> Blame {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let list = tip.withC { rcgit_blame(handle, $0, path, limit, &error) }
+        let list = tip.withC { rcgit_blame(handle, $0, path, limit, since ?? Int64.min, &error) }
         guard let list else {
             throw RepositoryError.take(error, fallback: "cannot blame \(path)")
         }
@@ -333,7 +335,8 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             let c = list.pointee.ranges[index]
             ranges.append(
                 BlameRange(
-                    commit: Oid(c: c.commit), startLine: c.start_line, lineCount: c.line_count))
+                    commit: Oid(c: c.commit), startLine: c.start_line, lineCount: c.line_count,
+                    boundary: c.boundary))
         }
         return .ranges(ranges)
     }
