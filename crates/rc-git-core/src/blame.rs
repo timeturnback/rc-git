@@ -60,6 +60,10 @@ impl Repository {
     /// In a shallow clone the walk stops at the boundary, like `git blame`: a boundary commit
     /// is judged like a root and keeps every line still unattributed when the walk reaches it.
     ///
+    /// Renames are followed, as `git blame` does: when a commit adds `path`, its parent is
+    /// searched for the file it was renamed from (default similarity, no copies), and the walk
+    /// continues under that name. Only a commit that adds or deletes the path pays for that diff.
+    ///
     /// An annotated tag `tip` is followed to its commit.
     ///
     /// The file at `tip` is sized from its object header first: over `limit`, the result is
@@ -102,7 +106,7 @@ impl Repository {
                 diff_algorithm: repo.diff_algorithm().map_err(git("read diff algorithm"))?,
                 ranges: gix::blame::BlameRanges::default(),
                 since: since.map(|seconds| gix::date::Time::new(seconds, 0)),
-                rewrites: None,
+                rewrites: Some(gix::diff::Rewrites::default()),
                 debug_track_path: false,
             };
             let outcome = gix::blame::file(

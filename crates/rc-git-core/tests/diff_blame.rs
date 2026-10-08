@@ -599,8 +599,8 @@ fn blame_attributes_lines_to_their_commits() {
     let renamed = blame_ranges(&repo, tip, "kept.txt");
     assert_eq!(renamed.len(), 1);
     assert_eq!(
-        renamed[0].commit, second,
-        "without rename tracking the rename commit owns the lines"
+        renamed[0].commit, first,
+        "blame follows the rename to the commit that wrote the lines"
     );
 }
 
