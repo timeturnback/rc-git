@@ -88,8 +88,8 @@ public enum CommitSelection: Sendable, Hashable {
 
 /// What a completed commit produced.
 public struct CommitOutcome: Sendable, Hashable {
-    /// Hex id of the new commit.
-    public let oid: String
+    /// The new commit.
+    public let oid: Oid
     /// Short name of the branch that advanced.
     public let branch: String
 }
@@ -209,7 +209,7 @@ public enum RepositoryGuard {
     /// identity; it never overrides one the repository sets. Throws `IdentityRequiredError`
     /// when neither gives an identity, `RepositoryError` for every other failure.
     public static func commit(
-        repoPath: String, message: String, fallback: CommitIdentity?, expectedHead: String?,
+        repoPath: String, message: String, fallback: CommitIdentity?, expectedHead: Oid?,
         selections: [CommitSelection], input: String?
     ) throws -> CommitOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
@@ -240,13 +240,15 @@ public enum RepositoryGuard {
             }
         }
         var out: UnsafeMutablePointer<RcGitCommitResult>? = nil
-        let status = withOwnedCStrings([message, expectedHead, input]) { strings in
+        let status = withOwnedCStrings([message, input]) { strings in
             withFallback(fallback) { fallbackPtr in
-                files.withUnsafeBufferPointer { buffer in
-                    var request = RcGitCommitRequest(
-                        message: strings[0], fallback: fallbackPtr, expected_head: strings[1],
-                        files: buffer.baseAddress, file_count: files.count)
-                    return rcgit_guard_commit(repoPath, &request, strings[2], &out, &error)
+                withOptionalOid(expectedHead) { headPtr in
+                    files.withUnsafeBufferPointer { buffer in
+                        var request = RcGitCommitRequest(
+                            message: strings[0], fallback: fallbackPtr, expected_head: headPtr,
+                            files: buffer.baseAddress, file_count: files.count)
+                        return rcgit_guard_commit(repoPath, &request, strings[1], &out, &error)
+                    }
                 }
             }
         }
@@ -255,7 +257,7 @@ public enum RepositoryGuard {
         }
         defer { rcgit_commit_result_free(result) }
         return CommitOutcome(
-            oid: String(cString: result.pointee.oid),
+            oid: Oid(c: result.pointee.oid),
             branch: String(cString: result.pointee.branch))
     }
 

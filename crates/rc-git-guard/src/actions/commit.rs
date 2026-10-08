@@ -14,17 +14,17 @@ use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
 use super::treebuild::{self, Node, PathEdit};
-use super::workfile;
 use super::{
     ActionError, ActionResult, Author, FileSelection, HunkStamp, Identity, confirm, git_err, open,
+    treeapply, workfile,
 };
 use crate::{Action, Policy};
 
 /// What a completed commit produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Committed {
-    /// Hex id of the new commit.
-    pub oid: String,
+    /// The new commit.
+    pub oid: rc_git_core::Oid,
     /// Short name of the branch that advanced.
     pub branch: String,
 }
@@ -61,7 +61,7 @@ pub fn commit(
     policy: &Policy,
     message: &str,
     author: Author,
-    expected_head: Option<&str>,
+    expected_head: Option<rc_git_core::Oid>,
     selections: &[FileSelection],
     input: Option<&str>,
 ) -> ActionResult<Committed> {
@@ -72,8 +72,10 @@ pub fn commit(
     let _proof = confirm(decision, OP, "HEAD", input)?;
     let message = normalized_message(message)?;
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
-    let current = head_commit.map(|id| id.to_string());
-    if current.as_deref() != expected_head {
+    let current = head_commit
+        .map(|id| treeapply::core_oid(id, OP))
+        .transpose()?;
+    if current != expected_head {
         return Err(ActionError::StaleRepository { op: OP });
     }
     if selections.is_empty() {
@@ -120,6 +122,7 @@ pub fn commit(
         extra_headers: Vec::new(),
     };
     let commit_oid = write_object(&repo, OP, &commit_object)?;
+    let oid = treeapply::core_oid(commit_oid, OP)?;
 
     let expected = match head_commit {
         Some(id) => PreviousValue::MustExistAndMatch(Target::Object(id)),
@@ -136,7 +139,7 @@ pub fn commit(
     update_index(&repo, OP, &index_changes)?;
 
     Ok(Committed {
-        oid: commit_oid.to_string(),
+        oid,
         branch: branch_ref
             .strip_prefix("refs/heads/")
             .unwrap_or(&branch_ref)

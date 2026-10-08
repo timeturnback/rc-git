@@ -37,7 +37,7 @@ public final class ChangesModel {
     public private(set) var selectedPath: String?
     /// The commit `HEAD` pointed at when the list was loaded; `nil` on an unborn branch.
     /// Guarded commits pass it back so a moved `HEAD` is refused instead of raced.
-    public private(set) var expectedHead: String?
+    public private(set) var expectedHead: Oid?
 
     private var untickedPaths: Set<String> = []
     /// Paths some status entry carries with U+FFFD replacements. The core reads a path
@@ -127,7 +127,7 @@ public final class ChangesModel {
             let tree = try target.map { try repository.treeOf($0) }
             let report = try repository.worktreeStatus(
                 tree: tree, maxScan: Repository.defaultStatusScanCap)
-            return (Self.listed(report, showsHidden: showsHidden), target?.hex)
+            return (Self.listed(report, showsHidden: showsHidden), target)
         }
         guard generation == statusGeneration else { return }
         switch result {

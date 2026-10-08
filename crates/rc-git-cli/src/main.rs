@@ -1243,17 +1243,17 @@ const COMMIT_FLAGS: [&str; 5] = ["-m", "--message", "--author", "--confirm", "--
 /// The HEAD commit the guard checks the commit against: the caller's `--expect-head`, so a
 /// commit made elsewhere since they looked is refused, or else HEAD as read now (`None` when
 /// the branch is unborn).
-fn expected_head(repo: &Repository, flag: Option<&str>) -> Result<Option<String>> {
+fn expected_head(repo: &Repository, flag: Option<&str>) -> Result<Option<rc_git_core::Oid>> {
     if let Some(hex) = flag {
         let oid = rc_git_core::Oid::from_hex(hex).map_err(|_| {
             usage_error(format!(
                 "commit --expect-head takes a full commit id, not '{hex}'\n\n{USAGE}"
             ))
         })?;
-        return Ok(Some(oid.to_hex()));
+        return Ok(Some(oid));
     }
     let head = repo.head().context("commit: read HEAD")?;
-    Ok(head.target.map(|oid| oid.to_hex()))
+    Ok(head.target)
 }
 
 fn commit_verb(
@@ -1277,7 +1277,7 @@ fn commit_verb(
         &rc_git_guard::Policy::default(),
         message,
         author(&args)?,
-        expected.as_deref(),
+        expected,
         &selections,
         args.value(&["--confirm"]),
     )?;
@@ -1546,7 +1546,7 @@ fn write_fetch(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::FetchOutcome)
 }
 
 fn write_pull(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PullOutcome) -> Result<()> {
-    if outcome.old == outcome.new {
+    if outcome.already_up_to_date {
         writeln!(out, "pull\t{}\tup to date", outcome.branch)?;
     } else {
         writeln!(
@@ -1559,7 +1559,7 @@ fn write_pull(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PullOutcome) -
 }
 
 fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -> Result<()> {
-    if outcome.old == Some(outcome.new) {
+    if outcome.already_up_to_date {
         writeln!(out, "push\t{}\tup to date", outcome.branch)?;
     } else {
         writeln!(

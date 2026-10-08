@@ -69,9 +69,9 @@ import Testing
 
         let outcome = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Bridge commit", fallback: author,
-            expectedHead: head, selections: [.whole(path: "alpha.txt")], input: nil)
+            expectedHead: try commitID(head), selections: [.whole(path: "alpha.txt")], input: nil)
         #expect(outcome.branch == "main")
-        #expect(try outcome.oid == fixture.revParse("HEAD"))
+        #expect(try outcome.oid.hex == fixture.revParse("HEAD"))
         #expect(
             try fixture.gitOutput(["log", "-1", "--format=%an|%ae|%s"])
                 == "Bridge User|bridge@example.com|Bridge commit")
@@ -109,7 +109,7 @@ import Testing
         #expect(stamps[1] == HunkStamp(oldStart: 15, oldLines: 6, newStart: 17, newLines: 7))
         _ = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Second hunk", fallback: author,
-            expectedHead: try fixture.revParse("HEAD"),
+            expectedHead: try commitID(fixture.revParse("HEAD")),
             selections: [.hunks(path: "hunky.txt", stamps: [stamps[1]])], input: nil)
         let committed = try fixture.gitOutput(["show", "HEAD:hunky.txt"])
         #expect(committed.contains("L18a\nL18b"))
@@ -132,7 +132,7 @@ import Testing
             _ = try RepositoryGuard.commit(
                 repoPath: fixture.path, message: "Nothing",
                 fallback: CommitIdentity(name: "Bridge User", email: "bridge@example.com"),
-                expectedHead: head,
+                expectedHead: try commitID(head),
                 selections: [.hunks(path: "alpha.txt", stamps: [])], input: nil)
             Issue.record("expected an empty hunk selection to be refused")
         } catch let error as RepositoryError {
@@ -169,7 +169,8 @@ import Testing
         try fixture.write("alpha.txt", "work edit\n")
         _ = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Work commit", fallback: saved,
-            expectedHead: try fixture.revParse("HEAD"), selections: [.whole(path: "alpha.txt")],
+            expectedHead: try commitID(fixture.revParse("HEAD")),
+            selections: [.whole(path: "alpha.txt")],
             input: nil)
         #expect(
             try fixture.gitOutput(["log", "-1", "--format=%ae|%ce"])
@@ -191,7 +192,8 @@ import Testing
 
         let commitError = #expect(throws: IdentityRequiredError.self) {
             _ = try RepositoryGuard.commit(
-                repoPath: fixture.path, message: "Nobody", fallback: nil, expectedHead: head,
+                repoPath: fixture.path, message: "Nobody", fallback: nil,
+                expectedHead: try commitID(head),
                 selections: [.whole(path: "alpha.txt")], input: nil)
         }
         #expect(commitError?.message.contains("no author identity") == true)
@@ -233,6 +235,10 @@ import Testing
             try RepositoryGuard.checkout(repoPath: fixture.path, branch: "main")
         }
         #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
+    }
+
+    private func commitID(_ hex: String) throws -> Oid {
+        try #require(Oid(hex: hex))
     }
 }
 

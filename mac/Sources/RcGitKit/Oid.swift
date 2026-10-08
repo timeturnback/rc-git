@@ -60,3 +60,11 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
         return try withUnsafePointer(to: &c, body)
     }
 }
+
+/// Runs `body` with `oid` as a C pointer, or with NULL when `oid` is `nil`.
+func withOptionalOid<T>(
+    _ oid: Oid?, _ body: (UnsafePointer<RcGitOid>?) throws -> T
+) rethrows -> T {
+    guard let oid else { return try body(nil) }
+    return try oid.withC { try body($0) }
+}

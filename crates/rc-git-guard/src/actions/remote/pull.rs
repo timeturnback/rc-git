@@ -24,11 +24,13 @@ pub struct PullOutcome {
     /// Short name of the branch that moved.
     pub branch: String,
     /// Where the branch was before the pull.
-    pub old: ObjectId,
+    pub old: rc_git_core::Oid,
     /// Where the branch is now. Equal to `old` when there was nothing to pull.
-    pub new: ObjectId,
+    pub new: rc_git_core::Oid,
     /// Files the working tree changed.
     pub files_changed: usize,
+    /// Whether there was nothing to pull, so nothing was written.
+    pub already_up_to_date: bool,
 }
 
 /// Fast-forwards the checked-out branch to its remote-tracking ref, updating the
@@ -63,12 +65,14 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
         branch: branch.clone(),
     })?;
 
+    let (old_id, new_id) = (treeapply::core_oid(old, OP)?, treeapply::core_oid(new, OP)?);
     if new == old || is_ancestor(&repo, new, old) {
         return Ok(PullOutcome {
             branch,
-            old,
-            new: old,
+            old: old_id,
+            new: old_id,
             files_changed: 0,
+            already_up_to_date: true,
         });
     }
     if !is_ancestor(&repo, old, new) {
@@ -87,9 +91,10 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     advance_ref(&repo, &branch, old, new)?;
     Ok(PullOutcome {
         branch,
-        old,
-        new,
+        old: old_id,
+        new: new_id,
         files_changed: changes.len(),
+        already_up_to_date: false,
     })
 }
 

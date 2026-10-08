@@ -24,7 +24,7 @@ pub struct CheckoutOutcome {
     /// Short name of the branch now checked out.
     pub branch: String,
     /// The commit `HEAD` resolves to afterwards.
-    pub new_head: ObjectId,
+    pub new_head: rc_git_core::Oid,
     /// Files the working tree changed.
     pub files_changed: usize,
     /// Whether `HEAD` was already on this branch, so nothing was written.
@@ -52,6 +52,7 @@ pub fn checkout_branch(
 
     let full_name = format!("refs/heads/{branch}");
     let target = branch_tip(&repo, &full_name)?;
+    let new_head = treeapply::core_oid(target, OP)?;
     let head = repo.head_name().map_err(git_err(OP, "HEAD"))?;
     if head
         .as_ref()
@@ -59,7 +60,7 @@ pub fn checkout_branch(
     {
         return Ok(CheckoutOutcome {
             branch: branch.to_owned(),
-            new_head: target,
+            new_head,
             files_changed: 0,
             already_on_branch: true,
         });
@@ -78,7 +79,7 @@ pub fn checkout_branch(
     log_head_switch(&repo, &from, branch, current, target)?;
     Ok(CheckoutOutcome {
         branch: branch.to_owned(),
-        new_head: target,
+        new_head,
         files_changed: changes.len(),
         already_on_branch: false,
     })

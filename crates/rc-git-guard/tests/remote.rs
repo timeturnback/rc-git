@@ -360,6 +360,8 @@ fn pull_fast_forwards_files_index_and_ref() {
     let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
     assert_eq!(outcome.branch, "main");
     assert_ne!(outcome.old, outcome.new);
+    assert!(!outcome.already_up_to_date);
+    assert_eq!(outcome.new.to_hex(), bare_rev(&remoted.bare, "main"));
     assert_eq!(outcome.files_changed, 3);
     assert_eq!(
         remoted.clone.rev_parse("main"),
@@ -401,6 +403,7 @@ fn pull_with_nothing_new_is_a_no_op() {
     let remoted = remoted();
     let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
     assert_eq!(outcome.old, outcome.new);
+    assert!(outcome.already_up_to_date);
     assert_eq!(outcome.files_changed, 0);
 }
 
@@ -414,6 +417,7 @@ fn pull_when_only_local_moved_is_a_no_op() {
     let before = remoted.clone.rev_parse("main");
     let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
     assert_eq!(outcome.old, outcome.new);
+    assert!(outcome.already_up_to_date);
     assert_eq!(remoted.clone.rev_parse("main"), before);
 }
 
@@ -611,6 +615,7 @@ fn push_uploads_commits_and_updates_the_tracking_ref() {
     assert_eq!(outcome.remote, "origin");
     assert_eq!(outcome.branch, "main");
     assert_eq!(outcome.pushed_commits, 1);
+    assert!(!outcome.already_up_to_date);
     assert_eq!(outcome.new.to_string(), tip);
     assert_eq!(
         bare_rev(&remoted.bare, "main"),
@@ -638,6 +643,7 @@ fn push_with_nothing_new_is_a_no_op() {
     .expect("push");
     assert_eq!(outcome.pushed_commits, 0);
     assert_eq!(outcome.old, Some(outcome.new));
+    assert!(outcome.already_up_to_date);
 }
 
 #[test]
@@ -654,6 +660,10 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
     .expect("push");
     assert_eq!(outcome.branch, "topic");
     assert_eq!(outcome.old, None);
+    assert!(
+        !outcome.already_up_to_date,
+        "creating the remote branch is not a no-op"
+    );
     assert_eq!(
         outcome.pushed_commits, 0,
         "every object already exists remotely"

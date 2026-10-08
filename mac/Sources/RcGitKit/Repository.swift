@@ -350,13 +350,6 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return .ranges(ranges)
     }
 
-    private func withOptionalOid<T>(
-        _ oid: Oid?, _ body: (UnsafePointer<RcGitOid>?) throws -> T
-    ) rethrows -> T {
-        guard let oid else { return try body(nil) }
-        return try oid.withC { try body($0) }
-    }
-
     /// One working-tree directory with a status overlay against the tree at the same path
     /// below `tree`. `dir` is repository-relative; empty for the root.
     public func worktreeEntries(tree: Oid, dir: String) throws -> WorktreeListing {

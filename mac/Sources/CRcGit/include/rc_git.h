@@ -687,8 +687,8 @@ typedef struct RcGitCommitRequest {
   const char *message;
   // Recorded only when the repository's own config sets no identity, or NULL for none.
   const struct RcGitFallbackIdentity *fallback;
-  // Hex commit the change list was built against, or NULL on an unborn branch.
-  const char *expected_head;
+  // The commit the change list was built against, or NULL on an unborn branch.
+  const struct RcGitOid *expected_head;
   // The selected files.
   const struct RcGitCommitFile *files;
   // Number of entries behind `files`.
@@ -697,8 +697,8 @@ typedef struct RcGitCommitRequest {
 
 // What a completed commit produced.
 typedef struct RcGitCommitResult {
-  // Hex id of the new commit.
-  char *oid;
+  // The new commit.
+  struct RcGitOid oid;
   // Short name of the branch that advanced.
   char *branch;
 } RcGitCommitResult;

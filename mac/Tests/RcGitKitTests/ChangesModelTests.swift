@@ -59,7 +59,7 @@ import Testing
             return
         }
         #expect(report.entries.count == 3)
-        #expect(model.expectedHead == head.hex)
+        #expect(model.expectedHead == head)
         #expect(repo.lock.withLock { repo.statusTrees } == [tree])
         #expect(statusCallbacks == 2, "one for loading, one for loaded")
     }

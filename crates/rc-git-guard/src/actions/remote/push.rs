@@ -10,6 +10,7 @@ use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
 
+use crate::actions::treeapply::core_oid;
 use crate::actions::{ActionError, ActionResult, confirm, open};
 use crate::{Action, Policy};
 
@@ -30,11 +31,13 @@ pub struct PushOutcome {
     /// Short name of the branch pushed.
     pub branch: String,
     /// The remote's tip before the push; `None` when the push created the branch.
-    pub old: Option<ObjectId>,
+    pub old: Option<rc_git_core::Oid>,
     /// The remote's tip now: the local tip. Equal to `old` when there was nothing to push.
-    pub new: ObjectId,
+    pub new: rc_git_core::Oid,
     /// Commits uploaded.
     pub pushed_commits: usize,
+    /// Whether the remote already had the local tip, so nothing was sent.
+    pub already_up_to_date: bool,
 }
 
 /// Pushes the checked-out branch to its upstream remote. Plain push only: the remote
@@ -95,13 +98,16 @@ pub fn push_upstream(
         )?,
     };
     let (remote_old, haves) = advertise(&repo, &mut transport, &host, auth.creds, &full_ref)?;
+    let old_id = remote_old.map(|id| core_oid(id, OP)).transpose()?;
+    let new_id = core_oid(tip, OP)?;
     if remote_old == Some(tip) {
         return Ok(PushOutcome {
             remote: remote_name,
             branch,
-            old: remote_old,
-            new: tip,
+            old: old_id,
+            new: new_id,
             pushed_commits: 0,
+            already_up_to_date: true,
         });
     }
     if let Some(old) = remote_old
@@ -125,9 +131,10 @@ pub fn push_upstream(
     Ok(PushOutcome {
         remote: remote_name,
         branch,
-        old: remote_old,
-        new: tip,
+        old: old_id,
+        new: new_id,
         pushed_commits: pack.commits,
+        already_up_to_date: false,
     })
 }
 

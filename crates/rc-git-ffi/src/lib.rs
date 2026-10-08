@@ -2756,13 +2756,7 @@ pub unsafe extern "C" fn rcgit_guard_checkout(
     ) {
         Ok(outcome) => {
             out.set(RcGitCheckoutOutcome {
-                new_head: Oid::from_bytes(outcome.new_head.as_slice()).map_or(
-                    RcGitOid {
-                        bytes: [0; 32],
-                        len: 0,
-                    },
-                    RcGitOid::from,
-                ),
+                new_head: outcome.new_head.into(),
                 files_changed: outcome.files_changed,
                 already_on_branch: outcome.already_on_branch,
             });
@@ -2948,19 +2942,16 @@ pub struct RcGitCommitFile {
 /// What a completed commit produced.
 #[repr(C)]
 pub struct RcGitCommitResult {
-    /// Hex id of the new commit.
-    pub oid: *mut c_char,
+    /// The new commit.
+    pub oid: RcGitOid,
     /// Short name of the branch that advanced.
     pub branch: *mut c_char,
 }
 
 impl Drop for RcGitCommitResult {
     fn drop(&mut self) {
-        // SAFETY: both strings were produced by `export_string` and are released once here.
-        unsafe {
-            release_string(self.oid);
-            release_string(self.branch);
-        }
+        // SAFETY: `branch` was produced by `export_string` and is released once here.
+        unsafe { release_string(self.branch) };
     }
 }
 
@@ -3129,8 +3120,8 @@ pub struct RcGitCommitRequest {
     pub message: *const c_char,
     /// Recorded only when the repository's own config sets no identity, or NULL for none.
     pub fallback: *const RcGitFallbackIdentity,
-    /// Hex commit the change list was built against, or NULL on an unborn branch.
-    pub expected_head: *const c_char,
+    /// The commit the change list was built against, or NULL on an unborn branch.
+    pub expected_head: *const RcGitOid,
     /// The selected files.
     pub files: *const RcGitCommitFile,
     /// Number of entries behind `files`.
@@ -3141,13 +3132,14 @@ pub struct RcGitCommitRequest {
 struct OwnedCommitRequest {
     message: String,
     author: Author,
-    expected_head: Option<String>,
+    expected_head: Option<Oid>,
     selections: Vec<FileSelection>,
 }
 
 impl OwnedCommitRequest {
     /// Reads the caller's request. `None` when it, its message, a selection path, a counted
-    /// hunk list, or a field of a set fallback is NULL.
+    /// hunk list, or a field of a set fallback is NULL, or when a set `expected_head` is not
+    /// a valid id.
     ///
     /// # Safety
     /// `request` is NULL or points to a readable `RcGitCommitRequest` per that struct's
@@ -3162,14 +3154,14 @@ impl OwnedCommitRequest {
             (
                 bytes_arg(request.message)?,
                 fallback_author(request.fallback)?,
-                bytes_arg(request.expected_head),
+                optional_oid_arg(request.expected_head).ok()?,
                 read_selections(request.files, request.file_count)?,
             )
         };
         Some(Self {
             message: String::from_utf8_lossy(message).into_owned(),
             author,
-            expected_head: expected_head.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+            expected_head,
             selections,
         })
     }
@@ -3316,7 +3308,7 @@ pub unsafe extern "C" fn rcgit_guard_commit(
     let (Some(repo_path), Some(request), false) = (repo_path, request, out_missing) else {
         error.report(
             "repo_path, request, its message, out, a selection path, a counted hunk list, or a \
-             fallback name or email is NULL",
+             fallback name or email is NULL, or expected_head is not a valid id",
         );
         return RCGIT_ERROR;
     };
@@ -3326,13 +3318,13 @@ pub unsafe extern "C" fn rcgit_guard_commit(
         &Policy::default(),
         &request.message,
         request.author,
-        request.expected_head.as_deref(),
+        request.expected_head,
         &request.selections,
         input.as_deref(),
     ) {
         Ok(committed) => {
             out.set(export(RcGitCommitResult {
-                oid: export_string(committed.oid.into_bytes()),
+                oid: committed.oid.into(),
                 branch: export_string(committed.branch.into_bytes()),
             }));
             RCGIT_OK
@@ -4101,15 +4093,9 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
     match pull_fast_forward(Path::new(OsStr::from_bytes(repo_path)), &Policy::default()) {
         Ok(outcome) => {
             out.set(RcGitPullOutcome {
-                new_head: Oid::from_bytes(outcome.new.as_slice()).map_or(
-                    RcGitOid {
-                        bytes: [0; 32],
-                        len: 0,
-                    },
-                    RcGitOid::from,
-                ),
+                new_head: outcome.new.into(),
                 files_changed: outcome.files_changed,
-                already_up_to_date: outcome.old == outcome.new,
+                already_up_to_date: outcome.already_up_to_date,
             });
             RCGIT_OK
         }
@@ -4164,7 +4150,7 @@ pub unsafe extern "C" fn rcgit_guard_push(
         Ok(outcome) => {
             out.set(RcGitPushOutcome {
                 pushed_commits: outcome.pushed_commits,
-                already_up_to_date: outcome.old == Some(outcome.new),
+                already_up_to_date: outcome.already_up_to_date,
             });
             RCGIT_OK
         }
@@ -4231,6 +4217,10 @@ mod tests {
 
     fn hex(oid: &RcGitOid) -> String {
         take_string(unsafe { rcgit_oid_hex(oid) })
+    }
+
+    fn commit_id(hex: &str) -> RcGitOid {
+        Oid::from_hex(hex).unwrap().into()
     }
 
     #[test]
@@ -5556,7 +5546,7 @@ mod tests {
 
         // Commit one whole file.
         fx.write("alpha.txt", b"via ffi\n");
-        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let head = commit_id(&fx.rev_parse("HEAD"));
         let message = CString::new("FFI commit").unwrap();
         let name = CString::new("FFI User").unwrap();
         let email = CString::new("ffi@example.com").unwrap();
@@ -5576,7 +5566,7 @@ mod tests {
                         name: name.as_ptr(),
                         email: email.as_ptr(),
                     },
-                    expected_head: head.as_ptr(),
+                    expected_head: &raw const head,
                     files: &raw const file,
                     file_count: 1,
                 },
@@ -5588,7 +5578,7 @@ mod tests {
         assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
         let result_ref = unsafe { &*result };
         assert_eq!(text(result_ref.branch), "main");
-        assert_eq!(text(result_ref.oid), fx.rev_parse("HEAD"));
+        assert_eq!(hex(&result_ref.oid), fx.rev_parse("HEAD"));
         unsafe { rcgit_commit_result_free(result) };
         assert_eq!(fx.git_output(&["log", "-1", "--format=%s"]), "FFI commit");
 
@@ -5671,7 +5661,7 @@ mod tests {
         unsafe { rcgit_identity_free(identity) };
 
         fx.write("alpha.txt", b"fallback loses\n");
-        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let head = commit_id(&fx.rev_parse("HEAD"));
         let message = CString::new("Repo identity wins").unwrap();
         let name = CString::new("Saved Fallback").unwrap();
         let email = CString::new("saved@example.com").unwrap();
@@ -5691,7 +5681,7 @@ mod tests {
                         name: name.as_ptr(),
                         email: email.as_ptr(),
                     },
-                    expected_head: head.as_ptr(),
+                    expected_head: &raw const head,
                     files: &raw const file,
                     file_count: 1,
                 },
@@ -5717,7 +5707,7 @@ mod tests {
         let fx = Fixture::standard();
         let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
         let head = fx.rev_parse("HEAD");
-        let head_c = CString::new(head.clone()).unwrap();
+        let head_c = commit_id(&head);
         let message = CString::new("nobody").unwrap();
         let path = CString::new("alpha.txt").unwrap();
         let file = RcGitCommitFile {
@@ -5734,7 +5724,7 @@ mod tests {
                 &RcGitCommitRequest {
                     message: message.as_ptr(),
                     fallback: ptr::null(),
-                    expected_head: head_c.as_ptr(),
+                    expected_head: &raw const head_c,
                     files: &raw const file,
                     file_count: 1,
                 },
@@ -5776,7 +5766,7 @@ mod tests {
                 &RcGitCommitRequest {
                     message: message.as_ptr(),
                     fallback: ptr::null(),
-                    expected_head: head_c.as_ptr(),
+                    expected_head: &raw const head_c,
                     files: &raw const file,
                     file_count: 1,
                 },
@@ -5787,6 +5777,67 @@ mod tests {
         };
         assert_eq!(status, RCGIT_ERROR, "a NULL out is an argument error");
         assert!(take_error(&mut error).contains("NULL"));
+    }
+
+    #[test]
+    fn a_malformed_expected_head_is_an_argument_error_not_a_moved_head() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let head = fx.rev_parse("HEAD");
+        let message = CString::new("msg").unwrap();
+        let name = CString::new("FFI User").unwrap();
+        let email = CString::new("ffi@example.com").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let file = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        fx.write("alpha.txt", b"changed\n");
+        let commit_against = |expected: &RcGitOid| {
+            let mut error = ptr::null_mut();
+            let mut result = ptr::null_mut();
+            let status = unsafe {
+                rcgit_guard_commit(
+                    repo_path.as_ptr(),
+                    &RcGitCommitRequest {
+                        message: message.as_ptr(),
+                        fallback: &RcGitFallbackIdentity {
+                            name: name.as_ptr(),
+                            email: email.as_ptr(),
+                        },
+                        expected_head: expected,
+                        files: &raw const file,
+                        file_count: 1,
+                    },
+                    ptr::null(),
+                    &raw mut result,
+                    &raw mut error,
+                )
+            };
+            assert!(result.is_null());
+            (status, take_error(&mut error))
+        };
+
+        let truncated = RcGitOid {
+            bytes: [0; 32],
+            len: 3,
+        };
+        let (status, message) = commit_against(&truncated);
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(
+            message.contains("expected_head is not a valid id"),
+            "{message}"
+        );
+
+        let (status, message) = commit_against(&commit_id(&fx.rev_parse("HEAD~1")));
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(!message.contains("not a valid id"), "{message}");
+        assert_eq!(
+            fx.rev_parse("HEAD"),
+            head,
+            "a refused commit writes nothing"
+        );
     }
 
     #[test]
@@ -5853,7 +5904,7 @@ mod tests {
 
         fx.write("alpha.txt", b"half an identity\n");
         let head = fx.rev_parse("HEAD");
-        let head_c = CString::new(head.clone()).unwrap();
+        let head_c = commit_id(&head);
         let name = CString::new("Only A Name").unwrap();
         let half = RcGitFallbackIdentity {
             name: name.as_ptr(),
@@ -5870,7 +5921,7 @@ mod tests {
                 &RcGitCommitRequest {
                     message: message.as_ptr(),
                     fallback: &raw const half,
-                    expected_head: head_c.as_ptr(),
+                    expected_head: &raw const head_c,
                     files: &raw const file,
                     file_count: 1,
                 },
@@ -5951,7 +6002,7 @@ mod tests {
     /// Commits `files` through `rcgit_guard_commit` against the current `HEAD`.
     fn guarded_commit(fx: &Fixture, files: &[RcGitCommitFile]) -> Result<String, String> {
         let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
-        let head = CString::new(fx.rev_parse("HEAD")).unwrap();
+        let head = commit_id(&fx.rev_parse("HEAD"));
         let message = CString::new("FFI hunks").unwrap();
         let name = CString::new("FFI User").unwrap();
         let email = CString::new("ffi@example.com").unwrap();
@@ -5966,7 +6017,7 @@ mod tests {
                         name: name.as_ptr(),
                         email: email.as_ptr(),
                     },
-                    expected_head: head.as_ptr(),
+                    expected_head: &raw const head,
                     files: files.as_ptr(),
                     file_count: files.len(),
                 },
@@ -5978,7 +6029,7 @@ mod tests {
         if status != RCGIT_OK {
             return Err(take_error(&mut error));
         }
-        let oid = text(unsafe { &*result }.oid);
+        let oid = hex(&unsafe { &*result }.oid);
         unsafe { rcgit_commit_result_free(result) };
         Ok(oid)
     }

@@ -324,7 +324,7 @@ mod commit_and_discard {
         reason = "tests arrange the fixture's working tree; only the guard mutates the repository"
     )]
 
-    use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Repository};
+    use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, Repository};
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
         ActionError, Author, FileSelection, HunkStamp, Identity, commit, configured_identity,
@@ -333,6 +333,14 @@ mod commit_and_discard {
     use rc_git_testkit::Fixture;
 
     use super::{explicit, identity, porcelain};
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper panics on a malformed fixture id"
+    )]
+    fn commit_id(hex: &str) -> Oid {
+        Oid::from_hex(hex).unwrap()
+    }
 
     fn whole(path: &str) -> FileSelection {
         FileSelection::Whole {
@@ -378,7 +386,7 @@ mod commit_and_discard {
             &Policy::default(),
             "modes",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &selections,
             None,
         )
@@ -424,7 +432,7 @@ mod commit_and_discard {
             &Policy::default(),
             "under a gitlink",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("sub/x.c")],
             None,
         )
@@ -452,7 +460,7 @@ mod commit_and_discard {
             &Policy::default(),
             "case",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("ALPHA.TXT")],
             None,
         )
@@ -475,7 +483,7 @@ mod commit_and_discard {
             &Policy::default(),
             "case",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("docs/guide.md")],
             None,
         )
@@ -502,7 +510,7 @@ mod commit_and_discard {
             &policy,
             "  Commit from rc-git  ",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[
                 whole("alpha.txt"),
                 whole("brand-new.txt"),
@@ -512,7 +520,7 @@ mod commit_and_discard {
         )
         .unwrap();
         assert_eq!(done.branch, "main");
-        assert_eq!(done.oid, fx.rev_parse("HEAD"));
+        assert_eq!(done.oid.to_hex(), fx.rev_parse("HEAD"));
 
         let log = fx.git_output(&["log", "-1", "--format=%an|%ae|%s"]);
         assert_eq!(log, "Test User|test@example.com|Commit from rc-git");
@@ -563,7 +571,7 @@ mod commit_and_discard {
             &policy,
             "Take the first hunk",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[FileSelection::Hunks {
                 path: "hunky.txt".to_owned(),
                 hunks: vec![found[0]],
@@ -626,7 +634,7 @@ mod commit_and_discard {
             &policy,
             "msg",
             explicit(),
-            Some(&fx.rev_parse("HEAD~1")),
+            Some(commit_id(&fx.rev_parse("HEAD~1"))),
             &[whole("alpha.txt")],
             None,
         )
@@ -638,7 +646,7 @@ mod commit_and_discard {
             &policy,
             "msg",
             Author::default(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("alpha.txt")],
             None,
         )
@@ -655,7 +663,7 @@ mod commit_and_discard {
             &policy,
             "   ",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("alpha.txt")],
             None,
         )
@@ -668,7 +676,7 @@ mod commit_and_discard {
             &policy,
             "msg",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("alpha.txt")],
             None,
         )
@@ -708,7 +716,7 @@ mod commit_and_discard {
             &policy,
             "Identity from config",
             Author::default(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("alpha.txt")],
             None,
         )
@@ -734,7 +742,7 @@ mod commit_and_discard {
             &Policy::default(),
             "Who wrote this",
             author,
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("alpha.txt")],
             None,
         )
@@ -823,7 +831,7 @@ mod commit_and_discard {
             &policy,
             "msg",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[FileSelection::Hunks {
                 path: "alpha.txt".to_owned(),
                 hunks: vec![HunkStamp {
@@ -852,7 +860,7 @@ mod commit_and_discard {
             &policy,
             "msg",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[FileSelection::Hunks {
                 path: "alpha.txt".to_owned(),
                 hunks: vec![],
@@ -972,7 +980,7 @@ mod commit_and_discard {
                 &policy,
                 "bad path",
                 explicit(),
-                Some(&head),
+                Some(commit_id(&head)),
                 &[whole(path)],
                 None,
             )
@@ -1078,7 +1086,7 @@ mod commit_and_discard {
             &policy,
             "outside",
             explicit(),
-            Some(&head),
+            Some(commit_id(&head)),
             &[whole("up/secret.txt")],
             None,
         )
