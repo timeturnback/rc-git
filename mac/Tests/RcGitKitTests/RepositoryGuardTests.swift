@@ -256,6 +256,74 @@ import Testing
         #expect(status.behind == 0)
     }
 
+    /// Points `main` at an unreachable origin; the tests below never touch the network.
+    private func configureUpstream(_ fixture: GitFixture) throws {
+        try fixture.git(["remote", "add", "origin", "https://127.0.0.1:9/repo.git"])
+        try fixture.git(["config", "branch.main.remote", "origin"])
+        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+    }
+
+    /// Moves `refs/remotes/origin/main` one commit (adding `news.txt`) past `main`.
+    private func advanceTrackingRef(_ fixture: GitFixture) throws {
+        try fixture.write("news.txt", "news\n")
+        try fixture.commit("Upstream", date: "2024-03-01T00:00:00+0000")
+        try fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        try fixture.git(["reset", "-q", "--hard", "HEAD~1"])
+    }
+
+    @Test func countsCrossTheBridgeUnswapped() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try configureUpstream(fixture)
+        try fixture.git(["commit", "--allow-empty", "-q", "-m", "local"])
+
+        let status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
+        #expect(status.ahead == 1)
+        #expect(status.behind == 0)
+    }
+
+    @Test func pullFastForwardAdvancesToTheTrackingRef() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try configureUpstream(fixture)
+        try advanceTrackingRef(fixture)
+        #expect(try RepositoryGuard.remotePreflight(repoPath: fixture.path).behind == 1)
+
+        let outcome = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
+        let newHead = try #require(outcome.newHead)
+        #expect(try newHead.hex == fixture.revParse("refs/remotes/origin/main"))
+        #expect(outcome.filesChanged == 1)
+        #expect(outcome.commitsAdvanced)
+        #expect(!outcome.alreadyUpToDate)
+
+        let again = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
+        #expect(again.newHead == nil)
+        #expect(!again.commitsAdvanced)
+        #expect(again.alreadyUpToDate)
+    }
+
+    @Test func aDivergedPullThrowsDiverged() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try configureUpstream(fixture)
+        try advanceTrackingRef(fixture)
+        try fixture.write("local.txt", "local\n")
+        try fixture.commit("Local", date: "2024-03-02T00:00:00+0000")
+        let head = try fixture.revParse("HEAD")
+
+        do {
+            _ = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
+            Issue.record("a diverged pull returned instead of throwing")
+        } catch {
+            guard case .diverged(let message) = error else {
+                Issue.record("expected .diverged, got \(error)")
+                return
+            }
+            #expect(message.contains("1 ahead and 1 behind"), "\(message)")
+        }
+        #expect(try fixture.revParse("HEAD") == head)
+    }
+
     @Test func anScpLikeOriginReportsSshThoughItsUrlLostTheUser() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

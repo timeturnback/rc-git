@@ -471,9 +471,6 @@ public enum SyncError: Error, Sendable, Hashable {
 public struct FetchOutcome: Sendable, Hashable {
     /// Remote-tracking refs created or moved.
     public let updatedRefs: Int
-    /// Branch vs tracking ref after the fetch.
-    public let ahead: Int
-    public let behind: Int
 }
 
 /// What a fast-forward pull did.
@@ -533,7 +530,7 @@ extension RepositoryGuard {
     ) throws(SyncError) -> FetchOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
-        var out = RcGitFetchOutcome(updated_refs: 0, ahead: 0, behind: 0)
+        var out = RcGitFetchOutcome(updated_refs: 0)
         let status = withOwnedCStrings([
             credentials?.username, credentials?.token, acceptedHostKey,
         ]) { strings in
@@ -545,8 +542,7 @@ extension RepositoryGuard {
         guard status == RCGIT_OK else {
             throw syncError(status, error, hostkey, fallback: "cannot fetch")
         }
-        return FetchOutcome(
-            updatedRefs: out.updated_refs, ahead: out.ahead, behind: out.behind)
+        return FetchOutcome(updatedRefs: out.updated_refs)
     }
 
     /// Fast-forwards the checked-out branch to its tracking ref. No network; fetch first.

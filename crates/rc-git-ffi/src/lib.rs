@@ -3662,10 +3662,6 @@ impl Drop for RcGitRemoteStatus {
 pub struct RcGitFetchOutcome {
     /// Remote-tracking refs created or moved.
     pub updated_refs: usize,
-    /// Commits the branch is ahead of its tracking ref after the fetch.
-    pub ahead: usize,
-    /// Commits the branch is behind its tracking ref after the fetch.
-    pub behind: usize,
 }
 
 /// What a fast-forward pull did. Plain data, no free function.
@@ -3933,12 +3929,8 @@ pub unsafe extern "C" fn rcgit_guard_fetch(
     let cancel = cancel.unwrap_or(&never);
     match fetch_upstream(repo_path, &Policy::default(), auth.borrow(), cancel) {
         Ok(outcome) => {
-            let (ahead, behind) =
-                upstream_status(repo_path).map_or((0, 0), |status| (status.ahead, status.behind));
             out.set(RcGitFetchOutcome {
                 updated_refs: outcome.updated_refs.len(),
-                ahead,
-                behind,
             });
             RCGIT_OK
         }
@@ -4946,6 +4938,21 @@ mod tests {
         assert!(!status_ref.uses_ssh);
         unsafe { rcgit_remote_status_free(status) };
 
+        fx.git(&["update-ref", "refs/remotes/origin/main", "main~1"]);
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert_eq!((status_ref.ahead, status_ref.behind), (1, 0));
+        unsafe { rcgit_remote_status_free(status) };
+
+        let upstream = fx.git_output(&["commit-tree", "main^{tree}", "-p", "main", "-m", "up"]);
+        fx.git(&["update-ref", "refs/remotes/origin/main", upstream.trim()]);
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert_eq!((status_ref.ahead, status_ref.behind), (0, 1));
+        unsafe { rcgit_remote_status_free(status) };
+
         fx.git(&["remote", "set-url", "origin", "git@example.com:x/y.git"]);
         let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
         assert!(!status.is_null(), "{}", take_error(&mut error));
@@ -4962,11 +4969,7 @@ mod tests {
     #[test]
     fn remote_actions_reject_null_paths_and_map_status_codes() {
         let mut error = ptr::null_mut();
-        let mut fetch_out = RcGitFetchOutcome {
-            updated_refs: 0,
-            ahead: 0,
-            behind: 0,
-        };
+        let mut fetch_out = RcGitFetchOutcome { updated_refs: 0 };
         let code = unsafe {
             rcgit_guard_fetch(
                 ptr::null(),
@@ -5049,11 +5052,7 @@ mod tests {
         fx.git(&["config", "branch.main.remote", "origin"]);
         fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
         let path = CString::new(fx.path().to_str().unwrap()).unwrap();
-        let mut fetch_out = RcGitFetchOutcome {
-            updated_refs: 0,
-            ahead: 0,
-            behind: 0,
-        };
+        let mut fetch_out = RcGitFetchOutcome { updated_refs: 0 };
         let mut error = ptr::null_mut();
 
         // Signalled from this thread before the call; a real caller signals from
@@ -5110,11 +5109,7 @@ mod tests {
             accepted_hostkey: ptr::null(),
             ssh_dir: ssh_dir.as_ptr(),
         };
-        let mut fetch_out = RcGitFetchOutcome {
-            updated_refs: 0,
-            ahead: 0,
-            behind: 0,
-        };
+        let mut fetch_out = RcGitFetchOutcome { updated_refs: 0 };
         let mut hostkey = ptr::null_mut();
         let mut error = ptr::null_mut();
         let code = unsafe {
@@ -5159,11 +5154,7 @@ mod tests {
     fn ffi_fetch(repo: &Path, auth: Option<&RcGitRemoteAuth>) -> (i32, String, bool) {
         let path = CString::new(repo.to_str().unwrap()).unwrap();
         let auth = auth.map_or(ptr::null(), ptr::from_ref);
-        let mut out = RcGitFetchOutcome {
-            updated_refs: 0,
-            ahead: 0,
-            behind: 0,
-        };
+        let mut out = RcGitFetchOutcome { updated_refs: 0 };
         let mut hostkey = ptr::null_mut();
         let mut error = ptr::null_mut();
         let code = unsafe {
@@ -5262,6 +5253,82 @@ mod tests {
         let message = take_error(&mut error);
         assert_eq!(code, RCGIT_ERROR, "{message}");
         assert!(message.contains("fetch and pull first"), "{message}");
+    }
+
+    fn ffi_pull(repo: &CString) -> RcGitPullOutcome {
+        let mut out = RcGitPullOutcome {
+            new_head: RcGitOid {
+                bytes: [0; 32],
+                len: 0,
+            },
+            files_changed: 0,
+            already_up_to_date: false,
+        };
+        let mut error = ptr::null_mut();
+        let code = unsafe { rcgit_guard_pull_ff(repo.as_ptr(), &raw mut out, &raw mut error) };
+        assert_eq!(code, RCGIT_OK, "{}", take_error(&mut error));
+        out
+    }
+
+    fn ffi_push(repo: &CString) -> RcGitPushOutcome {
+        let mut out = RcGitPushOutcome {
+            pushed_commits: 0,
+            already_up_to_date: false,
+        };
+        let mut error = ptr::null_mut();
+        let code = unsafe {
+            rcgit_guard_push(
+                repo.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut out,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_OK, "{}", take_error(&mut error));
+        out
+    }
+
+    #[test]
+    fn sync_outcomes_cross_the_boundary() {
+        let origin = Fixture::standard();
+        let (_bare, bare_path) = origin.bare_copy();
+        let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
+        let clone = Fixture::empty_dir();
+        clone.git(&["clone", "--quiet", &server.url(), "."]);
+        origin.write("news.txt", b"news\n");
+        origin.commit("News on origin", "2024-03-01T00:00:00+0000");
+        origin.push_main_to(&bare_path);
+        let path = CString::new(clone.path().to_str().unwrap()).unwrap();
+
+        let mut fetch_out = RcGitFetchOutcome { updated_refs: 0 };
+        let mut error = ptr::null_mut();
+        let code = unsafe {
+            rcgit_guard_fetch(
+                path.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut fetch_out,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(code, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(fetch_out.updated_refs, 1);
+
+        let pull_out = ffi_pull(&path);
+        assert!(!pull_out.already_up_to_date);
+        assert_eq!(pull_out.files_changed, 1);
+        assert_eq!(hex(&pull_out.new_head), origin.rev_parse("HEAD"));
+        assert!(ffi_pull(&path).already_up_to_date);
+
+        clone.write("local.txt", b"local\n");
+        clone.commit("Local work", "2024-03-02T00:00:00+0000");
+        let push_out = ffi_push(&path);
+        assert!(!push_out.already_up_to_date);
+        assert_eq!(push_out.pushed_commits, 1);
+        assert!(ffi_push(&path).already_up_to_date);
     }
 
     #[test]

@@ -689,10 +689,6 @@ typedef struct RcGitRemoteAuth {
 typedef struct RcGitFetchOutcome {
   // Remote-tracking refs created or moved.
   size_t updated_refs;
-  // Commits the branch is ahead of its tracking ref after the fetch.
-  size_t ahead;
-  // Commits the branch is behind its tracking ref after the fetch.
-  size_t behind;
 } RcGitFetchOutcome;
 
 // What a fast-forward pull did. Plain data, no free function.

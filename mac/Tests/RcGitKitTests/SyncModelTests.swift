@@ -179,7 +179,7 @@ private final class InMemoryHostKeyStore: HostKeyStoring, @unchecked Sendable {
     }
 }
 
-private let cleanFetch = FetchOutcome(updatedRefs: 1, ahead: 0, behind: 0)
+private let cleanFetch = FetchOutcome(updatedRefs: 1)
 private let cleanPull = PullOutcome(
     newHead: nil, commitsAdvanced: false, filesChanged: 2, alreadyUpToDate: false)
 private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
@@ -353,7 +353,7 @@ private let alreadyOnMain = CheckoutOutcome(
         let (model, _, _) = model(
             .init(
                 preflights: [StubSyncPerformer.upstream()],
-                fetches: [.success(FetchOutcome(updatedRefs: 0, ahead: 0, behind: 0))],
+                fetches: [.success(FetchOutcome(updatedRefs: 0))],
                 pulls: [
                     .success(
                         PullOutcome(
