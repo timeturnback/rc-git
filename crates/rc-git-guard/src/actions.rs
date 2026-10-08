@@ -523,7 +523,7 @@ pub fn plan_branch_delete(
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
-    let merged = branch_is_merged(&repo, name)?;
+    let (merged, _) = branch_is_merged(&repo, name)?;
     let decision = match policy.evaluate(&Action::DeleteLocalBranch {
         name: name.to_owned(),
         merged,
@@ -643,7 +643,7 @@ pub fn delete_branch(
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
     refuse_checked_out(&repo, OP, name, &full_name)?;
-    let merged = branch_is_merged(&repo, name)?;
+    let (merged, judged_tip) = branch_is_merged(&repo, name)?;
     let action = Action::DeleteLocalBranch {
         name: name.to_owned(),
         merged,
@@ -654,6 +654,7 @@ pub fn delete_branch(
         OP,
         &full_name,
         ("branch", name),
+        Some(judged_tip),
     )
 }
 
@@ -677,7 +678,13 @@ pub fn delete_tag(
         name: name.to_owned(),
     };
     let proof = authorize(policy, &action, OP, name, input)?;
-    delete_ref(&Writer::new(&repo, &proof), OP, &full_name, ("tag", name))
+    delete_ref(
+        &Writer::new(&repo, &proof),
+        OP,
+        &full_name,
+        ("tag", name),
+        None,
+    )
 }
 
 /// Asks `policy` about `action` and turns the user's `input` into the proof every write
@@ -815,43 +822,74 @@ fn create_ref(
 }
 
 /// Deletes `full_name`, first writing a backup ref under `refs/rc-git/backup/<kind>/<name>`
-/// for the `(kind, name)` given when the answered challenge asked for one.
+/// for the `(kind, name)` given when the answered challenge asked for one. `judged_tip` is the
+/// commit the policy decision was made on; a ref that no longer peels to it, or that moves
+/// before the transaction lands, is not deleted.
+///
+/// # Errors
+/// [`ActionError::StaleRepository`] naming `op` when the ref moved since it was judged,
+/// [`ActionError::Git`] when it cannot be read or the transaction fails.
 fn delete_ref(
     writer: &Writer<'_>,
     op: &'static str,
     full_name: &str,
     (backup_kind, short_name): (&str, &str),
+    judged_tip: Option<gix::ObjectId>,
 ) -> ActionResult<Deleted> {
     let reference = writer
         .repo()
         .find_reference(full_name)
         .map_err(git_err(op, full_name))?;
     let target = reference.target().into_owned();
+    let target_id = match target.clone() {
+        Target::Object(id) => id,
+        Target::Symbolic(_) => reference
+            .clone()
+            .into_fully_peeled_id()
+            .map_err(git_err(op, full_name))?
+            .detach(),
+    };
+    drop(reference);
+    if judged_tip.is_some_and(|tip| tip != target_id) {
+        return Err(ActionError::StaleRepository { op });
+    }
     let backup = if writer.backup_required() {
-        let target_id = match target.clone() {
-            Target::Object(id) => id,
-            Target::Symbolic(_) => reference
-                .clone()
-                .into_fully_peeled_id()
-                .map_err(git_err(op, full_name))?
-                .detach(),
-        };
         Some(writer.write_backup_ref(backup_kind, short_name, target_id)?)
     } else {
         None
     };
-    drop(reference);
-    let edit = delete_edit(full_name, PreviousValue::MustExistAndMatch(target), op)?;
-    writer.apply_edit(edit, op, full_name)?;
+    let edit = delete_edit(
+        full_name,
+        PreviousValue::MustExistAndMatch(target.clone()),
+        op,
+    )?;
+    if let Err(err) = writer.apply_edit(edit, op, full_name) {
+        return Err(if ref_moved(writer.repo(), full_name, &target) {
+            ActionError::StaleRepository { op }
+        } else {
+            err
+        });
+    }
     Ok(Deleted {
         full_name: full_name.to_owned(),
         backup_ref: backup,
     })
 }
 
+/// Whether `full_name` no longer has `expected` as its target, gone included: the reason a
+/// `MustExistAndMatch` transaction on it failed. A read error counts as not moved, so the
+/// transaction's own error is reported.
+fn ref_moved(repo: &gix::Repository, full_name: &str, expected: &Target) -> bool {
+    match repo.try_find_reference(full_name) {
+        Ok(Some(reference)) => reference.target() != expected.to_ref(),
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
 /// Whether every commit of `name` is reachable from another local branch or from `HEAD`
-/// when `HEAD` is not on `name` itself.
-fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
+/// when `HEAD` is not on `name` itself, and the tip that answer was judged on.
+fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, gix::ObjectId)> {
     const OP: &str = "check branch reachability";
     let full_name = format!("refs/heads/{name}");
     require_listed_ref(repo, OP, &full_name)?;
@@ -881,15 +919,15 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<bool> {
     }
     for other in others {
         if other == tip {
-            return Ok(true);
+            return Ok((true, tip));
         }
         if let Ok(base) = repo.merge_base(tip, other)
             && base.detach() == tip
         {
-            return Ok(true);
+            return Ok((true, tip));
         }
     }
-    Ok(false)
+    Ok((false, tip))
 }
 
 /// How `full_name` appears in the repository's own ref listing, loose and packed alike.
@@ -994,5 +1032,37 @@ fn refuse_case_variant(
     match listed_spellings(repo, op, full_name)?.variant {
         Some(variant) => Err(case_clash(op, full_name, &variant)),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_branch_that_moved_since_it_was_judged_refuses_as_stale() {
+        let fx = rc_git_testkit::Fixture::standard();
+        let tip = fx.rev_parse("feature");
+        let judged = gix::ObjectId::from_hex(fx.rev_parse("feature~1").as_bytes()).unwrap();
+        let repo = gix::open_opts(fx.path(), gix::open::Options::isolated()).unwrap();
+        let proof = Policy::default().authorize(&Action::Fetch, None).unwrap();
+        let err = delete_ref(
+            &Writer::new(&repo, &proof),
+            "delete branch",
+            "refs/heads/feature",
+            ("branch", "feature"),
+            Some(judged),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ActionError::StaleRepository {
+                    op: "delete branch"
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(fx.rev_parse("feature"), tip, "the moved branch is kept");
     }
 }
