@@ -1151,11 +1151,11 @@ void rcgit_stash_list_free(struct RcGitStashList *list);
 // Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
 // is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
 // `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-// with `*error` set when parsing fails. Needs no repository. Release with
-// `rcgit_highlight_list_free`.
+// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
+// repository. Release with `rcgit_highlight_list_free`.
 //
 // # Safety
-// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
 // `error` is NULL or valid for writing a `char *`.
 struct RcGitHighlightList *rcgit_highlight(const char *name,
                                            const uint8_t *data,
@@ -1172,11 +1172,11 @@ void rcgit_highlight_list_free(struct RcGitHighlightList *list);
 // implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
 // bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
 // `name` maps to no known language; an empty list when the language has no links or the
-// file has none; NULL with `*error` set when parsing fails. Needs no repository. Release
-// with `rcgit_import_link_list_free`.
+// file has none; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
+// fails. Needs no repository. Release with `rcgit_import_link_list_free`.
 //
 // # Safety
-// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
 // `error` is NULL or valid for writing a `char *`.
 struct RcGitImportLinkList *rcgit_import_links(const char *name,
                                                const uint8_t *data,

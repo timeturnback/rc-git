@@ -1277,6 +1277,22 @@ unsafe fn bytes_arg<'a>(ptr: *const c_char) -> Option<&'a [u8]> {
     Some(unsafe { CStr::from_ptr(ptr) }.to_bytes())
 }
 
+/// The `len` bytes at `ptr`: empty when `len` is 0, whatever `ptr` is, and `None` when `ptr`
+/// is NULL with a nonzero `len`.
+///
+/// # Safety
+/// `ptr` is NULL or points to `len` readable bytes that outlive the returned slice.
+unsafe fn slice_arg<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+    if len == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded from this function's contract.
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
 /// # Safety
 /// `repo` is NULL or a pointer from `rcgit_repo_open` that has not been freed.
 unsafe fn repo_arg<'a>(repo: *const RcGitRepo) -> Option<&'a Repository> {
@@ -2620,11 +2636,11 @@ pub unsafe extern "C" fn rcgit_stash_list_free(list: *mut RcGitStashList) {
 /// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
 /// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
 /// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-/// with `*error` set when parsing fails. Needs no repository. Release with
-/// `rcgit_highlight_list_free`.
+/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
+/// repository. Release with `rcgit_highlight_list_free`.
 ///
 /// # Safety
-/// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+/// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
 /// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_highlight(
@@ -2634,15 +2650,12 @@ pub unsafe extern "C" fn rcgit_highlight(
     error: *mut *mut c_char,
 ) -> *mut RcGitHighlightList {
     // SAFETY: forwarded from this function's contract.
-    let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
+    let (name, data, error) = unsafe { (bytes_arg(name), slice_arg(data, len), Out::new(error)) };
     let Some(name) = error.required("rcgit_highlight", "name", name) else {
         return ptr::null_mut();
     };
-    let data: &[u8] = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        // SAFETY: forwarded from this function's contract.
-        unsafe { std::slice::from_raw_parts(data, len) }
+    let Some(data) = error.required("rcgit_highlight", "data", data) else {
+        return ptr::null_mut();
     };
     let name = String::from_utf8_lossy(name);
     let Some(language) = Language::from_file_name(&name).or_else(|| Language::from_fence(&name))
@@ -2683,11 +2696,11 @@ pub unsafe extern "C" fn rcgit_highlight_list_free(list: *mut RcGitHighlightList
 /// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
 /// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
 /// `name` maps to no known language; an empty list when the language has no links or the
-/// file has none; NULL with `*error` set when parsing fails. Needs no repository. Release
-/// with `rcgit_import_link_list_free`.
+/// file has none; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
+/// fails. Needs no repository. Release with `rcgit_import_link_list_free`.
 ///
 /// # Safety
-/// `name` is a NUL-terminated string. `data` points to `len` readable bytes, or `len` is 0.
+/// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
 /// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_import_links(
@@ -2697,15 +2710,12 @@ pub unsafe extern "C" fn rcgit_import_links(
     error: *mut *mut c_char,
 ) -> *mut RcGitImportLinkList {
     // SAFETY: forwarded from this function's contract.
-    let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
+    let (name, data, error) = unsafe { (bytes_arg(name), slice_arg(data, len), Out::new(error)) };
     let Some(name) = error.required("rcgit_import_links", "name", name) else {
         return ptr::null_mut();
     };
-    let data: &[u8] = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        // SAFETY: forwarded from this function's contract.
-        unsafe { std::slice::from_raw_parts(data, len) }
+    let Some(data) = error.required("rcgit_import_links", "data", data) else {
+        return ptr::null_mut();
     };
     let name = String::from_utf8_lossy(name);
     let Some(language) = Language::from_file_name(&name) else {
@@ -6478,6 +6488,16 @@ mod tests {
         let list = unsafe { rcgit_highlight(ptr::null(), data.as_ptr(), 0, &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "rcgit_highlight: name is NULL");
+
+        let list = unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 0, &raw mut error) };
+        assert!(!list.is_null(), "no bytes means no spans");
+        assert_eq!(unsafe { &*list }.len, 0);
+        assert!(error.is_null());
+        unsafe { rcgit_highlight_list_free(list) };
+
+        let list = unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 5, &raw mut error) };
+        assert!(list.is_null());
+        assert_eq!(take_error(&mut error), "rcgit_highlight: data is NULL");
     }
 
     #[test]
@@ -6514,6 +6534,10 @@ mod tests {
         assert!(!list.is_null(), "no bytes means no links");
         assert_eq!(unsafe { &*list }.len, 0);
         unsafe { rcgit_import_link_list_free(list) };
+
+        let list = unsafe { rcgit_import_links(name.as_ptr(), ptr::null(), 5, &raw mut error) };
+        assert!(list.is_null());
+        assert_eq!(take_error(&mut error), "rcgit_import_links: data is NULL");
 
         let unknown = CString::new("photo.png").unwrap();
         let list = unsafe {
