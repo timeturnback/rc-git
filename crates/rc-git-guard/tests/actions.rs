@@ -435,6 +435,44 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn a_new_symlink_commits_as_a_link_to_its_target() {
+        let fx = Fixture::standard();
+        fx.symlink("alpha.txt", "alpha-link");
+
+        commit_whole(&fx, &["alpha-link"]);
+        assert_eq!(ls_tree_mode(&fx, "alpha-link"), "120000");
+        assert_eq!(
+            fx.git_output(&["cat-file", "-p", "HEAD:alpha-link"]),
+            "alpha.txt"
+        );
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
+    fn committing_a_directory_by_its_own_path_is_refused() {
+        let fx = Fixture::standard();
+        fx.write("fresh/one.txt", b"one\n");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            "a folder",
+            explicit(),
+            Some(commit_id(&head)),
+            &[whole("fresh")],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "commit", name, .. } if name == "fresh"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+    }
+
+    #[test]
     fn a_path_under_a_submodule_reads_as_absent_from_head() {
         let fx = Fixture::standard();
         let gitlink = "160000,1111111111111111111111111111111111111111,sub";
