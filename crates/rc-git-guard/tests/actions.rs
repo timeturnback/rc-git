@@ -1429,7 +1429,7 @@ mod commit_and_discard {
     }
 
     #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
-    fn file_mode(fx: &Fixture, path: &str) -> u32 {
+    pub(super) fn file_mode(fx: &Fixture, path: &str) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(fx.path().join(path))
             .unwrap()
@@ -1808,6 +1808,7 @@ mod stash {
     };
     use rc_git_testkit::Fixture;
 
+    use super::commit_and_discard::file_mode;
     use super::{explicit, porcelain, refs};
 
     fn stash_list(fx: &Fixture) -> String {
@@ -1884,6 +1885,42 @@ mod stash {
             std::fs::read(fx.path().join("brand-new.txt")).unwrap(),
             b"untracked goes in too\n"
         );
+    }
+
+    #[test]
+    fn a_mode_only_change_stashes_and_pops_the_exec_bit() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.set_mode("alpha.txt", 0o755);
+
+        stash_push(
+            fx.path(),
+            &policy,
+            &["alpha.txt".to_owned()],
+            None,
+            explicit(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            file_mode(&fx, "alpha.txt"),
+            0o644,
+            "push restores HEAD's mode"
+        );
+        assert_eq!(porcelain(&fx), "");
+
+        stash_pop(fx.path(), &policy, 0, None).unwrap();
+        assert_eq!(
+            file_mode(&fx, "alpha.txt"),
+            0o755,
+            "pop brings the exec bit back"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n"
+        );
+        assert_eq!(porcelain(&fx), " M alpha.txt");
+        assert_eq!(stash_list(&fx), "");
     }
 
     #[test]
