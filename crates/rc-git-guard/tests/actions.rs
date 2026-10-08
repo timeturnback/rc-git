@@ -1106,6 +1106,34 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn discard_also_unstages_a_staged_change() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"staged\n");
+        fx.write("fresh.txt", b"new and staged\n");
+        fx.write("README.md", b"staged elsewhere\n");
+        fx.git(&["add", "alpha.txt", "fresh.txt", "README.md"]);
+
+        discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned(), "fresh.txt".to_owned()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            porcelain(&fx),
+            "M  README.md",
+            "only the other path stays staged"
+        );
+        assert_eq!(
+            fx.git_output(&["rev-parse", ":alpha.txt"]),
+            fx.rev_parse("HEAD:alpha.txt"),
+            "the index entry is HEAD's blob again"
+        );
+        assert_eq!(fx.git_output(&["ls-files", "--", "fresh.txt"]), "");
+    }
+
+    #[test]
     fn discard_refuses_a_tracked_directory_before_restoring_earlier_files() {
         let fx = Fixture::standard();
         fx.write("alpha.txt", b"precious\n");
@@ -1511,6 +1539,39 @@ mod stash {
 
     fn stash_list(fx: &Fixture) -> String {
         fx.git_output(&["stash", "list", "--format=%gs"])
+    }
+
+    #[test]
+    fn a_stash_push_also_unstages_the_stashed_paths() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"staged\n");
+        fx.write("fresh.txt", b"new and staged\n");
+        fx.git(&["add", "alpha.txt", "fresh.txt"]);
+
+        stash_push(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned(), "fresh.txt".to_owned()],
+            None,
+            explicit(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            porcelain(&fx),
+            "",
+            "nothing is left staged for a plain git commit"
+        );
+
+        fx.git(&["stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"staged\n"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("fresh.txt")).unwrap(),
+            b"new and staged\n"
+        );
     }
 
     #[test]

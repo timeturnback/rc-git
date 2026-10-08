@@ -15,7 +15,7 @@ use gix::refs::Target;
 use gix::refs::transaction::{Change, PreviousValue};
 
 use super::commit::{
-    blob_data, checked_out_branch, refuse_case_variant_path, tree_entry_at, tree_of,
+    LockedIndex, blob_data, checked_out_branch, refuse_case_variant_path, tree_entry_at, tree_of,
     whole_file_edit, work_dir, write_object,
 };
 use super::discard::restore_paths;
@@ -43,14 +43,14 @@ pub struct StashSaved {
 }
 
 /// Records the changes at `paths` as a git-compatible stash entry, then restores those
-/// files to their `HEAD` state on disk. `author` decides who is recorded, as [`Author`]
+/// files to their `HEAD` state on disk and in `.git/index`, as `git stash push` does. `author` decides who is recorded, as [`Author`]
 /// describes.
 ///
 /// # Errors
 /// [`ActionError::NotConfirmed`] when the plain confirm is missing,
 /// [`ActionError::MissingIdentity`] without an identity, [`ActionError::Git`] when there is
-/// no commit yet, nothing changed at `paths`, an object cannot be written, or a merge,
-/// cherry-pick, revert or rebase is in progress.
+/// no commit yet, nothing changed at `paths`, an object cannot be written, another git process
+/// holds `index.lock`, or a merge, cherry-pick, revert or rebase is in progress.
 pub fn stash_push(
     repo_path: &Path,
     policy: &Policy,
@@ -99,6 +99,7 @@ pub fn stash_push(
     if stash_tree == base_tree {
         return Err(refused("no changes to stash at the selected paths"));
     }
+    let index = LockedIndex::acquire(&repo, OP)?;
 
     let branch = branch_ref
         .strip_prefix("refs/heads/")
@@ -145,7 +146,7 @@ pub fn stash_push(
     write_stash_ref(&repo, stash_commit, &stash_message, &identity)?;
 
     // Only now that the stash records everything: put the files back to HEAD state.
-    restore_paths(&repo, &work_dir, Some(base_tree), paths, OP)?;
+    restore_paths(&repo, &work_dir, index, Some(base_tree), paths, OP)?;
     Ok(StashSaved {
         oid: stash_commit.to_string(),
         message: stash_message,

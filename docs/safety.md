@@ -172,6 +172,9 @@ The Changes tab's write paths add their own guarantees:
   error — a retried action lands in the state it retries from. Discard deletes a path
   missing from `HEAD` only when its directory holds an entry of exactly that name, so on a
   case-insensitive volume `ALPHA.TXT` never deletes the tracked `alpha.txt`.
+  Both also reset `.git/index` for exactly the paths they restore — `HEAD`'s entry, or none
+  for an untracked path — as `git restore --staged --worktree` and `git stash push` do, so a
+  staged copy of the discarded or stashed change is never left for a terminal `git commit`.
 
 - **A git operation left in progress** (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, a
   rebase or `git am` directory) refuses commit and stash push, which would otherwise record

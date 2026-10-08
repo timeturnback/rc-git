@@ -7,7 +7,10 @@ use std::path::Path;
 
 use gix::objs::tree::EntryKind;
 
-use super::commit::{blob_data, tree_entry_at, verified_hunks, work_dir};
+use super::commit::{
+    IndexChange, LockedIndex, blob_data, disk_stat, tree_entry_at, update_index, verified_hunks,
+    work_dir,
+};
 use super::workfile::{self, DiskEntry};
 use super::{ActionError, ActionResult, HunkStamp, confirm, open, plan_discard};
 use crate::Policy;
@@ -41,15 +44,17 @@ pub struct DiscardOutcome {
 }
 
 /// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written
-/// back to disk, an untracked path is deleted. Every path is checked before the first write,
-/// so a refused path leaves every other one untouched. The policy asks for a plain confirm,
+/// back to disk, an untracked path is deleted, and `.git/index` gets the `HEAD` entry for
+/// each of them (or loses it), so a staged change is discarded too. Every path is checked
+/// before the first write, so a refused path leaves every other one untouched. The policy asks for a plain confirm,
 /// so `input` may be `None`. Returns one outcome per path, in order.
 ///
 /// # Errors
 /// [`ActionError::Git`] when a path is one git refuses (`.git`, `.`, `..`, an empty segment,
 /// a symlinked parent), names a directory in `HEAD` or on disk, is untracked without a file
-/// of exactly that name on disk, or can be neither restored nor deleted. Only that last
-/// failure can stop the run part-way, after the paths before it were handled.
+/// of exactly that name on disk, or can be neither restored nor deleted, and when another git
+/// process holds `index.lock`. Only a failed write can stop the run part-way, after the paths
+/// before it were handled; the index is then left as it was.
 pub fn discard_files(
     repo_path: &Path,
     policy: &Policy,
@@ -79,50 +84,72 @@ pub fn discard_files(
         };
         plan.push((path, entry));
     }
+    let index = LockedIndex::acquire(&repo, OP)?;
     let mut outcomes = Vec::with_capacity(plan.len());
+    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(plan.len());
     for (path, entry) in plan {
-        let kind = match entry {
-            Plan::Restore(entry) => {
-                let data = blob_data(&repo, OP, path, entry.oid)?;
-                workfile::restore_file(OP, &work_dir, path, &data, entry.mode.into())?;
-                DiscardKind::Restored
-            }
+        let (kind, change) = match entry {
+            Plan::Restore(entry) => (
+                DiscardKind::Restored,
+                restore_entry(&repo, &work_dir, path, &entry, OP)?,
+            ),
             Plan::Delete => {
                 workfile::delete_file(OP, &work_dir, path)?;
-                DiscardKind::Deleted
+                (DiscardKind::Deleted, (path.clone(), None))
             }
         };
+        index_changes.push(change);
         outcomes.push(DiscardOutcome {
             path: path.clone(),
             kind,
         });
     }
+    update_index(index, OP, &index_changes)?;
     Ok(outcomes)
 }
 
-/// Puts each of `paths` back to its state in `tree`: a tracked file gets its blob bytes and
-/// mode written back, an untracked one is deleted. Callers refuse directory entries first.
+/// Writes `entry`'s bytes and mode back to `path` and returns the index change that records
+/// it: the blob id, kind, and the stat of the file just written.
+fn restore_entry(
+    repo: &gix::Repository,
+    work_dir: &Path,
+    path: &str,
+    entry: &gix::objs::tree::Entry,
+    op: &'static str,
+) -> ActionResult<IndexChange> {
+    let kind = entry.mode.into();
+    let data = blob_data(repo, op, path, entry.oid)?;
+    workfile::restore_file(op, work_dir, path, &data, kind)?;
+    let stat = disk_stat(work_dir, path, op);
+    Ok((path.to_owned(), Some((entry.oid, kind, stat))))
+}
+
+/// Puts each of `paths` back to its state in `tree`, on disk and in `index`: a tracked file
+/// gets its blob bytes and mode written back and its index entry set to that blob, an
+/// untracked one is deleted and its index entry removed. Entries for other paths are kept.
+/// Callers refuse directory entries first.
 ///
 /// # Errors
-/// [`ActionError::Git`] when an entry cannot be read, or a file can be neither restored nor
-/// deleted.
+/// [`ActionError::Git`] when an entry cannot be read, a file can be neither restored nor
+/// deleted, or the index cannot be written.
 pub(super) fn restore_paths(
     repo: &gix::Repository,
     work_dir: &Path,
+    index: LockedIndex,
     tree: Option<gix::ObjectId>,
     paths: &[String],
     op: &'static str,
 ) -> ActionResult<()> {
+    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(paths.len());
     for path in paths {
-        match tree_entry_at(repo, op, tree, path)? {
-            Some(entry) => {
-                let data = blob_data(repo, op, path, entry.oid)?;
-                workfile::restore_file(op, work_dir, path, &data, entry.mode.into())?;
-            }
-            None => workfile::delete_file(op, work_dir, path)?,
+        if let Some(entry) = tree_entry_at(repo, op, tree, path)? {
+            index_changes.push(restore_entry(repo, work_dir, path, &entry, op)?);
+        } else {
+            workfile::delete_file(op, work_dir, path)?;
+            index_changes.push((path.clone(), None));
         }
     }
-    Ok(())
+    update_index(index, op, &index_changes)
 }
 
 /// Discards only `stamps` of `path`: the diff is recomputed, every stamp must match a
