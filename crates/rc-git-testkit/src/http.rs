@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 
@@ -17,6 +17,7 @@ pub struct HttpGitServer {
     port: u16,
     mount: String,
     shutdown: Arc<AtomicBool>,
+    requests: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -76,6 +77,13 @@ impl HttpGitServer {
         format!("http://127.0.0.1:{}/{}", self.port, self.mount)
     }
 
+    /// Connections accepted so far, each one HTTP request. The shutdown connection made
+    /// on drop is not counted.
+    #[must_use]
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+
     fn start(git_dir: &std::path::Path, mode: Mode) -> Self {
         let git_dir = git_dir.canonicalize().expect("canonicalize git dir");
         let project_root = git_dir
@@ -92,11 +100,14 @@ impl HttpGitServer {
         let port = listener.local_addr().expect("local addr").port();
         let shutdown = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&shutdown);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::clone(&requests);
         let handle = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
+                accepted.fetch_add(1, Ordering::SeqCst);
                 let Ok(stream) = stream else { continue };
                 let root = project_root.clone();
                 let backend = backend.clone();
@@ -112,6 +123,7 @@ impl HttpGitServer {
             port,
             mount,
             shutdown,
+            requests,
             handle: Some(handle),
         }
     }

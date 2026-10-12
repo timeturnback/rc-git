@@ -516,6 +516,7 @@ fn fetch_without_a_remote_reports_no_upstream() {
 #[test]
 fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
     let remoted = remoted();
+    let before = remoted.server.requests();
     let err = fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
@@ -527,7 +528,11 @@ fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
         matches!(err, ActionError::Cancelled { op: "fetch" }),
         "{err}"
     );
-    drop(remoted.server);
+    assert_eq!(
+        remoted.server.requests(),
+        before,
+        "a cancelled op must not reach the server"
+    );
 }
 
 /// Which remote operation a stalled-server test drives.
@@ -1596,6 +1601,7 @@ fn push_surfaces_a_hook_rejection() {
 #[test]
 fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
     let remoted = remoted();
+    let before = remoted.server.requests();
     let err = push_upstream(
         remoted.clone.path(),
         &Policy::default(),
@@ -1606,6 +1612,11 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
     assert!(
         matches!(err, ActionError::Cancelled { op: "push" }),
         "{err}"
+    );
+    assert_eq!(
+        remoted.server.requests(),
+        before,
+        "a cancelled op must not reach the server"
     );
 }
 
