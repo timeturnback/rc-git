@@ -51,6 +51,7 @@ pub struct SshGitServer {
     git_dir: PathBuf,
     host_key: ssh_key::PrivateKey,
     last_user: Arc<Mutex<Option<String>>>,
+    offered: Arc<Mutex<Vec<String>>>,
     runtime: Option<Runtime>,
 }
 
@@ -113,11 +114,13 @@ impl SshGitServer {
             .expect("bind the ssh listener");
         let addr = listener.local_addr().expect("read the bound address");
         let last_user = Arc::new(Mutex::new(None));
+        let offered = Arc::new(Mutex::new(Vec::new()));
         let mut server = GitSshServer {
             git_dir: git_dir.to_path_buf(),
             allowed,
             mode,
             last_user: Arc::clone(&last_user),
+            offered: Arc::clone(&offered),
         };
         runtime.spawn(async move {
             let running = server.run_on_socket(config, &listener);
@@ -130,6 +133,7 @@ impl SshGitServer {
             git_dir: git_dir.to_path_buf(),
             host_key,
             last_user,
+            offered,
             runtime: Some(runtime),
         }
     }
@@ -145,6 +149,22 @@ impl SshGitServer {
             .lock()
             .expect("read the authenticated user")
             .clone()
+    }
+
+    /// The `SHA256:...` fingerprint of every public key clients offered, in the order
+    /// they were offered, across all connections.
+    ///
+    /// # Panics
+    /// When a server thread panicked while holding the record.
+    #[must_use]
+    pub fn offered_keys(&self) -> Vec<String> {
+        self.offered.lock().expect("read the offered keys").clone()
+    }
+
+    /// The `SHA256:...` fingerprint of the key [`SshGitServer::write_client_key`] writes.
+    #[must_use]
+    pub fn client_key_fingerprint(&self) -> String {
+        fingerprint(key_from_seed(&CLIENT_KEY_SEED).public_key())
     }
 
     /// The ssh URL of the served repository, e.g. `ssh://git@127.0.0.1:49152/tmp/x.git`.
@@ -182,6 +202,18 @@ impl SshGitServer {
             .to_openssh(ssh_key::LineEnding::LF)
             .expect("encode the client key");
         write_private(&dir.join("id_ed25519"), pem.as_bytes());
+    }
+
+    /// Writes the public half of the plain fixture client key as `<dir>/id_ed25519.pub`,
+    /// with a comment, as `ssh-keygen` leaves it.
+    ///
+    /// # Panics
+    /// On I/O failure.
+    pub fn write_client_public_key(&self, dir: &Path) {
+        let mut key = key_from_seed(&CLIENT_KEY_SEED).public_key().clone();
+        key.set_comment("rc-git-fixture");
+        let line = key.to_openssh().expect("encode the client public key");
+        write_private(&dir.join("id_ed25519.pub"), format!("{line}\n").as_bytes());
     }
 
     /// Writes the passphrase-protected fixture client key as `<dir>/id_ed25519` and
@@ -249,6 +281,10 @@ impl Drop for SshGitServer {
     }
 }
 
+fn fingerprint(key: &ssh_key::PublicKey) -> String {
+    key.fingerprint(ssh_key::HashAlg::Sha256).to_string()
+}
+
 fn key_from_seed(seed: &[u8; 32]) -> ssh_key::PrivateKey {
     ssh_key::PrivateKey::from(ssh_key::private::Ed25519Keypair::from_seed(seed))
 }
@@ -290,6 +326,7 @@ struct GitSshServer {
     allowed: Vec<ssh_key::PublicKey>,
     mode: Mode,
     last_user: Arc<Mutex<Option<String>>>,
+    offered: Arc<Mutex<Vec<String>>>,
 }
 
 impl russh::server::Server for GitSshServer {
@@ -301,6 +338,7 @@ impl russh::server::Server for GitSshServer {
             allowed: self.allowed.clone(),
             mode: self.mode,
             last_user: Arc::clone(&self.last_user),
+            offered: Arc::clone(&self.offered),
             channels: HashMap::new(),
             env: HashMap::new(),
         }
@@ -320,6 +358,7 @@ struct GitSshHandler {
     allowed: Vec<ssh_key::PublicKey>,
     mode: Mode,
     last_user: Arc<Mutex<Option<String>>>,
+    offered: Arc<Mutex<Vec<String>>>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     env: HashMap<ChannelId, String>,
 }
@@ -337,6 +376,10 @@ impl russh::server::Handler for GitSshHandler {
         _user: &str,
         public_key: &ssh_key::PublicKey,
     ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        self.offered
+            .lock()
+            .expect("record the offered key")
+            .push(fingerprint(public_key));
         let auth = if self.allowed.iter().any(|key| key == public_key) {
             Auth::Accept
         } else {

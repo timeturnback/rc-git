@@ -28,7 +28,7 @@ fn auth(creds: &Credentials) -> RemoteAuth<'_> {
         ..RemoteAuth::default()
     }
 }
-use rc_git_testkit::Fixture;
+use rc_git_testkit::{Fixture, SshAgent};
 
 /// An origin repository, a bare copy served over HTTP from a sibling directory
 /// (never inside the origin's working tree), and a local clone of it.
@@ -2364,6 +2364,87 @@ fn ssh_host_key_alias() {
     )
     .expect("a host pinned under its HostKeyAlias is known");
     assert_eq!(outcome.updated_refs.len(), 1);
+}
+
+/// A private agent holding the server's unauthorized key, then its authorized one, and
+/// the directories holding them, each as `id_ed25519`: authorized first, unauthorized second.
+fn agent_with_both_keys(server: &rc_git_testkit::SshGitServer) -> (SshAgent, Fixture, Fixture) {
+    let authorized = Fixture::empty_dir();
+    let unauthorized = Fixture::empty_dir();
+    server.write_client_key(authorized.path());
+    server.write_unauthorized_client_key(unauthorized.path());
+    let agent = SshAgent::start();
+    agent.add(&unauthorized.path().join("id_ed25519"));
+    agent.add(&authorized.path().join("id_ed25519"));
+    (agent, authorized, unauthorized)
+}
+
+/// The field failure: the agent lists another account's key first. The agent key that
+/// matches the configured identity file is offered first, and the file is not offered
+/// again.
+#[test]
+fn ssh_agent_key_matching_the_identity_file_is_offered_first() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    let (agent, authorized, _unauthorized) = agent_with_both_keys(&remoted.server);
+    remoted.ssh_home.write(
+        "config",
+        format!(
+            "Host *\n  IdentityAgent \"{}\"\n  IdentityFile \"{}\"\n",
+            agent.socket().display(),
+            authorized.path().join("id_ed25519").display()
+        )
+        .as_bytes(),
+    );
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect("the agent key matching the identity file authenticates");
+    assert_eq!(outcome.updated_refs.len(), 1);
+    assert_eq!(
+        remoted.server.offered_keys(),
+        vec![remoted.server.client_key_fingerprint()],
+        "only the agent key matching IdentityFile is offered"
+    );
+}
+
+/// Only `<key>.pub` is on disk, with `IdentitiesOnly yes`: the public key selects the
+/// agent's copy of the private key, and the agent's other key is never offered.
+#[test]
+fn ssh_agent_pub_identity_file_selects_the_agent_key() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    let (agent, _authorized, _unauthorized) = agent_with_both_keys(&remoted.server);
+    let public = Fixture::empty_dir();
+    remoted.server.write_client_public_key(public.path());
+    remoted.ssh_home.write(
+        "config",
+        format!(
+            "Host *\n  IdentityAgent \"{}\"\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n",
+            agent.socket().display(),
+            public.path().join("id_ed25519.pub").display()
+        )
+        .as_bytes(),
+    );
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect("the agent key the .pub file names authenticates");
+    assert_eq!(outcome.updated_refs.len(), 1);
+    assert_eq!(
+        remoted.server.offered_keys(),
+        vec![remoted.server.client_key_fingerprint()]
+    );
 }
 
 // --- local and URL upstreams ---

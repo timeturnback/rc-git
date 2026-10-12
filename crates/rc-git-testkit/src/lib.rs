@@ -9,9 +9,11 @@ use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
+mod agent;
 mod http;
 mod ssh;
 
+pub use agent::SshAgent;
 pub use http::HttpGitServer;
 pub use ssh::SshGitServer;
 
