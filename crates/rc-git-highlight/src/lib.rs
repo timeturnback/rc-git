@@ -180,59 +180,48 @@ pub enum Class {
     Variable,
 }
 
-/// The capture names the queries are matched against, in the order `CLASS_FOR_NAME` maps.
+/// Every capture name the queries are matched against, paired with the class it colors as.
 /// Dotted capture names fall back to their longest prefix here, per tree-sitter's rules.
-const CAPTURE_NAMES: [&str; 23] = [
-    "attribute",
-    "comment",
-    "constant",
-    "constructor",
-    "embedded",
-    "escape",
-    "function",
-    "keyword",
-    "label",
-    "none",
-    "number",
-    "operator",
-    "property",
-    "punctuation",
-    "string",
-    "text.emphasis",
-    "text.literal",
-    "text.reference",
-    "text.strong",
-    "text.title",
-    "text.uri",
-    "type",
-    "variable",
+/// A `None` class leaves the node plain, on purpose.
+const CAPTURES: [(&str, Option<Class>); 25] = [
+    ("attribute", Some(Class::Attribute)),
+    ("character", Some(Class::String)),
+    ("comment", Some(Class::Comment)),
+    ("constant", Some(Class::Constant)),
+    ("constructor", Some(Class::Type)),
+    ("delimiter", Some(Class::Punctuation)),
+    ("embedded", None),
+    ("escape", Some(Class::String)),
+    ("function", Some(Class::Function)),
+    ("keyword", Some(Class::Keyword)),
+    ("label", Some(Class::Constant)),
+    ("none", None),
+    ("number", Some(Class::Number)),
+    ("operator", Some(Class::Operator)),
+    ("property", Some(Class::Property)),
+    ("punctuation", Some(Class::Punctuation)),
+    ("string", Some(Class::String)),
+    ("text.emphasis", Some(Class::Emphasis)),
+    ("text.literal", Some(Class::String)),
+    ("text.reference", Some(Class::Link)),
+    ("text.strong", Some(Class::Strong)),
+    ("text.title", Some(Class::Heading)),
+    ("text.uri", Some(Class::Link)),
+    ("type", Some(Class::Type)),
+    ("variable", Some(Class::Variable)),
 ];
 
-const CLASS_FOR_NAME: [Option<Class>; 23] = [
-    Some(Class::Attribute),
-    Some(Class::Comment),
-    Some(Class::Constant),
-    Some(Class::Type),
-    None,
-    Some(Class::String),
-    Some(Class::Function),
-    Some(Class::Keyword),
-    Some(Class::Constant),
-    None,
-    Some(Class::Number),
-    Some(Class::Operator),
-    Some(Class::Property),
-    Some(Class::Punctuation),
-    Some(Class::String),
-    Some(Class::Emphasis),
-    Some(Class::String),
-    Some(Class::Link),
-    Some(Class::Strong),
-    Some(Class::Heading),
-    Some(Class::Link),
-    Some(Class::Type),
-    Some(Class::Variable),
-];
+/// The names half of [`CAPTURES`], in the same order, which is what `configure` takes: the
+/// highlight index it hands back is a position in this array and so in `CAPTURES`.
+const CAPTURE_NAMES: [&str; CAPTURES.len()] = {
+    let mut names = [""; CAPTURES.len()];
+    let mut index = 0;
+    while index < CAPTURES.len() {
+        names[index] = CAPTURES[index].0;
+        index += 1;
+    }
+    names
+};
 
 /// One highlighted region: byte offsets into the input, half-open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,7 +306,7 @@ fn single_layer(
         let event = event.map_err(|source| Error::Parse { language, source })?;
         match event {
             HighlightEvent::HighlightStart(highlight) => {
-                stack.push(CLASS_FOR_NAME[highlight.0]);
+                stack.push(CAPTURES[highlight.0].1);
             }
             HighlightEvent::HighlightEnd => {
                 stack.pop();
@@ -580,10 +569,7 @@ fn build_configuration(
             tree_sitter_rust::LANGUAGE.into(),
             tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
         ),
-        Language::Swift => (
-            tree_sitter_swift::LANGUAGE.into(),
-            tree_sitter_swift::HIGHLIGHTS_QUERY.into(),
-        ),
+        Language::Swift => (tree_sitter_swift::LANGUAGE.into(), swift_query().into()),
         Language::Toml => (
             tree_sitter_toml_ng::LANGUAGE.into(),
             tree_sitter_toml_ng::HIGHLIGHTS_QUERY.into(),
@@ -616,6 +602,12 @@ fn typescript_query() -> String {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
     ]
     .join("\n")
+}
+
+/// Swift's query tags comments `@comment @spell`. The later capture wins on a node and
+/// `spell` is no color, so left in it would leave every `//` and `/* */` comment plain.
+fn swift_query() -> String {
+    tree_sitter_swift::HIGHLIGHTS_QUERY.replace(" @spell", "")
 }
 
 #[cfg(test)]
@@ -684,6 +676,111 @@ mod tests {
         for window in spans.windows(2) {
             assert!(window[0].start <= window[1].start, "spans are ordered");
         }
+    }
+
+    const ALL_LANGUAGES: [Language; LANGUAGE_COUNT] = [
+        Language::Bash,
+        Language::C,
+        Language::JavaScript,
+        Language::Json,
+        Language::Markdown,
+        Language::Python,
+        Language::Rust,
+        Language::Swift,
+        Language::Toml,
+        Language::Tsx,
+        Language::TypeScript,
+        Language::Yaml,
+    ];
+
+    /// Capture names a pinned query uses that no `CAPTURES` entry resolves yet. Each one is
+    /// a node that loses its color; P10-02 maps `boolean` and empties this list.
+    const KNOWN_UNRESOLVED: [&str; 1] = ["boolean"];
+
+    /// tree-sitter-highlight's `configure` rule: a name resolves to a configured name whose
+    /// dot-separated parts all appear among its own.
+    fn resolves(name: &str) -> bool {
+        let parts: Vec<&str> = name.split('.').collect();
+        CAPTURE_NAMES
+            .iter()
+            .any(|configured| configured.split('.').all(|part| parts.contains(&part)))
+    }
+
+    #[test]
+    fn every_query_capture_name_resolves() {
+        let mut configs = Vec::new();
+        for language in ALL_LANGUAGES {
+            let config = language
+                .configuration()
+                .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
+            configs.push((language.name(), config));
+        }
+        let inline = markdown_inline_configuration().expect("markdown_inline loads");
+        configs.push(("markdown_inline", inline));
+        let mut unresolved = Vec::new();
+        for (language, config) in configs {
+            for name in config.names() {
+                if name.starts_with('_') || resolves(name) {
+                    continue;
+                }
+                if !unresolved.contains(name) {
+                    unresolved.push(*name);
+                }
+                assert!(
+                    KNOWN_UNRESOLVED.contains(name),
+                    "{language} captures @{name}, which no CAPTURES entry resolves"
+                );
+            }
+        }
+        for name in KNOWN_UNRESOLVED {
+            assert!(
+                unresolved.contains(&name),
+                "@{name} resolves now; drop it from KNOWN_UNRESOLVED"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_names_pair_with_their_classes() {
+        assert_eq!(CAPTURE_NAMES.len(), CAPTURES.len());
+        for (name, (paired, _)) in CAPTURE_NAMES.iter().zip(CAPTURES.iter()) {
+            assert_eq!(name, paired);
+        }
+        let class_of = |name: &str| {
+            CAPTURES
+                .iter()
+                .find(|(configured, _)| *configured == name)
+                .map_or_else(|| panic!("{name} is not configured"), |(_, class)| *class)
+        };
+        assert_eq!(class_of("escape"), Some(Class::String));
+        assert_eq!(class_of("text.uri"), Some(Class::Link));
+        assert_eq!(class_of("variable"), Some(Class::Variable));
+        assert_eq!(class_of("delimiter"), Some(Class::Punctuation));
+        assert_eq!(class_of("character"), Some(Class::String));
+    }
+
+    #[test]
+    fn swift_line_block_and_doc_comments_are_classified() {
+        let data = b"// line\n/* block */\n/// doc\nlet x = 1\n";
+        let spans = highlight(data, Language::Swift).unwrap();
+        assert_eq!(classes_at(&spans, data, "// line"), vec![Class::Comment]);
+        assert_eq!(
+            classes_at(&spans, data, "/* block */"),
+            vec![Class::Comment]
+        );
+        assert_eq!(classes_at(&spans, data, "/// doc"), vec![Class::Comment]);
+    }
+
+    #[test]
+    fn c_delimiters_and_swift_wildcards_are_classified() {
+        let c = b"int x = s.y;\n";
+        let spans = highlight(c, Language::C).unwrap();
+        assert_eq!(classes_at(&spans, c, ";"), vec![Class::Punctuation]);
+        assert_eq!(classes_at(&spans, c, "."), vec![Class::Punctuation]);
+
+        let swift = b"let _ = f()\n";
+        let spans = highlight(swift, Language::Swift).unwrap();
+        assert_eq!(classes_at(&spans, swift, "_"), vec![Class::String]);
     }
 
     #[test]
