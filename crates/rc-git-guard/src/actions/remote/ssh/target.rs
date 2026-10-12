@@ -20,7 +20,9 @@ pub(in crate::actions::remote) struct SshTarget {
     /// URL user, else ssh-config `User`, else `$USER`.
     pub user: String,
     /// Candidate private keys: the ssh-config `IdentityFile` entries, or the OpenSSH
-    /// defaults when the config names none. Existence is checked at use.
+    /// defaults in OpenSSH's order when the config names none. The `_sk` defaults are left
+    /// out because russh cannot sign with a security-key file; an agent-held security key
+    /// is still offered as an agent key. Existence is checked at use.
     pub identities: Vec<PathBuf>,
     /// Whether `identities` came from ssh-config `IdentityFile` entries rather than the
     /// defaults: a configured file that is missing is worth reporting, a default is not.
@@ -109,7 +111,7 @@ pub(in crate::actions::remote) fn resolve(
         .filter(|files| !files.is_empty());
     let identities_configured = configured.is_some();
     let identities = configured.unwrap_or_else(|| {
-        ["id_ed25519", "id_ecdsa", "id_rsa"]
+        ["id_rsa", "id_ecdsa", "id_ed25519"]
             .into_iter()
             .map(|name| ssh_dir.join(name))
             .collect()
@@ -636,7 +638,10 @@ HostName	real.example.com
         .expect("resolve");
         assert_eq!(target.host_name, "example.com");
         assert_eq!(target.port, 22);
-        assert_eq!(target.identities.len(), 3);
+        assert_eq!(
+            target.identities,
+            ["id_rsa", "id_ecdsa", "id_ed25519"].map(|name| dir.path().join(name))
+        );
         assert!(!target.identities_configured);
         assert!(!target.identities_only);
     }
