@@ -14,7 +14,7 @@ use gix::remote::Direction;
 use crate::actions::treeapply::core_oid;
 use crate::actions::write::Writer;
 use crate::actions::{ActionError, ActionResult, authorize, open};
-use crate::{Action, Policy};
+use crate::{Action, Confirmation, Policy};
 
 use super::report::Report;
 use super::{
@@ -42,6 +42,9 @@ pub struct PushOutcome {
     pub pushed_commits: usize,
     /// Whether the remote already had the local tip, so nothing was sent.
     pub already_up_to_date: bool,
+    /// Why the remote-tracking ref still points at the old tip, when moving it failed. The
+    /// push itself landed; ahead/behind reads stale until a fetch or another push moves it.
+    pub tracking_ref_error: Option<String>,
 }
 
 /// Pushes the checked-out branch to the same-named branch on its push remote:
@@ -120,6 +123,7 @@ pub fn push_upstream(
             new: new_id,
             pushed_commits: 0,
             already_up_to_date: true,
+            tracking_ref_error: move_tracking_ref(&repo, &proof, tracking_ref.as_deref(), tip),
         });
     }
     if let Some(old) = remote_old
@@ -138,9 +142,6 @@ pub fn push_upstream(
             send(transport, &link, remote_old, tip, &bytes)
         })?;
     }
-    if let Some(tracking_ref) = tracking_ref {
-        update_tracking_ref(&Writer::new(&repo, &proof), &tracking_ref, tip)?;
-    }
     Ok(PushOutcome {
         remote: remote_name,
         branch,
@@ -148,6 +149,7 @@ pub fn push_upstream(
         new: new_id,
         pushed_commits,
         already_up_to_date: false,
+        tracking_ref_error: move_tracking_ref(&repo, &proof, tracking_ref.as_deref(), tip),
     })
 }
 
@@ -366,6 +368,30 @@ fn connect_failed(
     source: Box<dyn std::error::Error + Send + Sync + 'static>,
 ) -> ActionError {
     map_network_error(source, OP, super::redacted(url).as_str(), host)
+}
+
+/// Moves the remote-tracking ref to the tip the remote now has, unless it is already there,
+/// and returns why that failed. Runs only once the remote has the tip, so a failure here is
+/// reported beside the push rather than as its failure; a later push repairs the ref.
+fn move_tracking_ref(
+    repo: &gix::Repository,
+    proof: &Confirmation,
+    tracking_ref: Option<&str>,
+    tip: ObjectId,
+) -> Option<String> {
+    let tracking_ref = tracking_ref?;
+    // An unreadable ref only skips the shortcut: the write below reads it again and reports.
+    let current = repo
+        .try_find_reference(tracking_ref)
+        .ok()
+        .flatten()
+        .and_then(|reference| reference.target().try_id().map(ToOwned::to_owned));
+    if current == Some(tip) {
+        return None;
+    }
+    update_tracking_ref(&Writer::new(repo, proof), tracking_ref, tip)
+        .err()
+        .map(|err| err.to_string())
 }
 
 /// Moves the remote-tracking ref status counts against to the pushed tip so ahead/behind

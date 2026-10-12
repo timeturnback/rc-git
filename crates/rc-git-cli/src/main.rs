@@ -1621,6 +1621,12 @@ fn write_pull(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PullOutcome) -
 }
 
 fn write_push(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PushOutcome) -> Result<()> {
+    if let Some(error) = &outcome.tracking_ref_error {
+        writeln!(
+            io::stderr().lock(),
+            "warning: push landed, but the tracking ref was not moved: {error}"
+        )?;
+    }
     if outcome.already_up_to_date {
         writeln!(out, "push\t{}\tup to date", outcome.branch)?;
     } else {

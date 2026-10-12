@@ -966,6 +966,64 @@ fn push_uploads_commits_and_updates_the_tracking_ref() {
 }
 
 #[test]
+fn push_reports_a_stuck_tracking_ref_beside_the_push_and_a_retry_repairs_it() {
+    let remoted = remoted();
+    let before = remoted.clone.rev_parse("refs/remotes/origin/main");
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    let tip = remoted.clone.rev_parse("HEAD");
+    let lock = remoted
+        .clone
+        .path()
+        .join(".git/refs/remotes/origin/main.lock");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test setup holds the tracking ref's lock, as a concurrent git would"
+    )]
+    std::fs::write(&lock, b"").expect("hold the tracking ref lock");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("a push the server accepted is not a failure");
+    assert_eq!(outcome.pushed_commits, 1);
+    assert_eq!(bare_rev(&remoted.bare, "main"), tip, "the push must land");
+    let message = outcome
+        .tracking_ref_error
+        .expect("the stuck tracking ref must be reported");
+    assert!(message.contains("refs/remotes/origin/main"), "{message}");
+    assert_eq!(remoted.clone.rev_parse("refs/remotes/origin/main"), before);
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test setup releases the lock it took"
+    )]
+    std::fs::remove_file(&lock).expect("release the tracking ref lock");
+    let retry = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("retry");
+    assert_eq!(retry.pushed_commits, 0);
+    assert!(retry.already_up_to_date);
+    assert_eq!(retry.tracking_ref_error, None);
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        tip,
+        "the retry must move the stale tracking ref"
+    );
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!((status.ahead, status.behind), (0, 0));
+}
+
+#[test]
 fn push_with_nothing_new_is_a_no_op() {
     let remoted = remoted();
     let outcome = push_upstream(
@@ -978,6 +1036,7 @@ fn push_with_nothing_new_is_a_no_op() {
     assert_eq!(outcome.pushed_commits, 0);
     assert_eq!(outcome.old, Some(outcome.new));
     assert!(outcome.already_up_to_date);
+    assert_eq!(outcome.tracking_ref_error, None);
 }
 
 #[test]
