@@ -2,6 +2,7 @@
 //! trees and blobs, and write a self-contained (never thin) pack v2 into memory.
 
 use gix::ObjectId;
+use gix_pack::data::output::count::PackLocation;
 
 use crate::actions::{ActionError, ActionResult, git_err};
 
@@ -22,7 +23,8 @@ pub(super) struct BuiltPack {
 /// Enumerates and packs the objects to send.
 ///
 /// # Errors
-/// [`ActionError::Git`] when the walk or the pack writer fails, [`ActionError::Cancelled`]
+/// [`ActionError::Git`] when the walk or the pack writer fails or an object to send is
+/// missing locally (named by its id), [`ActionError::Cancelled`]
 /// when `cancel` was set during the commit walk, counting, or writing.
 pub(super) fn build_pack(
     repo: &gix::Repository,
@@ -79,6 +81,7 @@ pub(super) fn build_pack(
         }
         ActionError::git(OP, "object enumeration", source)
     })?;
+    refuse_missing_objects(repo, &counts)?;
 
     let entry_count = u32::try_from(counts.len())
         .map_err(|_| ActionError::git(OP, "pack", "more than u32::MAX objects in one push"))?;
@@ -107,6 +110,30 @@ pub(super) fn build_pack(
         bytes,
         commits: commit_count,
     })
+}
+
+/// Fails on the first counted object the local database cannot produce. Counting records
+/// blob ids from tree diffs without reading them, and the pack writer later drops an object
+/// it cannot find after the header already counted it, so the server would get a pack with
+/// fewer objects than it claims (a partial clone that never fetched those blobs). Only objects
+/// not found in a pack are checked: those are loose or missing.
+fn refuse_missing_objects(
+    repo: &gix::Repository,
+    counts: &[gix_pack::data::output::Count],
+) -> ActionResult<()> {
+    let missing = counts.iter().find(|count| {
+        matches!(count.entry_pack_location, PackLocation::LookedUp(None))
+            && !repo.has_object(count.id)
+    });
+    match missing {
+        Some(count) => Err(ActionError::git(
+            OP,
+            count.id.to_string(),
+            "this object is missing from the local object database (partial or shallow \
+             clone); fetch it with git, then push again",
+        )),
+        None => Ok(()),
+    }
 }
 
 /// A valid pack containing zero objects: header plus trailing hash.

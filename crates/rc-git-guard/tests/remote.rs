@@ -981,6 +981,46 @@ fn push_with_nothing_new_is_a_no_op() {
 }
 
 #[test]
+fn push_names_a_missing_local_object() {
+    let remoted = remoted();
+    remoted.clone.write("local.txt", b"never fetched\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    let blob = remoted.clone.rev_parse("HEAD:local.txt");
+    let (dir, file) = blob.split_at(2);
+    let loose = remoted
+        .clone
+        .path()
+        .join(".git/objects")
+        .join(dir)
+        .join(file);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test setup drops a loose blob, as a partial clone never has it"
+    )]
+    std::fs::remove_file(&loose).expect("remove the loose blob");
+
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("push with a missing blob");
+    assert!(
+        matches!(&err, ActionError::Git { op: "push", name, .. } if *name == blob),
+        "{err}"
+    );
+    assert!(err.to_string().contains("missing"), "{err}");
+    assert_ne!(
+        bare_rev(&remoted.bare, "main"),
+        remoted.clone.rev_parse("HEAD"),
+        "the served repository must not move"
+    );
+}
+
+#[test]
 fn push_creates_a_new_branch_from_an_existing_commit() {
     let remoted = remoted();
     remoted.clone.git(&["checkout", "-q", "-b", "topic"]);
