@@ -29,9 +29,11 @@ Four layers enforce it, and each catches what the others miss.
    `find_remote`, `connect`, `handshake`, plus `russh::client::connect` and the std and
    tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The curl
    feature also compiles gix's credential-helper and prompt machinery into the binary;
-   it is unreachable, because every connection installs a credential callback that
-   answers from caller-supplied credentials and never consults the helper cascade, and
-   `Command::new` stays banned workspace-wide. The ssh side reads `~/.ssh` (config,
+   it is unreachable: every connection, HTTPS and ssh, installs a credential callback that
+   answers from caller-supplied credentials and never consults the helper cascade; fetch and
+   push build their HTTP options from code-owned defaults, so no repository `http.proxy`
+   ever asks the cascade for a proxy password; and `Command::new` stays banned
+   workspace-wide. The ssh side reads `~/.ssh` (config,
    `known_hosts`, keys) and writes none of it; host-key approvals live in the app's own
    defaults. The `index` and `excludes` features are on so the working-tree view can
    honor ignore rules; both read.
@@ -49,6 +51,12 @@ Opening a repository someone else produced must be harmless.
   It ranks below the repository's `.gitignore` files and `.git/info/exclude`, as in git, and
   outranks the repository's own `core.excludesFile`. A `core.excludesFile` set in
   `~/.gitconfig` is not read.
+- A repository's `http.*`, `remote.<name>.proxy` and `credential.*` keys are never applied
+  to a transfer. Fetch and push build their HTTP options from code-owned defaults (timeouts
+  only), so the repository cannot pick a proxy, switch off certificate checks, add a CA or a
+  header, or run a credential helper. libcurl itself still honours `http_proxy`,
+  `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` from the process environment, as git does; a
+  loopback remote bypasses every proxy, environment ones included.
 - What `.git/config` itself can name outside the repository:
   - `core.worktree`: refused. Core and guard both open through `require_work_tree_at`, which
     fails unless the working tree resolves to the opened directory (or the parent of an

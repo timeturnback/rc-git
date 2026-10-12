@@ -465,10 +465,31 @@ fn bail_if_cancelled(cancel: &Cancel, op: &'static str) -> ActionResult<()> {
     Ok(())
 }
 
-/// Transport timeouts for the HTTPS backend. A repository opened with
-/// `Options::isolated()` reads no global configuration, so `http.lowSpeedLimit` and
-/// friends can only come from here; without them curl waits forever on a peer that
-/// accepts the connection and then goes quiet.
+/// The HTTP transport options every fetch and push uses, built from code-owned defaults.
+/// Nothing comes from the repository: its `http.*`, `remote.<name>.proxy` and
+/// `credential.*` keys are never read, so a repository someone else produced cannot route
+/// a transfer through its own proxy, switch off certificate checks, or spawn a credential
+/// helper through `proxy_authenticate`. Callers must always install these options; a gix
+/// connection left without any loads them from the repository's configuration.
+///
+/// libcurl still honours `http_proxy`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` from the
+/// process environment, as git does. A loopback URL sets an empty proxy, which tells
+/// libcurl to use none and ignore those variables, so local test servers stay hermetic.
+fn http_options(
+    url: &gix::Url,
+    cancel: &Cancel,
+) -> gix::protocol::transport::client::blocking_io::http::Options {
+    let mut options = gix::protocol::transport::client::blocking_io::http::Options::default();
+    http_timeouts(&mut options, cancel.idle());
+    if is_loopback(url) {
+        options.proxy = Some(String::new());
+    }
+    options
+}
+
+/// Transport timeouts for the HTTPS backend. [`http_options`] reads no repository
+/// configuration, so `http.lowSpeedLimit` and friends can only come from here; without
+/// them curl waits forever on a peer that accepts the connection and then goes quiet.
 ///
 /// `low_speed_limit_bytes_per_second` is 1 rather than a realistic rate on purpose:
 /// the pair means "fail when fewer than 1 byte moves for `idle`", which never punishes

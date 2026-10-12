@@ -18,7 +18,7 @@ use crate::{Action, Policy};
 use super::report::Report;
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
-    configured_remote_name, current_branch, host_of, http_timeouts, is_ancestor, map_network_error,
+    configured_remote_name, current_branch, host_of, http_options, is_ancestor, map_network_error,
     pack, report, set_reflog_identity, vet_remote_url,
 };
 
@@ -272,9 +272,9 @@ fn connect(
         },
     )
     .map_err(|source| failed(Box::new(source)))?;
-    let mut options = gix::protocol::transport::client::blocking_io::http::Options::default();
-    http_timeouts(&mut options, cancel.idle());
-    transport.configure(&options).map_err(failed)?;
+    transport
+        .configure(&http_options(url, cancel))
+        .map_err(failed)?;
     Ok(transport)
 }
 

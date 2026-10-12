@@ -181,6 +181,88 @@ fn fetch_updates_the_tracking_ref_and_reports_it() {
 }
 
 #[test]
+fn fetch_ignores_the_repository_http_settings() {
+    let remoted = remoted();
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    remoted
+        .clone
+        .git(&["config", "http.proxy", "http://127.0.0.1:9"]);
+    remoted
+        .clone
+        .git(&["config", "remote.origin.proxy", "http://127.0.0.1:9"]);
+
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch ignores the proxy the repository names");
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        bare_rev(&remoted.bare, "main")
+    );
+}
+
+#[test]
+fn fetch_ignores_repository_http_and_credential_config() {
+    let remoted = remoted();
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    let marker = remoted.clone.git_dir().join("helper-ran");
+    remoted
+        .clone
+        .git(&["config", "http.proxy", "http://u@127.0.0.1:1"]);
+    let helper = format!("!touch '{}'; :", marker.display());
+    remoted.clone.git(&["config", "credential.helper", &helper]);
+
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch ignores the repository's proxy and credential helper");
+    assert!(
+        !marker.exists(),
+        "the repository's credential helper ran: {}",
+        marker.display()
+    );
+}
+
+/// Set in the child process `fetch_from_loopback_bypasses_the_environment_proxy` starts.
+const DEAD_PROXY_CHILD: &str = "RC_GIT_TEST_DEAD_PROXY_CHILD";
+
+#[test]
+fn fetch_from_loopback_bypasses_the_environment_proxy() {
+    if std::env::var_os(DEAD_PROXY_CHILD).is_none() {
+        let dead = std::ffi::OsStr::new("http://127.0.0.1:9");
+        rc_git_testkit::run_test_with_env(
+            "fetch_from_loopback_bypasses_the_environment_proxy",
+            &[
+                (DEAD_PROXY_CHILD, std::ffi::OsStr::new("1")),
+                ("http_proxy", dead),
+                ("HTTPS_PROXY", dead),
+                ("ALL_PROXY", dead),
+            ],
+        );
+        return;
+    }
+    let remoted = remoted();
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("a loopback fetch ignores the proxy the environment names");
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        bare_rev(&remoted.bare, "main")
+    );
+}
+
+#[test]
 fn fetch_with_nothing_new_reports_no_updates() {
     let remoted = remoted();
     let outcome = fetch_upstream(

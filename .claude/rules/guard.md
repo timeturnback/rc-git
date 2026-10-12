@@ -73,7 +73,9 @@ here; so does everything that comes later.
   honors `IdentitiesOnly`: on GitHub the first accepted key picks the account
   (`docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md`).
   On the HTTPS side always install the credential closure; never let gix's helper
-  cascade run (it spawns).
+  cascade run (it spawns). Fetch and push take their HTTP options only from `http_options`
+  in `actions/remote.rs`: repo-local `http.*`, `remote.<name>.proxy` and `credential.*`
+  keys are ignored, and a connection left without options would load them from config.
   `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).

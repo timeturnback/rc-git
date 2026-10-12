@@ -10,7 +10,7 @@ use crate::{Action, Policy};
 
 use super::{
     Cancel, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
-    current_branch, host_of, http_timeouts, map_network_error, vet_remote_url,
+    current_branch, host_of, http_options, map_network_error, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -86,12 +86,7 @@ pub fn fetch_upstream(
                 .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
             let mut connection =
                 connection.with_credentials(authenticate_with(auth.creds.cloned()));
-            connection.set_transport_options(timed_http_options(
-                &repo,
-                &url,
-                &remote_name,
-                cancel,
-            )?);
+            connection.set_transport_options(Box::new(http_options(&url, cancel)));
             run_fetch(&writer, connection, (&remote_name, &host), cancel)?
         }
         RemoteScheme::Ssh => {
@@ -107,7 +102,9 @@ pub fn fetch_upstream(
                 clippy::disallowed_methods,
                 reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
             )]
-            let connection = remote.to_connection_with_transport(transport);
+            let connection = remote
+                .to_connection_with_transport(transport)
+                .with_credentials(authenticate_with(None));
             run_fetch(&writer, connection, (&remote_name, &host), cancel)?
         }
     };
@@ -116,38 +113,6 @@ pub fn fetch_upstream(
         remote: remote_name,
         updated_refs: updated_refs(&outcome),
     })
-}
-
-/// The repository's own HTTP transport options with rc-git's timeouts applied, built
-/// from gix's defaults when the repository configures none.
-///
-/// # Errors
-/// [`ActionError::Git`] when the repository's HTTP settings cannot be read, or when gix
-/// hands back options of a type other than the curl backend's: then the idle budget
-/// could not be set, and a fetch without it can hang forever on a silent server.
-fn timed_http_options(
-    repo: &gix::Repository,
-    url: &gix::Url,
-    remote_name: &str,
-    cancel: &Cancel,
-) -> ActionResult<Box<dyn std::any::Any>> {
-    use gix::bstr::{BStr, ByteSlice};
-    use gix::protocol::transport::client::blocking_io::http::Options;
-    let url = url.to_bstring();
-    let mut options = repo
-        .transport_options(url.as_bstr(), Some(<&BStr>::from(remote_name.as_bytes())))
-        .map_err(git_err(OP, remote_name))?
-        .unwrap_or_else(|| Box::new(Options::default()));
-    let Some(http) = options.downcast_mut::<Options>() else {
-        return Err(ActionError::git(
-            OP,
-            remote_name,
-            "the HTTP transport options are not curl's, so the idle timeout \
-                     cannot be set; refusing to fetch without it",
-        ));
-    };
-    http_timeouts(http, cancel.idle());
-    Ok(options)
 }
 
 /// Runs the prepared connection through negotiation and pack receive, mapping errors
