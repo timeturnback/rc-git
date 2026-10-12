@@ -82,8 +82,9 @@ pub(super) fn report_lines(band1: &[u8]) -> Result<Vec<&[u8]>, String> {
     Ok(lines)
 }
 
-/// Parses a `report-status` reply. `lines` are its pkt-line payloads, framing stripped;
-/// `full_ref` is the one ref pushed.
+/// Parses a `report-status` reply. `lines` are its pkt-line payloads, one per pkt-line
+/// with framing stripped, each with or without its trailing LF (a receiver must accept
+/// both); `full_ref` is the one ref pushed.
 pub(super) fn parse_report<'a>(
     lines: impl IntoIterator<Item = &'a [u8]>,
     full_ref: &str,
@@ -91,8 +92,9 @@ pub(super) fn parse_report<'a>(
     let mut unpack_ok = false;
     let mut ref_status: Option<Report> = None;
     for line in lines {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
         let line = String::from_utf8_lossy(line);
-        let line = line.trim_end();
+        let line = line.as_ref();
         if let Some(status) = line.strip_prefix("unpack ") {
             if status == "ok" {
                 unpack_ok = true;
@@ -253,6 +255,15 @@ mod tests {
     #[test]
     fn a_successful_report_parses() {
         let report = parse_report(lines(b"unpack ok\nok refs/heads/main\n"), "refs/heads/main");
+        assert_eq!(report, Ok(Report::Ok));
+    }
+
+    #[test]
+    fn a_report_whose_lines_lack_their_line_feeds_parses() {
+        let report = parse_report(
+            [&b"unpack ok"[..], b"ok refs/heads/main"],
+            "refs/heads/main",
+        );
         assert_eq!(report, Ok(Report::Ok));
     }
 

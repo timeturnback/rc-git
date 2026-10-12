@@ -341,20 +341,58 @@ fn send(
             side_band.receive(is_error, text)
         })));
     }
-    let mut payload = Vec::new();
-    let mut buf = [0_u8; 8 * 1024];
-    let read = loop {
-        if let Err(err) = link.bail_if_cancelled() {
-            break Err(err);
-        }
-        match reader.read(&mut buf) {
-            Ok(0) => break Ok(()),
-            Ok(read) => payload.extend_from_slice(buf.get(..read).unwrap_or_default()),
-            Err(source) => break Err(net(source)),
-        }
+    let reply = if update.side_band {
+        read_band1(&mut reader, link).map(Reply::Band1)
+    } else {
+        read_lines(&mut reader, link).map(Reply::Lines)
     };
     drop(reader);
-    side_band.judge(read, &payload, update.side_band, full_ref)
+    side_band.judge(reply, full_ref)
+}
+
+/// The server's `report-status`, as it arrived.
+enum Reply {
+    /// With [`report::SIDE_BAND`]: the band-1 bytes, a pkt-line stream of its own that
+    /// [`report::report_lines`] splits.
+    Band1(Vec<u8>),
+    /// Without it: one payload per pkt-line, kept apart because a line may lack its LF.
+    Lines(Vec<Vec<u8>>),
+}
+
+/// Reads the band-1 data of a side-band reply to its end; the progress handler takes
+/// bands 2 and 3 on the way.
+fn read_band1(reader: &mut impl Read, link: &Link) -> ActionResult<Vec<u8>> {
+    let mut payload = Vec::new();
+    let mut buf = [0_u8; 8 * 1024];
+    loop {
+        link.bail_if_cancelled()?;
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(payload),
+            Ok(read) => payload.extend_from_slice(buf.get(..read).unwrap_or_default()),
+            Err(source) => return Err(link.failed(Box::new(source))),
+        }
+    }
+}
+
+/// Reads a reply without a side band one pkt-line at a time, so a server that omits a
+/// line's trailing LF cannot run two report lines together.
+fn read_lines<R>(reader: &mut R, link: &Link) -> ActionResult<Vec<Vec<u8>>>
+where
+    R: gix::protocol::transport::client::blocking_io::ReadlineBufRead + ?Sized,
+{
+    let mut lines = Vec::new();
+    loop {
+        link.bail_if_cancelled()?;
+        let Some(line) = reader.readline() else {
+            return Ok(lines);
+        };
+        let line = line
+            .map_err(|source| link.failed(Box::new(source)))?
+            .map_err(|source| link.failed(Box::new(source)))?;
+        if let Some(payload) = line.as_slice() {
+            lines.push(payload.to_vec());
+        }
+    }
 }
 
 /// The server's sideband traffic during one push: band-2 messages and a band-3 fatal error.
@@ -382,15 +420,9 @@ impl SideBand {
         std::ops::ControlFlow::Continue(())
     }
 
-    /// Turns the read outcome and the report bytes into the push's result, with the
-    /// server's messages attached to every refusal or failure they can explain.
-    fn judge(
-        &self,
-        read: ActionResult<()>,
-        payload: &[u8],
-        side_band: bool,
-        full_ref: &str,
-    ) -> ActionResult<()> {
+    /// Turns the server's reply into the push's result, with the server's messages
+    /// attached to every refusal or failure they can explain.
+    fn judge(&self, reply: ActionResult<Reply>, full_ref: &str) -> ActionResult<()> {
         if let Some(fatal) = &self.fatal {
             return Err(ActionError::git(
                 OP,
@@ -398,11 +430,10 @@ impl SideBand {
                 self.with_messages(format!("the server failed the push:\n{fatal}")),
             ));
         }
-        read?;
-        let report = if side_band {
-            report::report_lines(payload).and_then(|lines| report::parse_report(lines, full_ref))
-        } else {
-            report::parse_report(payload.split(|byte| *byte == b'\n'), full_ref)
+        let report = match reply? {
+            Reply::Band1(payload) => report::report_lines(&payload)
+                .and_then(|lines| report::parse_report(lines, full_ref)),
+            Reply::Lines(lines) => report::parse_report(lines.iter().map(Vec::as_slice), full_ref),
         };
         match report {
             Ok(Report::Ok) => Ok(()),
@@ -518,5 +549,49 @@ mod tests {
         assert!(!message.contains("secret"), "{message}");
         assert!(!message.contains("user@"), "{message}");
         assert!(message.contains("https://example.com/x.git"), "{message}");
+    }
+
+    fn link() -> Link {
+        Link {
+            host: "example.com".to_owned(),
+            full_ref: "refs/heads/main".to_owned(),
+            cancel: Cancel::new(),
+        }
+    }
+
+    #[test]
+    fn a_reply_without_line_feeds_reads_one_line_per_pkt_line() {
+        let reply: &[u8] = b"000dunpack ok0016ok refs/heads/main0000";
+        let mut packets = gix_transport::packetline::blocking_io::StreamingPeekableIter::new(
+            reply,
+            &[gix_transport::packetline::PacketLineRef::Flush],
+            false,
+        );
+        let lines = read_lines(&mut packets.as_read(), &link()).expect("read");
+        assert_eq!(
+            lines,
+            vec![b"unpack ok".to_vec(), b"ok refs/heads/main".to_vec()]
+        );
+        assert_eq!(
+            report::parse_report(lines.iter().map(Vec::as_slice), "refs/heads/main"),
+            Ok(Report::Ok)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_push_stops_reading_the_reply() {
+        let reply: &[u8] = b"000dunpack ok0000";
+        let mut packets = gix_transport::packetline::blocking_io::StreamingPeekableIter::new(
+            reply,
+            &[gix_transport::packetline::PacketLineRef::Flush],
+            false,
+        );
+        let link = link();
+        link.cancel.signal();
+        let err = read_lines(&mut packets.as_read(), &link).expect_err("cancelled");
+        assert!(
+            matches!(err, ActionError::Cancelled { op: "push" }),
+            "{err}"
+        );
     }
 }
