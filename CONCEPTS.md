@@ -144,7 +144,8 @@ remembered by the app itself, per host.
 A key that is `@revoked`, or that contradicts every `known_hosts` entry for the host, is
 refused with no way to approve it inside rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
 by the name actually dialed, so a config alias shares the trust of the real host behind
-it.
+it — unless the config sets `HostKeyAlias`, which is looked up in its place, bare, as
+OpenSSH does.
 
 ## Tick
 

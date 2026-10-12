@@ -2241,6 +2241,50 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
     assert_eq!(outcome.updated_refs.len(), 1);
 }
 
+/// `HostKeyAlias` replaces the dialed address as the `known_hosts` key and is looked up
+/// bare, as OpenSSH does: the only entry is under the alias, so the fetch needs no approval.
+#[test]
+fn ssh_host_key_alias() {
+    let remoted = ssh_remoted();
+    let pinned = Fixture::empty_dir();
+    remoted.server.write_known_hosts(pinned.path());
+    let pinned = std::fs::read_to_string(pinned.path().join("known_hosts")).expect("read");
+    let key = pinned
+        .split_once(' ')
+        .map(|(_, key)| key)
+        .expect("a known_hosts line has a key");
+    remoted
+        .ssh_home
+        .write("known_hosts", format!("git.corp.example {key}").as_bytes());
+    remoted.ssh_home.write(
+        "config",
+        format!(
+            "Host gitbox\n\
+             \tHostName 127.0.0.1\n\
+             \tPort {}\n\
+             \tHostKeyAlias Git.Corp.Example\n",
+            remoted.server.port()
+        )
+        .as_bytes(),
+    );
+    remoted.clone.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        &format!("ssh://git@gitbox{}", remoted.bare_path.display()),
+    ]);
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect("a host pinned under its HostKeyAlias is known");
+    assert_eq!(outcome.updated_refs.len(), 1);
+}
+
 // --- local and URL upstreams ---
 
 /// A standard fixture checked out on `topic`, which tracks the local branch `main`

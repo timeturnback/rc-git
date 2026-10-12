@@ -12,7 +12,8 @@ pub(in crate::actions::remote) struct SshTarget {
     /// app-side host-key approvals are stored under.
     pub host: String,
     /// The host actually dialed: ssh-config `HostName`, or `host` when unset. The
-    /// `known_hosts` lookup key, exactly as OpenSSH records entries.
+    /// `known_hosts` lookup key (as `[host_name]:port` off port 22) unless
+    /// `host_key_alias` is set.
     pub host_name: String,
     /// URL port, else ssh-config `Port`, else 22.
     pub port: u16,
@@ -24,6 +25,9 @@ pub(in crate::actions::remote) struct SshTarget {
     /// ssh-config `IdentitiesOnly yes`: offer only `identities`, never an agent key
     /// that matches none of them.
     pub identities_only: bool,
+    /// ssh-config `HostKeyAlias`, lowercased as OpenSSH does: when set, the `known_hosts`
+    /// lookup key in place of `host_name` and the port, looked up bare.
+    pub host_key_alias: Option<String>,
     /// The `known_hosts` files OpenSSH consults for this host, in order: the ssh-config
     /// `UserKnownHostsFile` entries (else `known_hosts` and `known_hosts2` in the ssh
     /// directory), then the system files when the ssh directory is the default one.
@@ -58,9 +62,13 @@ pub(in crate::actions::remote) fn resolve(
         Some(dir) => dir.to_path_buf(),
         None => default_ssh_dir(op)?,
     };
-    let (config, identities_only) = match load_config(&ssh_dir, &host, op, url)? {
-        Some(settings) => (Some(settings.config), settings.identities_only),
-        None => (None, false),
+    let (config, identities_only, host_key_alias) = match load_config(&ssh_dir, &host, op, url)? {
+        Some(settings) => (
+            Some(settings.config),
+            settings.identities_only,
+            settings.host_key_alias,
+        ),
+        None => (None, false, None),
     };
     let user = url
         .user()
@@ -109,6 +117,7 @@ pub(in crate::actions::remote) fn resolve(
         user,
         identities,
         identities_only,
+        host_key_alias,
         known_hosts,
     })
 }
@@ -216,6 +225,7 @@ fn default_ssh_dir(op: &'static str) -> ActionResult<PathBuf> {
 struct HostSettings {
     config: russh_config::HostConfig,
     identities_only: bool,
+    host_key_alias: Option<String>,
 }
 
 /// Parses `<ssh_dir>/config` for `host`. `None` when the file does not exist; an
@@ -252,14 +262,21 @@ fn load_config(
     let config = parse_for_host(&contents, &host)
         .map_err(|source| parse_err(&source))?
         .host_config;
-    let identities_only = parse_for_host(&identities_only_as_user(&contents), &host)
+    let identities_only = parse_for_host(&directive_as_user(&contents, "identitiesonly"), &host)
         .map_err(|source| parse_err(&source))?
         .host_config
         .user
         .is_some_and(|value| value.eq_ignore_ascii_case("yes"));
+    let host_key_alias = parse_for_host(&directive_as_user(&contents, "hostkeyalias"), &host)
+        .map_err(|source| parse_err(&source))?
+        .host_config
+        .user
+        .map(|alias| alias.trim().to_lowercase())
+        .filter(|alias| !alias.is_empty());
     Ok(Some(HostSettings {
         config,
         identities_only,
+        host_key_alias,
     }))
 }
 
@@ -273,18 +290,18 @@ fn parse_for_host(contents: &str, host: &str) -> Result<russh_config::Config, ru
     parsed
 }
 
-/// russh-config drops `IdentitiesOnly`. This view keeps only the `Host` lines and
-/// rewrites each `IdentitiesOnly` line as `User`, so the same parser resolves it with
-/// the same block matching and first-value-wins rule as every other directive; the
-/// resulting `user` field holds the `IdentitiesOnly` value.
-fn identities_only_as_user(normalized: &str) -> String {
+/// russh-config drops `IdentitiesOnly` and `HostKeyAlias`. This view keeps only the
+/// `Host` lines and rewrites each line whose keyword is `keyword` (lowercase) as `User`,
+/// so the same parser resolves it with the same block matching and first-value-wins rule
+/// as every other directive; the resulting `user` field holds that directive's value.
+fn directive_as_user(normalized: &str, keyword: &str) -> String {
     let mut view = String::new();
     for line in normalized.lines() {
         let line = line.trim_start();
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         if key.eq_ignore_ascii_case("host") {
             view.push_str(line);
-        } else if key.eq_ignore_ascii_case("identitiesonly") {
+        } else if key.eq_ignore_ascii_case(keyword) {
             view.push_str("User ");
             view.push_str(value);
         } else {
@@ -402,6 +419,36 @@ mod tests {
         )
         .expect("resolve");
         assert!(target.identities_only);
+    }
+
+    /// `HostKeyAlias` comes from the matching block only, lowercased as OpenSSH does,
+    /// and leaves `host_name` and `port` as the address actually dialed.
+    #[test]
+    fn host_key_alias_is_read_from_the_matching_block() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host gitbox\n\
+              \tHostName localhost\n\
+              \tPort 2222\n\
+              \tHostKeyAlias Git.Corp.Example\n\
+              Host other.example.com\n\
+              \tPort 2200\n",
+        );
+        let target =
+            resolve(&url("ssh://git@gitbox/x.git"), Some(dir.path()), "fetch").expect("resolve");
+        assert_eq!(target.host_key_alias.as_deref(), Some("git.corp.example"));
+        assert_eq!(
+            (target.host_name.as_str(), target.port),
+            ("localhost", 2222)
+        );
+        let other = resolve(
+            &url("ssh://git@other.example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(other.host_key_alias, None);
     }
 
     /// The URL always wins over the config for user and port.
