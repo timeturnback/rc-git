@@ -83,7 +83,7 @@ pub(super) async fn authenticate(
         op,
     };
     let (mut agent, agent_keys) = connect_agent().await;
-    let file_keys: Vec<Option<PublicKey>> = target
+    let file_keys: Vec<Option<FileKey>> = target
         .identities
         .iter()
         .map(|path| file_public_key(path))
@@ -95,7 +95,7 @@ pub(super) async fn authenticate(
             .collect::<Vec<_>>(),
         &file_keys
             .iter()
-            .map(|key| key.as_ref().map(PublicKey::key_data))
+            .map(|file_key| file_key.as_ref().map(|file_key| file_key.key.key_data()))
             .collect::<Vec<_>>(),
         target.identities_only,
     );
@@ -113,8 +113,12 @@ pub(super) async fn authenticate(
                 let Some(path) = target.identities.get(index) else {
                     continue;
                 };
+                let public_only = file_keys
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|file_key| file_key.public_only);
                 let outcome = ladder
-                    .offer_file(path, passphrase, target.identities_configured)
+                    .offer_file(path, passphrase, target.identities_configured, public_only)
                     .await?;
                 (path.display().to_string(), outcome)
             }
@@ -234,8 +238,9 @@ impl Ladder<'_> {
         path: &Path,
         passphrase: Option<&str>,
         configured: bool,
+        public_only: bool,
     ) -> ActionResult<Outcome> {
-        let key = match load_identity(path, passphrase, configured) {
+        let key = match load_identity(path, passphrase, configured, public_only) {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
         };
@@ -253,12 +258,19 @@ impl Ladder<'_> {
 }
 
 /// Reads and decodes one identity file, or says why it cannot be offered. A missing
-/// default file is [`Outcome::Absent`]; a missing configured one is unusable.
+/// default file is [`Outcome::Absent`]; a missing configured one is unusable. A
+/// `public_only` identity (a public key named as `IdentityFile`) stands only for the
+/// agent key it matches, so reaching here means the agent does not hold it: no
+/// passphrase can open a public key.
 fn load_identity(
     path: &Path,
     passphrase: Option<&str>,
     configured: bool,
+    public_only: bool,
 ) -> Result<PrivateKey, Outcome> {
+    if public_only {
+        return Err(Outcome::Unusable(NOT_HELD.to_owned()));
+    }
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -282,6 +294,7 @@ fn load_identity(
 }
 
 const NOT_A_KEY: &str = "not a private key";
+const NOT_HELD: &str = "names a key the agent does not hold";
 
 /// What a failed key decode means for the ladder. russh reports a wrong passphrase as a
 /// decrypt failure that differs by format — `SshKey(Crypto)` for OpenSSH, `Unpad` for
@@ -372,19 +385,39 @@ async fn connect_agent() -> (Option<Agent>, Vec<AgentKey>) {
     (Some(agent), keys)
 }
 
-/// The public half of an identity file: the `.pub` beside it, else the public key an
-/// OpenSSH-format private key stores in the clear, encrypted or not. `None` when
-/// neither reads; the file is still offered, it just never matches an agent key.
-fn file_public_key(path: &Path) -> Option<PublicKey> {
+/// The public half of an identity file, and whether the file is only that half.
+struct FileKey {
+    key: PublicKey,
+    /// The file itself is a public key: `IdentityFile` names a key the agent holds.
+    public_only: bool,
+}
+
+/// The public half of an identity file, in OpenSSH's `sshkey_load_public` order: the
+/// file itself as a public key (`ssh_config(5)` lets `IdentityFile` name a `.pub` to pick
+/// an agent key), then the `.pub` beside it, then the public key an OpenSSH-format
+/// private key stores in the clear, encrypted or not. `None` when none reads; the file
+/// is still offered, it just never matches an agent key.
+fn file_public_key(path: &Path) -> Option<FileKey> {
+    if let Ok(key) = russh::keys::load_public_key(path) {
+        return Some(FileKey {
+            key,
+            public_only: true,
+        });
+    }
     let mut public_path = path.as_os_str().to_owned();
     public_path.push(".pub");
     if let Ok(key) = russh::keys::load_public_key(&public_path) {
-        return Some(key);
+        return Some(FileKey {
+            key,
+            public_only: false,
+        });
     }
     let contents = std::fs::read(path).ok()?;
-    PrivateKey::from_openssh(contents)
-        .ok()
-        .map(|key| key.public_key().clone())
+    let key = PrivateKey::from_openssh(contents).ok()?;
+    Some(FileKey {
+        key: key.public_key().clone(),
+        public_only: false,
+    })
 }
 
 /// RSA keys sign with the negotiated hash; every other algorithm ignores it.
@@ -504,8 +537,9 @@ mod tests {
         let dir = rc_git_testkit::Fixture::empty_dir();
         let public = keypair(1).public_key().to_openssh().expect("encode");
         dir.write("id_work.pub", public.as_bytes());
-        let key = file_public_key(&dir.path().join("id_work")).expect("public key");
-        assert_eq!(key.key_data(), keypair(1).public_key().key_data());
+        let file_key = file_public_key(&dir.path().join("id_work")).expect("public key");
+        assert_eq!(file_key.key.key_data(), keypair(1).public_key().key_data());
+        assert!(!file_key.public_only);
     }
 
     #[test]
@@ -515,8 +549,65 @@ mod tests {
             .to_openssh(russh::keys::ssh_key::LineEnding::LF)
             .expect("encode");
         dir.write("id_work", private.as_bytes());
-        let key = file_public_key(&dir.path().join("id_work")).expect("public key");
-        assert_eq!(key.key_data(), keypair(2).public_key().key_data());
+        let file_key = file_public_key(&dir.path().join("id_work")).expect("public key");
+        assert_eq!(file_key.key.key_data(), keypair(2).public_key().key_data());
+        assert!(!file_key.public_only);
+    }
+
+    /// `ssh_config(5)`: `IdentityFile` may name a public key to pick the agent key it
+    /// matches. The file must read as that key, not as `<file>.pub.pub` or a private key.
+    #[test]
+    fn a_pub_identity_file_is_its_own_public_key() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let public = keypair(1).public_key().to_openssh().expect("encode");
+        dir.write("id_work.pub", public.as_bytes());
+        let file_key = file_public_key(&dir.path().join("id_work.pub")).expect("public key");
+        assert_eq!(file_key.key.key_data(), keypair(1).public_key().key_data());
+        assert!(file_key.public_only);
+    }
+
+    fn pub_identity_order(agent: &[PrivateKey], identities_only: bool) -> Vec<Offer> {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let public = keypair(1).public_key().to_openssh().expect("encode");
+        dir.write("id_work.pub", public.as_bytes());
+        let file_key = file_public_key(&dir.path().join("id_work.pub")).expect("public key");
+        let agent: Vec<_> = agent
+            .iter()
+            .map(|key| key.public_key().key_data())
+            .collect();
+        offer_order(&agent, &[Some(file_key.key.key_data())], identities_only)
+    }
+
+    #[test]
+    fn a_pub_identity_file_picks_its_agent_key_first() {
+        let agent = [keypair(2), keypair(1)];
+        assert_eq!(
+            pub_identity_order(&agent, false),
+            [Offer::Agent(1), Offer::Agent(0)]
+        );
+    }
+
+    #[test]
+    fn a_pub_identity_file_under_identities_only_offers_only_its_agent_key() {
+        let agent = [keypair(2), keypair(1)];
+        assert_eq!(pub_identity_order(&agent, true), [Offer::Agent(1)]);
+    }
+
+    /// The agent does not hold the key a `.pub` identity names: no passphrase can open a
+    /// public key, so it must not read as locked.
+    #[test]
+    fn a_pub_identity_the_agent_does_not_hold_is_unusable_not_locked() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let public = keypair(1).public_key().to_openssh().expect("encode");
+        dir.write("id_work.pub", public.as_bytes());
+        let path = dir.path().join("id_work.pub");
+        for passphrase in [None, Some("pass")] {
+            assert_eq!(
+                load_identity(&path, passphrase, true, true).err(),
+                Some(Outcome::Unusable(NOT_HELD.to_owned())),
+                "{passphrase:?}"
+            );
+        }
     }
 
     fn tried(key: &str, outcome: Outcome) -> Tried {
@@ -531,11 +622,11 @@ mod tests {
         let dir = rc_git_testkit::Fixture::empty_dir();
         let path = dir.path().join("id_work");
         assert_eq!(
-            load_identity(&path, None, false).err(),
+            load_identity(&path, None, false, false).err(),
             Some(Outcome::Absent)
         );
         assert_eq!(
-            load_identity(&path, None, true).err(),
+            load_identity(&path, None, true, false).err(),
             Some(Outcome::Unusable("no such file".to_owned()))
         );
     }
@@ -550,7 +641,7 @@ mod tests {
         dir.write("id_garbage", b"not a key");
         dir.write("id_binary", &[0xff, 0xfe, 0x00]);
         for name in ["id_work.pub", "id_garbage", "id_binary"] {
-            let outcome = load_identity(&dir.path().join(name), Some("pass"), true).err();
+            let outcome = load_identity(&dir.path().join(name), Some("pass"), true, false).err();
             assert_eq!(
                 outcome,
                 Some(Outcome::Unusable(NOT_A_KEY.to_owned())),
