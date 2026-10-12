@@ -108,11 +108,11 @@ pub fn push_upstream(
         full_ref,
         cancel: cancel.clone(),
     };
-    let (transport, refs) = {
+    let (transport, advertised) = {
         let (link, creds) = (link.clone(), auth.creds.cloned());
         run_detached(cancel, OP, move || advertise(transport, &link, creds))?
     };
-    let (remote_old, haves) = remote_tips(&repo, &refs, &link.full_ref);
+    let (remote_old, haves) = remote_tips(&repo, &advertised.refs, &link.full_ref);
     let old_id = remote_old.map(|id| core_oid(id, OP)).transpose()?;
     let new_id = core_oid(tip, OP)?;
     if remote_old == Some(tip) {
@@ -139,7 +139,12 @@ pub fn push_upstream(
     {
         let (link, bytes) = (link.clone(), pack.bytes);
         run_detached(cancel, OP, move || {
-            send(transport, &link, remote_old, tip, &bytes)
+            let update = Update {
+                old: remote_old,
+                new: tip,
+                side_band: advertised.side_band,
+            };
+            send(transport, &link, update, &bytes)
         })?;
     }
     Ok(PushOutcome {
@@ -207,13 +212,20 @@ impl Link {
 /// pack instead of after the whole upload.
 const PACK_CHUNK: usize = 64 * 1024;
 
+/// What `git-receive-pack` advertised before the push.
+struct Advertised {
+    refs: Vec<gix::protocol::handshake::Ref>,
+    /// Whether it offered [`report::SIDE_BAND`], so the push may request it.
+    side_band: bool,
+}
+
 /// Handshakes with `git-receive-pack` on `transport` (the HTTP `GET /info/refs`) and
-/// returns the transport with the refs the server advertised.
+/// returns the transport with what the server advertised.
 fn advertise(
     mut transport: BoxedTransport,
     link: &Link,
     creds: Option<Credentials>,
-) -> ActionResult<(BoxedTransport, Vec<gix::protocol::handshake::Ref>)> {
+) -> ActionResult<(BoxedTransport, Advertised)> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
@@ -226,7 +238,14 @@ fn advertise(
         &mut gix::progress::Discard,
     )
     .map_err(|source| link.failed(Box::new(source)))?;
-    Ok((transport, handshake.refs.unwrap_or_default()))
+    let side_band = handshake.capabilities.contains(report::SIDE_BAND);
+    Ok((
+        transport,
+        Advertised {
+            refs: handshake.refs.unwrap_or_default(),
+            side_band,
+        },
+    ))
 }
 
 /// The advertised tip of `full_ref` plus every advertised tip present locally (the
@@ -266,6 +285,16 @@ fn remote_tips(
     (remote_old, haves)
 }
 
+/// The one ref update a push asks for, and how the server should answer it.
+#[derive(Clone, Copy)]
+struct Update {
+    old: Option<ObjectId>,
+    new: ObjectId,
+    /// Request [`report::SIDE_BAND`]: keepalives while the server works, and its hook and
+    /// error messages on band 2.
+    side_band: bool,
+}
+
 /// Sends the command line and the pack over one `git-receive-pack` request (the HTTP
 /// `POST`, on the transport the handshake prepared) and reads the server's
 /// `report-status`. The pack goes out in [`PACK_CHUNK`] pieces and the report comes in
@@ -273,12 +302,14 @@ fn remote_tips(
 fn send(
     mut transport: BoxedTransport,
     link: &Link,
-    remote_old: Option<ObjectId>,
-    tip: ObjectId,
+    update: Update,
     pack: &[u8],
 ) -> ActionResult<()> {
+    use gix::protocol::transport::client::blocking_io::ExtendedBufRead;
+
     let full_ref = link.full_ref.as_str();
     let net = |source: std::io::Error| link.failed(Box::new(source));
+    let mut side_band = SideBand::default();
     let mut writer = transport
         .request(
             gix::protocol::transport::client::WriteMode::OneLfTerminatedLinePerWriteCall,
@@ -287,7 +318,12 @@ fn send(
         )
         .map_err(|source| link.failed(Box::new(source)))?;
     writer
-        .write_all(&report::command_line(remote_old, tip, full_ref))
+        .write_all(&report::command_line(
+            update.old,
+            update.new,
+            full_ref,
+            update.side_band,
+        ))
         .map_err(net)?;
     writer
         .write_message(gix::protocol::transport::client::MessageKind::Flush)
@@ -300,37 +336,99 @@ fn send(
     raw.flush().map_err(net)?;
     drop(raw);
 
+    if update.side_band {
+        reader.set_progress_handler(Some(Box::new(|is_error, text| {
+            side_band.receive(is_error, text)
+        })));
+    }
     let mut payload = Vec::new();
     let mut buf = [0_u8; 8 * 1024];
-    loop {
-        link.bail_if_cancelled()?;
-        let read = reader.read(&mut buf).map_err(net)?;
-        if read == 0 {
-            break;
+    let read = loop {
+        if let Err(err) = link.bail_if_cancelled() {
+            break Err(err);
         }
-        payload.extend_from_slice(buf.get(..read).unwrap_or_default());
+        match reader.read(&mut buf) {
+            Ok(0) => break Ok(()),
+            Ok(read) => payload.extend_from_slice(buf.get(..read).unwrap_or_default()),
+            Err(source) => break Err(net(source)),
+        }
+    };
+    drop(reader);
+    side_band.judge(read, &payload, update.side_band, full_ref)
+}
+
+/// The server's sideband traffic during one push: band-2 messages and a band-3 fatal error.
+#[derive(Default)]
+struct SideBand {
+    messages: report::ServerMessages,
+    fatal: Option<String>,
+}
+
+impl SideBand {
+    /// The progress handler: band 2 (`is_error == false`) is kept as messages, band 3 ends
+    /// the read with the server's fatal error.
+    fn receive(&mut self, is_error: bool, text: &[u8]) -> std::ops::ControlFlow<()> {
+        if is_error {
+            let mut fatal = report::ServerMessages::default();
+            fatal.push(text);
+            self.fatal = Some(
+                fatal
+                    .text()
+                    .unwrap_or_else(|| "remote: (no message)".to_owned()),
+            );
+            return std::ops::ControlFlow::Break(());
+        }
+        self.messages.push(text);
+        std::ops::ControlFlow::Continue(())
     }
-    match report::parse_report(&payload, full_ref) {
-        Ok(Report::Ok) => Ok(()),
-        Ok(Report::Refused {
-            reason,
-            non_fast_forward,
-        }) => {
-            if non_fast_forward {
-                return Err(ActionError::PushRejected {
-                    branch: full_ref
-                        .strip_prefix("refs/heads/")
-                        .unwrap_or(full_ref)
-                        .to_owned(),
-                });
-            }
-            Err(ActionError::git(
+
+    /// Turns the read outcome and the report bytes into the push's result, with the
+    /// server's messages attached to every refusal or failure they can explain.
+    fn judge(
+        &self,
+        read: ActionResult<()>,
+        payload: &[u8],
+        side_band: bool,
+        full_ref: &str,
+    ) -> ActionResult<()> {
+        if let Some(fatal) = &self.fatal {
+            return Err(ActionError::git(
                 OP,
                 full_ref,
-                format!("the server refused the push: {reason}"),
-            ))
+                self.with_messages(format!("the server failed the push:\n{fatal}")),
+            ));
         }
-        Err(message) => Err(ActionError::git(OP, full_ref, message)),
+        read?;
+        let report = if side_band {
+            report::report_lines(payload).and_then(|lines| report::parse_report(lines, full_ref))
+        } else {
+            report::parse_report(payload.split(|byte| *byte == b'\n'), full_ref)
+        };
+        match report {
+            Ok(Report::Ok) => Ok(()),
+            Ok(Report::Refused {
+                non_fast_forward: true,
+                ..
+            }) => Err(ActionError::PushRejected {
+                branch: full_ref
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(full_ref)
+                    .to_owned(),
+            }),
+            Ok(Report::Refused { reason, .. }) => Err(ActionError::git(
+                OP,
+                full_ref,
+                self.with_messages(format!("the server refused the push: {reason}")),
+            )),
+            Err(message) => Err(ActionError::git(OP, full_ref, self.with_messages(message))),
+        }
+    }
+
+    fn with_messages(&self, message: String) -> String {
+        match self.messages.text() {
+            Some(text) => format!("{message}\n{text}"),
+            None => message,
+        }
     }
 }
 

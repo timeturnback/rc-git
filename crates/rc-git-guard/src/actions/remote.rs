@@ -28,8 +28,9 @@ pub use push::{PushOutcome, push_upstream};
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a transfer may move no bytes before it counts as dead. A git server sends
-/// keepalives every few seconds while it thinks, so this much total silence means the
-/// connection is gone rather than the server being slow on a large repository.
+/// keepalives every few seconds while it thinks (`upload-pack` always; `receive-pack` only
+/// over `side-band-64k`, which push requests for this), so this much total silence means
+/// the connection is gone rather than the server being slow on a large repository.
 pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often a blocked read or write wakes to look at the cancel flag. It bounds how

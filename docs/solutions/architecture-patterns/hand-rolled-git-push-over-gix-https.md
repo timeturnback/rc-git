@@ -58,11 +58,17 @@ The working pipeline (`crates/rc-git-guard/src/actions/remote/push.rs:48`,
    `bytes::FromEntriesIter` into a `Vec<u8>`. No thin packs (`allow_thin_pack: false`) —
    always valid, slightly larger.
 4. **Command line + response** (`report.rs`): one pkt-line
-   `"<old> <new> refs/heads/<b>\0report-status agent=…"` written through the
-   `RequestWriter` in text mode, `write_message(MessageKind::Flush)`, then
-   `into_parts()` for the raw (unframed) pack bytes. Do not request `side-band-64k`:
-   without it the reply is plain pkt-line payloads (`unpack ok`, `ok|ng <ref> [reason]`),
-   which a ~60-line permissive parser handles for both report-status v1 and v2.
+   `"<old> <new> refs/heads/<b>\0report-status side-band-64k agent=…"` written through
+   the `RequestWriter` in text mode, `write_message(MessageKind::Flush)`, then
+   `into_parts()` for the raw (unframed) pack bytes. Request `side-band-64k` whenever the
+   server advertises it: `receive-pack` sends its `receive.keepAlive` packets and relays
+   hook stderr only over the sideband, so without it the server is silent while hooks and
+   connectivity checks run (past `IDLE_TIMEOUT` the push is killed though the ref may
+   still move) and a hook's reason is lost. Set `reader.set_progress_handler` before
+   reading: gix then skips the empty band-1 keepalives, hands band 2 (messages, kept as a
+   bounded, escaped tail) and band 3 (fatal) to the handler, and returns band-1 data — the
+   report's pkt-lines framed a second time, which `report_lines` decodes before the
+   permissive `unpack ok` / `ok|ng <ref> [reason]` parser reads them.
 
 Traps that each cost a debug cycle:
 

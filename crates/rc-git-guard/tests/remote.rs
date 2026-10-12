@@ -1405,7 +1405,7 @@ fn push_surfaces_a_hook_rejection() {
     )
     .expect_err("hook rejects");
     let message = err.to_string();
-    assert!(message.contains("refused"), "{message}");
+    assert!(message.contains("by policy"), "{message}");
     assert_ne!(
         bare_rev(&remoted.bare, "main"),
         remoted.clone.rev_parse("HEAD")
