@@ -5,7 +5,7 @@ use gix::ObjectId;
 
 use crate::actions::{ActionError, ActionResult, git_err};
 
-use super::Cancel;
+use super::{Cancel, bail_if_cancelled};
 
 const OP: &str = "push";
 
@@ -23,7 +23,7 @@ pub(super) struct BuiltPack {
 ///
 /// # Errors
 /// [`ActionError::Git`] when the walk or the pack writer fails, [`ActionError::Cancelled`]
-/// when `cancel` was set during counting.
+/// when `cancel` was set during the commit walk, counting, or writing.
 pub(super) fn build_pack(
     repo: &gix::Repository,
     tip: ObjectId,
@@ -37,6 +37,7 @@ pub(super) fn build_pack(
         .map_err(|source| ActionError::git(OP, tip.to_string(), source))?;
     let mut commits: Vec<ObjectId> = Vec::new();
     for info in walk {
+        bail_if_cancelled(cancel, OP)?;
         let info = info.map_err(|source| ActionError::git(OP, tip.to_string(), source))?;
         commits.push(info.id);
     }
@@ -71,7 +72,13 @@ pub(super) fn build_pack(
             ..Default::default()
         },
     )
-    .map_err(git_err(OP, "object enumeration"))?;
+    .map_err(|source| {
+        // gix-pack ends the count with `Error::Interrupted` once the flag is set.
+        if cancel.is_cancelled() {
+            return ActionError::Cancelled { op: OP };
+        }
+        ActionError::git(OP, "object enumeration", source)
+    })?;
 
     let entry_count = u32::try_from(counts.len())
         .map_err(|_| ActionError::git(OP, "pack", "more than u32::MAX objects in one push"))?;
@@ -93,6 +100,7 @@ pub(super) fn build_pack(
         repo.object_hash(),
     );
     for written in writer {
+        bail_if_cancelled(cancel, OP)?;
         written.map_err(git_err(OP, "pack"))?;
     }
     Ok(BuiltPack {
@@ -122,3 +130,23 @@ fn empty_pack(hash: gix::hash::Kind) -> ActionResult<Vec<u8>> {
 #[derive(Debug, thiserror::Error)]
 #[error("unreachable")]
 struct EmptyError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_pack_returns_cancelled_when_the_flag_is_set() {
+        let fixture = rc_git_testkit::Fixture::standard();
+        let repo = gix::open(fixture.path()).expect("open fixture");
+        let tip = ObjectId::from_hex(fixture.rev_parse("HEAD").as_bytes()).expect("tip oid");
+        let cancel = Cancel::new();
+        cancel.signal();
+        let result = build_pack(&repo, tip, &[], &cancel);
+        assert!(
+            matches!(result, Err(ActionError::Cancelled { op: "push" })),
+            "expected Cancelled, got {:?}",
+            result.err()
+        );
+    }
+}
