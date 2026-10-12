@@ -214,237 +214,6 @@ mod tests {
     }
 
     #[test]
-    fn safe_actions_are_allowed_outright() {
-        let policy = Policy::default();
-        assert_eq!(policy.evaluate(&Action::Fetch), Decision::Allow);
-        assert_eq!(
-            policy.evaluate(&Action::CreateLocalBranch {
-                name: "main".into()
-            }),
-            Decision::Allow,
-            "creation never overwrites, so even a protected name is safe"
-        );
-        assert_eq!(
-            policy.evaluate(&Action::CreateTag { name: "v9".into() }),
-            Decision::Allow
-        );
-        assert_eq!(
-            policy.evaluate(&Action::Checkout {
-                target: "main".into()
-            }),
-            Decision::Allow
-        );
-        assert_eq!(
-            policy.evaluate(&Action::PullFastForward {
-                branch: "main".into()
-            }),
-            Decision::Allow,
-            "a fast-forward loses nothing; the write path refuses dirty files itself"
-        );
-        assert_eq!(
-            policy.evaluate(&Action::Push {
-                branch: "main".into(),
-                force: false
-            }),
-            Decision::Allow
-        );
-        assert_eq!(
-            policy.evaluate(&Action::DiscardWorkingChanges { files: 0 }),
-            Decision::Allow
-        );
-        assert_eq!(
-            policy.evaluate(&Action::Commit { files: 3 }),
-            Decision::Allow,
-            "a commit adds objects and advances the checked-out branch; it loses nothing"
-        );
-        assert_eq!(
-            policy.evaluate(&Action::StashApply),
-            Decision::Allow,
-            "the write path refuses dirty files itself, so apply overwrites nothing"
-        );
-    }
-
-    #[test]
-    fn stash_actions_scale_with_what_is_lost() {
-        let policy = Policy::default();
-        let push = challenge(policy.evaluate(&Action::StashPush { files: 2 }));
-        assert_eq!(
-            (push.risk(), push.typed_phrase(), push.backup_ref()),
-            (Risk::Recoverable, None, false),
-            "the stash commit is the record; there is nothing else to back up"
-        );
-        assert!(push.verify("").is_some(), "no phrase means a plain confirm");
-
-        let pop = challenge(policy.evaluate(&Action::StashPop {
-            name: "stash@{0} \"On main: wip\"".into(),
-        }));
-        assert_eq!(
-            (pop.risk(), pop.typed_phrase(), pop.backup_ref()),
-            (Risk::Recoverable, None, true)
-        );
-        assert!(
-            pop.summary().contains("stash@{0} \"On main: wip\""),
-            "{}",
-            pop.summary()
-        );
-
-        let drop = challenge(policy.evaluate(&Action::StashDrop {
-            name: "stash@{1} \"On main: wip\"".into(),
-        }));
-        assert_eq!(
-            (drop.risk(), drop.typed_phrase(), drop.backup_ref()),
-            (Risk::Destructive, Some("drop"), true)
-        );
-        assert!(
-            drop.summary().contains("stash@{1} \"On main: wip\""),
-            "{}",
-            drop.summary()
-        );
-        assert!(drop.verify("drop").is_some());
-        assert!(drop.verify("Drop").is_none());
-    }
-
-    #[test]
-    fn force_push_needs_the_branch_name_or_is_denied() {
-        let policy = Policy::default();
-        let c = challenge(policy.evaluate(&Action::Push {
-            branch: "topic".into(),
-            force: true,
-        }));
-        assert_eq!(c.risk(), Risk::Destructive);
-        assert_eq!(c.typed_phrase(), Some("topic"));
-        assert!(c.verify("topic").is_some());
-        assert!(c.verify("  topic\n").is_some());
-        assert!(c.verify("Topic").is_none());
-        assert!(c.verify("").is_none());
-
-        let denied = policy.evaluate(&Action::Push {
-            branch: "main".into(),
-            force: true,
-        });
-        assert!(matches!(denied, Decision::Deny { ref reason } if reason.contains("'main'")));
-    }
-
-    #[test]
-    fn branch_deletion_scales_with_what_is_lost() {
-        let policy = Policy::default();
-        let merged = challenge(policy.evaluate(&Action::DeleteLocalBranch {
-            name: "topic".into(),
-            merged: true,
-        }));
-        assert_eq!(
-            (merged.risk(), merged.typed_phrase(), merged.backup_ref()),
-            (Risk::Recoverable, None, false)
-        );
-        assert!(
-            merged.verify("anything").is_some(),
-            "no phrase means a plain confirm"
-        );
-
-        let unmerged = challenge(policy.evaluate(&Action::DeleteLocalBranch {
-            name: "topic".into(),
-            merged: false,
-        }));
-        assert_eq!(unmerged.risk(), Risk::Destructive);
-        assert_eq!(unmerged.typed_phrase(), Some("topic"));
-        assert!(unmerged.backup_ref());
-
-        for name in ["main", "MAIN", "Release/2.0"] {
-            assert!(
-                matches!(
-                    policy.evaluate(&Action::DeleteLocalBranch {
-                        name: name.into(),
-                        merged: true
-                    }),
-                    Decision::Deny { .. }
-                ),
-                "{name}"
-            );
-        }
-        assert!(matches!(
-            policy.evaluate(&Action::DeleteRemoteBranch {
-                name: "release/2.0".into()
-            }),
-            Decision::Deny { .. }
-        ));
-        let remote = challenge(policy.evaluate(&Action::DeleteRemoteBranch {
-            name: "topic".into(),
-        }));
-        assert_eq!(remote.typed_phrase(), Some("topic"));
-        let tag = challenge(policy.evaluate(&Action::DeleteTag {
-            name: "v1.0".into(),
-        }));
-        assert_eq!(
-            (tag.risk(), tag.typed_phrase()),
-            (Risk::Destructive, Some("v1.0"))
-        );
-    }
-
-    #[test]
-    fn history_rewrites_depend_on_publication() {
-        let policy = Policy::default();
-        let local = challenge(policy.evaluate(&Action::RewriteHistory {
-            branch: "topic".into(),
-            published: false,
-        }));
-        assert_eq!(
-            (local.risk(), local.typed_phrase(), local.backup_ref()),
-            (Risk::Recoverable, None, true)
-        );
-
-        let published = challenge(policy.evaluate(&Action::RewriteHistory {
-            branch: "topic".into(),
-            published: true,
-        }));
-        assert_eq!(published.risk(), Risk::Destructive);
-        assert_eq!(published.typed_phrase(), Some("topic"));
-
-        assert!(matches!(
-            policy.evaluate(&Action::RewriteHistory {
-                branch: "main".into(),
-                published: true
-            }),
-            Decision::Deny { .. }
-        ));
-        assert!(matches!(
-            policy.evaluate(&Action::RewriteHistory {
-                branch: "main".into(),
-                published: false
-            }),
-            Decision::Confirm(_)
-        ));
-    }
-
-    #[test]
-    fn reset_discard_and_prune_always_challenge() {
-        let policy = Policy::default();
-        let reset = challenge(policy.evaluate(&Action::ResetHard {
-            branch: "main".into(),
-            commits_dropped: 2,
-        }));
-        assert_eq!(reset.typed_phrase(), Some("main"));
-        assert!(reset.backup_ref());
-        assert!(reset.summary().contains("2 commit(s)"));
-
-        let discard = challenge(policy.evaluate(&Action::DiscardWorkingChanges { files: 3 }));
-        assert_eq!(
-            (discard.risk(), discard.typed_phrase()),
-            (Risk::Destructive, None),
-            "discard is destructive, but a plain confirm answers it"
-        );
-        assert!(
-            !discard.backup_ref(),
-            "uncommitted changes have nothing to back up into a ref"
-        );
-
-        let prune = challenge(policy.evaluate(&Action::Prune));
-        assert_eq!(
-            (prune.risk(), prune.typed_phrase()),
-            (Risk::Destructive, Some("prune"))
-        );
-    }
-
-    #[test]
     fn risk_orders_from_safe_to_destructive() {
         assert!(Risk::Safe < Risk::Recoverable);
         assert!(Risk::Recoverable < Risk::Destructive);
@@ -452,8 +221,91 @@ mod tests {
         assert_eq!(Action::Prune.risk(), Risk::Destructive);
     }
 
-    fn one_of_each_action() -> Vec<Action> {
-        let name = || "topic".to_owned();
+    /// What `docs/safety.md`'s table says one action gets.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Expected {
+        Allow,
+        Deny,
+        Confirm {
+            risk: Risk,
+            phrase: Option<String>,
+            backup: bool,
+        },
+    }
+
+    impl Expected {
+        fn confirm(risk: Risk, phrase: Option<&str>, backup: bool) -> Self {
+            Expected::Confirm {
+                risk,
+                phrase: phrase.map(str::to_owned),
+                backup,
+            }
+        }
+
+        fn of(decision: Decision) -> Self {
+            match decision {
+                Decision::Allow => Expected::Allow,
+                Decision::Deny { .. } => Expected::Deny,
+                Decision::Confirm(c) => Expected::Confirm {
+                    risk: c.risk(),
+                    phrase: c.typed_phrase().map(str::to_owned),
+                    backup: c.backup_ref(),
+                },
+            }
+        }
+    }
+
+    /// The safety table, one arm per row. The match has no wildcard, so a new `Action`
+    /// variant does not compile until it has a row here.
+    fn safety_table_row(action: &Action, protected: bool) -> Expected {
+        let unless_protected = |row: Expected| if protected { Expected::Deny } else { row };
+        match action {
+            Action::Fetch
+            | Action::CreateLocalBranch { .. }
+            | Action::CreateTag { .. }
+            | Action::Checkout { .. }
+            | Action::PullFastForward { .. }
+            | Action::Push { force: false, .. }
+            | Action::DiscardWorkingChanges { files: 0 }
+            | Action::Commit { .. }
+            | Action::StashApply => Expected::Allow,
+            Action::Push {
+                branch,
+                force: true,
+            } => unless_protected(Expected::confirm(Risk::Destructive, Some(branch), false)),
+            Action::DeleteLocalBranch { merged: true, .. } => {
+                unless_protected(Expected::confirm(Risk::Recoverable, None, false))
+            }
+            Action::DeleteLocalBranch {
+                name,
+                merged: false,
+            }
+            | Action::DeleteRemoteBranch { name } => {
+                unless_protected(Expected::confirm(Risk::Destructive, Some(name), true))
+            }
+            Action::DeleteTag { name } => Expected::confirm(Risk::Destructive, Some(name), true),
+            Action::ResetHard { branch, .. } => {
+                Expected::confirm(Risk::Destructive, Some(branch), true)
+            }
+            Action::RewriteHistory {
+                published: false, ..
+            }
+            | Action::StashPop { .. } => Expected::confirm(Risk::Recoverable, None, true),
+            Action::RewriteHistory {
+                branch,
+                published: true,
+            } => unless_protected(Expected::confirm(Risk::Destructive, Some(branch), true)),
+            Action::DiscardWorkingChanges { .. } => {
+                Expected::confirm(Risk::Destructive, None, false)
+            }
+            Action::Prune => Expected::confirm(Risk::Destructive, Some("prune"), false),
+            Action::StashPush { .. } => Expected::confirm(Risk::Recoverable, None, false),
+            Action::StashDrop { .. } => Expected::confirm(Risk::Destructive, Some("drop"), true),
+        }
+    }
+
+    fn one_of_each_action(name: &str) -> Vec<Action> {
+        let name = || name.to_owned();
         let stash = || "stash@{0} \"On topic: wip\"".to_owned();
         vec![
             Action::Fetch,
@@ -503,9 +355,30 @@ mod tests {
     }
 
     #[test]
+    fn every_action_gets_its_safety_table_row() {
+        let policy = Policy::default();
+        let names = [
+            ("topic", false),
+            ("feature/main", false),
+            ("main", true),
+            ("MAIN", true),
+            ("release/2.0", true),
+        ];
+        for (name, protected) in names {
+            for action in one_of_each_action(name) {
+                assert_eq!(
+                    Expected::of(policy.evaluate(&action)),
+                    safety_table_row(&action, protected),
+                    "{action:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn allow_is_exactly_the_safe_risk_and_a_challenge_carries_the_action_risk() {
         let policy = Policy::default();
-        for action in one_of_each_action() {
+        for action in one_of_each_action("topic") {
             let risk = action.risk();
             match policy.evaluate(&action) {
                 Decision::Allow => assert_eq!(risk, Risk::Safe, "{action:?} is allowed"),
@@ -518,6 +391,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_typed_phrase_matches_exactly_after_trimming() {
+        let policy = Policy::default();
+        let c = challenge(policy.evaluate(&Action::Push {
+            branch: "topic".into(),
+            force: true,
+        }));
+        assert!(c.verify("topic").is_some());
+        assert!(c.verify("  topic\n").is_some());
+        assert!(c.verify("Topic").is_none());
+        assert!(c.verify("").is_none());
+
+        let drop = challenge(policy.evaluate(&Action::StashDrop {
+            name: "stash@{1} \"On main: wip\"".into(),
+        }));
+        assert!(drop.verify("drop").is_some());
+        assert!(drop.verify("Drop").is_none());
+
+        let merged = challenge(policy.evaluate(&Action::DeleteLocalBranch {
+            name: "topic".into(),
+            merged: true,
+        }));
+        assert!(
+            merged.verify("anything").is_some(),
+            "no phrase means a plain confirm"
+        );
+    }
+
+    #[test]
+    fn a_challenge_summary_names_what_is_lost() {
+        let policy = Policy::default();
+        let pop = challenge(policy.evaluate(&Action::StashPop {
+            name: "stash@{0} \"On main: wip\"".into(),
+        }));
+        assert!(
+            pop.summary().contains("stash@{0} \"On main: wip\""),
+            "{}",
+            pop.summary()
+        );
+        let drop = challenge(policy.evaluate(&Action::StashDrop {
+            name: "stash@{1} \"On main: wip\"".into(),
+        }));
+        assert!(
+            drop.summary().contains("stash@{1} \"On main: wip\""),
+            "{}",
+            drop.summary()
+        );
+        let reset = challenge(policy.evaluate(&Action::ResetHard {
+            branch: "main".into(),
+            commits_dropped: 2,
+        }));
+        assert!(
+            reset.summary().contains("2 commit(s)"),
+            "{}",
+            reset.summary()
+        );
     }
 
     #[test]
