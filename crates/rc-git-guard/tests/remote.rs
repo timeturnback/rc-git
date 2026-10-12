@@ -1023,6 +1023,57 @@ fn ssh_push_uploads_commits_and_updates_the_tracking_ref() {
     assert_eq!((status.ahead, status.behind), (0, 0));
 }
 
+/// A cancel raised while the push waits on the server's report ends it as cancelled.
+/// The server's `pre-receive` hook marks that the pack arrived and then holds the
+/// report back, so the cancel lands inside the client's report read every time. Run on
+/// its own thread so a cancel that never lands fails here instead of hanging the suite.
+#[test]
+fn ssh_push_cancelled_mid_transfer_ends_as_cancelled() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    let marker = remoted.bare.path().join("pack-received");
+    let hook = format!("#!/bin/sh\n: > '{}'\nsleep 5\n", marker.display());
+    remoted
+        .bare
+        .write("remote.git/hooks/pre-receive", hook.as_bytes());
+    remoted.bare.set_mode("remote.git/hooks/pre-receive", 0o755);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let cancel = Cancel::new();
+    let signal = cancel.clone();
+    let repo = remoted.clone.path().to_path_buf();
+    let ssh_dir = remoted.ssh_home.path().to_path_buf();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let auth = RemoteAuth {
+            ssh_dir: Some(&ssh_dir),
+            ..RemoteAuth::default()
+        };
+        drop(done.send(push_upstream(&repo, &Policy::default(), auth, &cancel)));
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never ran its pre-receive hook"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    signal.signal();
+
+    let err = finished
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the push ends within 2 s of the cancel")
+        .expect_err("cancelled");
+    assert!(
+        matches!(err, ActionError::Cancelled { op: "push" }),
+        "{err}"
+    );
+}
+
 #[test]
 fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
     // No known_hosts entry is written, so the host is unknown.

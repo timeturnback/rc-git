@@ -65,9 +65,10 @@ impl Watch {
     /// Polls `operation` on the runtime until it finishes, waking every
     /// [`CANCEL_POLL`] to look at the cancel flag.
     ///
-    /// Returns [`io::ErrorKind::Interrupted`] once the flag is set, and
+    /// Returns an [`io::ErrorKind::Other`] error once the flag is set, and
     /// [`io::ErrorKind::TimedOut`] once the peer has been silent for the idle
-    /// budget. The clock starts at each call, so it measures the gap between
+    /// budget. Never [`io::ErrorKind::Interrupted`]: std's `read_exact`, `write_all`
+    /// and `read_to_end` retry that kind, so a cancel would spin forever. The clock starts at each call, so it measures the gap between
     /// bytes rather than the length of the transfer: a slow link is never punished,
     /// only a dead one.
     ///
@@ -82,10 +83,7 @@ impl Watch {
         let mut operation = pin!(operation);
         loop {
             if self.cancel.load(Ordering::SeqCst) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    format!("{}: cancelled", self.op),
-                ));
+                return Err(io::Error::other(format!("{}: cancelled", self.op)));
             }
             // The timer is built inside the async block on purpose: constructing a
             // `Sleep` needs the runtime context, which `block_on` only enters once it
@@ -271,8 +269,64 @@ mod tests {
         );
         raiser.join().expect("raiser");
         let error = blocked.expect_err("cancelled");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(
+            !matches!(error.kind(), io::ErrorKind::Interrupted),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("cancelled"), "{error}");
+    }
+
+    /// A reader and writer that block forever unless the watch ends them, as the ssh
+    /// halves do on a silent peer.
+    struct Blocked {
+        runtime: Runtime,
+        watch: Watch,
+    }
+
+    impl Read for Blocked {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            self.watch.drive(
+                self.runtime.handle(),
+                std::future::pending::<io::Result<usize>>(),
+            )
+        }
+    }
+
+    impl Write for Blocked {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            self.watch.drive(
+                self.runtime.handle(),
+                std::future::pending::<io::Result<usize>>(),
+            )
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cancel_ends_the_std_io_helpers_that_retry_interrupted_errors() {
+        let cancel = Cancel::new();
+        let mut blocked = Blocked {
+            runtime: build_runtime("test").expect("runtime"),
+            watch: watch(&cancel, IDLE_TIMEOUT),
+        };
+        cancel.signal();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let read = blocked.read_exact(&mut [0_u8; 4]);
+            let read_to_end = blocked.read_to_end(&mut Vec::new());
+            let written = blocked.write_all(b"pack");
+            drop(done.send((read, read_to_end, written)));
+        });
+        let (read, read_to_end, written) = finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("every helper returns within a second of the cancel");
+        for result in [read, read_to_end.map(drop), written] {
+            let error = result.expect_err("cancelled");
+            assert!(error.to_string().contains("cancelled"), "{error}");
+        }
     }
 
     #[test]

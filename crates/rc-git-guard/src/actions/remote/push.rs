@@ -98,7 +98,12 @@ pub fn push_upstream(
             OP,
         )?,
     };
-    let (remote_old, haves) = advertise(&repo, &mut transport, &host, auth.creds, &full_ref)?;
+    let link = Link {
+        host: &host,
+        full_ref: &full_ref,
+        cancel,
+    };
+    let (remote_old, haves) = advertise(&repo, &mut transport, &link, auth.creds)?;
     let old_id = remote_old.map(|id| core_oid(id, OP)).transpose()?;
     let new_id = core_oid(tip, OP)?;
     if remote_old == Some(tip) {
@@ -120,14 +125,7 @@ pub fn push_upstream(
 
     let pack = pack::build_pack(&repo, tip, &haves, cancel)?;
     bail_if_cancelled(cancel, OP)?;
-    send(
-        &mut transport,
-        &host,
-        remote_old,
-        tip,
-        &full_ref,
-        &pack.bytes,
-    )?;
+    send(&mut transport, &link, remote_old, tip, &pack.bytes)?;
     update_tracking_ref(&Writer::new(&repo, &proof), &remote_name, &branch, tip)?;
     Ok(PushOutcome {
         remote: remote_name,
@@ -139,15 +137,33 @@ pub fn push_upstream(
     })
 }
 
+/// The remote end of one push: what its network errors are reported against, and the
+/// flag that turns any of them into [`ActionError::Cancelled`].
+struct Link<'a> {
+    host: &'a str,
+    full_ref: &'a str,
+    cancel: &'a Cancel,
+}
+
+impl Link<'_> {
+    /// Maps a transfer failure. A cancel ends the transport's reads and writes with an
+    /// I/O error, so the flag is looked at first and wins over whatever that error says.
+    fn failed(&self, source: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {
+        if self.cancel.is_cancelled() {
+            return ActionError::Cancelled { op: OP };
+        }
+        map_network_error(source, OP, self.full_ref, self.host)
+    }
+}
+
 /// Handshakes with `git-receive-pack` on `transport` (the HTTP `GET /info/refs`) and
 /// returns the advertised tip of `full_ref` plus every advertised tip present locally
 /// (the remote's "haves").
 fn advertise(
     repo: &gix::Repository,
     transport: &mut Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
-    host: &str,
+    link: &Link<'_>,
     creds: Option<&Credentials>,
-    full_ref: &str,
 ) -> ActionResult<(Option<ObjectId>, Vec<ObjectId>)> {
     #[expect(
         clippy::disallowed_methods,
@@ -160,7 +176,7 @@ fn advertise(
         Vec::new(),
         &mut gix::progress::Discard,
     )
-    .map_err(|source| map_network_error(Box::new(source), OP, full_ref, host))?;
+    .map_err(|source| link.failed(Box::new(source)))?;
     let refs = handshake.refs.unwrap_or_default();
     let mut remote_old = None;
     let mut haves = Vec::new();
@@ -182,7 +198,7 @@ fn advertise(
             } => (full_ref_name, *object),
             gix::protocol::handshake::Ref::Unborn { .. } => continue,
         };
-        if name == full_ref {
+        if name == link.full_ref {
             remote_old = Some(target);
         }
         if repo.find_header(target).is_ok() {
@@ -197,20 +213,20 @@ fn advertise(
 /// `report-status`.
 fn send(
     transport: &mut Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
-    host: &str,
+    link: &Link<'_>,
     remote_old: Option<ObjectId>,
     tip: ObjectId,
-    full_ref: &str,
     pack: &[u8],
 ) -> ActionResult<()> {
-    let net = |source: std::io::Error| map_network_error(Box::new(source), OP, full_ref, host);
+    let full_ref = link.full_ref;
+    let net = |source: std::io::Error| link.failed(Box::new(source));
     let mut writer = transport
         .request(
             gix::protocol::transport::client::WriteMode::OneLfTerminatedLinePerWriteCall,
             gix::protocol::transport::client::MessageKind::Flush,
             false,
         )
-        .map_err(|source| map_network_error(Box::new(source), OP, full_ref, host))?;
+        .map_err(|source| link.failed(Box::new(source)))?;
     writer
         .write_all(&report::command_line(remote_old, tip, full_ref))
         .map_err(net)?;
