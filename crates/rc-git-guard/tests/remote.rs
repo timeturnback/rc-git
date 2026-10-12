@@ -1275,6 +1275,17 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
         bare_rev(&remoted.bare, "topic"),
         remoted.clone.rev_parse("HEAD")
     );
+
+    // `topic` has no `branch.topic.*` keys, so only the origin fallback names the tracking
+    // ref; a missing one would also read as (0, 0), hence the explicit ref checks.
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/topic"),
+        remoted.clone.rev_parse("HEAD")
+    );
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(status.upstream_ref, "refs/remotes/origin/topic");
+    assert_eq!((status.ahead, status.behind), (0, 0));
 }
 
 #[test]
