@@ -197,7 +197,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
             uses_ssh: false,
         });
     };
-    let upstream_ref = tracking_ref_name(&repo, &branch).map(|tracking| tracking.name);
+    let upstream_ref = tracking_ref_name(&repo, &branch, OP)?.and_then(|tracking| tracking.name);
     let (ahead, behind) = match (&upstream_ref, head_id) {
         (Some(upstream_ref), Some(head_id)) => match peel_ref(&repo, upstream_ref) {
             Some(upstream_id) => count_ahead_behind(&repo, head_id, upstream_id, OP)?,
@@ -389,8 +389,10 @@ fn find_named_remote<'repo>(
 
 /// A branch's remote-tracking ref and where its name came from.
 struct TrackingRef {
-    /// Full name, e.g. `refs/remotes/origin/main`.
-    name: String,
+    /// Full name, e.g. `refs/remotes/origin/main`. `None` when the branch names no upstream
+    /// and the remote's fetch refspecs do not map it (a `--single-branch` clone): no fetch
+    /// ever writes such a ref, so there is nothing to count against.
+    name: Option<String>,
     /// Whether `branch.<name>.merge` named it. False for the `origin` fallback, so a
     /// missing ref then means the branch was never published rather than deleted upstream.
     configured: bool,
@@ -399,20 +401,30 @@ struct TrackingRef {
 /// The branch's remote-tracking ref, e.g. `refs/remotes/origin/main`, or the local branch
 /// itself (`refs/heads/main`) for a local upstream; `None` for a URL upstream, which has
 /// no tracking ref. Without `branch.<name>.merge` — a branch made with `git init` and
-/// pushed without `-u` — it is `refs/remotes/<remote>/<branch>` on the remote
-/// `configured_remote_name` picks. A push to this remote moves this ref and refuses a
-/// `branch.<name>.merge` that names another branch ([`push_refs`]), so ahead/behind and pull
-/// agree with push.
-fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef> {
-    let remote = configured_remote_name(repo, branch, Direction::Fetch)?;
+/// pushed without `-u` — it is where the fetch refspecs of the remote
+/// `configured_remote_name` picks map `refs/heads/<branch>` ([`fetched_into`]), the ref a
+/// push to that remote moves. A push also refuses a `branch.<name>.merge` that names another
+/// branch ([`push_refs`]), so ahead/behind and pull agree with push.
+///
+/// # Errors
+/// [`ActionError::Git`] when the branch name, its upstream configuration or the fallback
+/// remote cannot be read.
+fn tracking_ref_name(
+    repo: &gix::Repository,
+    branch: &str,
+    op: &'static str,
+) -> ActionResult<Option<TrackingRef>> {
+    let Some(remote) = configured_remote_name(repo, branch, Direction::Fetch) else {
+        return Ok(None);
+    };
     if remote == LOCAL_REMOTE {
-        return Some(TrackingRef {
-            name: merge_ref_name(repo, branch)?,
+        return Ok(merge_ref_name(repo, branch).map(|name| TrackingRef {
+            name: Some(name),
             configured: true,
-        });
+        }));
     }
     let full = format!("refs/heads/{branch}");
-    let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
+    let full_name: gix::refs::FullName = full.as_str().try_into().map_err(git_err(op, &full))?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the one sanctioned resolver; it adds the origin fallback"
@@ -420,17 +432,18 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef
     let configured = repo.branch_remote_tracking_ref_name(full_name.as_ref(), Direction::Fetch);
     let Some(tracking) = configured else {
         if !is_named_remote(repo, &remote) {
-            return None;
+            return Ok(None);
         }
-        return Some(TrackingRef {
-            name: format!("refs/remotes/{remote}/{branch}"),
+        return Ok(Some(TrackingRef {
+            name: fetched_into(repo, &remote, &full, op)?,
             configured: false,
-        });
+        }));
     };
-    Some(TrackingRef {
-        name: tracking.ok()?.as_bstr().to_string(),
+    let name = tracking.map_err(git_err(op, &full))?;
+    Ok(Some(TrackingRef {
+        name: Some(name.as_bstr().to_string()),
         configured: true,
-    })
+    }))
 }
 
 /// The branch a push of `branch` writes on the remote and the remote-tracking ref it moves:

@@ -1180,6 +1180,72 @@ fn push_sends_to_the_remote_pushurl() {
     assert_eq!(remoted.clone.rev_parse("refs/remotes/origin/main"), tip);
 }
 
+#[test]
+fn push_from_a_single_branch_clone_writes_no_unmapped_tracking_ref() {
+    let remoted = remoted();
+    let clone = Fixture::empty_dir();
+    clone.git(&[
+        "clone",
+        "--quiet",
+        "--single-branch",
+        "-b",
+        "main",
+        &remoted.server.url(),
+        ".",
+    ]);
+    clone.git(&["checkout", "-q", "-b", "topic"]);
+    clone.write("topic.txt", b"topic\n");
+    clone.commit("Topic work", "2024-03-02T00:00:00+0000");
+    let tip = clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push");
+    assert_eq!(outcome.tracking_ref_error, None);
+    assert_eq!(bare_rev(&remoted.bare, "topic"), tip);
+    assert_eq!(
+        clone.git_output(&["for-each-ref", "--format=%(refname)", "refs/remotes/"]),
+        "refs/remotes/origin/main",
+        "no fetch refspec maps topic, so git writes no tracking ref for it"
+    );
+
+    clone.git(&["update-ref", "refs/remotes/origin/topic", "main"]);
+    let status = upstream_status(clone.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(
+        status.upstream_ref, "",
+        "a ref no fetch refspec maps is never fetched, so status must not count against it"
+    );
+    assert_eq!((status.ahead, status.behind), (0, 0));
+    let pulled = pull_fast_forward(clone.path(), &Policy::default()).expect("pull");
+    assert!(pulled.unpublished);
+    assert_eq!(clone.rev_parse("topic"), tip);
+}
+
+#[test]
+fn upstream_status_follows_a_remapping_fetch_refspec_without_branch_config() {
+    let remoted = remoted();
+    untrack(&remoted);
+    remoted.clone.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/upstream/*",
+    ]);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    fetch_clone(&remoted);
+
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!(status.upstream_ref, "refs/remotes/upstream/main");
+    assert_eq!((status.ahead, status.behind), (1, 0));
+}
+
 /// A second served bare copy of `remoted`'s origin, added to the clone as remote `fork`.
 fn add_fork(remoted: &Remoted) -> (Fixture, rc_git_testkit::HttpGitServer) {
     let (fork, fork_path) = remoted.origin.bare_copy();

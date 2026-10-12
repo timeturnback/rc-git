@@ -111,18 +111,22 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
 }
 
 /// The tip of the branch's remote-tracking ref, `None` when the branch was never
-/// published: no `branch.<name>.merge`, and the fallback tracking ref does not exist.
+/// published: no `branch.<name>.merge`, and the fallback tracking ref does not exist or no
+/// fetch refspec maps the branch to one.
 fn upstream_tip(repo: &gix::Repository, branch: &str) -> ActionResult<Option<ObjectId>> {
-    let tracking = tracking_ref_name(repo, branch).ok_or_else(|| ActionError::NoUpstream {
+    let tracking = tracking_ref_name(repo, branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
         op: OP,
         branch: branch.to_owned(),
     })?;
-    match peel_ref(repo, &tracking.name) {
+    let Some(name) = tracking.name else {
+        return Ok(None);
+    };
+    match peel_ref(repo, &name) {
         Some(tip) => Ok(Some(tip)),
         None if tracking.configured => Err(ActionError::UpstreamGone {
             op: OP,
             branch: branch.to_owned(),
-            upstream_ref: tracking.name,
+            upstream_ref: name,
         }),
         None => Ok(None),
     }
