@@ -11,8 +11,8 @@ pub(in crate::actions::remote) struct SshTarget {
     /// The host as written in the URL — what the user sees in prompts and the key
     /// app-side host-key approvals are stored under.
     pub host: String,
-    /// The host actually dialed: ssh-config `HostName`, or `host` when unset. The
-    /// `known_hosts` lookup key (as `[host_name]:port` off port 22) unless
+    /// The host actually dialed: ssh-config `HostName` lowercased as OpenSSH does, or
+    /// `host` when unset. The `known_hosts` lookup key (as `[host_name]:port` off port 22) unless
     /// `host_key_alias` is set.
     pub host_name: String,
     /// URL port, else ssh-config `Port`, else 22.
@@ -92,8 +92,8 @@ pub(in crate::actions::remote) fn resolve(
         .unwrap_or(22);
     let host_name = config
         .as_ref()
-        .and_then(|config| config.hostname.clone())
-        .unwrap_or_else(|| host.clone());
+        .and_then(|config| config.hostname.as_deref())
+        .map_or_else(|| host.clone(), str::to_ascii_lowercase);
     let known_hosts = known_hosts_files(
         config
             .as_ref()
@@ -455,6 +455,17 @@ mod tests {
         )
         .expect("resolve");
         assert_eq!(other.host_key_alias, None);
+    }
+
+    /// OpenSSH lowercases `HostName` and records `known_hosts` entries under that name;
+    /// russh compares hosts exactly, so a mixed-case value would miss a known key.
+    #[test]
+    fn host_name_is_lowercased_as_openssh_does() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("config", b"Host alias\n  HostName GitHub.COM\n");
+        let target =
+            resolve(&url("ssh://git@alias/x.git"), Some(dir.path()), "fetch").expect("resolve");
+        assert_eq!(target.host_name, "github.com");
     }
 
     /// The URL always wins over the config for user and port.
