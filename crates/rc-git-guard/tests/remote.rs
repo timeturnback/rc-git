@@ -317,6 +317,38 @@ fn fetch_with_nothing_new_reports_no_updates() {
 }
 
 #[test]
+fn fetch_reports_a_new_annotated_tag() {
+    let remoted = remoted();
+    remoted.origin.write("news.txt", b"news\n");
+    remoted
+        .origin
+        .commit("News on origin", "2024-03-01T00:00:00+0000");
+    remoted.origin.git(&["tag", "-a", "-m", "r", "v2"]);
+    let bare = remoted.bare_path.to_string_lossy();
+    remoted
+        .origin
+        .git(&["push", "--quiet", bare.as_ref(), "main", "v2"]);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch");
+    let tag = outcome
+        .updated_refs
+        .iter()
+        .find(|update| update.name == "refs/tags/v2")
+        .expect("refs/tags/v2 reported");
+    assert_eq!(tag.target.to_string(), bare_rev(&remoted.bare, "v2"));
+    let kind = remoted
+        .clone
+        .git_output(&["cat-file", "-t", &tag.target.to_string()]);
+    assert_eq!(kind, "tag");
+}
+
+#[test]
 fn fetch_against_an_auth_server_requires_matching_credentials() {
     let origin = Fixture::standard();
     let (_bare, bare_path) = origin.bare_copy();

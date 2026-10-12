@@ -1,4 +1,4 @@
-//! Plain (never force) push of the checked-out branch to its upstream over HTTPS.
+//! Plain (never force) push of the checked-out branch to its upstream over HTTPS or SSH.
 //! gix has no push, so this drives the smart protocol by hand: handshake for the
 //! advertisement, a client-side fast-forward check before anything is sent, one
 //! command pkt-line plus a self-contained pack, then the server's `report-status`.
@@ -57,7 +57,9 @@ pub struct PushOutcome {
 /// [`ActionError::PushRejected`] when the remote has commits the local branch lacks,
 /// [`ActionError::AuthRequired`], [`ActionError::UnsupportedRemote`],
 /// [`ActionError::NoUpstream`], [`ActionError::Cancelled`], [`ActionError::DetachedHead`],
-/// and [`ActionError::Git`] for every other failure, including a local upstream
+/// [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] when an SSH host is
+/// unknown or its key changed, [`ActionError::PassphraseRequired`] when an encrypted SSH key
+/// needs `creds.token`, and [`ActionError::Git`] for every other failure, including a local upstream
 /// (`branch.<name>.remote = .`), which rc-git does not push into, and a
 /// `branch.<name>.merge` that names another branch, which rc-git does not push to.
 pub fn push_upstream(
@@ -219,7 +221,7 @@ struct Advertised {
     side_band: bool,
 }
 
-/// Handshakes with `git-receive-pack` on `transport` (the HTTP `GET /info/refs`) and
+/// Handshakes with `git-receive-pack` on `transport` (on HTTPS, the `GET /info/refs`) and
 /// returns the transport with what the server advertised.
 fn advertise(
     mut transport: BoxedTransport,
@@ -295,9 +297,9 @@ struct Update {
     side_band: bool,
 }
 
-/// Sends the command line and the pack over one `git-receive-pack` request (the HTTP
-/// `POST`, on the transport the handshake prepared) and reads the server's
-/// `report-status`. The pack goes out in [`PACK_CHUNK`] pieces and the report comes in
+/// Sends the command line and the pack over one `git-receive-pack` request (on HTTPS, the
+/// `POST`; on SSH, the same channel), on the transport the handshake prepared, and reads the
+/// server's `report-status`. The pack goes out in [`PACK_CHUNK`] pieces and the report comes in
 /// one read at a time, with the cancel flag looked at before each.
 fn send(
     mut transport: BoxedTransport,

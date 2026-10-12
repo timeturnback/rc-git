@@ -1,6 +1,7 @@
-//! Fetch from the checked-out branch's remote (or `origin` on a detached HEAD) over HTTPS,
-//! updating remote-tracking refs exactly as `git fetch <remote>` would. gix writes the received pack and the
-//! tracking refs itself; nothing else is touched, and `FETCH_HEAD` is never written.
+//! Fetch from the checked-out branch's remote (or `origin` on a detached HEAD)
+//! over HTTPS or SSH, updating remote-tracking refs exactly as `git fetch <remote>` would. gix
+//! writes the received pack and the tracking refs itself; nothing else is touched, and
+//! `FETCH_HEAD` is never written.
 
 use std::path::Path;
 
@@ -16,12 +17,12 @@ use super::{
 
 const OP: &str = "fetch";
 
-/// One remote-tracking ref a fetch created or moved.
+/// One ref (remote-tracking branch or tag) a fetch created or moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefUpdate {
     /// Full ref name, e.g. `refs/remotes/origin/main`.
     pub name: String,
-    /// The commit it now points at.
+    /// The object it now points at: a commit, or a tag object for an annotated tag.
     pub target: gix::ObjectId,
 }
 
@@ -30,12 +31,13 @@ pub struct RefUpdate {
 pub struct FetchOutcome {
     /// The remote fetched from.
     pub remote: String,
-    /// Remote-tracking refs created or moved, empty when everything was up to date.
+    /// Refs (remote-tracking branches and tags) created or moved, empty when everything was up to date.
     pub updated_refs: Vec<RefUpdate>,
 }
 
 /// Fetches from the checked-out branch's remote (`origin` when none is configured, and
-/// always `origin` on a detached `HEAD`), using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401. A local
+/// always `origin` on a detached `HEAD`), using the remote's own refspecs. `auth.creds` answer
+/// an HTTPS server's 401 and, over SSH, `creds.token` unlocks an encrypted key. A local
 /// upstream (`branch.<name>.remote = .`) has nothing to transfer, so the fetch is a no-op.
 ///
 /// # Errors
@@ -43,8 +45,10 @@ pub struct FetchOutcome {
 /// [`ActionError::AuthRequired`] when the server rejects the credentials,
 /// [`ActionError::Cancelled`] when `cancel` is set, [`ActionError::NoUpstream`] when no
 /// remote is configured, or, on a detached `HEAD` (reported as branch `HEAD`), when there is no
-/// `origin`, [`ActionError::Git`] for every other failure, including an upstream
-/// that is a bare URL rather than a named remote.
+/// `origin`, [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] when an SSH
+/// host is unknown or its key changed, [`ActionError::PassphraseRequired`] when an encrypted
+/// SSH key needs `creds.token`, [`ActionError::Git`] for every other failure, including an
+/// upstream that is a bare URL rather than a named remote.
 pub fn fetch_upstream(
     repo_path: &Path,
     policy: &Policy,
