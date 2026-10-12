@@ -314,7 +314,7 @@ fn send(
 fn connect(url: &gix::Url, host: &str, cancel: &Cancel) -> ActionResult<BoxedTransport> {
     use gix::protocol::transport::client::TransportWithoutIO;
     let failed = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
-        map_network_error(source, OP, url.to_bstring().to_string().as_str(), host)
+        connect_failed(url, host, source)
     };
     #[expect(
         clippy::disallowed_methods,
@@ -334,6 +334,16 @@ fn connect(url: &gix::Url, host: &str, cancel: &Cancel) -> ActionResult<BoxedTra
     Ok(transport)
 }
 
+/// Maps a connect or configure failure, naming the URL without its userinfo so a token
+/// in the remote URL never reaches the message.
+fn connect_failed(
+    url: &gix::Url,
+    host: &str,
+    source: Box<dyn std::error::Error + Send + Sync + 'static>,
+) -> ActionError {
+    map_network_error(source, OP, super::redacted(url).as_str(), host)
+}
+
 /// Moves `refs/remotes/<remote>/<branch>` to the pushed tip so ahead/behind reads 0
 /// without another fetch.
 fn update_tracking_ref(
@@ -351,4 +361,20 @@ fn update_tracking_ref(
         OP,
     )?;
     writer.apply_edit(edit, OP, &full_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_connect_failure_names_the_url_without_its_userinfo() {
+        let url = gix::Url::from_bytes("https://user:secret@example.com/x.git".into())
+            .expect("parse url");
+        let err = connect_failed(&url, "example.com", "connection refused".into());
+        let message = err.to_string();
+        assert!(!message.contains("secret"), "{message}");
+        assert!(!message.contains("user@"), "{message}");
+        assert!(message.contains("https://example.com/x.git"), "{message}");
+    }
 }

@@ -1027,6 +1027,26 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
     );
 }
 
+#[test]
+fn a_failed_push_never_names_the_remote_url_password() {
+    let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("reserve a port")
+        .port();
+    let fixture = Fixture::standard();
+    let url = format!("http://user:secret@127.0.0.1:{closed_port}/x.git");
+    fixture.git(&["remote", "add", "origin", &url]);
+    let err = push_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("nothing listens on the port");
+    let message = err.to_string();
+    assert!(!message.contains("secret"), "{message}");
+}
+
 // ---- ssh ----------------------------------------------------------------------------
 
 /// An origin repository, a bare copy served over loopback ssh, a local clone whose
