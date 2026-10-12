@@ -135,13 +135,14 @@ operation stops between steps and leaves nothing half-applied.
 
 ## Host-key trust
 
-How an SSH server proves its identity to rc-git. The user's `known_hosts` is consulted
-read-only and never written; a host it does not know is refused until the user approves
-the offered key's fingerprint, and that approval is remembered by the app itself, per
-host.
+How an SSH server proves its identity to rc-git. The `known_hosts` files OpenSSH would
+read (the config's `UserKnownHostsFile`, else `known_hosts` and `known_hosts2`, then the
+system files) are consulted read-only and never written; a host they do not know is
+refused until the user approves the offered key's fingerprint, and that approval is
+remembered by the app itself, per host.
 
-A key that contradicts `known_hosts` is refused with no way to approve it inside
-rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
+A key that is `@revoked`, or that contradicts every `known_hosts` entry for the host, is
+refused with no way to approve it inside rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
 by the name actually dialed, so a config alias shares the trust of the real host behind
 it.
 

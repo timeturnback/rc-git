@@ -2040,6 +2040,58 @@ fn ssh_host_key_mismatch_is_fatal() {
     assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
 }
 
+/// A host pinned only in the file the ssh config names is known, as it is to OpenSSH:
+/// no trust-on-first-use prompt, no approval needed.
+#[test]
+fn ssh_user_known_hosts_file() {
+    let remoted = ssh_remoted();
+    let pinned = Fixture::empty_dir();
+    remoted.server.write_known_hosts(pinned.path());
+    let pinned = std::fs::read(pinned.path().join("known_hosts")).expect("read known_hosts");
+    remoted.ssh_home.write("other_hosts", &pinned);
+    let other_hosts = remoted.ssh_home.path().join("other_hosts");
+    remoted.ssh_home.write(
+        "config",
+        format!(
+            "Host 127.0.0.1\n  UserKnownHostsFile {}\n",
+            other_hosts.display()
+        )
+        .as_bytes(),
+    );
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect("a host pinned in UserKnownHostsFile is known");
+    assert_eq!(outcome.updated_refs.len(), 1);
+    assert!(!remoted.ssh_home.path().join("known_hosts").exists());
+}
+
+/// A stale same-algorithm line ahead of the correct one does not refuse the host:
+/// OpenSSH accepts any line holding the exact key.
+#[test]
+fn ssh_stale_known_hosts_line() {
+    let remoted = ssh_remoted();
+    remoted
+        .server
+        .write_mismatched_known_hosts(remoted.ssh_home.path());
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect("the correct line wins over the stale one");
+    assert_eq!(outcome.updated_refs.len(), 1);
+}
+
 /// A fingerprint that is not the server's real key, as an earlier approval.
 const STALE_APPROVAL: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 

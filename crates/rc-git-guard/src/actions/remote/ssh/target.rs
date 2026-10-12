@@ -24,16 +24,15 @@ pub(in crate::actions::remote) struct SshTarget {
     /// ssh-config `IdentitiesOnly yes`: offer only `identities`, never an agent key
     /// that matches none of them.
     pub identities_only: bool,
-    /// The directory holding `config`, `known_hosts`, and the default keys.
-    pub ssh_dir: PathBuf,
+    /// The `known_hosts` files OpenSSH consults for this host, in order: the ssh-config
+    /// `UserKnownHostsFile` entries (else `known_hosts` and `known_hosts2` in the ssh
+    /// directory), then the system files when the ssh directory is the default one.
+    /// Existence is checked at use.
+    pub known_hosts: Vec<PathBuf>,
 }
 
-impl SshTarget {
-    /// Path of the `known_hosts` file consulted for this target.
-    pub fn known_hosts(&self) -> PathBuf {
-        self.ssh_dir.join("known_hosts")
-    }
-}
+/// The global files OpenSSH reads after the user's (`GlobalKnownHostsFile` default).
+const SYSTEM_KNOWN_HOSTS: [&str; 2] = ["/etc/ssh/ssh_known_hosts", "/etc/ssh/ssh_known_hosts2"];
 
 /// Resolves `url` (an ssh URL, `ssh://` or scp-like) into a dialable target.
 ///
@@ -52,6 +51,9 @@ pub(in crate::actions::remote) fn resolve(
             ActionError::git(op, super::super::redacted(url), "the ssh URL has no host")
         })?
         .to_owned();
+    // A caller-chosen ssh directory (tests, `--ssh-dir`) stands in for the whole
+    // machine's ssh setup, so the system files are read only for the default one.
+    let system_files = ssh_dir.is_none();
     let ssh_dir = match ssh_dir {
         Some(dir) => dir.to_path_buf(),
         None => default_ssh_dir(op)?,
@@ -81,6 +83,14 @@ pub(in crate::actions::remote) fn resolve(
         .as_ref()
         .and_then(|config| config.hostname.clone())
         .unwrap_or_else(|| host.clone());
+    let known_hosts = known_hosts_files(
+        config
+            .as_ref()
+            .and_then(|config| config.user_known_hosts_file.as_deref()),
+        &ssh_dir,
+        &host_name,
+        system_files,
+    );
     // OpenSSH falls back to the default keys only when no `IdentityFile` applies; a
     // default key tried after the configured one can log in as another account.
     let identities = config
@@ -99,8 +109,69 @@ pub(in crate::actions::remote) fn resolve(
         user,
         identities,
         identities_only,
-        ssh_dir,
+        known_hosts,
     })
+}
+
+/// The `known_hosts` files for `host_name`. russh-config keeps a `UserKnownHostsFile`
+/// value as one path, so it is split on whitespace here and each part expanded the way
+/// OpenSSH does (`~`, `%d`, `%u`, `%h`, `%%`); `none` names no file.
+fn known_hosts_files(
+    configured: Option<&Path>,
+    ssh_dir: &Path,
+    host_name: &str,
+    system_files: bool,
+) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match configured {
+        Some(value) => value
+            .to_string_lossy()
+            .split_whitespace()
+            .filter(|part| *part != "none")
+            .map(|part| expand_known_hosts_path(part, host_name))
+            .collect(),
+        None => vec![ssh_dir.join("known_hosts"), ssh_dir.join("known_hosts2")],
+    };
+    if system_files {
+        files.extend(SYSTEM_KNOWN_HOSTS.iter().map(PathBuf::from));
+    }
+    files
+}
+
+/// Expands a leading `~` and the `%d` (local home), `%u` (local user), `%h` (remote
+/// host) and `%%` tokens in one `UserKnownHostsFile` path. A token whose value is
+/// unknown (no home, no `$USER`) stays as written, naming a file that will not exist.
+fn expand_known_hosts_path(part: &str, host_name: &str) -> PathBuf {
+    let home = std::env::home_dir().map(|home| home.to_string_lossy().into_owned());
+    let user = std::env::var("USER").ok();
+    let part = match (part.strip_prefix('~'), &home) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{home}{rest}")
+        }
+        _ => part.to_owned(),
+    };
+    let mut expanded = String::with_capacity(part.len());
+    let mut chars = part.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            expanded.push(c);
+            continue;
+        }
+        let token = chars.next();
+        let value = match token {
+            Some('%') => Some("%"),
+            Some('d') => home.as_deref(),
+            Some('u') => user.as_deref(),
+            Some('h') => Some(host_name),
+            _ => None,
+        };
+        if let Some(value) = value {
+            expanded.push_str(value);
+        } else {
+            expanded.push('%');
+            expanded.extend(token);
+        }
+    }
+    PathBuf::from(expanded)
 }
 
 /// The command line executed on the server, e.g. `git-upload-pack 'repo.git'`, with the
@@ -409,6 +480,84 @@ HostName	real.example.com
         assert_eq!(target.host_name, "github.com");
         // Values outside Host lines keep their case: paths are case-sensitive.
         assert_eq!(target.identities[0], PathBuf::from("./Work_Key"));
+    }
+
+    /// With no `UserKnownHostsFile`, OpenSSH reads `known_hosts` then `known_hosts2`;
+    /// a caller-chosen ssh directory never adds the machine's /etc files.
+    #[test]
+    fn default_known_hosts_files_are_known_hosts_and_known_hosts2() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(
+            target.known_hosts,
+            [
+                dir.path().join("known_hosts"),
+                dir.path().join("known_hosts2")
+            ]
+        );
+    }
+
+    /// The default ssh directory also reads the system files, after the user's.
+    #[test]
+    fn the_default_ssh_dir_appends_the_system_known_hosts_files() {
+        let files = known_hosts_files(None, Path::new("/home/u/.ssh"), "example.com", true);
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("/home/u/.ssh/known_hosts"),
+                PathBuf::from("/home/u/.ssh/known_hosts2"),
+                PathBuf::from("/etc/ssh/ssh_known_hosts"),
+                PathBuf::from("/etc/ssh/ssh_known_hosts2"),
+            ]
+        );
+    }
+
+    /// A configured `UserKnownHostsFile` replaces the default files.
+    #[test]
+    fn a_configured_user_known_hosts_file_replaces_the_defaults() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host example.com\n  HostName real.example.com\n  UserKnownHostsFile /keys/%h_hosts\n",
+        );
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert_eq!(
+            target.known_hosts,
+            [PathBuf::from("/keys/real.example.com_hosts")]
+        );
+    }
+
+    /// Several files on one line are several paths, each expanded on its own; `none`
+    /// names no file.
+    #[test]
+    fn a_multi_file_user_known_hosts_file_is_split_and_expanded() {
+        let home = std::env::home_dir().expect("home");
+        let user = std::env::var("USER").expect("USER");
+        let files = known_hosts_files(
+            Some(Path::new("/a/hosts ~/b_hosts\t%d/c none /d/%u/100%%")),
+            Path::new("/unused"),
+            "example.com",
+            false,
+        );
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("/a/hosts"),
+                home.join("b_hosts"),
+                home.join("c"),
+                PathBuf::from(format!("/d/{user}/100%")),
+            ]
+        );
     }
 
     /// No config file: URL host is dialed as written, defaults fill the rest.
