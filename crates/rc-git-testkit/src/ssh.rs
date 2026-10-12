@@ -60,11 +60,25 @@ impl SshGitServer {
     /// # Panics
     /// On any setup failure — a broken fixture must fail loudly.
     #[must_use]
+    pub fn serve(git_dir: &Path) -> Self {
+        Self::start(git_dir, false)
+    }
+
+    /// Starts a server that authenticates like [`SshGitServer::serve`] and then never
+    /// answers a session-channel open, for exercising the client's connect budget.
+    ///
+    /// # Panics
+    /// On any setup failure.
+    #[must_use]
+    pub fn serve_never_confirming_channels(git_dir: &Path) -> Self {
+        Self::start(git_dir, true)
+    }
+
     #[expect(
         clippy::print_stderr,
         reason = "the test double's only channel into the failing test's captured output"
     )]
-    pub fn serve(git_dir: &Path) -> Self {
+    fn start(git_dir: &Path, stall_channels: bool) -> Self {
         let host_key = key_from_seed(&HOST_KEY_SEED);
         let allowed = vec![
             key_from_seed(&CLIENT_KEY_SEED).public_key().clone(),
@@ -89,6 +103,7 @@ impl SshGitServer {
         let mut server = GitSshServer {
             git_dir: git_dir.to_path_buf(),
             allowed,
+            stall_channels,
         };
         runtime.spawn(async move {
             let running = server.run_on_socket(config, &listener);
@@ -234,6 +249,8 @@ fn write_private(path: &Path, bytes: &[u8]) {
 struct GitSshServer {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
+    /// Never answer a session-channel open.
+    stall_channels: bool,
 }
 
 impl russh::server::Server for GitSshServer {
@@ -243,6 +260,7 @@ impl russh::server::Server for GitSshServer {
         GitSshHandler {
             git_dir: self.git_dir.clone(),
             allowed: self.allowed.clone(),
+            stall_channels: self.stall_channels,
             channels: HashMap::new(),
             env: HashMap::new(),
         }
@@ -260,6 +278,7 @@ impl russh::server::Server for GitSshServer {
 struct GitSshHandler {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
+    stall_channels: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
     env: HashMap<ChannelId, String>,
 }
@@ -304,6 +323,9 @@ impl russh::server::Handler for GitSshHandler {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.stall_channels {
+            std::future::pending::<()>().await;
+        }
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())

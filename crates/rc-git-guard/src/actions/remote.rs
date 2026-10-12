@@ -46,13 +46,16 @@ pub(super) const CANCEL_POLL: Duration = Duration::from_millis(200);
 /// transports also check it between objects.
 ///
 /// It also carries the idle budget both transports measure silence against,
-/// two minutes unless [`Cancel::with_idle_timeout`] changes it. A read that blocks in
+/// two minutes unless [`Cancel::with_idle_timeout`] changes it, and the connect budget
+/// dialing, the handshake and authentication share, 30 s unless
+/// [`Cancel::with_connect_timeout`] changes it. A read that blocks in
 /// curl never sees the flag, so after a cancel the abandoned HTTPS thread lingers until
-/// its next object, chunk or this budget (30 s while still connecting) ends it.
+/// its next object, chunk or this budget (the connect budget while still connecting) ends it.
 #[derive(Debug, Clone)]
 pub struct Cancel {
     flag: Arc<AtomicBool>,
     idle: Duration,
+    connect: Duration,
 }
 
 impl Default for Cancel {
@@ -60,6 +63,7 @@ impl Default for Cancel {
         Self {
             flag: Arc::default(),
             idle: IDLE_TIMEOUT,
+            connect: CONNECT_TIMEOUT,
         }
     }
 }
@@ -77,6 +81,13 @@ impl Cancel {
     #[must_use]
     pub fn with_idle_timeout(self, idle: Duration) -> Self {
         Self { idle, ..self }
+    }
+
+    /// The same flag with a different connect budget: how long dialing, the TLS or ssh
+    /// handshake, and authentication may take together before the operation fails.
+    #[must_use]
+    pub fn with_connect_timeout(self, connect: Duration) -> Self {
+        Self { connect, ..self }
     }
 
     /// Asks the operation holding this flag to stop. Safe from any thread.
@@ -106,6 +117,11 @@ impl Cancel {
     /// How long a transfer may move no bytes before it counts as dead.
     pub(super) fn idle(&self) -> Duration {
         self.idle
+    }
+
+    /// How long dialing, the handshake, and authentication may take together.
+    pub(super) fn connect(&self) -> Duration {
+        self.connect
     }
 }
 
@@ -781,7 +797,7 @@ fn http_options(
     cancel: &Cancel,
 ) -> gix::protocol::transport::client::blocking_io::http::Options {
     let mut options = gix::protocol::transport::client::blocking_io::http::Options::default();
-    http_timeouts(&mut options, cancel.idle());
+    http_timeouts(&mut options, cancel.connect(), cancel.idle());
     if is_loopback(url) {
         options.proxy = Some(String::new());
     }
@@ -798,9 +814,10 @@ fn http_options(
 /// switch the check off, so a budget under a second becomes one second.
 fn http_timeouts(
     options: &mut gix::protocol::transport::client::blocking_io::http::Options,
+    connect: Duration,
     idle: Duration,
 ) {
-    options.connect_timeout = Some(CONNECT_TIMEOUT);
+    options.connect_timeout = Some(connect);
     options.low_speed_limit_bytes_per_second = 1;
     options.low_speed_time_seconds = idle.as_secs().max(1);
 }

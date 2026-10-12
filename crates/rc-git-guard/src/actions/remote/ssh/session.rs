@@ -41,6 +41,26 @@ pub(super) fn build_runtime(op: &'static str) -> ActionResult<Runtime> {
         .map_err(git_err(op, "ssh"))
 }
 
+/// Runs `connect` against `runtime` and hands the runtime back with its result. On
+/// failure the runtime is shut down without joining its blocking pool: a host name is
+/// resolved there, and a stalled `getaddrinfo` would otherwise hold the caller until the
+/// OS resolver gives up, long after a cancel or the connect budget said to stop.
+///
+/// # Errors
+/// Whatever `connect` returns.
+pub(super) fn connect_or_abandon<T>(
+    runtime: Runtime,
+    connect: impl FnOnce(&Runtime) -> ActionResult<T>,
+) -> ActionResult<(Runtime, T)> {
+    match connect(&runtime) {
+        Ok(value) => Ok((runtime, value)),
+        Err(err) => {
+            runtime.shutdown_background();
+            Err(err)
+        }
+    }
+}
+
 /// The cancel flag and the idle budget every channel read and write is measured
 /// against. Both halves hold a clone, so a cancel raised after the transport was built
 /// still lands.
@@ -237,6 +257,7 @@ impl Drop for SshWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::ActionError;
     use crate::actions::remote::IDLE_TIMEOUT;
 
     fn watch(cancel: &Cancel, idle: Duration) -> Watch {
@@ -244,6 +265,32 @@ mod tests {
             idle,
             ..Watch::new(cancel, "test")
         }
+    }
+
+    #[test]
+    fn an_early_return_does_not_wait_on_blocking_work() {
+        let runtime = build_runtime("test").expect("runtime");
+        let (running, started_blocking) = std::sync::mpsc::channel();
+        drop(runtime.spawn_blocking(move || {
+            running.send(()).expect("the test is waiting");
+            std::thread::sleep(Duration::from_secs(5));
+        }));
+        started_blocking
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking task starts");
+        let started = Instant::now();
+        let result = connect_or_abandon(runtime, |_| -> ActionResult<()> {
+            Err(ActionError::Cancelled { op: "fetch" })
+        });
+        assert!(matches!(
+            result,
+            Err(ActionError::Cancelled { op: "fetch" })
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

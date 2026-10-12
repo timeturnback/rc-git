@@ -3,15 +3,19 @@
 //! channel. No child process is ever spawned — the same invariant the HTTPS path
 //! keeps. `known_hosts` is consulted read-only; trust decisions live with the caller.
 
+use std::future::Future;
+use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use gix::protocol::transport::client::git::ConnectMode;
 use gix::protocol::transport::{Protocol, Service};
 use russh::client::{Handle, Msg};
+use tokio::runtime::Runtime;
 
 use crate::actions::{ActionError, ActionResult, git_err};
 
-use super::{CONNECT_TIMEOUT, Cancel, RemoteAuth, bail_if_cancelled};
+use super::{CANCEL_POLL, Cancel, RemoteAuth, bail_if_cancelled};
 
 mod auth;
 mod hostkey;
@@ -33,7 +37,8 @@ type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Tra
 /// [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] from host-key
 /// verification, [`ActionError::PassphraseRequired`] and [`ActionError::AuthRequired`]
 /// from authentication, [`ActionError::Cancelled`] when `cancel` is set before the
-/// dial, [`ActionError::Git`] for every other failure.
+/// channel is ready, [`ActionError::Git`] when the connect budget runs out and for every
+/// other failure.
 pub(super) fn transport(
     url: &gix::Url,
     auth: RemoteAuth<'_>,
@@ -45,24 +50,18 @@ pub(super) fn transport(
     let target = target::resolve(url, auth.ssh_dir, op)?;
     let command = target::quoted_command(service, url.path.as_ref(), op)?;
     bail_if_cancelled(cancel, op)?;
-    let runtime = session::build_runtime(op)?;
-    let report: ReportSlot = Arc::new(Mutex::new(None));
-    let handler = HostKeyHandler::new(&target, auth.accepted_hostkey, Arc::clone(&report));
-    let passphrase = auth.creds.map(|creds| creds.token.as_str());
-    let connected = runtime.block_on(connect_and_exec(
-        &target,
-        handler,
-        passphrase,
-        &command,
+    let request = Request {
+        target: &target,
+        auth,
+        command: &command,
         service,
         desired_version,
+        cancel,
         op,
-    ));
-    let (client, channel) = match connected {
-        Ok(pair) => pair,
-        Err(err) => return Err(typed_refusal(&report, &target, op).unwrap_or(err)),
     };
-    bail_if_cancelled(cancel, op)?;
+    let runtime = session::build_runtime(op)?;
+    let (runtime, (client, channel)) =
+        session::connect_or_abandon(runtime, |runtime| connect(runtime, &request))?;
     let (read_half, write_half) = tokio::io::split(channel.into_stream());
     let handle = runtime.handle().clone();
     let hold = SessionHold::new(client, runtime);
@@ -80,48 +79,121 @@ pub(super) fn transport(
     Ok(Box::new(connection))
 }
 
+/// Everything one connect attempt needs, borrowed from [`transport`].
+struct Request<'a> {
+    target: &'a SshTarget,
+    auth: RemoteAuth<'a>,
+    command: &'a str,
+    service: Service,
+    desired_version: Protocol,
+    cancel: &'a Cancel,
+    op: &'static str,
+}
+
+/// The connected session and its exec'd channel.
+type Connected = (Handle<HostKeyHandler>, russh::Channel<Msg>);
+
+/// Runs [`connect_and_exec`] on `runtime` under the cancel flag and the connect budget,
+/// and maps a failure to the error the caller should see: a cancel wins over whatever
+/// else went wrong, then a host-key refusal the handler recorded.
+fn connect(runtime: &Runtime, request: &Request<'_>) -> ActionResult<Connected> {
+    let Request {
+        target,
+        auth,
+        cancel,
+        op,
+        ..
+    } = *request;
+    let report: ReportSlot = Arc::new(Mutex::new(None));
+    let handler = HostKeyHandler::new(target, auth.accepted_hostkey, Arc::clone(&report));
+    let passphrase = auth.creds.map(|creds| creds.token.as_str());
+    // Entered for the whole call so whatever the abandoned future or a refused session
+    // drops (russh spawns close notifications on drop) still finds a reactor.
+    let _context = runtime.enter();
+    let connected = drive(
+        runtime,
+        connect_and_exec(request, handler, passphrase),
+        request,
+    );
+    match connected {
+        Ok(pair) => {
+            bail_if_cancelled(cancel, op)?;
+            Ok(pair)
+        }
+        Err(err) => {
+            bail_if_cancelled(cancel, op)?;
+            Err(typed_refusal(&report, target, op).unwrap_or(err))
+        }
+    }
+}
+
+/// Polls `connecting` on `runtime` until it finishes, waking every [`CANCEL_POLL`] to
+/// look at the cancel flag. Dialing, the handshake, authentication and the session
+/// channel share one deadline, the request's connect budget, measured from before the
+/// dial. The future is pinned once, so an elapsed slice drops only the timer.
+fn drive(
+    runtime: &Runtime,
+    connecting: impl Future<Output = ActionResult<Connected>>,
+    request: &Request<'_>,
+) -> ActionResult<Connected> {
+    let budget = request.cancel.connect();
+    let deadline = Instant::now() + budget;
+    let mut connecting = pin!(connecting);
+    loop {
+        bail_if_cancelled(request.cancel, request.op)?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(timed_out(request, budget));
+        }
+        let slice = left.min(CANCEL_POLL);
+        // The timer is built inside the async block: a `Sleep` needs the runtime context
+        // that `block_on` enters only once it has the future in hand.
+        let waited =
+            runtime.block_on(async { tokio::time::timeout(slice, connecting.as_mut()).await });
+        if let Ok(result) = waited {
+            return result;
+        }
+    }
+}
+
+/// The error for a connect that outlived its budget.
+fn timed_out(request: &Request<'_>, budget: Duration) -> ActionError {
+    let target = request.target;
+    ActionError::git(
+        request.op,
+        &target.host,
+        format!(
+            "'{}:{}' did not complete the ssh handshake within {budget:?}",
+            target.host_name, target.port
+        ),
+    )
+}
+
 /// Dial, verify the host key, authenticate, open a session channel, and exec the git
-/// service on it. Runs on the transport's private runtime.
+/// service on it. Runs on the transport's private runtime; [`drive`] bounds it.
 #[expect(
     clippy::disallowed_methods,
     reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
 )]
 async fn connect_and_exec(
-    target: &SshTarget,
+    request: &Request<'_>,
     handler: HostKeyHandler,
     passphrase: Option<&str>,
-    command: &str,
-    service: Service,
-    desired_version: Protocol,
-    op: &'static str,
-) -> ActionResult<(Handle<HostKeyHandler>, russh::Channel<Msg>)> {
+) -> ActionResult<Connected> {
+    let Request {
+        target,
+        command,
+        service,
+        desired_version,
+        op,
+        ..
+    } = *request;
     let config = Arc::new(russh::client::Config::default());
     let address = (target.host_name.as_str(), target.port);
-    let timed_out = || {
-        ActionError::git(
-            op,
-            &target.host,
-            format!(
-                "'{}:{}' did not complete the ssh handshake within {}s",
-                target.host_name,
-                target.port,
-                CONNECT_TIMEOUT.as_secs()
-            ),
-        )
-    };
-    let mut client = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        russh::client::connect(config, address, handler),
-    )
-    .await
-    .map_err(|_| timed_out())?
-    .map_err(git_err(op, &target.host))?;
-    tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        auth::authenticate(&mut client, target, passphrase, op),
-    )
-    .await
-    .map_err(|_| timed_out())??;
+    let mut client = russh::client::connect(config, address, handler)
+        .await
+        .map_err(git_err(op, &target.host))?;
+    auth::authenticate(&mut client, target, passphrase, op).await?;
     let channel = client
         .channel_open_session()
         .await

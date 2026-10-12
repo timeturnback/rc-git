@@ -1857,6 +1857,88 @@ fn ssh_push_cancelled_mid_transfer_ends_as_cancelled() {
     );
 }
 
+/// Runs `fetch_upstream` on its own thread, so a call that never returns fails the test
+/// at `recv_timeout` instead of hanging the suite.
+fn fetch_on_a_thread(
+    remoted: &SshRemoted,
+    cancel: Cancel,
+) -> std::sync::mpsc::Receiver<Result<rc_git_guard::actions::FetchOutcome, ActionError>> {
+    let repo = remoted.clone.path().to_path_buf();
+    let ssh_dir = remoted.ssh_home.path().to_path_buf();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let auth = RemoteAuth {
+            ssh_dir: Some(&ssh_dir),
+            ..RemoteAuth::default()
+        };
+        drop(done.send(fetch_upstream(&repo, &Policy::default(), auth, &cancel)));
+    });
+    finished
+}
+
+/// A peer that accepts the TCP connection and never sends its ssh banner stalls the dial;
+/// a cancel raised then still ends the fetch as cancelled.
+#[test]
+fn ssh_a_cancel_during_a_stalled_connect_returns_cancelled() {
+    let remoted = ssh_remoted();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+    remoted.clone.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        &format!("ssh://git@127.0.0.1:{port}{}", remoted.bare_path.display()),
+    ]);
+
+    let cancel = Cancel::new();
+    let signal = cancel.clone();
+    let finished = fetch_on_a_thread(&remoted, cancel);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    signal.signal();
+
+    let err = finished
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the fetch ends within 2 s of the cancel")
+        .expect_err("cancelled");
+    assert!(
+        matches!(err, ActionError::Cancelled { op: "fetch" }),
+        "{err}"
+    );
+    drop(silent.join().expect("listener thread").expect("accepted"));
+}
+
+/// A server that authenticates and then never confirms the session channel counts
+/// against the connect budget instead of hanging the fetch.
+#[test]
+fn ssh_a_server_that_never_confirms_the_channel_times_out() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::SshGitServer::serve_never_confirming_channels(&bare_path);
+    let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
+    server.write_known_hosts(ssh_home.path());
+    let remoted = SshRemoted {
+        origin,
+        bare,
+        bare_path,
+        server,
+        clone,
+        ssh_home,
+    };
+
+    let cancel = Cancel::new().with_connect_timeout(std::time::Duration::from_millis(1500));
+    let err = fetch_on_a_thread(&remoted, cancel)
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the fetch ends once the connect budget is spent")
+        .expect_err("timed out");
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("did not complete the ssh handshake"),
+        "{err}"
+    );
+}
+
 #[test]
 fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
     // No known_hosts entry is written, so the host is unknown.
