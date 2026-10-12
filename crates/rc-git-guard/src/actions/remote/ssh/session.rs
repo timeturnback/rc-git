@@ -406,4 +406,36 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("moved no data"), "{error}");
     }
+
+    #[test]
+    fn a_silent_peer_is_timed_across_several_polls() {
+        let runtime = build_runtime("test").expect("runtime");
+        let watch = watch(&Cancel::new(), CANCEL_POLL * 3);
+        let started = Instant::now();
+        let blocked = watch.drive(
+            runtime.handle(),
+            std::future::pending::<io::Result<usize>>(),
+        );
+        let elapsed = started.elapsed();
+        let error = blocked.expect_err("timed out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            elapsed >= CANCEL_POLL * 3 && elapsed < CANCEL_POLL * 5,
+            "took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn an_operation_pending_at_a_poll_tick_still_returns_its_value() {
+        let runtime = build_runtime("test").expect("runtime");
+        let watch = watch(&Cancel::new(), Duration::from_secs(5));
+        let started = Instant::now();
+        let read = watch.drive(runtime.handle(), async {
+            tokio::time::sleep(CANCEL_POLL + CANCEL_POLL / 2).await;
+            Ok(7_usize)
+        });
+        let elapsed = started.elapsed();
+        assert_eq!(read.expect("value"), 7);
+        assert!(elapsed > CANCEL_POLL, "took {elapsed:?}");
+    }
 }
