@@ -1933,8 +1933,7 @@ fn ssh_a_server_that_never_confirms_the_channel_times_out() {
         .expect_err("timed out");
     assert!(matches!(err, ActionError::Git { .. }), "{err}");
     assert!(
-        err.to_string()
-            .contains("did not complete the ssh handshake"),
+        err.to_string().contains("did not start the git service"),
         "{err}"
     );
 }

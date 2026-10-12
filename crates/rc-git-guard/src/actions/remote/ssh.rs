@@ -3,6 +3,7 @@
 //! channel. No child process is ever spawned — the same invariant the HTTPS path
 //! keeps. `known_hosts` is consulted read-only; trust decisions live with the caller.
 
+use std::cell::Cell;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -116,13 +117,15 @@ fn connect(runtime: &Runtime, request: &Request<'_>) -> ActionResult<Connected> 
     let report: ReportSlot = Arc::new(Mutex::new(None));
     let handler = HostKeyHandler::new(target, auth.accepted_hostkey, Arc::clone(&report));
     let passphrase = auth.creds.map(|creds| creds.token.as_str());
+    let phase = Cell::new(Phase::Handshake);
     // Entered for the whole call so whatever the abandoned future or a refused session
     // drops (russh spawns close notifications on drop) still finds a reactor.
     let _context = runtime.enter();
     let connected = drive(
         runtime,
-        connect_and_exec(request, handler, passphrase),
+        connect_and_exec(request, handler, passphrase, &phase),
         request,
+        &phase,
     );
     match connected {
         Ok(pair) => {
@@ -139,11 +142,13 @@ fn connect(runtime: &Runtime, request: &Request<'_>) -> ActionResult<Connected> 
 /// Polls `connecting` on `runtime` until it finishes, waking every [`CANCEL_POLL`] to
 /// look at the cancel flag. Dialing, the handshake, authentication and the session
 /// channel share one deadline, the request's connect budget, measured from before the
-/// dial. The future is pinned once, so an elapsed slice drops only the timer.
+/// dial. The future is pinned once, so an elapsed slice drops only the timer. A timeout
+/// names the `phase` the connect had reached.
 fn drive(
     runtime: &Runtime,
     connecting: impl Future<Output = ActionResult<Connected>>,
     request: &Request<'_>,
+    phase: &Cell<Phase>,
 ) -> ActionResult<Connected> {
     let budget = request.cancel.connect();
     let deadline = Instant::now() + budget;
@@ -152,7 +157,7 @@ fn drive(
         bail_if_cancelled(request.cancel, request.op)?;
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(timed_out(request, budget));
+            return Err(timed_out(request, phase.get(), budget));
         }
         let slice = left.min(CANCEL_POLL);
         // The timer is built inside the async block: a `Sleep` needs the runtime context
@@ -165,17 +170,43 @@ fn drive(
     }
 }
 
-/// The error for a connect that outlived its budget.
-fn timed_out(request: &Request<'_>, budget: Duration) -> ActionError {
+/// How far a connect got, so a timeout tells a network fault from a stalled login.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Dialing, the ssh handshake and the host-key check.
+    Handshake,
+    /// Authenticating, which includes waiting on an ssh-agent to sign.
+    Authenticate,
+    /// Opening the session channel and starting the git service.
+    Exec,
+}
+
+/// The error for a connect that outlived its budget in `phase`.
+fn timed_out(request: &Request<'_>, phase: Phase, budget: Duration) -> ActionError {
     let target = request.target;
     ActionError::git(
         request.op,
         &target.host,
-        format!(
-            "'{}:{}' did not complete the ssh handshake within {budget:?}",
-            target.host_name, target.port
-        ),
+        timeout_message(phase, &target.host_name, target.port, budget),
     )
+}
+
+/// The message for a connect to `host_name:port` that ran out of `budget` in `phase`.
+fn timeout_message(phase: Phase, host_name: &str, port: u16, budget: Duration) -> String {
+    match phase {
+        Phase::Handshake => {
+            format!("'{host_name}:{port}' did not complete the ssh handshake within {budget:?}")
+        }
+        Phase::Authenticate => format!(
+            "'{host_name}:{port}' accepted the connection, but authentication did not finish \
+             within {budget:?} (an ssh-agent waiting for approval, or a key the server is slow \
+             to check)"
+        ),
+        Phase::Exec => format!(
+            "'{host_name}:{port}' accepted the login, but did not start the git service \
+             within {budget:?}"
+        ),
+    }
 }
 
 /// Dial (see [`dial`]), verify the host key, authenticate, open a session channel, and exec the git
@@ -188,6 +219,7 @@ async fn connect_and_exec(
     request: &Request<'_>,
     handler: HostKeyHandler,
     passphrase: Option<&str>,
+    phase: &Cell<Phase>,
 ) -> ActionResult<Connected> {
     let Request {
         target,
@@ -207,7 +239,9 @@ async fn connect_and_exec(
     let mut client = russh::client::connect_stream(config, socket, handler)
         .await
         .map_err(git_err(op, &target.host))?;
+    phase.set(Phase::Authenticate);
     auth::authenticate(&mut client, target, passphrase, op).await?;
+    phase.set(Phase::Exec);
     let channel = client
         .channel_open_session()
         .await
@@ -253,4 +287,26 @@ fn typed_refusal(report: &ReportSlot, target: &SshTarget, op: &'static str) -> O
             fingerprint,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_auth_timeout_names_authentication() {
+        let budget = Duration::from_secs(30);
+        let handshake = timeout_message(Phase::Handshake, "example.com", 22, budget);
+        let auth = timeout_message(Phase::Authenticate, "example.com", 22, budget);
+        let exec = timeout_message(Phase::Exec, "example.com", 22, budget);
+        assert!(handshake.contains("ssh handshake"), "{handshake}");
+        assert!(auth.contains("authentication"), "{auth}");
+        assert!(auth.contains("ssh-agent"), "{auth}");
+        assert!(!auth.contains("handshake"), "{auth}");
+        assert!(exec.contains("git service"), "{exec}");
+        for message in [&handshake, &auth, &exec] {
+            assert!(message.contains("'example.com:22'"), "{message}");
+            assert!(message.contains("30s"), "{message}");
+        }
+    }
 }
