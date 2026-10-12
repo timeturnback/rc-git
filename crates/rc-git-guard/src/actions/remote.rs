@@ -834,6 +834,22 @@ fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionRe
 mod tests {
     use super::*;
 
+    #[test]
+    fn credentials_debug_redacts_the_token_alone_and_inside_remote_auth() {
+        let creds = Credentials {
+            username: "u".into(),
+            token: "secret-value".into(),
+        };
+        let auth = RemoteAuth {
+            creds: Some(&creds),
+            ..RemoteAuth::default()
+        };
+        for printed in [format!("{creds:?}"), format!("{auth:?}")] {
+            assert!(!printed.contains("secret-value"), "{printed}");
+            assert!(printed.contains("<redacted>"), "{printed}");
+        }
+    }
+
     fn map(error: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {
         map_network_error(error, "fetch", "origin", "127.0.0.1:4010")
     }

@@ -127,6 +127,23 @@ fn upstream_status_reports_the_ssh_transport_from_the_parsed_scheme() {
     assert_eq!(status.host, "example.com");
 }
 
+#[test]
+fn upstream_status_strips_userinfo_from_the_url() {
+    let fixture = Fixture::standard();
+    fixture.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://user:tok@example.com/x.git",
+    ]);
+    let status = upstream_status(fixture.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(status.url, "https://example.com/x.git");
+    assert!(!status.url.contains("tok"), "{}", status.url);
+    assert!(!status.url.contains("user@"), "{}", status.url);
+    assert_eq!(status.host, "example.com");
+}
+
 /// Drops `branch.main.remote` and `branch.main.merge`, the state of a branch made with
 /// `git init` and pushed without `-u`: `origin` exists, but nothing names it the upstream.
 fn untrack(remoted: &Remoted) {
