@@ -1214,6 +1214,86 @@ fn push_with_nothing_new_is_a_no_op() {
     assert_eq!(outcome.tracking_ref_error, None);
 }
 
+/// About 4 KiB of text that differs from `variant` to `variant` in one line, so git stores
+/// each version as a delta against another.
+fn four_kib_text(variant: usize) -> Vec<u8> {
+    let mut lines = Vec::new();
+    for line in 0..128 {
+        if line == 64 {
+            lines.push(format!("variant {variant:>22}\n"));
+        } else {
+            lines.push(format!("line {line:>25}\n"));
+        }
+    }
+    lines.concat().into_bytes()
+}
+
+#[test]
+fn push_after_repack_sends_a_self_contained_pack() {
+    let remoted = remoted();
+    for (variant, date) in [
+        "2024-03-02T00:00:00+0000",
+        "2024-03-03T00:00:00+0000",
+        "2024-03-04T00:00:00+0000",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        remoted.clone.write("big.txt", &four_kib_text(variant));
+        remoted.clone.commit(&format!("Edit {variant}"), date);
+    }
+    remoted.clone.git(&["repack", "-adf", "--quiet"]);
+    let tip = remoted.clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push");
+    assert_eq!(outcome.pushed_commits, 3);
+    assert_eq!(bare_rev(&remoted.bare, "main"), tip);
+    remoted
+        .bare
+        .git(&["--git-dir", "remote.git", "fsck", "--strict"]);
+}
+
+#[test]
+fn push_to_an_empty_remote_uploads_the_whole_history() {
+    let local = Fixture::standard();
+    local.git(&["repack", "-adf", "--quiet"]);
+    let bare = Fixture::empty_dir();
+    bare.git(&["init", "--bare", "--quiet", "remote.git"]);
+    bare.git(&[
+        "--git-dir",
+        "remote.git",
+        "config",
+        "http.receivepack",
+        "true",
+    ]);
+    let server = rc_git_testkit::HttpGitServer::serve(&bare.path().join("remote.git"));
+    local.git(&["remote", "add", "origin", &server.url()]);
+    local.git(&["config", "branch.main.remote", "origin"]);
+    local.git(&["config", "branch.main.merge", "refs/heads/main"]);
+
+    let outcome = push_upstream(
+        local.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push");
+    let history: usize = local
+        .git_output(&["rev-list", "--count", "HEAD"])
+        .parse()
+        .expect("commit count");
+    assert_eq!(outcome.pushed_commits, history);
+    assert_eq!(outcome.old, None);
+    assert_eq!(bare_rev(&bare, "main"), local.rev_parse("HEAD"));
+    bare.git(&["--git-dir", "remote.git", "fsck", "--strict"]);
+}
+
 #[test]
 fn push_names_a_missing_local_object() {
     let remoted = remoted();
