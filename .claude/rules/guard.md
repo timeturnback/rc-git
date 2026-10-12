@@ -48,8 +48,8 @@ here; so does everything that comes later.
   line to `logs/HEAD` themselves through `Writer::open_head_reflog` (before the first write)
   and `Writer::append_head_reflog`, only when the log already exists. Without it
   `git checkout -` and `HEAD@{1}` would silently point at the wrong commit.
-- Protected patterns default to `main`, `master`, `release/*`. Users may add patterns, never
-  remove the defaults through the UI.
+- Protected patterns default to `main`, `master`, `release/*`, and are fixed: every caller
+  uses `Policy::default()` and no setting changes them yet.
 - Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
 - Every remote entry point takes a `Cancel` and must stay interruptible: no new blocking
   call without a cancel poll and an idle budget (`CANCEL_POLL`, `IDLE_TIMEOUT` in
