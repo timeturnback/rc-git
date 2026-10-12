@@ -288,6 +288,21 @@ pub enum ActionError {
         /// Path of the encrypted key file.
         key: String,
     },
+    /// The ssh-agent refused to sign with one of its keys: an `ssh-add -c` key with no askpass,
+    /// a dismissed approval prompt, an untouched hardware key. The connection cannot go on to
+    /// the next key, so authentication stops here.
+    #[error(
+        "{op}: the ssh agent refused to sign with {key} for '{host}'; approve the request in \
+         the agent, or remove the key from it"
+    )]
+    AgentSignRefused {
+        /// What was being done.
+        op: &'static str,
+        /// The host being authenticated with.
+        host: String,
+        /// The agent key, as its comment and `SHA256:...` fingerprint.
+        key: String,
+    },
     /// No remote resolves for the branch: `branch.<name>.remote` is unset and there is no
     /// `origin`, or the remote has no URL.
     #[error(
@@ -1119,6 +1134,20 @@ mod tests {
             "fetch: the ssh-ed25519 host key for 'git.example.com' does not match the key \
              approved earlier (SHA256:approved) (offered SHA256:offered); this may be a \
              man-in-the-middle — investigate with ssh directly"
+        );
+    }
+
+    #[test]
+    fn a_refused_agent_signature_names_the_key_and_the_host() {
+        let err = ActionError::AgentSignRefused {
+            op: "fetch",
+            host: "git.example.com".to_owned(),
+            key: "'work@laptop' (SHA256:abc)".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "fetch: the ssh agent refused to sign with 'work@laptop' (SHA256:abc) for \
+             'git.example.com'; approve the request in the agent, or remove the key from it"
         );
     }
 

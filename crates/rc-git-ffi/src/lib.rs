@@ -3688,6 +3688,7 @@ fn action_status(err: &ActionError) -> i32 {
         | ActionError::DirtyPath { .. }
         | ActionError::AuthRequired { .. }
         | ActionError::PassphraseRequired { .. }
+        | ActionError::AgentSignRefused { .. }
         | ActionError::Diverged { .. }
         | ActionError::PushRejected { .. }
         | ActionError::UnknownHostKey { .. }
@@ -4146,6 +4147,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::DirtyPath { .. }
         | ActionError::UnsupportedRemote { .. }
         | ActionError::HostKeyMismatch { .. }
+        | ActionError::AgentSignRefused { .. }
         | ActionError::PushRejected { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::UpstreamGone { .. }
@@ -4477,6 +4479,24 @@ mod tests {
     use rc_git_testkit::{BIN_DAT, COMMIT_1_TITLE, COMMIT_2_TITLE, Fixture, MAIN_RS, README};
 
     use super::*;
+
+    /// A refused agent signature is not a credential the app can prompt for: it reports
+    /// the message as a plain error, never `RCGIT_AUTH_REQUIRED`.
+    #[test]
+    fn a_refused_agent_signature_is_a_non_prompting_remote_error() {
+        let err = ActionError::AgentSignRefused {
+            op: "fetch",
+            host: "github.com".to_owned(),
+            key: "'work@laptop' (SHA256:abc)".to_owned(),
+        };
+        let mut message = ptr::null_mut();
+        let mut hostkey = ptr::null_mut();
+        let (error, hostkey_out) =
+            unsafe { (Out::new(&raw mut message), Out::new(&raw mut hostkey)) };
+        assert_eq!(finish_remote(&error, &hostkey_out, &err), RCGIT_ERROR);
+        assert!(hostkey.is_null());
+        assert!(take_error(&mut message).contains("refused to sign with 'work@laptop'"));
+    }
 
     fn open(fx: &Fixture) -> *mut RcGitRepo {
         let path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();

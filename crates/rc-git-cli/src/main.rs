@@ -384,9 +384,11 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
         return EXIT_USAGE;
     }
     match err.downcast_ref::<ActionError>() {
-        Some(ActionError::AuthRequired { .. } | ActionError::PassphraseRequired { .. }) => {
-            EXIT_AUTH
-        }
+        Some(
+            ActionError::AuthRequired { .. }
+            | ActionError::PassphraseRequired { .. }
+            | ActionError::AgentSignRefused { .. },
+        ) => EXIT_AUTH,
         Some(ActionError::UnknownHostKey { .. }) => EXIT_HOSTKEY,
         Some(ActionError::Diverged { .. } | ActionError::PushRejected { .. }) => EXIT_DIVERGED,
         Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
@@ -1759,6 +1761,16 @@ mod tests {
         let mut out = Vec::new();
         write_path(&mut out, path);
         out
+    }
+
+    #[test]
+    fn an_agent_that_refuses_to_sign_exits_as_authentication() {
+        let err = anyhow::Error::new(crate::ActionError::AgentSignRefused {
+            op: "fetch",
+            host: "github.com".to_owned(),
+            key: "'work@laptop' (SHA256:abc)".to_owned(),
+        });
+        assert_eq!(crate::exit_code_for(&err), crate::EXIT_AUTH);
     }
 
     #[test]

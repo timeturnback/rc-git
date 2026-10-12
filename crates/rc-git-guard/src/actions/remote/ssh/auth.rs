@@ -11,6 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use russh::AgentAuthError;
 use russh::client::Handle;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
@@ -46,6 +47,8 @@ enum Outcome {
 /// [`ActionError::PassphraseRequired`] when the only remaining candidates are
 /// encrypted key files the passphrase (or its absence) cannot open,
 /// [`ActionError::AuthRequired`] when every candidate was tried and rejected,
+/// [`ActionError::AgentSignRefused`] when the ssh-agent refuses to sign with a key, which
+/// leaves the connection unusable for further offers,
 /// [`ActionError::Git`] when the server connection fails mid-auth.
 pub(super) async fn authenticate(
     handle: &mut Handle<HostKeyHandler>,
@@ -73,7 +76,7 @@ pub(super) async fn authenticate(
     let order = offer_order(
         &agent_keys
             .iter()
-            .map(PublicKey::key_data)
+            .map(|agent_key| agent_key.key.key_data())
             .collect::<Vec<_>>(),
         &file_keys
             .iter()
@@ -88,7 +91,7 @@ pub(super) async fn authenticate(
                 let (Some(agent), Some(key)) = (agent.as_mut(), agent_keys.get(index)) else {
                     continue;
                 };
-                ladder.offer_agent_key(agent, key.clone()).await?
+                ladder.offer_agent_key(agent, key).await?
             }
             Offer::File(index) => {
                 let Some(path) = target.identities.get(index) else {
@@ -165,14 +168,19 @@ impl Ladder<'_> {
     async fn offer_agent_key(
         &mut self,
         agent: &mut Agent,
-        key: PublicKey,
+        agent_key: &AgentKey,
     ) -> ActionResult<Outcome> {
-        let hash_alg = rsa_hash_for(&key.algorithm(), self.rsa_hash);
+        let hash_alg = rsa_hash_for(&agent_key.key.algorithm(), self.rsa_hash);
         let result = self
             .handle
-            .authenticate_publickey_with(self.target.user.clone(), key, hash_alg, agent)
+            .authenticate_publickey_with(
+                self.target.user.clone(),
+                agent_key.key.clone(),
+                hash_alg,
+                agent,
+            )
             .await
-            .map_err(git_err(self.op, &self.target.host))?;
+            .map_err(|source| agent_auth_err(self.op, &self.target.host, agent_key, source))?;
         Ok(accepted_or_rejected(result.success()))
     }
 
@@ -200,6 +208,26 @@ impl Ladder<'_> {
     }
 }
 
+/// Maps a failed agent-key offer. A refused signature becomes
+/// [`ActionError::AgentSignRefused`] naming the key: russh discards every server message
+/// until the signature arrives, so the connection cannot try the next key. Anything else
+/// is a transport failure.
+fn agent_auth_err(
+    op: &'static str,
+    host: &str,
+    agent_key: &AgentKey,
+    source: AgentAuthError,
+) -> ActionError {
+    match source {
+        AgentAuthError::Key(russh::keys::Error::AgentFailure) => ActionError::AgentSignRefused {
+            op,
+            host: host.to_owned(),
+            key: agent_key.describe(),
+        },
+        other => git_err(op, host)(other),
+    }
+}
+
 fn accepted_or_rejected(success: bool) -> Outcome {
     if success {
         Outcome::Accepted
@@ -208,9 +236,28 @@ fn accepted_or_rejected(success: bool) -> Outcome {
     }
 }
 
+/// One plain public key the ssh-agent holds, with the comment it was added under.
+struct AgentKey {
+    key: PublicKey,
+    comment: String,
+}
+
+impl AgentKey {
+    /// The key as a person recognizes it: its comment, when it has one, and its
+    /// `SHA256:...` fingerprint.
+    fn describe(&self) -> String {
+        let fingerprint = self.key.fingerprint(HashAlg::Sha256);
+        if self.comment.is_empty() {
+            format!("the agent key {fingerprint}")
+        } else {
+            format!("'{}' ({fingerprint})", self.comment)
+        }
+    }
+}
+
 /// The ssh-agent and the plain public keys it holds. A missing or broken agent is not
 /// an error — the ladder offers identity files only.
-async fn connect_agent() -> (Option<Agent>, Vec<PublicKey>) {
+async fn connect_agent() -> (Option<Agent>, Vec<AgentKey>) {
     let Ok(mut agent) = Agent::connect_env().await else {
         return (None, Vec::new());
     };
@@ -219,10 +266,10 @@ async fn connect_agent() -> (Option<Agent>, Vec<PublicKey>) {
     };
     let mut keys = Vec::new();
     for identity in identities {
-        let AgentIdentity::PublicKey { key, .. } = identity else {
+        let AgentIdentity::PublicKey { key, comment } = identity else {
             continue;
         };
-        keys.push(key);
+        keys.push(AgentKey { key, comment });
     }
     (Some(agent), keys)
 }
@@ -301,6 +348,55 @@ mod tests {
 
     fn keypair(seed: u8) -> PrivateKey {
         russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[seed; 32]).into()
+    }
+
+    fn agent_key(comment: &str) -> AgentKey {
+        AgentKey {
+            key: keypair(3).public_key().clone(),
+            comment: comment.to_owned(),
+        }
+    }
+
+    /// The agent answering `SSH_AGENT_FAILURE` (an `ssh-add -c` key, a dismissed approval)
+    /// stops the ladder with an auth-class error naming the key, not a bare
+    /// "Agent failure".
+    #[test]
+    fn a_refused_agent_signature_names_the_key_by_comment_and_fingerprint() {
+        let key = agent_key("work@laptop");
+        let fingerprint = key.key.fingerprint(HashAlg::Sha256).to_string();
+        let err = agent_auth_err(
+            "fetch",
+            "github.com",
+            &key,
+            AgentAuthError::Key(russh::keys::Error::AgentFailure),
+        );
+        let ActionError::AgentSignRefused { op, host, key } = err else {
+            panic!("expected AgentSignRefused, got {err:?}");
+        };
+        assert_eq!((op, host.as_str()), ("fetch", "github.com"));
+        assert_eq!(key, format!("'work@laptop' ({fingerprint})"));
+    }
+
+    #[test]
+    fn an_agent_key_without_a_comment_is_named_by_its_fingerprint() {
+        let key = agent_key("");
+        let fingerprint = key.key.fingerprint(HashAlg::Sha256).to_string();
+        assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}");
+        assert_eq!(key.describe(), format!("the agent key {fingerprint}"));
+    }
+
+    #[test]
+    fn a_lost_connection_during_an_agent_offer_stays_a_transport_error() {
+        let err = agent_auth_err(
+            "fetch",
+            "github.com",
+            &agent_key("work@laptop"),
+            AgentAuthError::Send(russh::SendError {}),
+        );
+        let ActionError::Git { op, .. } = err else {
+            panic!("expected a transport error, got {err:?}");
+        };
+        assert_eq!(op, "fetch");
     }
 
     /// The `.pub` file wins even when no private key sits beside it — the setup where
