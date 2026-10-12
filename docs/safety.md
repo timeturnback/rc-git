@@ -128,8 +128,11 @@ the policy's own evaluation). Every write is a method on the guard's `Writer`, w
 be built from a `Confirmation`, and nothing outside the policy can build one: the write path
 holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
-branch tip, the tag object, or the dropped stash commit — with numbered slots (`-2`, `-3`, …)
-so no backup ever overwrites an earlier one. Two more rules live in the write path itself:
+branch tip, the tag object, or the dropped stash commit — at
+`refs/rc-git/backup/<kind>/<name>`, where `<name>` escapes `%` as `%25` and `/` as `%2F` so
+`feature/x` backs up to `feature%2Fx` beside `feature`'s backup rather than under it. A repeat
+takes the slot one past the highest existing one (`-2`, `-3`, …), so no backup ever overwrites
+an earlier one. Two more rules live in the write path itself:
 a branch checked out in any worktree — the opened one, the main worktree, or any linked one —
 cannot be deleted (compared ignoring case; its delete plan is a `Deny` naming the checkout and
 the worktree's path unless the policy already denies it, a worktree whose `HEAD` cannot be read

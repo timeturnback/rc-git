@@ -120,41 +120,52 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// Writes `refs/rc-git/backup/<kind>/<name>` pointing at `target`, appending `-2`, `-3`, …
-    /// when earlier backups of the same name exist, so nothing is ever overwritten.
+    /// Writes `refs/rc-git/backup/<kind>/<leaf>` pointing at `target`, where `<leaf>` is `name`
+    /// escaped by [`backup_leaf`] so no backup nests under another. Earlier backups of the same
+    /// name are read once and the next numbered slot (`-2`, `-3`, …) is written, so nothing is
+    /// ever overwritten. A slot another writer takes between the read and the write is retried
+    /// once with a fresh read.
     ///
     /// # Errors
-    /// [`ActionError::Git`] when no free slot could be written.
+    /// [`ActionError::Git`] naming the slot when the existing backups cannot be read, the slot
+    /// cannot be written, or another writer took it twice in a row.
     pub(super) fn write_backup_ref(
         &self,
         kind: &str,
         name: &str,
         target: ObjectId,
     ) -> ActionResult<String> {
-        const OP: &str = "write backup ref";
-        for attempt in 1..=1000_u32 {
-            let candidate = if attempt == 1 {
-                format!("refs/rc-git/backup/{kind}/{name}")
-            } else {
-                format!("refs/rc-git/backup/{kind}/{name}-{attempt}")
-            };
-            let edit = update_edit(
-                &candidate,
-                PreviousValue::MustNotExist,
-                Target::Object(target),
-                "rc-git: backup before deletion",
-                OP,
-            )?;
-            match self.apply_edit(edit, OP, &candidate) {
-                Ok(()) => return Ok(candidate),
-                Err(error) => {
-                    if attempt == 1000 {
-                        return Err(error);
-                    }
-                }
-            }
+        let base = format!("refs/rc-git/backup/{kind}/{}", backup_leaf(name));
+        match self.write_next_backup(&base, target) {
+            Err(error) if slot_taken(&error) => self.write_next_backup(&base, target),
+            result => result,
         }
-        unreachable!("the loop always returns")
+    }
+
+    /// Writes the slot after the highest existing backup under `base` with `MustNotExist`.
+    ///
+    /// # Errors
+    /// [`ActionError::Git`] naming `base` or the slot when the backups cannot be read or the
+    /// slot cannot be written.
+    fn write_next_backup(&self, base: &str, target: ObjectId) -> ActionResult<String> {
+        const OP: &str = "write backup ref";
+        let slot = highest_backup_slot(self.repo, base)?
+            .checked_add(1)
+            .ok_or_else(|| ActionError::git(OP, base, "every numbered backup slot is taken"))?;
+        let candidate = if slot == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{slot}")
+        };
+        let edit = update_edit(
+            &candidate,
+            PreviousValue::MustNotExist,
+            Target::Object(target),
+            "rc-git: backup before deletion",
+            OP,
+        )?;
+        self.apply_edit(edit, OP, &candidate)?;
+        Ok(candidate)
     }
 
     /// Writes `data` as a blob read from `path`.
@@ -597,6 +608,68 @@ fn prune_empty_parents(work_dir: &Path, relative: &str) {
             break;
         }
     }
+}
+
+/// `name` as one ref path component: `%` becomes `%25` and `/` becomes `%2F`, which is
+/// injective, so `feature` and `feature/x` back up to sibling refs instead of a file and a
+/// directory of the same name.
+fn backup_leaf(name: &str) -> String {
+    name.replace('%', "%25").replace('/', "%2F")
+}
+
+/// The highest backup slot already used under `base`: 1 for `base` itself, `n` for `base-n`, 0
+/// when there is none. A ref nested below a slot (`base/…`, left by older versions that did not
+/// escape names) occupies it too, since that slot can no longer be created as a file.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `base` when the references cannot be listed or read.
+fn highest_backup_slot(repo: &gix::Repository, base: &str) -> ActionResult<u64> {
+    const OP: &str = "read backup refs";
+    let platform = repo.references().map_err(git_err(OP, base))?;
+    let mut highest = 0;
+    for reference in platform.prefixed(base).map_err(git_err(OP, base))? {
+        let reference = reference.map_err(|source| ActionError::git(OP, base, source))?;
+        let full_name = reference.name().as_bstr();
+        let Some(rest) = full_name.strip_prefix(base.as_bytes()) else {
+            continue;
+        };
+        let slot = backup_slot(rest);
+        highest = highest.max(slot);
+    }
+    Ok(highest)
+}
+
+/// The slot a ref name occupies given what follows its base: 1 for nothing or `/…`, `n` for
+/// `-n` or `-n/…`, and 0 for anything else (another name that merely shares the prefix).
+fn backup_slot(rest: &[u8]) -> u64 {
+    let slot_part = rest.split(|&byte| byte == b'/').next().unwrap_or_default();
+    if slot_part.is_empty() {
+        return 1;
+    }
+    let Some(digits) = slot_part.strip_prefix(b"-") else {
+        return 0;
+    };
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return 0;
+    }
+    digits
+        .to_str()
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// Whether `error` is a ref transaction refused because its `MustNotExist` target exists.
+fn slot_taken(error: &ActionError) -> bool {
+    let ActionError::Git { source, .. } = error else {
+        return false;
+    };
+    matches!(
+        source.downcast_ref::<gix::reference::edit::Error>(),
+        Some(gix::reference::edit::Error::FileTransactionPrepare(
+            gix::refs::file::transaction::prepare::Error::MustNotExist { .. }
+        ))
+    )
 }
 
 #[cfg(test)]

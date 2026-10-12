@@ -213,6 +213,46 @@ fn deleting_an_unmerged_branch_demands_the_name_and_writes_a_backup() {
 }
 
 #[test]
+fn a_branch_nested_under_a_backed_up_name_still_backs_up() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let tip = fx.rev_parse("feature");
+    delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap();
+
+    create_branch(fx.path(), &policy, "feature/x", &tip).unwrap();
+    let deleted = delete_branch(fx.path(), &policy, "feature/x", Some("feature/x")).unwrap();
+    assert_eq!(
+        deleted.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/feature%2Fx"),
+        "the slash is escaped, so the backup cannot nest under `feature`"
+    );
+    assert!(!refs(&fx).contains("refs/heads/feature/x"));
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature%2Fx"), tip);
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature"), tip);
+}
+
+#[test]
+fn a_backup_takes_the_slot_after_the_highest_existing_one() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let tip = fx.rev_parse("feature");
+    let main = fx.rev_parse("main");
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/feature-7", &main]);
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/feature-x", &main]);
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/feature/old", &main]);
+
+    let deleted = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap();
+    assert_eq!(
+        deleted.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/feature-8"),
+        "one past the highest slot: `feature-x` is another name, and the older nested \
+         `feature/old` occupies the unnumbered slot"
+    );
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature-8"), tip);
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature-7"), main);
+}
+
+#[test]
 fn an_unreadable_head_refuses_a_branch_delete() {
     let fx = Fixture::standard();
     fx.write(".git/HEAD", b"garbage\n");
@@ -446,6 +486,27 @@ fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
 
     let err = delete_tag(fx.path(), &policy, "nope", Some("nope")).unwrap_err();
     assert!(matches!(err, ActionError::Git { .. }), "{err}");
+}
+
+#[test]
+fn a_tag_nested_under_a_backed_up_name_still_backs_up() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let target = fx.rev_parse("v0.9");
+    let deleted = delete_tag(fx.path(), &policy, "v0.9", Some("v0.9")).unwrap();
+    assert_eq!(
+        deleted.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/tag/v0.9")
+    );
+
+    fx.git(&["tag", "v0.9/rc", &target]);
+    let deleted = delete_tag(fx.path(), &policy, "v0.9/rc", Some("v0.9/rc")).unwrap();
+    assert_eq!(
+        deleted.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/tag/v0.9%2Frc")
+    );
+    assert!(!refs(&fx).contains("refs/tags/v0.9/rc"));
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/tag/v0.9%2Frc"), target);
 }
 
 /// The standard fixture with `core.ignorecase=true`, as git sets it on a case-insensitive
