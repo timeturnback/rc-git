@@ -968,6 +968,49 @@ fn push_creates_a_new_branch_from_an_existing_commit() {
 }
 
 #[test]
+fn push_agrees_with_the_configured_upstream() {
+    let remoted = remoted();
+    remoted
+        .clone
+        .git(&["checkout", "-q", "-b", "topic", "origin/main"]);
+    remoted.clone.write("topic.txt", b"topic\n");
+    remoted
+        .clone
+        .commit("Topic work", "2024-03-02T00:00:00+0000");
+
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("a push to a differently named upstream is refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("upstream origin/main does not match branch topic"),
+        "{message}"
+    );
+    let listed = remoted.bare.git_output(&[
+        "--git-dir",
+        "remote.git",
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/topic",
+    ]);
+    assert_eq!(listed, "", "no differently named remote branch is created");
+    assert!(
+        remoted
+            .clone
+            .git_output(&["for-each-ref", "refs/remotes/origin/topic"])
+            .is_empty(),
+        "no tracking ref is written for the refused push"
+    );
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert_eq!(status.upstream_ref, "refs/remotes/origin/main");
+    assert_eq!((status.ahead, status.behind), (1, 0));
+}
+
+#[test]
 fn push_is_rejected_when_the_remote_moved() {
     let remoted = remoted();
     advance_origin(&remoted.origin, &remoted.bare_path);

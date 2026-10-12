@@ -18,7 +18,7 @@ use crate::{Action, Policy};
 use super::report::Report;
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    current_branch, host_of, http_options, is_ancestor, map_network_error, pack, report,
+    current_branch, host_of, http_options, is_ancestor, map_network_error, pack, push_refs, report,
     resolve_upstream, run_detached, set_reflog_identity, vet_remote_url,
 };
 
@@ -43,9 +43,9 @@ pub struct PushOutcome {
     pub already_up_to_date: bool,
 }
 
-/// Pushes the checked-out branch to its upstream remote. Plain push only: the remote
-/// tip must be an ancestor of the local tip, checked here before a byte is sent and
-/// enforced again by the server. A URL upstream gets the push but has no
+/// Pushes the checked-out branch to the same-named branch on its upstream remote. Plain
+/// push only: the remote tip must be an ancestor of the local tip, checked here before a
+/// byte is sent and enforced again by the server. A URL upstream gets the push but has no
 /// remote-tracking ref to move.
 ///
 /// # Errors
@@ -53,7 +53,8 @@ pub struct PushOutcome {
 /// [`ActionError::AuthRequired`], [`ActionError::UnsupportedRemote`],
 /// [`ActionError::NoUpstream`], [`ActionError::Cancelled`], [`ActionError::DetachedHead`],
 /// and [`ActionError::Git`] for every other failure, including a local upstream
-/// (`branch.<name>.remote = .`), which rc-git does not push into.
+/// (`branch.<name>.remote = .`), which rc-git does not push into, and a
+/// `branch.<name>.merge` that names another branch, which rc-git does not push to.
 pub fn push_upstream(
     repo_path: &Path,
     policy: &Policy,
@@ -77,10 +78,10 @@ pub fn push_upstream(
             "the branch has no commits yet; nothing to push",
         )
     })?;
-    let (remote_name, url, tracking_remote) = push_target(&repo, &branch)?;
+    let (remote_name, url) = push_target(&repo, &branch)?;
+    let (full_ref, tracking_ref) = push_refs(&repo, &branch, &remote_name, OP)?;
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
-    let full_ref = format!("refs/heads/{branch}");
 
     let transport = match scheme {
         RemoteScheme::Https => {
@@ -134,8 +135,8 @@ pub fn push_upstream(
             send(transport, &link, remote_old, tip, &bytes)
         })?;
     }
-    if let Some(remote) = tracking_remote {
-        update_tracking_ref(&Writer::new(&repo, &proof), &remote, &branch, tip)?;
+    if let Some(tracking_ref) = tracking_ref {
+        update_tracking_ref(&Writer::new(&repo, &proof), &tracking_ref, tip)?;
     }
     Ok(PushOutcome {
         remote: remote_name,
@@ -147,13 +148,9 @@ pub fn push_upstream(
     })
 }
 
-/// Where the branch pushes: the label reports and errors use, the URL, and the remote whose
-/// tracking ref follows the push (`None` for a URL upstream, which has none). A local
+/// Where the branch pushes: the label reports and errors use, and the URL. A local
 /// upstream is refused: rc-git does not push into a local branch.
-fn push_target(
-    repo: &gix::Repository,
-    branch: &str,
-) -> ActionResult<(String, gix::Url, Option<String>)> {
+fn push_target(repo: &gix::Repository, branch: &str) -> ActionResult<(String, gix::Url)> {
     let upstream = resolve_upstream(repo, branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
         op: OP,
         branch: branch.to_owned(),
@@ -168,8 +165,7 @@ fn push_target(
                  local branch (merge into it with git, or set a remote upstream)"
             ),
         )),
-        Upstream::Named { name, url } => Ok((label, url, Some(name))),
-        Upstream::Url { url } => Ok((label, url, None)),
+        Upstream::Named { url, .. } | Upstream::Url { url } => Ok((label, url)),
     }
 }
 
@@ -365,23 +361,17 @@ fn connect_failed(
     map_network_error(source, OP, super::redacted(url).as_str(), host)
 }
 
-/// Moves `refs/remotes/<remote>/<branch>` to the pushed tip so ahead/behind reads 0
-/// without another fetch.
-fn update_tracking_ref(
-    writer: &Writer<'_>,
-    remote: &str,
-    branch: &str,
-    tip: ObjectId,
-) -> ActionResult<()> {
-    let full_name = format!("refs/remotes/{remote}/{branch}");
+/// Moves the remote-tracking ref status counts against to the pushed tip so ahead/behind
+/// reads 0 without another fetch.
+fn update_tracking_ref(writer: &Writer<'_>, full_name: &str, tip: ObjectId) -> ActionResult<()> {
     let edit = crate::actions::update_edit(
-        &full_name,
+        full_name,
         PreviousValue::Any,
         Target::Object(tip),
         "rc-git: push",
         OP,
     )?;
-    writer.apply_edit(edit, OP, &full_name)
+    writer.apply_edit(edit, OP, full_name)
 }
 
 #[cfg(test)]

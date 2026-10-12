@@ -229,8 +229,9 @@ The remote operations add their own guarantees:
   leaves visibly modified files rather than what looks like lost work, and a branch moved
   from the terminal mid-pull fails the ref edit instead of clobbering it.
 - **Push** is never force from rc-git: the remote tip must be an ancestor of the local tip,
-  checked client-side before anything is sent and enforced again by the server. The pack is
-  self-contained (never thin). A rejection surfaces the server's reason verbatim.
+  checked client-side before anything is sent and enforced again by the server. It writes only
+  the same-named remote branch and refuses, before connecting, a branch whose
+  `branch.<name>.merge` names another one. The pack is self-contained (never thin). A rejection surfaces the server's reason verbatim.
 - **Credentials** are per-host, supplied by the caller (the app reads the login keychain),
   passed through the FFI per call, and never stored or logged by the Rust side.
 - **Every transfer ends.** Each remote call carries an `RcGitCancel` the app can signal

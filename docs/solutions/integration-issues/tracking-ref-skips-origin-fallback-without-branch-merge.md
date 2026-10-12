@@ -104,7 +104,7 @@ None of these checks for a remote called `origin`. rc-git adds that fallback in 
 
 The fallback's answer is the ref push writes: `update_tracking_ref` always uses `refs/remotes/{remote}/{branch}` with the remote from `configured_remote_name`. On a branch with no upstream config, status, pull, and push now name the same ref by construction. The `let ... else` runs on every `None` from gix, including a remote with no fetch refspecs, and in each of those cases it also picks the ref push would move.
 
-This holds only on the fallback path. Push always uploads `refs/heads/<branch>` (`push.rs:80`) and ignores `branch.<name>.merge`, so a branch whose config names a differently named upstream (the default after `git checkout -b topic origin/main`) still counts and pulls against `origin/main` while pushing to `origin/topic`. That mismatch predates this fix.
+Push uploads only `refs/heads/<branch>`. A branch whose `branch.<name>.merge` names a differently named upstream (the default after `git checkout -b topic origin/main`) used to count and pull against `origin/main` while pushing to `origin/topic`; `push_refs` in `remote.rs` now refuses that push before connecting, as git's `push.default=simple` does, and hands push the tracking ref `tracking_ref_name` returns.
 
 The fallback is rc-git's own convention, not a reading of the user's git defaults. The isolated open never reads `~/.gitconfig`, so settings such as `push.default` or `push.autoSetupRemote` cannot supply the answer either (see [fast-forward-only-pull-hands-divergence-to-git.md](../architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md) for the same constraint on pull).
 

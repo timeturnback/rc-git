@@ -373,8 +373,8 @@ struct TrackingRef {
 /// itself (`refs/heads/main`) for a local upstream; `None` for a URL upstream, which has
 /// no tracking ref. Without `branch.<name>.merge` — a branch made with `git init` and
 /// pushed without `-u` — it is `refs/remotes/<remote>/<branch>` on the remote
-/// `configured_remote_name` picks: the ref push uploads to and moves, so ahead/behind and
-/// pull agree with push.
+/// `configured_remote_name` picks. Push moves this ref and refuses a `branch.<name>.merge`
+/// that names another branch ([`push_refs`]), so ahead/behind and pull agree with push.
 fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef> {
     let remote = configured_remote_name(repo, branch)?;
     if remote == LOCAL_REMOTE {
@@ -404,6 +404,35 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef
         name: tracking.ok()?.as_bstr().to_string(),
         configured: true,
     })
+}
+
+/// The branch a push of `branch` writes on the remote and the remote-tracking ref it moves
+/// (`None` for a URL upstream, which has none). Same name only, as git's
+/// `push.default=simple`: when `branch.<name>.merge` names another branch, status and pull
+/// count against that one, so a same-name push would never clear them. That case is refused,
+/// and rc-git never creates a differently named remote branch.
+pub(super) fn push_refs(
+    repo: &gix::Repository,
+    branch: &str,
+    label: &str,
+    op: &'static str,
+) -> ActionResult<(String, Option<String>)> {
+    let full_ref = format!("refs/heads/{branch}");
+    if let Some(merge_ref) = merge_ref_name(repo, branch)
+        && merge_ref != full_ref
+    {
+        let short = merge_ref.strip_prefix("refs/heads/").unwrap_or(&merge_ref);
+        return Err(ActionError::git(
+            op,
+            branch,
+            format!(
+                "upstream {label}/{short} does not match branch {branch}; rc-git pushes only \
+                 to the same-named branch, so push this one with git"
+            ),
+        ));
+    }
+    let tracking = tracking_ref_name(repo, branch).map(|tracking| tracking.name);
+    Ok((full_ref, tracking))
 }
 
 /// Peels `name` to a commit id, `None` when the ref does not exist.
