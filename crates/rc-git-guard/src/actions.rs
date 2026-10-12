@@ -284,13 +284,32 @@ pub enum ActionError {
         /// Path of the encrypted key file.
         key: String,
     },
-    /// The branch has no configured upstream remote.
-    #[error("{op}: branch '{branch}' has no upstream; configure branch.{branch}.remote first")]
+    /// No remote resolves for the branch: `branch.<name>.remote` is unset and there is no
+    /// `origin`, or the remote has no URL.
+    #[error(
+        "{op}: branch '{branch}' has no remote to use; add an 'origin' remote or set \
+         branch.{branch}.remote"
+    )]
     NoUpstream {
         /// What was being done.
         op: &'static str,
         /// The branch involved.
         branch: String,
+    },
+    /// `branch.<name>.merge` names a remote branch whose tracking ref no longer exists:
+    /// the branch was deleted on the remote and pruned here. Nothing is pushed, so a
+    /// branch the team deleted is not re-created.
+    #[error(
+        "{op}: upstream '{upstream_ref}' of branch '{branch}' no longer exists; unset \
+         branch.{branch}.merge to publish it again"
+    )]
+    UpstreamGone {
+        /// What was being done.
+        op: &'static str,
+        /// The branch involved.
+        branch: String,
+        /// Full name of the missing remote-tracking ref.
+        upstream_ref: String,
     },
     /// Local and upstream have both moved; a fast-forward is impossible.
     #[error(

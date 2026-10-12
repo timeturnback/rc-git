@@ -620,6 +620,58 @@ fn pull_when_only_local_moved_is_a_no_op() {
     assert_eq!(remoted.clone.rev_parse("main"), before);
 }
 
+/// Checks out a new local branch `topic` with one commit the remote does not have.
+fn commit_on_new_topic(remoted: &Remoted) {
+    remoted.clone.git(&["checkout", "-q", "-b", "topic"]);
+    remoted.clone.write("topic.txt", b"topic\n");
+    remoted
+        .clone
+        .commit("Topic work", "2024-03-02T00:00:00+0000");
+}
+
+#[test]
+fn pull_on_a_never_pushed_branch_is_a_no_op() {
+    let remoted = remoted();
+    commit_on_new_topic(&remoted);
+    let before = remoted.clone.rev_parse("topic");
+
+    let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
+    assert!(outcome.unpublished);
+    assert!(outcome.already_up_to_date);
+    assert_eq!(outcome.old, outcome.new);
+    assert_eq!(outcome.files_changed, 0);
+    assert_eq!(remoted.clone.rev_parse("topic"), before);
+}
+
+#[test]
+fn pull_refuses_when_the_upstream_branch_is_gone() {
+    let remoted = remoted();
+    commit_on_new_topic(&remoted);
+    remoted
+        .clone
+        .git(&["config", "branch.topic.remote", "origin"]);
+    remoted
+        .clone
+        .git(&["config", "branch.topic.merge", "refs/heads/topic"]);
+    let before = remoted.clone.rev_parse("topic");
+
+    let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("gone");
+    let ActionError::UpstreamGone {
+        op,
+        branch,
+        upstream_ref,
+    } = &err
+    else {
+        panic!("expected UpstreamGone, got {err:?}");
+    };
+    assert_eq!(
+        (*op, branch.as_str(), upstream_ref.as_str()),
+        ("pull", "topic", "refs/remotes/origin/topic")
+    );
+    assert!(err.to_string().contains("no longer exists"), "{err}");
+    assert_eq!(remoted.clone.rev_parse("topic"), before);
+}
+
 #[test]
 fn pull_refuses_when_both_sides_moved() {
     let remoted = remoted();

@@ -1445,6 +1445,31 @@ fn sync_fetches_pulls_and_pushes() {
 }
 
 #[test]
+fn sync_pushes_a_branch_the_remote_does_not_have_yet() {
+    let (_origin, bare, _server, clone) = served_clone();
+    clone.git(&["checkout", "-q", "-b", "newwork"]);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["sync", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("pull\tnewwork\tnothing upstream yet"),
+        "{text}"
+    );
+    assert!(
+        text.contains("push\tnewwork\torigin/newwork\t1 commit(s)"),
+        "{text}"
+    );
+    assert_eq!(
+        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "newwork"]),
+        clone.rev_parse("HEAD")
+    );
+}
+
+#[test]
 fn push_uploads_a_local_commit() {
     let (_origin, bare, _server, clone) = served_clone();
     clone.write("local.txt", b"local\n");

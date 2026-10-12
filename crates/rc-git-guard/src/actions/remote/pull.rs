@@ -34,6 +34,9 @@ pub struct PullOutcome {
     pub files_changed: usize,
     /// Whether there was nothing to pull, so nothing was written.
     pub already_up_to_date: bool,
+    /// Whether the branch was never published: no `branch.<name>.merge` and no
+    /// remote-tracking ref yet, so there was nothing upstream to pull. A push publishes it.
+    pub unpublished: bool,
 }
 
 /// Fast-forwards the checked-out branch to its remote-tracking ref, updating the
@@ -42,7 +45,8 @@ pub struct PullOutcome {
 /// # Errors
 /// [`ActionError::Diverged`] when both sides moved, [`ActionError::DirtyPath`] when a
 /// changed path has uncommitted work (nothing is written), [`ActionError::NoUpstream`]
-/// when the branch has no tracking ref, [`ActionError::DetachedHead`], and
+/// when no remote resolves for the branch, [`ActionError::UpstreamGone`] when the tracking
+/// ref `branch.<name>.merge` names no longer exists, [`ActionError::DetachedHead`], and
 /// [`ActionError::Git`] for everything else, including a git operation in progress (merge,
 /// rebase, cherry-pick, revert, bisect) and an unresolved conflict in the index.
 pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<PullOutcome> {
@@ -61,25 +65,20 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
             "the branch has no commits yet; cannot pull into an unborn branch",
         )
     })?;
-    let upstream_ref =
-        tracking_ref_name(&repo, &branch).ok_or_else(|| ActionError::NoUpstream {
-            op: OP,
-            branch: branch.clone(),
-        })?;
-    let new = peel_ref(&repo, &upstream_ref).ok_or_else(|| ActionError::NoUpstream {
-        op: OP,
+    let old_id = treeapply::core_oid(old, OP)?;
+    let up_to_date = |unpublished: bool| PullOutcome {
         branch: branch.clone(),
-    })?;
-
-    let (old_id, new_id) = (treeapply::core_oid(old, OP)?, treeapply::core_oid(new, OP)?);
+        old: old_id,
+        new: old_id,
+        files_changed: 0,
+        already_up_to_date: true,
+        unpublished,
+    };
+    let Some(new) = upstream_tip(&repo, &branch)? else {
+        return Ok(up_to_date(true));
+    };
     if new == old || is_ancestor(&repo, new, old) {
-        return Ok(PullOutcome {
-            branch,
-            old: old_id,
-            new: old_id,
-            files_changed: 0,
-            already_up_to_date: true,
-        });
+        return Ok(up_to_date(false));
     }
     if !is_ancestor(&repo, old, new) {
         let (ahead, behind) = count_ahead_behind(&repo, old, new, OP)?;
@@ -103,10 +102,29 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     Ok(PullOutcome {
         branch,
         old: old_id,
-        new: new_id,
+        new: treeapply::core_oid(new, OP)?,
         files_changed: changes.len(),
         already_up_to_date: false,
+        unpublished: false,
     })
+}
+
+/// The tip of the branch's remote-tracking ref, `None` when the branch was never
+/// published: no `branch.<name>.merge`, and the fallback tracking ref does not exist.
+fn upstream_tip(repo: &gix::Repository, branch: &str) -> ActionResult<Option<ObjectId>> {
+    let tracking = tracking_ref_name(repo, branch).ok_or_else(|| ActionError::NoUpstream {
+        op: OP,
+        branch: branch.to_owned(),
+    })?;
+    match peel_ref(repo, &tracking.name) {
+        Some(tip) => Ok(Some(tip)),
+        None if tracking.configured => Err(ActionError::UpstreamGone {
+            op: OP,
+            branch: branch.to_owned(),
+            upstream_ref: tracking.name,
+        }),
+        None => Ok(None),
+    }
 }
 
 /// Moves the branch ref from `old` to `new` through the one ref-edit funnel, insisting

@@ -196,7 +196,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
     let Some(url) = remote_fetch_url(&repo, &remote_name, OP)? else {
         return Ok(no_upstream(&branch));
     };
-    let upstream_ref = tracking_ref_name(&repo, &branch);
+    let upstream_ref = tracking_ref_name(&repo, &branch).map(|tracking| tracking.name);
     let (ahead, behind) = match (&upstream_ref, head_id) {
         (Some(upstream_ref), Some(head_id)) => match peel_ref(&repo, upstream_ref) {
             Some(upstream_id) => count_ahead_behind(&repo, head_id, upstream_id, OP)?,
@@ -266,11 +266,20 @@ fn remote_fetch_url(
     Ok(remote.url(gix::remote::Direction::Fetch).cloned())
 }
 
-/// Full name of the branch's remote-tracking ref, e.g. `refs/remotes/origin/main`.
+/// A branch's remote-tracking ref and where its name came from.
+struct TrackingRef {
+    /// Full name, e.g. `refs/remotes/origin/main`.
+    name: String,
+    /// Whether `branch.<name>.merge` named it. False for the `origin` fallback, so a
+    /// missing ref then means the branch was never published rather than deleted upstream.
+    configured: bool,
+}
+
+/// The branch's remote-tracking ref, e.g. `refs/remotes/origin/main`.
 /// Without `branch.<name>.merge` — a branch made with `git init` and pushed without
 /// `-u` — it is `refs/remotes/<remote>/<branch>` on the remote `configured_remote_name`
 /// picks: the ref push uploads to and moves, so ahead/behind and pull agree with push.
-fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
+fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef> {
     let full = format!("refs/heads/{branch}");
     let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
     #[expect(
@@ -281,9 +290,15 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
         repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch);
     let Some(tracking) = configured else {
         let remote = configured_remote_name(repo, branch)?;
-        return Some(format!("refs/remotes/{remote}/{branch}"));
+        return Some(TrackingRef {
+            name: format!("refs/remotes/{remote}/{branch}"),
+            configured: false,
+        });
     };
-    Some(tracking.ok()?.as_bstr().to_string())
+    Some(TrackingRef {
+        name: tracking.ok()?.as_bstr().to_string(),
+        configured: true,
+    })
 }
 
 /// Peels `name` to a commit id, `None` when the ref does not exist.

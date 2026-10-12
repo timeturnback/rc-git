@@ -1601,7 +1601,9 @@ fn write_fetch(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::FetchOutcome)
 }
 
 fn write_pull(out: &mut Vec<u8>, outcome: &rc_git_guard::actions::PullOutcome) -> Result<()> {
-    if outcome.already_up_to_date {
+    if outcome.unpublished {
+        writeln!(out, "pull\t{}\tnothing upstream yet", outcome.branch)?;
+    } else if outcome.already_up_to_date {
         writeln!(out, "pull\t{}\tup to date", outcome.branch)?;
     } else {
         writeln!(
@@ -1729,7 +1731,7 @@ fn sync_verb(
     write_fetch(out, &fetch)?;
     let pull = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
     write_pull(out, &pull)?;
-    if rc_git_guard::actions::upstream_status(repo_path)?.ahead > 0 {
+    if pull.unpublished || rc_git_guard::actions::upstream_status(repo_path)?.ahead > 0 {
         let push = rc_git_guard::actions::push_upstream(repo_path, &policy, remote.auth(), cancel)?;
         write_push(out, &push)?;
     } else {
