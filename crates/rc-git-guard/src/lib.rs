@@ -452,6 +452,74 @@ mod tests {
         assert_eq!(Action::Prune.risk(), Risk::Destructive);
     }
 
+    fn one_of_each_action() -> Vec<Action> {
+        let name = || "topic".to_owned();
+        let stash = || "stash@{0} \"On topic: wip\"".to_owned();
+        vec![
+            Action::Fetch,
+            Action::CreateLocalBranch { name: name() },
+            Action::CreateTag { name: name() },
+            Action::Checkout { target: name() },
+            Action::PullFastForward { branch: name() },
+            Action::Push {
+                branch: name(),
+                force: false,
+            },
+            Action::Push {
+                branch: name(),
+                force: true,
+            },
+            Action::DeleteLocalBranch {
+                name: name(),
+                merged: true,
+            },
+            Action::DeleteLocalBranch {
+                name: name(),
+                merged: false,
+            },
+            Action::DeleteRemoteBranch { name: name() },
+            Action::DeleteTag { name: name() },
+            Action::ResetHard {
+                branch: name(),
+                commits_dropped: 1,
+            },
+            Action::RewriteHistory {
+                branch: name(),
+                published: false,
+            },
+            Action::RewriteHistory {
+                branch: name(),
+                published: true,
+            },
+            Action::DiscardWorkingChanges { files: 0 },
+            Action::DiscardWorkingChanges { files: 1 },
+            Action::Prune,
+            Action::Commit { files: 1 },
+            Action::StashPush { files: 1 },
+            Action::StashApply,
+            Action::StashPop { name: stash() },
+            Action::StashDrop { name: stash() },
+        ]
+    }
+
+    #[test]
+    fn allow_is_exactly_the_safe_risk_and_a_challenge_carries_the_action_risk() {
+        let policy = Policy::default();
+        for action in one_of_each_action() {
+            let risk = action.risk();
+            match policy.evaluate(&action) {
+                Decision::Allow => assert_eq!(risk, Risk::Safe, "{action:?} is allowed"),
+                Decision::Confirm(challenge) => {
+                    assert_ne!(risk, Risk::Safe, "{action:?} is safe but challenged");
+                    assert_eq!(challenge.risk(), risk, "{action:?}");
+                }
+                Decision::Deny { reason } => {
+                    panic!("{action:?} on an unprotected name was denied: {reason}")
+                }
+            }
+        }
+    }
+
     #[test]
     fn denial_tells_the_user_where_to_go() {
         let Decision::Deny { reason } = Policy::default().evaluate(&Action::Push {
