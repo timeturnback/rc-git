@@ -92,11 +92,18 @@ pub(super) fn parse_report<'a>(
 ) -> Result<Report, String> {
     let mut unpack_ok = false;
     let mut ref_status: Option<Report> = None;
+    let mut seen = Vec::new();
     for line in lines {
         let line = line.strip_suffix(b"\n").unwrap_or(line);
+        keep_excerpt(&mut seen, line);
         let line = String::from_utf8_lossy(line);
         let line = line.as_ref();
-        if let Some(status) = line.strip_prefix("unpack ") {
+        if let Some(message) = line.strip_prefix("ERR ") {
+            return Err(format!(
+                "the server reported an error: {}",
+                message.escape_debug()
+            ));
+        } else if let Some(status) = line.strip_prefix("unpack ") {
             if status == "ok" {
                 unpack_ok = true;
             } else {
@@ -120,9 +127,37 @@ pub(super) fn parse_report<'a>(
         }
     }
     if !unpack_ok {
-        return Err("the server sent no 'unpack' status".to_owned());
+        return Err(format!(
+            "the server sent no 'unpack' status; its reply was '{}'",
+            excerpt(&seen)
+        ));
     }
-    ref_status.ok_or_else(|| format!("the server sent no status for '{full_ref}'"))
+    ref_status.ok_or_else(|| {
+        format!(
+            "the server sent no status for '{full_ref}'; its reply was '{}'",
+            excerpt(&seen)
+        )
+    })
+}
+
+/// How much of a report-status reply an error quotes: enough to show what the server
+/// said instead, bounded because the reply is untrusted.
+const EXCERPT_LIMIT: usize = 200;
+
+/// Appends one report line, LF-terminated, to `seen` without growing it past
+/// [`EXCERPT_LIMIT`] bytes.
+fn keep_excerpt(seen: &mut Vec<u8>, line: &[u8]) {
+    for byte in line.iter().chain(b"\n") {
+        if seen.len() >= EXCERPT_LIMIT {
+            return;
+        }
+        seen.push(*byte);
+    }
+}
+
+/// The kept reply as text, with line feeds and other control characters escaped.
+fn excerpt(seen: &[u8]) -> String {
+    String::from_utf8_lossy(seen).escape_debug().to_string()
 }
 
 /// The reasons a server gives when the remote ref is not where the push expected it.
@@ -367,6 +402,34 @@ mod tests {
             .is_err()
         );
         assert!(parse_report(lines(b""), "refs/heads/main").is_err());
+    }
+
+    #[test]
+    fn an_err_line_carries_the_server_message() {
+        let error = parse_report(lines(b"ERR access denied\n"), "refs/heads/main")
+            .expect_err("an ERR line is an error");
+        assert_eq!(error, "the server reported an error: access denied");
+    }
+
+    #[test]
+    fn a_missing_ref_status_quotes_the_reply() {
+        let error = parse_report(
+            lines(b"unpack ok\nok refs/heads/other\n"),
+            "refs/heads/main",
+        )
+        .expect_err("no status for our ref");
+        assert!(error.contains("refs/heads/main"), "{error}");
+        assert!(error.contains("refs/heads/other"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_unpack_status_quotes_a_bounded_escaped_reply() {
+        let reply = format!("\x1b[31m{}", "x".repeat(1000));
+        let error =
+            parse_report([reply.as_bytes()], "refs/heads/main").expect_err("no unpack status");
+        assert!(error.contains("\\u{1b}[31mxxx"), "{error}");
+        assert!(!error.contains('\x1b'), "{error}");
+        assert!(error.len() < EXCERPT_LIMIT + 100, "{}", error.len());
     }
 
     #[test]
