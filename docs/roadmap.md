@@ -179,3 +179,15 @@ constraints are clear.
 - **Filters in the Changes tab.** Honoring gitattributes filters and `core.autocrlf` in
   status, diff, commit, and restore needs gix's `attributes` feature, which pulls in the
   process-spawning filter-driver machinery — a safety decision before a code change.
+- **Force push.** `Action::Push { force: true }` is settled in the guard's policy (denied on
+  a protected branch, the typed branch name elsewhere); the hand-rolled send-pack still
+  refuses a non-fast-forward, so no write path exists yet.
+- **Delete a remote branch.** `Action::DeleteRemoteBranch` is settled (denied on a protected
+  branch, the typed branch name and a backup ref elsewhere); push has no delete command yet.
+- **Reset --hard.** `Action::ResetHard` is settled (the typed branch name and a backup ref);
+  the move would reuse `actions/treeapply.rs`.
+- **Rewrite history (rebase, amend).** `Action::RewriteHistory` is settled (confirm and a
+  backup ref when unpublished; denied on a protected branch, the typed branch name elsewhere,
+  when published). Signing must be settled first: guard commits carry no signature.
+- **Prune unreachable objects.** `Action::Prune` is settled (type `prune`); nothing deletes
+  objects yet.

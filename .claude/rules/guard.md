@@ -56,6 +56,11 @@ here; so does everything that comes later.
   `actions/remote.rs`). A blocking read with neither is how a sync gets stuck forever.
   Build a tokio timer inside the `async` block, never as an argument to `block_on`: a
   `Sleep` needs the runtime context that `block_on` has not entered yet.
+- The policy settles rows ahead of their write paths on purpose ("settled policy waiting for
+  its feature", `docs/safety.md`): force push, remote branch delete, reset --hard, history
+  rewrite and prune each have a `docs/roadmap.md` Planned entry and are tested only in
+  `lib.rs`'s tests. Delete such a variant only with its roadmap entry, together with its
+  `risk` and `Policy::evaluate` arms, its tests and its `docs/safety.md` row.
 - Every rule change updates the table in `docs/safety.md`, the tests in `lib.rs`, and the
   tests in `tests/actions.rs` together.
 - Remote I/O lives in `actions/remote/` only; the network entry points (`find_remote`,
