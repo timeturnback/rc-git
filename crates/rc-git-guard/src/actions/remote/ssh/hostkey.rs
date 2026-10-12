@@ -1,7 +1,8 @@
 //! Host-key verification: `known_hosts` is read, never written. An unknown host is
 //! refused with its fingerprint so the user can approve it (trust-on-first-use); the
 //! approval lives app-side and returns as `RemoteAuth::accepted_hostkey`. A key that
-//! contradicts `known_hosts` is refused with no in-app override.
+//! contradicts `known_hosts`, or the fingerprint approved earlier, is refused with
+//! no in-app override.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,12 +22,15 @@ pub(super) enum HostKeyReport {
         /// The offered key's fingerprint, `SHA256:...`.
         fingerprint: String,
     },
-    /// The host has a `known_hosts` entry and the offered key contradicts it.
+    /// The offered key contradicts the host's `known_hosts` entry, or — when it has none —
+    /// the fingerprint the user approved earlier.
     Mismatch {
         /// The offered key's algorithm.
         key_type: String,
         /// The offered key's fingerprint.
         fingerprint: String,
+        /// The approved fingerprint it contradicts; `None` when `known_hosts` refused it.
+        approved: Option<String>,
     },
 }
 
@@ -84,42 +88,50 @@ impl HostKeyHandler {
         };
         let key_type = key.algorithm().to_string();
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
-        // Deliberately checked before known_hosts: an accepted fingerprint is one the
-        // user explicitly verified, so it wins even over a later contradicting entry.
-        if self.accepted.as_deref() == Some(fingerprint.as_str()) {
-            return Ok(true);
-        }
-        match russh::keys::check_known_hosts_path(
+        // known_hosts first: a contradicting entry is fatal whatever the app approved, and
+        // an approval only stands in for a missing entry.
+        let known = match russh::keys::check_known_hosts_path(
             &self.host_name,
             self.port,
             &key,
             &self.known_hosts,
         ) {
-            Ok(true) => Ok(true),
-            Ok(false) => {
-                self.record(HostKeyReport::Unknown {
-                    key_type,
-                    fingerprint,
-                });
-                Ok(false)
+            Ok(known) => known,
+            Err(russh::keys::Error::IO(source))
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                false
             }
             Err(russh::keys::Error::KeyChanged { .. }) => {
                 self.record(HostKeyReport::Mismatch {
                     key_type,
                     fingerprint,
+                    approved: None,
+                });
+                return Ok(false);
+            }
+            Err(source) => return Err(russh::Error::Keys(source)),
+        };
+        if known {
+            return Ok(true);
+        }
+        match self.accepted.clone() {
+            Some(approved) if approved == fingerprint => Ok(true),
+            Some(approved) => {
+                self.record(HostKeyReport::Mismatch {
+                    key_type,
+                    fingerprint,
+                    approved: Some(approved),
                 });
                 Ok(false)
             }
-            Err(russh::keys::Error::IO(source))
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
+            None => {
                 self.record(HostKeyReport::Unknown {
                     key_type,
                     fingerprint,
                 });
                 Ok(false)
             }
-            Err(source) => Err(russh::Error::Keys(source)),
         }
     }
 }

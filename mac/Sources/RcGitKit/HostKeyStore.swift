@@ -6,6 +6,8 @@ import Foundation
 public protocol HostKeyStoring: Sendable {
     func fingerprint(host: String) -> String?
     func store(fingerprint: String, host: String)
+    /// Drops the approval for `host`, so a legitimately rotated key can be approved anew.
+    func forget(host: String)
 }
 
 /// `UserDefaults`-backed store: one dictionary of host → `SHA256:...` fingerprint.
@@ -23,6 +25,13 @@ public struct UserDefaultsHostKeyStore: HostKeyStoring {
         var stored =
             UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
         stored[host] = fingerprint
+        UserDefaults.standard.set(stored, forKey: Self.key)
+    }
+
+    public func forget(host: String) {
+        var stored =
+            UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
+        stored[host] = nil
         UserDefaults.standard.set(stored, forKey: Self.key)
     }
 }

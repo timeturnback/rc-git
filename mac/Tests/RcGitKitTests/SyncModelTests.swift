@@ -172,6 +172,12 @@ private final class InMemoryHostKeyStore: HostKeyStoring, @unchecked Sendable {
         items[host] = fingerprint
     }
 
+    func forget(host: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        items[host] = nil
+    }
+
     var stored: [String: String] {
         lock.lock()
         defer { lock.unlock() }
@@ -469,6 +475,37 @@ private let alreadyOnMain = CheckoutOutcome(
 
         #expect(!prompted, "a stored fingerprint must be passed without asking")
         #expect(performer.fetchHostKeys == ["SHA256:abc123"])
+    }
+
+    @Test func aChangedHostKeyFailsWithoutPrompting() async {
+        let hostKeys = InMemoryHostKeyStore(["git.example.com": "SHA256:abc123"])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(
+                        .hostKeyUnknown(
+                            message: "not a known host",
+                            hostKey: "ssh-ed25519 SHA256:other"))
+                ]
+            ), hostKeys: hostKeys)
+        var prompted = false
+        model.onHostKeyNeeded = { _, _, resume in
+            prompted = true
+            resume(true)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(!prompted, "a changed key must not reach the first-use trust sheet")
+        if case let .failed(_, message) = model.state {
+            #expect(message.contains("SHA256:abc123"), "\(message)")
+            #expect(message.contains("SHA256:other"), "\(message)")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchHostKeys == ["SHA256:abc123"])
+        #expect(hostKeys.stored["git.example.com"] == "SHA256:abc123")
     }
 
     @Test func sshPassphrasePromptRetriesAndStoresUnderTheSshKind() async {

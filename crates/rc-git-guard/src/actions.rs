@@ -259,10 +259,11 @@ pub enum ActionError {
         /// The key's fingerprint, `SHA256:...`.
         fingerprint: String,
     },
-    /// The SSH server offered a key that contradicts `known_hosts`. Never overridable
-    /// inside rc-git.
+    /// The SSH server offered a key that contradicts `known_hosts`, or the fingerprint the
+    /// user approved earlier for a host `known_hosts` lacks. Never overridable inside rc-git.
     #[error(
-        "{op}: the {key_type} host key for '{host}' does not match known_hosts (offered {fingerprint}); this may be a man-in-the-middle — investigate with ssh directly"
+        "{op}: the {key_type} host key for '{host}' does not match {} (offered {fingerprint}); this may be a man-in-the-middle — investigate with ssh directly",
+        contradicted(.approved.as_deref())
     )]
     HostKeyMismatch {
         /// What was being done.
@@ -273,6 +274,9 @@ pub enum ActionError {
         key_type: String,
         /// The offered key's fingerprint, `SHA256:...`.
         fingerprint: String,
+        /// The approved fingerprint the offered key contradicts; `None` when it contradicts
+        /// `known_hosts`.
+        approved: Option<String>,
     },
     /// An SSH private key is encrypted and no (or the wrong) passphrase was supplied.
     #[error("{op}: the key '{key}' for '{host}' is encrypted; enter its passphrase")]
@@ -348,6 +352,14 @@ pub enum ActionError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+}
+
+/// What a refused host key contradicts, for the `HostKeyMismatch` message.
+fn contradicted(approved: Option<&str>) -> String {
+    match approved {
+        Some(approved) => format!("the key approved earlier ({approved})"),
+        None => "known_hosts".to_owned(),
+    }
 }
 
 impl ActionError {
@@ -1086,6 +1098,29 @@ fn refuse_case_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_key_mismatch_names_what_it_contradicts() {
+        let mismatch = |approved: Option<&str>| ActionError::HostKeyMismatch {
+            op: "fetch",
+            host: "git.example.com".to_owned(),
+            key_type: "ssh-ed25519".to_owned(),
+            fingerprint: "SHA256:offered".to_owned(),
+            approved: approved.map(str::to_owned),
+        };
+        assert_eq!(
+            mismatch(None).to_string(),
+            "fetch: the ssh-ed25519 host key for 'git.example.com' does not match known_hosts \
+             (offered SHA256:offered); this may be a man-in-the-middle — investigate with ssh \
+             directly"
+        );
+        assert_eq!(
+            mismatch(Some("SHA256:approved")).to_string(),
+            "fetch: the ssh-ed25519 host key for 'git.example.com' does not match the key \
+             approved earlier (SHA256:approved) (offered SHA256:offered); this may be a \
+             man-in-the-middle — investigate with ssh directly"
+        );
+    }
 
     #[test]
     fn deleting_a_branch_that_moved_since_it_was_judged_refuses_as_stale() {

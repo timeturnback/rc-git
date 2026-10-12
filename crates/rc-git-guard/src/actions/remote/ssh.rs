@@ -280,11 +280,13 @@ fn typed_refusal(report: &ReportSlot, target: &SshTarget, op: &'static str) -> O
         HostKeyReport::Mismatch {
             key_type,
             fingerprint,
+            approved,
         } => ActionError::HostKeyMismatch {
             op,
             host: target.host.clone(),
             key_type,
             fingerprint,
+            approved,
         },
     })
 }

@@ -500,6 +500,17 @@ public final class SyncModel {
                 return outcome
             case let .failure(.hostKeyUnknown(message, hostKey)):
                 try bailIfCancelled(step)
+                let fingerprint = String(
+                    hostKey.split(separator: " ").last ?? Substring(hostKey))
+                // A key that differs from an earlier approval is a changed key, never a
+                // first contact: refuse it without offering the trust sheet.
+                if let approved = acceptedHostKey, approved != fingerprint {
+                    throw StepFailure(
+                        step: step,
+                        message: Self.changedHostKeyMessage(
+                            host: host, approved: approved, offered: fingerprint),
+                        diverged: false)
+                }
                 guard !hostKeyPrompted else {
                     throw StepFailure(step: step, message: message, diverged: false)
                 }
@@ -508,8 +519,6 @@ public final class SyncModel {
                     throw StepFailure(
                         step: step, message: "host not trusted", diverged: false)
                 }
-                let fingerprint = String(
-                    hostKey.split(separator: " ").last ?? Substring(hostKey))
                 hostKeys.store(fingerprint: fingerprint, host: host)
                 acceptedHostKey = fingerprint
             case let .failure(error):
@@ -534,6 +543,13 @@ public final class SyncModel {
                 fromPrompt = true
             }
         }
+    }
+
+    private static func changedHostKeyMessage(
+        host: String, approved: String, offered: String
+    ) -> String {
+        "the ssh host key for '\(host)' changed: approved \(approved), offered \(offered); "
+            + "this may be a man-in-the-middle — investigate with ssh directly"
     }
 
     private func promptForCredentials(host: String, kind: CredentialKind) async -> Credentials? {

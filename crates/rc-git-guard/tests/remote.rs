@@ -2025,6 +2025,69 @@ fn ssh_host_key_mismatch_is_fatal() {
     .expect_err("mismatch refused");
     assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
     assert!(err.to_string().contains("man-in-the-middle"), "{err}");
+
+    let offered = remoted.server.host_fingerprint();
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            accepted_hostkey: Some(&offered),
+            ..remoted.auth()
+        },
+        &Cancel::new(),
+    )
+    .expect_err("approving the offered key does not override known_hosts");
+    assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
+}
+
+/// A fingerprint that is not the server's real key, as an earlier approval.
+const STALE_APPROVAL: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+#[test]
+fn ssh_changed_key_for_an_approved_host_is_a_mismatch() {
+    let remoted = ssh_remoted();
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            accepted_hostkey: Some(STALE_APPROVAL),
+            ..remoted.auth()
+        },
+        &Cancel::new(),
+    )
+    .expect_err("a changed key for an approved host is refused");
+    let ActionError::HostKeyMismatch {
+        fingerprint,
+        approved,
+        ..
+    } = &err
+    else {
+        panic!("expected HostKeyMismatch, got {err}");
+    };
+    assert_eq!(fingerprint, &remoted.server.host_fingerprint());
+    assert_eq!(approved.as_deref(), Some(STALE_APPROVAL));
+    assert!(err.to_string().contains(STALE_APPROVAL), "{err}");
+}
+
+#[test]
+fn ssh_an_accepted_fingerprint_for_another_key_is_still_refused() {
+    let remoted = ssh_remoted();
+    remoted
+        .server
+        .write_mismatched_known_hosts(remoted.ssh_home.path());
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            accepted_hostkey: Some(STALE_APPROVAL),
+            ..remoted.auth()
+        },
+        &Cancel::new(),
+    )
+    .expect_err("mismatch refused");
+    assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
 }
 
 #[test]
