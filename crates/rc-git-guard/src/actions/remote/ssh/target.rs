@@ -273,7 +273,10 @@ fn load_config(
         .map_err(|source| parse_err(&source))?
         .host_config
         .user
-        .is_some_and(|value| value.eq_ignore_ascii_case("yes"));
+        .is_some_and(|value| {
+            let value = strip_matching_quotes(&value);
+            value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("true")
+        });
     let host_key_alias = parse_for_host(&directive_as_user(&contents, "hostkeyalias"), &host)
         .map_err(|source| parse_err(&source))?
         .host_config
@@ -319,26 +322,47 @@ fn directive_as_user(normalized: &str, keyword: &str) -> String {
     view
 }
 
+/// The directives whose quoted value OpenSSH unquotes and russh-config keeps verbatim.
+const UNQUOTED_KEYWORDS: [&str; 4] = ["hostname", "user", "port", "identitiesonly"];
+
 /// Tabs become spaces; `Host` pattern lines are lowercased in full (patterns are host
 /// names, matched case-insensitively by OpenSSH). Values on every other line keep
-/// their case — an `IdentityFile` path is case-sensitive on disk.
+/// their case — an `IdentityFile` path is case-sensitive on disk. The values of
+/// [`UNQUOTED_KEYWORDS`] lose one pair of matching quotes, as OpenSSH reads them.
 fn normalize_config(contents: &str) -> String {
     let mut normalized = String::with_capacity(contents.len());
     for line in contents.lines() {
         let line = line.replace('\t', " ");
-        if line
-            .trim_start()
-            .split(' ')
-            .next()
-            .is_some_and(|key| key.eq_ignore_ascii_case("host"))
-        {
+        let trimmed = line.trim_start();
+        let (key, value) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
+        if key.eq_ignore_ascii_case("host") {
             normalized.push_str(&line.to_lowercase());
+        } else if UNQUOTED_KEYWORDS
+            .iter()
+            .any(|keyword| key.eq_ignore_ascii_case(keyword))
+        {
+            normalized.push_str(key);
+            normalized.push(' ');
+            normalized.push_str(strip_matching_quotes(value.trim()));
         } else {
             normalized.push_str(&line);
         }
         normalized.push('\n');
     }
     normalized
+}
+
+/// `value` without one surrounding pair of matching `"` or `'` quotes.
+fn strip_matching_quotes(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
 }
 
 #[cfg(test)]
@@ -468,6 +492,49 @@ mod tests {
         let target =
             resolve(&url("ssh://git@alias/x.git"), Some(dir.path()), "fetch").expect("resolve");
         assert_eq!(target.host_name, "github.com");
+    }
+
+    /// OpenSSH's flag parser takes `true` as well as `yes`, quoted or not.
+    #[test]
+    fn identities_only_accepts_true() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("config", b"Host example.com\n  IdentitiesOnly true\n");
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert!(target.identities_only);
+    }
+
+    #[test]
+    fn identities_only_accepts_a_quoted_yes() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("config", b"Host example.com\n  IdentitiesOnly \"yes\"\n");
+        let target = resolve(
+            &url("ssh://git@example.com/x.git"),
+            Some(dir.path()),
+            "fetch",
+        )
+        .expect("resolve");
+        assert!(target.identities_only);
+    }
+
+    /// OpenSSH strips the quotes from `HostName`, `User` and `Port`; dialing the quoted
+    /// name would fail DNS.
+    #[test]
+    fn quoted_host_name_user_and_port_are_unquoted() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "config",
+            b"Host alias\n  HostName \"real.example\"\n  User 'worker'\n  Port \"2222\"\n",
+        );
+        let target =
+            resolve(&url("ssh://alias/x.git"), Some(dir.path()), "fetch").expect("resolve");
+        assert_eq!(target.host_name, "real.example");
+        assert_eq!(target.user, "worker");
+        assert_eq!(target.port, 2222);
     }
 
     /// The URL always wins over the config for user and port.

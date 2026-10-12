@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use russh::keys::ssh_key;
 use russh::server::{Auth, Msg, Server as _, Session};
@@ -50,6 +50,7 @@ pub struct SshGitServer {
     addr: SocketAddr,
     git_dir: PathBuf,
     host_key: ssh_key::PrivateKey,
+    last_user: Arc<Mutex<Option<String>>>,
     runtime: Option<Runtime>,
 }
 
@@ -111,10 +112,12 @@ impl SshGitServer {
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
             .expect("bind the ssh listener");
         let addr = listener.local_addr().expect("read the bound address");
+        let last_user = Arc::new(Mutex::new(None));
         let mut server = GitSshServer {
             git_dir: git_dir.to_path_buf(),
             allowed,
             mode,
+            last_user: Arc::clone(&last_user),
         };
         runtime.spawn(async move {
             let running = server.run_on_socket(config, &listener);
@@ -126,8 +129,22 @@ impl SshGitServer {
             addr,
             git_dir: git_dir.to_path_buf(),
             host_key,
+            last_user,
             runtime: Some(runtime),
         }
+    }
+
+    /// The user name the most recent successful public-key authentication carried, or
+    /// `None` before any client has authenticated.
+    ///
+    /// # Panics
+    /// When a server thread panicked while holding the record.
+    #[must_use]
+    pub fn last_user(&self) -> Option<String> {
+        self.last_user
+            .lock()
+            .expect("read the authenticated user")
+            .clone()
     }
 
     /// The ssh URL of the served repository, e.g. `ssh://git@127.0.0.1:49152/tmp/x.git`.
@@ -272,6 +289,7 @@ struct GitSshServer {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
     mode: Mode,
+    last_user: Arc<Mutex<Option<String>>>,
 }
 
 impl russh::server::Server for GitSshServer {
@@ -282,6 +300,7 @@ impl russh::server::Server for GitSshServer {
             git_dir: self.git_dir.clone(),
             allowed: self.allowed.clone(),
             mode: self.mode,
+            last_user: Arc::clone(&self.last_user),
             channels: HashMap::new(),
             env: HashMap::new(),
         }
@@ -300,6 +319,7 @@ struct GitSshHandler {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
     mode: Mode,
+    last_user: Arc<Mutex<Option<String>>>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     env: HashMap<ChannelId, String>,
 }
@@ -327,10 +347,14 @@ impl russh::server::Handler for GitSshHandler {
 
     fn auth_publickey(
         &mut self,
-        _user: &str,
+        user: &str,
         public_key: &ssh_key::PublicKey,
     ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
         let auth = if self.allowed.iter().any(|key| key == public_key) {
+            *self
+                .last_user
+                .lock()
+                .expect("record the authenticated user") = Some(user.to_owned());
             Auth::Accept
         } else {
             Auth::reject()

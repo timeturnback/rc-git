@@ -2294,7 +2294,7 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
             "Host bitbucket.org-work\n\
              \tHostName 127.0.0.1\n\
              \tPort {}\n\
-             \tUser git\n",
+             \tUser rcgit-alias\n",
             remoted.server.port()
         )
         .as_bytes(),
@@ -2315,6 +2315,11 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
     )
     .expect("alias fetch");
     assert_eq!(outcome.updated_refs.len(), 1);
+    assert_eq!(
+        remoted.server.last_user().as_deref(),
+        Some("rcgit-alias"),
+        "the connection authenticates as the ssh-config User"
+    );
 }
 
 /// `HostKeyAlias` replaces the dialed address as the `known_hosts` key and is looked up
