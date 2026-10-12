@@ -123,5 +123,5 @@ Rewriting `IdentitiesOnly` as `User` reuses russh-config's own block matching an
 
 ## Related Issues
 
-- [russh-config diverges from OpenSSH: ssh-config aliases silently fail to resolve](../integration-issues/russh-config-ssh-alias-resolution-divergence.md) covers the same `target.rs` and the same class of problem: russh-config accepting legal OpenSSH input and silently doing less with it. The `Host *` retry (now `parse_for_host`) and `normalize_config` that the `IdentitiesOnly` view reuses come from that fix.
+- [russh-config diverges from OpenSSH: ssh-config aliases silently fail to resolve](../integration-issues/russh-config-ssh-alias-resolution-divergence.md) covers the same `target.rs` and the same class of problem: russh-config accepting legal OpenSSH input and silently doing less with it. The `Host *` retry (now `parse_for_host`) and the normalization (now `ConfigReader`) that the `IdentitiesOnly` view reuses come from that fix.
 - [Sync spins forever: a cancel flag nobody could set and a transport with no idle budget](../runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md) covers `Watch::drive` in `session.rs`, which drives the `SshRead`/`SshWrite` channel halves. This failure ended at EOF in those halves.

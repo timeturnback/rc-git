@@ -20,7 +20,7 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicK
 use crate::actions::{ActionError, ActionResult, git_err};
 
 use super::hostkey::HostKeyHandler;
-use super::target::SshTarget;
+use super::target::{AgentSocket, SshTarget};
 
 type Agent = AgentClient<tokio::net::UnixStream>;
 
@@ -82,7 +82,7 @@ pub(super) async fn authenticate(
         rsa_hash,
         op,
     };
-    let (mut agent, agent_keys) = connect_agent().await;
+    let (mut agent, agent_keys) = connect_agent(&target.identity_agent).await;
     let file_keys: Vec<Option<FileKey>> = target
         .identities
         .iter()
@@ -366,10 +366,16 @@ impl AgentKey {
     }
 }
 
-/// The ssh-agent and the plain public keys it holds. A missing or broken agent is not
-/// an error — the ladder offers identity files only.
-async fn connect_agent() -> (Option<Agent>, Vec<AgentKey>) {
-    let Ok(mut agent) = Agent::connect_env().await else {
+/// The ssh-agent the target's `IdentityAgent` names and the plain public keys it holds.
+/// A missing or broken agent is not an error — the ladder offers identity files only —
+/// and [`AgentSocket::None`] connects to none, so no agent key reaches the server.
+async fn connect_agent(socket: &AgentSocket) -> (Option<Agent>, Vec<AgentKey>) {
+    let connected = match socket {
+        AgentSocket::Env => Agent::connect_env().await,
+        AgentSocket::Path(path) => Agent::connect_uds(path).await,
+        AgentSocket::None => return (None, Vec::new()),
+    };
+    let Ok(mut agent) = connected else {
         return (None, Vec::new());
     };
     let Ok(identities) = agent.request_identities().await else {
