@@ -242,7 +242,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 ]
             ), store: store)
         var promptedHost: String?
-        model.onCredentialsNeeded = { host, _, resume in
+        model.onCredentialsNeeded = { host, _, _, resume in
             promptedHost = host
             resume(Credentials(username: "user", token: "sekret"))
         }
@@ -271,7 +271,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 ]
             ), store: store)
         var prompts = 0
-        model.onCredentialsNeeded = { _, _, resume in
+        model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
             resume(Credentials(username: "user", token: "wrong"))
         }
@@ -293,7 +293,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 preflights: [StubSyncPerformer.upstream()],
                 fetches: [.failure(.authRequired(message: "401"))]
             ))
-        model.onCredentialsNeeded = { _, _, resume in resume(nil) }
+        model.onCredentialsNeeded = { _, _, _, resume in resume(nil) }
         await model.refreshStatus()
         await model.fetch()
 
@@ -514,19 +514,23 @@ private let alreadyOnMain = CheckoutOutcome(
             .init(
                 preflights: [Self.sshUpstream()],
                 fetches: [
-                    .failure(.authRequired(message: "key is encrypted")),
+                    .failure(
+                        .passphraseRequired(message: "key is encrypted", key: "/k/id_ed25519")),
                     .success(cleanFetch),
                 ]
             ), store: store)
         var promptedKind: CredentialKind?
-        model.onCredentialsNeeded = { _, kind, resume in
+        var promptedKey: String?
+        model.onCredentialsNeeded = { _, kind, key, resume in
             promptedKind = kind
+            promptedKey = key
             resume(Credentials(username: "", token: "opensesame"))
         }
         await model.refreshStatus()
         await model.fetch()
 
         #expect(promptedKind == .sshPassphrase)
+        #expect(promptedKey == "/k/id_ed25519", "the prompt names the locked key")
         if case .done = model.state {
         } else {
             Issue.record("expected done, got \(model.state)")
@@ -534,6 +538,51 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.fetchCredentials.last??.token == "opensesame")
         #expect(store.stored["git.example.com#ssh"]?.token == "opensesame")
         #expect(store.stored["git.example.com"] == nil)
+    }
+
+    /// Over ssh, `authRequired` means every key was offered and rejected: no passphrase
+    /// can fix that, so the step fails with the server's answer instead of asking.
+    @Test func anSshAuthRejectionFailsAtOnceWithoutAPrompt() async {
+        let (model, performer, store) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(.authRequired(message: "no key accepted")),
+                    .success(cleanFetch),
+                ]
+            ))
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "", token: "opensesame"))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(prompts == 0, "a rejected key is not a locked key")
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message == "no key accepted")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.count == 1, "no retry")
+        #expect(store.stored.isEmpty)
+    }
+
+    @Test func onlyTheErrorTheSecretCanFixEarnsAPrompt() {
+        let locked = SyncError.passphraseRequired(message: "m", key: "/k/id")
+        let rejected = SyncError.authRequired(message: "m")
+        #expect(
+            SyncModel.credentialRetry(after: locked, kind: .sshPassphrase)
+                == .prompt(key: "/k/id"))
+        #expect(SyncModel.credentialRetry(after: rejected, kind: .sshPassphrase) == .none)
+        #expect(
+            SyncModel.credentialRetry(after: rejected, kind: .httpsToken) == .prompt(key: nil))
+        #expect(SyncModel.credentialRetry(after: locked, kind: .httpsToken) == .none)
+        #expect(
+            SyncModel.credentialRetry(after: .failure(message: "m"), kind: .sshPassphrase)
+                == .none)
     }
 
     @Test func anScpLikeRemoteAsksForThePassphraseAndLeavesTheHttpsTokenAlone() async {
@@ -546,19 +595,23 @@ private let alreadyOnMain = CheckoutOutcome(
             .init(
                 preflights: [scpLike],
                 fetches: [
-                    .failure(.authRequired(message: "key is encrypted")),
+                    .failure(
+                        .passphraseRequired(message: "key is encrypted", key: "/k/id_ed25519")),
                     .success(cleanFetch),
                 ]
             ), store: store)
         var promptedKind: CredentialKind?
-        model.onCredentialsNeeded = { _, kind, resume in
+        var promptedKey: String?
+        model.onCredentialsNeeded = { _, kind, key, resume in
             promptedKind = kind
+            promptedKey = key
             resume(Credentials(username: "", token: "opensesame"))
         }
         await model.refreshStatus()
         await model.fetch()
 
         #expect(promptedKind == .sshPassphrase)
+        #expect(promptedKey == "/k/id_ed25519")
         #expect(
             performer.fetchCredentials.allSatisfy { $0?.token != "pat-for-https" },
             "the HTTPS token must never be offered as the key passphrase")
@@ -614,7 +667,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 fetches: [.failure(.authRequired(message: "401"))]
             ))
         var prompts = 0
-        model.onCredentialsNeeded = { _, _, resume in
+        model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
             resume(Credentials(username: "user", token: "token"))
         }

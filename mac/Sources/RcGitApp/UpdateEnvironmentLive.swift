@@ -328,8 +328,9 @@ struct AppUpdateEnvironment: UpdateEnvironment {
             repoPath: sourceRoot, performer: GuardSyncPerformer(),
             store: KeychainCredentialStore())
         let window = window
-        model.onCredentialsNeeded = { host, kind, resume in
-            SyncPrompts.credentials(on: window(), host: host, kind: kind, completion: resume)
+        model.onCredentialsNeeded = { host, kind, key, resume in
+            SyncPrompts.credentials(
+                on: window(), host: host, kind: kind, key: key, completion: resume)
         }
         model.onHostKeyNeeded = { host, hostKey, resume in
             SyncPrompts.hostKey(on: window(), host: host, hostKey: hostKey, completion: resume)

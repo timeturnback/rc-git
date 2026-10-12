@@ -34,6 +34,11 @@
 /// for one and retry with it as the fallback.
 #define RCGIT_IDENTITY_REQUIRED -6
 
+/// Status for remote functions over ssh: an encrypted key file stayed locked, with no
+/// passphrase or the wrong one; `hostkey` holds the key file's path, `error` the message.
+/// Ask for that key's passphrase and retry with it.
+#define RCGIT_PASSPHRASE_REQUIRED -7
+
 /// Namespace of a reference.
 typedef enum RcGitRefKind {
   /// `refs/heads/*`
@@ -1494,8 +1499,9 @@ void rcgit_cancel_free(struct RcGitCancel *cancel);
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
 /// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
 /// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
-/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
-/// then holds the offered key for the user to verify).
+/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then
+/// holds the offered key for the user to verify), or `RCGIT_PASSPHRASE_REQUIRED`
+/// (`hostkey` then holds the locked key file's path).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
@@ -1520,8 +1526,9 @@ int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out,
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
 /// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
 /// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
-/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or
-/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
+/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
+/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
+/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or

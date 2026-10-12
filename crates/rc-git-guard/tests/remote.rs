@@ -2215,6 +2215,64 @@ fn ssh_encrypted_key_requires_a_passphrase_and_opens_with_it() {
 }
 
 #[test]
+fn ssh_wrong_passphrase_reports_passphrase_required() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    remoted
+        .server
+        .write_encrypted_client_key(remoted.ssh_home.path());
+    let creds = Credentials {
+        username: String::new(),
+        token: "not-the-passphrase".to_owned(),
+    };
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth {
+            creds: Some(&creds),
+            ..remoted.auth()
+        },
+        &Cancel::new(),
+    )
+    .expect_err("a wrong passphrase cannot open the key");
+    let ActionError::PassphraseRequired { key, .. } = &err else {
+        panic!("expected PassphraseRequired, got {err}");
+    };
+    let expected = remoted.ssh_home.path().join("id_ed25519");
+    assert_eq!(key, &expected.display().to_string());
+    assert!(err.to_string().contains("passphrase is wrong"), "{err}");
+}
+
+#[test]
+fn ssh_unreadable_identity_names_the_file() {
+    let remoted = ssh_remoted();
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    remoted.ssh_home.write("id_ed25519", b"not a key");
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        remoted.auth(),
+        &Cancel::new(),
+    )
+    .expect_err("a file that is not a key cannot authenticate");
+    assert!(
+        !matches!(
+            &err,
+            ActionError::PassphraseRequired { .. } | ActionError::AuthRequired { .. }
+        ),
+        "{err}"
+    );
+    let path = remoted.ssh_home.path().join("id_ed25519");
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("'{}' (not a private key)", path.display())),
+        "{message}"
+    );
+}
+
+#[test]
 fn scp_like_urls_parse_as_the_ssh_scheme() {
     // The router keys on gix's URL parsing; this pins the scp-like form to `Ssh` so a
     // gix upgrade cannot silently reroute it.

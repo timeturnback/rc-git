@@ -156,10 +156,11 @@ public final class SyncModel {
 
     public var onStateChanged: (() -> Void)?
     /// Fires on the main actor when a network step needs credentials for `host`. The
-    /// kind says what to ask for: an HTTPS token, or an ssh key passphrase. Resume with
-    /// `nil` to cancel the flow; the model retries otherwise.
+    /// kind says what to ask for: an HTTPS token, or an ssh key passphrase, with the
+    /// locked key file's path (`nil` for HTTPS). Resume with `nil` to cancel the flow;
+    /// the model retries otherwise.
     public var onCredentialsNeeded:
-        ((String, CredentialKind, @escaping (Credentials?) -> Void) -> Void)?
+        ((String, CredentialKind, String?, @escaping (Credentials?) -> Void) -> Void)?
     /// Fires on the main actor when an ssh host is unknown: host and
     /// `"<key type> <fingerprint>"`. Resume with `true` to trust and retry.
     public var onHostKeyNeeded: ((String, String, @escaping (Bool) -> Void) -> Void)?
@@ -462,7 +463,8 @@ public final class SyncModel {
     }
 
     /// Runs one network step with the credential loop: stored credentials (or none)
-    /// first, then prompt-and-retry on `authRequired`, storing only what worked. An
+    /// first, then prompt-and-retry on what a secret can fix (`authRequired` over HTTPS,
+    /// `passphraseRequired` over ssh), storing only what worked. An
     /// unknown ssh host key gets one trust prompt, separate from the credential
     /// attempts; the accepted fingerprint persists in `hostKeys`.
     private func networkStep<Outcome: Sendable>(
@@ -522,7 +524,8 @@ public final class SyncModel {
                 hostKeys.store(fingerprint: fingerprint, host: host)
                 acceptedHostKey = fingerprint
             case let .failure(error):
-                guard case .authRequired = error else {
+                guard case let .prompt(key) = Self.credentialRetry(after: error, kind: kind)
+                else {
                     throw StepFailure(
                         step: step, message: error.message, diverged: isDiverged(error))
                 }
@@ -531,11 +534,13 @@ public final class SyncModel {
                 guard authAttempts < Self.promptLimit else {
                     throw StepFailure(
                         step: step,
-                        message: "'\(host)' kept rejecting the credentials",
+                        message: "'\(host)' kept rejecting the credentials: \(error.message)",
                         diverged: false
                     )
                 }
-                guard let prompted = await promptForCredentials(host: host, kind: kind) else {
+                guard
+                    let prompted = await promptForCredentials(host: host, kind: kind, key: key)
+                else {
                     throw StepFailure(
                         step: step, message: "authentication canceled", diverged: false)
                 }
@@ -552,10 +557,32 @@ public final class SyncModel {
             + "this may be a man-in-the-middle — investigate with ssh directly"
     }
 
-    private func promptForCredentials(host: String, kind: CredentialKind) async -> Credentials? {
+    /// What a failed attempt allows: a prompt for the secret that can fix it, naming the
+    /// locked key over ssh, or nothing. Over ssh only a locked key is worth a prompt; a
+    /// plain rejection means no key was accepted, which no passphrase changes.
+    enum CredentialRetry: Equatable {
+        case prompt(key: String?)
+        case none
+    }
+
+    static func credentialRetry(after error: SyncError, kind: CredentialKind)
+        -> CredentialRetry
+    {
+        switch (error, kind) {
+        case (.authRequired, .httpsToken): .prompt(key: nil)
+        case let (.passphraseRequired(_, key), .sshPassphrase): .prompt(key: key)
+        case (.authRequired, .sshPassphrase), (.passphraseRequired, .httpsToken),
+            (.diverged, _), (.hostKeyUnknown, _), (.cancelled, _), (.failure, _):
+            .none
+        }
+    }
+
+    private func promptForCredentials(host: String, kind: CredentialKind, key: String?) async
+        -> Credentials?
+    {
         guard let onCredentialsNeeded else { return nil }
         return await withCheckedContinuation { continuation in
-            onCredentialsNeeded(host, kind) { credentials in
+            onCredentialsNeeded(host, kind, key) { credentials in
                 continuation.resume(returning: credentials)
             }
         }

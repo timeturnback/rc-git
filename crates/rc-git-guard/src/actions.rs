@@ -279,7 +279,10 @@ pub enum ActionError {
         approved: Option<String>,
     },
     /// An SSH private key is encrypted and no (or the wrong) passphrase was supplied.
-    #[error("{op}: the key '{key}' for '{host}' is encrypted; enter its passphrase")]
+    #[error(
+        "{op}: the key '{key}' for '{host}' is encrypted or the passphrase is wrong; enter \
+         its passphrase"
+    )]
     PassphraseRequired {
         /// What was being done.
         op: &'static str,

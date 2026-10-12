@@ -22,6 +22,9 @@ pub(in crate::actions::remote) struct SshTarget {
     /// Candidate private keys: the ssh-config `IdentityFile` entries, or the OpenSSH
     /// defaults when the config names none. Existence is checked at use.
     pub identities: Vec<PathBuf>,
+    /// Whether `identities` came from ssh-config `IdentityFile` entries rather than the
+    /// defaults: a configured file that is missing is worth reporting, a default is not.
+    pub identities_configured: bool,
     /// ssh-config `IdentitiesOnly yes`: offer only `identities`, never an agent key
     /// that matches none of them.
     pub identities_only: bool,
@@ -101,21 +104,23 @@ pub(in crate::actions::remote) fn resolve(
     );
     // OpenSSH falls back to the default keys only when no `IdentityFile` applies; a
     // default key tried after the configured one can log in as another account.
-    let identities = config
+    let configured = config
         .and_then(|config| config.identity_file)
-        .filter(|files| !files.is_empty())
-        .unwrap_or_else(|| {
-            ["id_ed25519", "id_ecdsa", "id_rsa"]
-                .into_iter()
-                .map(|name| ssh_dir.join(name))
-                .collect()
-        });
+        .filter(|files| !files.is_empty());
+    let identities_configured = configured.is_some();
+    let identities = configured.unwrap_or_else(|| {
+        ["id_ed25519", "id_ecdsa", "id_rsa"]
+            .into_iter()
+            .map(|name| ssh_dir.join(name))
+            .collect()
+    });
     Ok(SshTarget {
         host,
         host_name,
         port,
         user,
         identities,
+        identities_configured,
         identities_only,
         host_key_alias,
         known_hosts,
@@ -370,6 +375,7 @@ mod tests {
             [PathBuf::from("./work_key")],
             "a configured IdentityFile replaces the default keys, as in OpenSSH"
         );
+        assert!(target.identities_configured);
         assert!(!target.identities_only);
     }
 
@@ -620,6 +626,7 @@ HostName	real.example.com
         assert_eq!(target.host_name, "example.com");
         assert_eq!(target.port, 22);
         assert_eq!(target.identities.len(), 3);
+        assert!(!target.identities_configured);
         assert!(!target.identities_only);
     }
 }

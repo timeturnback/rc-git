@@ -33,19 +33,34 @@ enum Offer {
 }
 
 /// What one offer came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Outcome {
     Accepted,
     Rejected,
-    /// An identity file the passphrase (or its absence) cannot open.
+    /// An identity file the passphrase (or its absence) cannot open: encrypted with no
+    /// passphrase given, or the passphrase given does not decrypt it.
     Locked,
+    /// An identity file no passphrase can make usable, with the reason: not a private
+    /// key, unreadable, an unsupported format, or a configured file that does not exist.
+    Unusable(String),
+    /// A default identity file that does not exist; OpenSSH skips these silently.
+    Absent,
+}
+
+/// One key the ladder offered, as a person recognizes it, and what came of it.
+struct Tried {
+    key: String,
+    outcome: Outcome,
 }
 
 /// Authenticates `handle` as `target.user`, trying keys in [`offer_order`].
 /// `passphrase` deciphers encrypted key files when present.
 ///
 /// # Errors
-/// [`ActionError::PassphraseRequired`] when the only remaining candidates are
-/// encrypted key files the passphrase (or its absence) cannot open,
+/// [`ActionError::PassphraseRequired`] when no key was accepted and an encrypted key
+/// file the passphrase (or its absence) cannot open remains,
+/// [`ActionError::Git`] naming each identity file that cannot be used and why, when no
+/// key was accepted and none is locked,
 /// [`ActionError::AuthRequired`] when every candidate was tried and rejected,
 /// [`ActionError::AgentSignRefused`] when the ssh-agent refuses to sign with a key, which
 /// leaves the connection unusable for further offers,
@@ -84,41 +99,71 @@ pub(super) async fn authenticate(
             .collect::<Vec<_>>(),
         target.identities_only,
     );
-    let mut locked: Option<&Path> = None;
+    let agent_reached = agent.is_some();
+    let mut tried = Vec::new();
     for offer in order {
-        let outcome = match offer {
+        let (key, outcome) = match offer {
             Offer::Agent(index) => {
                 let (Some(agent), Some(key)) = (agent.as_mut(), agent_keys.get(index)) else {
                     continue;
                 };
-                ladder.offer_agent_key(agent, key).await?
+                (key.describe(), ladder.offer_agent_key(agent, key).await?)
             }
             Offer::File(index) => {
                 let Some(path) = target.identities.get(index) else {
                     continue;
                 };
-                let outcome = ladder.offer_file(path, passphrase).await?;
-                if let Outcome::Locked = outcome {
-                    locked.get_or_insert(path);
-                }
-                outcome
+                let outcome = ladder
+                    .offer_file(path, passphrase, target.identities_configured)
+                    .await?;
+                (path.display().to_string(), outcome)
             }
         };
         if let Outcome::Accepted = outcome {
             return Ok(());
         }
+        tried.push(Tried { key, outcome });
     }
-    match locked {
-        Some(key) => Err(ActionError::PassphraseRequired {
-            op,
-            host: target.host.clone(),
-            key: key.display().to_string(),
-        }),
-        None => Err(ActionError::AuthRequired {
-            op,
-            host: target.host.clone(),
-        }),
+    Err(ladder_error(op, &target.host, &tried, agent_reached))
+}
+
+/// The error for a ladder that ended with no key accepted. A locked key comes first: a
+/// passphrase can still open it. Then the files no passphrase can fix, by name and
+/// reason, so the user is not asked for one. Otherwise every key offered was rejected.
+fn ladder_error(op: &'static str, host: &str, tried: &[Tried], agent_reached: bool) -> ActionError {
+    let mut unusable = Vec::new();
+    let mut rejected = 0usize;
+    for attempt in tried {
+        match &attempt.outcome {
+            Outcome::Locked => {
+                return ActionError::PassphraseRequired {
+                    op,
+                    host: host.to_owned(),
+                    key: attempt.key.clone(),
+                };
+            }
+            Outcome::Unusable(reason) => unusable.push(format!("'{}' ({reason})", attempt.key)),
+            Outcome::Rejected => rejected += 1,
+            Outcome::Accepted | Outcome::Absent => {}
+        }
     }
+    if unusable.is_empty() {
+        return ActionError::AuthRequired {
+            op,
+            host: host.to_owned(),
+        };
+    }
+    let mut parts = vec![format!(
+        "no ssh key was accepted; cannot use the identity file {}",
+        unusable.join(", ")
+    )];
+    if rejected > 0 {
+        parts.push(format!("the server rejected {rejected} other key(s)"));
+    }
+    if !agent_reached {
+        parts.push("no ssh-agent was reachable".to_owned());
+    }
+    ActionError::git(op, host, parts.join("; "))
 }
 
 /// The order keys are offered in. `agent` holds the agent's keys, `files` the public
@@ -184,16 +229,15 @@ impl Ladder<'_> {
         Ok(accepted_or_rejected(result.success()))
     }
 
-    async fn offer_file(&mut self, path: &Path, passphrase: Option<&str>) -> ActionResult<Outcome> {
-        if !path.exists() {
-            return Ok(Outcome::Rejected);
-        }
-        let key = match russh::keys::load_secret_key(path, passphrase) {
+    async fn offer_file(
+        &mut self,
+        path: &Path,
+        passphrase: Option<&str>,
+        configured: bool,
+    ) -> ActionResult<Outcome> {
+        let key = match load_identity(path, passphrase, configured) {
             Ok(key) => key,
-            Err(russh::keys::Error::KeyIsEncrypted | russh::keys::Error::CouldNotReadKey) => {
-                return Ok(Outcome::Locked);
-            }
-            Err(_) => return Ok(Outcome::Rejected),
+            Err(outcome) => return Ok(outcome),
         };
         let hash_alg = rsa_hash_for(&key.algorithm(), self.rsa_hash);
         let result = self
@@ -205,6 +249,60 @@ impl Ladder<'_> {
             .await
             .map_err(git_err(self.op, &self.target.host))?;
         Ok(accepted_or_rejected(result.success()))
+    }
+}
+
+/// Reads and decodes one identity file, or says why it cannot be offered. A missing
+/// default file is [`Outcome::Absent`]; a missing configured one is unusable.
+fn load_identity(
+    path: &Path,
+    passphrase: Option<&str>,
+    configured: bool,
+) -> Result<PrivateKey, Outcome> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(if configured {
+                Outcome::Unusable("no such file".to_owned())
+            } else {
+                Outcome::Absent
+            });
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(Outcome::Unusable(NOT_A_KEY.to_owned()));
+        }
+        Err(err) => return Err(Outcome::Unusable(err.to_string())),
+    };
+    russh::keys::decode_secret_key(&contents, passphrase).map_err(|err| {
+        let encrypted_pkcs8 = contents
+            .lines()
+            .any(|line| line == "-----BEGIN ENCRYPTED PRIVATE KEY-----");
+        classify_load_error(&err, passphrase.is_some(), encrypted_pkcs8)
+    })
+}
+
+const NOT_A_KEY: &str = "not a private key";
+
+/// What a failed key decode means for the ladder. russh reports a wrong passphrase as a
+/// decrypt failure that differs by format — `SshKey(Crypto)` for OpenSSH, `Unpad` for
+/// PEM, `Pkcs8` for encrypted PKCS#8 — and an encrypted PKCS#8 key read with no
+/// passphrase fails as a DER parse error. Everything else no passphrase can fix.
+fn classify_load_error(
+    err: &russh::keys::Error,
+    passphrase_given: bool,
+    encrypted_pkcs8: bool,
+) -> Outcome {
+    use russh::keys::Error;
+    match err {
+        Error::KeyIsEncrypted => Outcome::Locked,
+        Error::SshKey(russh::keys::ssh_key::Error::Crypto) | Error::Unpad(_) | Error::Pkcs8(_)
+            if passphrase_given =>
+        {
+            Outcome::Locked
+        }
+        Error::Der(_) if encrypted_pkcs8 && !passphrase_given => Outcome::Locked,
+        Error::CouldNotReadKey => Outcome::Unusable(NOT_A_KEY.to_owned()),
+        other => Outcome::Unusable(other.to_string()),
     }
 }
 
@@ -419,6 +517,144 @@ mod tests {
         dir.write("id_work", private.as_bytes());
         let key = file_public_key(&dir.path().join("id_work")).expect("public key");
         assert_eq!(key.key_data(), keypair(2).public_key().key_data());
+    }
+
+    fn tried(key: &str, outcome: Outcome) -> Tried {
+        Tried {
+            key: key.to_owned(),
+            outcome,
+        }
+    }
+
+    #[test]
+    fn a_missing_default_identity_is_skipped_but_a_missing_configured_one_is_unusable() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let path = dir.path().join("id_work");
+        assert_eq!(
+            load_identity(&path, None, false).err(),
+            Some(Outcome::Absent)
+        );
+        assert_eq!(
+            load_identity(&path, None, true).err(),
+            Some(Outcome::Unusable("no such file".to_owned()))
+        );
+    }
+
+    /// A `.pub` file or any other headerless file used to read as encrypted, which asked
+    /// for a passphrase the key does not have.
+    #[test]
+    fn a_public_key_or_garbage_file_is_unusable_not_locked() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let public = keypair(1).public_key().to_openssh().expect("encode");
+        dir.write("id_work.pub", public.as_bytes());
+        dir.write("id_garbage", b"not a key");
+        dir.write("id_binary", &[0xff, 0xfe, 0x00]);
+        for name in ["id_work.pub", "id_garbage", "id_binary"] {
+            let outcome = load_identity(&dir.path().join(name), Some("pass"), true).err();
+            assert_eq!(
+                outcome,
+                Some(Outcome::Unusable(NOT_A_KEY.to_owned())),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn decrypt_failures_are_locked_only_when_a_passphrase_was_given() {
+        use russh::keys::Error;
+        let crypto = Error::SshKey(russh::keys::ssh_key::Error::Crypto);
+        assert_eq!(classify_load_error(&crypto, true, false), Outcome::Locked);
+        assert_eq!(
+            classify_load_error(&crypto, false, false),
+            Outcome::Unusable(crypto.to_string())
+        );
+        assert_eq!(
+            classify_load_error(&Error::KeyIsEncrypted, false, false),
+            Outcome::Locked
+        );
+        assert_eq!(
+            classify_load_error(&Error::CouldNotReadKey, true, false),
+            Outcome::Unusable(NOT_A_KEY.to_owned())
+        );
+    }
+
+    /// russh reads an encrypted PKCS#8 key with no passphrase as a DER parse error.
+    #[test]
+    fn a_der_error_is_locked_only_for_an_encrypted_pkcs8_file_read_without_a_passphrase() {
+        let der = russh::keys::Error::Der(der_error());
+        assert_eq!(classify_load_error(&der, false, true), Outcome::Locked);
+        assert_eq!(
+            classify_load_error(&der, false, false),
+            Outcome::Unusable(der.to_string())
+        );
+        assert_eq!(
+            classify_load_error(&der, true, true),
+            Outcome::Unusable(der.to_string())
+        );
+    }
+
+    fn der_error() -> russh::keys::ssh_key::sec1::der::Error {
+        russh::keys::ssh_key::sec1::der::ErrorKind::Failed.into()
+    }
+
+    #[test]
+    fn a_locked_key_wins_over_unusable_files_and_is_named() {
+        let err = ladder_error(
+            "fetch",
+            "example.com",
+            &[
+                tried("/k/id_bad", Outcome::Unusable(NOT_A_KEY.to_owned())),
+                tried("/k/id_locked", Outcome::Locked),
+            ],
+            true,
+        );
+        let ActionError::PassphraseRequired { key, .. } = &err else {
+            panic!("expected PassphraseRequired, got {err:?}");
+        };
+        assert_eq!(key, "/k/id_locked");
+        assert!(
+            err.to_string().contains("or the passphrase is wrong"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unusable_files_are_named_with_their_reasons_instead_of_asking_for_auth() {
+        let err = ladder_error(
+            "fetch",
+            "example.com",
+            &[
+                tried("'work' (SHA256:x)", Outcome::Rejected),
+                tried("/k/id_work", Outcome::Unusable("no such file".to_owned())),
+                tried("/k/id_rsa", Outcome::Absent),
+                tried("/k/id_bad", Outcome::Unusable(NOT_A_KEY.to_owned())),
+            ],
+            false,
+        );
+        assert!(matches!(&err, ActionError::Git { .. }), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "fetch 'example.com': no ssh key was accepted; cannot use the identity file \
+             '/k/id_work' (no such file), '/k/id_bad' (not a private key); the server \
+             rejected 1 other key(s); no ssh-agent was reachable"
+        );
+    }
+
+    #[test]
+    fn only_rejections_and_absent_defaults_stay_auth_required() {
+        let err = ladder_error(
+            "push",
+            "example.com",
+            &[
+                tried("/k/id_ed25519", Outcome::Rejected),
+                tried("/k/id_rsa", Outcome::Absent),
+            ],
+            true,
+        );
+        assert!(
+            matches!(&err, ActionError::AuthRequired { op: "push", .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

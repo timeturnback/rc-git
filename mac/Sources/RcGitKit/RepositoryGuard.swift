@@ -483,8 +483,11 @@ public struct IdentityRequiredError: Error, Sendable, Hashable, CustomStringConv
 /// How a remote operation failed, typed so the caller can prompt or explain.
 public enum SyncError: Error, Sendable, Hashable {
     /// The host wants credentials it did not get, or rejected the given ones. Over ssh
-    /// this also covers an encrypted key that needs its passphrase.
+    /// it means every key was offered and none accepted: no passphrase can fix that.
     case authRequired(message: String)
+    /// An encrypted ssh key file stayed locked, with no passphrase or the wrong one; `key`
+    /// is the file's path, to name in the passphrase prompt.
+    case passphraseRequired(message: String, key: String)
     /// Local and remote history diverged; reconcile in git.
     case diverged(message: String)
     /// The ssh host's key is not known; `hostKey` is `"<key type> <fingerprint>"` for
@@ -499,7 +502,8 @@ public enum SyncError: Error, Sendable, Hashable {
     public var message: String {
         switch self {
         case let .authRequired(message), let .cancelled(message), let .diverged(message),
-            let .failure(message), let .hostKeyUnknown(message, _):
+            let .failure(message), let .hostKeyUnknown(message, _),
+            let .passphraseRequired(message, _):
             message
         }
     }
@@ -667,6 +671,9 @@ extension RepositoryGuard {
         case RCGIT_HOSTKEY_UNKNOWN:
             return .hostKeyUnknown(
                 message: message, hostKey: RepositoryError.takeString(hostkey) ?? "")
+        case RCGIT_PASSPHRASE_REQUIRED:
+            return .passphraseRequired(
+                message: message, key: RepositoryError.takeString(hostkey) ?? "")
         default: return .failure(message: message)
         }
     }

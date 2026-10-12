@@ -6,11 +6,11 @@ import RcGitKit
 /// asks for its secret the same way wherever the pull started.
 @MainActor
 enum SyncPrompts {
-    /// Asks for a username and token (HTTPS) or a key passphrase (ssh) for `host`. The
-    /// secret field is secure; what the server accepts is remembered in the login
-    /// keychain by the model.
+    /// Asks for a username and token (HTTPS) or the passphrase of the key file at `key`
+    /// (ssh) for `host`. The secret field is secure; what the server accepts is
+    /// remembered in the login keychain by the model.
     static func credentials(
-        on window: NSWindow?, host: String, kind: CredentialKind,
+        on window: NSWindow?, host: String, kind: CredentialKind, key: String?,
         completion: @escaping (Credentials?) -> Void
     ) {
         guard let window else {
@@ -35,8 +35,9 @@ enum SyncPrompts {
         case .sshPassphrase:
             alert.messageText = "Unlock the ssh key for \(host)"
             alert.informativeText =
-                "The ssh key for this remote is encrypted. The passphrase is remembered "
-                + "in your login keychain once the server accepts the key."
+                "The ssh key \(key.map { "'\($0)'" } ?? "for this remote") is encrypted, "
+                + "or the passphrase given was wrong. The passphrase is remembered in your "
+                + "login keychain once the server accepts the key."
             secretField.placeholderString = "Passphrase"
             let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
             box.addSubview(secretField)

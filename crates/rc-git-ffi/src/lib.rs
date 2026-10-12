@@ -52,6 +52,10 @@ pub const RCGIT_CANCELLED: i32 = -5;
 /// sets no `user.name`/`user.email` and the call passed no fallback; see `error`. Ask the user
 /// for one and retry with it as the fallback.
 pub const RCGIT_IDENTITY_REQUIRED: i32 = -6;
+/// Status for remote functions over ssh: an encrypted key file stayed locked, with no
+/// passphrase or the wrong one; `hostkey` holds the key file's path, `error` the message.
+/// Ask for that key's passphrase and retry with it.
+pub const RCGIT_PASSPHRASE_REQUIRED: i32 = -7;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -4121,12 +4125,15 @@ pub struct RcGitPushOutcome {
 }
 
 /// Maps a remote-action error to its status code and reports the message. An unknown
-/// host key additionally fills `hostkey` with `"<key type> <fingerprint>"`.
+/// host key additionally fills `hostkey` with `"<key type> <fingerprint>"`; a locked ssh
+/// key fills it with the key file's path.
 fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &ActionError) -> i32 {
     error.report(err);
     match err {
-        ActionError::AuthRequired { .. } | ActionError::PassphraseRequired { .. } => {
-            RCGIT_AUTH_REQUIRED
+        ActionError::AuthRequired { .. } => RCGIT_AUTH_REQUIRED,
+        ActionError::PassphraseRequired { key, .. } => {
+            hostkey.set(export_string(key.clone()));
+            RCGIT_PASSPHRASE_REQUIRED
         }
         ActionError::Diverged { .. } => RCGIT_DIVERGED,
         ActionError::UnknownHostKey {
@@ -4331,8 +4338,9 @@ unsafe fn cancel_arg<'a>(cancel: *const RcGitCancel) -> Option<&'a Cancel> {
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
 /// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
 /// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
-/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
-/// then holds the offered key for the user to verify).
+/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then
+/// holds the offered key for the user to verify), or `RCGIT_PASSPHRASE_REQUIRED`
+/// (`hostkey` then holds the locked key file's path).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
@@ -4417,8 +4425,9 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
 /// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
 /// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
-/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, or
-/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key).
+/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
+/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
+/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
@@ -5740,8 +5749,8 @@ mod tests {
     }
 
     /// Fetches `repo` through the C entry point; returns the status, the error message
-    /// (empty when none was set), and whether `hostkey` was filled.
-    fn ffi_fetch(repo: &Path, auth: Option<&RcGitRemoteAuth>) -> (i32, String, bool) {
+    /// (empty when none was set), and `hostkey` when it was filled.
+    fn ffi_fetch(repo: &Path, auth: Option<&RcGitRemoteAuth>) -> (i32, String, Option<String>) {
         let path = CString::new(repo.to_str().unwrap()).unwrap();
         let auth = auth.map_or(ptr::null(), ptr::from_ref);
         let mut out = RcGitFetchOutcome { updated_refs: 0 };
@@ -5757,16 +5766,13 @@ mod tests {
                 &raw mut error,
             )
         };
-        let had_hostkey = !hostkey.is_null();
         let message = if error.is_null() {
             String::new()
         } else {
             take_error(&mut error)
         };
-        if had_hostkey {
-            take_error(&mut hostkey);
-        }
-        (code, message, had_hostkey)
+        let hostkey = (!hostkey.is_null()).then(|| take_error(&mut hostkey));
+        (code, message, hostkey)
     }
 
     fn anonymous_fetch_from_an_auth_server_maps_to_auth_required() {
@@ -5775,13 +5781,13 @@ mod tests {
         let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
         let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
 
-        let (code, message, had_hostkey) = ffi_fetch(clone.path(), None);
+        let (code, message, hostkey) = ffi_fetch(clone.path(), None);
         assert_eq!(code, RCGIT_AUTH_REQUIRED, "{message}");
         assert!(message.contains("requires authentication"), "{message}");
-        assert!(!had_hostkey);
+        assert_eq!(hostkey, None);
     }
 
-    fn encrypted_ssh_key_maps_to_auth_required_until_the_passphrase_is_given() {
+    fn encrypted_ssh_key_maps_to_passphrase_required_until_the_passphrase_is_given() {
         let origin = Fixture::standard();
         let (_bare, bare_path) = origin.bare_copy();
         let server = rc_git_testkit::SshGitServer::serve(&bare_path);
@@ -5796,9 +5802,14 @@ mod tests {
             accepted_hostkey: ptr::null(),
             ssh_dir: ssh_dir.as_ptr(),
         };
-        let (code, message, had_hostkey) = ffi_fetch(clone.path(), Some(&auth));
-        assert_eq!(code, RCGIT_AUTH_REQUIRED, "{message}");
-        assert!(!had_hostkey);
+        let (code, message, hostkey) = ffi_fetch(clone.path(), Some(&auth));
+        assert_eq!(code, RCGIT_PASSPHRASE_REQUIRED, "{message}");
+        let key = ssh_home.path().join("id_ed25519");
+        assert_eq!(
+            hostkey,
+            Some(key.display().to_string()),
+            "the locked key is named"
+        );
 
         // The app sends an empty username with a passphrase; ssh ignores it.
         let username = CString::new("").unwrap();
@@ -5921,7 +5932,7 @@ mod tests {
     #[test]
     fn remote_failures_map_to_auth_and_diverged_statuses() {
         anonymous_fetch_from_an_auth_server_maps_to_auth_required();
-        encrypted_ssh_key_maps_to_auth_required_until_the_passphrase_is_given();
+        encrypted_ssh_key_maps_to_passphrase_required_until_the_passphrase_is_given();
         push_behind_a_moved_remote_maps_to_error_not_diverged();
     }
 
