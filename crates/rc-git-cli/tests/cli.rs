@@ -1641,6 +1641,8 @@ fn sync_on_a_diverged_clone_still_reports_the_fetch_it_ran() {
     clone.write("local.txt", b"local\n");
     clone.commit("Local work", "2024-03-02T00:00:00+0000");
     let path = clone.path().to_str().unwrap();
+    let served_main = || bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"]);
+    let before = served_main();
 
     let out = rc_git(&["sync", path]);
     assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
@@ -1656,6 +1658,8 @@ fn sync_on_a_diverged_clone_still_reports_the_fetch_it_ran() {
             clone.rev_parse("origin/main")
         )
     );
+    assert_eq!(served_main(), before, "sync uploaded past a divergence");
+    assert_ne!(served_main(), clone.rev_parse("HEAD"));
 }
 
 #[test]
