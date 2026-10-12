@@ -1742,8 +1742,8 @@ fn wait_with_deadline(child: &mut std::process::Child, limit: std::time::Duratio
 #[test]
 fn interrupting_a_stalled_fetch_exits_130() {
     let (_origin, _bare, _server, clone) = served_clone();
-    // A remote that accepts the connection and then never says a word: the HTTPS read blocks
-    // where the cancel flag cannot reach it, so only the second signal ends the fetch.
+    // A remote that accepts the connection and then never says a word: curl blocks in a read
+    // the flag cannot reach, and the guard stops waiting for it on the first signal.
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/remote.git", silent.local_addr().unwrap());
     clone.git(&["remote", "set-url", "origin", &url]);
@@ -1757,13 +1757,7 @@ fn interrupting_a_stalled_fetch_exits_130() {
     // Accepting proves the fetch is past the handler setup, so the signal cannot kill it raw.
     let (_held_open, _) = silent.accept().unwrap();
     send_signal(child.id(), "INT");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "the first Ctrl+C only sets the cancel flag"
-    );
-    send_signal(child.id(), "INT");
 
-    let out = wait_with_deadline(&mut child, std::time::Duration::from_secs(10));
+    let out = wait_with_deadline(&mut child, std::time::Duration::from_secs(5));
     assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
 }

@@ -37,13 +37,15 @@ pub(super) const CANCEL_POLL: Duration = Duration::from_millis(200);
 
 /// A shared "stop" flag for one remote operation, cloneable so the transport can hold
 /// it after the call that started the transfer has returned. Setting it from another
-/// thread ends the operation with [`ActionError::Cancelled`]: the ssh transport wakes
-/// out of its read within a fifth of a second, and the pack steps of both transports
-/// check it between objects.
+/// thread ends the operation with [`ActionError::Cancelled`] within a fifth of a second:
+/// the ssh transport wakes out of its read to look at it, and every HTTPS network step
+/// runs on a detached thread the caller stops waiting for. The pack steps of both
+/// transports also check it between objects.
 ///
 /// It also carries the idle budget both transports measure silence against,
-/// two minutes unless [`Cancel::with_idle_timeout`] changes it: a read that blocks
-/// in curl never sees the flag, so that budget is what ends a stalled HTTPS transfer.
+/// two minutes unless [`Cancel::with_idle_timeout`] changes it. A read that blocks in
+/// curl never sees the flag, so after a cancel the abandoned HTTPS thread lingers until
+/// its next object, chunk or this budget (30 s while still connecting) ends it.
 #[derive(Debug, Clone)]
 pub struct Cancel {
     flag: Arc<AtomicBool>,
@@ -463,6 +465,43 @@ fn bail_if_cancelled(cancel: &Cancel, op: &'static str) -> ActionResult<()> {
         return Err(ActionError::Cancelled { op });
     }
     Ok(())
+}
+
+/// Runs one blocking transfer step on a detached thread and waits for it, looking at
+/// `cancel` every [`CANCEL_POLL`]. curl has no interrupt, so a read it is blocked in never
+/// sees the flag; waiting here instead lets a cancel return [`ActionError::Cancelled`]
+/// within a fifth of a second while the abandoned thread runs on until its next cancel
+/// check or curl's own connect or idle timeout ends it. The thread is never joined: a
+/// scoped thread would make the cancel wait for curl after all. A result that arrives
+/// before the cancel is noticed wins, since the step it reports has already happened.
+fn run_detached<T, F>(cancel: &Cancel, op: &'static str, work: F) -> ActionResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> ActionResult<T> + Send + 'static,
+{
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    let (done, finished) = channel();
+    std::thread::Builder::new()
+        .name(format!("rc-git {op}"))
+        .spawn(move || {
+            // The receiver is gone only when the caller already returned Cancelled, so
+            // nobody is left to hand the result to.
+            drop(done.send(work()));
+        })
+        .map_err(|source| ActionError::git(op, "transfer thread", source))?;
+    loop {
+        match finished.recv_timeout(CANCEL_POLL) {
+            Ok(result) => return result,
+            Err(RecvTimeoutError::Timeout) => bail_if_cancelled(cancel, op)?,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(ActionError::git(
+                    op,
+                    "transfer thread",
+                    "the transfer thread ended without a result",
+                ));
+            }
+        }
+    }
 }
 
 /// The HTTP transport options every fetch and push uses, built from code-owned defaults.

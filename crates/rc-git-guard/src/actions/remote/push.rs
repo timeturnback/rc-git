@@ -19,10 +19,12 @@ use super::report::Report;
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
     configured_remote_name, current_branch, host_of, http_options, is_ancestor, map_network_error,
-    pack, report, set_reflog_identity, vet_remote_url,
+    pack, report, run_detached, set_reflog_identity, vet_remote_url,
 };
 
 const OP: &str = "push";
+
+type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>;
 
 /// What a push did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +89,11 @@ pub fn push_upstream(
     let host = host_of(&url);
     let full_ref = format!("refs/heads/{branch}");
 
-    let mut transport = match scheme {
-        RemoteScheme::Https => connect(&url, &host, cancel)?,
+    let transport = match scheme {
+        RemoteScheme::Https => {
+            let (url, host, worker_cancel) = (url.clone(), host.clone(), cancel.clone());
+            run_detached(cancel, OP, move || connect(&url, &host, &worker_cancel))?
+        }
         RemoteScheme::Ssh => super::ssh::transport(
             &url,
             auth,
@@ -99,11 +104,15 @@ pub fn push_upstream(
         )?,
     };
     let link = Link {
-        host: &host,
-        full_ref: &full_ref,
-        cancel,
+        host,
+        full_ref,
+        cancel: cancel.clone(),
     };
-    let (remote_old, haves) = advertise(&repo, &mut transport, &link, auth.creds)?;
+    let (transport, refs) = {
+        let (link, creds) = (link.clone(), auth.creds.cloned());
+        run_detached(cancel, OP, move || advertise(transport, &link, creds))?
+    };
+    let (remote_old, haves) = remote_tips(&repo, &refs, &link.full_ref);
     let old_id = remote_old.map(|id| core_oid(id, OP)).transpose()?;
     let new_id = core_oid(tip, OP)?;
     if remote_old == Some(tip) {
@@ -125,62 +134,85 @@ pub fn push_upstream(
 
     let pack = pack::build_pack(&repo, tip, &haves, cancel)?;
     bail_if_cancelled(cancel, OP)?;
-    send(&mut transport, &link, remote_old, tip, &pack.bytes)?;
+    let pushed_commits = pack.commits;
+    {
+        let (link, bytes) = (link.clone(), pack.bytes);
+        run_detached(cancel, OP, move || {
+            send(transport, &link, remote_old, tip, &bytes)
+        })?;
+    }
     update_tracking_ref(&Writer::new(&repo, &proof), &remote_name, &branch, tip)?;
     Ok(PushOutcome {
         remote: remote_name,
         branch,
         old: old_id,
         new: new_id,
-        pushed_commits: pack.commits,
+        pushed_commits,
         already_up_to_date: false,
     })
 }
 
 /// The remote end of one push: what its network errors are reported against, and the
-/// flag that turns any of them into [`ActionError::Cancelled`].
-struct Link<'a> {
-    host: &'a str,
-    full_ref: &'a str,
-    cancel: &'a Cancel,
+/// flag that turns any of them into [`ActionError::Cancelled`]. Owned, so each network
+/// step can carry a copy onto the detached thread [`run_detached`] runs it on.
+#[derive(Clone)]
+struct Link {
+    host: String,
+    full_ref: String,
+    cancel: Cancel,
 }
 
-impl Link<'_> {
+impl Link {
     /// Maps a transfer failure. A cancel ends the transport's reads and writes with an
     /// I/O error, so the flag is looked at first and wins over whatever that error says.
     fn failed(&self, source: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {
         if self.cancel.is_cancelled() {
             return ActionError::Cancelled { op: OP };
         }
-        map_network_error(source, OP, self.full_ref, self.host)
+        map_network_error(source, OP, &self.full_ref, &self.host)
+    }
+
+    fn bail_if_cancelled(&self) -> ActionResult<()> {
+        bail_if_cancelled(&self.cancel, OP)
     }
 }
 
+/// Bytes handed to the transport per write, so a cancel lands between chunks of a large
+/// pack instead of after the whole upload.
+const PACK_CHUNK: usize = 64 * 1024;
+
 /// Handshakes with `git-receive-pack` on `transport` (the HTTP `GET /info/refs`) and
-/// returns the advertised tip of `full_ref` plus every advertised tip present locally
-/// (the remote's "haves").
+/// returns the transport with the refs the server advertised.
 fn advertise(
-    repo: &gix::Repository,
-    transport: &mut Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
-    link: &Link<'_>,
-    creds: Option<&Credentials>,
-) -> ActionResult<(Option<ObjectId>, Vec<ObjectId>)> {
+    mut transport: BoxedTransport,
+    link: &Link,
+    creds: Option<Credentials>,
+) -> ActionResult<(BoxedTransport, Vec<gix::protocol::handshake::Ref>)> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
     )]
     let handshake = gix::protocol::handshake(
-        transport,
+        &mut transport,
         gix::protocol::transport::Service::ReceivePack,
-        authenticate_with(creds.cloned()),
+        authenticate_with(creds),
         Vec::new(),
         &mut gix::progress::Discard,
     )
     .map_err(|source| link.failed(Box::new(source)))?;
-    let refs = handshake.refs.unwrap_or_default();
+    Ok((transport, handshake.refs.unwrap_or_default()))
+}
+
+/// The advertised tip of `full_ref` plus every advertised tip present locally (the
+/// remote's "haves").
+fn remote_tips(
+    repo: &gix::Repository,
+    refs: &[gix::protocol::handshake::Ref],
+    full_ref: &str,
+) -> (Option<ObjectId>, Vec<ObjectId>) {
     let mut remote_old = None;
     let mut haves = Vec::new();
-    for advertised in &refs {
+    for advertised in refs {
         let (name, target) = match advertised {
             gix::protocol::handshake::Ref::Direct {
                 full_ref_name,
@@ -198,27 +230,28 @@ fn advertise(
             } => (full_ref_name, *object),
             gix::protocol::handshake::Ref::Unborn { .. } => continue,
         };
-        if name == link.full_ref {
+        if name == full_ref {
             remote_old = Some(target);
         }
         if repo.find_header(target).is_ok() {
             haves.push(target);
         }
     }
-    Ok((remote_old, haves))
+    (remote_old, haves)
 }
 
 /// Sends the command line and the pack over one `git-receive-pack` request (the HTTP
 /// `POST`, on the transport the handshake prepared) and reads the server's
-/// `report-status`.
+/// `report-status`. The pack goes out in [`PACK_CHUNK`] pieces and the report comes in
+/// one read at a time, with the cancel flag looked at before each.
 fn send(
-    transport: &mut Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
-    link: &Link<'_>,
+    mut transport: BoxedTransport,
+    link: &Link,
     remote_old: Option<ObjectId>,
     tip: ObjectId,
     pack: &[u8],
 ) -> ActionResult<()> {
-    let full_ref = link.full_ref;
+    let full_ref = link.full_ref.as_str();
     let net = |source: std::io::Error| link.failed(Box::new(source));
     let mut writer = transport
         .request(
@@ -234,12 +267,23 @@ fn send(
         .write_message(gix::protocol::transport::client::MessageKind::Flush)
         .map_err(net)?;
     let (mut raw, mut reader) = writer.into_parts();
-    raw.write_all(pack).map_err(net)?;
+    for chunk in pack.chunks(PACK_CHUNK) {
+        link.bail_if_cancelled()?;
+        raw.write_all(chunk).map_err(net)?;
+    }
     raw.flush().map_err(net)?;
     drop(raw);
 
     let mut payload = Vec::new();
-    reader.read_to_end(&mut payload).map_err(net)?;
+    let mut buf = [0_u8; 8 * 1024];
+    loop {
+        link.bail_if_cancelled()?;
+        let read = reader.read(&mut buf).map_err(net)?;
+        if read == 0 {
+            break;
+        }
+        payload.extend_from_slice(buf.get(..read).unwrap_or_default());
+    }
     match report::parse_report(&payload, full_ref) {
         Ok(Report::Ok) => Ok(()),
         Ok(Report::Refused {
@@ -267,11 +311,7 @@ fn send(
 /// Opens the HTTP transport for `url`, with rc-git's connect and idle timeouts on it.
 /// `connect::Options` carries no HTTP settings, so they go on afterwards through the
 /// transport's own `configure`; without them curl waits forever on a dead peer.
-fn connect(
-    url: &gix::Url,
-    host: &str,
-    cancel: &Cancel,
-) -> ActionResult<Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>> {
+fn connect(url: &gix::Url, host: &str, cancel: &Cancel) -> ActionResult<BoxedTransport> {
     use gix::protocol::transport::client::TransportWithoutIO;
     let failed = |source: Box<dyn std::error::Error + Send + Sync + 'static>| {
         map_network_error(source, OP, url.to_bstring().to_string().as_str(), host)

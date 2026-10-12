@@ -6,11 +6,12 @@ use std::path::Path;
 
 use crate::actions::write::Writer;
 use crate::actions::{ActionError, ActionResult, authorize, git_err, open};
-use crate::{Action, Policy};
+use crate::{Action, Confirmation, Policy};
 
 use super::{
-    Cancel, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled, configured_remote_name,
-    current_branch, host_of, http_options, map_network_error, vet_remote_url,
+    Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
+    configured_remote_name, current_branch, host_of, http_options, map_network_error, run_detached,
+    vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -52,19 +53,12 @@ pub fn fetch_upstream(
     let mut repo = open(repo_path, OP, "repository")?;
     super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
-    let writer = Writer::new(&repo, &proof);
     let (branch, _tip) = current_branch(&repo, OP)?;
     let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
         op: OP,
         branch: branch.clone(),
     })?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
-    )]
-    let remote = repo
-        .find_remote(remote_name.as_str())
-        .map_err(git_err(OP, &remote_name))?;
+    let remote = find_remote(&repo, &remote_name)?;
     let url = remote
         .url(gix::remote::Direction::Fetch)
         .ok_or_else(|| ActionError::NoUpstream {
@@ -75,19 +69,20 @@ pub fn fetch_upstream(
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
 
-    let outcome = match scheme {
+    let updated_refs = match scheme {
         RemoteScheme::Https => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
-            )]
-            let connection = remote
-                .connect(gix::remote::Direction::Fetch)
-                .map_err(|source| map_network_error(Box::new(source), OP, &remote_name, &host))?;
-            let mut connection =
-                connection.with_credentials(authenticate_with(auth.creds.cloned()));
-            connection.set_transport_options(Box::new(http_options(&url, cancel)));
-            run_fetch(&writer, connection, (&remote_name, &host), cancel)?
+            let creds = auth.creds.cloned();
+            let worker_cancel = cancel.clone();
+            let (remote_name, host) = (remote_name.clone(), host.clone());
+            run_detached(cancel, OP, move || {
+                fetch_https(
+                    &repo,
+                    &proof,
+                    creds,
+                    (&remote_name, &url, &host),
+                    &worker_cancel,
+                )
+            })?
         }
         RemoteScheme::Ssh => {
             let transport = super::ssh::transport(
@@ -105,14 +100,62 @@ pub fn fetch_upstream(
             let connection = remote
                 .to_connection_with_transport(transport)
                 .with_credentials(authenticate_with(None));
-            run_fetch(&writer, connection, (&remote_name, &host), cancel)?
+            let writer = Writer::new(&repo, &proof);
+            updated_refs(&run_fetch(
+                &writer,
+                connection,
+                (&remote_name, &host),
+                cancel,
+            )?)
         }
     };
 
     Ok(FetchOutcome {
         remote: remote_name,
-        updated_refs: updated_refs(&outcome),
+        updated_refs,
     })
+}
+
+/// The named remote of `repo`.
+fn find_remote<'repo>(
+    repo: &'repo gix::Repository,
+    remote_name: &str,
+) -> ActionResult<gix::Remote<'repo>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
+    )]
+    repo.find_remote(remote_name)
+        .map_err(git_err(OP, remote_name))
+}
+
+/// The whole HTTPS fetch: connect, negotiate, receive. It runs on the detached thread
+/// [`run_detached`] starts, because curl blocks in reads the cancel flag cannot reach;
+/// `cancel` still stops it at the next object once the caller has given up waiting.
+fn fetch_https(
+    repo: &gix::Repository,
+    proof: &Confirmation,
+    creds: Option<Credentials>,
+    (remote_name, url, host): (&str, &gix::Url, &str),
+    cancel: &Cancel,
+) -> ActionResult<Vec<RefUpdate>> {
+    let remote = find_remote(repo, remote_name)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
+    )]
+    let connection = remote
+        .connect(gix::remote::Direction::Fetch)
+        .map_err(|source| map_network_error(Box::new(source), OP, remote_name, host))?;
+    let mut connection = connection.with_credentials(authenticate_with(creds));
+    connection.set_transport_options(Box::new(http_options(url, cancel)));
+    let writer = Writer::new(repo, proof);
+    Ok(updated_refs(&run_fetch(
+        &writer,
+        connection,
+        (remote_name, host),
+        cancel,
+    )?))
 }
 
 /// Runs the prepared connection through negotiation and pack receive, mapping errors

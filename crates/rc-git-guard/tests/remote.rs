@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rc_git_guard::Policy;
 use rc_git_guard::actions::{
-    ActionError, Cancel, Credentials, RemoteAuth, fetch_upstream, upstream_status,
+    ActionError, Cancel, Credentials, RemoteAuth, fetch_upstream, push_upstream, upstream_status,
 };
 
 /// A flag that is already set, for the tests that check a cancelled operation never
@@ -381,33 +381,96 @@ fn a_preset_cancel_flag_stops_the_fetch_before_it_connects() {
     drop(remoted.server);
 }
 
-/// The HTTPS idle budget is the only thing that ends a read curl is blocked in; the
-/// cancel flag is never looked at there. This fails if the budget stops reaching the
-/// backend, whether through a gix type change or a switch to a backend that ignores it.
-#[test]
-fn a_stalling_https_server_ends_the_fetch_once_the_idle_budget_is_spent() {
+/// Which remote operation a stalled-server test drives.
+#[derive(Clone, Copy)]
+enum Transfer {
+    Fetch,
+    Push,
+}
+
+/// A clone whose `origin` points at a server that reads each request and never answers,
+/// with `transfer` already running against it on its own thread under `cancel`. The
+/// receiver yields the result, so a call that never ends fails at `recv_timeout` instead
+/// of hanging the suite. Keep the returned server alive until the result arrives.
+fn transfer_against_a_silent_peer(
+    transfer: Transfer,
+    cancel: Cancel,
+) -> (
+    Remoted,
+    rc_git_testkit::HttpGitServer,
+    std::sync::mpsc::Receiver<Result<(), ActionError>>,
+) {
     let remoted = remoted();
     let stalling = rc_git_testkit::HttpGitServer::serve_stalling(&remoted.bare_path);
     remoted
         .clone
         .git(&["remote", "set-url", "origin", &stalling.url()]);
-    let cancel = Cancel::new().with_idle_timeout(std::time::Duration::from_secs(2));
-
-    // On its own thread so a regression fails here instead of hanging the suite: without
-    // the budget nothing ever ends the read.
     let repo = remoted.clone.path().to_path_buf();
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result = fetch_upstream(&repo, &Policy::default(), RemoteAuth::default(), &cancel);
+        let policy = Policy::default();
+        let auth = RemoteAuth::default();
+        let result = match transfer {
+            Transfer::Fetch => fetch_upstream(&repo, &policy, auth, &cancel).map(drop),
+            Transfer::Push => push_upstream(&repo, &policy, auth, &cancel).map(drop),
+        };
         drop(done.send(result));
     });
+    (remoted, stalling, finished)
+}
+
+/// A cancel raised while curl waits on a server that never answers ends the call within
+/// the 5 s allowed here, though the idle budget left in place is two minutes.
+fn assert_cancel_ends_a_stalled_handshake(transfer: Transfer, op: &str) {
+    let cancel = Cancel::new();
+    let signal = cancel.clone();
+    let (_remoted, _stalling, finished) = transfer_against_a_silent_peer(transfer, cancel);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    signal.signal();
+    let err = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the call ends within 5 s of the cancel")
+        .expect_err("cancelled");
+    assert!(
+        matches!(err, ActionError::Cancelled { op: got } if got == op),
+        "{err}"
+    );
+}
+
+/// The idle budget ends a read curl is blocked in when nobody cancels. This fails if the
+/// budget stops reaching the backend, whether through a gix type change, a call site
+/// that drops `http_options`, or a switch to a backend that ignores it.
+fn assert_idle_budget_ends_a_silent_peer(transfer: Transfer, op: &str) {
+    let cancel = Cancel::new().with_idle_timeout(std::time::Duration::from_secs(2));
+    let (_remoted, _stalling, finished) = transfer_against_a_silent_peer(transfer, cancel);
     let err = finished
         .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the fetch ends within 10 s of a 2 s idle budget")
-        .expect_err("a silent server fails the fetch");
+        .expect("the call ends within 10 s of a 2 s idle budget")
+        .expect_err("a silent server fails the call");
+    assert!(
+        matches!(err, ActionError::Git { op: got, .. } if got == op),
+        "{err}"
+    );
+}
 
-    assert!(matches!(err, ActionError::Git { op: "fetch", .. }), "{err}");
-    drop(stalling);
+#[test]
+fn a_cancel_signalled_during_an_http_handshake_ends_the_fetch() {
+    assert_cancel_ends_a_stalled_handshake(Transfer::Fetch, "fetch");
+}
+
+#[test]
+fn a_cancel_signalled_during_an_http_handshake_ends_the_push() {
+    assert_cancel_ends_a_stalled_handshake(Transfer::Push, "push");
+}
+
+#[test]
+fn an_https_fetch_from_a_silent_peer_ends_within_the_idle_budget() {
+    assert_idle_budget_ends_a_silent_peer(Transfer::Fetch, "fetch");
+}
+
+#[test]
+fn an_https_push_to_a_silent_peer_ends_within_the_idle_budget() {
+    assert_idle_budget_ends_a_silent_peer(Transfer::Push, "push");
 }
 
 // --- fast-forward pull ---
@@ -744,8 +807,6 @@ fn pull_refuses_a_detached_head() {
 }
 
 // --- push ---
-
-use rc_git_guard::actions::push_upstream;
 
 #[test]
 fn push_uploads_commits_and_updates_the_tracking_ref() {

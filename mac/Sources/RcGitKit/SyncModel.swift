@@ -211,8 +211,9 @@ public final class SyncModel {
     }
 
     /// Asks the running workflow to stop. The flag reaches the step itself — the ssh
-    /// transport wakes out of its read, the pack steps check it between objects — so
-    /// this does not wait for a dead connection to time out. A no-op when nothing is
+    /// transport wakes out of its read, an HTTPS step stops being waited for and its
+    /// curl thread is left to time out on its own — so this does not wait for a dead
+    /// connection to time out. A no-op when nothing is
     /// running or a cancel is already under way.
     public func cancelRunning() {
         guard case let .running(step) = state else { return }
@@ -306,10 +307,10 @@ public final class SyncModel {
                 summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
         } catch let failure as StepFailure {
             guard generation == self.generation else { return }
-            // A cancel unwinds through whatever the step reported — the guard's own
-            // cancelled error over ssh, a transport error over HTTPS where curl is cut
-            // off mid-request. What the user asked for decides the state, not which of
-            // those arrived.
+            // A cancel unwinds through whatever the step reported — usually the guard's
+            // own cancelled error, or a transport error the step hit as the flag was
+            // set. What the user asked for decides the state, not which of those
+            // arrived.
             state =
                 switch (cancel.isSignalled, failure.diverged) {
                 case (true, _): .idle

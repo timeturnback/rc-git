@@ -420,8 +420,8 @@ fn shell_word(word: &str) -> String {
 /// One cancel flag for every remote step of the command, set by SIGINT or SIGTERM so the guard
 /// stops between steps and cleans up instead of the process dying with `.lock` and `tmp_pack_*`
 /// files left in `.git`. A second signal, once the flag is set, exits at once with
-/// [`EXIT_INTERRUPTED`]: some steps never look at the flag (the ssh dial, a blocked HTTPS read,
-/// the pull's tree apply), and Ctrl+C must still end them.
+/// [`EXIT_INTERRUPTED`]: some steps never look at the flag (the ssh dial, the pull's tree
+/// apply), and Ctrl+C must still end them.
 fn interruptible_cancel() -> Result<Cancel> {
     let cancel = Cancel::new();
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
