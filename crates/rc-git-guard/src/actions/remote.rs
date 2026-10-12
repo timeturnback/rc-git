@@ -106,40 +106,6 @@ impl Cancel {
     }
 }
 
-/// What one sync pass did: fetch, fast-forward, and — when the branch was ahead — push.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncOutcome {
-    /// The fetch that ran first.
-    pub fetch: FetchOutcome,
-    /// The fast-forward that followed.
-    pub pull: PullOutcome,
-    /// The push, `None` when the branch had nothing to push.
-    pub push: Option<PushOutcome>,
-}
-
-/// Fetch, fast-forward the checked-out branch, then push it when it is ahead.
-/// Stops at the first failure; a divergence surfaces as [`ActionError::Diverged`]
-/// from the pull step before anything is uploaded.
-///
-/// # Errors
-/// Everything [`fetch_upstream`], [`pull_fast_forward`], and [`push_upstream`] report.
-pub fn sync(
-    repo_path: &Path,
-    policy: &crate::Policy,
-    auth: RemoteAuth<'_>,
-    cancel: &Cancel,
-) -> ActionResult<SyncOutcome> {
-    let fetch = fetch_upstream(repo_path, policy, auth, cancel)?;
-    let pull = pull_fast_forward(repo_path, policy)?;
-    let status = upstream_status(repo_path)?;
-    let push = if status.ahead > 0 {
-        Some(push_upstream(repo_path, policy, auth, cancel)?)
-    } else {
-        None
-    };
-    Ok(SyncOutcome { fetch, pull, push })
-}
-
 /// Everything a remote operation may need to authenticate, borrowed from the caller.
 /// For HTTPS remotes only `creds` matters; for SSH remotes `creds.token` doubles as the
 /// key passphrase (`username` is ignored) and `accepted_hostkey` is the SHA256

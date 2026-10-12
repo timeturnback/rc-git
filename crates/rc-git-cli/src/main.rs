@@ -510,6 +510,8 @@ fn write_stdout(out: &[u8]) -> Result<()> {
     }
 }
 
+/// Runs the verb, then writes whatever it put in `out` even when it failed: a remote verb that
+/// fails at a later step still reports the steps that already ran, as git does.
 fn run(invocation: &Invocation) -> Result<ExitCode> {
     let opened_at = Instant::now();
     let repo = Repository::open(&invocation.repo)?;
@@ -517,48 +519,11 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
 
     let started_at = Instant::now();
     let mut out = Vec::new();
-    let code = match invocation.verb {
-        Verb::Head => head(&repo, &invocation.args, &mut out)?,
-        Verb::Refs => refs(&repo, &invocation.args, &mut out)?,
-        Verb::Ls => ls(&repo, &invocation.args, &mut out)?,
-        Verb::Cat => cat(&repo, &invocation.args, &mut out)?,
-        Verb::Log => log(&repo, &invocation.args, &mut out)?,
-        Verb::Filelog => filelog(&repo, &invocation.args, &mut out)?,
-        Verb::Search => search(&repo, &invocation.args, &mut out)?,
-        Verb::Show => show(&repo, &invocation.args, &mut out)?,
-        Verb::Diff => diff(&repo, &invocation.args, &mut out)?,
-        Verb::Blame => blame(&repo, &invocation.args, &mut out)?,
-        Verb::Status => status(&repo, &invocation.args, &mut out)?,
-        Verb::Changes => changes(&repo, &invocation.args, &mut out)?,
-        Verb::Files => files(&repo, &invocation.args, &mut out)?,
-        Verb::Stash => stash(&repo, &invocation.args, &mut out)?,
-        Verb::Resolve => resolve(&repo, &invocation.args, &mut out)?,
-        Verb::DefaultBranch => default_branch(&repo, &invocation.args, &mut out)?,
-        Verb::Commit => commit_verb(&repo, &invocation.repo, &invocation.args, &mut out)?,
-        Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::StashApply => stash_index_verb(
-            &invocation.repo,
-            &invocation.args,
-            StashVerb::Apply,
-            &mut out,
-        )?,
-        Verb::StashPop => {
-            stash_index_verb(&invocation.repo, &invocation.args, StashVerb::Pop, &mut out)?
-        }
-        Verb::StashDrop => stash_index_verb(
-            &invocation.repo,
-            &invocation.args,
-            StashVerb::Drop,
-            &mut out,
-        )?,
-        Verb::Discard => discard_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, &mut out)?,
-        Verb::Fetch | Verb::Pull | Verb::Push | Verb::Sync => remote_verb(invocation, &mut out)?,
-    };
+    let result = dispatch(&repo, invocation, &mut out);
     let command_elapsed = started_at.elapsed();
 
-    write_stdout(&out)?;
-    if invocation.time {
+    let written = write_stdout(&out);
+    let timed = if invocation.time {
         writeln!(
             io::stderr().lock(),
             "time: open {:.2} ms, {} {:.2} ms",
@@ -566,9 +531,47 @@ fn run(invocation: &Invocation) -> Result<ExitCode> {
             invocation.verb.name(),
             command_elapsed.as_secs_f64() * 1000.0
         )
-        .context("write timing")?;
-    }
+        .context("write timing")
+    } else {
+        Ok(())
+    };
+    let code = result?;
+    written?;
+    timed?;
     Ok(code)
+}
+
+fn dispatch(repo: &Repository, invocation: &Invocation, out: &mut Vec<u8>) -> Result<ExitCode> {
+    match invocation.verb {
+        Verb::Head => head(repo, &invocation.args, out),
+        Verb::Refs => refs(repo, &invocation.args, out),
+        Verb::Ls => ls(repo, &invocation.args, out),
+        Verb::Cat => cat(repo, &invocation.args, out),
+        Verb::Log => log(repo, &invocation.args, out),
+        Verb::Filelog => filelog(repo, &invocation.args, out),
+        Verb::Search => search(repo, &invocation.args, out),
+        Verb::Show => show(repo, &invocation.args, out),
+        Verb::Diff => diff(repo, &invocation.args, out),
+        Verb::Blame => blame(repo, &invocation.args, out),
+        Verb::Status => status(repo, &invocation.args, out),
+        Verb::Changes => changes(repo, &invocation.args, out),
+        Verb::Files => files(repo, &invocation.args, out),
+        Verb::Stash => stash(repo, &invocation.args, out),
+        Verb::Resolve => resolve(repo, &invocation.args, out),
+        Verb::DefaultBranch => default_branch(repo, &invocation.args, out),
+        Verb::Commit => commit_verb(repo, &invocation.repo, &invocation.args, out),
+        Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, out),
+        Verb::StashApply => {
+            stash_index_verb(&invocation.repo, &invocation.args, StashVerb::Apply, out)
+        }
+        Verb::StashPop => stash_index_verb(&invocation.repo, &invocation.args, StashVerb::Pop, out),
+        Verb::StashDrop => {
+            stash_index_verb(&invocation.repo, &invocation.args, StashVerb::Drop, out)
+        }
+        Verb::Discard => discard_verb(&invocation.repo, &invocation.args, out),
+        Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, out),
+        Verb::Fetch | Verb::Pull | Verb::Push | Verb::Sync => remote_verb(invocation, out),
+    }
 }
 
 /// Ends a record: a newline, or NUL under `-z`.
@@ -1721,17 +1724,16 @@ fn sync_verb(
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
     let remote = parse_remote_args("sync", repo_path, args)?;
-    let outcome = rc_git_guard::actions::sync(
-        repo_path,
-        &rc_git_guard::Policy::default(),
-        remote.auth(),
-        cancel,
-    )?;
-    write_fetch(out, &outcome.fetch)?;
-    write_pull(out, &outcome.pull)?;
-    match &outcome.push {
-        Some(push) => write_push(out, push)?,
-        None => writeln!(out, "push\t{}\tup to date", outcome.pull.branch)?,
+    let policy = rc_git_guard::Policy::default();
+    let fetch = rc_git_guard::actions::fetch_upstream(repo_path, &policy, remote.auth(), cancel)?;
+    write_fetch(out, &fetch)?;
+    let pull = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
+    write_pull(out, &pull)?;
+    if rc_git_guard::actions::upstream_status(repo_path)?.ahead > 0 {
+        let push = rc_git_guard::actions::push_upstream(repo_path, &policy, remote.auth(), cancel)?;
+        write_push(out, &push)?;
+    } else {
+        writeln!(out, "push\t{}\tup to date", pull.branch)?;
     }
     Ok(ExitCode::SUCCESS)
 }

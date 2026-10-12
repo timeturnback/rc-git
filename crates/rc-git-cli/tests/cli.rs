@@ -1598,10 +1598,39 @@ fn pull_and_push_report_divergence_with_exit_7() {
         "{}",
         stderr(&out)
     );
+    assert!(
+        stdout(&out).contains("fetch\trefs/remotes/origin/main\t"),
+        "{}",
+        stdout(&out)
+    );
 
     let out = rc_git(&["push", path]);
     assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
     assert!(stderr(&out).contains("push rejected"), "{}", stderr(&out));
+}
+
+#[test]
+fn sync_on_a_diverged_clone_still_reports_the_fetch_it_ran() {
+    let (origin, bare, _server, clone) = served_clone();
+    advance_origin(&origin, &bare);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["sync", path]);
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot fast-forward"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "fetch\trefs/remotes/origin/main\t{}\n",
+            clone.rev_parse("origin/main")
+        )
+    );
 }
 
 #[test]
