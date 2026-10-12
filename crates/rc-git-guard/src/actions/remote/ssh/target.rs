@@ -1473,4 +1473,31 @@ HostName	real.example.com
         .expect("resolve");
         assert_eq!(target.identity_agent, AgentSocket::None);
     }
+
+    #[test]
+    fn quoted_command_single_quotes_the_path() {
+        let command = quoted_command(
+            gix::protocol::transport::Service::ReceivePack,
+            gix::bstr::BStr::new("repo.git"),
+            "push",
+        )
+        .expect("quote");
+        assert_eq!(command, "git-receive-pack 'repo.git'");
+    }
+
+    /// A byte that cannot travel inside single quotes, or a path that is not UTF-8,
+    /// is refused rather than sent to the server.
+    #[test]
+    fn quoted_command_refuses_unquotable_paths() {
+        let paths: [&[u8]; 4] = [b"it's.git", b"repo\n.git", b"repo\0.git", b"repo\xff.git"];
+        for path in paths {
+            let path = gix::bstr::BStr::new(path);
+            let result =
+                quoted_command(gix::protocol::transport::Service::UploadPack, path, "fetch");
+            assert!(
+                matches!(&result, Err(ActionError::Git { op: "fetch", .. })),
+                "{path:?}: {result:?}"
+            );
+        }
+    }
 }
