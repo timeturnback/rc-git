@@ -18,6 +18,7 @@ use crate::actions::{ActionError, ActionResult, git_err};
 use super::{CANCEL_POLL, Cancel, RemoteAuth, bail_if_cancelled};
 
 mod auth;
+mod dial;
 mod hostkey;
 mod output;
 mod session;
@@ -177,7 +178,7 @@ fn timed_out(request: &Request<'_>, budget: Duration) -> ActionError {
     )
 }
 
-/// Dial, verify the host key, authenticate, open a session channel, and exec the git
+/// Dial (see [`dial`]), verify the host key, authenticate, open a session channel, and exec the git
 /// service on it. Runs on the transport's private runtime; [`drive`] bounds it.
 #[expect(
     clippy::disallowed_methods,
@@ -197,8 +198,13 @@ async fn connect_and_exec(
         ..
     } = *request;
     let config = Arc::new(russh::client::Config::default());
-    let address = (target.host_name.as_str(), target.port);
-    let mut client = russh::client::connect(config, address, handler)
+    let socket = dial::dial(target, request.cancel.connect(), op).await?;
+    if config.nodelay {
+        socket
+            .set_nodelay(true)
+            .map_err(git_err(op, &target.host))?;
+    }
+    let mut client = russh::client::connect_stream(config, socket, handler)
         .await
         .map_err(git_err(op, &target.host))?;
     auth::authenticate(&mut client, target, passphrase, op).await?;

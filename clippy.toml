@@ -70,6 +70,7 @@ disallowed-methods = [
     { path = "std::net::TcpStream::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "std::net::TcpStream::connect_timeout", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "tokio::net::TcpStream::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
+    { path = "tokio::net::lookup_host", reason = "network entry point (DNS); remote I/O goes through rc-git-guard" },
     { path = "russh::client::connect", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "russh::client::connect_stream", reason = "network entry point; remote I/O goes through rc-git-guard" },
     { path = "russh::keys::known_hosts::learn_known_hosts", reason = "known_hosts is read-only; approvals live app-side" },
