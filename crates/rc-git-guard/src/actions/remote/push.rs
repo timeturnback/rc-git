@@ -438,8 +438,7 @@ impl SideBand {
         match report {
             Ok(Report::Ok) => Ok(()),
             Ok(Report::Refused {
-                non_fast_forward: true,
-                ..
+                remote_moved: true, ..
             }) => Err(ActionError::PushRejected {
                 branch: full_ref
                     .strip_prefix("refs/heads/")

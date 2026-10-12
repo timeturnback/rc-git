@@ -44,8 +44,9 @@ pub(super) enum Report {
     Refused {
         /// The server's reason, verbatim.
         reason: String,
-        /// Whether the reason names a non-fast-forward rejection.
-        non_fast_forward: bool,
+        /// Whether the reason says the remote ref is not where the push expected it: a
+        /// non-fast-forward, or a ref someone else moved or created since the advertisement.
+        remote_moved: bool,
     },
 }
 
@@ -101,7 +102,7 @@ pub(super) fn parse_report<'a>(
             } else {
                 return Ok(Report::Refused {
                     reason: format!("unpack {status}"),
-                    non_fast_forward: false,
+                    remote_moved: false,
                 });
             }
         } else if let Some(rest) = line.strip_prefix("ok ") {
@@ -113,7 +114,7 @@ pub(super) fn parse_report<'a>(
             if name == full_ref {
                 ref_status = Some(Report::Refused {
                     reason: reason.to_owned(),
-                    non_fast_forward: reason.contains("non-fast-forward"),
+                    remote_moved: names_a_moved_remote(reason),
                 });
             }
         }
@@ -122,6 +123,24 @@ pub(super) fn parse_report<'a>(
         return Err("the server sent no 'unpack' status".to_owned());
     }
     ref_status.ok_or_else(|| format!("the server sent no status for '{full_ref}'"))
+}
+
+/// The reasons a server gives when the remote ref is not where the push expected it.
+/// `non-fast-forward` and `fetch first` come from servers that check ancestry themselves;
+/// git's `receive-pack` answers `incorrect old value provided` when the ref moved since the
+/// advertisement, and `reference already exists` when a new branch was created meanwhile.
+/// Older servers' `failed to update ref` is left out: it also covers unrelated failures.
+const REMOTE_MOVED_REASONS: [&str; 4] = [
+    "non-fast-forward",
+    "fetch first",
+    "incorrect old value provided",
+    "reference already exists",
+];
+
+fn names_a_moved_remote(reason: &str) -> bool {
+    REMOTE_MOVED_REASONS
+        .iter()
+        .any(|moved| reason.contains(moved))
 }
 
 /// How much band-2 text is kept: the last lines whose total stays within this many bytes.
@@ -277,7 +296,51 @@ mod tests {
             report,
             Ok(Report::Refused {
                 reason: "non-fast-forward".to_owned(),
-                non_fast_forward: true,
+                remote_moved: true,
+            })
+        );
+    }
+
+    fn refusal(reason: &str) -> Result<Report, String> {
+        let reply = format!("unpack ok\nng refs/heads/main {reason}\n");
+        parse_report(lines(reply.as_bytes()), "refs/heads/main")
+    }
+
+    fn moved(reason: &str) -> Report {
+        Report::Refused {
+            reason: reason.to_owned(),
+            remote_moved: true,
+        }
+    }
+
+    #[test]
+    fn fetch_first_means_the_remote_moved() {
+        assert_eq!(refusal("fetch first"), Ok(moved("fetch first")));
+    }
+
+    #[test]
+    fn incorrect_old_value_provided_means_the_remote_moved() {
+        assert_eq!(
+            refusal("incorrect old value provided"),
+            Ok(moved("incorrect old value provided"))
+        );
+    }
+
+    #[test]
+    fn reference_already_exists_means_the_remote_moved() {
+        assert_eq!(
+            refusal("reference already exists"),
+            Ok(moved("reference already exists"))
+        );
+    }
+
+    #[test]
+    fn failed_to_update_ref_stays_a_plain_refusal() {
+        assert_eq!(
+            refusal("failed to update ref"),
+            Ok(Report::Refused {
+                reason: "failed to update ref".to_owned(),
+                remote_moved: false,
             })
         );
     }
@@ -289,7 +352,7 @@ mod tests {
             report,
             Ok(Report::Refused {
                 reason: "unpack index-pack failed".to_owned(),
-                non_fast_forward: false,
+                remote_moved: false,
             })
         );
     }
@@ -313,7 +376,7 @@ mod tests {
             report,
             Ok(Report::Refused {
                 reason: "rejected".to_owned(),
-                non_fast_forward: false,
+                remote_moved: false,
             })
         );
     }
@@ -337,7 +400,7 @@ mod tests {
             parse_report(decoded, "refs/heads/trunk"),
             Ok(Report::Refused {
                 reason: "pre-receive hook declined".to_owned(),
-                non_fast_forward: false,
+                remote_moved: false,
             })
         );
     }
