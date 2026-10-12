@@ -887,8 +887,37 @@ fn ref_moved(repo: &gix::Repository, full_name: &str, expected: &Target) -> bool
     }
 }
 
-/// Whether every commit of `name` is reachable from another local branch or from `HEAD`
-/// when `HEAD` is not on `name` itself, and the tip that answer was judged on.
+/// Whether `HEAD`'s symbolic chain (`HEAD -> alias -> branch`) passes through `full_name`,
+/// compared ignoring case as [`head_is_on`] does. A detached or unborn `HEAD` reaches nothing;
+/// a chain longer than git's own symref depth limit (a cycle included) counts as reaching it,
+/// so the caller stops counting `HEAD` rather than trusting it.
+fn head_chain_reaches(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<bool> {
+    const MAX_SYMREF_DEPTH: usize = 5;
+    let mut reference = repo.find_reference("HEAD").map_err(git_err(op, "HEAD"))?;
+    for _ in 0..MAX_SYMREF_DEPTH {
+        let Some(target) = reference.target().try_name().map(ToOwned::to_owned) else {
+            return Ok(false);
+        };
+        if target.as_bstr().eq_ignore_ascii_case(full_name.as_bytes()) {
+            return Ok(true);
+        }
+        match repo.try_find_reference(target.as_ref()) {
+            Ok(Some(next)) => reference = next,
+            Ok(None) => return Ok(false),
+            Err(err) => return Err(git_err(op, "HEAD")(err)),
+        }
+    }
+    Ok(true)
+}
+
+/// Whether every commit of `name` is reachable from another direct local branch or from
+/// `HEAD` when `HEAD`'s symbolic chain does not reach `name`, and the tip that answer was
+/// judged on. A symbolic branch is skipped: an alias of `name` (or of another branch) is no
+/// independent evidence that the commits survive the delete.
 fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, gix::ObjectId)> {
     const OP: &str = "check branch reachability";
     let full_name = format!("refs/heads/{name}");
@@ -901,7 +930,7 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, g
         .map_err(git_err(OP, &full_name))?
         .detach();
     let mut others: Vec<gix::ObjectId> = Vec::new();
-    if !head_is_on(repo, OP, &full_name)?
+    if !head_chain_reaches(repo, OP, &full_name)?
         && let Ok(head) = repo.head_id()
     {
         others.push(head.detach());
@@ -909,7 +938,8 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, g
     let references = repo.references().map_err(git_err(OP, &full_name))?;
     if let Ok(branches) = references.local_branches() {
         for branch in branches.flatten() {
-            if branch.name().as_bstr() == full_name.as_str() {
+            let symbolic = branch.target().try_name().is_some();
+            if symbolic || branch.name().as_bstr() == full_name.as_str() {
                 continue;
             }
             if let Ok(id) = branch.into_fully_peeled_id() {

@@ -246,6 +246,42 @@ fn protected_and_checked_out_branches_cannot_be_deleted() {
 }
 
 #[test]
+fn a_symbolic_alias_is_not_evidence_that_an_unmerged_branch_survives() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let feature_tip = fx.rev_parse("feature");
+    fx.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/feature"]);
+
+    let plan = plan_branch_delete(fx.path(), &policy, "feature").unwrap();
+    assert!(!plan.merged, "an alias of feature peels to its own tip");
+    let Decision::Confirm(challenge) = &plan.decision else {
+        panic!("expected Confirm, got {:?}", plan.decision);
+    };
+    assert_eq!(challenge.typed_phrase(), Some("feature"));
+    assert!(challenge.backup_ref());
+
+    let err = delete_branch(fx.path(), &policy, "feature", None).unwrap_err();
+    assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
+    let deleted = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap();
+    assert_eq!(
+        fx.rev_parse(deleted.backup_ref.as_deref().unwrap()),
+        feature_tip,
+        "the backup keeps the unmerged tip"
+    );
+}
+
+#[test]
+fn head_through_an_alias_of_the_branch_is_not_evidence_either() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    fx.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/feature"]);
+    fx.git(&["symbolic-ref", "HEAD", "refs/heads/alias"]);
+
+    let plan = plan_branch_delete(fx.path(), &policy, "feature").unwrap();
+    assert!(!plan.merged, "HEAD -> alias -> feature is feature itself");
+}
+
+#[test]
 fn the_checked_out_branch_plans_a_deny_and_counts_head_as_itself() {
     let fx = Fixture::standard();
     let policy = Policy::default();

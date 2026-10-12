@@ -134,7 +134,8 @@ a branch checked out in any worktree — the opened one, the main worktree, or a
 cannot be deleted (compared ignoring case; its delete plan is a `Deny` naming the checkout and
 the worktree's path unless the policy already denies it, a worktree whose `HEAD` cannot be read
 refuses rather than counts as elsewhere, and the merged check never counts `HEAD` on the branch
-itself as another home for its commits), and a ref is never created over an existing one.
+itself, directly or through a symbolic alias, nor any symbolic branch, as another home for its
+commits), and a ref is never created over an existing one.
 Checkout likewise refuses a branch another worktree has checked out, naming that worktree as
 git does. Every name a delete, a checkout or the merged check acts on must appear
 byte for byte in the repository's own branch or tag listing, so `MAIN` never reaches `main`
