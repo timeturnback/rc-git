@@ -428,34 +428,98 @@ fn authenticate_with(
     }
 }
 
-/// Maps a network failure to [`ActionError::AuthRequired`] when the chain shows the
-/// server demanded credentials, else wraps it as [`ActionError::Git`].
+/// Maps a network failure to [`ActionError::AuthRequired`] when the server demanded
+/// credentials, else wraps it as [`ActionError::Git`]. Only the handshake's credential
+/// errors, a transport-level 401 and a missing identity count; a local I/O failure deeper
+/// in the chain (an unwritable pack directory) stays a [`ActionError::Git`].
 fn map_network_error(
     error: Box<dyn std::error::Error + Send + Sync + 'static>,
     op: &'static str,
     name: &str,
     host: &str,
 ) -> ActionError {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
+    if demands_credentials(error.as_ref()) {
+        return ActionError::AuthRequired {
+            op,
+            host: host.to_owned(),
+        };
+    }
+    ActionError::git(op, name, error)
+}
+
+/// Whether `error` is the server asking for credentials, or rejecting the ones sent.
+fn demands_credentials(error: &(dyn std::error::Error + 'static)) -> bool {
+    handshake_error(error).is_some_and(rejected_credentials)
+        || transport_io_error(error)
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+        || lacks_identity(error)
+}
+
+/// The handshake error at the top of `error`: push's `advertise` returns it as is, and
+/// fetch's `prepare_fetch` wraps it in two `transparent` variants `source()` skips.
+fn handshake_error<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a gix::protocol::handshake::Error> {
+    if let Some(handshake) = error.downcast_ref::<gix::protocol::handshake::Error>() {
+        return Some(handshake);
+    }
+    let prepare = error.downcast_ref::<gix::remote::fetch::prepare::Error>()?;
+    if let gix::remote::fetch::prepare::Error::RefMap(gix::remote::ref_map::Error::Handshake(
+        handshake,
+    )) = prepare
+    {
+        return Some(handshake);
+    }
+    None
+}
+
+/// Whether the handshake failed on credentials: none offered, none returned, or refused.
+fn rejected_credentials(error: &gix::protocol::handshake::Error) -> bool {
+    use gix::protocol::handshake::Error;
+    match error {
+        Error::Credentials(_) | Error::EmptyCredentials | Error::InvalidCredentials { .. } => true,
+        Error::Transport(_)
+        | Error::TransportProtocolPolicyViolation { .. }
+        | Error::ParseRefs(_) => false,
+    }
+}
+
+/// The transport's own I/O error after the handshake, where gix reports a 401 as
+/// `PermissionDenied`: push's bare transport error or its request error, and fetch's
+/// client error. An I/O error under the pack write or the ref updates is not one.
+fn transport_io_error<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a std::io::Error> {
+    use gix::protocol::transport::client;
+    if let Some(io) = error.downcast_ref::<std::io::Error>() {
+        return Some(io);
+    }
+    let mut client_error = error.downcast_ref::<client::Error>();
+    if let Some(
+        gix::remote::fetch::Error::Client(inner)
+        | gix::remote::fetch::Error::Fetch(gix::protocol::fetch::Error::Client(inner)),
+    ) = error.downcast_ref::<gix::remote::fetch::Error>()
+    {
+        client_error = Some(inner);
+    }
+    if let Some(client::Error::Io(io)) = client_error {
+        return Some(io);
+    }
+    None
+}
+
+/// Whether the credential callback said it has no identity to offer, anywhere in the chain.
+fn lacks_identity(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
     while let Some(err) = current {
-        if let Some(io) = err.downcast_ref::<std::io::Error>()
-            && io.kind() == std::io::ErrorKind::PermissionDenied
+        if let Some(gix::credentials::protocol::Error::IdentityMissing { .. }) =
+            err.downcast_ref::<gix::credentials::protocol::Error>()
         {
-            return ActionError::AuthRequired {
-                op,
-                host: host.to_owned(),
-            };
-        }
-        let text = err.to_string();
-        if text.contains("401") || text.contains("Could not obtain identity") {
-            return ActionError::AuthRequired {
-                op,
-                host: host.to_owned(),
-            };
+            return true;
         }
         current = err.source();
     }
-    ActionError::git(op, name, error)
+    false
 }
 
 /// Returns [`ActionError::Cancelled`] when the flag is already set, so a cancelled
@@ -566,4 +630,66 @@ fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionRe
     set(&gix::config::tree::User::EMAIL, super::REFLOG_EMAIL)?;
     config.commit().map_err(git_err(op, "configuration"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(error: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {
+        map_network_error(error, "fetch", "origin", "127.0.0.1:4010")
+    }
+
+    #[test]
+    fn a_connect_failure_whose_text_holds_401_is_a_git_error() {
+        let error = std::io::Error::other("Failed to connect to 127.0.0.1 port 4010 after 1401 ms");
+        let mapped = map(Box::new(error));
+        assert!(matches!(mapped, ActionError::Git { .. }), "{mapped}");
+    }
+
+    #[test]
+    fn a_transport_permission_denied_is_auth_required() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let mapped = map(Box::new(error));
+        assert!(
+            matches!(mapped, ActionError::AuthRequired { .. }),
+            "{mapped}"
+        );
+    }
+
+    #[test]
+    fn a_permission_denied_while_writing_the_pack_is_a_git_error() {
+        let local = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let error = gix::remote::fetch::Error::Fetch(gix::protocol::fetch::Error::ConsumePack(
+            Box::new(local),
+        ));
+        let mapped = map(Box::new(error));
+        assert!(matches!(mapped, ActionError::Git { .. }), "{mapped}");
+    }
+
+    #[test]
+    fn a_401_after_the_handshake_is_auth_required() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let error = gix::remote::fetch::Error::Fetch(gix::protocol::fetch::Error::Client(
+            gix::protocol::transport::client::Error::Io(denied),
+        ));
+        let mapped = map(Box::new(error));
+        assert!(
+            matches!(mapped, ActionError::AuthRequired { .. }),
+            "{mapped}"
+        );
+    }
+
+    #[test]
+    fn rejected_credentials_in_the_fetch_handshake_are_auth_required() {
+        let error =
+            gix::remote::fetch::prepare::Error::RefMap(gix::remote::ref_map::Error::Handshake(
+                gix::protocol::handshake::Error::EmptyCredentials,
+            ));
+        let mapped = map(Box::new(error));
+        assert!(
+            matches!(mapped, ActionError::AuthRequired { .. }),
+            "{mapped}"
+        );
+    }
 }

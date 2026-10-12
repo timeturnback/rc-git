@@ -321,6 +321,35 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
     assert_ne!(outcome.updated_refs.len(), 0);
 }
 
+/// Sets the mode of `path`, for the tests that make a directory unwritable.
+fn chmod(path: &Path, mode: u32) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test setup changes a directory's mode"
+    )]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+}
+
+#[test]
+fn fetch_into_an_unwritable_pack_directory_is_a_git_error() {
+    let remoted = remoted();
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    let pack_dir = remoted.clone.path().join(".git/objects/pack");
+    chmod(&pack_dir, 0o555);
+
+    let result = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    );
+    chmod(&pack_dir, 0o755);
+    assert!(matches!(result, Err(ActionError::Git { .. })), "{result:?}");
+}
+
 #[test]
 fn unsupported_remote_schemes_are_refused() {
     let fixture = Fixture::standard();
