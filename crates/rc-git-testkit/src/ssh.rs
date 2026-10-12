@@ -61,7 +61,7 @@ impl SshGitServer {
     /// On any setup failure — a broken fixture must fail loudly.
     #[must_use]
     pub fn serve(git_dir: &Path) -> Self {
-        Self::start(git_dir, false)
+        Self::start(git_dir, Mode::Serve)
     }
 
     /// Starts a server that authenticates like [`SshGitServer::serve`] and then never
@@ -71,14 +71,25 @@ impl SshGitServer {
     /// On any setup failure.
     #[must_use]
     pub fn serve_never_confirming_channels(git_dir: &Path) -> Self {
-        Self::start(git_dir, true)
+        Self::start(git_dir, Mode::StallChannels)
+    }
+
+    /// Starts a server that authenticates like [`SshGitServer::serve`] and then answers
+    /// every git command the way GitHub answers a key whose account cannot see the
+    /// repository: `ERROR: Repository not found.` on stderr and exit status 1.
+    ///
+    /// # Panics
+    /// On any setup failure.
+    #[must_use]
+    pub fn serve_refusing_repositories(git_dir: &Path) -> Self {
+        Self::start(git_dir, Mode::RefuseRepositories)
     }
 
     #[expect(
         clippy::print_stderr,
         reason = "the test double's only channel into the failing test's captured output"
     )]
-    fn start(git_dir: &Path, stall_channels: bool) -> Self {
+    fn start(git_dir: &Path, mode: Mode) -> Self {
         let host_key = key_from_seed(&HOST_KEY_SEED);
         let allowed = vec![
             key_from_seed(&CLIENT_KEY_SEED).public_key().clone(),
@@ -103,7 +114,7 @@ impl SshGitServer {
         let mut server = GitSshServer {
             git_dir: git_dir.to_path_buf(),
             allowed,
-            stall_channels,
+            mode,
         };
         runtime.spawn(async move {
             let running = server.run_on_socket(config, &listener);
@@ -245,12 +256,22 @@ fn write_private(path: &Path, bytes: &[u8]) {
     }
 }
 
+/// How the server answers once a client has authenticated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Run the requested git service against the repository.
+    Serve,
+    /// Never answer a session-channel open.
+    StallChannels,
+    /// Refuse every git command with GitHub's "Repository not found" on stderr.
+    RefuseRepositories,
+}
+
 /// Accepts connections; every client gets a fresh handler over the shared state.
 struct GitSshServer {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
-    /// Never answer a session-channel open.
-    stall_channels: bool,
+    mode: Mode,
 }
 
 impl russh::server::Server for GitSshServer {
@@ -260,7 +281,7 @@ impl russh::server::Server for GitSshServer {
         GitSshHandler {
             git_dir: self.git_dir.clone(),
             allowed: self.allowed.clone(),
-            stall_channels: self.stall_channels,
+            mode: self.mode,
             channels: HashMap::new(),
             env: HashMap::new(),
         }
@@ -278,7 +299,7 @@ impl russh::server::Server for GitSshServer {
 struct GitSshHandler {
     git_dir: PathBuf,
     allowed: Vec<ssh_key::PublicKey>,
-    stall_channels: bool,
+    mode: Mode,
     channels: HashMap<ChannelId, Channel<Msg>>,
     env: HashMap<ChannelId, String>,
 }
@@ -323,7 +344,7 @@ impl russh::server::Handler for GitSshHandler {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.stall_channels {
+        if self.mode == Mode::StallChannels {
             std::future::pending::<()>().await;
         }
         self.channels.insert(channel.id(), channel);
@@ -379,7 +400,12 @@ impl GitSshHandler {
             );
             return Err(russh::Error::Inconsistent);
         };
-        let child = spawn_git(subcommand, &self.git_dir, self.env.remove(&channel_id));
+        let git_protocol = self.env.remove(&channel_id);
+        let child = if self.mode == Mode::RefuseRepositories {
+            spawn_refusal()
+        } else {
+            spawn_git(subcommand, &self.git_dir, git_protocol)
+        };
         session.channel_success(channel_id)?;
         let handle = session.handle();
         tokio::spawn(pump(channel, child, handle, channel_id));
@@ -421,17 +447,35 @@ fn spawn_git(
         .env("HOME", git_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     if let Some(value) = git_protocol {
         command.env("GIT_PROTOCOL", value);
     }
     command.spawn().expect("spawn git for the ssh server")
 }
 
-/// Pipes the channel to the child and back. The child's stdout EOF — not the client's —
-/// drives completion: exit status, channel EOF, and close follow it immediately, so a
-/// client blocked in `read_to_end` is released even while it holds its own write side
-/// open.
+/// A child that refuses the way GitHub's git service does for a repository the
+/// authenticated account cannot see.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test kit shells out by design"
+)]
+fn spawn_refusal() -> tokio::process::Child {
+    tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("printf 'ERROR: Repository not found.\\n' >&2; exit 1")
+        .env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the refusing command for the ssh server")
+}
+
+/// Pipes the channel to the child and back, the child's stderr as extended data type 1
+/// like sshd. The child's stdout and stderr EOF — not the client's — drive completion:
+/// exit status, channel EOF, and close follow immediately, so a client blocked in
+/// `read_to_end` is released even while it holds its own write side open.
 async fn pump(
     channel: Channel<Msg>,
     mut child: tokio::process::Child,
@@ -444,12 +488,19 @@ async fn pump(
     let Some(mut stdout) = child.stdout.take() else {
         return;
     };
+    let Some(mut stderr) = child.stderr.take() else {
+        return;
+    };
+    let mut stderr_to_client = channel.make_writer_ext(Some(1));
     let (mut from_client, mut to_client) = tokio::io::split(channel.into_stream());
     let uplink = tokio::spawn(async move {
         let _ = tokio::io::copy(&mut from_client, &mut stdin).await;
         // Dropping stdin closes the child's input so it can finish.
     });
-    let _ = tokio::io::copy(&mut stdout, &mut to_client).await;
+    let _ = tokio::join!(
+        tokio::io::copy(&mut stdout, &mut to_client),
+        tokio::io::copy(&mut stderr, &mut stderr_to_client),
+    );
     let status = child.wait().await;
     let code = status
         .ok()

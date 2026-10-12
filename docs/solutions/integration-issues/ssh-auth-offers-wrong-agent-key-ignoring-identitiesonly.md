@@ -120,7 +120,6 @@ Rewriting `IdentitiesOnly` as `User` reuses russh-config's own block matching an
 - Before relying on an ssh directive, check that russh-config's `HostConfig` carries it. Its catch-all arm drops unknown keys with only a `debug!`. A directive that is not a field needs a view like `identities_only_as_user` plus a test. `IdentitiesOnly` resolution is pinned by `identities_only_is_read_from_the_matching_block` and `identities_only_takes_the_first_value_in_file_order` in `target.rs`, and default-key suppression by `config_host_name_user_port_and_identity_are_honored`. Other options multi-account setups use, such as `IdentityAgent` and `CertificateFile`, are still not `HostConfig` fields.
 - Compare ssh keys by `key_data()`, never with `PublicKey ==`, because the comment takes part in equality.
 - Read `failed to fill whole buffer` (or any `UnexpectedEof`) straight after connect as "the server closed the channel after exec", not as a network fault. Check which account authenticated before touching the transport: `ssh -T git@<real host>` against `ssh -T git@<alias>`, and `ssh-add -l` against `ssh-keygen -lf <key>.pub`.
-- Open gap, not done in the fix: when the channel closes early, rc-git still drops the server's stderr, so the next rejection after exec will also arrive as a bare EOF. Showing that stderr in the error would have printed `Repository not found` directly.
 
 ## Related Issues
 

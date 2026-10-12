@@ -645,7 +645,8 @@ fn authenticate_with(
 /// Maps a network failure to [`ActionError::AuthRequired`] when the server demanded
 /// credentials, else wraps it as [`ActionError::Git`]. Only the handshake's credential
 /// errors, a transport-level 401 and a missing identity count; a local I/O failure deeper
-/// in the chain (an unwritable pack directory) stays a [`ActionError::Git`].
+/// in the chain (an unwritable pack directory) stays a [`ActionError::Git`]. An ssh
+/// server's refusal replaces gix's wrapping as the cause, so its stderr is what shows.
 fn map_network_error(
     error: Box<dyn std::error::Error + Send + Sync + 'static>,
     op: &'static str,
@@ -657,6 +658,9 @@ fn map_network_error(
             op,
             host: host.to_owned(),
         };
+    }
+    if let Some(refusal) = ssh::ServerRefusal::find(error.as_ref()) {
+        return ActionError::git(op, name, refusal.clone());
     }
     ActionError::git(op, name, error)
 }

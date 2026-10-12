@@ -10,23 +10,28 @@
 
 use std::future::Future;
 use std::io::{self, Read, Write};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use russh::ChannelStream;
 use russh::client::{Handle, Msg};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
+use russh::{ChannelReadHalf, ChannelWriteHalf};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::runtime::Runtime;
 
 use crate::actions::remote::{CANCEL_POLL, Cancel};
 use crate::actions::{ActionResult, git_err};
 
 use super::hostkey::HostKeyHandler;
+use super::output::ChannelReader;
 
-/// How long the closing channel EOF may take before the transport gives up on it.
+/// How long the closing channel EOF, the server's exit status after its EOF, and the
+/// channel close may each take before the transport gives up on them.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The channel's stdin writer, boxed because russh only names it as `impl AsyncWrite`.
+pub(super) type ChannelWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
 /// Builds the runtime every ssh transport runs on.
 ///
@@ -152,11 +157,13 @@ impl Drop for SessionHold {
     }
 }
 
-/// Blocking reader over the channel's stdout. Its inner half is dropped inside the
-/// runtime's context: russh's channel types spawn a close notification on drop, which
-/// panics without a reactor.
+/// Blocking reader over the channel's stdout; the server's stderr and exit status come
+/// back through it as the error that ends the stream (see [`ChannelReader`]). It owns
+/// the channel's write half only to send the channel close when it is dropped, inside
+/// the runtime, as russh's own stream did.
 pub(super) struct SshRead {
-    inner: Option<ReadHalf<ChannelStream<Msg>>>,
+    inner: Option<ChannelReader>,
+    closer: Option<ChannelWriteHalf<Msg>>,
     handle: tokio::runtime::Handle,
     watch: Watch,
     _hold: Arc<SessionHold>,
@@ -164,13 +171,14 @@ pub(super) struct SshRead {
 
 impl SshRead {
     pub(super) fn new(
-        half: ReadHalf<ChannelStream<Msg>>,
+        (read_half, write_half): (ChannelReadHalf, ChannelWriteHalf<Msg>),
         handle: tokio::runtime::Handle,
         hold: &Arc<SessionHold>,
         watch: Watch,
     ) -> Self {
         Self {
-            inner: Some(half),
+            inner: Some(ChannelReader::new(read_half, SHUTDOWN_TIMEOUT)),
+            closer: Some(write_half),
             handle,
             watch,
             _hold: Arc::clone(hold),
@@ -189,8 +197,18 @@ impl Read for SshRead {
 
 impl Drop for SshRead {
     fn drop(&mut self) {
-        let _context = self.handle.enter();
         drop(self.inner.take());
+        let Some(closer) = self.closer.take() else {
+            return;
+        };
+        // A session that is already gone refuses the close; there is nothing left to
+        // tell it, so that result is dropped.
+        let closed = self
+            .handle
+            .block_on(async { tokio::time::timeout(SHUTDOWN_TIMEOUT, closer.close()).await });
+        drop(closed);
+        let _context = self.handle.enter();
+        drop(closer);
     }
 }
 
@@ -199,7 +217,7 @@ impl Drop for SshRead {
 /// does not shut the stream down by itself. Like [`SshRead`], the inner half is
 /// dropped inside the runtime's context.
 pub(super) struct SshWrite {
-    inner: Option<WriteHalf<ChannelStream<Msg>>>,
+    inner: Option<ChannelWriter>,
     handle: tokio::runtime::Handle,
     watch: Watch,
     _hold: Arc<SessionHold>,
@@ -207,7 +225,7 @@ pub(super) struct SshWrite {
 
 impl SshWrite {
     pub(super) fn new(
-        half: WriteHalf<ChannelStream<Msg>>,
+        half: ChannelWriter,
         handle: tokio::runtime::Handle,
         hold: &Arc<SessionHold>,
         watch: Watch,

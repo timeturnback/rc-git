@@ -19,10 +19,12 @@ use super::{CANCEL_POLL, Cancel, RemoteAuth, bail_if_cancelled};
 
 mod auth;
 mod hostkey;
+mod output;
 mod session;
 mod target;
 
 use hostkey::{HostKeyHandler, HostKeyReport, ReportSlot};
+pub(super) use output::ServerRefusal;
 use session::{SessionHold, SshRead, SshWrite};
 use target::SshTarget;
 
@@ -62,13 +64,19 @@ pub(super) fn transport(
     let runtime = session::build_runtime(op)?;
     let (runtime, (client, channel)) =
         session::connect_or_abandon(runtime, |runtime| connect(runtime, &request))?;
-    let (read_half, write_half) = tokio::io::split(channel.into_stream());
+    let (read_half, write_half) = channel.split();
+    let writer: session::ChannelWriter = Box::pin(write_half.make_writer());
     let handle = runtime.handle().clone();
     let hold = SessionHold::new(client, runtime);
     let watch = session::Watch::new(cancel, op);
     let connection = gix::protocol::transport::client::git::blocking_io::Connection::new(
-        SshRead::new(read_half, handle.clone(), &hold, watch.clone()),
-        SshWrite::new(write_half, handle, &hold, watch),
+        SshRead::new(
+            (read_half, write_half),
+            handle.clone(),
+            &hold,
+            watch.clone(),
+        ),
+        SshWrite::new(writer, handle, &hold, watch),
         desired_version,
         url.path.clone(),
         None::<(String, _)>,

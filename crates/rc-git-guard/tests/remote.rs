@@ -1939,6 +1939,37 @@ fn ssh_a_server_that_never_confirms_the_channel_times_out() {
     );
 }
 
+/// A server that authenticates and then refuses the git command on stderr, as GitHub
+/// does when the accepted key's account cannot see the repository, reports that text
+/// rather than a bare end of stream.
+#[test]
+fn ssh_a_server_refusal_reports_its_stderr() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::SshGitServer::serve_refusing_repositories(&bare_path);
+    let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
+    server.write_known_hosts(ssh_home.path());
+    let remoted = SshRemoted {
+        origin,
+        bare,
+        bare_path,
+        server,
+        clone,
+        ssh_home,
+    };
+
+    let err = fetch_on_a_thread(&remoted, Cancel::new())
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the fetch ends once the server refuses")
+        .expect_err("refused");
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("the server said: ERROR: Repository not found. (exit status 1)"),
+        "{err}"
+    );
+}
+
 #[test]
 fn ssh_unknown_host_reports_the_fingerprint_and_an_accepted_retry_succeeds() {
     // No known_hosts entry is written, so the host is unknown.
