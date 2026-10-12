@@ -9,9 +9,9 @@ use crate::actions::{ActionError, ActionResult, authorize, git_err, open};
 use crate::{Action, Confirmation, Policy};
 
 use super::{
-    Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
-    configured_remote_name, current_branch, host_of, http_options, map_network_error, run_detached,
-    vet_remote_url,
+    Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
+    current_branch, host_of, http_options, map_network_error, redacted, resolve_upstream,
+    run_detached, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -35,13 +35,15 @@ pub struct FetchOutcome {
 }
 
 /// Fetches from the checked-out branch's remote (`origin` when none is configured),
-/// using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401.
+/// using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401. A local
+/// upstream (`branch.<name>.remote = .`) has nothing to transfer, so the fetch is a no-op.
 ///
 /// # Errors
 /// [`ActionError::UnsupportedRemote`] for a remote scheme rc-git does not speak,
 /// [`ActionError::AuthRequired`] when the server rejects the credentials,
 /// [`ActionError::Cancelled`] when `cancel` is set, [`ActionError::NoUpstream`] when no
-/// remote is configured, [`ActionError::Git`] for every other failure.
+/// remote is configured, [`ActionError::Git`] for every other failure, including an upstream
+/// that is a bare URL rather than a named remote.
 pub fn fetch_upstream(
     repo_path: &Path,
     policy: &Policy,
@@ -54,18 +56,29 @@ pub fn fetch_upstream(
     super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
     let (branch, _tip) = current_branch(&repo, OP)?;
-    let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
-        op: OP,
-        branch: branch.clone(),
-    })?;
-    let remote = find_remote(&repo, &remote_name)?;
-    let url = remote
-        .url(gix::remote::Direction::Fetch)
-        .ok_or_else(|| ActionError::NoUpstream {
+    let upstream =
+        resolve_upstream(&repo, &branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
             op: OP,
             branch: branch.clone(),
-        })?
-        .clone();
+        })?;
+    let (remote_name, url) = match upstream {
+        Upstream::Local { .. } => {
+            return Ok(FetchOutcome {
+                remote: upstream.label(),
+                updated_refs: Vec::new(),
+            });
+        }
+        Upstream::Url { url } => {
+            return Err(ActionError::git(
+                OP,
+                redacted(&url),
+                "the upstream is a URL with no remote configured for it; rc-git fetches only \
+                 from a named remote (add one with `git remote add`)",
+            ));
+        }
+        Upstream::Named { name, url } => (name, url),
+    };
+    let remote = find_remote(&repo, &remote_name)?;
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
 

@@ -146,11 +146,14 @@ impl std::fmt::Debug for Credentials {
 pub struct UpstreamStatus {
     /// Short name of the checked-out branch.
     pub branch: String,
-    /// Upstream remote name, e.g. `origin`. Empty when `has_upstream` is false.
+    /// Upstream remote name, e.g. `origin`; `.` when the upstream is a local branch, and the
+    /// URL without userinfo when `branch.<name>.remote` holds one. Empty when `has_upstream`
+    /// is false.
     pub remote: String,
-    /// Full name of the remote-tracking ref, e.g. `refs/remotes/origin/main`.
+    /// Full name of the remote-tracking ref, e.g. `refs/remotes/origin/main`, or of the local
+    /// branch a local upstream names. Empty for a URL upstream, which has no tracking ref.
     pub upstream_ref: String,
-    /// Fetch URL of the remote, userinfo removed.
+    /// Fetch URL of the remote, userinfo removed. Empty for a local upstream.
     pub url: String,
     /// Host (with port when present) parsed from the URL — the credential key.
     pub host: String,
@@ -158,9 +161,9 @@ pub struct UpstreamStatus {
     pub ahead: usize,
     /// Commits on the tracking ref that the branch does not have.
     pub behind: usize,
-    /// Whether a remote with a fetch URL was resolved for the branch: `branch.<name>.remote`,
-    /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
-    /// `behind` are then 0.
+    /// Whether an upstream was resolved for the branch: a local branch, a URL, or a remote
+    /// with a fetch URL from `branch.<name>.remote`, else `origin` when it exists. True even
+    /// before a tracking ref exists; `ahead` and `behind` are then 0.
     pub has_upstream: bool,
     /// Whether the remote URL parses as ssh (`ssh://` or scp-like `user@host:path`), the
     /// transport that takes a key passphrase rather than an HTTPS token. False without an
@@ -179,22 +182,18 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
     const OP: &str = "read upstream status";
     let repo = open(repo_path, OP, "repository")?;
     let (branch, head_id) = current_branch(&repo, OP)?;
-    let no_upstream = |branch: &str| UpstreamStatus {
-        branch: branch.to_owned(),
-        remote: String::new(),
-        upstream_ref: String::new(),
-        url: String::new(),
-        host: String::new(),
-        ahead: 0,
-        behind: 0,
-        has_upstream: false,
-        uses_ssh: false,
-    };
-    let Some(remote_name) = configured_remote_name(&repo, &branch) else {
-        return Ok(no_upstream(&branch));
-    };
-    let Some(url) = remote_fetch_url(&repo, &remote_name, OP)? else {
-        return Ok(no_upstream(&branch));
+    let Some(upstream) = resolve_upstream(&repo, &branch, OP)? else {
+        return Ok(UpstreamStatus {
+            branch,
+            remote: String::new(),
+            upstream_ref: String::new(),
+            url: String::new(),
+            host: String::new(),
+            ahead: 0,
+            behind: 0,
+            has_upstream: false,
+            uses_ssh: false,
+        });
     };
     let upstream_ref = tracking_ref_name(&repo, &branch).map(|tracking| tracking.name);
     let (ahead, behind) = match (&upstream_ref, head_id) {
@@ -204,13 +203,14 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
         },
         (Some(_) | None, Some(_) | None) => (0, 0),
     };
+    let url = upstream.url();
     Ok(UpstreamStatus {
         branch,
-        remote: remote_name,
+        remote: upstream.label(),
         upstream_ref: upstream_ref.unwrap_or_default(),
-        host: host_of(&url),
-        uses_ssh: url.scheme == gix::url::Scheme::Ssh,
-        url: redacted(&url),
+        host: url.map(host_of).unwrap_or_default(),
+        uses_ssh: url.is_some_and(|url| url.scheme == gix::url::Scheme::Ssh),
+        url: url.map(redacted).unwrap_or_default(),
         ahead,
         behind,
         has_upstream: true,
@@ -250,6 +250,100 @@ fn configured_remote_name(repo: &gix::Repository, branch: &str) -> Option<String
         .then(|| "origin".to_owned())
 }
 
+/// What `branch.<name>.remote` says when the upstream is another branch of this repository.
+const LOCAL_REMOTE: &str = ".";
+
+/// Where the checked-out branch's upstream lives, resolved once from `branch.<name>.remote`
+/// (or the `origin` fallback) for status, fetch, pull and push alike.
+pub(super) enum Upstream {
+    /// `branch.<name>.remote = .`: another branch of this repository, e.g. `refs/heads/main`.
+    Local {
+        /// Full name of the local branch `branch.<name>.merge` names.
+        merge_ref: String,
+    },
+    /// A configured remote and its fetch URL.
+    Named {
+        /// The remote's name, e.g. `origin`.
+        name: String,
+        /// The remote's fetch URL.
+        url: gix::Url,
+    },
+    /// A URL written straight into `branch.<name>.remote`, with no remote configured for it.
+    Url {
+        /// The URL as configured.
+        url: gix::Url,
+    },
+}
+
+impl Upstream {
+    /// What reports and errors call the upstream: `.`, the remote's name, or the URL
+    /// without userinfo.
+    pub(super) fn label(&self) -> String {
+        match self {
+            Self::Local { .. } => LOCAL_REMOTE.to_owned(),
+            Self::Named { name, .. } => name.clone(),
+            Self::Url { url } => redacted(url),
+        }
+    }
+
+    /// The URL a transfer talks to, `None` for a local upstream.
+    pub(super) fn url(&self) -> Option<&gix::Url> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Named { url, .. } | Self::Url { url } => Some(url),
+        }
+    }
+}
+
+/// Resolves the branch's upstream. `None` when no remote is configured, the named remote
+/// has no URL, or a local upstream names no branch (`branch.<name>.merge` unset).
+fn resolve_upstream(
+    repo: &gix::Repository,
+    branch: &str,
+    op: &'static str,
+) -> ActionResult<Option<Upstream>> {
+    let Some(name) = configured_remote_name(repo, branch) else {
+        return Ok(None);
+    };
+    if name == LOCAL_REMOTE {
+        return Ok(merge_ref_name(repo, branch).map(|merge_ref| Upstream::Local { merge_ref }));
+    }
+    if is_named_remote(repo, &name) {
+        let url = remote_fetch_url(repo, &name, op)?;
+        return Ok(url.map(|url| Upstream::Named { name, url }));
+    }
+    let url = gix::url::parse(name.as_str()).map_err(|_unparsable| {
+        ActionError::git(
+            op,
+            format!("branch.{branch}.remote"),
+            "the value is neither a configured remote nor a URL",
+        )
+    })?;
+    Ok(Some(Upstream::Url { url }))
+}
+
+/// Whether `name` is a remote's name rather than a URL: a configured remote, or a word
+/// with no `/` (git's own test), so a misspelt name still fails as a missing remote.
+fn is_named_remote(repo: &gix::Repository, name: &str) -> bool {
+    !name.contains('/')
+        || repo
+            .remote_names()
+            .iter()
+            .any(|remote| remote.as_slice() == name.as_bytes())
+}
+
+/// `branch.<name>.merge` as a full ref name, e.g. `refs/heads/main`.
+fn merge_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
+    let full = format!("refs/heads/{branch}");
+    let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one sanctioned resolver; a local upstream has no remote to fall back from"
+    )]
+    let merge = repo.branch_remote_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch)?;
+    Some(merge.ok()?.as_bstr().to_string())
+}
+
 /// The remote's fetch URL, or `None` when the remote has no URL configured.
 fn remote_fetch_url(
     repo: &gix::Repository,
@@ -275,11 +369,20 @@ struct TrackingRef {
     configured: bool,
 }
 
-/// The branch's remote-tracking ref, e.g. `refs/remotes/origin/main`.
-/// Without `branch.<name>.merge` — a branch made with `git init` and pushed without
-/// `-u` — it is `refs/remotes/<remote>/<branch>` on the remote `configured_remote_name`
-/// picks: the ref push uploads to and moves, so ahead/behind and pull agree with push.
+/// The branch's remote-tracking ref, e.g. `refs/remotes/origin/main`, or the local branch
+/// itself (`refs/heads/main`) for a local upstream; `None` for a URL upstream, which has
+/// no tracking ref. Without `branch.<name>.merge` — a branch made with `git init` and
+/// pushed without `-u` — it is `refs/remotes/<remote>/<branch>` on the remote
+/// `configured_remote_name` picks: the ref push uploads to and moves, so ahead/behind and
+/// pull agree with push.
 fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef> {
+    let remote = configured_remote_name(repo, branch)?;
+    if remote == LOCAL_REMOTE {
+        return Some(TrackingRef {
+            name: merge_ref_name(repo, branch)?,
+            configured: true,
+        });
+    }
     let full = format!("refs/heads/{branch}");
     let full_name: gix::refs::FullName = full.as_str().try_into().ok()?;
     #[expect(
@@ -289,7 +392,9 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef
     let configured =
         repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch);
     let Some(tracking) = configured else {
-        let remote = configured_remote_name(repo, branch)?;
+        if !is_named_remote(repo, &remote) {
+            return None;
+        }
         return Some(TrackingRef {
             name: format!("refs/remotes/{remote}/{branch}"),
             configured: false,

@@ -1392,3 +1392,139 @@ fn ssh_config_alias_resolves_hostname_user_and_port() {
     .expect("alias fetch");
     assert_eq!(outcome.updated_refs.len(), 1);
 }
+
+// --- local and URL upstreams ---
+
+/// A standard fixture checked out on `topic`, which tracks the local branch `main`
+/// (`branch.topic.remote = .`), as `git checkout -b topic --track main` sets it up.
+fn tracking_local_main() -> Fixture {
+    let fixture = Fixture::standard();
+    fixture.git(&["checkout", "-q", "-b", "topic", "--track", "main"]);
+    assert_eq!(fixture.git_output(&["config", "branch.topic.remote"]), ".");
+    fixture
+}
+
+#[test]
+fn upstream_status_reports_a_local_upstream() {
+    let fixture = tracking_local_main();
+    fixture.write("local.txt", b"local\n");
+    fixture.commit("Local work", "2024-03-02T00:00:00+0000");
+
+    let status = upstream_status(fixture.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(status.branch, "topic");
+    assert_eq!(status.remote, ".");
+    assert_eq!(status.upstream_ref, "refs/heads/main");
+    assert_eq!(status.url, "");
+    assert_eq!(status.host, "");
+    assert!(!status.uses_ssh);
+    assert_eq!((status.ahead, status.behind), (1, 0));
+}
+
+#[test]
+fn fetch_with_a_local_upstream_is_a_no_op() {
+    let fixture = tracking_local_main();
+    let refs_before = fixture.git_output(&["for-each-ref"]);
+
+    let outcome = fetch_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch");
+    assert_eq!(outcome.remote, ".");
+    assert!(outcome.updated_refs.is_empty());
+    assert_eq!(fixture.git_output(&["for-each-ref"]), refs_before);
+}
+
+#[test]
+fn pull_fast_forwards_from_a_local_upstream() {
+    let fixture = tracking_local_main();
+    fixture.git(&["checkout", "-q", "main"]);
+    fixture.write("news.txt", b"news\n");
+    fixture.commit("News on main", "2024-03-02T00:00:00+0000");
+    fixture.git(&["checkout", "-q", "topic"]);
+    let before = fixture.rev_parse("topic");
+
+    let outcome = pull_fast_forward(fixture.path(), &Policy::default()).expect("pull");
+    assert_eq!(outcome.branch, "topic");
+    assert!(!outcome.already_up_to_date);
+    assert!(!outcome.unpublished);
+    assert_eq!(outcome.old.to_hex(), before);
+    assert_eq!(outcome.new.to_hex(), fixture.rev_parse("main"));
+    assert_eq!(outcome.files_changed, 1);
+    assert_eq!(fixture.rev_parse("topic"), fixture.rev_parse("main"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("news.txt")).expect("news.txt"),
+        b"news\n"
+    );
+    assert_eq!(fixture.git_output(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn push_refuses_a_local_upstream() {
+    let fixture = tracking_local_main();
+    fixture.write("local.txt", b"local\n");
+    fixture.commit("Local work", "2024-03-02T00:00:00+0000");
+    let main_before = fixture.rev_parse("main");
+
+    let err = push_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("push into a local branch");
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("refs/heads/main"), "{message}");
+    assert!(
+        message.contains("does not push into a local branch"),
+        "{message}"
+    );
+    assert_eq!(fixture.rev_parse("main"), main_before);
+}
+
+/// A standard fixture whose `main` names a URL, not a remote, in `branch.main.remote`.
+fn tracking_a_url() -> Fixture {
+    let fixture = Fixture::standard();
+    fixture.git(&[
+        "config",
+        "branch.main.remote",
+        "https://user:secret@example.invalid/x.git",
+    ]);
+    fixture.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    fixture
+}
+
+#[test]
+fn upstream_status_reports_a_url_upstream() {
+    let fixture = tracking_a_url();
+    let status = upstream_status(fixture.path()).expect("status");
+    assert!(status.has_upstream);
+    assert_eq!(status.remote, "https://example.invalid/x.git");
+    assert_eq!(status.url, "https://example.invalid/x.git");
+    assert_eq!(status.host, "example.invalid");
+    assert_eq!(status.upstream_ref, "");
+    assert_eq!((status.ahead, status.behind), (0, 0));
+}
+
+#[test]
+fn fetch_and_pull_refuse_a_url_upstream_by_name() {
+    let fixture = tracking_a_url();
+    let err = fetch_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("fetch from a bare URL");
+    let message = err.to_string();
+    assert!(matches!(err, ActionError::Git { .. }), "{message}");
+    assert!(message.contains("named remote"), "{message}");
+    assert!(!message.contains("secret"), "{message}");
+
+    let err = pull_fast_forward(fixture.path(), &Policy::default()).expect_err("pull");
+    assert!(matches!(err, ActionError::NoUpstream { .. }), "{err}");
+}

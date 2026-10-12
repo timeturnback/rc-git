@@ -17,9 +17,9 @@ use crate::{Action, Policy};
 
 use super::report::Report;
 use super::{
-    Cancel, Credentials, RemoteAuth, RemoteScheme, authenticate_with, bail_if_cancelled,
-    configured_remote_name, current_branch, host_of, http_options, is_ancestor, map_network_error,
-    pack, report, run_detached, set_reflog_identity, vet_remote_url,
+    Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
+    current_branch, host_of, http_options, is_ancestor, map_network_error, pack, report,
+    resolve_upstream, run_detached, set_reflog_identity, vet_remote_url,
 };
 
 const OP: &str = "push";
@@ -45,13 +45,15 @@ pub struct PushOutcome {
 
 /// Pushes the checked-out branch to its upstream remote. Plain push only: the remote
 /// tip must be an ancestor of the local tip, checked here before a byte is sent and
-/// enforced again by the server.
+/// enforced again by the server. A URL upstream gets the push but has no
+/// remote-tracking ref to move.
 ///
 /// # Errors
 /// [`ActionError::PushRejected`] when the remote has commits the local branch lacks,
 /// [`ActionError::AuthRequired`], [`ActionError::UnsupportedRemote`],
 /// [`ActionError::NoUpstream`], [`ActionError::Cancelled`], [`ActionError::DetachedHead`],
-/// and [`ActionError::Git`] for every other failure.
+/// and [`ActionError::Git`] for every other failure, including a local upstream
+/// (`branch.<name>.remote = .`), which rc-git does not push into.
 pub fn push_upstream(
     repo_path: &Path,
     policy: &Policy,
@@ -75,16 +77,7 @@ pub fn push_upstream(
             "the branch has no commits yet; nothing to push",
         )
     })?;
-    let remote_name = configured_remote_name(&repo, &branch).ok_or(ActionError::NoUpstream {
-        op: OP,
-        branch: branch.clone(),
-    })?;
-    let url = super::remote_fetch_url(&repo, &remote_name, OP)?.ok_or_else(|| {
-        ActionError::NoUpstream {
-            op: OP,
-            branch: branch.clone(),
-        }
-    })?;
+    let (remote_name, url, tracking_remote) = push_target(&repo, &branch)?;
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
     let full_ref = format!("refs/heads/{branch}");
@@ -141,7 +134,9 @@ pub fn push_upstream(
             send(transport, &link, remote_old, tip, &bytes)
         })?;
     }
-    update_tracking_ref(&Writer::new(&repo, &proof), &remote_name, &branch, tip)?;
+    if let Some(remote) = tracking_remote {
+        update_tracking_ref(&Writer::new(&repo, &proof), &remote, &branch, tip)?;
+    }
     Ok(PushOutcome {
         remote: remote_name,
         branch,
@@ -150,6 +145,32 @@ pub fn push_upstream(
         pushed_commits,
         already_up_to_date: false,
     })
+}
+
+/// Where the branch pushes: the label reports and errors use, the URL, and the remote whose
+/// tracking ref follows the push (`None` for a URL upstream, which has none). A local
+/// upstream is refused: rc-git does not push into a local branch.
+fn push_target(
+    repo: &gix::Repository,
+    branch: &str,
+) -> ActionResult<(String, gix::Url, Option<String>)> {
+    let upstream = resolve_upstream(repo, branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
+        op: OP,
+        branch: branch.to_owned(),
+    })?;
+    let label = upstream.label();
+    match upstream {
+        Upstream::Local { merge_ref } => Err(ActionError::git(
+            OP,
+            branch,
+            format!(
+                "the upstream is the local branch {merge_ref}; rc-git does not push into a \
+                 local branch (merge into it with git, or set a remote upstream)"
+            ),
+        )),
+        Upstream::Named { name, url } => Ok((label, url, Some(name))),
+        Upstream::Url { url } => Ok((label, url, None)),
+    }
 }
 
 /// The remote end of one push: what its network errors are reported against, and the

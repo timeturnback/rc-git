@@ -39,7 +39,8 @@ pub struct PullOutcome {
     pub unpublished: bool,
 }
 
-/// Fast-forwards the checked-out branch to its remote-tracking ref, updating the
+/// Fast-forwards the checked-out branch to its remote-tracking ref (for a local upstream,
+/// `branch.<name>.remote = .`, the local branch `branch.<name>.merge` names), updating the
 /// working tree, the index, and — last — the branch ref. No network I/O.
 ///
 /// # Errors
