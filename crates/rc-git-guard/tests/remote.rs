@@ -440,34 +440,64 @@ fn fetch_into_an_unwritable_pack_directory_is_a_git_error() {
     assert!(matches!(result, Err(ActionError::Git { .. })), "{result:?}");
 }
 
+/// Fetch and push from `fixture` against whatever its `origin` names.
+fn fetch_and_push(fixture: &Fixture) -> [(&'static str, Result<(), ActionError>); 2] {
+    let policy = Policy::default();
+    let cancel = Cancel::new();
+    [
+        (
+            "fetch",
+            fetch_upstream(fixture.path(), &policy, RemoteAuth::default(), &cancel).map(drop),
+        ),
+        (
+            "push",
+            push_upstream(fixture.path(), &policy, RemoteAuth::default(), &cancel).map(drop),
+        ),
+    ]
+}
+
 #[test]
 fn unsupported_remote_schemes_are_refused() {
     let fixture = Fixture::standard();
     fixture.git(&["remote", "add", "origin", "git://example.com/x.git"]);
-    let err = fetch_upstream(
-        fixture.path(),
-        &Policy::default(),
-        RemoteAuth::default(),
-        &Cancel::new(),
-    )
-    .expect_err("git protocol refused");
-    assert!(
-        matches!(&err, ActionError::UnsupportedRemote { scheme, .. } if scheme == "git"),
-        "{err}"
-    );
+    let empty = Fixture::empty_dir();
+    let plain_path = empty.path().join("x.git");
+    let plain_path = plain_path.to_str().expect("utf-8 temp path");
+    for (url, expected) in [
+        ("git://example.com/x.git", "git"),
+        ("http://example.com/x.git", "http"),
+        ("file:///x.git", "file"),
+        (plain_path, "file"),
+    ] {
+        fixture.git(&["remote", "set-url", "origin", url]);
+        for (op, result) in fetch_and_push(&fixture) {
+            let err = result.expect_err(url);
+            assert!(
+                matches!(
+                    &err,
+                    ActionError::UnsupportedRemote { op: got, name, scheme }
+                        if *got == op && name == "origin" && scheme == expected
+                ),
+                "{op} {url}: {err}"
+            );
+        }
+    }
+}
 
-    fixture.git(&["remote", "set-url", "origin", "http://example.com/x.git"]);
-    let err = fetch_upstream(
-        fixture.path(),
-        &Policy::default(),
-        RemoteAuth::default(),
-        &Cancel::new(),
-    )
-    .expect_err("non-loopback http refused");
-    assert!(
-        matches!(&err, ActionError::UnsupportedRemote { scheme, .. } if scheme == "http"),
-        "{err}"
-    );
+#[test]
+fn loopback_http_hosts_are_not_refused_as_unsupported() {
+    let fixture = Fixture::standard();
+    fixture.git(&["remote", "add", "origin", "http://localhost:1/x.git"]);
+    for url in ["http://localhost:1/x.git", "http://[::1]:1/x.git"] {
+        fixture.git(&["remote", "set-url", "origin", url]);
+        for (op, result) in fetch_and_push(&fixture) {
+            let err = result.expect_err("nothing listens on port 1");
+            assert!(
+                !matches!(err, ActionError::UnsupportedRemote { .. }),
+                "{op} {url}: {err}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -975,6 +1005,97 @@ fn pull_refuses_a_detached_head() {
     remoted.clone.git(&["checkout", "-q", "--detach"]);
     let err = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect_err("detached");
     assert!(matches!(err, ActionError::DetachedHead { .. }), "{err}");
+}
+
+#[test]
+fn detached_head_is_refused_by_every_entry_point() {
+    let remoted = remoted();
+    remoted.clone.git(&["checkout", "-q", "--detach"]);
+    let served = bare_rev(&remoted.bare, "main");
+
+    let err = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("push on a detached HEAD");
+    assert!(
+        matches!(err, ActionError::DetachedHead { op: "push" }),
+        "{err}"
+    );
+    assert_eq!(bare_rev(&remoted.bare, "main"), served);
+
+    let err = upstream_status(remoted.clone.path()).expect_err("status on a detached HEAD");
+    assert!(matches!(err, ActionError::DetachedHead { .. }), "{err}");
+}
+
+#[test]
+fn pull_without_a_remote_reports_no_upstream() {
+    let fixture = Fixture::standard();
+    let before = fixture.rev_parse("main");
+    let err = pull_fast_forward(fixture.path(), &Policy::default()).expect_err("no remote");
+    assert!(
+        matches!(&err, ActionError::NoUpstream { op: "pull", branch } if branch == "main"),
+        "{err}"
+    );
+    assert_eq!(fixture.rev_parse("main"), before);
+}
+
+/// A repository on an unborn `main`, with an `origin` that is never contacted.
+fn unborn_with_origin() -> Fixture {
+    let fixture = Fixture::empty_dir();
+    fixture.git(&["init", "-q", "-b", "main"]);
+    fixture.git(&["remote", "add", "origin", "https://example.invalid/x.git"]);
+    fixture
+}
+
+#[test]
+fn pull_refuses_an_unborn_branch() {
+    let fixture = unborn_with_origin();
+    let err = pull_fast_forward(fixture.path(), &Policy::default()).expect_err("unborn");
+    assert!(matches!(&err, ActionError::Git { op: "pull", .. }), "{err}");
+    assert!(err.to_string().contains("no commits yet"), "{err}");
+    assert_eq!(
+        fixture.git_output(&["for-each-ref", "--format=%(refname)"]),
+        "",
+        "the refused pull must create no ref"
+    );
+}
+
+#[test]
+fn push_refuses_an_unborn_branch() {
+    let fixture = unborn_with_origin();
+    let err = push_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("unborn");
+    assert!(matches!(&err, ActionError::Git { op: "push", .. }), "{err}");
+    assert!(err.to_string().contains("no commits yet"), "{err}");
+    assert_eq!(
+        fixture.git_output(&["for-each-ref", "--format=%(refname)"]),
+        "",
+        "the refused push must create no ref"
+    );
+}
+
+#[test]
+fn push_without_a_remote_reports_no_upstream() {
+    let fixture = Fixture::standard();
+    let err = push_upstream(
+        fixture.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("no remote");
+    assert!(
+        matches!(&err, ActionError::NoUpstream { op: "push", branch } if branch == "main"),
+        "{err}"
+    );
 }
 
 // --- push ---
