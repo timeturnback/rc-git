@@ -1659,6 +1659,21 @@ fn sync_on_a_diverged_clone_still_reports_the_fetch_it_ran() {
 }
 
 #[test]
+fn fetch_on_a_detached_head_fetches_origin() {
+    let (origin, bare, _server, clone) = served_clone();
+    clone.git(&["checkout", "-q", "--detach"]);
+    advance_origin(&origin, &bare);
+    let path = clone.path().to_str().unwrap();
+
+    let out = rc_git(&["fetch", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        clone.rev_parse("refs/remotes/origin/main"),
+        bare.git_output(&["--git-dir", "remote.git", "rev-parse", "main"])
+    );
+}
+
+#[test]
 fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
     let origin = Fixture::standard();
     let (_bare, bare_path) = origin.bare_copy();

@@ -251,6 +251,11 @@ fn configured_remote_name(
     if let Some(name) = configured {
         return Some(name.as_bstr().to_string());
     }
+    default_remote_name(repo)
+}
+
+/// The remote used when no branch names one: `origin`, when that remote exists.
+fn default_remote_name(repo: &gix::Repository) -> Option<String> {
     repo.remote_names()
         .iter()
         .any(|name| name.as_slice() == b"origin")
@@ -330,6 +335,18 @@ fn resolve_upstream(
         )
     })?;
     Ok(Some(Upstream::Url { url }))
+}
+
+/// The upstream a detached `HEAD` fetches from: [`default_remote_name`] and its fetch URL, as
+/// `git fetch` with no branch to consult. `None` when there is no `origin` or it has no URL.
+fn detached_upstream(repo: &gix::Repository, op: &'static str) -> ActionResult<Option<Upstream>> {
+    let Some(name) = default_remote_name(repo) else {
+        return Ok(None);
+    };
+    let url = find_named_remote(repo, &name, op)?
+        .url(Direction::Fetch)
+        .cloned();
+    Ok(url.map(|url| Upstream::Named { name, url }))
 }
 
 /// Whether `name` is a remote's name rather than a URL: a configured remote, or a word

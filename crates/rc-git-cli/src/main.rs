@@ -1565,9 +1565,14 @@ enum Transport {
 }
 
 /// The transport of the checked-out branch's upstream, read from the repository's own
-/// configuration without any network I/O.
+/// configuration without any network I/O. A detached `HEAD` has no branch upstream to read;
+/// a fetch there still runs against `origin`, so it reads as [`Transport::Other`].
 fn upstream_transport(repo_path: &std::path::Path) -> Result<Transport> {
-    let status = rc_git_guard::actions::upstream_status(repo_path)?;
+    let status = match rc_git_guard::actions::upstream_status(repo_path) {
+        Ok(status) => status,
+        Err(ActionError::DetachedHead { .. }) => return Ok(Transport::Other),
+        Err(err) => return Err(err.into()),
+    };
     if !status.has_upstream {
         return Ok(Transport::Other);
     }

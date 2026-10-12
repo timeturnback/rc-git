@@ -181,6 +181,47 @@ fn fetch_updates_the_tracking_ref_and_reports_it() {
 }
 
 #[test]
+fn fetch_on_a_detached_head_fetches_origin() {
+    let remoted = remoted();
+    remoted.clone.git(&["checkout", "-q", "--detach"]);
+    advance_origin(&remoted.origin, &remoted.bare_path);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("fetch on a detached HEAD");
+    assert_eq!(outcome.remote, "origin");
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        bare_rev(&remoted.bare, "main")
+    );
+}
+
+#[test]
+fn fetch_on_a_detached_head_without_origin_reports_no_upstream() {
+    let remoted = remoted();
+    remoted.clone.git(&["checkout", "-q", "--detach"]);
+    remoted
+        .clone
+        .git(&["remote", "rename", "origin", "upstream"]);
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("no origin");
+    let ActionError::NoUpstream { branch, .. } = &err else {
+        panic!("expected NoUpstream, got {err}");
+    };
+    assert_eq!(branch, "HEAD");
+}
+
+#[test]
 fn fetch_ignores_the_repository_http_settings() {
     let remoted = remoted();
     advance_origin(&remoted.origin, &remoted.bare_path);

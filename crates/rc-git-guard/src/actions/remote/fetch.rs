@@ -1,5 +1,5 @@
-//! Fetch from the checked-out branch's remote over HTTPS, updating remote-tracking
-//! refs exactly as `git fetch <remote>` would. gix writes the received pack and the
+//! Fetch from the checked-out branch's remote (or `origin` on a detached HEAD) over HTTPS,
+//! updating remote-tracking refs exactly as `git fetch <remote>` would. gix writes the received pack and the
 //! tracking refs itself; nothing else is touched, and `FETCH_HEAD` is never written.
 
 use std::path::Path;
@@ -10,7 +10,7 @@ use crate::{Action, Confirmation, Policy};
 
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    current_branch, host_of, http_options, map_network_error, redacted, resolve_upstream,
+    detached_upstream, host_of, http_options, map_network_error, redacted, resolve_upstream,
     run_detached, vet_remote_url,
 };
 
@@ -34,15 +34,16 @@ pub struct FetchOutcome {
     pub updated_refs: Vec<RefUpdate>,
 }
 
-/// Fetches from the checked-out branch's remote (`origin` when none is configured),
-/// using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401. A local
+/// Fetches from the checked-out branch's remote (`origin` when none is configured, and
+/// always `origin` on a detached `HEAD`), using the remote's own refspecs. `auth.creds` answer an HTTPS server's 401. A local
 /// upstream (`branch.<name>.remote = .`) has nothing to transfer, so the fetch is a no-op.
 ///
 /// # Errors
 /// [`ActionError::UnsupportedRemote`] for a remote scheme rc-git does not speak,
 /// [`ActionError::AuthRequired`] when the server rejects the credentials,
 /// [`ActionError::Cancelled`] when `cancel` is set, [`ActionError::NoUpstream`] when no
-/// remote is configured, [`ActionError::Git`] for every other failure, including an upstream
+/// remote is configured, or, on a detached `HEAD` (reported as branch `HEAD`), when there is no
+/// `origin`, [`ActionError::Git`] for every other failure, including an upstream
 /// that is a bare URL rather than a named remote.
 pub fn fetch_upstream(
     repo_path: &Path,
@@ -55,12 +56,7 @@ pub fn fetch_upstream(
     let mut repo = open(repo_path, OP, "repository")?;
     super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
-    let (branch, _tip) = current_branch(&repo, OP)?;
-    let upstream = resolve_upstream(&repo, &branch, gix::remote::Direction::Fetch, OP)?
-        .ok_or_else(|| ActionError::NoUpstream {
-            op: OP,
-            branch: branch.clone(),
-        })?;
+    let upstream = fetch_source(&repo)?;
     let (remote_name, url) = match upstream {
         Upstream::Local { .. } => {
             return Ok(FetchOutcome {
@@ -127,6 +123,21 @@ pub fn fetch_upstream(
         remote: remote_name,
         updated_refs,
     })
+}
+
+/// Where a fetch reads from: the checked-out branch's upstream, or on a detached `HEAD`
+/// `origin`, since a fetch needs no branch.
+fn fetch_source(repo: &gix::Repository) -> ActionResult<Upstream> {
+    let head_name = repo.head_name().map_err(git_err(OP, "HEAD"))?;
+    let (branch, upstream) = match head_name {
+        Some(head_name) => {
+            let branch = head_name.shorten().to_string();
+            let upstream = resolve_upstream(repo, &branch, gix::remote::Direction::Fetch, OP)?;
+            (branch, upstream)
+        }
+        None => ("HEAD".to_owned(), detached_upstream(repo, OP)?),
+    };
+    upstream.ok_or(ActionError::NoUpstream { op: OP, branch })
 }
 
 /// The named remote of `repo`.
