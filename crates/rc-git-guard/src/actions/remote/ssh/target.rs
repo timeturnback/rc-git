@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::actions::remote::redacted;
 use crate::actions::{ActionError, ActionResult};
 
 /// Where and how to connect for one ssh remote.
@@ -75,9 +76,7 @@ pub(in crate::actions::remote) fn resolve(
     let host = url
         .host()
         .filter(|host| !host.is_empty())
-        .ok_or_else(|| {
-            ActionError::git(op, super::super::redacted(url), "the ssh URL has no host")
-        })?
+        .ok_or_else(|| ActionError::git(op, redacted(url), "the ssh URL has no host"))?
         .to_owned();
     // A caller-chosen ssh directory (tests, `--ssh-dir`) stands in for the whole
     // machine's ssh setup, so the system files are read only for the default one.
@@ -98,7 +97,7 @@ pub(in crate::actions::remote) fn resolve(
         .ok_or_else(|| {
             ActionError::git(
                 op,
-                super::super::redacted(url),
+                redacted(url),
                 "no ssh user: none in the URL, the ssh config, or $USER",
             )
         })?;
@@ -168,7 +167,7 @@ fn refuse_proxy(
         if set {
             return Err(ActionError::git(
                 op,
-                super::super::redacted(url),
+                redacted(url),
                 format!(
                     "ssh config sets {directive} for {host}; rc-git cannot tunnel, \
                      use git for this remote"
@@ -242,7 +241,7 @@ fn agent_socket(value: Option<&str>, paths: &PathTokens<'_>) -> ActionResult<Age
     {
         return Err(ActionError::git(
             paths.op,
-            super::super::redacted(paths.url),
+            redacted(paths.url),
             format!("ssh config IdentityAgent '{value}' names no valid environment variable"),
         ));
     }
@@ -281,7 +280,7 @@ fn expand_tokens(value: &str, lookup: impl Fn(char) -> Option<String>) -> Result
 fn token_err(op: &'static str, url: &gix::Url, directive: &str, token: &str) -> ActionError {
     ActionError::git(
         op,
-        super::super::redacted(url),
+        redacted(url),
         format!(
             "ssh config {directive} uses the token '{token}', which rc-git cannot expand; \
              use git for this remote"
@@ -443,7 +442,7 @@ fn load_config(
         parse_for_host(contents, &host).map_err(|source| {
             ActionError::git(
                 op,
-                super::super::redacted(url),
+                redacted(url),
                 format!("cannot parse '{}': {source}", path.display()),
             )
         })
@@ -550,7 +549,7 @@ struct ConfigReader<'a> {
 
 impl ConfigReader<'_> {
     fn err(&self, message: String) -> ActionError {
-        ActionError::git(self.op, super::super::redacted(self.url), message)
+        ActionError::git(self.op, redacted(self.url), message)
     }
 
     /// Appends `path`'s lines, `depth` includes below the top-level config.
