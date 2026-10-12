@@ -9,6 +9,7 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::refs::Target;
 use gix::refs::transaction::PreviousValue;
+use gix::remote::Direction;
 
 use crate::actions::treeapply::core_oid;
 use crate::actions::write::Writer;
@@ -43,10 +44,11 @@ pub struct PushOutcome {
     pub already_up_to_date: bool,
 }
 
-/// Pushes the checked-out branch to the same-named branch on its upstream remote. Plain
-/// push only: the remote tip must be an ancestor of the local tip, checked here before a
-/// byte is sent and enforced again by the server. A URL upstream gets the push but has no
-/// remote-tracking ref to move.
+/// Pushes the checked-out branch to the same-named branch on its push remote:
+/// `branch.<name>.pushRemote`, then `remote.pushDefault`, then the upstream remote, at its
+/// `pushurl` when it has one. Plain push only: the remote tip must be an ancestor of the
+/// local tip, checked here before a byte is sent and enforced again by the server. The
+/// remote-tracking ref moved is the pushed remote's; a URL upstream has none to move.
 ///
 /// # Errors
 /// [`ActionError::PushRejected`] when the remote has commits the local branch lacks,
@@ -78,8 +80,9 @@ pub fn push_upstream(
             "the branch has no commits yet; nothing to push",
         )
     })?;
-    let (remote_name, url) = push_target(&repo, &branch)?;
-    let (full_ref, tracking_ref) = push_refs(&repo, &branch, &remote_name, OP)?;
+    let (upstream, url) = push_target(&repo, &branch)?;
+    let (full_ref, tracking_ref) = push_refs(&repo, &branch, &upstream, OP)?;
+    let remote_name = upstream.label();
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
 
@@ -148,15 +151,16 @@ pub fn push_upstream(
     })
 }
 
-/// Where the branch pushes: the label reports and errors use, and the URL. A local
+/// Where the branch pushes, resolved in git's push order, with the URL it pushes to. A local
 /// upstream is refused: rc-git does not push into a local branch.
-fn push_target(repo: &gix::Repository, branch: &str) -> ActionResult<(String, gix::Url)> {
-    let upstream = resolve_upstream(repo, branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
-        op: OP,
-        branch: branch.to_owned(),
+fn push_target(repo: &gix::Repository, branch: &str) -> ActionResult<(Upstream, gix::Url)> {
+    let upstream = resolve_upstream(repo, branch, Direction::Push, OP)?.ok_or_else(|| {
+        ActionError::NoUpstream {
+            op: OP,
+            branch: branch.to_owned(),
+        }
     })?;
-    let label = upstream.label();
-    match upstream {
+    match &upstream {
         Upstream::Local { merge_ref } => Err(ActionError::git(
             OP,
             branch,
@@ -165,7 +169,10 @@ fn push_target(repo: &gix::Repository, branch: &str) -> ActionResult<(String, gi
                  local branch (merge into it with git, or set a remote upstream)"
             ),
         )),
-        Upstream::Named { url, .. } | Upstream::Url { url } => Ok((label, url)),
+        Upstream::Named { url, .. } | Upstream::Url { url } => {
+            let url = url.clone();
+            Ok((upstream, url))
+        }
     }
 }
 

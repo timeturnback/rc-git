@@ -1011,6 +1011,106 @@ fn push_agrees_with_the_configured_upstream() {
 }
 
 #[test]
+fn push_sends_to_the_remote_pushurl() {
+    let remoted = remoted();
+    remoted.clone.git(&[
+        "config",
+        "remote.origin.url",
+        "git://example.invalid/up.git",
+    ]);
+    remoted
+        .clone
+        .git(&["config", "remote.origin.pushurl", &remoted.server.url()]);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+    let tip = remoted.clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push goes to the pushurl, not the unsupported fetch url");
+    assert_eq!(outcome.remote, "origin");
+    assert_eq!(outcome.pushed_commits, 1);
+    assert_eq!(bare_rev(&remoted.bare, "main"), tip);
+    assert_eq!(remoted.clone.rev_parse("refs/remotes/origin/main"), tip);
+}
+
+/// A second served bare copy of `remoted`'s origin, added to the clone as remote `fork`.
+fn add_fork(remoted: &Remoted) -> (Fixture, rc_git_testkit::HttpGitServer) {
+    let (fork, fork_path) = remoted.origin.bare_copy();
+    let server = rc_git_testkit::HttpGitServer::serve(&fork_path);
+    remoted.clone.git(&["remote", "add", "fork", &server.url()]);
+    (fork, server)
+}
+
+/// Pushes the clone's checked-out branch, which must land on `fork` and leave origin and
+/// its tracking ref alone, and moves `refs/remotes/fork/<branch>`.
+fn assert_push_lands_on_the_fork(remoted: &Remoted, fork: &Fixture, branch: &str) {
+    let origin_before = bare_rev(&remoted.bare, "main");
+    let tracking_before = remoted.clone.rev_parse("refs/remotes/origin/main");
+    let tip = remoted.clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push to the fork");
+    assert_eq!(outcome.remote, "fork");
+    assert_eq!(outcome.branch, branch);
+    assert_eq!(bare_rev(fork, branch), tip);
+    assert_eq!(bare_rev(&remoted.bare, "main"), origin_before);
+    assert_eq!(
+        remoted
+            .clone
+            .rev_parse(&format!("refs/remotes/fork/{branch}")),
+        tip
+    );
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        tracking_before,
+        "the fetch remote's tracking ref must not claim a commit it lacks"
+    );
+}
+
+#[test]
+fn push_follows_the_branch_push_remote() {
+    let remoted = remoted();
+    let (fork, _server) = add_fork(&remoted);
+    remoted
+        .clone
+        .git(&["config", "branch.main.pushRemote", "fork"]);
+    remoted.clone.write("local.txt", b"local\n");
+    remoted
+        .clone
+        .commit("Local work", "2024-03-02T00:00:00+0000");
+
+    assert_push_lands_on_the_fork(&remoted, &fork, "main");
+}
+
+#[test]
+fn push_follows_push_default_even_when_merge_names_another_branch() {
+    let remoted = remoted();
+    let (fork, _server) = add_fork(&remoted);
+    remoted.clone.git(&["config", "remote.pushDefault", "fork"]);
+    remoted
+        .clone
+        .git(&["checkout", "-q", "-b", "topic", "origin/main"]);
+    remoted.clone.write("topic.txt", b"topic\n");
+    remoted
+        .clone
+        .commit("Topic work", "2024-03-02T00:00:00+0000");
+
+    assert_push_lands_on_the_fork(&remoted, &fork, "topic");
+}
+
+#[test]
 fn push_is_rejected_when_the_remote_moved() {
     let remoted = remoted();
     advance_origin(&remoted.origin, &remoted.bare_path);

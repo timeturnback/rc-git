@@ -120,10 +120,12 @@ supplied by the caller per call, and never stored by the core.
 
 A branch's upstream is the remote and branch its own config names. When the config names
 none — a branch pushed without setting one — rc-git takes the same-named branch on
-`origin`, and the ahead/behind counts and pull compare against it. Push uploads only to
-the same-named branch on the upstream's remote, as git's `push.default=simple` does, and
-refuses a branch whose config names an upstream under another name, so what push uploads
-to is always what the counts and pull compare against.
+`origin`, and the ahead/behind counts and pull compare against it. Push picks its remote
+the way git does — `branch.<name>.pushRemote`, then `remote.pushDefault`, then the
+upstream's remote — and sends to that remote's `pushurl` when it has one. It uploads only to
+the same-named branch, as git's `push.default=simple` does, and when it pushes to the
+upstream's remote it refuses a branch whose config names an upstream under another name, so
+what push uploads to is always what the counts and pull compare against.
 
 Every one of them ends. The app carries a cancel flag into the call that the user can
 raise from the other side while the transfer holds the thread, and each transport keeps

@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use gix::remote::Direction;
+
 use super::{ActionError, ActionResult, git_err, open};
 
 mod fetch;
@@ -182,7 +184,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
     const OP: &str = "read upstream status";
     let repo = open(repo_path, OP, "repository")?;
     let (branch, head_id) = current_branch(&repo, OP)?;
-    let Some(upstream) = resolve_upstream(&repo, &branch, OP)? else {
+    let Some(upstream) = resolve_upstream(&repo, &branch, Direction::Fetch, OP)? else {
         return Ok(UpstreamStatus {
             branch,
             remote: String::new(),
@@ -231,16 +233,21 @@ fn current_branch(
     Ok((branch, tip))
 }
 
-/// `branch.<name>.remote` from the repository's own configuration, falling back to
-/// `origin` when that remote exists.
-fn configured_remote_name(repo: &gix::Repository, branch: &str) -> Option<String> {
+/// The branch's remote for `direction` from the repository's own configuration, falling
+/// back to `origin` when that remote exists. Fetch reads `branch.<name>.remote`; push reads
+/// `branch.<name>.pushRemote`, then `remote.pushDefault`, then `branch.<name>.remote`, as git
+/// does.
+fn configured_remote_name(
+    repo: &gix::Repository,
+    branch: &str,
+    direction: Direction,
+) -> Option<String> {
     use gix::bstr::ByteSlice;
     #[expect(
         clippy::disallowed_methods,
         reason = "the one sanctioned resolver; it adds the origin fallback"
     )]
-    let configured =
-        repo.branch_remote_name(branch.as_bytes().as_bstr(), gix::remote::Direction::Fetch);
+    let configured = repo.branch_remote_name(branch.as_bytes().as_bstr(), direction);
     if let Some(name) = configured {
         return Some(name.as_bstr().to_string());
     }
@@ -253,19 +260,21 @@ fn configured_remote_name(repo: &gix::Repository, branch: &str) -> Option<String
 /// What `branch.<name>.remote` says when the upstream is another branch of this repository.
 const LOCAL_REMOTE: &str = ".";
 
-/// Where the checked-out branch's upstream lives, resolved once from `branch.<name>.remote`
-/// (or the `origin` fallback) for status, fetch, pull and push alike.
+/// Where the checked-out branch's upstream lives, resolved once by [`configured_remote_name`]
+/// for status, fetch, pull and push alike: the fetch remote for the first three, the push
+/// remote for push.
 pub(super) enum Upstream {
     /// `branch.<name>.remote = .`: another branch of this repository, e.g. `refs/heads/main`.
     Local {
         /// Full name of the local branch `branch.<name>.merge` names.
         merge_ref: String,
     },
-    /// A configured remote and its fetch URL.
+    /// A configured remote and its URL for the direction resolved.
     Named {
         /// The remote's name, e.g. `origin`.
         name: String,
-        /// The remote's fetch URL.
+        /// The remote's URL: `remote.<name>.url` for fetch, `remote.<name>.pushurl` falling
+        /// back to it for push.
         url: gix::Url,
     },
     /// A URL written straight into `branch.<name>.remote`, with no remote configured for it.
@@ -300,16 +309,17 @@ impl Upstream {
 fn resolve_upstream(
     repo: &gix::Repository,
     branch: &str,
+    direction: Direction,
     op: &'static str,
 ) -> ActionResult<Option<Upstream>> {
-    let Some(name) = configured_remote_name(repo, branch) else {
+    let Some(name) = configured_remote_name(repo, branch, direction) else {
         return Ok(None);
     };
     if name == LOCAL_REMOTE {
         return Ok(merge_ref_name(repo, branch).map(|merge_ref| Upstream::Local { merge_ref }));
     }
     if is_named_remote(repo, &name) {
-        let url = remote_fetch_url(repo, &name, op)?;
+        let url = find_named_remote(repo, &name, op)?.url(direction).cloned();
         return Ok(url.map(|url| Upstream::Named { name, url }));
     }
     let url = gix::url::parse(name.as_str()).map_err(|_unparsable| {
@@ -340,16 +350,16 @@ fn merge_ref_name(repo: &gix::Repository, branch: &str) -> Option<String> {
         clippy::disallowed_methods,
         reason = "the one sanctioned resolver; a local upstream has no remote to fall back from"
     )]
-    let merge = repo.branch_remote_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch)?;
+    let merge = repo.branch_remote_ref_name(full_name.as_ref(), Direction::Fetch)?;
     Some(merge.ok()?.as_bstr().to_string())
 }
 
-/// The remote's fetch URL, or `None` when the remote has no URL configured.
-fn remote_fetch_url(
-    repo: &gix::Repository,
+/// The configured remote named `remote_name`, read from the repository's own configuration.
+fn find_named_remote<'repo>(
+    repo: &'repo gix::Repository,
     remote_name: &str,
     op: &'static str,
-) -> ActionResult<Option<gix::Url>> {
+) -> ActionResult<gix::Remote<'repo>> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the guard crate is the one sanctioned remote-I/O path; see docs/safety.md"
@@ -357,7 +367,7 @@ fn remote_fetch_url(
     let remote = repo
         .find_remote(remote_name)
         .map_err(git_err(op, remote_name))?;
-    Ok(remote.url(gix::remote::Direction::Fetch).cloned())
+    Ok(remote)
 }
 
 /// A branch's remote-tracking ref and where its name came from.
@@ -373,10 +383,11 @@ struct TrackingRef {
 /// itself (`refs/heads/main`) for a local upstream; `None` for a URL upstream, which has
 /// no tracking ref. Without `branch.<name>.merge` — a branch made with `git init` and
 /// pushed without `-u` — it is `refs/remotes/<remote>/<branch>` on the remote
-/// `configured_remote_name` picks. Push moves this ref and refuses a `branch.<name>.merge`
-/// that names another branch ([`push_refs`]), so ahead/behind and pull agree with push.
+/// `configured_remote_name` picks. A push to this remote moves this ref and refuses a
+/// `branch.<name>.merge` that names another branch ([`push_refs`]), so ahead/behind and pull
+/// agree with push.
 fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef> {
-    let remote = configured_remote_name(repo, branch)?;
+    let remote = configured_remote_name(repo, branch, Direction::Fetch)?;
     if remote == LOCAL_REMOTE {
         return Some(TrackingRef {
             name: merge_ref_name(repo, branch)?,
@@ -389,8 +400,7 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef
         clippy::disallowed_methods,
         reason = "the one sanctioned resolver; it adds the origin fallback"
     )]
-    let configured =
-        repo.branch_remote_tracking_ref_name(full_name.as_ref(), gix::remote::Direction::Fetch);
+    let configured = repo.branch_remote_tracking_ref_name(full_name.as_ref(), Direction::Fetch);
     let Some(tracking) = configured else {
         if !is_named_remote(repo, &remote) {
             return None;
@@ -406,21 +416,28 @@ fn tracking_ref_name(repo: &gix::Repository, branch: &str) -> Option<TrackingRef
     })
 }
 
-/// The branch a push of `branch` writes on the remote and the remote-tracking ref it moves
+/// The branch a push of `branch` writes on the remote and the remote-tracking ref it moves:
+/// where the push remote's fetch refspecs file that branch, as git moves it after a push
 /// (`None` for a URL upstream, which has none). Same name only, as git's
-/// `push.default=simple`: when `branch.<name>.merge` names another branch, status and pull
-/// count against that one, so a same-name push would never clear them. That case is refused,
-/// and rc-git never creates a differently named remote branch.
+/// `push.default=simple`: when the push goes to the remote the branch pulls from and
+/// `branch.<name>.merge` names another branch, status and pull count against that one, so a
+/// same-name push would never clear them. That case is refused, and rc-git never creates a
+/// differently named remote branch. A push to another remote (`pushRemote`, `pushDefault`)
+/// skips that check, as git's `simple` does.
 pub(super) fn push_refs(
     repo: &gix::Repository,
     branch: &str,
-    label: &str,
+    upstream: &Upstream,
     op: &'static str,
 ) -> ActionResult<(String, Option<String>)> {
     let full_ref = format!("refs/heads/{branch}");
-    if let Some(merge_ref) = merge_ref_name(repo, branch)
+    let pushes_where_it_pulls = configured_remote_name(repo, branch, Direction::Push)
+        == configured_remote_name(repo, branch, Direction::Fetch);
+    if pushes_where_it_pulls
+        && let Some(merge_ref) = merge_ref_name(repo, branch)
         && merge_ref != full_ref
     {
+        let label = upstream.label();
         let short = merge_ref.strip_prefix("refs/heads/").unwrap_or(&merge_ref);
         return Err(ActionError::git(
             op,
@@ -431,8 +448,43 @@ pub(super) fn push_refs(
             ),
         ));
     }
-    let tracking = tracking_ref_name(repo, branch).map(|tracking| tracking.name);
+    let tracking = match upstream {
+        Upstream::Named { name, .. } => fetched_into(repo, name, &full_ref, op)?,
+        Upstream::Local { .. } | Upstream::Url { .. } => None,
+    };
     Ok((full_ref, tracking))
+}
+
+/// Where `remote_name`'s fetch refspecs file its branch `remote_ref`, e.g.
+/// `refs/remotes/fork/main` for `refs/heads/main`; `None` when no refspec maps it.
+fn fetched_into(
+    repo: &gix::Repository,
+    remote_name: &str,
+    remote_ref: &str,
+    op: &'static str,
+) -> ActionResult<Option<String>> {
+    use gix::bstr::ByteSlice;
+    let remote = find_named_remote(repo, remote_name, op)?;
+    let group = gix::refspec::MatchGroup {
+        specs: remote
+            .refspecs(Direction::Fetch)
+            .iter()
+            .map(gix::refspec::RefSpec::to_ref)
+            .filter(|spec| spec.source().is_some() && spec.destination().is_some())
+            .collect(),
+    };
+    let null = repo.object_hash().null();
+    let item = gix::refspec::match_group::Item {
+        full_ref_name: remote_ref.as_bytes().as_bstr(),
+        target: &null,
+        object: None,
+    };
+    let matched = group.match_lhs(std::iter::once(item));
+    Ok(matched
+        .mappings
+        .into_iter()
+        .find_map(|mapping| mapping.rhs)
+        .map(|rhs| rhs.to_string()))
 }
 
 /// Peels `name` to a commit id, `None` when the ref does not exist.

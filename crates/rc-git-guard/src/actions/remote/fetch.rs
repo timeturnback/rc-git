@@ -56,8 +56,8 @@ pub fn fetch_upstream(
     super::set_reflog_identity(&mut repo, OP)?;
     let repo = repo;
     let (branch, _tip) = current_branch(&repo, OP)?;
-    let upstream =
-        resolve_upstream(&repo, &branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
+    let upstream = resolve_upstream(&repo, &branch, gix::remote::Direction::Fetch, OP)?
+        .ok_or_else(|| ActionError::NoUpstream {
             op: OP,
             branch: branch.clone(),
         })?;
