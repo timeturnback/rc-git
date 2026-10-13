@@ -686,7 +686,7 @@ import Testing
         let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
         await model.openFile(entry, path: "a.txt")
         await model.requestBlame()
-        guard case let .loaded(path, spans) = model.blame else {
+        guard case let .loaded(path, spans, _) = model.blame else {
             Issue.record("expected a loaded blame, got \(model.blame)")
             return
         }
@@ -712,7 +712,7 @@ import Testing
         let entry = TreeEntry(name: "a.txt", oid: newBlob, kind: .blob)
         await model.openFile(entry, path: "a.txt")
         await model.requestBlame()
-        guard case let .loaded(_, spans) = model.blame else {
+        guard case let .loaded(_, spans, _) = model.blame else {
             Issue.record("expected a loaded blame, got \(model.blame)")
             return
         }
@@ -734,5 +734,71 @@ import Testing
         }
         #expect(message.contains("40 bytes, over the 10 byte limit"))
         #expect(repo.blameLimits == [10])
+    }
+
+    @Test func blameInTheWorkingTreeUsesHead() async {
+        repo.workDir = "/w"
+        repo.worktreeFiles["a.txt"] = textBlob("one\ntwo\n")
+        await model.attach(repo)
+        #expect(model.browsingWorkingTree)
+        await model.openWorktreeFile(name: "a.txt", path: "a.txt", status: .modified)
+        #expect(model.canBlameOpenedFile)
+        await model.requestBlame()
+        guard case let .loaded(path, spans, title) = model.blame else {
+            Issue.record("expected a loaded blame, got \(model.blame)")
+            return
+        }
+        #expect(path == "a.txt")
+        #expect(spans.map(\.commit.title) == ["parent"])
+        #expect(repo.blameTips == [mainCommit], "the working tree blames HEAD's version")
+        #expect(title == "Blame — a.txt at HEAD")
+    }
+
+    @Test func blameRefusesAnUntrackedFileInTheWorkingTree() async {
+        repo.workDir = "/w"
+        repo.worktreeFiles["new.txt"] = textBlob("fresh\n")
+        await model.attach(repo)
+        await model.openWorktreeFile(name: "new.txt", path: "new.txt", status: .untracked)
+        #expect(!model.canBlameOpenedFile, "Show Blame is disabled for an untracked file")
+        await model.requestBlame()
+        #expect(model.blame == .failed("new.txt is untracked; it has no history to blame"))
+        #expect(repo.blameTips.isEmpty, "no walk runs for an untracked file")
+    }
+
+    @Test func blameRefusesAnUntrackedFileOpenedByLink() async {
+        repo.workDir = "/w"
+        repo.worktreeListings[""] = WorktreeListing(entries: [
+            WorktreeEntry(name: "new.txt", kind: .blob, status: .untracked, oid: nil, size: 6)
+        ])
+        repo.worktreeFiles["new.txt"] = textBlob("fresh\n")
+        await model.attach(repo)
+        #expect(await model.openPath("new.txt") == .opened)
+        #expect(!model.canBlameOpenedFile, "the link lookup carries the file's status")
+    }
+
+    @Test func blameOfARefIsNotTitledHead() async {
+        await model.attach(repo)
+        #expect(!model.browsingWorkingTree)
+        await model.openFile(TreeEntry(name: "a.txt", oid: newBlob, kind: .blob), path: "a.txt")
+        await model.requestBlame()
+        guard case let .loaded(_, _, title) = model.blame else {
+            Issue.record("expected a loaded blame, got \(model.blame)")
+            return
+        }
+        #expect(title == "Blame — a.txt")
+    }
+
+    @Test func blameWithNothingSelectedThrows() async {
+        repo.listing = RefListing(refs: [])
+        repo.headValue = Head(refName: nil, target: nil)
+        await model.attach(repo)
+        await model.openFile(TreeEntry(name: "a.txt", oid: newBlob, kind: .blob), path: "a.txt")
+        #expect(!model.canBlameOpenedFile)
+        await model.requestBlame()
+        guard case let .failed(message) = model.blame else {
+            Issue.record("expected a failed blame, got \(model.blame)")
+            return
+        }
+        #expect(message.contains("nothing is selected"))
     }
 }

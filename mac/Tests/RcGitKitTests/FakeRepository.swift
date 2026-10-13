@@ -58,6 +58,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blames: [String: Blame] = [:]
     /// The limit each `blame` call passed, in call order.
     var blameLimits: [UInt64] = []
+    var blameTips: [Oid] = []
     /// The `since` floor each `blame` call passed, in call order.
     var blameFloors: [Int64?] = []
     /// Holds the next `blame` call, then clears itself.
@@ -283,6 +284,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func blame(tip: Oid, path: String, limit: UInt64, since: Int64?) throws -> Blame {
         let (found, gate) = lock.withLock { () -> (Blame?, CallGate?) in
             blameLimits.append(limit)
+            blameTips.append(tip)
             blameFloors.append(since)
             let gate = blameGate
             blameGate = nil

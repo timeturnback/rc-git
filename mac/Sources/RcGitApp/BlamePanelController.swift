@@ -49,10 +49,10 @@ final class BlamePanelController: NSObject, NSTableViewDataSource, NSTableViewDe
         panel.contentView = scroll
     }
 
-    /// Shows the ranges for `fileName`, replacing whatever the panel showed before.
-    func show(_ spans: [BlameSpan], fileName: String, over window: NSWindow?) {
+    /// Shows the ranges under `title`, replacing whatever the panel showed before.
+    func show(_ spans: [BlameSpan], title: String, over window: NSWindow?) {
         self.spans = spans
-        panel.title = "Blame — \(fileName)"
+        panel.title = title
         table.reloadData()
         if let frame = window?.frame {
             let size = panel.frame.size

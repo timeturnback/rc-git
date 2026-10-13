@@ -435,7 +435,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     @objc func showBlame(_ sender: Any?) {
-        guard model.openedFilePath != nil else { return }
+        guard model.canBlameOpenedFile else { return }
         Task { await model.requestBlame() }
     }
 
@@ -467,7 +467,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(showBlame(_:)) {
-            return model.openedFilePath != nil
+            return model.canBlameOpenedFile
         }
         if menuItem.action == #selector(showFileHistory(_:)) {
             return model.openedFilePath != nil
@@ -794,8 +794,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             switch model.blame {
             case .empty:
                 break
-            case let .loaded(path, spans):
-                blamePanel.show(spans, fileName: path, over: window)
+            case let .loaded(_, spans, title):
+                blamePanel.show(spans, title: title, over: window)
             case let .failed(message):
                 presentError(message)
             }
@@ -818,7 +818,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             if model.browsingWorkingTree, !row.missing {
                 Task {
                     await self.model.openWorktreeFile(
-                        name: row.entry.name, path: path, pathIsExact: pathIsExact)
+                        name: row.entry.name, path: path, pathIsExact: pathIsExact,
+                        status: row.status)
                 }
             } else {
                 Task { await self.model.openFile(row.entry, path: path, pathIsExact: pathIsExact) }

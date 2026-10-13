@@ -326,7 +326,8 @@ import Testing
                 range: BlameRange(commit: mainCommit, startLine: 1, lineCount: 1),
                 commit: commitSummary(mainCommit, title: "main"))
         ]
-        #expect(states == [.loaded(path: "src/main.rs", spans: spans)])
+        #expect(
+            states == [.loaded(path: "src/main.rs", spans: spans, title: "Blame — src/main.rs")])
         #expect(repo.blameLimits.count == 2, "the repeat joined the main.rs walk")
     }
 
@@ -348,7 +349,7 @@ import Testing
 
         #expect(repo.blameLimits.count == 1)
         #expect(events == 1)
-        guard case let .loaded(path, spans) = model.blame else {
+        guard case let .loaded(path, spans, _) = model.blame else {
             Issue.record("expected a loaded blame, got \(model.blame)")
             return
         }

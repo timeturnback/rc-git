@@ -12,7 +12,9 @@ public enum FileState: Equatable, Sendable {
 
 /// Where the open file's bytes came from: a working-tree file read by path, or a blob.
 private enum OpenedFileSource {
-    case disk(name: String)
+    /// Read from disk; `status` is how the file relates to HEAD, `nil` when the opener did
+    /// not know.
+    case disk(name: String, status: WorktreeStatus?)
     case blob(TreeEntry)
 }
 
@@ -180,6 +182,8 @@ public final class BrowserModel {
         let tip: Oid
         let limit: UInt64
         let file: Int
+        /// True when the tip is HEAD standing in for the working tree, not a browsed revision.
+        let atHead: Bool
     }
     /// The unfiltered pages of one tip plus the lane graph built alongside them.
     private struct HistoryPages {
@@ -479,16 +483,17 @@ public final class BrowserModel {
 
     /// Opens a file straight from the working directory into the file pane. `pathIsExact` is
     /// false when a component of `path` arrived with U+FFFD replacements; such a file is not
-    /// read, since the read goes by path and could land on another file.
+    /// read, since the read goes by path and could land on another file. `status` is the
+    /// file's status against HEAD when the opener knows it; an untracked file cannot be blamed.
     public func openWorktreeFile(
-        name: String, path: String, pathIsExact: Bool = true,
+        name: String, path: String, pathIsExact: Bool = true, status: WorktreeStatus? = nil,
         limit: UInt64 = Repository.defaultBlobLimit
     ) async {
         guard let repository else { return }
         let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob, hasExactName: pathIsExact)
         fileGeneration += 1
         let generation = fileGeneration
-        openedFileSource = .disk(name: name)
+        openedFileSource = .disk(name: name, status: status)
         openedFilePath = path
         openedPathIsExact = pathIsExact
         openedFileLimit = limit
@@ -617,10 +622,11 @@ public final class BrowserModel {
         switch openedFileSource {
         case nil:
             return
-        case let .disk(name):
+        case let .disk(name, status):
             guard let path = openedFilePath else { return }
             await openWorktreeFile(
-                name: name, path: path, pathIsExact: openedPathIsExact, limit: limit)
+                name: name, path: path, pathIsExact: openedPathIsExact, status: status,
+                limit: limit)
         case let .blob(entry):
             await openFile(
                 entry, path: openedFilePath, pathIsExact: openedPathIsExact, limit: limit)
@@ -659,27 +665,28 @@ public final class BrowserModel {
         _ path: String, repository: any RepositoryReading, root: Oid
     ) async -> OpenPathOutcome {
         let lookup = await RepositoryError.run {
-            try Self.worktreeFileExists(at: path, repository: repository, root: root)
+            try Self.worktreeFileStatus(at: path, repository: repository, root: root)
         }
+        let status: WorktreeStatus
         switch lookup {
         case let .failure(error):
             return .failed(error.message)
-        case .success(false):
+        case .success(nil):
             return .missing
-        case .success(true):
-            break
+        case let .success(found?):
+            status = found
         }
         let name = path.split(separator: "/").last.map(String.init) ?? path
-        await openWorktreeFile(name: name, path: path)
+        await openWorktreeFile(name: name, path: path, status: status)
         if case let .failed(_, message) = fileState { return .failed(message) }
         return .opened
     }
 
-    /// Whether `path` names a file in the working directory, listing one directory per
-    /// component. `false` when a component is missing or the path names a directory.
-    nonisolated private static func worktreeFileExists(
+    /// The status of the file `path` names in the working directory, listing one directory per
+    /// component. `nil` when a component is missing or the path names a directory.
+    nonisolated private static func worktreeFileStatus(
         at path: String, repository: any RepositoryReading, root: Oid
-    ) throws -> Bool {
+    ) throws -> WorktreeStatus? {
         let components = path.split(separator: "/").map(String.init)
         var dir = ""
         for (offset, component) in components.enumerated() {
@@ -689,14 +696,14 @@ public final class BrowserModel {
                 let match = listing.entries.first(where: {
                     $0.hasExactName && $0.name == component
                 })
-            else { return false }
+            else { return nil }
             if offset == components.count - 1 {
-                return !match.kind.isDirectory
+                return match.kind.isDirectory ? nil : match.status
             }
-            guard match.kind.isDirectory else { return false }
+            guard match.kind.isDirectory else { return nil }
             dir = dir.isEmpty ? component : dir + "/" + component
         }
-        return false
+        return nil
     }
 
     /// The blob at `path` below `tree`, walking one directory at a time. `nil` when a
@@ -1113,6 +1120,10 @@ public final class BrowserModel {
     /// `blame`, firing `onBlameChanged`. Ranges are paired with their commit summaries,
     /// resolved through a cache so each commit is read once.
     ///
+    /// The working tree has no revision of its own, so there the walk blames HEAD's committed
+    /// version of the file, not the bytes on disk, and the panel title says so. An untracked
+    /// file has no history and is refused.
+    ///
     /// The walk stops at `blameFloor(tipTime:)` of the tip's committer time, so a line older
     /// than that comes back as a span with `olderThan` set instead of costing a walk of the
     /// whole ancestry; the walk itself cannot be cancelled.
@@ -1130,6 +1141,10 @@ public final class BrowserModel {
                 ? "no file with a known path is open" : "nothing is selected to blame at"
             return publishBlame(.failed(message))
         }
+        guard !openedFileIsUntracked else {
+            return publishBlame(
+                .failed("\(target.path) is untracked; it has no history to blame"))
+        }
         guard openedPathIsExact else {
             return publishBlame(.failed(InexactName.pathRefusal("blame", target.path)))
         }
@@ -1145,19 +1160,41 @@ public final class BrowserModel {
         guard target == blameTarget() else { return }
         switch result {
         case let .success(spans):
-            publishBlame(.loaded(path: target.path, spans: spans))
+            let title = Self.blameTitle(path: target.path, atHead: target.atHead)
+            publishBlame(.loaded(path: target.path, spans: spans, title: title))
         case let .failure(error):
             publishBlame(.failed(error.message))
         }
     }
 
+    /// Whether Show Blame can run on the file in the file pane: a file with a known path is
+    /// open at a revision, which is HEAD in the working tree, and it is not untracked.
+    public var canBlameOpenedFile: Bool {
+        blameTarget() != nil && !openedFileIsUntracked
+    }
+
+    /// True when the open file was read from disk in the working tree and HEAD does not have it.
+    private var openedFileIsUntracked: Bool {
+        guard browsingWorkingTree, case .disk(_, .untracked) = openedFileSource else {
+            return false
+        }
+        return true
+    }
+
     /// What a blame asked for now would walk, or `nil` when no file with a known path is open
     /// at a committed revision. The file generation makes a reopen count as a different file.
     private func blameTarget() -> BlameTarget? {
-        guard let path = openedFilePath,
-            let tip = selectedRef?.target ?? browsedCommit?.oid
-        else { return nil }
-        return BlameTarget(path: path, tip: tip, limit: openedFileLimit, file: fileGeneration)
+        let tip = browsingWorkingTree ? head?.target : (selectedRef?.target ?? browsedCommit?.oid)
+        guard let path = openedFilePath, let tip else { return nil }
+        return BlameTarget(
+            path: path, tip: tip, limit: openedFileLimit, file: fileGeneration,
+            atHead: browsingWorkingTree)
+    }
+
+    /// The blame panel's title: the path, marked as HEAD's version when the working tree
+    /// stood in for a revision.
+    public nonisolated static func blameTitle(path: String, atHead: Bool) -> String {
+        atHead ? "Blame — \(path) at HEAD" : "Blame — \(path)"
     }
 
     /// How far back blame walks: two years (730 days), in seconds.
