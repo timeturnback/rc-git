@@ -188,6 +188,8 @@ public enum FuzzyMatch {
     /// query compares bytes, since an ASCII byte never occurs inside a multi-byte character;
     /// any other query compares whole Unicode scalars, so one typed letter never matches bytes
     /// taken from different letters. Both strings are expected in the same normalization form.
+    /// When the leftmost match starts in a directory, the scan runs once more from the file
+    /// name, so `Model/Model.swift` still earns the file-name bonus for `model`.
     public static func score(_ candidate: String, query: String) -> Int? {
         if isASCII(query) {
             return score(path: Array(candidate.utf8), needle: Array(query.utf8))
@@ -206,11 +208,26 @@ public enum FuzzyMatch {
         if needle.isEmpty { return 0 }
         let lastSlash = path.lastIndex(of: Unit(UInt8(ascii: "/")))
         let nameStart = lastSlash.map { $0 + 1 } ?? 0
+        guard let leftmost = scan(path: path, needle: needle, from: 0) else { return nil }
+        var score = leftmost.score
+        if leftmost.firstMatch >= nameStart {
+            score += fileNameBonus
+        } else if let inName = scan(path: path, needle: needle, from: nameStart) {
+            score = max(score, inName.score + fileNameBonus)
+        }
+        return score - (path.count - nameStart) / 8
+    }
+
+    /// One greedy left-to-right match of `needle` in `path` starting at `from`: its run and
+    /// boundary score and where it began, or `nil` when `needle` is not a subsequence there.
+    private static func scan<Unit: FixedWidthInteger>(path: [Unit], needle: [Unit], from: Int)
+        -> (score: Int, firstMatch: Int)?
+    {
         var score = 0
         var needleIndex = 0
         var previousMatch = -2
         var firstMatch = -1
-        for index in 0..<path.count where lower(path[index]) == lower(needle[needleIndex]) {
+        for index in from..<path.count where lower(path[index]) == lower(needle[needleIndex]) {
             score += 1
             if index == previousMatch + 1 {
                 score += consecutiveBonus
@@ -224,9 +241,7 @@ public enum FuzzyMatch {
             if needleIndex == needle.count { break }
         }
         guard needleIndex == needle.count else { return nil }
-        if firstMatch >= nameStart { score += fileNameBonus }
-        score -= (path.count - nameStart) / 8
-        return score
+        return (score, firstMatch)
     }
 
     private static func lower<Unit: FixedWidthInteger>(_ unit: Unit) -> Unit {

@@ -25,6 +25,12 @@ import Testing
         #expect(inName! > inDirectory!)
     }
 
+    @Test func fileNamedLikeItsFolderKeepsTheFileNameBonus() throws {
+        let named = try #require(FuzzyMatch.score("Sources/Model/Model.swift", query: "model"))
+        let sibling = try #require(FuzzyMatch.score("Sources/Model/View.swift", query: "model"))
+        #expect(named > sibling)
+    }
+
     @Test func consecutiveRunsBeatScatteredMatches() {
         let run = FuzzyMatch.score("browser.swift", query: "brow")
         let scattered = FuzzyMatch.score("b_r_o_w_x.swift", query: "brow")
@@ -113,6 +119,18 @@ import Testing
         #expect(index.search("zzz").isEmpty)
         #expect(index.search("").count == index.entries.count)
         #expect(index.search("", limit: 2).count == 2)
+    }
+
+    @Test func searchPutsTheFileNamedLikeItsFolderFirst() {
+        let paths = [
+            "components/button/index.ts", "components/button/Button.tsx",
+            "components/button/styles.css",
+        ]
+        let entries = paths.map {
+            PathIndexEntry(path: $0, oid: .unhashed, kind: .blob, hidden: false)
+        }
+        let index = PathIndex(root: root, entries: entries, truncated: false)
+        #expect(index.search("button").first?.path == "components/button/Button.tsx")
     }
 
     @Test func hiddenFilesAreMarkedAndLeftOutOnRequest() throws {
