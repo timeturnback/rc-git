@@ -77,8 +77,14 @@ struct MarkdownBlockParser {
         let rest: Range<Int>
     }
 
+    /// A UTF-8 byte order mark. GitHub ignores one at the start of a file, so the parser does too.
+    private static let byteOrderMark: [UInt8] = [0xEF, 0xBB, 0xBF]
+
     init(source: String) {
-        bytes = Array(source.utf8)
+        let utf8 = Array(source.utf8)
+        bytes =
+            utf8.starts(with: Self.byteOrderMark)
+            ? Array(utf8.dropFirst(Self.byteOrderMark.count)) : utf8
         lines = Self.lineRanges(of: bytes)
     }
 

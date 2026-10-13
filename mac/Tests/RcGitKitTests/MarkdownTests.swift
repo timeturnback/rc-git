@@ -78,6 +78,19 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[1].kind == .heading(level: 1))
     }
 
+    @Test func aByteOrderMarkDoesNotHideALeadingHeading() {
+        let blocks = MarkdownDocument.parse("\u{FEFF}# Title\n").blocks
+        #expect(blocks.count == 1)
+        #expect(blocks[0].kind == .heading(level: 1))
+        #expect(plain(blocks[0].runs) == "Title")
+    }
+
+    @Test func aByteOrderMarkDoesNotHideFrontMatter() {
+        let blocks = MarkdownDocument.parse("\u{FEFF}---\ntitle: x\n---\n").blocks
+        #expect(blocks.count == 1)
+        #expect(blocks[0].kind == .frontMatter(text: "title: x"))
+    }
+
     @Test func aLeadingRuleWithoutACloserIsNotFrontMatter() {
         let blocks = MarkdownDocument.parse("---\n\ntext\n").blocks
         #expect(blocks[0].kind == .thematicBreak)
