@@ -121,6 +121,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// The gutter the sidebar section keeps on both sides, the sidebar's own margin.
     private static let sectionInset = Style.margin
+    /// What a label adds around its text: 2 pt each side, measured against `fittingSize`.
+    private static let labelInset: CGFloat = 4
 
     // MARK: Layout
 
@@ -369,6 +371,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         column.resizingMask = .autoresizingMask
         diffTable.addTableColumn(column)
         diffTable.headerView = nil
+        diffTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         diffTable.rowHeight = 16
         diffTable.intercellSpacing = NSSize(width: 3, height: 0)
         diffTable.usesAlternatingRowBackgroundColors = false
@@ -479,7 +482,20 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 diffScroll.isHidden = false
             }
         }
+        fitDiffColumn(to: diffHunks)
         diffTable.reloadData()
+    }
+
+    /// Widens the diff column to the longest line, so a line past the pane scrolls into view
+    /// instead of clipping; the column still fills the pane when every line is shorter.
+    private func fitDiffColumn(to hunks: [DiffHunk]) {
+        guard let column = diffTable.tableColumns.first else { return }
+        let widest =
+            hunks.lazy.flatMap(\.lines)
+            .map { DiffRendering.line($0).size().width }
+            .max() ?? 0
+        column.minWidth = ceil(widest) + Self.labelInset
+        diffTable.sizeLastColumnToFit()
     }
 
     /// Re-renders the sync row: commit counts from the last preflight in the button titles,
