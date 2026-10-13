@@ -7,6 +7,8 @@ import Testing
     @Test func clampsSelectionIntoTheList() {
         #expect(OpenTabs.clampedSelection(1, count: 3) == 1)
         #expect(OpenTabs.clampedSelection(0, count: 3) == 0)
+        #expect(OpenTabs.clampedSelection(2, count: 3) == 2)
+        #expect(OpenTabs.clampedSelection(3, count: 3) == 0)
         #expect(OpenTabs.clampedSelection(5, count: 3) == 0)
         #expect(OpenTabs.clampedSelection(-1, count: 3) == 0)
         #expect(OpenTabs.clampedSelection(0, count: 0) == 0)
