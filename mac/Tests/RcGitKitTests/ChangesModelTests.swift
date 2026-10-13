@@ -382,6 +382,45 @@ import Testing
         #expect(model.diffState == .idle)
     }
 
+    @Test func aRescanReloadsTheSelectedDiffWithoutShowingLoading() async throws {
+        repo.lock.withLock { repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk]) }
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        await model.select(try #require(report.entries.first))
+        var shown: [WorktreeDiffState] = []
+        model.onDiffChanged = { shown.append(self.model.diffState) }
+
+        let newDiff = BlobDiff.text(hunks: [Self.secondHunk])
+        repo.lock.withLock { repo.worktreeDiffs["a.txt"] = newDiff }
+        await model.loadStatus()
+        #expect(model.diffState == .loaded("a.txt", newDiff))
+        #expect(shown == [.loaded("a.txt", newDiff)], "never back through loading")
+
+        await model.loadStatus()
+        #expect(shown.count == 1, "an unchanged diff does not re-render")
+    }
+
+    @Test func aDiffThatCannotBeReadShowsTheErrorForThatPath() async throws {
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        var diffCallbacks = 0
+        model.onDiffChanged = { diffCallbacks += 1 }
+        await model.select(try #require(report.entries.dropFirst().first))
+        guard case let .failed(path, message) = model.diffState else {
+            Issue.record("expected a failed diff, got \(model.diffState)")
+            return
+        }
+        #expect(path == "b.txt")
+        #expect(message.contains("read working tree file"))
+        #expect(diffCallbacks == 2, "one for loading, one for failed")
+    }
+
     @Test func stashesLoadAndFailuresSurfaceThroughOnError() async {
         repo.lock.withLock {
             repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]

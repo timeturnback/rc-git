@@ -143,6 +143,7 @@ public final class ChangesModel {
             return (report, target, hunks)
         }
         guard generation == statusGeneration else { return }
+        var selectedEntry: StatusEntry?
         switch result {
         case let .success((report, head, hunks)):
             statusState = .loaded(report)
@@ -157,10 +158,28 @@ public final class ChangesModel {
                 diffState = .idle
                 onDiffChanged?()
             }
+            selectedEntry = report.entries.first { $0.path == selectedPath }
         case let .failure(error):
             statusState = .failed(error.message)
         }
         onStatusChanged?()
+        if let selectedEntry {
+            await reloadDiff(selectedEntry)
+        }
+    }
+
+    /// Re-reads the selected file's diff from a fresh scan's entry, whose `oid` follows a moved
+    /// `HEAD`. Unlike `select(_:)` it never shows `.loading`, so a watcher-driven rescan does not
+    /// flash the placeholder, and it fires `onDiffChanged` only when what the pane shows
+    /// changed, so an unchanged file keeps its table and scroll.
+    private func reloadDiff(_ entry: StatusEntry) async {
+        diffGeneration += 1
+        let generation = diffGeneration
+        let fresh = await readDiffState(entry)
+        guard generation == diffGeneration, selectedPath == entry.path, fresh != diffState
+        else { return }
+        diffState = fresh
+        onDiffChanged?()
     }
 
     /// Each partially ticked path's current hunk stamps, read from the fresh report's entry:
@@ -251,18 +270,22 @@ public final class ChangesModel {
         let generation = diffGeneration
         diffState = .loading(entry.path)
         onDiffChanged?()
+        let fresh = await readDiffState(entry)
+        guard generation == diffGeneration, selectedPath == entry.path else { return }
+        diffState = fresh
+        onDiffChanged?()
+    }
+
+    /// `entry`'s diff read off the main actor, as the state the pane shows for it.
+    private func readDiffState(_ entry: StatusEntry) async -> WorktreeDiffState {
         let repository = repository
         let result = await RepositoryError.run {
             try Self.worktreeDiff(entry, repository: repository)
         }
-        guard generation == diffGeneration, selectedPath == entry.path else { return }
-        switch result {
-        case let .success(diff):
-            diffState = .loaded(entry.path, diff)
-        case let .failure(error):
-            diffState = .failed(entry.path, error.message)
+        return switch result {
+        case let .success(diff): .loaded(entry.path, diff)
+        case let .failure(error): .failed(entry.path, error.message)
         }
-        onDiffChanged?()
     }
 
     /// `entry`'s diff against `HEAD`: the old blob alone for a deleted file, else the file on
