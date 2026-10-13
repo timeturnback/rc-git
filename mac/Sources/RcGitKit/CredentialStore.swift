@@ -17,21 +17,27 @@ public protocol CredentialStoring: Sendable {
     func delete(host: String, kind: CredentialKind) throws
 }
 
-/// The login keychain, one `kSecClassInternetPassword` item per host: the host is
-/// `kSecAttrServer`, the username rides along as `kSecAttrAccount`, and the token is the
-/// item data. Kept deliberately thin — every branch is one SecItem call — because the real
+/// The login keychain, one rc-git `kSecClassInternetPassword` item per host and kind: the
+/// host is `kSecAttrServer`, the kind picks `kSecAttrProtocol`, the username rides along as
+/// `kSecAttrAccount`, and the token is the item data. Every query carries the security domain
+/// `rc-git`, part of an internet password's primary key, so it never reads, overwrites or
+/// deletes another program's item for the same host (git-credential-osxkeychain, Safari).
+/// Items from builds before the domain are no longer read; the user enters the token again.
+/// Kept deliberately thin — every branch is one SecItem call — because the real
 /// keychain cannot run under `swift test`.
 ///
 /// The app is ad-hoc signed, so each rebuild is a new code identity and the keychain
 /// re-prompts per host ("Always Allow" makes it once per rebuild). A stable signing
 /// identity in `scripts/build-app.sh` is the real fix.
 public struct KeychainCredentialStore: CredentialStoring {
+    static let securityDomain = "rc-git"
+
     public init() {}
 
     public func credentials(host: String, kind: CredentialKind) throws -> Credentials? {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(
-            query(host: host, kind: kind).merging([
+            Self.query(host: host, kind: kind).merging([
                 kSecReturnAttributes as String: true,
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne,
@@ -61,28 +67,25 @@ public struct KeychainCredentialStore: CredentialStoring {
             kSecValueData as String: Data(credentials.token.utf8),
             kSecAttrLabel as String: label,
         ]
+        try delete(host: host, kind: kind)
         let add = SecItemAdd(
-            query(host: host, kind: kind).merging(attributes) { _, new in new } as CFDictionary,
+            Self.query(host: host, kind: kind).merging(attributes) { _, new in new }
+                as CFDictionary,
             nil)
-        if add == errSecSuccess { return }
-        guard add == errSecDuplicateItem else {
+        guard add == errSecSuccess else {
             throw RepositoryError("keychain write failed for '\(host)' (status \(add))")
-        }
-        let update = SecItemUpdate(
-            query(host: host, kind: kind) as CFDictionary, attributes as CFDictionary)
-        guard update == errSecSuccess else {
-            throw RepositoryError("keychain update failed for '\(host)' (status \(update))")
         }
     }
 
     public func delete(host: String, kind: CredentialKind) throws {
-        let status = SecItemDelete(query(host: host, kind: kind) as CFDictionary)
+        let status = SecItemDelete(Self.query(host: host, kind: kind) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw RepositoryError("keychain delete failed for '\(host)' (status \(status))")
         }
     }
 
-    private func query(host: String, kind: CredentialKind) -> [String: Any] {
+    /// The attributes that identify rc-git's item for `host` and `kind`.
+    static func query(host: String, kind: CredentialKind) -> [String: Any] {
         let protocolAttr =
             switch kind {
             case .httpsToken: kSecAttrProtocolHTTPS
@@ -92,6 +95,7 @@ public struct KeychainCredentialStore: CredentialStoring {
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: host,
             kSecAttrProtocol as String: protocolAttr,
+            kSecAttrSecurityDomain as String: securityDomain,
         ]
     }
 }
