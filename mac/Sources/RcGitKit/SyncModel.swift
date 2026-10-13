@@ -159,8 +159,9 @@ public enum SyncState: Sendable, Hashable {
 /// performer); the window controller renders the state.
 @MainActor
 public final class SyncModel {
-    /// How many times one step may ask for credentials before giving up.
-    private static let promptLimit = 3
+    /// Authentication attempts one step makes before giving up: the stored (or anonymous)
+    /// attempt, then up to two prompted ones.
+    private static let attemptLimit = 3
 
     public private(set) var state: SyncState = .idle
     /// The last preflight's answer; feeds menu titles and tooltips. `nil` before the first
@@ -632,7 +633,7 @@ public final class SyncModel {
                 }
                 try bailIfCancelled(step)
                 authAttempts += 1
-                guard authAttempts < Self.promptLimit else {
+                guard authAttempts < Self.attemptLimit else {
                     throw StepFailure(
                         step: step,
                         message: "'\(host)' kept rejecting the credentials: \(error.message)",
