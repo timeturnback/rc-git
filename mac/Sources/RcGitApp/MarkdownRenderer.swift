@@ -178,13 +178,13 @@ private struct MarkdownBuilder {
         rule.setWidth(1, type: .absoluteValueType, for: .border, edge: .minY)
         rule.setBorderColor(.separatorColor, for: .minY)
         rule.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minY)
-        let style = paragraphStyle(for: block, hanging: false)
+        let style = blockStyle(for: block)
         style.textBlocks += [rule]
         terminate(style: style, font: MarkdownRenderer.Theme.body)
     }
 
     private mutating func appendCode(_ text: String, language: String?, block: MarkdownBlock) {
-        let style = paragraphStyle(for: block, hanging: false)
+        let style = blockStyle(for: block)
         style.textBlocks += [
             MarkdownRenderer.Theme.panel(background: MarkdownRenderer.Theme.codeBackground)
         ]
@@ -278,7 +278,7 @@ private struct MarkdownBuilder {
         let style = NSMutableParagraphStyle()
         let indent = CGFloat(block.listDepth) * MarkdownRenderer.Theme.listIndent
         style.firstLineHeadIndent = indent
-        style.headIndent = indent + (block.listDepth > 0 ? MarkdownRenderer.Theme.markerWidth : 0)
+        style.headIndent = Self.textIndent(for: block)
         style.paragraphSpacing = MarkdownRenderer.Theme.blockSpacing
         style.lineSpacing = 2
         if !hanging, block.listDepth > 0 { style.firstLineHeadIndent = style.headIndent }
@@ -288,6 +288,37 @@ private struct MarkdownBuilder {
             }
         }
         return style
+    }
+
+    /// The style for a paragraph that draws a block of its own (code panel, rule, table cell).
+    /// Paragraph indents apply inside a block, so a list item's indent goes on an enclosing
+    /// block instead; the drawn block then starts under the item's text, not under its marker.
+    /// Pass one `listItem` to every paragraph that must share the same enclosing block.
+    private func blockStyle(
+        for block: MarkdownBlock, listItem: NSTextBlock? = nil
+    ) -> NSMutableParagraphStyle {
+        let style = paragraphStyle(for: block, hanging: false)
+        guard let item = listItem ?? Self.listItemBlock(for: block) else { return style }
+        style.textBlocks += [item]
+        style.firstLineHeadIndent = 0
+        style.headIndent = 0
+        return style
+    }
+
+    /// A pane-wide block padded by a list item's text indent, or nil outside a list.
+    private static func listItemBlock(for block: MarkdownBlock) -> NSTextBlock? {
+        guard block.listDepth > 0 else { return nil }
+        let item = MarkdownRenderer.Theme.fullWidthBlock()
+        item.setWidth(
+            textIndent(for: block), type: .absoluteValueType, for: .padding, edge: .minX)
+        return item
+    }
+
+    /// Where a list item's text starts: past its nesting and its marker. Zero outside a list.
+    private static func textIndent(for block: MarkdownBlock) -> CGFloat {
+        guard block.listDepth > 0 else { return 0 }
+        return CGFloat(block.listDepth) * MarkdownRenderer.Theme.listIndent
+            + MarkdownRenderer.Theme.markerWidth
     }
 
     private mutating func appendMarker(
@@ -335,9 +366,12 @@ extension MarkdownBuilder {
         textTable.collapsesBorders = true
         textTable.hidesEmptyCells = false
         var row = 0
-        appendRow(table.header, in: table, of: textTable, row: &row, header: true, block: block)
+        let context = TableContext(
+            table: table, textTable: textTable, block: block,
+            listItem: Self.listItemBlock(for: block))
+        appendRow(table.header, in: context, row: &row, header: true)
         for cells in table.rows {
-            appendRow(cells, in: table, of: textTable, row: &row, header: false, block: block)
+            appendRow(cells, in: context, row: &row, header: false)
         }
         // The paragraph that closes the table is invisible: it only exists to end the table's
         // block context, so it carries a 1-point font and the spacing the next block needs.
@@ -345,22 +379,29 @@ extension MarkdownBuilder {
         terminate(style: trailer, font: .systemFont(ofSize: 1))
     }
 
+    /// What every cell of one table shares, the list item's enclosing block included: cells
+    /// under different enclosing blocks would not lay out as one table.
+    private struct TableContext {
+        let table: MarkdownTable
+        let textTable: NSTextTable
+        let block: MarkdownBlock
+        let listItem: NSTextBlock?
+    }
+
     private mutating func appendRow(
-        _ cells: [[MarkdownRun]], in table: MarkdownTable, of textTable: NSTextTable,
-        row: inout Int, header: Bool, block: MarkdownBlock
+        _ cells: [[MarkdownRun]], in context: TableContext, row: inout Int, header: Bool
     ) {
+        let table = context.table
         for column in 0..<table.columnCount {
             let cell = NSTextTableBlock(
-                table: textTable, startingRow: row, rowSpan: 1, startingColumn: column,
+                table: context.textTable, startingRow: row, rowSpan: 1, startingColumn: column,
                 columnSpan: 1)
             cell.setBorderColor(.separatorColor)
             cell.setWidth(1, type: .absoluteValueType, for: .border)
             cell.setWidth(6, type: .absoluteValueType, for: .padding)
             if header { cell.backgroundColor = MarkdownRenderer.Theme.codeBackground }
-            let style = paragraphStyle(for: block, hanging: false)
+            let style = blockStyle(for: context.block, listItem: context.listItem)
             style.paragraphSpacing = 0
-            style.firstLineHeadIndent = 0
-            style.headIndent = 0
             style.textBlocks += [cell]
             style.alignment = Self.alignment(of: table.alignments[column])
             let font =
