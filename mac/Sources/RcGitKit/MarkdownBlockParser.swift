@@ -192,6 +192,7 @@ struct MarkdownBlockParser {
         if depth != quoteDepth {
             flushPending()
             listIndents.removeAll()
+            nextMarker = nil
             quoteDepth = depth
         }
         let indent = indentWidth(of: rest)
@@ -269,8 +270,13 @@ struct MarkdownBlockParser {
             || isHTMLBlockStart(body)
     }
 
+    /// Closes every list item the indent leaves, and with it the marker of an item that never
+    /// emitted a block, so the marker cannot land on a block outside its list.
     private mutating func popLists(to indent: Int) {
-        while let last = listIndents.last, indent < last { listIndents.removeLast() }
+        while let last = listIndents.last, indent < last {
+            listIndents.removeLast()
+            nextMarker = nil
+        }
     }
 
     // MARK: Emitting

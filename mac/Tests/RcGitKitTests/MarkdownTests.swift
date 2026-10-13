@@ -237,6 +237,23 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(blocks[1].runs) == "done")
     }
 
+    @Test func anEmptyItemLeavesNoMarkerOnTheNextBlock() {
+        for source in [
+            "Intro\n\n*\n\n# Heading\n", "- [ ] \n\n## Next\n", "-\n\nparagraph after\n",
+            "> -\n\nafter the quote\n",
+        ] {
+            let last = MarkdownDocument.parse(source).blocks.last
+            #expect(last?.listDepth == 0, "\(source)")
+            #expect(last?.marker == nil, "\(source)")
+        }
+    }
+
+    @Test func anEmptyItemKeepsItsMarkerForItsIndentedContent() {
+        let blocks = MarkdownDocument.parse("-\n  inside\n").blocks
+        #expect(blocks.map(\.marker) == [.bullet])
+        #expect(blocks.first?.listDepth == 1)
+    }
+
     @Test func codeInsideAnItemKeepsTheBullet() {
         let blocks = MarkdownDocument.parse("- item\n\n  ```sh\n  ls\n  ```\n").blocks
         #expect(blocks[1].kind == .code(language: "sh", text: "ls"))
