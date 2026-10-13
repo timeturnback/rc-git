@@ -11,27 +11,35 @@ public protocol HostKeyStoring: Sendable {
 }
 
 /// `UserDefaults`-backed store: one dictionary of host → `SHA256:...` fingerprint.
-public struct UserDefaultsHostKeyStore: HostKeyStoring {
+///
+/// `@unchecked Sendable` because `UserDefaults` is documented thread-safe and the struct holds
+/// nothing else. Entries are read one by one, so a value that is not a string under one host
+/// neither hides nor wipes the approvals stored for the others.
+public struct UserDefaultsHostKeyStore: HostKeyStoring, @unchecked Sendable {
     private static let key = "rcgit.acceptedHostKeys"
+    private let defaults: UserDefaults
 
-    public init() {}
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     public func fingerprint(host: String) -> String? {
-        let stored = UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String]
-        return stored?[host]
+        approvals()[host]
     }
 
     public func store(fingerprint: String, host: String) {
-        var stored =
-            UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
+        var stored = approvals()
         stored[host] = fingerprint
-        UserDefaults.standard.set(stored, forKey: Self.key)
+        defaults.set(stored, forKey: Self.key)
     }
 
     public func forget(host: String) {
-        var stored =
-            UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
+        var stored = approvals()
         stored[host] = nil
-        UserDefaults.standard.set(stored, forKey: Self.key)
+        defaults.set(stored, forKey: Self.key)
+    }
+
+    private func approvals() -> [String: String] {
+        (defaults.dictionary(forKey: Self.key) ?? [:]).compactMapValues { $0 as? String }
     }
 }
