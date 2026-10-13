@@ -240,6 +240,37 @@ private final class InMemoryHostKeyStore: HostKeyStoring, @unchecked Sendable {
     }
 }
 
+/// What a step saw when the test stopped it through the model, read after the workflow ends.
+private final class CancelObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopOffered = false
+    private var signalled = false
+
+    func record(offeredStop: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        stopOffered = offeredStop
+    }
+
+    func record(tokenSignalled: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        signalled = tokenSignalled
+    }
+
+    var offeredStop: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopOffered
+    }
+
+    var tokenSignalled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return signalled
+    }
+}
+
 private let cleanFetch = FetchOutcome(updatedRefs: 1)
 private let cleanPull = PullOutcome(
     newHead: nil, commitsAdvanced: false, filesChanged: 2, alreadyUpToDate: false)
@@ -1140,8 +1171,9 @@ private let alreadyOnMain = CheckoutOutcome(
                 pulls: [.success(cleanPull)],
                 pushes: [.success(cleanPush)]
             ))
-        // The real transfer sees the flag and fails; the stub stands in for that, and
-        // cancels from the step's own thread the way the toolbar button does.
+        // The real transfer sees the flag and fails; the stub stands in for that by raising
+        // the token directly. The toolbar goes through `cancelRunning()` on the main actor,
+        // which `cancelRunningMidFetchStopsTheWorkflow` covers.
         performer.duringStep = { cancel in cancel.signal() }
         await model.refreshStatus()
         await model.sync()
@@ -1208,7 +1240,84 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(model.state == .idle)
         #expect(!model.isCancellable)
 
+        // A cancel while idle is refused, so it leaves nothing behind for the next sync.
+        await model.sync()
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1)))
+        #expect(performer.pushCalls == 1)
+    }
+
+    @Test func cancelRunningMidFetchStopsTheWorkflow() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(ahead: 1)],
+                fetches: [.failure(.failure(message: "fetch: cancelled"))],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ))
+        var states: [SyncState] = []
+        model.onStateChanged = { states.append(model.state) }
+        let seen = CancelObservation()
+        // Stop the way the toolbar does: through the model on the main actor, which is free
+        // while the model awaits the step. The step's thread waits for the hop to finish.
+        performer.duringStep = { cancel in
+            let hopped = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                seen.record(offeredStop: model.isCancellable)
+                model.cancelRunning()
+                hopped.signal()
+            }
+            hopped.wait()
+            seen.record(tokenSignalled: cancel.isSignalled)
+        }
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(seen.offeredStop, "a running fetch must offer Stop")
+        #expect(seen.tokenSignalled, "cancelRunning() must raise the running step's token")
+        #expect(states.contains(.cancelling(.fetch)), "\(states)")
+        #expect(model.state == .idle)
+        #expect(performer.pullCalls == 0, "a cancelled fetch must stop the workflow")
+        #expect(performer.pushCalls == 0)
+        #expect(!model.isBusy)
+    }
+
+    @Test func aCancelWhileTheCredentialSheetIsUpStartsNoSecondAttempt() async {
+        let (model, performer, store) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401")), .success(cleanFetch)]
+            ))
+        model.onCredentialsNeeded = { _, _, _, resume in
+            model.cancelRunning()
+            resume(.provided(Credentials(username: "user", token: "typed")))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(performer.fetchCredentials.count == 1, "the answer after Stop is not tried")
+        #expect(model.state == .idle)
+        #expect(store.stored.isEmpty, "credentials never tried are never stored")
+    }
+
+    @Test func aCancelledWorkflowLeavesTheNextOneClean() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [
+                    .failure(.failure(message: "fetch: cancelled")), .success(cleanFetch),
+                ],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ))
+        performer.duringStep = { cancel in cancel.signal() }
+        await model.refreshStatus()
+        await model.sync()
+        #expect(model.state == .idle)
+
         // The flag a cancel raises belongs to one workflow: the next one starts clean.
+        performer.duringStep = nil
         await model.sync()
         #expect(
             model.state
