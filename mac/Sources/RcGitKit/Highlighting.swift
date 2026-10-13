@@ -83,6 +83,18 @@ public enum Highlighter {
         }
         return spans
     }
+
+    /// The language the core reads a file as by its extension, such as `markdown` for
+    /// `README.md`; `nil` when the extension names none. The same lookup `highlight` uses, so
+    /// a file highlighted as a language is the file every other surface treats as one.
+    public static func language(forFileName name: String) -> String? {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let language = rcgit_language_name(name, &error)
+        if let error { HighlightFailureLog.report(error) }
+        guard let language else { return nil }
+        defer { rcgit_string_free(language) }
+        return String(cString: language)
+    }
 }
 
 /// Logs why the core could not highlight or link a file, once per distinct message. The

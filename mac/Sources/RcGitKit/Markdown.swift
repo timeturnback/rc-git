@@ -125,6 +125,16 @@ public struct MarkdownDocument: Sendable, Hashable {
 
     public init(blocks: [MarkdownBlock]) { self.blocks = blocks }
 
+    /// Markdown above this many bytes opens in source mode. The parser reads about 50 MB/s, so
+    /// the limit is what keeps TextKit's layout of the rendered result quick, not the parse.
+    public static let previewLimit = 8 * 1024 * 1024
+
+    /// Whether the file `name`, `byteCount` bytes long, offers the rendered preview: it is
+    /// markdown by the highlighter's own extension lookup and no larger than `previewLimit`.
+    public static func isPreviewable(name: String, byteCount: Int) -> Bool {
+        byteCount <= previewLimit && Highlighter.language(forFileName: name) == "markdown"
+    }
+
     /// Parses `source`. Never fails: anything it does not recognise stays literal text.
     public static func parse(_ source: String) -> MarkdownDocument {
         var parser = MarkdownBlockParser(source: source)

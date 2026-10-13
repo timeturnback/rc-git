@@ -2738,6 +2738,27 @@ pub unsafe extern "C" fn rcgit_highlight_list_free(list: *mut RcGitHighlightList
     unsafe { release(list) };
 }
 
+/// Names the language the file name `name` implies by its extension, as `rcgit_highlight`
+/// picks it for a file: `markdown` for `README.md`. Returns NULL with `*error` untouched when
+/// `name` maps to no known language; NULL with `*error` set when `name` is NULL. Release
+/// with `rcgit_string_free`.
+///
+/// # Safety
+/// `name` is NULL or a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_language_name(
+    name: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    // SAFETY: forwarded from this function's contract.
+    let (name, error) = unsafe { (bytes_arg(name), Out::new(error)) };
+    let Some(name) = error.required("rcgit_language_name", "name", name) else {
+        return ptr::null_mut();
+    };
+    Language::from_file_name(&String::from_utf8_lossy(name))
+        .map_or(ptr::null_mut(), |language| export_string(language.name()))
+}
+
 /// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
 /// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
 /// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
@@ -6881,6 +6902,28 @@ mod tests {
             unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 5, ptr::null(), &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "rcgit_highlight: data is NULL");
+    }
+
+    #[test]
+    fn a_language_is_named_by_the_file_extension() {
+        let mut error = ptr::null_mut();
+        for (file, expected) in [("README.MD", "markdown"), ("notes.markdown", "markdown")] {
+            let name = CString::new(file).unwrap();
+            let language = unsafe { rcgit_language_name(name.as_ptr(), &raw mut error) };
+            assert_eq!(take_string(language), expected, "{file}");
+            assert!(error.is_null(), "success must leave error untouched");
+        }
+
+        for file in ["photo.png", "markdown", "rust"] {
+            let name = CString::new(file).unwrap();
+            let language = unsafe { rcgit_language_name(name.as_ptr(), &raw mut error) };
+            assert!(language.is_null(), "{file} names no language by extension");
+            assert!(error.is_null(), "an unknown language is not an error");
+        }
+
+        let language = unsafe { rcgit_language_name(ptr::null(), &raw mut error) };
+        assert!(language.is_null());
+        assert_eq!(take_error(&mut error), "rcgit_language_name: name is NULL");
     }
 
     #[test]

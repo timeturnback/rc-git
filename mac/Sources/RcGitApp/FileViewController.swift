@@ -25,11 +25,6 @@ final class FileViewController: NSViewController {
     /// `nil` when the opener did not know it.
     var repositoryPath: String?
 
-    /// Files above this size are never offered for display, even with "Load anyway".
-    static let hardLimit: UInt64 = 512 * 1024 * 1024
-    /// Markdown above this size opens in source mode. The parser reads about 50 MB/s, so the
-    /// limit is what keeps TextKit's layout of the rendered result quick, not the parse.
-    static let previewLimit = 8 * 1024 * 1024
     /// Syntax colors are applied per chunk of this many UTF-16 units as chunks scroll in.
     static let highlightChunk = 4096
 
@@ -236,7 +231,7 @@ final class FileViewController: NSViewController {
             showPlaceholder(
                 BlobDiff.tooLargePlaceholder(path: entry.name, size: size, limit: limit)
             )
-            if size <= FileViewController.hardLimit {
+            if FileLimits.canForceLoad(size: size) {
                 tooLargeSize = size
                 loadAnyway.isHidden = false
             }
@@ -261,11 +256,6 @@ final class FileViewController: NSViewController {
 
     // MARK: Content
 
-    private static func isMarkdown(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        return lowered.hasSuffix(".md") || lowered.hasSuffix(".markdown")
-    }
-
     /// Shows the current document in the chosen mode. The attributed string is built off the
     /// main actor; a stale build is dropped by generation.
     private func presentContent() {
@@ -275,8 +265,8 @@ final class FileViewController: NSViewController {
         linkSource = nil
         clearHighlights()
         clearImportLinks()
-        let previewable =
-            Self.isMarkdown(entry.name) && document.byteCount <= Self.previewLimit
+        let previewable = MarkdownDocument.isPreviewable(
+            name: entry.name, byteCount: document.byteCount)
         modePicker.isHidden = !previewable
         let preview = previewable && markdownPrefersPreview
         modePicker.selectedSegment = preview ? 0 : 1

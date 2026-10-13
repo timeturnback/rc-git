@@ -1194,6 +1194,15 @@ struct RcGitHighlightList *rcgit_highlight(const char *name,
 /// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
 void rcgit_highlight_list_free(struct RcGitHighlightList *list);
 
+/// Names the language the file name `name` implies by its extension, as `rcgit_highlight`
+/// picks it for a file: `markdown` for `README.md`. Returns NULL with `*error` untouched when
+/// `name` maps to no known language; NULL with `*error` set when `name` is NULL. Release
+/// with `rcgit_string_free`.
+///
+/// # Safety
+/// `name` is NULL or a NUL-terminated string. `error` is NULL or valid for writing a `char *`.
+char *rcgit_language_name(const char *name, char **error);
+
 /// Finds the import links in `len` bytes of `data`, read as the language the file name `name`
 /// implies: the specifiers of imports, re-exports, `import()` and `require()`, the names they
 /// bind, and the JSX elements named after one. Returns NULL with `*error` untouched when
