@@ -213,7 +213,7 @@ struct MarkdownBlockParser {
             index += 1
             return true
         }
-        if startsBlock(body) { return false }
+        if indent < codeIndent, startsBlock(body) { return false }
         if isTableDelimiter(body), let header = singlePendingLine() {
             pending = nil
             index += 1
@@ -233,8 +233,13 @@ struct MarkdownBlockParser {
         return !startsBlock(body) && setextLevel(body) == nil && !isTableDelimiter(body)
     }
 
+    /// The indent at which a line outside a paragraph is indented code, whatever it starts with.
+    private var codeIndent: Int { (listIndents.last ?? 0) + 4 }
+
     private mutating func dispatch(body: Range<Int>, indent: Int) {
-        if let fence = fenceInfo(body) {
+        if indent >= codeIndent {
+            consumeIndentedCode(baseIndent: codeIndent)
+        } else if let fence = fenceInfo(body) {
             consumeFence(fence, indent: indent)
         } else if let level = atxLevel(body) {
             emit(.heading(level: level), runs: inlineRuns(text(atxContent(body, level: level))))
@@ -251,8 +256,6 @@ struct MarkdownBlockParser {
             index += 1
         } else if isHTMLBlockStart(body) {
             consumeHTMLBlock(indent: indent)
-        } else if indent >= (listIndents.last ?? 0) + 4 {
-            consumeIndentedCode(baseIndent: (listIndents.last ?? 0) + 4)
         } else {
             beginPending(kind: .paragraph, first: text(body))
             index += 1

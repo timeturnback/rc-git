@@ -72,6 +72,18 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(blocks[2].runs) == "after")
     }
 
+    @Test(arguments: ["# x", "- x", "[a]: https://example.com"])
+    func indentedCodeIsCodeWhateverItStartsWith(first: String) {
+        let blocks = MarkdownDocument.parse("Text\n\n    \(first)\n    more\n").blocks
+        #expect(blocks.map(\.kind) == [.paragraph, .code(language: nil, text: "\(first)\nmore")])
+    }
+
+    @Test func anIndentedBlockStartContinuesTheParagraph() throws {
+        let blocks = MarkdownDocument.parse("Text\n    # not heading\n").blocks
+        #expect(blocks.map(\.kind) == [.paragraph])
+        #expect(plain(try #require(blocks.first).runs) == "Text # not heading")
+    }
+
     @Test func blockQuotesCarryTheirDepth() {
         let blocks = MarkdownDocument.parse("> one\n\n>> two\n").blocks
         #expect(blocks[0].quoteDepth == 1)
