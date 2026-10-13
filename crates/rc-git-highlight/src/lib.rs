@@ -111,11 +111,32 @@ impl Language {
         }
     }
 
+    /// Every language, in declaration order, so `ALL[language as usize] == language`.
+    const ALL: [Self; 12] = [
+        Self::Bash,
+        Self::C,
+        Self::JavaScript,
+        Self::Json,
+        Self::Markdown,
+        Self::Python,
+        Self::Rust,
+        Self::Swift,
+        Self::Toml,
+        Self::Tsx,
+        Self::TypeScript,
+        Self::Yaml,
+    ];
+
     fn configuration(self) -> Result<&'static HighlightConfiguration, Error> {
         static CONFIGS: [OnceLock<Loaded>; LANGUAGE_COUNT] =
             [const { OnceLock::new() }; LANGUAGE_COUNT];
-        CONFIGS[self as usize]
-            .get_or_init(|| build_configuration(self))
+        let Some(slot) = CONFIGS.get(self as usize) else {
+            return Err(Error::Grammar {
+                language: self,
+                detail: "no configuration slot: Language::ALL does not list it".to_owned(),
+            });
+        };
+        slot.get_or_init(|| build_configuration(self))
             .as_ref()
             .map_err(|detail| Error::Grammar {
                 language: self,
@@ -124,7 +145,7 @@ impl Language {
     }
 }
 
-const LANGUAGE_COUNT: usize = 12;
+const LANGUAGE_COUNT: usize = Language::ALL.len();
 
 /// A grammar's configuration as first loaded, or why it failed to: the query error with its
 /// row and column, or the ABI version mismatch. Cached either way, so the cause is kept.
@@ -717,21 +738,6 @@ mod tests {
         }
     }
 
-    const ALL_LANGUAGES: [Language; LANGUAGE_COUNT] = [
-        Language::Bash,
-        Language::C,
-        Language::JavaScript,
-        Language::Json,
-        Language::Markdown,
-        Language::Python,
-        Language::Rust,
-        Language::Swift,
-        Language::Toml,
-        Language::Tsx,
-        Language::TypeScript,
-        Language::Yaml,
-    ];
-
     /// tree-sitter-highlight's `configure` rule: a name resolves to a configured name whose
     /// dot-separated parts all appear among its own.
     fn resolves(name: &str) -> bool {
@@ -744,7 +750,7 @@ mod tests {
     #[test]
     fn every_query_capture_name_resolves() {
         let mut configs = Vec::new();
-        for language in ALL_LANGUAGES {
+        for language in Language::ALL {
             let config = language
                 .configuration()
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
@@ -824,24 +830,36 @@ mod tests {
 
     #[test]
     fn every_language_grammar_loads_and_highlights() {
-        let samples: [(Language, &[u8]); LANGUAGE_COUNT] = [
-            (Language::Bash, b"echo \"hi\" # done\n"),
-            (Language::C, b"int main(void) { return 0; }\n"),
-            (Language::JavaScript, b"const x = 1; // c\n"),
-            (Language::Json, b"{\"key\": [1, true]}\n"),
-            (Language::Markdown, b"# Title\n\nSome *prose*.\n"),
-            (Language::Python, b"def f():\n    return 'x'\n"),
-            (Language::Rust, b"pub fn f() -> u32 { 1 }\n"),
-            (Language::Swift, b"func f() -> Int { return 1 }\n"),
-            (Language::Toml, b"[table]\nkey = \"value\"\n"),
-            (Language::Tsx, b"const a = <Tag prop={1} />;\n"),
-            (Language::TypeScript, b"const x: number = 1; // c\n"),
-            (Language::Yaml, b"key: value\nlist:\n  - 1\n"),
-        ];
-        for (language, data) in samples {
+        for language in Language::ALL {
+            let data: &[u8] = match language {
+                Language::Bash => b"echo \"hi\" # done\n",
+                Language::C => b"int main(void) { return 0; }\n",
+                Language::JavaScript => b"const x = 1; // c\n",
+                Language::Json => b"{\"key\": [1, true]}\n",
+                Language::Markdown => b"# Title\n\nSome *prose*.\n",
+                Language::Python => b"def f():\n    return 'x'\n",
+                Language::Rust => b"pub fn f() -> u32 { 1 }\n",
+                Language::Swift => b"func f() -> Int { return 1 }\n",
+                Language::Toml => b"[table]\nkey = \"value\"\n",
+                Language::Tsx => b"const a = <Tag prop={1} />;\n",
+                Language::TypeScript => b"const x: number = 1; // c\n",
+                Language::Yaml => b"key: value\nlist:\n  - 1\n",
+            };
             let spans = highlight(data, language)
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             assert_ne!(spans.len(), 0, "{} produced no spans", language.name());
+        }
+    }
+
+    #[test]
+    fn all_lists_every_language_at_its_discriminant() {
+        for (index, language) in Language::ALL.into_iter().enumerate() {
+            assert_eq!(
+                language as usize,
+                index,
+                "{} is out of order",
+                language.name()
+            );
         }
     }
 
