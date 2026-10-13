@@ -10,7 +10,7 @@
 mod imports;
 
 use std::borrow::Cow;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -457,13 +457,7 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
         let mut descend = true;
         match node.kind() {
             "inline" | "pipe_table_cell" => {
-                append_region(
-                    &mut overlays,
-                    data,
-                    node.byte_range(),
-                    Region::Inline,
-                    nesting,
-                )?;
+                append_region(&mut overlays, data, node, Region::Inline, nesting)?;
                 descend = false;
             }
             "fenced_code_block" => {
@@ -472,12 +466,12 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
             }
             "minus_metadata" => {
                 let region = Region::Fence(Language::Yaml);
-                append_region(&mut overlays, data, node.byte_range(), region, nesting)?;
+                append_region(&mut overlays, data, node, region, nesting)?;
                 descend = false;
             }
             "plus_metadata" => {
                 let region = Region::Fence(Language::Toml);
-                append_region(&mut overlays, data, node.byte_range(), region, nesting)?;
+                append_region(&mut overlays, data, node, region, nesting)?;
                 descend = false;
             }
             _ => {}
@@ -529,7 +523,7 @@ fn append_fence(
                     }
                 }
             }
-            "code_fence_content" => content = Some(child.byte_range()),
+            "code_fence_content" => content = Some(child),
             _ => {}
         }
     }
@@ -539,7 +533,40 @@ fn append_fence(
     append_region(overlays, data, content, Region::Fence(language), nesting)
 }
 
-/// Highlights one region's slice and appends its spans shifted back to document offsets.
+/// The byte ranges of `node` an injected grammar reads: the node minus its direct
+/// `block_continuation` children, which are the list indent or `> ` quote marker that
+/// continue the enclosing block on each line. tree-sitter-highlight subtracts child ranges
+/// the same way when a query does not set `injection.include-children`, which markdown's
+/// does not.
+fn included_ranges(node: tree_sitter::Node) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = node.start_byte();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "block_continuation" {
+            continue;
+        }
+        if child.start_byte() > start {
+            ranges.push(start..child.start_byte());
+        }
+        start = start.max(child.end_byte());
+    }
+    if node.end_byte() > start {
+        ranges.push(start..node.end_byte());
+    }
+    ranges
+}
+
+/// One included range of a region: where it starts in the concatenated buffer the injected
+/// grammar reads, and where in the document.
+struct Segment {
+    buffer: usize,
+    document: usize,
+    len: usize,
+}
+
+/// Highlights one region, its continuation markers left out, and appends its spans mapped
+/// back to document offsets. A span that crosses a left-out marker splits around it.
 ///
 /// # Errors
 /// [`Error::Grammar`] when the region's grammar fails to load, and [`Error::Parse`] wrapping
@@ -548,52 +575,83 @@ fn append_fence(
 fn append_region(
     overlays: &mut Vec<Span>,
     data: &[u8],
-    range: std::ops::Range<usize>,
+    node: tree_sitter::Node,
     region: Region,
     nesting: Nesting,
 ) -> Result<(), Error> {
-    let Some(slice) = data.get(range.clone()) else {
-        return Ok(());
-    };
+    let mut buffer = Vec::new();
+    let mut segments = Vec::new();
+    for range in included_ranges(node) {
+        let Some(slice) = data.get(range.clone()) else {
+            return Ok(());
+        };
+        segments.push(Segment {
+            buffer: buffer.len(),
+            document: range.start,
+            len: slice.len(),
+        });
+        buffer.extend_from_slice(slice);
+    }
+    let spans = highlight_region(&buffer, region, nesting)?;
+    for span in spans {
+        push_mapped(overlays, &segments, span);
+    }
+    Ok(())
+}
+
+/// Appends `span`, given in buffer offsets, as one document span per segment it overlaps.
+fn push_mapped(overlays: &mut Vec<Span>, segments: &[Segment], span: Span) {
+    let (start, end) = (span.start as usize, span.end as usize);
+    let first = segments.partition_point(|segment| segment.buffer + segment.len <= start);
+    for segment in segments.iter().skip(first) {
+        if segment.buffer >= end {
+            break;
+        }
+        let from = start.max(segment.buffer) - segment.buffer + segment.document;
+        let to = end.min(segment.buffer + segment.len) - segment.buffer + segment.document;
+        overlays.push(Span {
+            start: u32::try_from(from).unwrap_or(u32::MAX),
+            end: u32::try_from(to).unwrap_or(u32::MAX),
+            class: span.class,
+        });
+    }
+}
+
+/// Highlights a region's concatenated text in the region's grammar, in buffer offsets.
+///
+/// # Errors
+/// As [`append_region`]; a parse failure other than a cancel yields no spans.
+fn highlight_region(buffer: &[u8], region: Region, nesting: Nesting) -> Result<Vec<Span>, Error> {
     let spans = match region {
         Region::Inline => markdown_inline_configuration()
-            .and_then(|config| single_layer(config, slice, Language::Markdown, nesting.cancel)),
+            .and_then(|config| single_layer(config, buffer, Language::Markdown, nesting.cancel)),
         Region::Fence(Language::Markdown) => {
             if nesting.depth >= MARKDOWN_FENCE_DEPTH {
-                return Ok(());
+                return Ok(Vec::new());
             }
             let inner = Nesting {
                 depth: nesting.depth + 1,
                 cancel: nesting.cancel,
             };
-            highlight_markdown(slice, inner)
+            highlight_markdown(buffer, inner)
         }
         Region::Fence(language) => language
             .configuration()
-            .and_then(|config| single_layer(config, slice, language, nesting.cancel)),
+            .and_then(|config| single_layer(config, buffer, language, nesting.cancel)),
     };
-    let spans = match spans {
-        Ok(spans) => spans,
+    match spans {
+        Ok(spans) => Ok(spans),
         Err(
             error @ (Error::Grammar { .. }
             | Error::Parse {
                 source: tree_sitter_highlight::Error::Cancelled,
                 ..
             }),
-        ) => return Err(error),
+        ) => Err(error),
         // A region tree-sitter cannot parse leaves its text plain; the rest of the file keeps
         // its color, as an unparseable stretch of any other file does.
-        Err(Error::Parse { .. } | Error::Imports { .. }) => return Ok(()),
-    };
-    let offset = u32::try_from(range.start).unwrap_or(u32::MAX);
-    for span in spans {
-        overlays.push(Span {
-            start: span.start.saturating_add(offset),
-            end: span.end.saturating_add(offset),
-            class: span.class,
-        });
+        Err(Error::Parse { .. } | Error::Imports { .. }) => Ok(Vec::new()),
     }
-    Ok(())
 }
 
 /// Merges overlay spans into base spans, both sorted and internally non-overlapping. An
@@ -1109,6 +1167,52 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fence_inside_a_list_item_drops_the_indent() {
+        let data = b"- step\n\n  ```yaml\n  key:\n    nested: 1\n  other: 2\n  ```\n";
+        let spans = highlight(data, Language::Markdown, None).unwrap();
+        assert!(classes_at(&spans, data, "key").contains(&Class::Property));
+        assert!(classes_at(&spans, data, "other").contains(&Class::Property));
+        assert!(classes_at(&spans, data, "2\n").contains(&Class::Number));
+    }
+
+    #[test]
+    fn markdown_quote_markers_stay_punctuation_inside_a_fence() {
+        let data = b"> ```python\n> def f():\n>     return 1\n> x = 2\n> ```\n";
+        let spans = highlight(data, Language::Markdown, None).unwrap();
+        assert!(classes_at(&spans, data, "def").contains(&Class::Keyword));
+        for (index, byte) in data.iter().enumerate() {
+            let line_start = index == 0 || data[index - 1] == b'\n';
+            if *byte != b'>' || !line_start {
+                continue;
+            }
+            let covering: Vec<Class> = spans
+                .iter()
+                .filter(|span| span.start as usize <= index && index < span.end as usize)
+                .map(|span| span.class)
+                .collect();
+            assert!(
+                !covering.contains(&Class::Operator),
+                "quote marker at {index} is an Operator: {covering:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_emphasis_across_quoted_lines_leaves_the_marker() {
+        let data = b"> Some *soft\n> text* here.\n";
+        let spans = highlight(data, Language::Markdown, None).unwrap();
+        assert!(classes_at(&spans, data, "soft").contains(&Class::Emphasis));
+        assert!(classes_at(&spans, data, "text").contains(&Class::Emphasis));
+        let marker = data.windows(3).position(|w| w == b"\n> ").unwrap() + 1;
+        let emphasized = spans.iter().any(|span| {
+            span.class == Class::Emphasis
+                && (span.start as usize) < marker + 2
+                && marker < span.end as usize
+        });
+        assert!(!emphasized, "the quote marker is emphasized: {spans:?}");
+    }
+
+    #[test]
     fn broken_input_still_highlights_the_intact_parts() {
         let data = b"fn ok() {}\n%%%%\nfn also_ok() {}\n";
         let spans = highlight(data, Language::Rust, None).unwrap();
@@ -1172,8 +1276,9 @@ mod tests {
             markdown_overlays(data, nesting),
             "highlighting markdown: Cancelled",
         );
-        let mut overlays = Vec::new();
-        let error = append_region(&mut overlays, data, 0..data.len(), Region::Inline, nesting);
-        assert_cancelled(error.map(|()| overlays), "highlighting markdown: Cancelled");
+        assert_cancelled(
+            highlight_region(data, Region::Inline, nesting),
+            "highlighting markdown: Cancelled",
+        );
     }
 }

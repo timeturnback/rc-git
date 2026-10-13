@@ -80,10 +80,14 @@ layer merge entirely and resolves injections by hand.
   grammar, then walks the tree with a `TreeCursor` looking for injection sites by node kind:
   `"inline"` → the inline grammar; `"fenced_code_block"` → read the `info_string > language`
   child, map it via `Language::from_injection`, take the `code_fence_content` range
-  (`append_fence`); `"minus_metadata"` → YAML; `"plus_metadata"` → TOML. Each region's byte
-  *slice* is highlighted recursively and its spans shifted back to document offsets
-  (`append_region`). Markdown-in-markdown fences recurse with a depth counter capped at
-  `MARKDOWN_FENCE_DEPTH`; beyond it an inner fence stays plain.
+  (`append_fence`); `"minus_metadata"` → YAML; `"plus_metadata"` → TOML. Continuation
+  markers are excluded before an injected region is highlighted: `included_ranges` drops the
+  node's direct `block_continuation` children (a list indent, a `> ` quote marker), as
+  tree-sitter-highlight does when a query leaves `injection.include-children` unset. The
+  remaining pieces are concatenated, highlighted recursively, and each span is mapped back to
+  document offsets, split around any marker it crosses (`append_region`). Markdown-in-markdown
+  fences recurse with a depth counter capped at `MARKDOWN_FENCE_DEPTH`; beyond it an inner
+  fence stays plain.
 - `merge_overlays()` clips base spans around every overlay span they touch — interval
   subtraction, overlays win — then merge-sorts the two lists, preserving the sorted,
   non-overlapping contract the FFI and the Swift side rely on.
@@ -106,11 +110,14 @@ highlight is worse than a second parse.
 
 Single-layer event streams from tree-sitter-highlight are well-ordered; only the merge of
 events *across* layers is broken. Walking the block tree for injection sites gives
-deterministic byte regions with no ordering ambiguity, and highlighting each region's slice
-in isolation keeps every stream single-layer. Interval subtraction in `merge_overlays()`
-then reimposes the innermost-wins invariant that the event merge failed to provide — an
-overlay is by construction deeper than the base, so clipping base spans around overlays
-yields exactly the attribution the flawed merge was supposed to deliver.
+deterministic byte regions with no ordering ambiguity, and highlighting each region in
+isolation keeps every stream single-layer. Continuation markers are excluded before an
+injected region is highlighted, so a fence inside a list item or block quote reads the same
+text the injected grammar would see on its own: a YAML fence keeps its nesting, and a `> `
+marker is never an operator or part of an emphasis run. Interval subtraction in
+`merge_overlays()` then reimposes the innermost-wins invariant that the event merge failed to
+provide — an overlay is deeper than the base, and since overlays never cover a marker the
+base layer's class for it stands.
 
 ## Prevention
 
