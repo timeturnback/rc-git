@@ -27,6 +27,9 @@ import Testing
     @Test func oversizedInputStaysPlain() {
         let big = [UInt8](repeating: UInt8(ascii: "a"), count: Highlighter.byteLimit + 1)
         #expect(Highlighter.highlight(name: "big.rs", data: big) == nil)
+
+        let atLimit = [UInt8](repeating: UInt8(ascii: "a"), count: Highlighter.byteLimit)
+        #expect(Highlighter.highlight(name: "big.rs", data: atLimit) != nil)
     }
 
     @Test func mapperConvertsAsciiOffsetsOneToOne() throws {
