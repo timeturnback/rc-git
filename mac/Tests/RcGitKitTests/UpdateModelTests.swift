@@ -54,6 +54,33 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     }
 }
 
+/// Holds the toolchain probe until the test releases it, so a test can act while the model
+/// sits in `.running(.preflight)`. Every other step fails fast; only the probe count matters.
+private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sendable {
+    let entered = Signal()
+    let release = Signal()
+    private let lock = NSLock()
+    private var calls = 0
+
+    var toolchainCalls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func toolchain() async -> ToolchainCheck {
+        lock.withLock { calls += 1 }
+        entered.signal()
+        await release.wait()
+        return .failure("released")
+    }
+
+    func sourceState() async -> SourceStateResult { .failure("unused") }
+    func sync() async -> String? { "unused" }
+    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { "unused" }
+    func relaunch() async -> String? { "unused" }
+}
+
 @MainActor
 @Suite(.timeLimit(.minutes(1))) struct UpdateModelTests {
     private static let head = "a3f91c2d4e5f60718293a4b5c6d7e8f901234567"
@@ -293,6 +320,145 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         await model.start()
         #expect(model.log.count == UpdateModel.maxLogLines)
         #expect(model.log.last == "line \(UpdateModel.maxLogLines + 499)")
+    }
+
+    // MARK: proceed()
+
+    @Test func proceedFromIdleStartsTheUpdate() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+            ]))
+        #expect(model.canProceed)
+        await model.proceed()
+        #expect(model.state == .installed)
+        #expect(environment.calls.first == "toolchain")
+    }
+
+    /// From "already up to date" the button reads "Rebuild Anyway": it forces the build.
+    @Test func proceedFromUpToDateRebuildsAnyway() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
+            ]))
+        await model.start()
+        #expect(model.state == .upToDate)
+        #expect(model.canProceed)
+        await model.proceed()
+        #expect(model.state == .installed)
+        #expect(environment.calls.filter { $0 == "install" }.count == 1)
+    }
+
+    @Test func proceedFromAFailureStartsOver() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [.failure("cannot open /checkout")]))
+        await model.start()
+        #expect(model.state == .failed(step: .preflight, message: "cannot open /checkout"))
+        #expect(model.canProceed)
+        await model.proceed()
+        #expect(environment.calls == ["toolchain", "sourceState", "toolchain", "sourceState"])
+        #expect(model.state == .failed(step: .preflight, message: "cannot open /checkout"))
+        #expect(model.log.filter { $0 == "checking the toolchain" }.count == 1)
+    }
+
+    @Test func proceedAfterInstallDoesNothing() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+            ]))
+        await model.start()
+        #expect(model.state == .installed)
+        let callsBefore = environment.calls
+        #expect(!model.canProceed)
+        await model.proceed()
+        #expect(environment.calls == callsBefore)
+        #expect(model.state == .installed)
+    }
+
+    /// A press while a step runs, the shortcut included, neither starts a second update
+    /// nor cancels the first.
+    @Test func proceedWhileRunningDoesNothing() async {
+        let environment = GatedToolchainEnvironment()
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.proceed() }
+        await environment.entered.wait()
+        #expect(model.state == .running(.preflight))
+        #expect(!model.canProceed)
+        await model.proceed()
+        #expect(environment.toolchainCalls == 1)
+        environment.release.signal()
+        await first.value
+        #expect(environment.toolchainCalls == 1)
+    }
+
+    @Test func proceedOnAnUnstampedBundleDoesNothing() async {
+        let (model, environment) = Self.model(
+            .init(), build: Self.build(variant: .release, sourceRoot: nil))
+        #expect(!model.canProceed)
+        await model.proceed()
+        #expect(model.state == .idle)
+        #expect(environment.calls.isEmpty)
+    }
+
+    // MARK: Dirty rule
+
+    private static func entry(_ path: String, _ status: WorktreeStatus) -> StatusEntry {
+        StatusEntry(path: path, kind: .blob, status: status, oid: nil, size: 0)
+    }
+
+    @Test func modifiedAndDeletedFilesAreDirty() {
+        let report = StatusReport(
+            entries: [
+                Self.entry("a.rs", .modified), Self.entry("b.rs", .deleted),
+                Self.entry("RCGit.app", .untracked), Self.entry("build/x", .ignored),
+            ],
+            scanned: 10, truncated: false)
+        let state = SourceState(commit: Self.head, branch: "master", report: report)
+        #expect(state.dirtyPaths == ["a.rs", "b.rs"])
+        #expect(!state.isClean)
+    }
+
+    @Test func untrackedAndIgnoredFilesAreNotDirty() {
+        let report = StatusReport(
+            entries: [Self.entry("RCGit.app", .untracked), Self.entry("build/x", .ignored)],
+            scanned: 10, truncated: false)
+        let state = SourceState(commit: Self.head, branch: "master", report: report)
+        #expect(state.dirtyPaths.isEmpty)
+        #expect(state.isClean)
+    }
+
+    @Test func anEmptyReportIsClean() {
+        let report = StatusReport(entries: [], scanned: 10, truncated: false)
+        #expect(SourceState(commit: Self.head, branch: nil, report: report).isClean)
+    }
+
+    @Test func aTruncatedReportIsNotClean() {
+        let report = StatusReport(entries: [], scanned: 10, truncated: true)
+        let state = SourceState(commit: Self.head, branch: nil, report: report)
+        #expect(state.dirtyPaths.isEmpty)
+        #expect(!state.scanComplete)
+        #expect(!state.isClean)
+    }
+
+    /// A scan that stopped at its cap may have missed uncommitted work, so the release
+    /// update refuses rather than fetching over it.
+    @Test func aTruncatedScanStopsTheUpdate() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(
+                    SourceState(
+                        commit: Self.head, branch: "master", dirtyPaths: [], scanComplete: false))
+            ]))
+        await model.start()
+        guard case let .failed(step, message) = model.state else {
+            Issue.record("expected a preflight failure, got \(model.state)")
+            return
+        }
+        #expect(step == .preflight)
+        #expect(message.contains("uncommitted work cannot be ruled out"))
+        #expect(!environment.calls.contains("sync"))
     }
 
     @Test func listNamesUpToThreePaths() {

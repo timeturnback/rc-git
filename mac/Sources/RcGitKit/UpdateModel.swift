@@ -42,12 +42,36 @@ public struct SourceState: Sendable, Hashable {
     /// Modified or deleted tracked files. Untracked and ignored files are not listed:
     /// `RCGit.app` and `build/` are build output and must not block an update.
     public let dirtyPaths: [String]
+    /// Whether the status scan covered the whole working tree. A scan stopped at its cap
+    /// may have missed a dirty path, so it never counts as clean.
+    public let scanComplete: Bool
 
-    public init(commit: String, branch: String?, dirtyPaths: [String]) {
+    public init(
+        commit: String, branch: String?, dirtyPaths: [String], scanComplete: Bool = true
+    ) {
         self.commit = commit
         self.branch = branch
         self.dirtyPaths = dirtyPaths
+        self.scanComplete = scanComplete
     }
+
+    /// The state a working-tree status scan describes: its dirty paths, and whether it
+    /// finished.
+    public init(commit: String, branch: String?, report: StatusReport) {
+        self.init(
+            commit: commit, branch: branch, dirtyPaths: Self.dirtyPaths(in: report),
+            scanComplete: !report.truncated)
+    }
+
+    /// The paths an update treats as uncommitted work: modified or deleted tracked files.
+    public static func dirtyPaths(in report: StatusReport) -> [String] {
+        report.entries
+            .filter { $0.status == .modified || $0.status == .deleted }
+            .map(\.path)
+    }
+
+    /// No uncommitted work, and a scan that covered the whole tree to say so.
+    public var isClean: Bool { dirtyPaths.isEmpty && scanComplete }
 }
 
 /// What reading a checkout produced: its state, or why it could not be read.
@@ -146,6 +170,36 @@ public final class UpdateModel {
         onChanged?()
     }
 
+    /// Whether `proceed()` would start anything: the bundle can rebuild itself, and the
+    /// update is neither running nor already relaunching.
+    public var canProceed: Bool { Self.canProceed(build: build, state: state) }
+
+    /// The one rule behind `canProceed`, so the window's button and the model agree.
+    nonisolated public static func canProceed(build: AppBuild, state: UpdateState) -> Bool {
+        guard build.updateMode != nil else { return false }
+        switch state {
+        case .idle, .upToDate, .failed: return true
+        case .running, .installed: return false
+        }
+    }
+
+    /// What the window's button and its shortcut do: start from `.idle`, rebuild anyway
+    /// from `.upToDate`, start over from `.failed`, and nothing otherwise.
+    public func proceed() async {
+        guard canProceed else { return }
+        switch state {
+        case .upToDate:
+            await start(force: true)
+        case .failed:
+            reset()
+            await start()
+        case .idle:
+            await start()
+        case .running, .installed:
+            return
+        }
+    }
+
     /// `a.rs, b.rs and 3 more` — enough to recognize the work without a wall of paths.
     public static func list(_ paths: [String], limit: Int = 3) -> String {
         guard paths.count > limit else { return paths.joined(separator: ", ") }
@@ -185,8 +239,8 @@ public final class UpdateModel {
     /// the result with the commit this bundle was built from. `false` when the update must
     /// stop, either because a step failed or because there is nothing new to build.
     private func fastForward(from before: SourceState, force: Bool) async -> Bool {
-        guard before.dirtyPaths.isEmpty else {
-            fail(.preflight, "the checkout has uncommitted work: \(Self.list(before.dirtyPaths))")
+        guard before.isClean else {
+            fail(.preflight, Self.uncleanMessage(before))
             return false
         }
         enter(.sync)
@@ -220,6 +274,16 @@ public final class UpdateModel {
         }
         state = .installed
         onChanged?()
+    }
+
+    /// Why a checkout that is not clean stops the update: the paths when there are any,
+    /// otherwise the scan that could not finish.
+    private static func uncleanMessage(_ state: SourceState) -> String {
+        guard state.dirtyPaths.isEmpty else {
+            return "the checkout has uncommitted work: \(list(state.dirtyPaths))"
+        }
+        return "the status scan stopped at its cap before covering the checkout, so "
+            + "uncommitted work cannot be ruled out; run scripts/install-app.sh in a terminal"
     }
 
     /// A bundle with no `RCGitSourceRoot` stamp cannot know what to build; the message

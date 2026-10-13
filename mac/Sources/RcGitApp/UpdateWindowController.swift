@@ -20,10 +20,6 @@ final class UpdateWindowController: NSWindowController {
     private let actionButton = NSButton(title: "", target: nil, action: nil)
     private let logView = NSTextView()
 
-    /// Whether this bundle rebuilds itself from the working tree instead of updating from
-    /// upstream. It is what every label in the window reads.
-    private var isRebuild: Bool { build.updateMode == .rebuild }
-
     /// `handOffState` runs just before the new bundle is launched, so the tabs the
     /// relaunched app reopens are the ones on screen now. It flushes them: this process is
     /// still alive when the new one reads them.
@@ -47,7 +43,7 @@ final class UpdateWindowController: NSWindowController {
         model = UpdateModel(
             build: build, environment: environment ?? UnavailableUpdateEnvironment())
         super.init(window: window)
-        window.title = isRebuild ? "Rebuild \(build.name)" : "Update rc-git"
+        window.title = UpdateCopy(build: build, state: model.state).title
         window.contentMinSize = NSSize(width: 460, height: 320)
         window.contentView = buildContentView()
         window.center()
@@ -63,17 +59,13 @@ final class UpdateWindowController: NSWindowController {
 
     // MARK: Actions
 
-    /// Starts the update as the button would. Does nothing while one is running or when
-    /// this bundle cannot rebuild itself.
+    /// Does what the button does; the model decides what that is in each state.
     func start() {
-        guard actionButton.isEnabled else { return }
-        runUpdate(nil)
+        Task { await model.proceed() }
     }
 
     @objc private func runUpdate(_ sender: Any?) {
-        let force = model.state == .upToDate
-        if case .failed = model.state { model.reset() }
-        Task { await model.start(force: force) }
+        start()
     }
 
     // MARK: Views
@@ -153,63 +145,23 @@ final class UpdateWindowController: NSWindowController {
     // MARK: Rendering
 
     private func render() {
-        let heading = isRebuild ? "Running" : "Installed"
-        installedLabel.stringValue = "\(heading): \(build.versionLine)\(builtSuffix())"
-        sourceLabel.stringValue = sourceDescription()
-        renderState()
+        let copy = UpdateCopy(build: build, state: model.state)
+        installedLabel.stringValue = "\(copy.heading): \(build.versionLine)\(builtSuffix())"
+        sourceLabel.stringValue = copy.source
+        renderState(copy)
         renderLog()
     }
 
-    private func sourceDescription() -> String {
-        guard let sourceRoot = build.sourceRoot else {
-            return "This bundle was not built by scripts/build-app.sh, so it cannot rebuild itself."
-        }
-        return isRebuild
-            ? "Rebuilds \(sourceRoot) as it stands now — no fetch, uncommitted work included."
-            : "Builds from \(sourceRoot), fast-forwarded from its upstream first."
-    }
-
-    private func renderState() {
-        switch model.state {
-        case .idle:
-            spinner.stopAnimation(nil)
-            statusLabel.stringValue =
-                isRebuild
-                ? "Rebuild and relaunch. Tabs come back."
-                : "Fetch, rebuild, install, relaunch. Tabs come back."
-            actionButton.title = isRebuild ? "Rebuild and Relaunch" : "Update and Relaunch"
-            actionButton.isEnabled = build.updateMode != nil
-        case let .running(step):
+    private func renderState(_ copy: UpdateCopy) {
+        if copy.spinning {
             spinner.startAnimation(nil)
-            statusLabel.stringValue = runningDescription(step)
-            actionButton.isEnabled = false
-        case .upToDate:
+        } else {
             spinner.stopAnimation(nil)
-            statusLabel.stringValue = "Already at the commit this build came from."
-            actionButton.title = "Rebuild Anyway"
-            actionButton.isEnabled = true
-        case .installed:
-            spinner.startAnimation(nil)
-            statusLabel.stringValue = "\(isRebuild ? "Built" : "Installed"). Relaunching…"
-            actionButton.isEnabled = false
-        case let .failed(step, message):
-            spinner.stopAnimation(nil)
-            statusLabel.stringValue = "\(name(of: step)) failed: \(message)"
-            statusLabel.toolTip = message
-            actionButton.title = "Try Again"
-            actionButton.isEnabled = build.updateMode != nil
         }
-    }
-
-    private func runningDescription(_ step: UpdateStep) -> String {
-        switch step {
-        case .preflight: "Checking the toolchain and the checkout…"
-        case .sync: "Fetching and fast-forwarding the checkout…"
-        case .install:
-            isRebuild
-                ? "Building the dev bundle — this takes a moment…"
-                : "Building and installing — this takes a few minutes…"
-        }
+        statusLabel.stringValue = copy.status
+        statusLabel.toolTip = copy.statusToolTip
+        actionButton.title = copy.actionTitle
+        actionButton.isEnabled = copy.actionEnabled
     }
 
     /// Replaces the whole log and pins the view to the bottom: the log only ever grows,
@@ -227,14 +179,6 @@ final class UpdateWindowController: NSWindowController {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return " · built \(formatter.string(from: date))"
-    }
-
-    private func name(of step: UpdateStep) -> String {
-        switch step {
-        case .preflight: "Preflight"
-        case .sync: "Fetch"
-        case .install: isRebuild ? "Build" : "Install"
-        }
     }
 }
 
