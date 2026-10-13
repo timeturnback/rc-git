@@ -9,9 +9,9 @@ import RcGitKit
 struct AppUpdateEnvironment: UpdateEnvironment {
     /// What the build needs and macOS does not ship.
     static let requiredTools = ["cargo", "swift", "cbindgen"]
-    /// A probe that cannot answer in this long is stuck, not slow: it is three `command -v`
-    /// builtins in a login shell. Killing it turns a window that spins forever into one
-    /// that names what to try in a terminal.
+    /// A probe that cannot answer in this long is stuck, not slow: it is three quick lookups
+    /// in a login shell. Killing it turns a window that spins forever into one that names
+    /// what to try in a terminal.
     static let toolchainTimeoutSeconds = 20
     /// A build that prints nothing for this long is waiting, not working: cargo and swift
     /// print steadily, while one blocked on another build's lock prints a line and stops.
@@ -44,11 +44,22 @@ struct AppUpdateEnvironment: UpdateEnvironment {
             idleTimeout: idleTimeout, onOutput: onOutput)
     }
 
+    /// Prints each tool in `requiredTools` that cannot run. `command -v` alone is not
+    /// enough for two of them: `/usr/bin/swift` is the xcode-select shim, on every `PATH`
+    /// with no developer directory installed, and rustup's `cargo` proxy resolves with no
+    /// toolchain behind it. So swift is looked up through the active developer directory
+    /// and cargo has to answer `--version`, with rustup's auto-install off: a missing pinned
+    /// toolchain is a gap to name, not a download to start inside the probe's timeout.
+    static let toolchainProbe = """
+        RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 || echo cargo
+        { xcode-select -p && xcrun --find swift; } >/dev/null 2>&1 || echo swift
+        command -v cbindgen >/dev/null || echo cbindgen
+        """
+
     func toolchain() async -> ToolchainCheck {
-        let tools = Self.requiredTools.joined(separator: " ")
         let outcome = await Self.login(
-            "for tool in \(tools); do command -v $tool >/dev/null || echo $tool; done",
-            in: sourceRoot, timeout: .seconds(Self.toolchainTimeoutSeconds))
+            Self.toolchainProbe, in: sourceRoot,
+            timeout: .seconds(Self.toolchainTimeoutSeconds))
         if outcome.stopped != nil {
             return .failure(
                 "the toolchain check did not answer in \(Self.toolchainTimeoutSeconds)s and was "
