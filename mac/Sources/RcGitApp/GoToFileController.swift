@@ -28,6 +28,9 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = true
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(kind)?.isHidden = true
+        }
 
         field.placeholderString = "Go to file"
         field.font = NSFont.systemFont(ofSize: 16)
