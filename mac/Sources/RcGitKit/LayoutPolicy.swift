@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// How the panes are arranged. The sidebar carries the navigation for whichever mode is
 /// showing — refs, plus the directory tree or the change list — and the content area beside
@@ -72,5 +73,45 @@ public enum LayoutPolicy {
         return splitPane(
             available: available, preferred: available - detail,
             firstFloor: historyCommitsFloor, secondFloor: historyDetailFloor)
+    }
+}
+
+/// Whether the window controller collapsed the sidebar itself, so that widening the window
+/// re-opens only a sidebar the policy closed and never one the user closed.
+public struct SidebarCollapse: Equatable, Sendable {
+    public private(set) var collapsedByPolicy = false
+
+    public init() {}
+
+    /// The collapsed state the sidebar should take for `layout`, or `nil` to leave it as it is.
+    ///
+    /// A window too narrow for the sidebar collapses an open one and remembers doing so; a
+    /// window widening past the threshold re-opens it only when that collapse is still the
+    /// policy's.
+    public mutating func apply(_ layout: Layout, previous: Layout?, isCollapsed: Bool) -> Bool? {
+        if !layout.showsSidebar, !isCollapsed {
+            collapsedByPolicy = true
+            return true
+        }
+        if layout.showsSidebar, previous?.showsSidebar == false, collapsedByPolicy {
+            collapsedByPolicy = false
+            return false
+        }
+        return nil
+    }
+
+    /// The user opened or closed the sidebar by hand: whatever state it is in now is theirs.
+    public mutating func userToggled() {
+        collapsedByPolicy = false
+    }
+}
+
+/// Reads `NSSplitView.didResizeSubviewsNotification` user info.
+public enum SidebarResize {
+    /// Whether the resize was the user dragging a divider. `setPosition(_:ofDividerAt:)` posts
+    /// the user-resize key as 0 and a window resize posts no key, so only a drag counts —
+    /// the automatic fit and a frame restore must not pin the width.
+    public static func isUserDrag(_ userInfo: [AnyHashable: Any]?) -> Bool {
+        (userInfo?["NSSplitViewUserResizeKey"] as? Int) == 1
     }
 }

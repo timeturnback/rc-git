@@ -19,7 +19,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     var onBecomeMain: (() -> Void)?
     private(set) var isEmpty = true
 
-    private let outerSplit = NSSplitViewController()
+    private let outerSplit = SidebarSplitViewController()
     private let contentTabs = NSTabViewController()
     private let sidebarController = SidebarViewController()
     private let treeController = TreeViewController()
@@ -53,9 +53,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Set from the first scroll event of a swipe until its animation ends.
     private var trackingSwipe = false
     private var currentLayout: Layout?
-    private var sidebarCollapsedByPolicy = false
+    private var sidebarCollapse = SidebarCollapse()
     /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
-    private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned"
+    /// .v2: the first key was also set by the fit's own `setPosition`, so it pins nothing.
+    private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned.v2"
     /// The defaults name every tab saves its window frame under and the next window restores.
     private static let frameName = "rc-git.window"
     private var repositoryName = ""
@@ -585,14 +586,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let previous = currentLayout
         currentLayout = layout
 
-        if !layout.showsSidebar, !sidebar.isCollapsed {
-            sidebar.isCollapsed = true
-            sidebarCollapsedByPolicy = true
-        } else if layout.showsSidebar, previous?.showsSidebar == false, sidebarCollapsedByPolicy {
-            sidebar.isCollapsed = false
-            sidebarCollapsedByPolicy = false
+        if let collapsed = sidebarCollapse.apply(
+            layout, previous: previous, isCollapsed: sidebar.isCollapsed)
+        {
+            sidebar.isCollapsed = collapsed
         }
-
     }
 
     /// Sizes the sidebar to the tree rows it is showing so the detail pane keeps the rest of
@@ -609,8 +607,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     @objc private func sidebarDidResize(_ notification: Notification) {
-        // Present only when a divider drag caused the resize, not when the window changed.
-        guard notification.userInfo?["NSSplitViewDividerIndex"] != nil else { return }
+        guard SidebarResize.isUserDrag(notification.userInfo) else { return }
         UserDefaults.standard.set(true, forKey: Self.sidebarWidthPinnedKey)
     }
 
@@ -641,6 +638,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let content = NSSplitViewItem(viewController: contentTabs)
         content.minimumThickness = 240
         outerSplit.addSplitViewItem(sidebar)
+        outerSplit.onToggleSidebar = { [weak self] in self?.sidebarCollapse.userToggled() }
         outerSplit.addSplitViewItem(content)
         // .v2: the tree moved into the sidebar, so a saved width is a width for different
         // content and the content split it used to share is gone.
@@ -1675,5 +1673,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         default:
             return nil
         }
+    }
+}
+
+/// The window's outer split. Toggle Sidebar, from the menu or the toolbar, reaches the split
+/// controller through the responder chain, so this is where a manual open or close is seen.
+private final class SidebarSplitViewController: NSSplitViewController {
+    var onToggleSidebar: (() -> Void)?
+
+    override func toggleSidebar(_ sender: Any?) {
+        onToggleSidebar?()
+        super.toggleSidebar(sender)
     }
 }

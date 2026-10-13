@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 
 @testable import RcGitKit
@@ -106,5 +107,48 @@ import Testing
         #expect(
             LayoutPolicy.historyCommitsHeight(available: 600, detailHeight: 900)
                 == LayoutPolicy.historyCommitsFloor)
+    }
+
+    private static let wide = Layout(showsSidebar: true)
+    private static let narrow = Layout(showsSidebar: false)
+
+    @Test func aPolicyCollapseReopensWhenTheWindowWidens() {
+        var collapse = SidebarCollapse()
+        #expect(collapse.apply(Self.narrow, previous: Self.wide, isCollapsed: false) == true)
+        #expect(collapse.collapsedByPolicy)
+        #expect(collapse.apply(Self.wide, previous: Self.narrow, isCollapsed: true) == false)
+        #expect(!collapse.collapsedByPolicy)
+    }
+
+    @Test func aSidebarTheUserClosedAfterAPolicyCollapseStaysClosed() {
+        var collapse = SidebarCollapse()
+        #expect(collapse.apply(Self.narrow, previous: Self.wide, isCollapsed: false) == true)
+        collapse.userToggled()  // opened by hand while narrow
+        collapse.userToggled()  // closed by hand again
+        #expect(collapse.apply(Self.wide, previous: Self.narrow, isCollapsed: true) == nil)
+    }
+
+    @Test func aManualCollapseWhileWideNeverReopens() {
+        var collapse = SidebarCollapse()
+        #expect(collapse.apply(Self.wide, previous: nil, isCollapsed: false) == nil)
+        collapse.userToggled()
+        #expect(collapse.apply(Self.narrow, previous: Self.wide, isCollapsed: true) == nil)
+        #expect(collapse.apply(Self.wide, previous: Self.narrow, isCollapsed: true) == nil)
+    }
+
+    @Test func onlyADividerDragPinsTheSidebarWidth() {
+        let drag: [AnyHashable: Any] = [
+            "NSSplitViewDividerIndex": NSNumber(value: 0),
+            "NSSplitViewUserResizeKey": NSNumber(value: 1),
+        ]
+        let setPosition: [AnyHashable: Any] = [
+            "NSSplitViewDividerIndex": NSNumber(value: 0),
+            "NSSplitViewUserResizeKey": NSNumber(value: 0),
+        ]
+        let windowResize: [AnyHashable: Any] = ["NSSplitViewDividerIndex": NSNumber(value: 0)]
+        #expect(SidebarResize.isUserDrag(drag))
+        #expect(!SidebarResize.isUserDrag(setPosition))
+        #expect(!SidebarResize.isUserDrag(windowResize))
+        #expect(!SidebarResize.isUserDrag(nil))
     }
 }
