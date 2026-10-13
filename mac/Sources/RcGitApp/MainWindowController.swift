@@ -29,6 +29,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var changesModel: ChangesModel?
     private var authorModel: CommitAuthorModel?
     private var syncModel: SyncModel?
+    /// Set once the window closes: a sync step still unwinding must not raise a sheet on it.
+    private var isClosed = false
     private var syncButton: NSButton?
     private var syncSpinner: NSProgressIndicator?
     private var syncToolbarItem: NSToolbarItem?
@@ -564,6 +566,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         worktreeWatcher?.stop()
         worktreeWatcher = nil
         changesModel?.cancelScans()
+        isClosed = true
+        syncModel?.cancelRunning()
         syncModel = nil
         goToFileController.close()
         model.cancelBlame()
@@ -1215,11 +1219,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.renderSyncState()
         }
         sync.onCredentialsNeeded = { [weak self] host, kind, key, resume in
-            guard let self else { return resume(.unavailable) }
+            guard let self, !isClosed else { return resume(.unavailable) }
             promptForCredentials(host: host, kind: kind, key: key, completion: resume)
         }
         sync.onHostKeyNeeded = { [weak self] host, hostKey, resume in
-            guard let self else { return resume(.unavailable) }
+            guard let self, !isClosed else { return resume(.unavailable) }
             promptForHostKey(host: host, hostKey: hostKey, completion: resume)
         }
     }
