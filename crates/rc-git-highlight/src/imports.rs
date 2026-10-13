@@ -345,11 +345,8 @@ impl<'a> Collector<'a> {
         if root.kind() != "identifier" {
             return;
         }
-        let intrinsic = root.id() == name.id()
-            && self
-                .text(root)
-                .first()
-                .is_some_and(|byte| !byte.is_ascii_uppercase());
+        let intrinsic =
+            root.id() == name.id() && self.text(root).first().is_some_and(u8::is_ascii_lowercase);
         if !intrinsic {
             self.elements.push((Bytes::of(name), root.byte_range()));
         }
@@ -491,6 +488,24 @@ mod tests {
         assert_eq!(
             links(source, Language::Tsx),
             vec![("div", "./div"), ("./div", "./div")]
+        );
+    }
+
+    #[test]
+    fn components_named_with_underscore_dollar_or_non_ascii_link() {
+        let source = "import _Icon from './icon';\n\
+                      import $Btn from './btn';\n\
+                      import \u{c9}cran from './ecran';\n\
+                      const v = <><_Icon /><$Btn /><\u{c9}cran /><div /></>;\n";
+        let found = links(source, Language::Tsx);
+        let elements: Vec<_> = found.iter().skip(6).copied().collect();
+        assert_eq!(
+            elements,
+            vec![
+                ("_Icon", "./icon"),
+                ("$Btn", "./btn"),
+                ("\u{c9}cran", "./ecran"),
+            ]
         );
     }
 
