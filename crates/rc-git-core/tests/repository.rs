@@ -941,6 +941,38 @@ fn log_reads_through_a_commit_graph() {
 }
 
 #[test]
+fn log_orders_by_commit_time_when_a_parent_is_newer_than_its_child() {
+    let fx = Fixture::standard();
+    fx.commit_with_body("X", "parent", "2024-03-01T00:00:00Z");
+    fx.git(&["branch", "side"]);
+    fx.commit_with_body("C1", "newer child", "2024-04-01T00:00:00Z");
+    fx.git(&["checkout", "-q", "side"]);
+    fx.commit_with_body("C2", "child older than its parent", "2024-02-01T00:00:00Z");
+    fx.git(&["checkout", "-q", "main"]);
+    let date = "2024-05-01T00:00:00Z";
+    fx.git_with_env(
+        &["merge", "-q", "--no-ff", "-m", "M", "side"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let main = repo.resolve("main").unwrap();
+
+    let commits = repo.log(main, 0, 10).unwrap();
+    let titles: Vec<_> = commits.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["M", "C1", "X", "C2", COMMIT_2_TITLE, COMMIT_1_TITLE],
+        "newest commit time first, not topological"
+    );
+    assert_eq!(commits[3].parents, [oid(&fx.rev_parse("main~2"))]);
+    assert_eq!(
+        commits[2].oid,
+        oid(&fx.rev_parse("main~2")),
+        "X precedes its child C2"
+    );
+}
+
+#[test]
 fn log_title_folds_a_wrapped_subject() {
     let fx = Fixture::standard();
     fx.write("wrapped.txt", b"x\n");

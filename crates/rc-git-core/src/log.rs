@@ -47,8 +47,9 @@ pub struct CommitDetail {
 }
 
 impl Repository {
-    /// Commits reachable from `tip`, newest commit time first, skipping the first `skip` and
-    /// returning at most `limit`. The walk restarts from `tip` on every call, so a page deep in
+    /// Commits reachable from `tip`, newest commit time first; not topological — under clock
+    /// skew a parent can precede one of its children. Skips the first `skip` and returns at
+    /// most `limit`. The walk restarts from `tip` on every call, so a page deep in
     /// a long history costs the pages before it; keep `skip` small or cache pages. An
     /// annotated tag `tip` is followed to its commit.
     ///

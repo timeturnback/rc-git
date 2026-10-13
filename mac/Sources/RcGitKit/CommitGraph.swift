@@ -60,9 +60,10 @@ public struct GraphRow: Hashable, Sendable {
 /// Assigns lanes with the active-lanes algorithm: the first lane expecting a commit takes
 /// it, other expecting lanes merge in and close, unexpected commits open a new rightmost
 /// lane. The commit's lane then expects its first parent; other parents reuse a lane already
-/// expecting them or open new lanes. Commit-time order guarantees a child is emitted before
-/// its parents, so every commit after the tip is already expected unless truncation hid the
-/// child.
+/// expecting them or open new lanes. Commit-time order is not topological: under committer
+/// clock skew a parent can be emitted before one of its children. A parent already emitted
+/// gets no lane, since nothing below would ever take it; the child's edge to it ends at the
+/// dot.
 public struct GraphBuilder: Sendable {
     public private(set) var rows: [GraphRow] = []
     /// The widest the graph has been, for sizing the column without rescanning rows.
@@ -75,6 +76,8 @@ public struct GraphBuilder: Sendable {
 
     private var lanes: [Lane] = []
     private var nextColor = 0
+    /// Every commit already given a row; grows only with `rows`.
+    private var emitted: Set<Oid> = []
 
     public init() {}
 
@@ -87,6 +90,8 @@ public struct GraphBuilder: Sendable {
     }
 
     private mutating func appendRow(for commit: CommitSummary) {
+        emitted.insert(commit.oid)
+        let firstParent = commit.parents.first.flatMap { emitted.contains($0) ? nil : $0 }
         let matching = lanes.indices.filter { lanes[$0].expected == commit.oid }
         let topCount = lanes.count
         let commitLane = matching.first ?? topCount
@@ -116,8 +121,8 @@ public struct GraphBuilder: Sendable {
         // The commit's own lane continues to its first parent at the commit's position;
         // survivors at or past that slot shift right by one.
         let slot = min(commitLane, bottom.count)
-        let continues = commit.parents.first != nil
-        if let firstParent = commit.parents.first {
+        let continues = firstParent != nil
+        if let firstParent {
             bottom.insert(Lane(expected: firstParent, colorIndex: color), at: slot)
             edges.append(GraphEdge(from: commitLane, to: slot, colorIndex: color, phase: .out))
         }
@@ -126,7 +131,7 @@ public struct GraphBuilder: Sendable {
             edges.append(
                 GraphEdge(from: top, to: target, colorIndex: colorIndex, phase: .through))
         }
-        for parent in commit.parents.dropFirst() {
+        for parent in commit.parents.dropFirst() where !emitted.contains(parent) {
             if let existing = bottom.firstIndex(where: { $0.expected == parent }) {
                 edges.append(
                     GraphEdge(

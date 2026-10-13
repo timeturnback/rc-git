@@ -96,6 +96,36 @@ import Testing
         #expect(paged.maxLaneCount == whole.maxLaneCount)
     }
 
+    @Test func aParentEmittedBeforeItsChildOpensNoLane() throws {
+        let (c1, c2, p, q, y) = (oid(0x21), oid(0x22), oid(0x23), oid(0x24), oid(0x25))
+        let rows = build([
+            commitSummary(m, parents: [c1, c2]),
+            commitSummary(c1, parents: [p]),
+            commitSummary(p, parents: [q]),
+            commitSummary(c2, parents: [p]),
+            commitSummary(q, parents: [y]),
+            commitSummary(y),
+        ]).rows
+        #expect(rows[4].laneCount == 1, "C2's edge to the emitted P ends at its dot")
+        #expect(rows[4].edges.allSatisfy { $0.phase != .through })
+        let last = try #require(rows.last)
+        #expect(last.edges.allSatisfy { $0.phase != .through }, "no lane leaks to the end")
+    }
+
+    @Test func aRootEmittedBeforeItsChildOpensNoLane() throws {
+        let unrelated = oid(0x26)
+        let rows = build([
+            commitSummary(m, parents: [b, c]),
+            commitSummary(b, parents: [a]),
+            commitSummary(a),
+            commitSummary(c, parents: [a]),
+            commitSummary(unrelated),
+        ]).rows
+        let last = try #require(rows.last)
+        #expect(last.laneCount == 1)
+        #expect(last.edges.allSatisfy { $0.phase != .through })
+    }
+
     @Test func truncationLeavesLanesOpen() {
         let builder = build([commitSummary(m, parents: [a, b])])
         #expect(builder.rows[0].laneCount == 2, "both parent lanes stay open past the last row")
