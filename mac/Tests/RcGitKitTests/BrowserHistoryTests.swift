@@ -276,6 +276,42 @@ import Testing
         #expect(model.rootTree == featureTree)
     }
 
+    @Test func refreshWithEveryRefGoneEmptiesTheBrowser() async {
+        await model.attach(repo)
+        await model.loadMoreHistory()
+        #expect(model.history.count == 100)
+        repo.lock.withLock {
+            repo.listing = RefListing(refs: [])
+            repo.headValue = Head(refName: nil, target: nil)
+        }
+        var rootEvents = 0
+        model.onRootChanged = { rootEvents += 1 }
+        await model.refreshRefs()
+        #expect(model.selectedRef == nil)
+        #expect(model.rootTree == nil, "the deleted ref's tree must not stay on screen")
+        #expect(model.history.isEmpty, "the deleted ref's history must not stay on screen")
+        #expect(rootEvents == 1)
+    }
+
+    @Test func refreshKeepsABrowsedCommit() async {
+        await model.attach(repo)
+        let commit = commitSummary(featureCommit, title: "feature 0")
+        await model.browseCommit(commit)
+        repo.lock.withLock {
+            repo.listing.refs.append(
+                RefEntry(
+                    fullName: "refs/tags/v2", shortName: "v2", kind: .tag, target: mainCommit))
+        }
+        var rootEvents = 0
+        model.onRootChanged = { rootEvents += 1 }
+        await model.refreshRefs()
+        #expect(model.refs.refs.count == 3)
+        #expect(model.selectedRef == nil)
+        #expect(model.browsedCommit == commit, "a fetch must not leave the browsed commit")
+        #expect(model.rootTree == featureTree)
+        #expect(rootEvents == 0)
+    }
+
     @Test func refreshFailureKeepsTheLastGoodListingQuietly() async {
         await model.attach(repo)
         let failing = repo
