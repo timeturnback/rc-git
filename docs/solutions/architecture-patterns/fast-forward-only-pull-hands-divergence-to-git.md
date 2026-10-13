@@ -105,8 +105,10 @@ What the diverged sheet does now:
   asks for a strategy when a plain `git pull` meets diverged branches with none configured. A
   user who prefers merge edits the line.
 - `ShellWord.quote` (`mac/Sources/RcGitKit/ShellWord.swift:11`) leaves a word bare when every
-  scalar is in the set Python's `shlex.quote` leaves bare, and otherwise single-quotes it with
-  each embedded quote written as `'\''`. It replaced the updater's untested `Shell.quote`.
+  scalar is in the set Python's `shlex.quote` leaves bare minus `=`, and otherwise single-quotes
+  it with each embedded quote written as `'\''`. `=` is quoted because both consumers run the
+  word in zsh (the updater's `/bin/zsh -lc`, Terminal's default shell), whose EQUALS option
+  turns `=ls` into `/bin/ls`. It replaced the updater's untested `Shell.quote`.
 - `presentDiverged` (`mac/Sources/RcGitApp/MainWindowController.swift:1024`) shows the guard's
   message and the command with Copy Command, Open in Terminal (copies, then opens
   `com.apple.Terminal` in the checkout through `NSWorkspace.open(_:withApplicationAt:configuration:)`),
@@ -167,9 +169,10 @@ cd /Users/me/WorkSpace/rc-git && git pull --rebase
 ```
 
 `mac/Tests/RcGitKitTests/ShellWordTests.swift` runs adversarial words — a quote, `$HOME`,
-backticks, `;` and `&&`, a glob, a newline, non-ASCII text, the empty word — through
-`/bin/sh -c "printf %s <word>"` and checks the shell prints each one back unchanged. Writing the
-escape as `\'` instead of `'\''` fails it.
+backticks, `;` and `&&`, globs, braces, a tilde, `#`, `!`, a leading `=`, a newline, non-ASCII
+text, the empty word, and the bare word itself — through both `/bin/sh -c` and `/bin/zsh -f -c`
+running `printf %s <word>`, and checks each shell exits 0 and prints the word back unchanged.
+Writing the escape as `\'` instead of `'\''` fails it.
 
 ## Related
 
