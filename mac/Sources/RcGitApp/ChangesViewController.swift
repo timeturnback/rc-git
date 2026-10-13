@@ -266,6 +266,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         }
 
         messageText.isRichText = false
+        messageText.allowsUndo = true
         messageText.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         messageText.isVerticallyResizable = true
         messageText.autoresizingMask = [.width]

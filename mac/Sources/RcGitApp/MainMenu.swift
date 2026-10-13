@@ -98,7 +98,18 @@ enum MainMenu {
 
     private static func editMenu() -> NSMenu {
         let menu = NSMenu(title: "Edit")
+        // `UndoManager.undo` resolves to `undo` without the colon, which no responder handles.
+        menu.addItem(item("Undo", Selector(("undo:")), "z"))
+        menu.addItem(item("Redo", Selector(("redo:")), "z", [.command, .shift]))
+        menu.addItem(.separator())
+        menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
         menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
+        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
+        menu.addItem(
+            item(
+                "Paste and Match Style", #selector(NSTextView.pasteAsPlainText(_:)), "v",
+                [.command, .option, .shift]))
+        menu.addItem(item("Delete", #selector(NSText.delete(_:)), ""))
         menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
         menu.addItem(.separator())
         let find = NSMenu(title: "Find")
