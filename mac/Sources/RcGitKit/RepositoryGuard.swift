@@ -418,7 +418,9 @@ public struct RemoteStatus: Sendable, Hashable {
     public let usesSsh: Bool
 }
 
-/// A per-host username and token. Deliberately not `CustomStringConvertible`; never log it.
+/// A per-host username and token. Its description, debug description and mirror print the
+/// username and `<redacted>` in place of the token, since default reflection would print every
+/// stored property. Still never log it.
 public struct Credentials: Sendable {
     public let username: String
     public let token: String
@@ -426,6 +428,18 @@ public struct Credentials: Sendable {
     public init(username: String, token: String) {
         self.username = username
         self.token = token
+    }
+}
+
+extension Credentials: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "Credentials(username: \(username), token: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["username": username, "token": "<redacted>"])
     }
 }
 

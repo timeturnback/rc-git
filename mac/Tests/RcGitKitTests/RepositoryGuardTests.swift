@@ -381,3 +381,29 @@ import Testing
         }
     }
 }
+
+/// A token must not leak through any way Swift turns a value into text.
+@Suite struct CredentialsRedactionTests {
+    private enum Holder {
+        case signIn(Credentials)
+    }
+
+    @Test func everyTextFormOmitsTheToken() {
+        let credentials = Credentials(username: "octocat", token: "TOKEN-VALUE")
+        let renderings = [
+            "\(credentials)",
+            String(describing: credentials),
+            String(reflecting: credentials),
+            "\(Holder.signIn(credentials))",
+            String(reflecting: Holder.signIn(credentials)),
+            "\([credentials])",
+            "\(Optional(credentials) as Any)",
+            String(describing: Mirror(reflecting: credentials).children.map(\.value)),
+        ]
+        for rendering in renderings {
+            #expect(!rendering.contains("TOKEN-VALUE"), "\(rendering)")
+            #expect(rendering.contains("<redacted>"), "\(rendering)")
+        }
+        #expect("\(credentials)".contains("octocat"))
+    }
+}
