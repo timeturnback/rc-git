@@ -24,6 +24,15 @@ import Testing
         #expect(!WorktreeWatchFilter.isRelevant("/repo/.git", workDir: workDir, gitDir: gitDir))
     }
 
+    @Test func anExcludeFileEditIsRelevant() {
+        #expect(
+            WorktreeWatchFilter.isRelevant(
+                "/repo/.git/info/exclude", workDir: workDir, gitDir: gitDir))
+        #expect(
+            !WorktreeWatchFilter.isRelevant(
+                "/repo/.git/info/attributes", workDir: workDir, gitDir: gitDir))
+    }
+
     @Test func aDotGitPrefixedSiblingIsNotTheGitDir() {
         #expect(
             WorktreeWatchFilter.isRelevant(

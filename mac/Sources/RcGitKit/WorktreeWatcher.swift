@@ -2,15 +2,17 @@ import CoreServices
 import Foundation
 
 /// Decides which filesystem events under the working directory mean the change list may be
-/// stale. Everything inside `.git` is dropped: the ref watcher owns that side, and object or
-/// index churn never changes what the working tree looks like. Pure, so the filter is
-/// testable without FSEvents.
+/// stale. Everything inside `.git` is dropped except `info/exclude`, whose patterns decide which
+/// untracked files the status walk reports: the ref watcher owns the rest of that side, and
+/// object or index churn never changes what the working tree looks like. Pure, so the filter
+/// is testable without FSEvents.
 public enum WorktreeWatchFilter {
     /// Whether an event at `path` can change the outcome of `worktreeStatus`.
     public static func isRelevant(_ path: String, workDir: String, gitDir: String) -> Bool {
         let root = normalized(workDir)
         guard path == root || path.hasPrefix(root + "/") else { return false }
         let git = normalized(gitDir)
+        if path == git + "/info/exclude" { return true }
         if path == git || path.hasPrefix(git + "/") { return false }
         return true
     }
