@@ -57,10 +57,10 @@ public struct PathIndex: Sendable {
             switch next {
             case .files(let files):
                 for file in files {
-                    entries.append(file)
                     if entries.count >= limit {
                         return PathIndex(root: root, entries: entries, truncated: true)
                     }
+                    entries.append(file)
                 }
             case .tree(let tree, let prefix, let hidden, let exact):
                 try Task.checkCancellation()

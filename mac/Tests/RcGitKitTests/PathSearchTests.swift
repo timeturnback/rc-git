@@ -139,10 +139,38 @@ import Testing
         #expect(capped.truncated, "a walk cut at the limit is flagged")
         let whole = try PathIndex.build(root: root, limit: 4) { fixed[$0]! }
         #expect(whole.entries.count == 4)
-        #expect(whole.truncated, "reaching the limit exactly still stops the walk")
+        #expect(!whole.truncated, "a walk that fits the limit exactly drops nothing")
         let roomy = try PathIndex.build(root: root, limit: 5) { fixed[$0]! }
         #expect(roomy.entries.count == 4)
         #expect(!roomy.truncated)
+    }
+
+    @Test func buildStopsAtTheEntryCap() throws {
+        func flat(_ count: Int) throws -> PathIndex {
+            let files = (0..<count).map { TreeEntry(name: "f\($0)", oid: oid(0x77), kind: .blob) }
+            return try PathIndex.build(root: root) { _ in files }
+        }
+        let over = try flat(PathIndex.maxEntries + 1)
+        #expect(over.truncated)
+        #expect(over.entries.count == PathIndex.maxEntries)
+        let exact = try flat(PathIndex.maxEntries)
+        #expect(!exact.truncated, "nothing was dropped")
+        #expect(exact.entries.count == PathIndex.maxEntries)
+        #expect(try !flat(PathIndex.maxEntries - 1).truncated)
+    }
+
+    @Test func buildStopsAtTheNextDirectoryOnceCancelled() async {
+        let fixed = trees()
+        let root = root
+        let task = Task.detached { () throws -> PathIndex in
+            var reads = 0
+            return try PathIndex.build(root: root) { tree in
+                reads += 1
+                if reads == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return fixed[tree] ?? []
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
     }
 
     @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() {
