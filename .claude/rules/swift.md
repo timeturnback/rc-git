@@ -133,9 +133,10 @@ paths: mac/**
 - An action that changes the pane on its way somewhere calls `setMode`, then the model, then
   `recordStop()` once the call returns. `switchMode` is for a pane picked by itself. Two
   records for one click leave a Back press that changes nothing.
-- `AppDelegate` owns the one `BackForwardList`. Only the front tab records, and nothing
-  records while `restoresInFlight` is non-zero. A stop names its tab by repository path, so
-  closing a tab calls `removeStops`; never keep a stop for a tab that is gone.
+- `Navigator` (RcGitKit) owns the one `BackForwardList` and decides what it records:
+  only the front tab, and nothing between `beginRestore` and `endRestore`. `AppDelegate`
+  only forwards tab events to it. A stop names its tab by repository path, so closing a tab
+  calls `tabClosed`; never keep a stop for a tab that is gone.
 - `BrowserModel.restore` coalesces like `ChangesModel`: a restore asked for while one runs
   sets `pendingRestore` and returns. Do not let two run at once — the second would resolve
   its file against a root the first is still loading.

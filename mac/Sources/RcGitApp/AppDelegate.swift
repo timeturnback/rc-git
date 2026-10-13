@@ -23,13 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Set while the tabs are handed to a relaunching build; see `handOffTabs` and
     /// `reclaimTabs`.
     private var tabsHandedOff = false
-    /// The stops the user went through, across every tab. In memory only: a stop names a
-    /// tab, and closing the tab drops its stops.
-    private var backForward = BackForwardList()
-    /// The tab whose moves are the user's: the one in the main window.
-    private weak var frontController: MainWindowController?
-    /// How many stops are being restored. What a tab reports meanwhile is the restore itself.
-    private var restoresInFlight = 0
+    /// The stops the user went through, across every tab, and which tab's moves count. In
+    /// memory only: a stop names a tab, and closing the tab drops its stops.
+    private var navigator = Navigator()
     /// Set while ⇧⌘W closes a window group and once the app is quitting: tabs closed then
     /// stay in the saved list. A tab closed on its own leaves it.
     private var keepingClosedTabs = false
@@ -144,10 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return closedTabs.canReopen(skipping: openPaths)
         }
         if menuItem.action == #selector(goBack(_:)) {
-            return backForward.canGo(.back)
+            return navigator.canGo(.back)
         }
         if menuItem.action == #selector(goForward(_:)) {
-            return backForward.canGo(.forward)
+            return navigator.canGo(.forward)
         }
         return true
     }
@@ -236,24 +232,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             host.addTabbedWindow(window, ordered: .above)
         }
         controllers.append(controller)
+        let tab = ObjectIdentifier(controller)
         controller.onClose = { [weak self, weak controller] in
             guard let self else { return }
             let path = controller?.repositoryPath
             if let path { closedTabs.push(path) }
             controllers.removeAll { $0 === controller }
             saveTabs(dropping: keepingClosedTabs ? nil : path)
-            forgetStops(of: controller)
+            navigator.tabClosed(tab, repositoryPath: path)
+            renderNavigation()
         }
-        controller.onStop = { [weak self, weak controller] stop in
-            self?.record(stop, from: controller)
+        controller.onStop = { [weak self] stop in
+            guard let self, navigator.report(stop, from: tab) else { return }
+            renderNavigation()
         }
         controller.onBecomeMain = { [weak self, weak controller] in
-            self?.cameToFront(controller)
+            guard let self, let controller,
+                navigator.tabCameToFront(tab, at: controller.currentStop)
+            else { return }
+            renderNavigation()
         }
         controller.onNavigate = { [weak self] direction in
             self?.go(direction)
         }
-        controller.renderNavigation(backForward)
+        controller.renderNavigation(navigator.list)
         return controller
     }
 
@@ -270,52 +272,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Steps to the stop before or after the current one: brings its tab to the front and
     /// has it show the stop.
     private func go(_ direction: BackForwardList.Direction) {
-        guard let stop = backForward.go(direction) else { return }
+        guard let stop = navigator.go(direction) else { return }
         renderNavigation()
         guard
             let controller = controllers.first(where: {
                 $0.repositoryPath == stop.repositoryPath
             })
         else { return }
-        frontController = controller
+        navigator.beginRestore(in: ObjectIdentifier(controller))
         controller.showWindow(nil)
-        restoresInFlight += 1
         Task {
             await controller.restore(stop)
-            restoresInFlight -= 1
+            navigator.endRestore()
         }
-    }
-
-    /// Records where the front tab is. A background tab's moves are not the user going
-    /// anywhere — a repository attaching at launch, a ref refresh — and neither is a stop
-    /// being restored.
-    private func record(_ stop: NavigationStop, from controller: MainWindowController?) {
-        guard restoresInFlight == 0, let controller, controller === frontController else {
-            return
-        }
-        backForward.visit(stop)
-        renderNavigation()
-    }
-
-    /// A switch to another tab is a move to where that tab is. The same window becoming
-    /// main again, when the app is reactivated, is not.
-    private func cameToFront(_ controller: MainWindowController?) {
-        guard let controller, controller !== frontController else { return }
-        frontController = controller
-        if let stop = controller.currentStop {
-            record(stop, from: controller)
-        }
-    }
-
-    private func forgetStops(of controller: MainWindowController?) {
-        guard let path = controller?.repositoryPath else { return }
-        backForward.removeStops(inRepository: path)
-        renderNavigation()
     }
 
     private func renderNavigation() {
         for controller in controllers {
-            controller.renderNavigation(backForward)
+            controller.renderNavigation(navigator.list)
         }
     }
 
