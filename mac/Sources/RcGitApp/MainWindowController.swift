@@ -912,7 +912,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         changes.onStashChanged = { [weak self] in
             guard let self, let changesModel else { return }
-            changesController.renderStashes(changesModel.stashes)
+            changesController.renderStashes(
+                changesModel.stashes, state: changesModel.stashState)
         }
         changes.onError = { [weak self] message in
             self?.presentError(message)

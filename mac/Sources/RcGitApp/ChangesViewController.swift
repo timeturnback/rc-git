@@ -82,6 +82,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let stashTable = NSTableView()
     private let stashScroll = NSScrollView()
     private let stashGroup = NSStackView()
+    private let stashPlaceholder = NSTextField(labelWithString: "")
     private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let popButton = NSButton(title: "Pop", target: nil, action: nil)
     private let dropButton = NSButton(title: "Drop…", target: nil, action: nil)
@@ -224,6 +225,22 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         stashScroll.documentView = stashTable
         stashScroll.hasVerticalScroller = true
         stashScroll.autohidesScrollers = true
+        // A subview of the scroll view, not the pane, so its constraints travel with the
+        // stash group when the stack detaches it.
+        stashPlaceholder.textColor = .secondaryLabelColor
+        stashPlaceholder.lineBreakMode = .byTruncatingTail
+        stashPlaceholder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        stashPlaceholder.isHidden = true
+        stashPlaceholder.translatesAutoresizingMaskIntoConstraints = false
+        stashScroll.addSubview(stashPlaceholder)
+        NSLayoutConstraint.activate([
+            stashPlaceholder.centerXAnchor.constraint(equalTo: stashScroll.centerXAnchor),
+            stashPlaceholder.centerYAnchor.constraint(equalTo: stashScroll.centerYAnchor),
+            stashPlaceholder.leadingAnchor.constraint(
+                greaterThanOrEqualTo: stashScroll.leadingAnchor, constant: Style.margin),
+            stashPlaceholder.trailingAnchor.constraint(
+                lessThanOrEqualTo: stashScroll.trailingAnchor, constant: -Style.margin),
+        ])
 
         for (button, action): (NSButton, Selector) in [
             (applyButton, #selector(applyClicked(_:))),
@@ -465,18 +482,29 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         pushButton.isEnabled = !busy && hasUpstream
     }
 
-    func renderStashes(_ stashes: [StashEntry]) {
+    /// Shows the stash list, or, when the last read failed, its error in place of a list that
+    /// is no longer current.
+    func renderStashes(_ stashes: [StashEntry], state: StashListState) {
         let selected = selectedStash?.oid
-        self.stashes = stashes
+        switch state {
+        case .loaded:
+            self.stashes = stashes
+            stashPlaceholder.isHidden = true
+        case let .failed(message):
+            self.stashes = []
+            stashPlaceholder.stringValue = message
+            stashPlaceholder.toolTip = message
+            stashPlaceholder.isHidden = false
+        }
         isReloading = true
         stashTable.reloadData()
         // Re-select by commit, not row: a push from elsewhere shifts every entry down a row.
-        let row = selected.flatMap { oid in stashes.firstIndex { $0.oid == oid } }
+        let row = selected.flatMap { oid in self.stashes.firstIndex { $0.oid == oid } }
         stashTable.selectRowIndexes(
             row.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
         isReloading = false
         updateStashButtons()
-        show(stashGroup, visible: !stashes.isEmpty, width: &stashWidth)
+        show(stashGroup, visible: !self.stashes.isEmpty || state != .loaded, width: &stashWidth)
     }
 
     /// Re-renders tick checkboxes after the model's tick state moved.

@@ -76,6 +76,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Per path, how long each `diffWorktreeFile` call takes, for racing two selections.
     var worktreeDiffDelays: [String: TimeInterval] = [:]
     var stashes: [StashEntry] = []
+    var stashCalls = 0
+    /// How long each `stashList` call takes, for racing a stash reload against a burst or cancel.
+    var stashDelay: TimeInterval = 0
+    var failNextStash = false
     /// Set to make the fake a checkout rather than a bare repository.
     var workDir: String?
     /// The full working-tree file walk result.
@@ -369,7 +373,15 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func stashList() throws -> [StashEntry] {
-        lock.withLock { stashes }
+        let (entries, fail, delay) = lock.withLock { () -> ([StashEntry], Bool, TimeInterval) in
+            stashCalls += 1
+            let fail = failNextStash
+            failNextStash = false
+            return (stashes, fail, stashDelay)
+        }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        if fail { throw RepositoryError("list stashes: transient failure") }
+        return entries
     }
 }
 

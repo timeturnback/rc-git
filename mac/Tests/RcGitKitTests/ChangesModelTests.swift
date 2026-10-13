@@ -421,7 +421,7 @@ import Testing
         #expect(diffCallbacks == 2, "one for loading, one for failed")
     }
 
-    @Test func stashesLoadAndFailuresSurfaceThroughOnError() async {
+    @Test func stashesLoad() async {
         repo.lock.withLock {
             repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
         }
@@ -429,6 +429,141 @@ import Testing
         model.onStashChanged = { stashCallbacks += 1 }
         await model.loadStashes()
         #expect(model.stashes.count == 1)
+        #expect(model.stashState == .loaded)
         #expect(stashCallbacks == 1)
+    }
+
+    @Test func aFailedStashListSurfacesThroughOnErrorAndKeepsTheLastList() async {
+        repo.lock.withLock {
+            repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
+        }
+        await model.loadStashes()
+        var reported: [String] = []
+        model.onError = { reported.append($0) }
+        var states: [StashListState] = []
+        model.onStashChanged = { states.append(self.model.stashState) }
+        repo.lock.withLock { repo.failNextStash = true }
+        await model.loadStashes()
+
+        #expect(reported.count == 1)
+        #expect(reported.first?.contains("list stashes") == true)
+        #expect(model.stashes.count == 1, "the last list read stays for the view to set aside")
+        guard case let .failed(message) = model.stashState else {
+            Issue.record("expected failed, got \(model.stashState)")
+            return
+        }
+        #expect(message.contains("list stashes"))
+        #expect(states == [model.stashState], "the failure is announced for inline display")
+
+        await model.loadStashes()
+        #expect(model.stashState == .loaded, "a successful read clears the failure")
+        #expect(states.last == .loaded)
+    }
+
+    @Test func aStashFailureThatPersistsAcrossRefreshesAlertsOnce() async {
+        var reported: [String] = []
+        model.onError = { reported.append($0) }
+        repo.lock.withLock { repo.failNextStash = true }
+        await model.refresh()
+        repo.lock.withLock { repo.failNextStash = true }
+        await model.refresh()
+
+        #expect(repo.lock.withLock { repo.stashCalls } == 2)
+        #expect(reported.count == 1, "one alert per distinct message, not one per refresh")
+        guard case .failed = model.stashState else {
+            Issue.record("expected failed, got \(model.stashState)")
+            return
+        }
+    }
+
+    @Test func aBurstOfStashRequestsCostsOneReload() async {
+        repo.lock.withLock { repo.stashDelay = 1 }
+        async let inFlight: Void = model.loadStashes()
+        try? await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<20 {
+            await model.loadStashes()
+        }
+        await inFlight
+        #expect(
+            repo.lock.withLock { repo.stashCalls } == 2,
+            "the read in flight plus one re-run, however many requests arrived")
+    }
+
+    @Test func aCancelledStashLoadNeverLands() async {
+        repo.lock.withLock {
+            repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
+            repo.stashDelay = 1
+        }
+        var stashCallbacks = 0
+        model.onStashChanged = { stashCallbacks += 1 }
+        async let inFlight: Void = model.loadStashes()
+        try? await Task.sleep(for: .milliseconds(100))
+        model.cancelScans()
+        await inFlight
+        #expect(model.stashes.isEmpty, "the cancelled read's result never lands")
+        #expect(stashCallbacks == 0)
+        #expect(repo.lock.withLock { repo.stashCalls } == 1, "a cancel drops the queued re-run")
+    }
+
+    @Test func refreshLoadsTheChangeListAndTheStashes() async {
+        let stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
+        repo.lock.withLock { repo.stashes = stashes }
+        await model.refresh()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        #expect(report == repo.lock.withLock { repo.statusReport })
+        #expect(model.stashes == stashes)
+    }
+
+    @Test func aReselectedFilesOlderDiffNeverLands() async throws {
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        let aTxt = try #require(report.entries.first)
+        repo.lock.withLock {
+            repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk])
+            repo.worktreeDiffDelays["a.txt"] = 1
+        }
+        var shown: [WorktreeDiffState] = []
+        model.onDiffChanged = { shown.append(self.model.diffState) }
+        async let slowSelect: Void = model.select(aTxt)
+        try? await Task.sleep(for: .milliseconds(100))
+        // Same path, newer content: only the generation tells the two reads apart.
+        repo.lock.withLock {
+            repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.secondHunk])
+            repo.worktreeDiffDelays["a.txt"] = nil
+        }
+        await model.select(aTxt)
+        await slowSelect
+
+        #expect(model.diffState == .loaded("a.txt", .text(hunks: [Self.secondHunk])))
+        #expect(
+            !shown.contains(.loaded("a.txt", .text(hunks: [Self.firstHunk]))),
+            "the older read never rendered")
+    }
+
+    @Test func aDiffForAFileThatLeftTheListNeverLands() async throws {
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        repo.lock.withLock {
+            repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk])
+            repo.worktreeDiffDelays["a.txt"] = 1
+        }
+        let aTxt = try #require(report.entries.first)
+        async let slowSelect: Void = model.select(aTxt)
+        try? await Task.sleep(for: .milliseconds(100))
+        repo.lock.withLock { repo.statusReport = reportWith(aTxt: false) }
+        await model.loadStatus()
+        await slowSelect
+
+        #expect(model.selectedPath == nil)
+        #expect(model.diffState == .idle, "the vanished file's diff never lands")
     }
 }

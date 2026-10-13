@@ -16,6 +16,13 @@ public enum WorktreeDiffState: Sendable, Hashable {
     case failed(String, String)
 }
 
+/// The stash list's load state. A failed read keeps the last list in `stashes`, so the state
+/// is what tells the view that list is no longer current.
+public enum StashListState: Sendable, Hashable {
+    case loaded
+    case failed(String)
+}
+
 /// State for the Changes tab: the flat change list, one file's diff against `HEAD`, the
 /// stash list, and the tick state that becomes a commit or stash selection. Reads only —
 /// guarded actions run in the window controller, which calls `refresh()` afterwards.
@@ -36,6 +43,7 @@ public final class ChangesModel {
     public private(set) var statusState: ChangesState = .idle
     public private(set) var diffState: WorktreeDiffState = .idle
     public private(set) var stashes: [StashEntry] = []
+    public private(set) var stashState: StashListState = .loaded
     public private(set) var selectedPath: String?
     /// The commit `HEAD` pointed at when the list was loaded; `nil` on an unborn branch.
     /// Guarded commits pass it back so a moved `HEAD` is refused instead of raced.
@@ -52,6 +60,9 @@ public final class ChangesModel {
     private var statusGeneration = 0
     private var diffGeneration = 0
     private var stashGeneration = 0
+    /// The stash failure last sent to `onError`. A watcher refresh re-reads the stash list on
+    /// every event, so a failure that persists would otherwise raise one alert per event.
+    private var reportedStashFailure: String?
 
     /// Whether a scan is running, and whether another was asked for while it ran. A scan is
     /// never started beside one already in flight: the request is merged into a single re-run
@@ -245,6 +256,8 @@ public final class ChangesModel {
         stashScanning = false
     }
 
+    /// A failure is shown through `stashState` every time and sent to `onError` once per
+    /// distinct message, until a read succeeds again.
     private func runStashScan() async {
         stashGeneration += 1
         let generation = stashGeneration
@@ -256,10 +269,16 @@ public final class ChangesModel {
         switch result {
         case let .success(entries):
             stashes = entries
-            onStashChanged?()
+            stashState = .loaded
+            reportedStashFailure = nil
         case let .failure(error):
-            onError?(error.message)
+            stashState = .failed(error.message)
+            if reportedStashFailure != error.message {
+                reportedStashFailure = error.message
+                onError?(error.message)
+            }
         }
+        onStashChanged?()
     }
 
     /// Shows `entry`'s diff against `HEAD` in the detail pane. A file on disk whose path is
