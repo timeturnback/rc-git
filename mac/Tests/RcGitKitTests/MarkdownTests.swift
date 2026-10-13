@@ -30,6 +30,19 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[1].kind == .heading(level: 2))
     }
 
+    @Test func anUnderlineLeftOfAListItemIsARuleNotAHeading() throws {
+        let blocks = MarkdownDocument.parse("- Foo\n---\n").blocks
+        #expect(blocks.map(\.kind) == [.paragraph, .thematicBreak])
+        #expect(blocks.map(\.listDepth) == [1, 0])
+        #expect(plain(try #require(blocks.first).runs) == "Foo")
+    }
+
+    @Test func anUnderlineInsideAListItemStillRetitlesIt() {
+        let blocks = MarkdownDocument.parse("- Foo\n  ---\n").blocks
+        #expect(blocks.map(\.kind) == [.heading(level: 2)])
+        #expect(blocks.map(\.listDepth) == [1])
+    }
+
     @Test func softBreaksFoldAndTrailingSpacesKeepTheBreak() {
         let blocks = MarkdownDocument.parse("one\ntwo\n\nthree  \nfour\n").blocks
         #expect(plain(blocks[0].runs) == "one two")

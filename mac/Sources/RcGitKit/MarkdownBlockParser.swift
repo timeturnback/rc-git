@@ -202,9 +202,13 @@ struct MarkdownBlockParser {
     }
 
     /// Handles a line belonging to the paragraph already open: a setext underline that retitles
-    /// it, a table delimiter that turns it into a table, or one more line of prose.
+    /// it, a table delimiter that turns it into a table, or one more line of prose. An underline
+    /// left of the open list item's content is no part of the item, as in CommonMark: `---`
+    /// there ends the list as a thematic break.
     private mutating func continuePending(body: Range<Int>, indent: Int) -> Bool {
-        if let level = setextLevel(body), pending?.kind == .paragraph {
+        if let level = setextLevel(body), pending?.kind == .paragraph,
+            indent >= (listIndents.last ?? 0)
+        {
             retitlePending(level: level)
             index += 1
             return true
