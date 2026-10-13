@@ -326,7 +326,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     private func makeSyncModel() -> SyncModel {
         let model = SyncModel(
             repoPath: sourceRoot, performer: GuardSyncPerformer(),
-            store: KeychainCredentialStore())
+            store: AppDelegate.credentialStore)
         let window = window
         model.onCredentialsNeeded = { host, kind, key, resume in
             SyncPrompts.credentials(

@@ -143,9 +143,15 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
     private let lock = NSLock()
     private var items: [String: Credentials] = [:]
     private var queries: [String] = []
+    private let failsReads: Bool
+    private let failsWrites: Bool
 
-    init(_ items: [String: Credentials] = [:]) {
+    init(
+        _ items: [String: Credentials] = [:], failsReads: Bool = false, failsWrites: Bool = false
+    ) {
         self.items = items
+        self.failsReads = failsReads
+        self.failsWrites = failsWrites
     }
 
     /// Every host `credentials(host:kind:)` was asked for, in order.
@@ -163,12 +169,18 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         queries.append(host)
+        if failsReads {
+            throw RepositoryError("keychain read failed for '\(host)' (status -25293)")
+        }
         return items[key(host, kind)]
     }
 
     func store(_ credentials: Credentials, host: String, kind: CredentialKind) throws {
         lock.lock()
         defer { lock.unlock() }
+        if failsWrites {
+            throw RepositoryError("keychain write failed for '\(host)' (status -25293)")
+        }
         items[key(host, kind)] = credentials
     }
 
@@ -291,6 +303,141 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.fetchCredentials[0] == nil, "the first attempt is anonymous")
         #expect(performer.fetchCredentials.last??.username == "user")
         #expect(store.stored["git.example.com"]?.token == "sekret")
+    }
+
+    @Test func aSyncReadsTheStoreOnce() async {
+        let saved = Credentials(username: "user", token: "saved")
+        let store = InMemoryCredentialStore(["example.com": saved])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ), store: store)
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(store.queriedHosts == ["example.com"])
+        #expect(performer.fetchCredentials.map { $0?.token } == ["saved"])
+        #expect(performer.pushCredentials.map { $0?.token } == ["saved"])
+    }
+
+    @Test func aPromptedTokenCarriesFromTheFetchToThePushOfOneSync() async {
+        let store = InMemoryCredentialStore()
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401")), .success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ), store: store)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "user", token: "typed"))
+        }
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(prompts == 1)
+        #expect(store.queriedHosts.count == 1)
+        #expect(performer.pushCredentials.map { $0?.token } == ["typed"])
+    }
+
+    @Test func aFailedStoreReadStillPromptsAndTheFailureIsReported() async {
+        let store = InMemoryCredentialStore(failsReads: true)
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401")), .success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ), store: store)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "user", token: "typed"))
+        }
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(prompts == 1)
+        #expect(performer.fetchCredentials[0] == nil, "falls back to anonymous")
+        #expect(performer.pushCredentials.map { $0?.token } == ["typed"])
+        guard case let .done(summary) = model.state else {
+            Issue.record("expected done, got \(model.state)")
+            return
+        }
+        #expect(summary.pushedCommits == 1)
+        #expect(summary.notice?.contains("could not be read") == true)
+        #expect(summary.notice?.contains("status -25293") == true)
+        #expect(summary.notice?.contains("typed") == false, "never the token")
+    }
+
+    @Test func aFailedStoreReadIsNamedInTheFailure() async {
+        let store = InMemoryCredentialStore(failsReads: true)
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401"))]
+            ), store: store)
+        model.onCredentialsNeeded = { _, _, _, resume in resume(nil) }
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .failed(_, message) = model.state else {
+            Issue.record("expected failed, got \(model.state)")
+            return
+        }
+        #expect(message.contains("authentication canceled"))
+        #expect(message.contains("keychain read failed for 'example.com'"))
+    }
+
+    @Test func aFailedStoreWriteKeepsTheStepAndSaysTheTokenWasNotSaved() async {
+        let store = InMemoryCredentialStore(failsWrites: true)
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401")), .success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ), store: store)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "user", token: "typed"))
+        }
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(prompts == 1)
+        #expect(performer.pushCredentials.map { $0?.token } == ["typed"])
+        #expect(store.stored.isEmpty)
+        guard case let .done(summary) = model.state else {
+            Issue.record("expected done, got \(model.state)")
+            return
+        }
+        #expect(summary.fetchedRefs == 1 && summary.pushedCommits == 1)
+        #expect(
+            summary.notice
+                == "signed in, but the token was not saved: "
+                + "keychain write failed for 'example.com' (status -25293)")
+    }
+
+    @Test func eachWorkflowReadsTheStoreAfresh() async {
+        let store = InMemoryCredentialStore()
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch), .success(cleanFetch)]
+            ), store: store)
+        await model.refreshStatus()
+        await model.fetch()
+        model.reset()
+        await model.fetch()
+
+        #expect(store.queriedHosts.count == 2)
     }
 
     @Test func fetchWithNoPriorRefreshKeysCredentialsOnTheRealHost() async {

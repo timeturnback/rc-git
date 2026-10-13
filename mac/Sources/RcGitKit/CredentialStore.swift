@@ -95,3 +95,49 @@ public struct KeychainCredentialStore: CredentialStoring {
         ]
     }
 }
+
+/// Remembers what another store answered, so one launch asks the keychain for each secret
+/// once: under an ad-hoc signature every keychain read can raise an access dialog, and
+/// "Allow" covers a single read. Only a found secret is kept; a miss and a failure are asked
+/// again next time. Writes and deletes go through to the wrapped store first.
+///
+/// `@unchecked Sendable` because an `NSLock` guards `cache`, and the wrapped store is called
+/// only while holding it, so concurrent misses for one secret share a single read.
+public final class CachingCredentialStore: CredentialStoring, @unchecked Sendable {
+    private struct Key: Hashable {
+        let host: String
+        let kind: CredentialKind
+    }
+
+    private let inner: CredentialStoring
+    private let lock = NSLock()
+    private var cache: [Key: Credentials] = [:]
+
+    public init(wrapping inner: CredentialStoring) {
+        self.inner = inner
+    }
+
+    public func credentials(host: String, kind: CredentialKind) throws -> Credentials? {
+        let key = Key(host: host, kind: kind)
+        return try lock.withLock {
+            if let hit = cache[key] { return hit }
+            let found = try inner.credentials(host: host, kind: kind)
+            if let found { cache[key] = found }
+            return found
+        }
+    }
+
+    public func store(_ credentials: Credentials, host: String, kind: CredentialKind) throws {
+        try lock.withLock {
+            try inner.store(credentials, host: host, kind: kind)
+            cache[Key(host: host, kind: kind)] = credentials
+        }
+    }
+
+    public func delete(host: String, kind: CredentialKind) throws {
+        try lock.withLock {
+            try inner.delete(host: host, kind: kind)
+            cache[Key(host: host, kind: kind)] = nil
+        }
+    }
+}

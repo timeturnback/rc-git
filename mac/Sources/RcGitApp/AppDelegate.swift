@@ -3,6 +3,11 @@ import RcGitKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+    /// The one credential store every window and the updater share, so a secret is read from
+    /// the keychain once per launch rather than once per network step.
+    nonisolated static let credentialStore: CredentialStoring = CachingCredentialStore(
+        wrapping: KeychainCredentialStore())
+
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
     private let openTabs = OpenTabs()

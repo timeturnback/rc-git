@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The seam between the sync workflow and the FFI, so tests never open a socket. The
 /// network steps take the operation's `CancelToken`; it is the only way to reach a
@@ -136,14 +137,25 @@ public struct SyncSummary: Sendable, Hashable {
     /// Set when the cancel landed during a step that cannot stop (checkout, pull): that step
     /// finished, and what it did is still reported.
     public let cancelledAfter: SyncStep?
+    /// What went wrong beside the transfer, for the user to read: the saved credentials could
+    /// not be read, or the ones that just worked could not be saved. `nil` when nothing did.
+    public let notice: String?
 
     public init(
-        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, cancelledAfter: SyncStep? = nil
+        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, cancelledAfter: SyncStep? = nil,
+        notice: String? = nil
     ) {
         self.fetchedRefs = fetchedRefs
         self.pulledFiles = pulledFiles
         self.pushedCommits = pushedCommits
         self.cancelledAfter = cancelledAfter
+        self.notice = notice
+    }
+
+    func with(notice: String?) -> SyncSummary {
+        SyncSummary(
+            fetchedRefs: fetchedRefs, pulledFiles: pulledFiles, pushedCommits: pushedCommits,
+            cancelledAfter: cancelledAfter, notice: notice)
     }
 }
 
@@ -167,6 +179,8 @@ public final class SyncModel {
     /// Authentication attempts one step makes before giving up: the stored (or anonymous)
     /// attempt, then up to two prompted ones.
     private static let attemptLimit = 3
+    private nonisolated static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "sync")
 
     public private(set) var state: SyncState = .idle
     /// The last preflight's answer; feeds menu titles and tooltips. `nil` before the first
@@ -190,6 +204,13 @@ public final class SyncModel {
     /// whatever ends the workflow — done, diverged, failed or cancelled — because HEAD and
     /// the working tree have moved either way. Cleared when a workflow starts.
     private var switchedBranch: String?
+    /// The credentials the running workflow settled on: what the store held, or a prompted
+    /// replacement the server accepted. Read once per workflow, so a Sync costs one keychain
+    /// read and its push never prompts for what its fetch was just given. Cleared when a
+    /// workflow starts and when it ends.
+    private var workflowCredentials: WorkflowCredentials?
+    /// A credential-store failure in the running workflow, reported with its outcome.
+    private var credentialNotice: String?
 
     public var isBusy: Bool {
         switch state {
@@ -391,6 +412,13 @@ public final class SyncModel {
 
     // MARK: - Workflow plumbing
 
+    /// The credentials a workflow settled on for one host and kind; `nil` when none are known.
+    private struct WorkflowCredentials {
+        let host: String
+        let kind: CredentialKind
+        let credentials: Credentials?
+    }
+
     /// A step that failed in a way the workflow reports and stops on.
     private struct StepFailure: Error {
         let step: SyncStep
@@ -411,6 +439,11 @@ public final class SyncModel {
         let generation = generation
         cancel = CancelToken()
         switchedBranch = nil
+        workflowCredentials = nil
+        credentialNotice = nil
+        defer {
+            if generation == self.generation { workflowCredentials = nil }
+        }
         enter(start)
         do {
             if checkUpstream {
@@ -419,7 +452,8 @@ public final class SyncModel {
             let summary = try await body(self)
             guard generation == self.generation else { return }
             state = .done(
-                summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
+                (summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
+                    .with(notice: credentialNotice))
         } catch let failure as StepFailure {
             guard generation == self.generation else { return }
             // A cancel unwinds through whatever the step reported — usually the guard's
@@ -430,14 +464,23 @@ public final class SyncModel {
                 switch (cancel.isSignalled, failure.diverged) {
                 case (true, _): .idle
                 case (false, true): .diverged(message: failure.message)
-                case (false, false): .failed(step: failure.step, message: failure.message)
+                case (false, false):
+                    .failed(step: failure.step, message: withNotice(failure.message))
                 }
         } catch {
             guard generation == self.generation else { return }
-            state = cancel.isSignalled ? .idle : .failed(step: .fetch, message: "\(error)")
+            state =
+                cancel.isSignalled
+                ? .idle : .failed(step: .fetch, message: withNotice("\(error)"))
         }
         onStateChanged?()
         await refreshStatus()
+    }
+
+    /// A failure message with the workflow's credential-store failure, when there was one.
+    private func withNotice(_ message: String) -> String {
+        guard let credentialNotice else { return message }
+        return "\(message) (\(credentialNotice))"
     }
 
     /// Why a status read failed, carried as a message ready to show.
@@ -621,7 +664,7 @@ public final class SyncModel {
         }
         let host = status.host
         let kind: CredentialKind = status.usesSsh ? .sshPassphrase : .httpsToken
-        var credentials = (try? store.credentials(host: host, kind: kind)) ?? nil
+        var credentials = await savedCredentials(host: host, kind: kind)
         var acceptedHostKey = hostKeys.fingerprint(host: host)
         var fromPrompt = false
         var hostKeyPrompted = false
@@ -640,7 +683,7 @@ public final class SyncModel {
             switch result {
             case let .success(outcome):
                 if fromPrompt, let credentials {
-                    try? store.store(credentials, host: host, kind: kind)
+                    await remember(credentials, host: host, kind: kind)
                 }
                 return outcome
             case let .failure(.hostKeyUnknown(message, hostKey)):
@@ -691,6 +734,50 @@ public final class SyncModel {
                 fromPrompt = true
             }
         }
+    }
+
+    /// The credentials to try first for `host`: the ones this workflow already settled on, or
+    /// else the store's, read once off the main actor (a keychain read can wait on an access
+    /// dialog). A failed read is logged and reported, and the workflow goes on without
+    /// credentials, as it does when nothing is stored, rather than read again.
+    private func savedCredentials(host: String, kind: CredentialKind) async -> Credentials? {
+        if let known = workflowCredentials, known.host == host, known.kind == kind {
+            return known.credentials
+        }
+        let store = store
+        let read = await Task.detached(priority: .userInitiated) {
+            Result { try store.credentials(host: host, kind: kind) }
+        }.value
+        switch read {
+        case let .success(found):
+            workflowCredentials = WorkflowCredentials(host: host, kind: kind, credentials: found)
+            return found
+        case let .failure(error):
+            let message = Self.message(of: error)
+            Self.logger.error(
+                "credential read failed for \(host, privacy: .public): \(message, privacy: .public)"
+            )
+            credentialNotice = "the saved credentials could not be read: \(message)"
+            workflowCredentials = WorkflowCredentials(host: host, kind: kind, credentials: nil)
+            return nil
+        }
+    }
+
+    /// Keeps prompted credentials the server accepted, for the rest of the workflow and in
+    /// the store. A failed write is logged and reported; the step that used them still
+    /// succeeded.
+    private func remember(_ credentials: Credentials, host: String, kind: CredentialKind) async {
+        workflowCredentials = WorkflowCredentials(host: host, kind: kind, credentials: credentials)
+        let store = store
+        let write = await Task.detached(priority: .userInitiated) {
+            Result { try store.store(credentials, host: host, kind: kind) }
+        }.value
+        guard case let .failure(error) = write else { return }
+        let message = Self.message(of: error)
+        Self.logger.error(
+            "credential write failed for \(host, privacy: .public): \(message, privacy: .public)")
+        let secret = kind == .httpsToken ? "token" : "passphrase"
+        credentialNotice = "signed in, but the \(secret) was not saved: \(message)"
     }
 
     /// One network attempt: the performer, the host the credentials belong to, the

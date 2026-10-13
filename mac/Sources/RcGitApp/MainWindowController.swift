@@ -145,7 +145,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changesController.showAuthor(nil)
         Task { await author.refresh() }
         let sync = SyncModel(
-            repoPath: path, performer: GuardSyncPerformer(), store: KeychainCredentialStore())
+            repoPath: path, performer: GuardSyncPerformer(), store: AppDelegate.credentialStore)
         syncModel = sync
         wireSync(sync)
         Task { await sync.refreshStatus() }
@@ -1208,6 +1208,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             syncToolbarItem?.toolTip = idleSyncTooltip()
             if summary.pulledFiles > 0 {
                 changeListIsStale()
+            }
+            if let notice = summary.notice {
+                presentError(notice, title: "rc-git synced, with a problem")
             }
             sync.reset()
         case let .diverged(message):
