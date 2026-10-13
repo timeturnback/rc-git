@@ -27,6 +27,12 @@ import Testing
         #expect(!RefWatchFilter.isRelevant("/tmp/repo/.github/refs", gitDir: gitDir))
     }
 
+    @Test func configEditsAreRelevantButItsLockIsNot() {
+        #expect(RefWatchFilter.isRelevant("/tmp/repo/.git/config", gitDir: gitDir))
+        #expect(!RefWatchFilter.isRelevant("/tmp/repo/.git/config.lock", gitDir: gitDir))
+        #expect(!RefWatchFilter.isRelevant("/tmp/repo/.git/configx", gitDir: gitDir))
+    }
+
     @Test func trailingSlashOnGitDirIsTolerated() {
         #expect(RefWatchFilter.isRelevant("/tmp/repo/.git/HEAD", gitDir: gitDir + "/"))
     }

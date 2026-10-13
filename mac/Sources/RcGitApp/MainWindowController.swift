@@ -510,7 +510,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             if action == #selector(fetchRemote(_:)) {
                 return true
             }
-            return status?.hasUpstream != false
+            if action == #selector(pushRemote(_:)) {
+                return SyncTitles.canPush(status: status, busy: syncModel.isBusy)
+            }
+            return SyncTitles.canPull(status: status, busy: syncModel.isBusy)
         }
         return true
     }
@@ -1269,16 +1272,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return "\(title) — switch, fetch, and fast-forward"
     }
 
-    /// "Sync — 2 to push, 3 to pull" while idle, from the last preflight.
+    /// The idle tooltip, from the last preflight or the reason it failed.
     private func idleSyncTooltip() -> String {
-        guard let status = syncModel?.remoteStatus, status.hasUpstream else { return "Sync" }
-        if status.ahead == 0 && status.behind == 0 {
-            return "Sync — up to date"
-        }
-        var parts: [String] = []
-        if status.ahead > 0 { parts.append("\(status.ahead) to push") }
-        if status.behind > 0 { parts.append("\(status.behind) to pull") }
-        return "Sync — " + parts.joined(separator: ", ")
+        SyncTitles.idleSyncTooltip(
+            status: syncModel?.remoteStatus, error: syncModel?.statusError)
     }
 
     /// rc-git only fast-forwards, so a diverged branch is reconciled in git. The sheet names

@@ -6,8 +6,12 @@ import Testing
 /// A scripted performer: each step returns its queued results in order, or throws.
 private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     struct Script {
-        var preflights: [RemoteStatus]
+        /// One answer per preflight, the last one repeating; `nil` makes that preflight throw.
+        var preflights: [RemoteStatus?]
+        /// Seconds each preflight sleeps before answering, in call order.
+        var preflightDelays: [TimeInterval] = []
         var defaultBranch: String? = "main"
+        var defaultBranchFails = false
         var fetches: [Result<FetchOutcome, SyncError>] = []
         var pulls: [Result<PullOutcome, SyncError>] = []
         var checkouts: [Result<CheckoutOutcome, SyncError>] = []
@@ -22,6 +26,8 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private(set) var checkoutBranches: [String] = []
     private(set) var pullCalls = 0
     private(set) var pushCalls = 0
+    private(set) var preflightCalls = 0
+    private(set) var defaultBranchCalls = 0
     /// Called on the step's own thread, with that step's token, before the step
     /// answers. A test uses it to cancel exactly while the transfer is in flight.
     var duringStep: (@Sendable (CancelToken) -> Void)?
@@ -47,12 +53,20 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
 
     func preflight(repoPath: String) throws -> RemoteStatus {
         lock.lock()
-        defer { lock.unlock() }
-        if script.preflights.count > 1 {
-            return script.preflights.removeFirst()
+        preflightCalls += 1
+        let next: RemoteStatus?? =
+            script.preflights.count > 1
+            ? script.preflights.removeFirst() : script.preflights.first
+        let delay = script.preflightDelays.isEmpty ? 0 : script.preflightDelays.removeFirst()
+        lock.unlock()
+        if delay > 0 {
+            Thread.sleep(forTimeInterval: delay)
         }
-        guard let status = script.preflights.first else {
+        guard let next else {
             throw SyncError.failure(message: "no preflight scripted")
+        }
+        guard let status = next else {
+            throw SyncError.failure(message: "preflight failed")
         }
         return status
     }
@@ -60,6 +74,10 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     func defaultBranch(repoPath: String) throws -> String? {
         lock.lock()
         defer { lock.unlock() }
+        defaultBranchCalls += 1
+        if script.defaultBranchFails {
+            throw RepositoryError("cannot open /tmp/repo")
+        }
         return script.defaultBranch
     }
 
@@ -795,6 +813,172 @@ private let alreadyOnMain = CheckoutOutcome(
         }
         #expect(performer.fetchCredentials.isEmpty, "no network step may run")
     }
+
+    @Test func aFailedRefreshClearsTheStaleStatusAndSaysWhy() async {
+        let (model, _, _) = model(
+            .init(preflights: [StubSyncPerformer.upstream(ahead: 2), nil]))
+        await model.refreshStatus()
+        #expect(SyncTitles.push(model.remoteStatus) == "Push 2 Commits")
+        var changes = 0
+        model.onStateChanged = { changes += 1 }
+        await model.refreshStatus()
+
+        #expect(model.remoteStatus == nil, "a failed read must not keep the older count")
+        #expect(model.statusError == "preflight failed")
+        #expect(changes == 1, "the views hear about the failure")
+        #expect(SyncTitles.push(model.remoteStatus) == "Push")
+        #expect(!SyncTitles.canPull(status: model.remoteStatus, busy: false))
+        #expect(!SyncTitles.canPush(status: model.remoteStatus, busy: false))
+        #expect(
+            SyncTitles.idleSyncTooltip(status: model.remoteStatus, error: model.statusError)
+                == "Sync — couldn't read upstream status: preflight failed")
+    }
+
+    @Test func aSuccessfulRefreshAfterAFailureClearsTheError() async {
+        let (model, _, _) = model(.init(preflights: [nil, StubSyncPerformer.upstream()]))
+        await model.refreshStatus()
+        #expect(model.statusError != nil)
+        await model.refreshStatus()
+        #expect(model.statusError == nil)
+        #expect(model.remoteStatus == StubSyncPerformer.upstream())
+    }
+
+    @Test func aSlowRefreshDoesNotOverwriteTheFreshReadAWorkflowMade() async {
+        let (model, _, _) = model(
+            .init(
+                preflights: [
+                    StubSyncPerformer.upstream(ahead: 1), StubSyncPerformer.upstream(ahead: 2),
+                ],
+                preflightDelays: [1],
+                fetches: [.success(cleanFetch)]
+            ))
+        var seen: [Int?] = []
+        model.onStateChanged = { seen.append(model.remoteStatus?.ahead) }
+        let slow = Task { await model.refreshStatus() }
+        try? await Task.sleep(for: .milliseconds(50))
+        await model.fetch()
+        await slow.value
+
+        #expect(model.remoteStatus?.ahead == 2)
+        #expect(!seen.contains(1), "the older answer never lands: \(seen)")
+    }
+
+    @Test func aBurstOfRefreshesCostsTwoPreflightsAndOneMainlineRead() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()], preflightDelays: [1],
+                defaultBranch: nil))
+        let slow = Task { await model.refreshStatus() }
+        try? await Task.sleep(for: .milliseconds(50))
+        let burst = (0..<20).map { _ in Task { await model.refreshStatus() } }
+        await slow.value
+        for refresh in burst { await refresh.value }
+        #expect(performer.preflightCalls == 2, "the burst joins one more read")
+
+        await model.refreshStatus()
+        await model.refreshStatus()
+        #expect(
+            performer.defaultBranchCalls == 1,
+            "a repository that names no mainline is not asked again")
+        #expect(model.defaultBranch == nil)
+    }
+
+    @Test func aFailedMainlineReadIsRetriedOnTheNextRefresh() async {
+        let (model, performer, _) = model(
+            .init(preflights: [StubSyncPerformer.upstream()], defaultBranchFails: true))
+        await model.refreshStatus()
+        await model.refreshStatus()
+        #expect(performer.defaultBranchCalls == 2, "a failure is not an answer")
+    }
+
+    @Test func anUnreadableMainlineNamesTheCause() async {
+        let (model, performer, _) = model(
+            .init(preflights: [StubSyncPerformer.upstream()], defaultBranchFails: true))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .checkout)
+            #expect(message == "cannot read the mainline branch: cannot open /tmp/repo")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.checkoutBranches.isEmpty)
+    }
+
+    @Test func anUnreadableUpstreamAfterTheSwitchStopsBeforeTheFetch() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(), nil],
+                fetches: [.success(cleanFetch)],
+                checkouts: [.success(switchedToMain)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message == "cannot read the upstream status: preflight failed")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.checkoutBranches == ["main"])
+        #expect(performer.fetchCredentials.isEmpty, "no network step may run")
+    }
+
+    @Test func anUnreadableUpstreamRefusesTheFetchWithTheCause() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(), nil],
+                fetches: [.success(cleanFetch)]))
+        await model.refreshStatus()
+        await model.fetch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message == "cannot read the upstream status: preflight failed")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.isEmpty, "no network step may run")
+        #expect(model.remoteStatus == nil)
+    }
+
+    @Test func aCachedMissingUpstreamDoesNotRefuseOnceOneIsConfigured() async {
+        let noUpstream = RemoteStatus(
+            remote: "", url: "", host: "", branch: "main",
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+        let (model, performer, _) = model(
+            .init(
+                preflights: [noUpstream, StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)]))
+        await model.refreshStatus()
+        #expect(model.remoteStatus?.hasUpstream == false)
+        await model.fetch()
+
+        #expect(
+            model.state == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0)))
+        #expect(performer.fetchCredentials.count == 1)
+    }
+
+    @Test func aRemoteMovedSinceTheRefreshIsAskedForItsOwnCredentials() async {
+        let store = InMemoryCredentialStore([
+            "old.example.com": Credentials(username: "old", token: "old-token"),
+            "new.example.com": Credentials(username: "new", token: "new-token"),
+        ])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [
+                    StubSyncPerformer.upstream(host: "old.example.com"),
+                    StubSyncPerformer.upstream(host: "new.example.com"),
+                ],
+                fetches: [.success(cleanFetch)]
+            ), store: store)
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(performer.fetchCredentials.map { $0?.token } == ["new-token"])
+    }
 }
 
 @Suite struct SyncTitlesTests {
@@ -813,6 +997,35 @@ private let alreadyOnMain = CheckoutOutcome(
         let status = StubSyncPerformer.upstream(ahead: 3, behind: 1)
         #expect(SyncTitles.push(status) == "Push 3 Commits")
         #expect(SyncTitles.pull(status) == "Pull 1 Commit")
+    }
+
+    @Test func pullAndPushNeedAKnownUpstreamAndAnIdleModel() {
+        let noUpstream = RemoteStatus(
+            remote: "", url: "", host: "", branch: "main",
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+        let upstream = StubSyncPerformer.upstream()
+        #expect(!SyncTitles.canPull(status: nil, busy: false), "no status read yet")
+        #expect(!SyncTitles.canPush(status: nil, busy: false))
+        #expect(!SyncTitles.canPull(status: noUpstream, busy: false))
+        #expect(!SyncTitles.canPush(status: noUpstream, busy: false))
+        #expect(!SyncTitles.canPull(status: upstream, busy: true))
+        #expect(!SyncTitles.canPush(status: upstream, busy: true))
+        #expect(SyncTitles.canPull(status: upstream, busy: false))
+        #expect(SyncTitles.canPush(status: upstream, busy: false))
+    }
+
+    @Test func theIdleTooltipReadsTheLastPreflight() {
+        #expect(SyncTitles.idleSyncTooltip(status: nil, error: nil) == "Sync")
+        #expect(
+            SyncTitles.idleSyncTooltip(status: StubSyncPerformer.upstream(), error: nil)
+                == "Sync — up to date")
+        #expect(
+            SyncTitles.idleSyncTooltip(
+                status: StubSyncPerformer.upstream(ahead: 2, behind: 3), error: nil)
+                == "Sync — 2 to push, 3 to pull")
+        #expect(
+            SyncTitles.idleSyncTooltip(status: nil, error: "HEAD is detached")
+                == "Sync — couldn't read upstream status: HEAD is detached")
     }
 
     @Test func backToDefaultNamesTheBranchOnceItIsKnown() {

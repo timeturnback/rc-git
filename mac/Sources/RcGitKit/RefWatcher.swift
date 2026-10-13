@@ -1,14 +1,17 @@
 import CoreServices
 import Foundation
 
-/// Decides which filesystem events inside `.git` mean the refs may have changed.
+/// Decides which filesystem events inside `.git` mean the refs or their upstreams may have
+/// changed.
 ///
-/// The watcher observes the whole `.git` directory, because `HEAD` and `packed-refs` live at
-/// its top level while branches and tags live anywhere under `refs/`. Everything else in the
-/// directory (objects, index, logs) changes far more often and never affects the ref listing,
-/// so those events are filtered out here. Pure, so the filter is testable without FSEvents.
+/// The watcher observes the whole `.git` directory, because `HEAD`, `packed-refs` and `config`
+/// (remotes and upstreams) live at its top level while branches and tags live anywhere under
+/// `refs/`. Everything else in the directory (objects, index, logs) changes far more often and
+/// never affects the ref listing, so those events are filtered out here. Pure, so the filter
+/// is testable without FSEvents.
 public enum RefWatchFilter {
-    /// Whether an event at `path` can change the outcome of `refs()` or `head()`.
+    /// Whether an event at `path` can change the outcome of `refs()`, `head()`, or the
+    /// upstream status.
     public static func isRelevant(_ path: String, gitDir: String) -> Bool {
         let root = gitDir.hasSuffix("/") ? String(gitDir.dropLast()) : gitDir
         guard path == root || path.hasPrefix(root + "/") else { return false }
@@ -18,8 +21,10 @@ public enum RefWatchFilter {
         if relative.hasSuffix(".lock") { return false }
         // The directory itself: `packed-refs` rewrites and ref packs land as events here.
         if relative.isEmpty { return true }
-        return relative == "HEAD" || relative == "packed-refs" || relative == "refs"
-            || relative.hasPrefix("refs/")
+        // `config` names the remotes and upstreams the sync status reads: `git remote add`
+        // and `git branch -u` change nothing else.
+        return relative == "HEAD" || relative == "packed-refs" || relative == "config"
+            || relative == "refs" || relative.hasPrefix("refs/")
     }
 }
 
