@@ -1020,6 +1020,43 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fences_nested_past_the_cap_stay_plain() {
+        let mut doc = String::from("# L0\n\n");
+        for (level, run) in (1..=5).zip((4..=8).rev()) {
+            doc.push_str(&"`".repeat(run));
+            doc.push_str("md\n# L");
+            doc.push_str(&level.to_string());
+            doc.push_str("\n\n");
+        }
+        doc.push_str("```rust\nfn innermost() {}\n```\n");
+        for run in 4..=8 {
+            doc.push_str(&"`".repeat(run));
+            doc.push('\n');
+        }
+        let data = doc.as_bytes();
+        let spans = highlight(data, Language::Markdown, None).unwrap();
+        for level in 0..=3 {
+            let heading = format!("L{level}");
+            assert!(
+                classes_at(&spans, data, &heading).contains(&Class::Heading),
+                "{heading} sits within the depth cap and highlights"
+            );
+        }
+        for level in 4..=5 {
+            let heading = format!("L{level}");
+            assert_eq!(
+                classes_at(&spans, data, &heading),
+                Vec::new(),
+                "{heading} sits past the depth cap and stays plain"
+            );
+        }
+        assert!(
+            !classes_at(&spans, data, "innermost").contains(&Class::Function),
+            "a code fence past the depth cap stays plain"
+        );
+    }
+
+    #[test]
     fn markdown_merged_spans_stay_ordered_and_disjoint() {
         let data = b"# A *bold* title\n\n---\nkey: value\n---\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
         let spans = highlight(data, Language::Markdown, None).unwrap();
