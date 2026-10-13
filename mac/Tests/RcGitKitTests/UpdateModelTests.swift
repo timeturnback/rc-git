@@ -48,6 +48,14 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         return script.installFailure
     }
 
+    func handOff() async {
+        calls.append("handOff")
+    }
+
+    func reclaim() async {
+        calls.append("reclaim")
+    }
+
     func relaunch() async -> String? {
         calls.append("relaunch")
         return script.relaunchFailure
@@ -78,6 +86,8 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
     func sourceState() async -> SourceStateResult { .failure("unused") }
     func sync() async -> String? { "unused" }
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { "unused" }
+    func handOff() async {}
+    func reclaim() async {}
     func relaunch() async -> String? { "unused" }
 }
 
@@ -120,6 +130,9 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         _ = await hangOnce(.install)
         return nil
     }
+
+    func handOff() async {}
+    func reclaim() async {}
 
     func relaunch() async -> String? {
         calls.append("relaunch")
@@ -180,7 +193,8 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(model.state == .installed)
         #expect(
             environment.calls == [
-                "toolchain", "sourceState", "sync", "sourceState", "install", "relaunch",
+                "toolchain", "sourceState", "sync", "sourceState", "install", "handOff",
+                "relaunch",
             ])
         #expect(model.log.contains("on master"))
         #expect(model.log.contains("built RCGit.app"))
@@ -320,6 +334,36 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(message.contains("/Applications/RCGit.app"))
     }
 
+    /// The old process keeps running after a launch that failed, so the state it handed
+    /// over is taken back and recorded again.
+    @Test func aFailedRelaunchReclaimsTheHandedOffState() async {
+        let (model, environment) = Self.model(
+            .init(
+                sourceStates: [
+                    .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                    .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+                ],
+                relaunchFailure: "could not launch /Applications/RCGit.app"
+            ))
+        await model.start()
+        #expect(environment.calls.suffix(3) == ["handOff", "relaunch", "reclaim"])
+    }
+
+    /// A build that never relaunches never hands its state over either.
+    @Test func aFailedBuildKeepsTheState() async {
+        let (model, environment) = Self.model(
+            .init(
+                sourceStates: [
+                    .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                    .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+                ],
+                installFailure: "linker error"
+            ))
+        await model.start()
+        #expect(!environment.calls.contains("handOff"))
+        #expect(!environment.calls.contains("reclaim"))
+    }
+
     @Test func anUnreadableCheckoutFailsPreflight() async {
         let (model, _) = Self.model(.init(sourceStates: [.failure("cannot open /checkout")]))
         await model.start()
@@ -338,7 +382,8 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             build: Self.build(variant: .dev))
         await model.start()
         #expect(model.state == .installed)
-        #expect(environment.calls == ["toolchain", "sourceState", "install", "relaunch"])
+        #expect(
+            environment.calls == ["toolchain", "sourceState", "install", "handOff", "relaunch"])
         #expect(model.log.contains("uncommitted work goes in: a.rs"))
     }
 

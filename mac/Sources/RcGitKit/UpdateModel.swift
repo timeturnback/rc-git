@@ -110,6 +110,13 @@ public protocol UpdateEnvironment: Sendable {
     /// success. Bounded by the implementation, and stops — killing the build — when the
     /// calling Task is cancelled.
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String?
+    /// Hands the state the relaunched build reads — the open tabs — to it, and stops this
+    /// process recording that state. Runs just before `relaunch()`, so the new process
+    /// finds the state already written when it starts.
+    func handOff() async
+    /// Takes back what `handOff()` gave away, after a relaunch that failed: this process
+    /// keeps running, so it records its state again.
+    func reclaim() async
     /// Launches the installed bundle and quits this instance. `nil` on success.
     func relaunch() async -> String?
 }
@@ -118,8 +125,9 @@ public protocol UpdateEnvironment: Sendable {
 /// bundle's `UpdateMode` decides whether the fetch happens at all. Stops at the first
 /// failure and keeps the log, so the window can show what happened.
 ///
-/// Open tabs are not this model's concern — they live in `UserDefaults` under the bundle
-/// identifier, which an update does not change, so the relaunched app reopens them.
+/// Open tabs live in `UserDefaults` under the bundle identifier, which an update does not
+/// change, so the relaunched app reopens them. The model only decides when they are handed
+/// over and when a failed relaunch takes them back.
 @MainActor
 public final class UpdateModel {
     /// Kept bounded like every other buffer in the app: a build log is not a reason to
@@ -320,7 +328,9 @@ public final class UpdateModel {
             fail(.install, message)
             return
         }
+        await environment.handOff()
         if let message = await environment.relaunch() {
+            await environment.reclaim()
             fail(.install, message)
             return
         }

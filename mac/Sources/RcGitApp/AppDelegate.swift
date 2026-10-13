@@ -15,7 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let recentMenu = NSMenu(title: "Open Recent")
     private let build = AppBuild.current
     private var updateController: UpdateWindowController?
-    /// Set once the tabs were handed to a relaunching build; see `handOffTabs`.
+    /// Set while the tabs are handed to a relaunching build; see `handOffTabs` and
+    /// `reclaimTabs`.
     private var tabsHandedOff = false
     /// The stops the user went through, across every tab. In memory only: a stop names a
     /// tab, and closing the tab drops its stops.
@@ -103,7 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let controller =
             updateController
             ?? UpdateWindowController(
-                build: build, handOffState: { [weak self] in self?.handOffTabs() })
+                build: build, handOffState: { [weak self] in self?.handOffTabs() },
+                reclaimState: { [weak self] in self?.reclaimTabs() })
         updateController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -348,6 +350,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let state = tabState()
         openTabs.handOff(live: state.paths, selectedIndex: state.selectedIndex)
         tabsHandedOff = true
+    }
+
+    /// Undoes `handOffTabs` after a relaunch that failed: this process keeps running, so it
+    /// records its tabs again, starting with the ones on screen now.
+    func reclaimTabs() {
+        tabsHandedOff = false
+        saveTabs()
     }
 
     private func tabState() -> (paths: [String], selectedIndex: Int) {

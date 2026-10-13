@@ -28,7 +28,9 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// The window sheets attach to, resolved when a prompt is actually needed.
     let window: @MainActor @Sendable () -> NSWindow?
     /// Runs on the main actor just before the new bundle is launched.
-    let willRelaunch: @MainActor @Sendable () -> Void
+    let handOffState: @MainActor @Sendable () -> Void
+    /// Runs on the main actor when the launch failed and this process keeps running.
+    let reclaimState: @MainActor @Sendable () -> Void
 
     /// Runs `script` through a login `zsh`, so the toolchain on `PATH` is the one the
     /// user's terminal has — rustup and Homebrew both install themselves into a shell
@@ -150,8 +152,15 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }
     }
 
+    func handOff() async {
+        await MainActor.run { handOffState() }
+    }
+
+    func reclaim() async {
+        await MainActor.run { reclaimState() }
+    }
+
     func relaunch() async -> String? {
-        await MainActor.run { willRelaunch() }
         let target = URL(fileURLWithPath: relaunchPath)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true

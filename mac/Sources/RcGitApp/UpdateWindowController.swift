@@ -22,8 +22,12 @@ final class UpdateWindowController: NSWindowController {
 
     /// `handOffState` runs just before the new bundle is launched, so the tabs the
     /// relaunched app reopens are the ones on screen now. It flushes them: this process is
-    /// still alive when the new one reads them.
-    init(build: AppBuild, handOffState: @escaping @MainActor @Sendable () -> Void) {
+    /// still alive when the new one reads them. `reclaimState` undoes it when the launch
+    /// fails and this process keeps running.
+    init(
+        build: AppBuild, handOffState: @escaping @MainActor @Sendable () -> Void,
+        reclaimState: @escaping @MainActor @Sendable () -> Void
+    ) {
         self.build = build
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 440),
@@ -38,7 +42,8 @@ final class UpdateWindowController: NSWindowController {
                 mode: mode,
                 relaunchPath: relaunchPath,
                 window: { [weak window] in window },
-                willRelaunch: handOffState)
+                handOffState: handOffState,
+                reclaimState: reclaimState)
         }
         model = UpdateModel(
             build: build, environment: environment ?? UnavailableUpdateEnvironment())
@@ -192,5 +197,7 @@ private struct UnavailableUpdateEnvironment: UpdateEnvironment {
     func sourceState() async -> SourceStateResult { .failure(Self.reason) }
     func sync() async -> String? { Self.reason }
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { Self.reason }
+    func handOff() async {}
+    func reclaim() async {}
     func relaunch() async -> String? { Self.reason }
 }
