@@ -501,6 +501,15 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(link == MarkdownLink(destination: "docs/x.md", title: "Title"))
     }
 
+    @Test func inlineAndReferenceTitlesAgreeForEveryQuoting() {
+        for (title, expected) in [("\"T\"", "T"), ("'T'", "T"), ("(T)", "T"), ("\"\"", "")] {
+            let inline = runs("[a](x \(title))").first?.link
+            let reference = runs("[a][r]\n\n[r]: x \(title)\n").first?.link
+            #expect(inline == MarkdownLink(destination: "x", title: expected), "\(title)")
+            #expect(reference == inline, "\(title)")
+        }
+    }
+
     @Test func referenceLinksResolveInEitherOrder() {
         let before = runs("[a][ref]\n\n[ref]: https://example.com\n")
         #expect(before.first?.link?.destination == "https://example.com")
@@ -552,6 +561,13 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(upper) == "Visit WWW.Example.com today")
         let lower = runs("Visit www.example.com today")
         #expect(lower.compactMap { $0.link?.destination } == ["https://www.example.com"])
+    }
+
+    @Test func bareURLPrefixesMatchInEitherCase() {
+        for url in ["HTTPS://X.COM", "Http://x.com", "https://x.com"] {
+            #expect(runs("go \(url) now").compactMap { $0.link?.destination } == [url], "\(url)")
+        }
+        #expect(runs("go ftp://x.com now").allSatisfy { $0.link == nil })
     }
 
     @Test func bareURLKeepsABalancedClosingParenthesis() {

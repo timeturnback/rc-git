@@ -213,10 +213,9 @@ struct InlineScanner {
             return angle(at: cursor, end: end, style: style, link: link)
         case Ascii.newline:
             return lineBreak(at: cursor, end: end)
-        case 0x68, 0x48, 0x77, 0x57:
-            return bareURL(at: cursor, end: end, style: style, link: link)
         default:
-            return nil
+            return Self.urlStart[Int(bytes[cursor])]
+                ? bareURL(at: cursor, end: end, style: style, link: link) : nil
         }
     }
 
@@ -701,6 +700,16 @@ extension InlineScanner {
     private static let urlPrefixes: [[UInt8]] = [
         Array("https://".utf8), Array("http://".utf8), Array("www.".utf8),
     ]
+
+    /// Indexed by byte: true for the first byte of a `urlPrefixes` entry, in either case.
+    private static let urlStart: [Bool] = {
+        var table = [Bool](repeating: false, count: 256)
+        for first in urlPrefixes.compactMap(\.first) {
+            table[Int(first)] = true
+            table[Int(first & ~0x20)] = true
+        }
+        return table
+    }()
 
     private static func isURLByte(_ byte: UInt8) -> Bool {
         byte > Ascii.space && byte != Ascii.lessThan && byte != Ascii.greaterThan

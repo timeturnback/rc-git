@@ -498,25 +498,13 @@ extension MarkdownBlockParser {
         while end < after.upperBound, !Ascii.isSpace(bytes[end]) { end += 1 }
         let destination = MarkdownInlineParser.unangled(text(after.lowerBound..<end))
         let trailing = trimmedEnd(of: trimmedStart(of: end..<after.upperBound))
-        let title = quotedTitle(trailing)
+        let title = MarkdownInlineParser.unquoted(text(trailing))
         guard trailing.isEmpty || title != nil else { return nil }
         return (label, MarkdownLink(destination: destination, title: title))
     }
 
     private func isReferenceDefinition(_ body: Range<Int>) -> Bool {
         referenceDefinition(body) != nil
-    }
-
-    private func quotedTitle(_ range: Range<Int>) -> String? {
-        guard range.count >= 2 else { return nil }
-        let open = bytes[range.lowerBound]
-        let close = bytes[range.upperBound - 1]
-        let matches =
-            (open == Ascii.quote && close == Ascii.quote)
-            || (open == Ascii.apostrophe && close == Ascii.apostrophe)
-            || (open == Ascii.leftParen && close == Ascii.rightParen)
-        guard matches else { return nil }
-        return text((range.lowerBound + 1)..<(range.upperBound - 1))
     }
 
     /// Block-level tags whose line starts raw HTML. Inline tags such as `<b>` are left to the
