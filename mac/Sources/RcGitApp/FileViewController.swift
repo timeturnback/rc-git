@@ -502,8 +502,13 @@ extension FileViewController: NSTextViewDelegate {
             items.append(item("Open File", #selector(openLink(_:)), destination))
         case .fragment:
             items.append(item("Go to Section", #selector(openLink(_:)), destination))
-        case .external:
+        case .web:
             items.append(item("Open in Browser", #selector(openLink(_:)), destination))
+        case let .otherScheme(url):
+            if let app = NSWorkspace.shared.urlForApplication(toOpen: url) {
+                let title = "Open with \(Self.appName(app))\u{2026}"
+                items.append(item(title, #selector(openLink(_:)), destination))
+            }
         }
         items.append(item("Copy Link", #selector(copyLink(_:)), Self.copyText(for: target)))
         items.append(.separator())
@@ -528,16 +533,19 @@ extension FileViewController: NSTextViewDelegate {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    /// Follows one markdown destination: a URL goes to the browser, a repository path is
-    /// handed up so the pane can show that file, and a bare fragment scrolls this one.
+    /// Follows one markdown destination: a web link goes to the browser, any other scheme
+    /// opens only after the user confirms the sheet naming it, a repository path is handed up
+    /// so the pane can show that file, and a bare fragment scrolls this one.
     private func open(destination: String) {
         guard let target = MarkdownLinkTarget.resolve(destination, from: repositoryPath) else {
             NSSound.beep()
             return
         }
         switch target {
-        case let .external(url):
+        case let .web(url):
             NSWorkspace.shared.open(url)
+        case let .otherScheme(url):
+            confirmOpen(url)
         case let .repositoryPath(path, fragment):
             pendingAnchor = fragment
             onOpenRepositoryPath?(path)
@@ -547,11 +555,41 @@ extension FileViewController: NSTextViewDelegate {
         }
     }
 
+    /// A link outside the web hands its URL to whichever app claims the scheme (Terminal for
+    /// `ssh:`, Finder for `smb:`), and the repository's author wrote it. Nothing launches
+    /// until the user has seen the full URL and the app, and said yes.
+    private func confirmOpen(_ url: URL) {
+        guard let app = NSWorkspace.shared.urlForApplication(toOpen: url),
+            let window = view.window
+        else {
+            NSSound.beep()
+            return
+        }
+        let name = Self.appName(app)
+        let alert = NSAlert()
+        alert.messageText = "Open this link with \(name)?"
+        alert.informativeText =
+            "The link is not a web address. Opening it hands it to \(name):\n\n"
+            + url.absoluteString
+            + "\n\nOpen it only if you trust the repository it came from."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open with \(name)")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private static func appName(_ app: URL) -> String {
+        app.deletingPathExtension().lastPathComponent
+    }
+
     /// What "Copy Link" puts on the pasteboard: the absolute URL for the web, and the
     /// repository-relative path for anything inside the repository.
     private static func copyText(for target: MarkdownLinkTarget) -> String {
         switch target {
-        case let .external(url): return url.absoluteString
+        case let .web(url), let .otherScheme(url): return url.absoluteString
         case let .repositoryPath(path, fragment):
             return fragment.map { "\(path)#\($0)" } ?? path
         case let .fragment(name): return "#\(name)"

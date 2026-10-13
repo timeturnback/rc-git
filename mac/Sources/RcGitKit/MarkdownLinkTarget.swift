@@ -4,16 +4,23 @@ import Foundation
 /// resolves every link through this, so clicking, copying, and the context menu all agree on
 /// what a destination means.
 public enum MarkdownLinkTarget: Sendable, Hashable {
-    /// Something a browser handles: `https:`, `mailto:`, or any other scheme.
-    case external(URL)
+    private static let browserSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// A web or mail link: `http:`, `https:`, `mailto:`, or a scheme-relative `//host` link.
+    /// Safe to hand to the system without asking.
+    case web(URL)
+    /// Any other scheme (`ssh:`, `smb:`, `vnc:`, an app's own scheme). The system hands it to
+    /// whichever app claims the scheme, so the preview asks before opening it.
+    case otherScheme(URL)
     /// Another file in the repository, with the heading fragment the link asked for.
     case repositoryPath(String, fragment: String?)
     /// A jump inside the file already on screen.
     case fragment(String)
 
     /// Resolves `destination` as written in a file at `sourcePath`. Returns `nil` for an empty
-    /// destination, for a relative path that climbs above the repository root, and for a
-    /// scheme the URL parser rejects.
+    /// destination, for a relative path that climbs above the repository root, for a `file:`
+    /// URL, and for a scheme the URL parser rejects. Only `browserSchemes` resolve to `.web`;
+    /// every other scheme resolves to `.otherScheme`.
     ///
     /// `sourcePath` is the repository-relative path of the file being shown; when it is `nil`
     /// a relative destination is read as if the file sat at the repository root.
@@ -23,10 +30,10 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if trimmed.hasPrefix("#") { return .fragment(String(trimmed.dropFirst())) }
-        if trimmed.hasPrefix("//") { return URL(string: "https:\(trimmed)").map(Self.external) }
+        if trimmed.hasPrefix("//") { return URL(string: "https:\(trimmed)").map(Self.web) }
         if let scheme = Self.scheme(of: trimmed) {
-            guard scheme != "file" else { return nil }
-            return URL(string: trimmed).map(Self.external)
+            guard scheme != "file", let url = URL(string: trimmed) else { return nil }
+            return browserSchemes.contains(scheme) ? .web(url) : .otherScheme(url)
         }
         return repositoryTarget(trimmed, from: sourcePath)
     }

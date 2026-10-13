@@ -257,7 +257,8 @@ private struct MarkdownBuilder {
             attributes[.link] = link.destination
             attributes[.foregroundColor] = NSColor.linkColor
             attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
-            if let title = link.title { attributes[.toolTip] = title }
+            attributes[.toolTip] =
+                link.title.map { "\($0)\n\(link.destination)" } ?? link.destination
         }
         return attributes
     }

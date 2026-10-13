@@ -10,14 +10,29 @@ import Testing
         MarkdownLinkTarget.resolve(destination, from: source)
     }
 
-    @Test func schemesGoToTheBrowser() {
-        #expect(resolve("https://example.com") == .external(URL(string: "https://example.com")!))
-        #expect(resolve("mailto:a@b.com") == .external(URL(string: "mailto:a@b.com")!))
-        #expect(resolve("//example.com/x") == .external(URL(string: "https://example.com/x")!))
+    @Test func webSchemesGoToTheBrowser() {
+        #expect(resolve("https://example.com") == .web(URL(string: "https://example.com")!))
+        #expect(resolve("http://example.com") == .web(URL(string: "http://example.com")!))
+        #expect(resolve("HTTPS://example.com") == .web(URL(string: "HTTPS://example.com")!))
+        #expect(resolve("mailto:a@b.com") == .web(URL(string: "mailto:a@b.com")!))
+        #expect(resolve("//example.com/x") == .web(URL(string: "https://example.com/x")!))
+    }
+
+    @Test func otherSchemesAreNotWebLinks() {
+        #expect(resolve("smb://h/share") == .otherScheme(URL(string: "smb://h/share")!))
+        #expect(resolve("ssh://h") == .otherScheme(URL(string: "ssh://h")!))
+        #expect(resolve("vnc://h") == .otherScheme(URL(string: "vnc://h")!))
+        #expect(resolve("x-man-page://ls") == .otherScheme(URL(string: "x-man-page://ls")!))
+        #expect(resolve("vscode://x") == .otherScheme(URL(string: "vscode://x")!))
+        #expect(
+            resolve("applescript://com.apple.scripteditor?action=new")
+                == .otherScheme(URL(string: "applescript://com.apple.scripteditor?action=new")!))
+        #expect(resolve("my-app+v2:open") == .otherScheme(URL(string: "my-app+v2:open")!))
     }
 
     @Test func aLocalFileURLIsRefused() {
         #expect(resolve("file:///etc/passwd") == nil)
+        #expect(resolve("FILE:///etc/passwd") == nil)
     }
 
     @Test func aBareFragmentStaysInTheOpenFile() {
