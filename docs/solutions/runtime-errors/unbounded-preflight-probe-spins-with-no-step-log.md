@@ -117,8 +117,11 @@ user is already looking.
 ## Prevention
 
 - **Every out-of-process step in the updater is bounded.** A probe gets a hard limit and a
-  kill; a build does not (it legitimately takes minutes) but streams its output, so the log
-  keeps moving. Nothing may have only "success" and "forever" as outcomes.
+  kill. A build legitimately takes minutes, so it gets an idle clock (killed after 10 minutes
+  without output — a build blocked on another build's lock prints one line and then nothing),
+  a generous wall-clock limit, and a Cancel button while it runs. Every kill signals the
+  process group, so the cargo and swift a script `exec`s die with it instead of holding the
+  lock. Nothing may have only "success" and "forever" as outcomes.
 - **Log a step before running it, not after.** The log is the only account of where an update
   is sitting. `preflightLogsBothHalvesBeforeRunningThem` in
   `mac/Tests/RcGitKitTests/UpdateModelTests.swift` pins the order.

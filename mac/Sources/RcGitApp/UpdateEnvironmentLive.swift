@@ -13,6 +13,11 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// builtins in a login shell. Killing it turns a window that spins forever into one
     /// that names what to try in a terminal.
     static let toolchainTimeoutSeconds = 20
+    /// A build that prints nothing for this long is waiting, not working: cargo and swift
+    /// print steadily, while one blocked on another build's lock prints a line and stops.
+    static let buildIdleLimitMinutes = 10
+    /// The most a build may take in all, idle or not: several times a cold release build.
+    static let buildLimitMinutes = 45
 
     let sourceRoot: String
     /// What this update produces, which decides the script that runs and whether the
@@ -30,10 +35,11 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// profile, and an app launched from the Dock inherits none of it.
     private static func login(
         _ script: String, in directory: String, timeout: Duration? = nil,
-        onOutput: (@Sendable (String) -> Void)? = nil
+        idleTimeout: Duration? = nil, onOutput: (@Sendable (String) -> Void)? = nil
     ) async -> Shell.Outcome {
         await Shell.run(
-            "/bin/zsh", ["-lc", script], in: directory, timeout: timeout, onOutput: onOutput)
+            "/bin/zsh", ["-lc", script], in: directory, timeout: timeout,
+            idleTimeout: idleTimeout, onOutput: onOutput)
     }
 
     func toolchain() async -> ToolchainCheck {
@@ -41,7 +47,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         let outcome = await Self.login(
             "for tool in \(tools); do command -v $tool >/dev/null || echo $tool; done",
             in: sourceRoot, timeout: .seconds(Self.toolchainTimeoutSeconds))
-        if outcome.timedOut {
+        if outcome.stopped != nil {
             return .failure(
                 "the toolchain check did not answer in \(Self.toolchainTimeoutSeconds)s and was "
                     + "killed; your login shell is hanging — run "
@@ -87,11 +93,18 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }.value
     }
 
+    /// A cancel reaches the pull through `SyncModel.cancelRunning`, the same stop the
+    /// Changes tab's Cancel uses.
     func sync() async -> String? {
         let model = await MainActor.run { makeSyncModel() }
         let reconcile = ReconcileCommand.rebase(workDir: sourceRoot)
-        await model.refreshStatus()
-        await model.pull()
+        await withTaskCancellationHandler {
+            await model.refreshStatus()
+            guard !Task.isCancelled else { return }
+            await model.pull()
+        } onCancel: {
+            Task { @MainActor in model.cancelRunning() }
+        }
         return await MainActor.run {
             switch model.state {
             case .done:
@@ -117,10 +130,24 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
         let script = buildScript
         let command = "exec \(ShellWord.quote("\(sourceRoot)/\(script.path)"))\(script.arguments)"
-        let outcome = await Self.login(command, in: sourceRoot, onOutput: onOutput)
-        guard outcome.status != 0 else { return nil }
+        let outcome = await Self.login(
+            command, in: sourceRoot, timeout: .seconds(Self.buildLimitMinutes * 60),
+            idleTimeout: .seconds(Self.buildIdleLimitMinutes * 60), onOutput: onOutput)
         let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"
-        return "\(script.path)\(script.arguments) failed (status \(outcome.status)): \(lastLine)"
+        switch outcome.stopped {
+        case .idle:
+            return "stopped after \(Self.buildIdleLimitMinutes) min without output; "
+                + "last line: \(lastLine)"
+        case .timedOut:
+            return "stopped after \(Self.buildLimitMinutes) min, the build's limit; "
+                + "last line: \(lastLine)"
+        case .cancelled:
+            return "cancelled"
+        case nil:
+            guard outcome.status != 0 else { return nil }
+            return "\(script.path)\(script.arguments) failed (status \(outcome.status)): "
+                + lastLine
+        }
     }
 
     func relaunch() async -> String? {

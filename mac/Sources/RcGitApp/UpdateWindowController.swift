@@ -64,8 +64,9 @@ final class UpdateWindowController: NSWindowController {
         Task { await model.proceed() }
     }
 
+    /// The button: cancels the running fetch or build, otherwise does what `start()` does.
     @objc private func runUpdate(_ sender: Any?) {
-        start()
+        Task { await model.pressAction() }
     }
 
     // MARK: Views
@@ -84,7 +85,6 @@ final class UpdateWindowController: NSWindowController {
         spinner.isDisplayedWhenStopped = false
 
         actionButton.bezelStyle = .rounded
-        actionButton.keyEquivalent = "\r"
         actionButton.target = self
         actionButton.action = #selector(runUpdate(_:))
 
@@ -162,6 +162,7 @@ final class UpdateWindowController: NSWindowController {
         statusLabel.toolTip = copy.statusToolTip
         actionButton.title = copy.actionTitle
         actionButton.isEnabled = copy.actionEnabled
+        actionButton.keyEquivalent = copy.actionCancels ? "\u{1b}" : "\r"
     }
 
     /// Replaces the whole log and pins the view to the bottom: the log only ever grows,

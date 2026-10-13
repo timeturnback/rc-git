@@ -1,26 +1,43 @@
 import Foundation
 
 /// A bounded process runner: merged stdout and stderr streamed one line at a time, a
-/// timeout that kills, and a bounded wait for the last bytes. Nothing here waits forever.
+/// wall-clock limit and an idle limit that kill, a kill on Task cancellation, and a bounded
+/// wait for the last bytes. Nothing here waits forever.
+///
+/// Every kill signals the process group, not the pid: Foundation starts the child as its own
+/// group leader, so a script that `exec`s or spawns cargo and swift takes them down with it
+/// instead of leaving them holding the build lock.
 public enum Shell {
+    /// Why a command was stopped before it exited on its own.
+    public enum Stop: Sendable, Hashable {
+        /// It ran past its wall-clock limit.
+        case timedOut
+        /// It printed nothing for its idle limit.
+        case idle
+        /// The Task running it was cancelled.
+        case cancelled
+    }
+
     public struct Outcome: Sendable {
         public let status: Int32
         public let lines: [String]
-        /// Whether the command ran past its limit and was killed.
-        public let timedOut: Bool
+        /// Why the command was killed; `nil` when it exited on its own.
+        public let stopped: Stop?
     }
 
     /// How long the last bytes get to arrive after the process exits. A grandchild that
     /// inherited the pipe keeps it open, so this wait is bounded like every other.
     static let drainGrace = Duration.seconds(2)
-    /// How long a killed process gets to die before `SIGKILL`.
-    private static let killGrace = Duration.seconds(2)
+    /// How long a killed process group gets to die before `SIGKILL`.
+    static let killGrace = Duration.seconds(2)
 
-    /// Runs `executable` with `arguments` in `directory`. With a `timeout`, a command still
-    /// running at the limit is killed and the outcome says so.
+    /// Runs `executable` with `arguments` in `directory`. A command still running at
+    /// `timeout`, silent for `idleTimeout`, or running when the calling Task is cancelled is
+    /// killed with its process group, and the outcome says which.
     public static func run(
         _ executable: String, _ arguments: [String], in directory: String,
-        timeout: Duration? = nil, onOutput: (@Sendable (String) -> Void)? = nil
+        timeout: Duration? = nil, idleTimeout: Duration? = nil,
+        onOutput: (@Sendable (String) -> Void)? = nil
     ) async -> Outcome {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -38,19 +55,25 @@ public enum Shell {
             try process.run()
         } catch {
             collector.take(Data("cannot run \(executable): \(error)\n".utf8))
-            return Outcome(status: -1, lines: collector.finish(), timedOut: false)
+            return Outcome(status: -1, lines: collector.finish(), stopped: nil)
         }
 
         let drained = drain(pipe.fileHandleForReading, into: collector)
-        let expired = Flag()
-        let watchdog = timeout.map { limit in
-            kill(process.processIdentifier, after: limit, recording: expired)
+        let killer = GroupKiller(process.processIdentifier)
+        let watchdogs = [
+            timeout.map { limit in wallClock(limit, killer) },
+            idleTimeout.map { limit in idleClock(limit, collector, killer) },
+        ].compactMap { $0 }
+        await withTaskCancellationHandler {
+            await exited.wait()
+        } onCancel: {
+            killer.stop(.cancelled)
         }
-        await exited.wait()
-        watchdog?.cancel()
+        for watchdog in watchdogs { watchdog.cancel() }
+        await killer.finish()
         await drained.wait(upTo: drainGrace)
         return Outcome(
-            status: process.terminationStatus, lines: collector.finish(), timedOut: expired.isSet)
+            status: process.terminationStatus, lines: collector.finish(), stopped: killer.reason)
     }
 
     /// Reads the pipe to EOF on a thread of its own. `availableData` blocks, and a blocked
@@ -70,49 +93,96 @@ public enum Shell {
         return finished
     }
 
-    /// Kills `pid` once `limit` has passed: `SIGTERM`, then `SIGKILL` for a process that
-    /// ignores it. Cancelled the moment the process exits on its own.
-    private static func kill(
-        _ pid: Int32, after limit: Duration, recording expired: Flag
-    ) -> Task<Void, Never> {
+    /// Stops the command once `limit` has passed. Cancelled the moment it exits on its own.
+    private static func wallClock(_ limit: Duration, _ killer: GroupKiller) -> Task<Void, Never> {
         Task {
             // A cancelled sleep is the process exiting first; the guard below handles it.
             try? await Task.sleep(for: limit)
             guard !Task.isCancelled else { return }
-            expired.set()
-            Darwin.kill(pid, SIGTERM)
-            try? await Task.sleep(for: killGrace)
-            guard !Task.isCancelled else { return }
-            Darwin.kill(pid, SIGKILL)
+            killer.stop(.timedOut)
+        }
+    }
+
+    /// Stops the command once it has printed nothing for `limit`: a build prints steadily,
+    /// while one waiting on a lock prints a line and then nothing. Sleeps until the moment
+    /// the limit would run out, and re-arms when output arrived in the meantime.
+    private static func idleClock(
+        _ limit: Duration, _ collector: LineCollector, _ killer: GroupKiller
+    ) -> Task<Void, Never> {
+        Task {
+            while !Task.isCancelled {
+                let deadline = collector.lastActivity + limit
+                if ContinuousClock.now >= deadline {
+                    killer.stop(.idle)
+                    return
+                }
+                // A cancelled sleep is the process exiting first; the loop condition stops it.
+                try? await Task.sleep(until: deadline, clock: .continuous)
+            }
         }
     }
 }
 
-/// A one-shot flag, set from whichever thread gets there first. Thread-safe through `lock`.
-final class Flag: @unchecked Sendable {
+/// Kills one process group, once: `SIGTERM`, then `SIGKILL` for whatever is left after the
+/// grace. The first `stop` records why; later ones are no-ops. Thread-safe through `lock`.
+final class GroupKiller: @unchecked Sendable {
+    private let pid: Int32
     private let lock = NSLock()
-    private var value = false
+    private var stopReason: Shell.Stop?
+    private var task: Task<Void, Never>?
 
-    func set() {
-        lock.lock()
-        value = true
-        lock.unlock()
+    init(_ pid: Int32) {
+        self.pid = pid
     }
 
-    var isSet: Bool {
+    var reason: Shell.Stop? {
         lock.lock()
         defer { lock.unlock() }
-        return value
+        return stopReason
+    }
+
+    func stop(_ reason: Shell.Stop) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard stopReason == nil else { return }
+        stopReason = reason
+        let pid = pid
+        task = Task.detached {
+            Self.signal(pid, SIGTERM)
+            let clock = ContinuousClock()
+            let deadline = clock.now + Shell.killGrace
+            while clock.now < deadline, Darwin.kill(-pid, 0) == 0 {
+                // Cancellation is never requested on this task; the sleep cannot fail early.
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            Self.signal(pid, SIGKILL)
+        }
+    }
+
+    /// Waits for a kill under way to finish, so nothing it signalled is still alive when the
+    /// run returns. Returns at once when nothing was stopped.
+    func finish() async {
+        let running = lock.withLock { task }
+        await running?.value
+    }
+
+    /// Signals the group. The group outlives its leader while a grandchild is in it, and a
+    /// group id is not reused while the group exists, so a signal sent after the leader
+    /// exited reaches only what it left behind.
+    private static func signal(_ pid: Int32, _ signal: Int32) {
+        // ESRCH means the group is already gone, which is what the kill is for.
+        _ = Darwin.kill(-pid, signal)
     }
 }
 
 /// Splits streamed bytes into lines. Buffers on `Data`, not `String`, so a multi-byte
 /// character split across two reads survives. Reads arrive on a background thread;
-/// `lock` guards the buffer and the lines.
+/// `lock` guards the buffer, the lines and the clock.
 final class LineCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
     private var lines: [String] = []
+    private var lastRead = ContinuousClock.now
     private let onOutput: (@Sendable (String) -> Void)?
 
     init(onOutput: (@Sendable (String) -> Void)?) {
@@ -123,6 +193,7 @@ final class LineCollector: @unchecked Sendable {
         guard !data.isEmpty else { return }
         var complete: [String] = []
         lock.lock()
+        lastRead = .now
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0A) {
             complete.append(String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self))
@@ -131,6 +202,13 @@ final class LineCollector: @unchecked Sendable {
         lines.append(contentsOf: complete)
         lock.unlock()
         for line in complete { onOutput?(line) }
+    }
+
+    /// When the last bytes arrived, or when the collector was made if none have.
+    var lastActivity: ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRead
     }
 
     /// Flushes a last line without a newline and returns everything collected.

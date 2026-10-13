@@ -103,10 +103,12 @@ public protocol UpdateEnvironment: Sendable {
     func toolchain() async -> ToolchainCheck
     /// The checkout's commit and dirty paths, or why they could not be read.
     func sourceState() async -> SourceStateResult
-    /// Fetches and fast-forwards the checkout. `nil` on success.
+    /// Fetches and fast-forwards the checkout. `nil` on success. Stops early when the
+    /// calling Task is cancelled.
     func sync() async -> String?
     /// Builds and installs the release bundle, streaming the script's output. `nil` on
-    /// success.
+    /// success. Bounded by the implementation, and stops — killing the build — when the
+    /// calling Task is cancelled.
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String?
     /// Launches the installed bundle and quits this instance. `nil` on success.
     func relaunch() async -> String?
@@ -130,6 +132,11 @@ public final class UpdateModel {
 
     private let build: AppBuild
     private let environment: UpdateEnvironment
+    /// The attempt under way, kept so `cancel()` can stop it.
+    private var running: Task<Void, Never>?
+    /// Counts attempts, so a line a cancelled build prints late never lands in the next
+    /// attempt's log.
+    private var attempt = 0
 
     public init(build: AppBuild, environment: UpdateEnvironment) {
         self.build = build
@@ -145,8 +152,45 @@ public final class UpdateModel {
     /// commit this bundle was built from; it means nothing in `.rebuild`, which always
     /// builds.
     public func start(force: Bool = false) async {
-        guard !isBusy else { return }
+        guard !isBusy, running == nil else { return }
+        attempt += 1
         log = []
+        // Cleared inside the task, in the same turn that settles the state, so the model is
+        // never idle while still holding a finished attempt.
+        let task = Task {
+            await run(force: force)
+            running = nil
+        }
+        running = task
+        await task.value
+    }
+
+    /// Stops the attempt under way: the fetch or the build is killed, and the update ends
+    /// `.failed` with "cancelled", so Try Again starts clean. A no-op when nothing runs.
+    public func cancel() {
+        running?.cancel()
+    }
+
+    /// Whether the button stops the update rather than starting one: while the fetch or
+    /// the build runs. Preflight is a bounded probe and is left to finish.
+    nonisolated public static func isCancellable(state: UpdateState) -> Bool {
+        switch state {
+        case .running(.sync), .running(.install): true
+        case .running(.preflight), .idle, .upToDate, .installed, .failed: false
+        }
+    }
+
+    /// What the window's button does: cancel while the fetch or the build runs, otherwise
+    /// `proceed()`. The shortcut calls `proceed()` alone, so it never cancels.
+    public func pressAction() async {
+        if Self.isCancellable(state: state) {
+            cancel()
+        } else {
+            await proceed()
+        }
+    }
+
+    private func run(force: Bool) async {
         guard let mode = build.updateMode, let root = build.sourceRoot else {
             fail(.preflight, Self.unstampedMessage(build.variant))
             return
@@ -245,7 +289,9 @@ public final class UpdateModel {
         }
         enter(.sync)
         note("fetching and fast-forwarding")
-        if let message = await environment.sync() {
+        let message = await environment.sync()
+        guard !stoppedByCancel(.sync) else { return false }
+        if let message {
             fail(.sync, message)
             return false
         }
@@ -262,9 +308,15 @@ public final class UpdateModel {
     /// Builds the bundle, puts it in place, and launches it.
     private func buildAndRelaunch() async {
         enter(.install)
-        if let message = await environment.install(onOutput: { [weak self] line in
-            Task { @MainActor in self?.note(line) }
-        }) {
+        let current = attempt
+        let message = await environment.install(onOutput: { [weak self] line in
+            Task { @MainActor in
+                guard let self, self.attempt == current else { return }
+                self.note(line)
+            }
+        })
+        guard !stoppedByCancel(.install) else { return }
+        if let message {
             fail(.install, message)
             return
         }
@@ -301,6 +353,15 @@ public final class UpdateModel {
             fail(step, message)
             return nil
         }
+    }
+
+    /// Ends the update as cancelled when `cancel()` landed during `step`. Checked after the
+    /// step returns, so a build that finished at the moment of the cancel still never
+    /// relaunches.
+    private func stoppedByCancel(_ step: UpdateStep) -> Bool {
+        guard Task.isCancelled else { return false }
+        fail(step, "cancelled")
+        return true
     }
 
     private func enter(_ step: UpdateStep) {

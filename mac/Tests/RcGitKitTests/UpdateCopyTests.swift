@@ -51,13 +51,21 @@ import Testing
         #expect(!UpdateCopy(build: Self.unstamped, state: failed).actionEnabled)
     }
 
-    @Test func runningSpinsAndDisablesTheAction() {
+    @Test func runningSpinsAndOffersCancelForTheFetchAndTheBuild() {
         for build in [Self.release, Self.dev] {
             for step in [UpdateStep.preflight, .sync, .install] {
                 let copy = UpdateCopy(build: build, state: .running(step))
                 #expect(copy.spinning, "\(build.variant) \(step)")
-                #expect(!copy.actionEnabled, "\(build.variant) \(step)")
                 #expect(copy.statusToolTip == nil, "\(build.variant) \(step)")
+            }
+            let preflight = UpdateCopy(build: build, state: .running(.preflight))
+            #expect(!preflight.actionEnabled)
+            #expect(!preflight.actionCancels)
+            for step in [UpdateStep.sync, .install] {
+                let copy = UpdateCopy(build: build, state: .running(step))
+                #expect(copy.actionEnabled, "\(build.variant) \(step)")
+                #expect(copy.actionCancels, "\(build.variant) \(step)")
+                #expect(copy.actionTitle == "Cancel", "\(build.variant) \(step)")
             }
         }
         #expect(

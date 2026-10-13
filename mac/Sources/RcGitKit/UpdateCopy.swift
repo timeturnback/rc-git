@@ -14,6 +14,8 @@ public struct UpdateCopy: Sendable, Hashable {
     public let statusToolTip: String?
     public let actionTitle: String
     public let actionEnabled: Bool
+    /// Whether the button cancels the running fetch or build; Return must not press it then.
+    public let actionCancels: Bool
     /// Whether work is under way: running a step, or relaunching.
     public let spinning: Bool
 
@@ -28,8 +30,9 @@ public struct UpdateCopy: Sendable, Hashable {
         } else {
             statusToolTip = nil
         }
-        actionTitle = Self.actionTitle(state, rebuild: rebuild)
-        actionEnabled = UpdateModel.canProceed(build: build, state: state)
+        actionCancels = UpdateModel.isCancellable(state: state)
+        actionTitle = actionCancels ? "Cancel" : Self.actionTitle(state, rebuild: rebuild)
+        actionEnabled = actionCancels || UpdateModel.canProceed(build: build, state: state)
         switch state {
         case .running, .installed: spinning = true
         case .idle, .upToDate, .failed: spinning = false

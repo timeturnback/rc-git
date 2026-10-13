@@ -81,6 +81,71 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
     func relaunch() async -> String? { "unused" }
 }
 
+/// A fetch or a build that never returns on its own: the first call to the `hanging` step
+/// suspends until its Task is cancelled, like a build waiting on another build's lock. Every
+/// later call succeeds at once, so a second attempt runs clean. The model calls one step at
+/// a time, so `calls` needs no lock; `entered` fires once the hang has begun.
+private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendable {
+    let hanging: UpdateStep
+    let entered = Signal()
+    private(set) var calls: [String] = []
+    /// The first build's output callback, kept so a test can print a line late.
+    private(set) var firstOutput: (@Sendable (String) -> Void)?
+
+    init(hanging: UpdateStep) {
+        self.hanging = hanging
+    }
+
+    func toolchain() async -> ToolchainCheck {
+        calls.append("toolchain")
+        return .ready
+    }
+
+    func sourceState() async -> SourceStateResult {
+        calls.append("sourceState")
+        let commit = calls.filter { $0 == "sourceState" }.count == 1 ? "a1" : "b2"
+        return .state(SourceState(commit: commit, branch: "master", dirtyPaths: []))
+    }
+
+    func sync() async -> String? {
+        calls.append("sync")
+        return await hangOnce(.sync) ? "the pull was cancelled" : nil
+    }
+
+    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
+        calls.append("install")
+        if firstOutput == nil { firstOutput = onOutput }
+        // Reports success even when cancelled, like a build that finished at the moment of
+        // the cancel: the model alone must keep it from relaunching.
+        _ = await hangOnce(.install)
+        return nil
+    }
+
+    func relaunch() async -> String? {
+        calls.append("relaunch")
+        return nil
+    }
+
+    /// Suspends until cancelled when `step` is the hanging one and this is its first call.
+    private func hangOnce(_ step: UpdateStep) async -> Bool {
+        guard step == hanging, calls.filter({ $0 == Self.name(step) }).count == 1 else {
+            return false
+        }
+        let cancelled = Signal()
+        await withTaskCancellationHandler {
+            entered.signal()
+            await cancelled.wait()
+        } onCancel: {
+            cancelled.signal()
+        }
+        return true
+    }
+
+    private static func name(_ step: UpdateStep) -> String {
+        step == .sync ? "sync" : "install"
+    }
+}
+
 @MainActor
 @Suite(.timeLimit(.minutes(1))) struct UpdateModelTests {
     private static let head = "a3f91c2d4e5f60718293a4b5c6d7e8f901234567"
@@ -391,6 +456,76 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
         environment.release.signal()
         await first.value
         #expect(environment.toolchainCalls == 1)
+    }
+
+    // MARK: cancel()
+
+    /// A build that never returns is stopped by Cancel: the update fails as cancelled,
+    /// never relaunches, and the next attempt runs clean.
+    @Test func cancelStopsAHungBuildAndTheNextAttemptRunsClean() async {
+        let environment = HangingStepEnvironment(hanging: .install)
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.start() }
+        await environment.entered.wait()
+        #expect(model.state == .running(.install))
+        await model.pressAction()
+        await first.value
+        #expect(model.state == .failed(step: .install, message: "cancelled"))
+        #expect(!environment.calls.contains("relaunch"))
+
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(environment.calls.filter { $0 == "install" }.count == 2)
+        #expect(environment.calls.filter { $0 == "relaunch" }.count == 1)
+    }
+
+    /// A line the cancelled build prints late stays out of the next attempt's log.
+    @Test func aCancelledBuildsLateOutputStaysOutOfTheNextLog() async throws {
+        let environment = HangingStepEnvironment(hanging: .install)
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.start() }
+        await environment.entered.wait()
+        model.cancel()
+        await first.value
+        await model.start()
+        let stale = try #require(environment.firstOutput)
+        stale("late line from the cancelled build")
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!model.log.contains("late line from the cancelled build"))
+    }
+
+    /// The fetch is cancellable too, and a cancelled fetch never reaches the build.
+    @Test func cancelStopsAHungFetchBeforeTheBuild() async {
+        let environment = HangingStepEnvironment(hanging: .sync)
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.start() }
+        await environment.entered.wait()
+        #expect(model.state == .running(.sync))
+        await model.pressAction()
+        await first.value
+        #expect(model.state == .failed(step: .sync, message: "cancelled"))
+        #expect(!environment.calls.contains("install"))
+    }
+
+    /// Preflight is a bounded probe: the button does not cancel it, and pressing it starts
+    /// nothing either.
+    @Test func pressActionDuringPreflightDoesNothing() async {
+        let environment = GatedToolchainEnvironment()
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.start() }
+        await environment.entered.wait()
+        await model.pressAction()
+        #expect(model.state == .running(.preflight))
+        environment.release.signal()
+        await first.value
+        #expect(model.state == .failed(step: .preflight, message: "released"))
+        #expect(environment.toolchainCalls == 1)
+    }
+
+    @Test func cancelWithNothingRunningDoesNothing() {
+        let (model, _) = Self.model(.init())
+        model.cancel()
+        #expect(model.state == .idle)
     }
 
     @Test func proceedOnAnUnstampedBundleDoesNothing() async {

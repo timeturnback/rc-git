@@ -103,9 +103,10 @@ paths: mac/**
   `ShellWord.quote` (RcGitKit, round-trip tested through `/bin/sh`); never interpolate a path
   raw or hand-roll another quoter.
 - Every step the updater runs outside the process is bounded and is logged *before* it runs,
-  never after: the probe carries a timeout and a kill, the result type has a failure case that
-  says it could not answer, and the log's last line is the step that stalled. Nothing may have
-  only "success" and "forever" as outcomes
+  never after: the probe carries a timeout and a kill, the build an idle clock, a wall-clock
+  limit and a cancel, every kill signals the process group, the result type has a failure case
+  that says it could not answer, and the log's last line is the step that stalled. Nothing
+  may have only "success" and "forever" as outcomes
   (`docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md`).
 - One reader per `Pipe`. Setting a `readabilityHandler` and also calling
   `readDataToEndOfFile()` reads one descriptor from two places, and the second blocks until
