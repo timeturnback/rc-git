@@ -603,7 +603,11 @@ extension InlineScanner {
         else { return nil }
         var stop = cursor + prefix.count
         while stop < end, Self.isURLByte(bytes[stop]) { stop += 1 }
-        while stop > cursor, Self.isTrailingPunctuation(bytes[stop - 1]) { stop -= 1 }
+        while stop > cursor, Self.isTrailingPunctuation(bytes[stop - 1]),
+            !closesParen(at: stop - 1, from: cursor)
+        {
+            stop -= 1
+        }
         guard stop > cursor + prefix.count else { return nil }
         let visible = String(decoding: bytes[cursor..<stop], as: UTF8.self)
         flush(style: style, link: link)
@@ -612,6 +616,17 @@ extension InlineScanner {
             MarkdownRun(
                 text: visible, style: style, link: MarkdownLink(destination: destination)))
         return stop
+    }
+
+    /// GFM keeps a trailing `)` that closes a `(` earlier in the URL, as in Wikipedia links.
+    private func closesParen(at index: Int, from start: Int) -> Bool {
+        guard bytes[index] == Ascii.rightParen else { return false }
+        var depth = 0
+        for byte in bytes[start..<index] {
+            if byte == Ascii.leftParen { depth += 1 }
+            if byte == Ascii.rightParen { depth -= 1 }
+        }
+        return depth > 0
     }
 
     private func matches(_ prefix: [UInt8], at cursor: Int, end: Int) -> Bool {

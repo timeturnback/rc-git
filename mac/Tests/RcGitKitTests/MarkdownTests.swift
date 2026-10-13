@@ -506,6 +506,18 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(bare) == "see https://example.com/x. done")
     }
 
+    @Test func bareURLKeepsABalancedClosingParenthesis() {
+        let wiki = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        let balanced = runs("See \(wiki) now")
+        #expect(balanced.compactMap { $0.link?.destination } == [wiki])
+        #expect(plain(balanced) == "See \(wiki) now")
+        let wrapped = runs("(see \(wiki))")
+        #expect(wrapped.compactMap { $0.link?.destination } == [wiki])
+        #expect(plain(wrapped) == "(see \(wiki))")
+        let unbalanced = runs("(see https://example.com/x)")
+        #expect(unbalanced.compactMap { $0.link?.destination } == ["https://example.com/x"])
+    }
+
     @Test func imagesKeepTheirAltTextAndSource() {
         let image = runs("![logo](assets/logo.png)").first
         #expect(image?.isImage == true)
