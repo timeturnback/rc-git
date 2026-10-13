@@ -10,6 +10,10 @@ public struct PathIndexEntry: Sendable, Hashable {
     /// Whether every component of `path` is the stored name byte for byte; see
     /// `TreeEntry.hasExactName`.
     public let hasExactPath: Bool
+    /// `path` in precomposed (NFC) form, which search matches against, so a name stored
+    /// decomposed on disk matches the precomposed letters a keyboard types. Equal to `path`
+    /// when the path is ASCII.
+    public let searchKey: String
 
     public init(path: String, oid: Oid, kind: EntryKind, hidden: Bool, hasExactPath: Bool = true) {
         self.path = path
@@ -17,6 +21,8 @@ public struct PathIndexEntry: Sendable, Hashable {
         self.kind = kind
         self.hidden = hidden
         self.hasExactPath = hasExactPath
+        self.searchKey =
+            FuzzyMatch.isASCII(path) ? path : path.precomposedStringWithCanonicalMapping
     }
 
     /// The file name after the last `/`.
@@ -119,17 +125,19 @@ public struct PathIndex: Sendable {
 
     /// The best `limit` matches for `query`, highest score first, ties by shorter then
     /// lexicographic path so the order is stable. An empty query returns the first entries.
-    /// Entries under `HiddenFiles` are left out unless `includeHidden`.
+    /// Entries under `HiddenFiles` are left out unless `includeHidden`. The query is matched in
+    /// precomposed (NFC) form against each entry's `searchKey`.
     public func search(_ query: String, limit: Int = 100, includeHidden: Bool = true)
         -> [PathIndexEntry]
     {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
+            .precomposedStringWithCanonicalMapping
         if trimmed.isEmpty {
             return Array(entries.lazy.filter { includeHidden || !$0.hidden }.prefix(limit))
         }
         var scored: [(score: Int, entry: PathIndexEntry)] = []
         for entry in entries where includeHidden || !entry.hidden {
-            if let score = FuzzyMatch.score(entry.path, query: trimmed) {
+            if let score = FuzzyMatch.score(entry.searchKey, query: trimmed) {
                 scored.append((score, entry))
             }
         }
@@ -176,12 +184,27 @@ public enum FuzzyMatch {
     static let fileNameBonus = 20
 
     /// Score of matching `query` as a subsequence of `candidate`, or `nil` when it is not
-    /// one. Comparison is ASCII-case-insensitive, matching how people type paths.
+    /// one. Comparison is ASCII-case-insensitive, matching how people type paths. An ASCII
+    /// query compares bytes, since an ASCII byte never occurs inside a multi-byte character;
+    /// any other query compares whole Unicode scalars, so one typed letter never matches bytes
+    /// taken from different letters. Both strings are expected in the same normalization form.
     public static func score(_ candidate: String, query: String) -> Int? {
-        let path = Array(candidate.utf8)
-        let needle = Array(query.utf8)
+        if isASCII(query) {
+            return score(path: Array(candidate.utf8), needle: Array(query.utf8))
+        }
+        return score(
+            path: candidate.unicodeScalars.map(\.value), needle: query.unicodeScalars.map(\.value))
+    }
+
+    /// Whether every byte of `text` is ASCII.
+    static func isASCII(_ text: String) -> Bool {
+        text.utf8.allSatisfy { $0 < 0x80 }
+    }
+
+    /// The scoring loop over code units: UTF-8 bytes or Unicode scalar values.
+    private static func score<Unit: FixedWidthInteger>(path: [Unit], needle: [Unit]) -> Int? {
         if needle.isEmpty { return 0 }
-        let lastSlash = path.lastIndex(of: UInt8(ascii: "/"))
+        let lastSlash = path.lastIndex(of: Unit(UInt8(ascii: "/")))
         let nameStart = lastSlash.map { $0 + 1 } ?? 0
         var score = 0
         var needleIndex = 0
@@ -206,12 +229,12 @@ public enum FuzzyMatch {
         return score
     }
 
-    private static func lower(_ byte: UInt8) -> UInt8 {
-        byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z") ? byte + 32 : byte
+    private static func lower<Unit: FixedWidthInteger>(_ unit: Unit) -> Unit {
+        unit >= Unit(UInt8(ascii: "A")) && unit <= Unit(UInt8(ascii: "Z")) ? unit + 32 : unit
     }
 
-    private static func isBoundary(_ byte: UInt8) -> Bool {
-        byte == UInt8(ascii: "/") || byte == UInt8(ascii: ".") || byte == UInt8(ascii: "_")
-            || byte == UInt8(ascii: "-")
+    private static func isBoundary<Unit: FixedWidthInteger>(_ unit: Unit) -> Bool {
+        unit == Unit(UInt8(ascii: "/")) || unit == Unit(UInt8(ascii: "."))
+            || unit == Unit(UInt8(ascii: "_")) || unit == Unit(UInt8(ascii: "-"))
     }
 }

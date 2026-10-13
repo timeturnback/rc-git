@@ -30,6 +30,13 @@ import Testing
         let scattered = FuzzyMatch.score("b_r_o_w_x.swift", query: "brow")
         #expect(run! > scattered!)
     }
+
+    @Test func nonAsciiQueriesMatchWholeCharacters() {
+        #expect(FuzzyMatch.score("tiếng/bá.md", query: "ạ") == nil)
+        #expect(FuzzyMatch.score("è©.txt", query: "é") == nil)
+        #expect(FuzzyMatch.score("tiếng/bạn.md", query: "ạ") != nil)
+        #expect(FuzzyMatch.score("tiếng/bạn.md", query: "bn") != nil)
+    }
 }
 
 @Suite struct PathIndexTests {
@@ -187,6 +194,21 @@ import Testing
         #expect(index.entries.map(\.hidden) == [false, true, false])
         #expect(index.entries.allSatisfy { $0.oid.bytes.isEmpty })
         #expect(index.entries[2].kind == .executableBlob)
+    }
+
+    @Test func searchMatchesDecomposedNamesByWholeCharacters() {
+        let list = WorktreeFileList(
+            files: ["cafe\u{301}.txt", "\u{e8}\u{a9}.txt"].map {
+                WorktreeFile(path: $0, kind: .blob)
+            },
+            scanned: 2, truncated: false)
+        let index = PathIndex(root: root, worktreeFiles: list)
+        let found = index.search("caf\u{e9}")
+        #expect(found.count == 1, "a precomposed query finds the decomposed name")
+        #expect(found.first?.path == "cafe\u{301}.txt", "the stored path stays as it was on disk")
+        #expect(
+            index.search("\u{e9}").map(\.path) == ["cafe\u{301}.txt"],
+            "the letter matches only the name that has it, never bytes of other letters")
     }
 
     @Test func buildReadsEachDirectoryOnce() throws {
