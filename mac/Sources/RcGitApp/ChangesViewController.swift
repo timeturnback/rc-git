@@ -670,19 +670,13 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func discardClicked(_ sender: Any?) {
-        var rows = filesOutline.selectedRowIndexes
-        if filesOutline.clickedRow >= 0, !rows.contains(filesOutline.clickedRow) {
-            rows = IndexSet(integer: filesOutline.clickedRow)
+        let selected = filesOutline.selectedRowIndexes.compactMap {
+            filesOutline.item(atRow: $0) as? StatusNode
         }
-        // A folder row discards everything under it, which is what its tick box covers too.
-        var paths: [String] = []
-        for row in rows {
-            guard let node = filesOutline.item(atRow: row) as? StatusNode else { continue }
-            paths.append(contentsOf: node.filePaths)
-        }
-        let unique = Array(Set(paths)).sorted()
-        guard !unique.isEmpty else { return }
-        onDiscard?(unique)
+        let clicked = filesOutline.item(atRow: filesOutline.clickedRow) as? StatusNode
+        let paths = ChangeTree.discardPaths(selected: selected, clicked: clicked)
+        guard !paths.isEmpty else { return }
+        onDiscard?(paths)
     }
 
     @objc private func groupingChanged(_ sender: Any?) {

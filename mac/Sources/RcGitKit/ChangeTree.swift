@@ -66,6 +66,21 @@ public enum ChangeTree {
         }
     }
 
+    /// The files a Discard on these rows returns to HEAD or deletes, sorted, each once.
+    ///
+    /// A right-clicked row outside the selection acts alone, as a context menu does
+    /// everywhere else; a clicked row inside it, or no clicked row, acts on the whole
+    /// selection. A folder row covers every file beneath it, which is what its tick box covers.
+    public static func discardPaths<Entry>(
+        selected: [ChangeNode<Entry>], clicked: ChangeNode<Entry>?
+    ) -> [String] {
+        var rows = selected
+        if let clicked, !selected.contains(where: { $0 === clicked }) {
+            rows = [clicked]
+        }
+        return Array(Set(rows.flatMap(\.filePaths))).sorted()
+    }
+
     /// A folder's files, and the folders under it, while the tree is being built.
     private final class Level<Entry> {
         var folders: [String: Level] = [:]

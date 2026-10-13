@@ -88,6 +88,48 @@ import Testing
         }
     }
 
+    @Test func discardTakesTheSelectionWhenTheClickedRowIsInIt() {
+        let rows = ChangeTree.nodes([entry("a"), entry("b"), entry("c")], grouping: .flat)
+        let paths = ChangeTree.discardPaths(selected: [rows[0], rows[2]], clicked: rows[2])
+        #expect(paths == ["a", "c"])
+    }
+
+    @Test func discardTakesOnlyAClickedRowOutsideTheSelection() {
+        let rows = ChangeTree.nodes([entry("a"), entry("b"), entry("c")], grouping: .flat)
+        let paths = ChangeTree.discardPaths(selected: [rows[0], rows[2]], clicked: rows[1])
+        #expect(paths == ["b"])
+    }
+
+    @Test func discardWithNoClickedRowTakesTheSelection() {
+        let rows = ChangeTree.nodes([entry("a"), entry("b"), entry("c")], grouping: .flat)
+        let paths = ChangeTree.discardPaths(selected: [rows[1], rows[2]], clicked: nil)
+        #expect(paths == ["b", "c"])
+    }
+
+    @Test func aFolderRowDiscardsEveryFileBeneathIt() throws {
+        let rows = ChangeTree.nodes(
+            [entry("mac/App.swift"), entry("mac/tests/KitTests.swift"), entry("a.txt")],
+            grouping: .folders)
+        let folder = try #require(rows.first { $0.isFolder })
+        let paths = ChangeTree.discardPaths(selected: [], clicked: folder)
+        #expect(paths == ["mac/App.swift", "mac/tests/KitTests.swift"])
+    }
+
+    @Test func aFolderAndItsChildSelectedTogetherListEachPathOnce() throws {
+        let rows = ChangeTree.nodes(
+            [entry("mac/Kit.swift"), entry("mac/App.swift"), entry("a.txt")], grouping: .folders)
+        let folder = try #require(rows.first { $0.isFolder })
+        let child = try #require(folder.children.last)
+        let file = try #require(rows.last)
+        let paths = ChangeTree.discardPaths(selected: [file, child, folder], clicked: child)
+        #expect(paths == ["a.txt", "mac/App.swift", "mac/Kit.swift"])
+    }
+
+    @Test func nothingSelectedDiscardsNothing() {
+        let paths = ChangeTree.discardPaths(selected: [ChangeNode<StatusEntry>](), clicked: nil)
+        #expect(paths.isEmpty)
+    }
+
     @Test func eachListKeepsItsOwnGroupingAndDefault() throws {
         try withScratchDefaults { defaults in
             let commit = ChangeGroupingStore.commit(defaults: defaults)
