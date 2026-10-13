@@ -302,6 +302,26 @@ import Testing
         #expect(model.selectedRef?.shortName == "main")
         #expect(reported == nil)
     }
+
+    @Test func aBurstOfRefreshesCostsTwoListings() async {
+        await model.attach(repo)
+        repo.lock.withLock {
+            repo.refsCalls = 0
+            repo.refsDelay = 1
+        }
+        let slow = Task { await model.refreshRefs() }
+        try? await Task.sleep(for: .milliseconds(20))
+        repo.lock.withLock {
+            repo.listing.refs.append(
+                RefEntry(
+                    fullName: "refs/tags/v2", shortName: "v2", kind: .tag, target: mainCommit))
+        }
+        let burst = (0..<5).map { _ in Task { await model.refreshRefs() } }
+        await slow.value
+        for refresh in burst { await refresh.value }
+        #expect(repo.lock.withLock { repo.refsCalls } == 2, "the burst joins one more listing")
+        #expect(model.refs.refs.count == 3, "the last listing read is the latest")
+    }
 }
 
 /// Commit detail: changed files, one file's diff, and blame for the open file.

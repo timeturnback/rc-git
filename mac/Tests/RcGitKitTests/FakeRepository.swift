@@ -85,6 +85,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var failNextRefs = false
     /// How long each `refs` call takes, for racing a ref refresh against another move.
     var refsDelay: TimeInterval = 0
+    var refsCalls = 0
 
     var workingDirectory: String? { lock.withLock { workDir } }
 
@@ -92,6 +93,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
 
     func refs() throws -> RefListing {
         let (result, fail, delay) = lock.withLock { () -> (RefListing, Bool, TimeInterval) in
+            refsCalls += 1
             let fail = failNextRefs
             failNextRefs = false
             return (listing, fail, refsDelay)
