@@ -121,6 +121,17 @@ import Testing
         #expect(index.search("", limit: 2).count == 2)
     }
 
+    @Test func tiesOrderByLengthThenPath() {
+        let entries = ["src/main.rs", "b/main.rs", "a/main.rs"].map {
+            PathIndexEntry(path: $0, oid: oid(0x11), kind: .blob, hidden: false)
+        }
+        let index = PathIndex(root: root, entries: entries, truncated: false)
+        let ranked = ["a/main.rs", "b/main.rs", "src/main.rs"]
+        #expect(index.search("main").map(\.path) == ranked)
+        #expect(index.search(" main ").map(\.path) == ranked, "the query is trimmed")
+        #expect(index.search("   ").count == 3, "a blank query lists every entry")
+    }
+
     @Test func searchPutsTheFileNamedLikeItsFolderFirst() {
         let paths = [
             "components/button/index.ts", "components/button/Button.tsx",
