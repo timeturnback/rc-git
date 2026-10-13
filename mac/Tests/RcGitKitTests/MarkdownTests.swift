@@ -499,6 +499,14 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(image?.link?.destination == "assets/logo.png")
     }
 
+    @Test func imageInsideALinkFollowsTheLink() {
+        let parsed = runs("[![CI](https://ci.example/badge.svg)](https://ci.example/actions)")
+        #expect(parsed.count == 1)
+        #expect(parsed.first?.isImage == true)
+        #expect(parsed.first?.text == "CI")
+        #expect(parsed.first?.link?.destination == "https://ci.example/actions")
+    }
+
     @Test func inlineTagsAreDroppedAndBreaksSurvive() {
         #expect(plain(runs("a <span>b</span> c")) == "a b c")
         #expect(plain(runs("a<br>b")) == "a\nb")

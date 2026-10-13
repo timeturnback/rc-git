@@ -319,7 +319,7 @@ extension InlineScanner {
         }
         flush(style: style, link: link)
         if image {
-            emitImage(inner, target: target.link, style: style)
+            emitImage(inner, target: link ?? target.link, style: style)
         } else {
             parse(inner, style: style, link: target.link, depth: depth + 1)
         }
