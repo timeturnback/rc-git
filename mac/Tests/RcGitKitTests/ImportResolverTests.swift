@@ -8,18 +8,20 @@ import Testing
     /// A resolver over `files`, path to content. Directories are whatever the paths imply.
     private func resolver(_ files: [String: String]) -> ImportResolver {
         ImportResolver(
-            list: { directory in
-                let prefix = directory.isEmpty ? "" : directory + "/"
-                var kinds: [String: EntryKind] = [:]
-                for path in files.keys where path.hasPrefix(prefix) {
-                    let rest = path.dropFirst(prefix.count).split(separator: "/")
-                    guard let name = rest.first else { continue }
-                    kinds[String(name)] = rest.count > 1 ? .tree : .blob
-                }
-                if kinds.isEmpty, !directory.isEmpty { return nil }
-                return kinds.map { TreeEntry(name: $0.key, oid: oid(1), kind: $0.value) }
-            },
-            read: { path in files[path].map { Array($0.utf8) } })
+            list: { listing($0, in: files) }, read: { path in files[path].map { Array($0.utf8) } })
+    }
+
+    /// The children of `directory` that the paths of `files` imply.
+    private func listing(_ directory: String, in files: [String: String]) -> [TreeEntry]? {
+        let prefix = directory.isEmpty ? "" : directory + "/"
+        var kinds: [String: EntryKind] = [:]
+        for path in files.keys where path.hasPrefix(prefix) {
+            let rest = path.dropFirst(prefix.count).split(separator: "/")
+            guard let name = rest.first else { continue }
+            kinds[String(name)] = rest.count > 1 ? .tree : .blob
+        }
+        if kinds.isEmpty, !directory.isEmpty { return nil }
+        return kinds.map { TreeEntry(name: $0.key, oid: oid(1), kind: $0.value) }
     }
 
     private func sources(_ paths: String...) -> [String: String] {
@@ -202,11 +204,46 @@ import Testing
             resolver(files).resolve("shared/x", from: "apps/web/src/page.tsx") == "shared/x.ts")
     }
 
+    /// A resolver over `files` that counts every config read into `reads`.
+    private func counting(_ files: [String: String], into reads: ReadCounter) -> ImportResolver {
+        ImportResolver(
+            list: { listing($0, in: files) },
+            read: { path in
+                reads.count += 1
+                return files[path].map { Array($0.utf8) }
+            })
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aFanOutOfExtendsStaysWithinTheReadBudget() {
+        var files = sources("src/a.ts")
+        let entries = Array(repeating: #""./tsconfig.json""#, count: 50)
+        files["tsconfig.json"] = #"{"extends": ["# + entries.joined(separator: ", ") + "]}"
+        let reads = ReadCounter()
+        #expect(counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(reads.count <= ImportResolver.configReadLimit)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aFanOutAcrossDistinctConfigsStaysWithinTheReadBudget() {
+        var files = sources("src/a.ts")
+        let names = (0..<20).map { "c\($0).json" }
+        let extends = #"{"extends": ["# + names.map { #""./\#($0)""# }.joined(separator: ", ")
+        files["tsconfig.json"] = extends + "]}"
+        for name in names { files[name] = extends + "]}" }
+        let reads = ReadCounter()
+        #expect(counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(reads.count == ImportResolver.configReadLimit)
+    }
+
     @Test func anUnreadableConfigResolvesNothing() {
         var files = sources("src/a.ts")
         files["tsconfig.json"] = "{ not json"
         #expect(resolver(files).resolve("@/a", from: "src/a.ts") == nil)
     }
+}
+
+/// How many times a resolver read a config.
+private final class ReadCounter {
+    var count = 0
 }
 
 /// Import links end to end through the model: the cache, and opening what a link names.
