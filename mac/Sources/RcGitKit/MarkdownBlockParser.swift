@@ -114,11 +114,14 @@ struct MarkdownBlockParser {
         return ranges
     }
 
-    /// Strips `>` markers, returning how many were found and what is left of the line.
-    private func strippingQuotes(_ line: Range<Int>) -> (depth: Int, rest: Range<Int>) {
+    /// Strips up to `limit` `>` markers, returning how many were found and what is left of the
+    /// line. A fence body passes its own depth, so a `>` past it stays part of the code.
+    private func strippingQuotes(_ line: Range<Int>, limit: Int = .max) -> (
+        depth: Int, rest: Range<Int>
+    ) {
         var cursor = line.lowerBound
         var depth = 0
-        while cursor < line.upperBound {
+        while cursor < line.upperBound, depth < limit {
             var probe = cursor
             var spaces = 0
             while probe < line.upperBound, bytes[probe] == Ascii.space, spaces < 3 {
@@ -576,22 +579,25 @@ extension MarkdownBlockParser {
     /// cannot define one, and so is a line that continues a paragraph, which the main pass
     /// shows as text.
     private mutating func collectReferences() {
-        var fence: (marker: UInt8, count: Int)?
+        var fence: (marker: UInt8, count: Int, depth: Int)?
         var inParagraph = false
         for line in lines {
-            let rest = strippingQuotes(line).rest
-            let body = trimmedStart(of: rest)
-            if let open = fence {
-                if closesFence(body, opening: open) { fence = nil }
+            if let open = fence, let rest = fenceBodyLine(line, depth: open.depth) {
+                if closesFence(trimmedStart(of: rest), opening: (open.marker, open.count)) {
+                    fence = nil
+                }
                 continue
             }
+            fence = nil
+            let (depth, rest) = strippingQuotes(line)
+            let body = trimmedStart(of: rest)
             if body.isEmpty {
                 inParagraph = false
                 continue
             }
             if indentWidth(of: rest) >= 4 { continue }
             if let opening = fenceInfo(body) {
-                fence = (opening.marker, opening.count)
+                fence = (opening.marker, opening.count, depth)
                 inParagraph = false
                 continue
             }
@@ -603,6 +609,13 @@ extension MarkdownBlockParser {
             }
             inParagraph = atxLevel(body) == nil && !isThematicBreak(body)
         }
+    }
+
+    /// The line with the fence's `depth` quote markers removed, or nil when it has fewer: the
+    /// quote the fence opened in has ended, and the fence with it.
+    private func fenceBodyLine(_ line: Range<Int>, depth: Int) -> Range<Int>? {
+        let (found, rest) = strippingQuotes(line, limit: depth)
+        return found == depth ? rest : nil
     }
 
     /// True when the line closes `opening`: the same marker, at least as many of it, no info.
@@ -632,7 +645,7 @@ extension MarkdownBlockParser {
         index += 1
         var body: [String] = []
         while index < lines.count {
-            let rest = strippingQuotes(lines[index]).rest
+            guard let rest = fenceBodyLine(lines[index], depth: quoteDepth) else { break }
             let trimmed = trimmedStart(of: rest)
             if closesFence(trimmed, opening: (fence.marker, fence.count)) {
                 index += 1

@@ -66,6 +66,32 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[0].kind == .code(language: nil, text: "# not a heading\n- not a list"))
     }
 
+    @Test func fencedCodeKeepsLeadingGreaterThanSigns() {
+        let repl = MarkdownDocument.parse("```python\n>>> import os\n```\n").blocks
+        #expect(repl.map(\.kind) == [.code(language: "python", text: ">>> import os")])
+        let quoted = MarkdownDocument.parse("```text\n> quoted line\n```\n").blocks
+        #expect(quoted.map(\.kind) == [.code(language: "text", text: "> quoted line")])
+    }
+
+    @Test func aQuotedFenceKeepsMarkersPastItsOwnDepth() {
+        let blocks = MarkdownDocument.parse("> ```\n> >>> x\n> ```\n").blocks
+        #expect(blocks.map(\.kind) == [.code(language: nil, text: ">>> x")])
+        #expect(blocks.map(\.quoteDepth) == [1])
+    }
+
+    @Test func aQuotedFenceEndsWithTheQuote() {
+        let blocks = MarkdownDocument.parse("> ```\n> code\n\noutside\n").blocks
+        #expect(blocks.map(\.kind) == [.code(language: nil, text: "code"), .paragraph])
+        #expect(blocks.map(\.quoteDepth) == [1, 0])
+        #expect(blocks.last.map { plain($0.runs) } == "outside")
+    }
+
+    @Test func aDefinitionAfterAnUnclosedQuotedFenceStillDefines() {
+        let source = "> ```\n> code\n\n[a]: /real\n\nSee [a].\n"
+        let blocks = MarkdownDocument.parse(source).blocks
+        #expect(blocks.last?.runs.contains { $0.link?.destination == "/real" } == true)
+    }
+
     @Test func indentedCodeStopsAtTheNextParagraph() {
         let blocks = MarkdownDocument.parse("intro\n\n    code line\n\nafter\n").blocks
         #expect(blocks[1].kind == .code(language: nil, text: "code line"))
