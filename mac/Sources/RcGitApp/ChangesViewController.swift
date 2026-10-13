@@ -74,7 +74,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private let filesOutline = NSOutlineView()
     private let filesScroll = NSScrollView()
-    private let filesPlaceholder = NSTextField(labelWithString: "No changes")
+    private let filesPlaceholder = NSTextField(wrappingLabelWithString: "No changes")
     private let groupingControl = NSSegmentedControl()
     private let truncationLabel = NSTextField(labelWithString: "")
     private let authorLabel = NSTextField(labelWithString: "")
@@ -96,7 +96,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let stashButton = NSButton(title: "Stash", target: nil, action: nil)
     private let diffTable = NSTableView()
     private let diffScroll = NSScrollView()
-    private let diffPlaceholder = NSTextField(labelWithString: "Select a file")
+    private let diffPlaceholder = NSTextField(wrappingLabelWithString: "Select a file")
 
     private typealias StatusNode = ChangeNode<StatusEntry>
 
@@ -329,6 +329,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         pane.addSubview(filesPlaceholder)
         pane.addSubview(messagePlaceholder)
         filesPlaceholder.textColor = .secondaryLabelColor
+        filesPlaceholder.alignment = .center
         filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
         let inset = Self.sectionInset
         // The list keeps a usable height, but yields before the layout breaks: it shares
@@ -356,6 +357,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 equalToConstant: LayoutPolicy.changesMessageHeight),
             filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),
             filesPlaceholder.centerYAnchor.constraint(equalTo: filesScroll.centerYAnchor),
+            filesPlaceholder.widthAnchor.constraint(
+                lessThanOrEqualTo: filesScroll.widthAnchor, constant: -2 * inset),
             // The text container's own inset, so the placeholder sits on the caret.
             messagePlaceholder.leadingAnchor.constraint(
                 equalTo: messageScroll.leadingAnchor, constant: 5),
@@ -386,6 +389,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         diffScroll.autohidesScrollers = true
 
         diffPlaceholder.textColor = .secondaryLabelColor
+        diffPlaceholder.alignment = .center
         diffPlaceholder.translatesAutoresizingMaskIntoConstraints = false
 
         let pane = NSView()
@@ -401,6 +405,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 greaterThanOrEqualToConstant: LayoutPolicy.changesDiffFloor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: pane.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: pane.centerYAnchor),
+            diffPlaceholder.widthAnchor.constraint(
+                lessThanOrEqualTo: pane.widthAnchor, constant: -2 * Self.sectionInset),
         ])
         return pane
     }
@@ -435,6 +441,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             entries = report.entries
             filesPlaceholder.isHidden = !entries.isEmpty
             filesPlaceholder.stringValue = "No changes"
+            filesPlaceholder.toolTip = nil
             showTruncation(
                 report.truncated
                     ? "Scan stopped after \(report.scanned) entries; the list is incomplete."
@@ -443,6 +450,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             entries = []
             filesPlaceholder.isHidden = false
             filesPlaceholder.stringValue = message
+            filesPlaceholder.toolTip = message
             showTruncation(nil)
         }
         reloadFiles()
@@ -641,6 +649,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private func showDiffPlaceholder(_ message: String) {
         diffPlaceholder.stringValue = message
+        diffPlaceholder.toolTip = message
         diffPlaceholder.isHidden = false
         diffScroll.isHidden = true
     }
