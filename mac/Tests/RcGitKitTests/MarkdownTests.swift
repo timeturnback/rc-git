@@ -246,6 +246,14 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(continued[0].runs) == "Text [a]: /x")
         #expect(continued.last?.runs.allSatisfy { $0.link == nil } == true)
     }
+
+    @Test func crlfLinesParseLikeLf() {
+        let lf =
+            "---\nmodule: core\n---\n\n### Three ###\n\nthree  \nfour\n\n"
+            + "```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+        let crlf = lf.replacingOccurrences(of: "\n", with: "\r\n")
+        #expect(MarkdownDocument.parse(crlf) == MarkdownDocument.parse(lf))
+    }
 }
 
 @Suite struct MarkdownAnchorTests {
