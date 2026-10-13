@@ -139,28 +139,17 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     private func rebuild() {
-        let filter = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-        func matching(_ kind: RefKind) -> [RefEntry] {
-            listing.refs
-                .filter {
-                    $0.kind == kind
-                        && (filter.isEmpty || $0.shortName.lowercased().contains(filter))
-                }
-                .sorted { $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending }
+        let filter = search.stringValue
+        sections = listing.sections(matching: filter).map {
+            Section(title: $0.title, refs: $0.refs)
         }
-        sections = [
-            Section(title: "Branches", refs: matching(.localBranch)),
-            Section(title: "Remotes", refs: matching(.remoteBranch)),
-            Section(title: "Tags", refs: matching(.tag)),
-            Section(title: "Other", refs: matching(.other)),
-        ].filter { !$0.refs.isEmpty }
 
         isReloading = true
         outline.reloadData()
         outline.expandItem(nil, expandChildren: true)
-        if behavior == .picker, !filter.isEmpty {
+        if behavior == .picker, RefListing.query(from: filter) != nil {
             // Typing narrows the list; Return takes the best match, not the row browsed now.
-            highlight(row: firstRow(where: { $0 is RefEntry }))
+            highlight(row: listing.bestMatch(for: filter).flatMap { rowOf($0) })
         } else if workingTreeSelected, showsWorkingTree {
             let row = outline.row(forItem: workingTreeRow)
             if row >= 0 {
