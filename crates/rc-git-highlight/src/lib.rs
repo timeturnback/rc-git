@@ -373,14 +373,19 @@ fn single_layer(
                     continue;
                 }
                 spans.push(Span {
-                    start: u32::try_from(start).unwrap_or(u32::MAX),
-                    end: u32::try_from(end).unwrap_or(u32::MAX),
+                    start: offset(start),
+                    end: offset(end),
                     class: *class,
                 });
             }
         }
     }
     Ok(spans)
+}
+
+/// A byte index as a span offset, saturating at `u32::MAX` for an input past 4 GiB.
+pub(crate) fn offset(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// Markdown fences may nest more markdown; beyond this depth an inner markdown fence
@@ -453,29 +458,7 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
     let mut overlays = Vec::new();
     let mut cursor = tree.walk();
     'walk: loop {
-        let node = cursor.node();
-        let mut descend = true;
-        match node.kind() {
-            "inline" | "pipe_table_cell" => {
-                append_region(&mut overlays, data, node, Region::Inline, nesting)?;
-                descend = false;
-            }
-            "fenced_code_block" => {
-                append_fence(&mut overlays, data, node, nesting)?;
-                descend = false;
-            }
-            "minus_metadata" => {
-                let region = Region::Fence(Language::Yaml);
-                append_region(&mut overlays, data, node, region, nesting)?;
-                descend = false;
-            }
-            "plus_metadata" => {
-                let region = Region::Fence(Language::Toml);
-                append_region(&mut overlays, data, node, region, nesting)?;
-                descend = false;
-            }
-            _ => {}
-        }
+        let descend = overlay_node(&mut overlays, data, cursor.node(), nesting)?;
         if descend && cursor.goto_first_child() {
             continue 'walk;
         }
@@ -490,6 +473,33 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
     }
     overlays.sort_unstable_by_key(|span| span.start);
     Ok(overlays)
+}
+
+/// Appends the spans of `node` when it is an injected region, and answers whether the walk
+/// should descend into it: a region's children are already covered by its own grammar.
+///
+/// # Errors
+/// As [`append_region`].
+fn overlay_node(
+    overlays: &mut Vec<Span>,
+    data: &[u8],
+    node: tree_sitter::Node,
+    nesting: Nesting,
+) -> Result<bool, Error> {
+    match node.kind() {
+        "inline" | "pipe_table_cell" => {
+            append_region(overlays, data, node, Region::Inline, nesting)?;
+        }
+        "fenced_code_block" => append_fence(overlays, data, node, nesting)?,
+        "minus_metadata" => {
+            append_region(overlays, data, node, Region::Fence(Language::Yaml), nesting)?;
+        }
+        "plus_metadata" => {
+            append_region(overlays, data, node, Region::Fence(Language::Toml), nesting)?;
+        }
+        _ => return Ok(true),
+    }
+    Ok(false)
 }
 
 /// What fills an injected markdown region.
@@ -610,8 +620,8 @@ fn push_mapped(overlays: &mut Vec<Span>, segments: &[Segment], span: Span) {
         let from = start.max(segment.buffer) - segment.buffer + segment.document;
         let to = end.min(segment.buffer + segment.len) - segment.buffer + segment.document;
         overlays.push(Span {
-            start: u32::try_from(from).unwrap_or(u32::MAX),
-            end: u32::try_from(to).unwrap_or(u32::MAX),
+            start: offset(from),
+            end: offset(to),
             class: span.class,
         });
     }
@@ -661,12 +671,17 @@ fn merge_overlays(base: Vec<Span>, overlays: Vec<Span>) -> Vec<Span> {
     if overlays.is_empty() {
         return base;
     }
+    let clipped = clip_around(&base, &overlays);
+    merge_sorted(clipped, overlays)
+}
+
+/// Cuts every base span around the overlays it touches, keeping only the uncovered pieces.
+/// Both inputs are sorted and internally non-overlapping, and so is the result.
+fn clip_around(base: &[Span], overlays: &[Span]) -> Vec<Span> {
     let mut clipped = Vec::with_capacity(base.len());
     let mut first_relevant = 0;
-    for span in &base {
-        while first_relevant < overlays.len() && overlays[first_relevant].end <= span.start {
-            first_relevant += 1;
-        }
+    for span in base {
+        first_relevant += overlays[first_relevant..].partition_point(|cut| cut.end <= span.start);
         let mut cursor = span.start;
         let mut index = first_relevant;
         while index < overlays.len() && overlays[index].start < span.end {
@@ -692,9 +707,14 @@ fn merge_overlays(base: Vec<Span>, overlays: Vec<Span>) -> Vec<Span> {
             });
         }
     }
-    let mut merged = Vec::with_capacity(clipped.len() + overlays.len());
-    let mut left = clipped.into_iter().peekable();
-    let mut right = overlays.into_iter().peekable();
+    clipped
+}
+
+/// Merges two lists sorted by start into one; on a tie the left span comes first.
+fn merge_sorted(left: Vec<Span>, right: Vec<Span>) -> Vec<Span> {
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let mut left = left.into_iter().peekable();
+    let mut right = right.into_iter().peekable();
     loop {
         match (left.peek(), right.peek()) {
             (Some(a), Some(b)) => {
@@ -1140,6 +1160,35 @@ mod tests {
         assert!(classes_at(&spans, data, "bold").contains(&Class::Emphasis));
         assert!(classes_at(&spans, data, "title").contains(&Class::Heading));
         assert!(classes_at(&spans, data, "key").contains(&Class::Property));
+    }
+
+    #[test]
+    fn merge_overlays_clips_base_around_overlays_without_empty_pieces() {
+        let span = |start, end, class| Span { start, end, class };
+        let base = vec![
+            span(0, 10, Class::Heading),
+            span(12, 14, Class::Comment),
+            span(20, 30, Class::Heading),
+        ];
+        let overlays = vec![
+            span(0, 4, Class::Emphasis),
+            span(4, 6, Class::Strong),
+            span(8, 12, Class::Link),
+            span(25, 30, Class::String),
+        ];
+        let merged = merge_overlays(base, overlays);
+        assert_eq!(
+            merged,
+            vec![
+                span(0, 4, Class::Emphasis),
+                span(4, 6, Class::Strong),
+                span(6, 8, Class::Heading),
+                span(8, 12, Class::Link),
+                span(12, 14, Class::Comment),
+                span(20, 25, Class::Heading),
+                span(25, 30, Class::String),
+            ]
+        );
     }
 
     #[test]

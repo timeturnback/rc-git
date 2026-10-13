@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use tree_sitter::Node;
 
-use crate::{Error, Language};
+use crate::{Error, Language, offset};
 
 /// One clickable region and the module it leads to. Byte offsets into the input, half-open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,8 +35,8 @@ impl Bytes {
     fn of(node: Node<'_>) -> Self {
         let range = node.byte_range();
         Self {
-            start: u32::try_from(range.start).unwrap_or(u32::MAX),
-            end: u32::try_from(range.end).unwrap_or(u32::MAX),
+            start: offset(range.start),
+            end: offset(range.end),
         }
     }
 }
