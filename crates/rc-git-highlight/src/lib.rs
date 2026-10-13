@@ -51,7 +51,7 @@ impl Language {
     /// Picks a language from a file name by its extension, case-insensitively.
     #[must_use]
     pub fn from_file_name(name: &str) -> Option<Self> {
-        let extension = name.rsplit('.').next()?;
+        let (_, extension) = name.rsplit_once('.')?;
         match extension.to_ascii_lowercase().as_str() {
             "sh" | "bash" | "zsh" => Some(Self::Bash),
             "c" | "h" => Some(Self::C),
@@ -96,8 +96,8 @@ impl Language {
     pub fn from_fence(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "bash" | "sh" | "shell" | "zsh" => Some(Self::Bash),
-            "c" => Some(Self::C),
-            "javascript" | "js" | "jsx" => Some(Self::JavaScript),
+            "c" | "h" => Some(Self::C),
+            "javascript" | "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
             "json" => Some(Self::Json),
             "markdown" | "md" => Some(Self::Markdown),
             "python" | "py" => Some(Self::Python),
@@ -105,7 +105,7 @@ impl Language {
             "swift" => Some(Self::Swift),
             "toml" => Some(Self::Toml),
             "tsx" => Some(Self::Tsx),
-            "typescript" | "ts" => Some(Self::TypeScript),
+            "typescript" | "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "yaml" | "yml" => Some(Self::Yaml),
             _ => None,
         }
@@ -662,7 +662,13 @@ mod tests {
         assert_eq!(Language::from_fence("rust"), Some(Language::Rust));
         assert_eq!(Language::from_fence("SH"), Some(Language::Bash));
         assert_eq!(Language::from_fence("mermaid"), None);
+        assert_eq!(Language::from_fence("h"), Some(Language::C));
+        assert_eq!(Language::from_fence("mjs"), Some(Language::JavaScript));
+        assert_eq!(Language::from_fence("cts"), Some(Language::TypeScript));
         assert_eq!(Language::from_file_name("noext"), None);
+        for name in ["c", "sh", "json", "rs", "md"] {
+            assert_eq!(Language::from_file_name(name), None, "{name}");
+        }
         assert_eq!(Language::from_file_name("photo.png"), None);
         assert_eq!(Language::from_file_name(""), None);
     }
