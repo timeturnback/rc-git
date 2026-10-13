@@ -38,8 +38,11 @@ import Testing
         await model.loadMoreHistory()
         #expect(model.history.count == 150)
         #expect(model.historyComplete, "a short page means the walk is done")
+        let calls = repo.lock.withLock { repo.logCalls }
         await model.loadMoreHistory()
         #expect(model.history.count == 150, "a complete history never re-fetches")
+        #expect(
+            repo.lock.withLock { repo.logCalls } == calls, "a complete history never re-fetches")
     }
 
     @Test func pathScopeFiltersAndRestores() async {
@@ -57,9 +60,13 @@ import Testing
         #expect(model.historyScope == .path("src/a.rs"))
         #expect(model.history.map(\.title) == ["touch 1", "touch 2"])
         #expect(model.historyComplete)
+        let calls = repo.lock.withLock { repo.logCalls }
         model.clearHistoryScope()
         #expect(model.historyScope == .all)
         #expect(model.history.count == 100, "the unfiltered pages come back from the cache")
+        #expect(
+            repo.lock.withLock { repo.logCalls } == calls,
+            "the unfiltered pages come back from the cache")
     }
 
     @Test func pathScopeCachesPerTipAndPath() async {
@@ -110,8 +117,12 @@ import Testing
 
         await model.select(model.refs.refs[0])
         #expect(model.graphRows.count <= 1, "another tip starts its own graph")
+        let calls = repo.lock.withLock { repo.logCalls }
         await model.select(model.refs.refs[1])
         #expect(model.graphRows.count == 150, "the cached graph returns with the pages")
+        #expect(
+            repo.lock.withLock { repo.logCalls } == calls,
+            "the cached graph returns with the pages")
 
         await model.search(CommitFilter(message: "main"))
         #expect(model.graphRows.isEmpty, "a filtered list has no topology")
@@ -240,8 +251,11 @@ import Testing
         await model.loadMoreHistory()
         #expect(model.history.count == 1)
         #expect(model.historyComplete)
+        let calls = repo.lock.withLock { repo.logCalls }
         await model.select(model.refs.refs[1])
         #expect(model.history.count == 100, "cached pages come back without a walk")
+        #expect(
+            repo.lock.withLock { repo.logCalls } == calls, "cached pages come back without a walk")
     }
 
     @Test func historyErrorsSurface() async {
