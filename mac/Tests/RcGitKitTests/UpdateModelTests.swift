@@ -297,6 +297,19 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(environment.calls.contains("install"))
     }
 
+    /// A bundle stamped with no commit cannot prove it matches the checkout, so it rebuilds
+    /// rather than report itself up to date.
+    @Test func aBundleWithNoRecordedCommitRebuildsInsteadOfReportingUpToDate() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
+            ]),
+            build: Self.build(commit: nil))
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(environment.calls.contains("install"))
+    }
+
     @Test func forceRebuildsAnUnchangedCheckout() async {
         let (model, environment) = Self.model(
             .init(sourceStates: [
