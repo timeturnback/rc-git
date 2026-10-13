@@ -77,7 +77,7 @@ constraints are clear.
   `path_history`'s scan-cursor paging; a since-bound uses gix's commit-time cutoff so the
   walk terminates at the window instead of scanning to the root. No index is ever built.
   The CLI gained `search`.
-- **Per-file history.** "Show File History" on tree rows and ⌥⌘H for the open file scope the
+- **Per-file history.** "Show File History" on tree rows and ⌥⌘Y for the open file scope the
   History pane to the commits that changed one path, with a chip to clear. `path_history`
   walks like `log` and compares the entry at the path against every parent (clean merges hide,
   root commits count, renames are not followed), examining at most `max_scan` commits per call

@@ -26,21 +26,37 @@ enum MainMenu {
         return item
     }
 
+    private static let keys = MenuShortcuts()
+
+    private static func item(_ title: String, _ action: Selector?) -> NSMenuItem {
+        NSMenuItem(title: title, action: action, keyEquivalent: "")
+    }
+
+    /// An item whose key equivalent comes from `MenuShortcuts`; `title` overrides the row's
+    /// placeholder for the items named after the app or the branch.
     private static func item(
-        _ title: String, _ action: Selector?, _ key: String,
-        _ modifiers: NSEvent.ModifierFlags = .command
+        _ shortcut: MenuShortcut, _ action: Selector?, title: String? = nil
     ) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        item.keyEquivalentModifierMask = modifiers
+        let item = NSMenuItem(
+            title: title ?? shortcut.title, action: action, keyEquivalent: shortcut.key)
+        item.keyEquivalentModifierMask = modifierFlags(shortcut.modifiers)
         return item
+    }
+
+    private static func modifierFlags(_ modifiers: MenuModifiers) -> NSEvent.ModifierFlags {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains(.command) { flags.insert(.command) }
+        if modifiers.contains(.option) { flags.insert(.option) }
+        if modifiers.contains(.shift) { flags.insert(.shift) }
+        if modifiers.contains(.control) { flags.insert(.control) }
+        return flags
     }
 
     private static func appMenu(appName: String, updateMode: UpdateMode?) -> NSMenu {
         let menu = NSMenu(title: appName)
         menu.addItem(
             item(
-                "About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-                ""))
+                "About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
         if let updateMode {
             menu.addItem(.separator())
             // The dev bundle earns key equivalents: rebuilding is the edit-run loop, not
@@ -48,76 +64,60 @@ enum MainMenu {
             // without asking; the Repository menu's Sync is Cmd-Shift-R.
             switch updateMode {
             case .update:
-                menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:)), ""))
+                menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:))))
             case .rebuild:
-                menu.addItem(
-                    item("Rebuild and Relaunch…", #selector(AppDelegate.showUpdate(_:)), "r"))
-                menu.addItem(
-                    item(
-                        "Rebuild and Relaunch Now", #selector(AppDelegate.rebuildNow(_:)), "r",
-                        [.command, .option]))
+                menu.addItem(item(keys.rebuild, #selector(AppDelegate.showUpdate(_:))))
+                menu.addItem(item(keys.rebuildNow, #selector(AppDelegate.rebuildNow(_:))))
             }
         }
         menu.addItem(.separator())
-        menu.addItem(item("Hide \(appName)", #selector(NSApplication.hide(_:)), "h"))
         menu.addItem(
-            item(
-                "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
-                [.command, .option]))
-        menu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:)), ""))
+            item(keys.hideApp, #selector(NSApplication.hide(_:)), title: "Hide \(appName)"))
+        menu.addItem(item(keys.hideOthers, #selector(NSApplication.hideOtherApplications(_:))))
+        menu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:))))
         menu.addItem(.separator())
-        menu.addItem(item("Quit \(appName)", #selector(NSApplication.terminate(_:)), "q"))
+        menu.addItem(
+            item(keys.quit, #selector(NSApplication.terminate(_:)), title: "Quit \(appName)"))
         return menu
     }
 
     private static func fileMenu(recentMenu: NSMenu) -> NSMenu {
         let menu = NSMenu(title: "File")
-        menu.addItem(item("New Tab", #selector(AppDelegate.newWindowForTab(_:)), "t"))
-        menu.addItem(
-            item(
-                "Reopen Closed Tab", #selector(AppDelegate.reopenClosedTab(_:)), "t",
-                [.command, .shift]))
-        menu.addItem(item("Open Repository…", #selector(AppDelegate.openDocument(_:)), "o"))
+        menu.addItem(item(keys.newTab, #selector(AppDelegate.newWindowForTab(_:))))
+        menu.addItem(item(keys.reopenClosedTab, #selector(AppDelegate.reopenClosedTab(_:))))
+        menu.addItem(item(keys.openRepository, #selector(AppDelegate.openDocument(_:))))
         let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recent.submenu = recentMenu
         menu.addItem(recent)
         menu.addItem(.separator())
-        menu.addItem(
-            item(
-                "Go to File…", #selector(MainWindowController.goToFile(_:)), "o",
-                [.command, .shift]))
-        menu.addItem(item("Go to Branch…", #selector(MainWindowController.chooseRef(_:)), "b"))
+        menu.addItem(item(keys.goToFile, #selector(MainWindowController.goToFile(_:))))
+        menu.addItem(item(keys.goToBranch, #selector(MainWindowController.chooseRef(_:))))
         menu.addItem(.separator())
-        menu.addItem(item("Close Tab", #selector(NSWindow.performClose(_:)), "w"))
-        menu.addItem(
-            item(
-                "Close Window", #selector(AppDelegate.closeWindowGroup(_:)), "w",
-                [.command, .shift]))
+        menu.addItem(item(keys.closeTab, #selector(NSWindow.performClose(_:))))
+        menu.addItem(item(keys.closeWindow, #selector(AppDelegate.closeWindowGroup(_:))))
         return menu
     }
 
     private static func editMenu() -> NSMenu {
         let menu = NSMenu(title: "Edit")
         // `UndoManager.undo` resolves to `undo` without the colon, which no responder handles.
-        menu.addItem(item("Undo", Selector(("undo:")), "z"))
-        menu.addItem(item("Redo", Selector(("redo:")), "z", [.command, .shift]))
+        menu.addItem(item(keys.undo, Selector(("undo:"))))
+        menu.addItem(item(keys.redo, Selector(("redo:"))))
         menu.addItem(.separator())
-        menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
-        menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
-        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
+        menu.addItem(item(keys.cut, #selector(NSText.cut(_:))))
+        menu.addItem(item(keys.copy, #selector(NSText.copy(_:))))
+        menu.addItem(item(keys.paste, #selector(NSText.paste(_:))))
         menu.addItem(
-            item(
-                "Paste and Match Style", #selector(NSTextView.pasteAsPlainText(_:)), "v",
-                [.command, .option, .shift]))
-        menu.addItem(item("Delete", #selector(NSText.delete(_:)), ""))
-        menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
+            item(keys.pasteAndMatchStyle, #selector(NSTextView.pasteAsPlainText(_:))))
+        menu.addItem(item("Delete", #selector(NSText.delete(_:))))
+        menu.addItem(item(keys.selectAll, #selector(NSText.selectAll(_:))))
         menu.addItem(.separator())
         let find = NSMenu(title: "Find")
-        for (title, key, tag) in [
-            ("Find…", "f", 1), ("Find Next", "g", 2), ("Find Previous", "G", 3),
-            ("Use Selection for Find", "e", 7),
+        for (shortcut, tag) in [
+            (keys.find, 1), (keys.findNext, 2), (keys.findPrevious, 3),
+            (keys.useSelectionForFind, 7),
         ] {
-            let entry = item(title, #selector(NSTextView.performFindPanelAction(_:)), key)
+            let entry = item(shortcut, #selector(NSTextView.performFindPanelAction(_:)))
             entry.tag = tag
             find.addItem(entry)
         }
@@ -129,98 +129,59 @@ enum MainMenu {
 
     private static func viewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
-        menu.addItem(item("Files", #selector(MainWindowController.showFiles(_:)), "1"))
-        menu.addItem(item("History", #selector(MainWindowController.showHistory(_:)), "2"))
-        menu.addItem(item("Changes", #selector(MainWindowController.showChanges(_:)), "3"))
+        menu.addItem(item(keys.files, #selector(MainWindowController.showFiles(_:))))
+        menu.addItem(item(keys.history, #selector(MainWindowController.showHistory(_:))))
+        menu.addItem(item(keys.changes, #selector(MainWindowController.showChanges(_:))))
         menu.addItem(.separator())
         // Finder's and Safari's shortcuts. The tab switch in the Window menu adds Shift.
-        menu.addItem(item("Back", #selector(AppDelegate.goBack(_:)), "["))
-        menu.addItem(item("Forward", #selector(AppDelegate.goForward(_:)), "]"))
+        menu.addItem(item(keys.back, #selector(AppDelegate.goBack(_:))))
+        menu.addItem(item(keys.forward, #selector(AppDelegate.goForward(_:))))
         menu.addItem(.separator())
         // Finder's shortcut for the same toggle.
+        menu.addItem(item(keys.showHiddenFiles, #selector(AppDelegate.toggleHiddenFiles(_:))))
+        menu.addItem(.separator())
+        menu.addItem(item(keys.showBlame, #selector(MainWindowController.showBlame(_:))))
         menu.addItem(
-            item(
-                "Show Hidden Files", #selector(AppDelegate.toggleHiddenFiles(_:)), ".",
-                [.command, .shift]))
+            item(keys.fileHistory, #selector(MainWindowController.showFileHistory(_:))))
+        menu.addItem(
+            item(keys.searchCommits, #selector(MainWindowController.searchCommits(_:))))
         menu.addItem(.separator())
         menu.addItem(
-            item(
-                "Show Blame", #selector(MainWindowController.showBlame(_:)), "b",
-                [.command, .option]))
-        menu.addItem(
-            item(
-                "History of This File", #selector(MainWindowController.showFileHistory(_:)), "h",
-                [.command, .option]))
-        menu.addItem(
-            item(
-                "Search Commits", #selector(MainWindowController.searchCommits(_:)), "F",
-                [.command, .shift]))
-        menu.addItem(.separator())
-        menu.addItem(
-            item(
-                "Toggle Sidebar", #selector(NSSplitViewController.toggleSidebar(_:)), "s",
-                [.command, .control]))
-        menu.addItem(
-            item(
-                "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f",
-                [.command, .control]))
+            item(keys.toggleSidebar, #selector(NSSplitViewController.toggleSidebar(_:))))
+        menu.addItem(item(keys.enterFullScreen, #selector(NSWindow.toggleFullScreen(_:))))
         return menu
     }
 
     private static func repositoryMenu() -> NSMenu {
         let menu = NSMenu(title: "Repository")
-        menu.addItem(
-            item(
-                "Fetch", #selector(MainWindowController.fetchRemote(_:)), "f",
-                [.command, .option]))
-        menu.addItem(
-            item(
-                "Pull", #selector(MainWindowController.pullRemote(_:)), "u",
-                [.command, .shift]))
-        menu.addItem(
-            item(
-                "Push", #selector(MainWindowController.pushRemote(_:)), "p",
-                [.command, .shift]))
+        menu.addItem(item(keys.fetch, #selector(MainWindowController.fetchRemote(_:))))
+        menu.addItem(item(keys.pull, #selector(MainWindowController.pullRemote(_:))))
+        menu.addItem(item(keys.push, #selector(MainWindowController.pushRemote(_:))))
         menu.addItem(.separator())
-        menu.addItem(
-            item(
-                "Sync", #selector(MainWindowController.syncRepository(_:)), "r",
-                [.command, .shift]))
+        menu.addItem(item(keys.sync, #selector(MainWindowController.syncRepository(_:))))
         // The title is rewritten with the branch name in `validateMenuItem`.
         menu.addItem(
             item(
-                SyncTitles.backToDefault(nil),
-                #selector(MainWindowController.backToDefaultBranch(_:)), "m",
-                [.command, .shift]))
-        menu.addItem(
-            item(
-                "Cancel Sync", #selector(MainWindowController.cancelSync(_:)), ".",
-                [.command]))
+                keys.backToDefault, #selector(MainWindowController.backToDefaultBranch(_:)),
+                title: SyncTitles.backToDefault(nil)))
+        menu.addItem(item(keys.cancelSync, #selector(MainWindowController.cancelSync(_:))))
         menu.addItem(.separator())
         menu.addItem(
-            item("Commit Identity…", #selector(MainWindowController.editCommitIdentity(_:)), ""))
+            item("Commit Identity…", #selector(MainWindowController.editCommitIdentity(_:))))
         return menu
     }
 
     private static func windowMenu() -> NSMenu {
         let menu = NSMenu(title: "Window")
-        menu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
-        menu.addItem(item("Zoom", #selector(NSWindow.performZoom(_:)), ""))
+        menu.addItem(item(keys.minimize, #selector(NSWindow.performMiniaturize(_:))))
+        menu.addItem(item("Zoom", #selector(NSWindow.performZoom(_:))))
         menu.addItem(.separator())
-        menu.addItem(
-            item(
-                "Show Previous Tab", #selector(NSWindow.selectPreviousTab(_:)), "[",
-                [.command, .shift]))
-        menu.addItem(
-            item(
-                "Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "]",
-                [.command, .shift]))
-        menu.addItem(
-            item(
-                "Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:)), ""))
-        menu.addItem(item("Merge All Windows", #selector(NSWindow.mergeAllWindows(_:)), ""))
+        menu.addItem(item(keys.previousTab, #selector(NSWindow.selectPreviousTab(_:))))
+        menu.addItem(item(keys.nextTab, #selector(NSWindow.selectNextTab(_:))))
+        menu.addItem(item("Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:))))
+        menu.addItem(item("Merge All Windows", #selector(NSWindow.mergeAllWindows(_:))))
         menu.addItem(.separator())
-        menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), ""))
+        menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))))
         NSApp.windowsMenu = menu
         return menu
     }
