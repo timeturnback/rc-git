@@ -67,6 +67,28 @@ import Testing
         #expect(ByteFormat.string(1_234_567) == "1.2 MB")
         #expect(ByteFormat.string(5_000_000_000) == "5.0 GB")
     }
+
+    @Test func byteFormatRoundsAcrossUnitBoundaries() {
+        #expect(ByteFormat.string(9_960) == "10 KB")
+        #expect(ByteFormat.string(9_999) == "10 KB")
+        #expect(ByteFormat.string(999_499) == "999 KB")
+        #expect(ByteFormat.string(999_500) == "1.0 MB")
+        #expect(ByteFormat.string(999_999) == "1.0 MB")
+        #expect(ByteFormat.string(999_999_999) == "1.0 GB")
+        #expect(ByteFormat.string(999_999_999_999) == "1000 GB")
+    }
+
+    @Test func overLimitFallsBackToExactBytesWhenShortStringsMatch() {
+        let limit: UInt64 = 8 * 1024 * 1024
+        let justOver = ByteFormat.overLimit(size: limit + 1, limit: limit)
+        #expect(justOver.size == "8,388,609 bytes")
+        #expect(justOver.limit == "8,388,608-byte")
+        let double = ByteFormat.overLimit(size: 2 * limit, limit: limit)
+        #expect(double.size == "17 MB")
+        #expect(double.limit == "8.4 MB")
+        let text = BlobDiff.tooLargePlaceholder(path: "big.bin", size: limit + 1, limit: limit)
+        #expect(text == "big.bin is 8,388,609 bytes, over the 8,388,608-byte limit")
+    }
 }
 
 @Suite struct LineNumberingTests {

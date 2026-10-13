@@ -80,16 +80,37 @@ public enum LineNumbering {
 
 /// Human-readable byte counts, e.g. `1.2 MB`.
 public enum ByteFormat {
+    /// Picks the unit and the digit count from the value as it will print, so a value that
+    /// rounds up to 1000 carries to the next unit and one that rounds up to 10 drops its decimal.
     public static func string(_ bytes: UInt64) -> String {
         let units = ["B", "KB", "MB", "GB"]
         var value = Double(bytes)
         var unit = 0
-        while value >= 1000, unit < units.count - 1 {
+        while value.rounded() >= 1000, unit < units.count - 1 {
             value /= 1000
             unit += 1
         }
         if unit == 0 { return "\(bytes) B" }
-        let digits = value < 10 ? 1 : 0
+        let digits = (value * 10).rounded() / 10 < 10 ? 1 : 0
         return String(format: "%.\(digits)f %@", value, units[unit])
+    }
+
+    /// A size and the limit it is over, worded for "is <size>, over the <limit> limit". Falls
+    /// back to exact byte counts when the short strings would read the same.
+    public static func overLimit(size: UInt64, limit: UInt64) -> (size: String, limit: String) {
+        let short = (size: string(size), limit: string(limit))
+        guard short.size == short.limit else { return short }
+        return (size: "\(grouped(size)) bytes", limit: "\(grouped(limit))-byte")
+    }
+
+    /// Digits in groups of three separated by commas, independent of the user's locale.
+    static func grouped(_ value: UInt64) -> String {
+        var digits = Array(String(value))
+        var index = digits.count - 3
+        while index > 0 {
+            digits.insert(",", at: index)
+            index -= 3
+        }
+        return String(digits)
     }
 }

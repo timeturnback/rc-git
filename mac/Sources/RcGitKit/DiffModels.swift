@@ -158,7 +158,8 @@ extension BlobDiff {
 
     /// The line a pane shows for a file over its size limit.
     public static func tooLargePlaceholder(path: String, size: UInt64, limit: UInt64) -> String {
-        "\(path) is \(ByteFormat.string(size)), over the \(ByteFormat.string(limit)) limit"
+        let text = ByteFormat.overLimit(size: size, limit: limit)
+        return "\(path) is \(text.size), over the \(text.limit) limit"
     }
 }
 
