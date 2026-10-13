@@ -1,9 +1,11 @@
 import AppKit
+import RcGitKit
 
-/// Draws a line number beside every visible line fragment. Wrapping is off in the file pane,
-/// so each fragment is one line; the number comes from a binary search over the UTF-16
-/// offsets where lines start, which arrive precomputed with the document — this view never
-/// scans the text itself.
+/// Draws a line number beside every visible line fragment that begins a line. Wrapping is off
+/// in the file pane and non-LF separators are drawn as markers, so a fragment is normally a
+/// whole line; a fragment that starts anywhere else gets no number. `LineNumbering` decides
+/// from the UTF-16 offsets where lines start, which arrive precomputed with the document — this
+/// view never scans the text itself.
 final class LineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
     private var lineStarts: [Int] = [0]
@@ -56,8 +58,11 @@ final class LineNumberRulerView: NSRulerView {
             var fragmentRange = NSRange()
             let fragment = layoutManager.lineFragmentRect(
                 forGlyphAt: glyphIndex, effectiveRange: &fragmentRange)
-            let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-            let line = lineNumber(forCharacterAt: charIndex)
+            glyphIndex = NSMaxRange(fragmentRange)
+            let charIndex = layoutManager.characterIndexForGlyph(at: fragmentRange.location)
+            guard let line = LineNumbering.label(at: charIndex, lineStarts: lineStarts) else {
+                continue
+            }
             let label = String(line) as NSString
             let size = label.size(withAttributes: attributes)
             let y =
@@ -65,17 +70,6 @@ final class LineNumberRulerView: NSRulerView {
                 + (fragment.height - size.height) / 2
             label.draw(
                 at: NSPoint(x: ruleThickness - size.width - 8, y: y), withAttributes: attributes)
-            glyphIndex = NSMaxRange(fragmentRange)
         }
-    }
-
-    private func lineNumber(forCharacterAt index: Int) -> Int {
-        var low = 0
-        var high = lineStarts.count - 1
-        while low < high {
-            let mid = (low + high + 1) / 2
-            if lineStarts[mid] <= index { low = mid } else { high = mid - 1 }
-        }
-        return low + 1
     }
 }

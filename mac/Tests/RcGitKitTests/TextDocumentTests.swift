@@ -39,6 +39,26 @@ import Testing
         #expect(document?.utf16LineStarts == [0, 2, 5])
     }
 
+    @Test func nonLFBreaksRecordEverySeparatorTextKitBreaksOn() {
+        func breaks(_ text: String) -> [Int]? {
+            TextDocument(content: textBlob(text))?.utf16NonLFBreaks
+        }
+        #expect(breaks("a\nb") == [])
+        #expect(breaks("a\rb") == [1])
+        #expect(breaks("a\r\nb") == [])
+        #expect(breaks("a\rb\rc\r") == [1, 3, 5])
+        #expect(breaks("a\u{0C}\nb") == [1])
+        #expect(breaks("a\u{0B}b\u{85}c") == [1, 3])
+        #expect(breaks("a\u{2028}b\u{2029}c") == [1, 3])
+        #expect(breaks("") == [])
+    }
+
+    @Test func nonLFBreaksLeaveLineStartsOnLF() {
+        let document = TextDocument(content: textBlob("😀\r\u{2028}x\ny"))
+        #expect(document?.utf16LineStarts == [0, 6])
+        #expect(document?.utf16NonLFBreaks == [2, 3])
+    }
+
     @Test func byteFormatUsesShortUnits() {
         #expect(ByteFormat.string(0) == "0 B")
         #expect(ByteFormat.string(999) == "999 B")
@@ -46,5 +66,32 @@ import Testing
         #expect(ByteFormat.string(12_345) == "12 KB")
         #expect(ByteFormat.string(1_234_567) == "1.2 MB")
         #expect(ByteFormat.string(5_000_000_000) == "5.0 GB")
+    }
+}
+
+@Suite struct LineNumberingTests {
+    @Test func labelsOnlyExactLineStarts() {
+        // "a\nb\nc": LF lines start at 0, 2, 4.
+        #expect(LineNumbering.label(at: 0, lineStarts: [0, 2, 4]) == 1)
+        #expect(LineNumbering.label(at: 2, lineStarts: [0, 2, 4]) == 2)
+        #expect(LineNumbering.label(at: 4, lineStarts: [0, 2, 4]) == 3)
+        #expect(LineNumbering.label(at: 1, lineStarts: [0, 2, 4]) == nil)
+        #expect(LineNumbering.label(at: 5, lineStarts: [0, 2, 4]) == nil)
+        #expect(LineNumbering.label(at: 0, lineStarts: []) == nil)
+    }
+
+    @Test func followsTheDocumentsLineStarts() throws {
+        func labels(_ text: String, at offsets: [Int]) throws -> [Int?] {
+            let starts = try #require(TextDocument(content: textBlob(text))).utf16LineStarts
+            return offsets.map { LineNumbering.label(at: $0, lineStarts: starts) }
+        }
+        // CRLF: the second row starts after the LF, at 3.
+        #expect(try labels("a\r\nb", at: [0, 3]) == [1, 2])
+        // CR only: TextKit would start rows at 2 and 4; neither is a line start.
+        #expect(try labels("a\rb\rc", at: [0, 2, 4]) == [1, nil, nil])
+        // U+2028 mid-line: the row after it is a continuation.
+        #expect(try labels("a\u{2028}b", at: [0, 2]) == [1, nil])
+        // FF before LF: the empty row at 2 is a continuation, the LF line starts at 3.
+        #expect(try labels("a\u{0C}\nb", at: [0, 2, 3]) == [1, nil, 2])
     }
 }

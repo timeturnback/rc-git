@@ -13,6 +13,10 @@ public struct TextDocument: Sendable, Hashable {
     /// UTF-16 offsets where lines start, for the line-number ruler. Same rule as the core's
     /// byte offsets: empty text has none, a trailing newline does not start a line.
     public let utf16LineStarts: [Int]
+    /// UTF-16 offsets of the characters other than LF that TextKit would start a new line at:
+    /// a CR not followed by LF, VT, FF, NEL, U+2028 and U+2029. Git does not count them as
+    /// line breaks, so the view draws them as visible markers to keep its rows on these lines.
+    public let utf16NonLFBreaks: [Int]
 
     public init(bytes: [UInt8], lineStarts: [UInt32], validUTF8: Bool) {
         let text = String(decoding: bytes, as: UTF8.self)
@@ -20,7 +24,7 @@ public struct TextDocument: Sendable, Hashable {
         self.lineCount = lineStarts.count
         self.byteCount = bytes.count
         self.isLossy = !validUTF8
-        self.utf16LineStarts = Self.utf16LineStarts(of: text)
+        (self.utf16LineStarts, self.utf16NonLFBreaks) = Self.utf16Breaks(of: text)
     }
 
     /// Builds a document from a blob when it is text; `nil` for binary or oversize blobs.
@@ -30,17 +34,47 @@ public struct TextDocument: Sendable, Hashable {
     }
 
     /// One walk over the UTF-16 view, so the ruler never scans the string itself.
-    private static func utf16LineStarts(of text: String) -> [Int] {
+    private static func utf16Breaks(of text: String) -> (lineStarts: [Int], nonLF: [Int]) {
         var starts = [0]
+        var nonLF: [Int] = []
         var offset = 0
-        let newline: UInt16 = 0x0A
+        var previousWasCR = false
         for unit in text.utf16 {
+            if previousWasCR, unit != lineFeed { nonLF.append(offset - 1) }
+            previousWasCR = unit == carriageReturn
             offset += 1
-            if unit == newline { starts.append(offset) }
+            if unit == lineFeed {
+                starts.append(offset)
+            } else if otherSeparators.contains(unit) {
+                nonLF.append(offset - 1)
+            }
         }
-        if offset == 0 { return [] }
+        if previousWasCR { nonLF.append(offset - 1) }
+        if offset == 0 { return ([], []) }
         if starts.count > 1, starts[starts.count - 1] == offset { starts.removeLast() }
-        return starts
+        return (starts, nonLF)
+    }
+
+    private static let lineFeed: UInt16 = 0x0A
+    private static let carriageReturn: UInt16 = 0x0D
+    /// VT, FF, NEL, LINE SEPARATOR, PARAGRAPH SEPARATOR: each always ends a TextKit line.
+    private static let otherSeparators: Set<UInt16> = [0x0B, 0x0C, 0x85, 0x2028, 0x2029]
+}
+
+/// Which line number the gutter draws beside a row of text.
+public enum LineNumbering {
+    /// The 1-based line whose start is exactly `utf16Offset`, or `nil` when the row begins
+    /// anywhere else, so a row TextKit broke off mid-line gets no number of its own.
+    /// `lineStarts` is sorted ascending, as `TextDocument.utf16LineStarts` is.
+    public static func label(at utf16Offset: Int, lineStarts: [Int]) -> Int? {
+        var low = 0
+        var high = lineStarts.count
+        while low < high {
+            let mid = (low + high) / 2
+            if lineStarts[mid] < utf16Offset { low = mid + 1 } else { high = mid }
+        }
+        guard low < lineStarts.count, lineStarts[low] == utf16Offset else { return nil }
+        return low + 1
     }
 }
 

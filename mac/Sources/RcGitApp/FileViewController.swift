@@ -65,6 +65,9 @@ final class FileViewController: NSViewController {
     /// Whether the links of the source on screen were asked for yet.
     private var importLinksRequested = false
     private var importLinks: ImportLinkMap?
+    /// UTF-16 offsets of the source's non-LF line separators, drawn as a marker in place of
+    /// the break TextKit would make; empty in preview mode.
+    private var markedBreaks: Set<Int> = []
 
     override func loadView() {
         pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
@@ -97,6 +100,7 @@ final class FileViewController: NSViewController {
 
         let layoutManager = NSLayoutManager()
         layoutManager.allowsNonContiguousLayout = true
+        layoutManager.delegate = self
         let container = NSTextContainer(
             size: NSSize(
                 width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
@@ -275,7 +279,7 @@ final class FileViewController: NSViewController {
             }.value
             guard let self, generation == self.contentGeneration else { return }
             self.anchors = built.anchors
-            self.show(built.text, asPreview: preview, lineStarts: document.utf16LineStarts)
+            self.show(built.text, asPreview: preview, document: document)
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
             }
@@ -283,7 +287,7 @@ final class FileViewController: NSViewController {
         }
     }
 
-    private func show(_ text: NSAttributedString, asPreview: Bool, lineStarts: [Int]) {
+    private func show(_ text: NSAttributedString, asPreview: Bool, document: TextDocument) {
         placeholder.isHidden = true
         scroll.isHidden = false
         if asPreview {
@@ -291,14 +295,16 @@ final class FileViewController: NSViewController {
         } else {
             configureForSource()
         }
+        markedBreaks = asPreview ? [] : Set(document.utf16NonLFBreaks)
         textStorage.setAttributedString(text)
         showsSource = !asPreview
-        ruler.setLineStarts(asPreview ? [] : lineStarts)
+        ruler.setLineStarts(asPreview ? [] : document.utf16LineStarts)
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         textView.scroll(.zero)
     }
 
-    /// Source mode: no wrapping, one fragment per line, the ruler visible.
+    /// Source mode: no wrapping, the ruler visible. With non-LF separators drawn as markers,
+    /// TextKit starts a fragment only at an LF, so the rows match git's line numbers.
     private func configureForSource() {
         scroll.rulersVisible = true
         scroll.hasHorizontalScroller = true
@@ -311,8 +317,8 @@ final class FileViewController: NSViewController {
         }
     }
 
-    /// Preview mode: wrapped prose, no ruler. The ruler assumes one fragment per line, which
-    /// wrapping breaks, so it is hidden here.
+    /// Preview mode: wrapped prose, no ruler. Wrapping leaves most rows without a line start
+    /// to number, so the ruler is hidden here.
     private func configureForPreview() {
         scroll.rulersVisible = false
         scroll.hasHorizontalScroller = false
@@ -336,6 +342,7 @@ final class FileViewController: NSViewController {
         placeholder.stringValue = message
         placeholder.isHidden = false
         scroll.isHidden = true
+        markedBreaks = []
         textStorage.setAttributedString(NSAttributedString(string: ""))
         ruler.setLineStarts([])
     }
@@ -616,5 +623,49 @@ extension FileViewController: NSTextViewDelegate {
         let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
         textView.setSelectedRange(NSRange(location: location, length: 0))
         textView.scroll(NSPoint(x: 0, y: max(rect.minY - 8, 0)))
+    }
+}
+
+// MARK: Non-LF separators
+
+/// A CR, VT, FF, NEL, U+2028 or U+2029 in source mode is drawn as `⏎` on the line it sits in
+/// rather than starting a new row: git does not end a line there, and a row that looked like a
+/// line of its own could pass off a comment's tail as code.
+extension FileViewController: @MainActor NSLayoutManagerDelegate {
+    private static let breakMarker: UniChar = 0x23CE
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldUse action: NSLayoutManager.ControlCharacterAction,
+        forControlCharacterAt charIndex: Int
+    ) -> NSLayoutManager.ControlCharacterAction {
+        markedBreaks.contains(charIndex) ? .whitespace : action
+    }
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+        properties: UnsafePointer<NSLayoutManager.GlyphProperty>,
+        characterIndexes: UnsafePointer<Int>,
+        font: NSFont,
+        forGlyphRange glyphRange: NSRange
+    ) -> Int {
+        guard !markedBreaks.isEmpty else { return 0 }
+        let count = glyphRange.length
+        let marked = (0..<count).filter { markedBreaks.contains(characterIndexes[$0]) }
+        var character = Self.breakMarker
+        var marker: CGGlyph = 0
+        guard !marked.isEmpty, CTFontGetGlyphsForCharacters(font, &character, &marker, 1)
+        else { return 0 }
+        var newGlyphs = Array(UnsafeBufferPointer(start: glyphs, count: count))
+        var newProperties = Array(UnsafeBufferPointer(start: properties, count: count))
+        for index in marked {
+            newGlyphs[index] = marker
+            newProperties[index] = []
+        }
+        layoutManager.setGlyphs(
+            newGlyphs, properties: newProperties, characterIndexes: characterIndexes, font: font,
+            forGlyphRange: glyphRange)
+        return count
     }
 }
