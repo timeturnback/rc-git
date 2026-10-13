@@ -28,9 +28,11 @@ enum StatusPalette {
 /// name. The truncation lives in the string's paragraph style — a label showing an attributed
 /// string ignores the one set on the cell, and clips with no ellipsis.
 enum ChangeRowLabel {
-    /// A file row's label.
+    /// A file row's label. A path truncates in the middle, never at the head: head truncation
+    /// cuts from the start of the line, which is the status letter.
     static func make(letter: String, color: NSColor, name: String) -> NSAttributedString {
-        let paragraph = paragraphStyle(for: name)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = name.contains("/") ? .byTruncatingMiddle : .byTruncatingTail
         let text = NSMutableAttributedString(
             string: letter + "  ",
             attributes: [
@@ -61,7 +63,7 @@ enum ChangeRowLabel {
             ])
     }
 
-    /// A whole path reads from its tail, a bare name from its head.
+    /// A folder's whole path reads from its tail, a bare name from its head.
     private static func paragraphStyle(for name: String) -> NSParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = name.contains("/") ? .byTruncatingHead : .byTruncatingTail
