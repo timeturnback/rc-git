@@ -216,6 +216,18 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         return (UpdateModel(build: build, environment: environment), environment)
     }
 
+    /// What the window saw at each `onChanged`: the state and the log it would draw.
+    private typealias Frame = (state: UpdateState, log: [String])
+
+    /// Whether every redraw carried one change, so no state was shown only once a later log
+    /// line happened to redraw the window. Starts from the fresh model, idle with no log.
+    private static func eachRedrawCarriesOneChange(_ frames: [Frame]) -> Bool {
+        let previous: [Frame] = [(.idle, [])] + frames
+        return zip(previous, frames).allSatisfy { before, after in
+            before.state == after.state || before.log == after.log
+        }
+    }
+
     @Test func aFullUpdateRunsEveryStepInOrder() async {
         let (model, environment) = Self.model(
             .init(
@@ -225,8 +237,14 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
                 ],
                 installOutput: ["==> building", "built RCGit.app"]
             ))
+        var seen: [Frame] = []
+        model.onChanged = { [weak model] in
+            if let model { seen.append((model.state, model.log)) }
+        }
         await model.start()
         #expect(model.state == .installed)
+        #expect(seen.last?.state == model.state)
+        #expect(Self.eachRedrawCarriesOneChange(seen))
         #expect(
             environment.calls == [
                 "toolchain", "sourceState", "sync", "sourceState", "install", "handOff",
@@ -255,8 +273,14 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             .init(sourceStates: [
                 .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
             ]))
+        var seen: [Frame] = []
+        model.onChanged = { [weak model] in
+            if let model { seen.append((model.state, model.log)) }
+        }
         await model.start()
         #expect(model.state == .upToDate)
+        #expect(seen.last?.state == model.state)
+        #expect(Self.eachRedrawCarriesOneChange(seen))
         #expect(!environment.calls.contains("install"))
     }
 
@@ -373,8 +397,14 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
                 ],
                 syncFailure: "host not trusted"
             ))
+        var seen: [Frame] = []
+        model.onChanged = { [weak model] in
+            if let model { seen.append((model.state, model.log)) }
+        }
         await model.start()
         #expect(model.state == .failed(step: .sync, message: "host not trusted"))
+        #expect(seen.last?.state == model.state)
+        #expect(Self.eachRedrawCarriesOneChange(seen))
         #expect(!environment.calls.contains("install"))
     }
 
