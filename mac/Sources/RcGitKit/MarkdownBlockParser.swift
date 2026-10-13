@@ -276,7 +276,7 @@ struct MarkdownBlockParser {
         } else if isReferenceDefinition(body) {
             index += 1
         } else if isHTMLBlockStart(body) {
-            consumeHTMLBlock(indent: indent)
+            consumeHTMLBlock(first: body, indent: indent)
         } else {
             beginPending(kind: .paragraph, first: text(body))
             index += 1
@@ -679,8 +679,11 @@ extension MarkdownBlockParser {
         emit(.code(language: nil, text: body.joined(separator: "\n")))
     }
 
-    private mutating func consumeHTMLBlock(indent: Int) {
-        var body: [String] = []
+    /// Raw HTML up to the next blank line. The first line is `first`, the body already read past
+    /// any list marker, so an item's marker never lands in the block's text.
+    private mutating func consumeHTMLBlock(first: Range<Int>, indent: Int) {
+        var body = [text(first)]
+        index += 1
         while index < lines.count {
             let rest = strippingQuotes(lines[index]).rest
             if trimmedStart(of: rest).isEmpty { break }

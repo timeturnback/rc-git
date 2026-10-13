@@ -137,6 +137,13 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[0].kind == .html(text: "<div class=\"x\">\ntext\n</div>"))
     }
 
+    @Test func anHTMLBlockInAListItemLeavesTheMarkerOutOfItsText() {
+        let blocks = MarkdownDocument.parse("- <details>\n  <summary>More</summary>\n").blocks
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .html(text: "<details>\n<summary>More</summary>"))
+        #expect(blocks.first?.marker == .bullet)
+    }
+
     @Test func frontMatterIsItsOwnBlock() {
         let blocks = MarkdownDocument.parse("---\nmodule: core\n---\n\n# Title\n").blocks
         #expect(blocks[0].kind == .frontMatter(text: "module: core"))
