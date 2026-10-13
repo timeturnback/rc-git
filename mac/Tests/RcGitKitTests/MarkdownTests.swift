@@ -506,6 +506,14 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(bare) == "see https://example.com/x. done")
     }
 
+    @Test func bareWWWURLGetsHTTPSWhateverItsCase() {
+        let upper = runs("Visit WWW.Example.com today")
+        #expect(upper.compactMap { $0.link?.destination } == ["https://WWW.Example.com"])
+        #expect(plain(upper) == "Visit WWW.Example.com today")
+        let lower = runs("Visit www.example.com today")
+        #expect(lower.compactMap { $0.link?.destination } == ["https://www.example.com"])
+    }
+
     @Test func bareURLKeepsABalancedClosingParenthesis() {
         let wiki = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
         let balanced = runs("See \(wiki) now")

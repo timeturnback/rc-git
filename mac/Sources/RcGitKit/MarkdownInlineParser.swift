@@ -611,7 +611,7 @@ extension InlineScanner {
         guard stop > cursor + prefix.count else { return nil }
         let visible = String(decoding: bytes[cursor..<stop], as: UTF8.self)
         flush(style: style, link: link)
-        let destination = visible.hasPrefix("www.") ? "https://\(visible)" : visible
+        let destination = visible.lowercased().hasPrefix("www.") ? "https://\(visible)" : visible
         output.append(
             MarkdownRun(
                 text: visible, style: style, link: MarkdownLink(destination: destination)))
