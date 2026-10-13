@@ -764,6 +764,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 active: model.searchFilter != nil, results: model.searchResults,
                 scanned: model.searchScanned, complete: model.searchComplete,
                 searching: model.isSearching, error: model.searchError)
+            if let commit = model.diffCommit {
+                historyController.selectCommitRow(commit.oid)
+            }
         }
         historyController.onSearchFilterChanged = { [weak self] filter in
             guard let self else { return }
