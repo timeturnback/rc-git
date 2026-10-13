@@ -157,7 +157,7 @@ private struct MarkdownBuilder {
     }
 
     private mutating func appendFootnote(_ block: MarkdownBlock, label: String) {
-        record(anchor: "fn-\(label)")
+        record(anchor: MarkdownDocument.footnoteAnchor(for: label))
         let style = paragraphStyle(for: block, hanging: true)
         let font = NSFont.systemFont(ofSize: MarkdownRenderer.Theme.bodySize - 1)
         result.append(

@@ -428,7 +428,7 @@ extension InlineScanner {
         output.append(
             MarkdownRun(
                 text: label, style: frame.style.union(.footnoteMarker),
-                link: MarkdownLink(destination: "#fn-\(label)")))
+                link: MarkdownLink(destination: "#" + MarkdownDocument.footnoteAnchor(for: label))))
     }
 
     private mutating func emitImage(

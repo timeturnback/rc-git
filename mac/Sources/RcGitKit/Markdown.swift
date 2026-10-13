@@ -156,15 +156,24 @@ public struct MarkdownDocument: Sendable, Hashable {
         return slug
     }
 
+    /// The fragment the footnote `label` answers to: `fn-` plus the label, slugged by
+    /// `anchor(for:)`. The marker links to it and the definition records it, so a label with
+    /// uppercase or punctuation still matches, case-insensitively as GFM does.
+    public static func footnoteAnchor(for label: String) -> String {
+        anchor(for: "fn-" + label)
+    }
+
     /// The fragment each heading in `blocks` answers to, one per `.heading` block in document
     /// order. A repeated slug takes the first free `-1`, `-2`, ... suffix, the way GitHub
     /// de-duplicates heading ids, so the second "Fixed" is `fixed-1`. Footnote anchors
-    /// (`fn-<label>`) count as taken, so a heading never claims a footnote's id. A heading
-    /// with no slug gets an empty string and claims nothing.
+    /// (`footnoteAnchor(for:)`) count as taken, so a heading never claims a footnote's id. A
+    /// heading with no slug gets an empty string and claims nothing.
     public static func headingAnchors(for blocks: [MarkdownBlock]) -> [String] {
         var occurrences: [String: Int] = [:]
         for block in blocks {
-            if case let .footnote(label) = block.kind { occurrences["fn-\(label)"] = 0 }
+            if case let .footnote(label) = block.kind {
+                occurrences[footnoteAnchor(for: label)] = 0
+            }
         }
         var anchors: [String] = []
         for block in blocks {

@@ -236,6 +236,24 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(blocks[1].runs) == "Because.")
     }
 
+    @Test func footnoteAnchorMatchesMarker() throws {
+        let blocks = MarkdownDocument.parse("See[^Note].\n\n[^Note]: text\n").blocks
+        let marker = try #require(firstRun(blocks) { $0.style.contains(.footnoteMarker) })
+        let destination = try #require(marker.link?.destination)
+        #expect(destination == "#fn-note")
+        let footnote = try #require(blocks.last)
+        guard case let .footnote(label) = footnote.kind else {
+            Issue.record("expected a footnote block, got \(footnote.kind)")
+            return
+        }
+        #expect(
+            MarkdownDocument.anchor(for: String(destination.dropFirst()))
+                == MarkdownDocument.footnoteAnchor(for: label))
+        #expect(
+            MarkdownDocument.anchor(for: "fn-note")
+                == MarkdownDocument.footnoteAnchor(for: "Note"))
+    }
+
     @Test func proseAfterABracketedLabelStaysAParagraph() {
         let blocks = MarkdownDocument.parse("[Note]: this is not done\n\nSee [Note].\n").blocks
         #expect(blocks.count == 2)
