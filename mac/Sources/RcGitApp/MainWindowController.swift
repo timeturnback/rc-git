@@ -55,8 +55,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var currentLayout: Layout?
     private var sidebarCollapse = SidebarCollapse()
     /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
-    /// .v2: the first key was also set by the fit's own `setPosition`, so it pins nothing.
-    private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned.v2"
+    private let sidebarWidthPin = SidebarWidthPin()
     /// The defaults name every tab saves its window frame under and the next window restores.
     private static let frameName = "rc-git.window"
     private var repositoryName = ""
@@ -100,7 +99,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         buildVersionBadge()
         wireModel()
         renderBanner()
-        model.setShowsHiddenFiles(UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey))
+        model.setShowsHiddenFiles(HiddenFilesPreference().shows)
         window.center()
         // The frame is saved by name rather than through `setFrameAutosaveName`: AppKit
         // grants an autosave name to one live window only, and every tab is its own window.
@@ -598,7 +597,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the window. A divider the user dragged is theirs from then on, so the fit stops, and
     /// only the tree measures its rows, so the fit runs only while the tree is showing.
     private func fitSidebarWidth(to contentWidth: CGFloat) {
-        guard !UserDefaults.standard.bool(forKey: Self.sidebarWidthPinnedKey),
+        guard !sidebarWidthPin.isPinned,
             contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue,
             // A width for a collapsed sidebar would re-open it behind the user.
             outerSplit.splitViewItems.first?.isCollapsed == false
@@ -609,7 +608,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc private func sidebarDidResize(_ notification: Notification) {
         guard SidebarResize.isUserDrag(notification.userInfo) else { return }
-        UserDefaults.standard.set(true, forKey: Self.sidebarWidthPinnedKey)
+        sidebarWidthPin.pin()
     }
 
     // MARK: Construction

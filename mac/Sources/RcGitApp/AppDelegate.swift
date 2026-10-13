@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
+    private let hiddenFiles = HiddenFilesPreference()
     private let openTabs = OpenTabs()
     private var closedTabs = ClosedTabs()
     private let recentMenu = NSMenu(title: "Open Recent")
@@ -115,8 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Shows or hides the entries `HiddenFiles` names in every tab, and remembers the choice
     /// for the next launch.
     @objc func toggleHiddenFiles(_ sender: Any?) {
-        let shows = !UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey)
-        UserDefaults.standard.set(shows, forKey: HiddenFiles.preferenceKey)
+        let shows = hiddenFiles.toggle()
         for controller in controllers {
             controller.setShowsHiddenFiles(shows)
         }
@@ -124,8 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleHiddenFiles(_:)) {
-            menuItem.state =
-                UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey) ? .on : .off
+            menuItem.state = hiddenFiles.shows ? .on : .off
         }
         if menuItem.action == #selector(clearRecents(_:)) {
             return !recents.paths.isEmpty

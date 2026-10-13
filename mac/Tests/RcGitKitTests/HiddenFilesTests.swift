@@ -31,3 +31,16 @@ import Testing
         #expect(!HiddenFiles.isHidden(path: ""))
     }
 }
+
+@Suite struct HiddenFilesPreferenceTests {
+    @Test func startsOffAndEachToggleFlipsAndRemembers() throws {
+        try withScratchDefaults { defaults in
+            let preference = HiddenFilesPreference(defaults: defaults)
+            #expect(!preference.shows)
+            #expect(preference.toggle())
+            #expect(HiddenFilesPreference(defaults: defaults).shows, "the next launch shows them")
+            #expect(!preference.toggle())
+            #expect(!HiddenFilesPreference(defaults: defaults).shows)
+        }
+    }
+}

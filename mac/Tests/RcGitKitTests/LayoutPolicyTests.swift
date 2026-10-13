@@ -176,3 +176,20 @@ import Testing
         #expect(!SidebarResize.isUserDrag(nil))
     }
 }
+
+@Suite struct SidebarWidthPinTests {
+    @Test func unpinnedUntilPinnedThenRemembered() throws {
+        try withScratchDefaults { defaults in
+            #expect(!SidebarWidthPin(defaults: defaults).isPinned)
+            SidebarWidthPin(defaults: defaults).pin()
+            #expect(SidebarWidthPin(defaults: defaults).isPinned)
+        }
+    }
+
+    @Test func theFirstKeyNoLongerPins() throws {
+        try withScratchDefaults { defaults in
+            defaults.set(true, forKey: "rc-git.sidebar-width-pinned")
+            #expect(!SidebarWidthPin(defaults: defaults).isPinned)
+        }
+    }
+}

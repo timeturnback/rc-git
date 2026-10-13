@@ -129,3 +129,22 @@ public enum SidebarResize {
         (userInfo?["NSSplitViewUserResizeKey"] as? Int) == 1
     }
 }
+
+/// Whether the user has dragged the sidebar divider, remembered between launches. Once pinned,
+/// the automatic fit stands back for good.
+public struct SidebarWidthPin {
+    /// .v2: the first key was also set by the fit's own `setPosition`, so it pins nothing.
+    public static let key = "rc-git.sidebar-width-pinned.v2"
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public var isPinned: Bool { defaults.bool(forKey: Self.key) }
+
+    public func pin() {
+        defaults.set(true, forKey: Self.key)
+    }
+}
