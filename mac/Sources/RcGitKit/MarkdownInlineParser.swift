@@ -11,7 +11,9 @@ enum MarkdownInlineParser {
     static func runs(of source: String, references: [String: MarkdownLink]) -> [MarkdownRun] {
         guard !source.isEmpty else { return [] }
         var scanner = InlineScanner(bytes: Array(source.utf8), references: references)
-        scanner.parse(0..<scanner.bytes.count, style: [], link: nil, depth: 0)
+        scanner.parse(
+            from: 0,
+            in: InlineScanner.Frame(end: scanner.bytes.count, style: [], link: nil, depth: 0))
         return scanner.output
     }
 
@@ -35,6 +37,20 @@ enum MarkdownInlineParser {
 /// The inline scanner's mutable state: the bytes, the runs emitted so far, and the plain text
 /// accumulated since the last run was closed.
 struct InlineScanner {
+    /// What a construct inherits from the one around it: where its range ends, the style and
+    /// link its runs carry, and how deep the nesting already is.
+    struct Frame {
+        let end: Int
+        let style: MarkdownStyle
+        let link: MarkdownLink?
+        let depth: Int
+
+        /// The frame for a construct nested inside this one.
+        func nested(end: Int, style: MarkdownStyle, link: MarkdownLink?) -> Frame {
+            Frame(end: end, style: style, link: link, depth: depth + 1)
+        }
+    }
+
     let bytes: [UInt8]
     let references: [String: MarkdownLink]
     /// The start of every maximal backtick run, ascending, keyed by the run's width. A code span
@@ -174,55 +190,54 @@ struct InlineScanner {
         return found >= 0 && found < end ? found : nil
     }
 
-    mutating func parse(
-        _ range: Range<Int>, style: MarkdownStyle, link: MarkdownLink?, depth: Int
-    ) {
-        var cursor = range.lowerBound
-        while cursor < range.upperBound {
-            if let next = special(
-                at: cursor, end: range.upperBound, style: style, link: link, depth: depth)
-            {
+    /// True when `index` falls before `end` and holds `byte`.
+    func has(_ byte: UInt8, at index: Int, end: Int) -> Bool {
+        index < end && bytes[index] == byte
+    }
+
+    /// Parses `start..<frame.end`, emitting every run with the frame's style and link.
+    mutating func parse(from start: Int, in frame: Frame) {
+        var cursor = start
+        while cursor < frame.end {
+            if let next = special(at: cursor, in: frame) {
                 cursor = next
             } else {
                 buffer.append(bytes[cursor])
                 cursor += 1
             }
         }
-        flush(style: style, link: link)
+        flush(frame)
     }
 
     /// Tries every construct that can start at `cursor`; `nil` means the byte is literal text.
-    private mutating func special(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?, depth: Int
-    ) -> Int? {
+    private mutating func special(at cursor: Int, in frame: Frame) -> Int? {
         switch bytes[cursor] {
         case Ascii.backslash:
-            return escape(at: cursor, end: end)
+            return escape(at: cursor, end: frame.end)
         case Ascii.backtick:
-            return codeSpan(at: cursor, end: end, style: style, link: link)
+            return codeSpan(at: cursor, in: frame)
         case Ascii.asterisk, Ascii.underscore, Ascii.tilde:
-            return emphasis(at: cursor, end: end, style: style, link: link, depth: depth)
+            return emphasis(at: cursor, in: frame)
         case Ascii.leftBracket:
-            return bracket(
-                at: cursor, end: end, style: style, link: link, depth: depth, image: false)
+            return bracket(at: cursor, in: frame, image: false)
         case Ascii.exclamation:
-            guard cursor + 1 < end, bytes[cursor + 1] == Ascii.leftBracket else { return nil }
-            return bracket(
-                at: cursor + 1, end: end, style: style, link: link, depth: depth, image: true)
+            guard has(Ascii.leftBracket, at: cursor + 1, end: frame.end) else { return nil }
+            return bracket(at: cursor + 1, in: frame, image: true)
         case Ascii.lessThan:
-            return angle(at: cursor, end: end, style: style, link: link)
+            return angle(at: cursor, in: frame)
         case Ascii.newline:
-            return lineBreak(at: cursor, end: end)
+            return lineBreak(at: cursor, end: frame.end)
         default:
-            return Self.urlStart[Int(bytes[cursor])]
-                ? bareURL(at: cursor, end: end, style: style, link: link) : nil
+            return Self.urlStart[Int(bytes[cursor])] ? bareURL(at: cursor, in: frame) : nil
         }
     }
 
-    private mutating func flush(style: MarkdownStyle, link: MarkdownLink?) {
+    private mutating func flush(_ frame: Frame) {
         guard !buffer.isEmpty else { return }
         output.append(
-            MarkdownRun(text: String(decoding: buffer, as: UTF8.self), style: style, link: link))
+            MarkdownRun(
+                text: String(decoding: buffer, as: UTF8.self), style: frame.style,
+                link: frame.link))
         buffer.removeAll(keepingCapacity: true)
     }
 
@@ -243,49 +258,47 @@ struct InlineScanner {
     /// A backtick run closes only on a run of exactly the same length, which is what lets
     /// ``a ` b`` hold a backtick. A run with no closer is literal as a whole, never reopened
     /// one byte later as a narrower one.
-    private mutating func codeSpan(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?
-    ) -> Int? {
+    private mutating func codeSpan(at cursor: Int, in frame: Frame) -> Int? {
         var open = cursor
-        while open < end, bytes[open] == Ascii.backtick { open += 1 }
+        while has(Ascii.backtick, at: open, end: frame.end) { open += 1 }
         let width = open - cursor
         if let close = Self.firstRun(of: width, atOrAfter: open, in: backtickRuns),
-            close + width <= end
+            close + width <= frame.end
         {
-            emitCode(open..<close, style: style, link: link)
+            emitCode(open..<close, in: frame)
             return close + width
         }
         buffer.append(contentsOf: bytes[cursor..<open])
         return open
     }
 
-    private mutating func emitCode(
-        _ range: Range<Int>, style: MarkdownStyle, link: MarkdownLink?
-    ) {
-        flush(style: style, link: link)
+    private mutating func emitCode(_ range: Range<Int>, in frame: Frame) {
+        flush(frame)
         var content = String(decoding: bytes[range], as: UTF8.self)
             .replacingOccurrences(of: "\n", with: " ")
         if content.count > 2, content.hasPrefix(" "), content.hasSuffix(" ") {
             content = String(content.dropFirst().dropLast())
         }
         guard !content.isEmpty else { return }
-        output.append(MarkdownRun(text: content, style: style.union(.code), link: link))
+        output.append(
+            MarkdownRun(text: content, style: frame.style.union(.code), link: frame.link))
     }
 
-    private mutating func emphasis(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?, depth: Int
-    ) -> Int? {
-        guard depth < MarkdownInlineParser.maximumDepth else { return nil }
+    private mutating func emphasis(at cursor: Int, in frame: Frame) -> Int? {
+        guard frame.depth < MarkdownInlineParser.maximumDepth else { return nil }
+        let end = frame.end
         let marker = bytes[cursor]
         var run = cursor
-        while run < end, bytes[run] == marker { run += 1 }
+        while has(marker, at: run, end: end) { run += 1 }
         guard let (width, added) = Self.delimiter(marker: marker, runLength: run - cursor)
         else { return nil }
         guard canOpen(marker: marker, at: cursor, width: width, end: end) else { return nil }
         guard let close = closingRun(marker: marker, width: width, from: cursor + width, end: end)
         else { return nil }
-        flush(style: style, link: link)
-        parse((cursor + width)..<close, style: style.union(added), link: link, depth: depth + 1)
+        flush(frame)
+        parse(
+            from: cursor + width,
+            in: frame.nested(end: close, style: frame.style.union(added), link: frame.link))
         return close + width
     }
 
@@ -385,39 +398,36 @@ struct InlineScanner {
 extension InlineScanner {
     /// `[text](target)`, `[text][label]`, `[label]`, `![alt](src)`, and `[^note]`. `cursor` is
     /// the opening bracket; for an image the `!` before it has already been skipped.
-    fileprivate mutating func bracket(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?, depth: Int,
-        image: Bool
-    ) -> Int? {
-        guard depth < MarkdownInlineParser.maximumDepth,
-            let close = matchingBracket(from: cursor, end: end)
+    fileprivate mutating func bracket(at cursor: Int, in frame: Frame, image: Bool) -> Int? {
+        guard frame.depth < MarkdownInlineParser.maximumDepth,
+            let close = matchingBracket(from: cursor, end: frame.end)
         else { return nil }
         let inner = (cursor + 1)..<close
         if !image, inner.count > 1, bytes[inner.lowerBound] == Ascii.caret {
-            emitFootnoteMarker(inner, style: style, link: link)
+            emitFootnoteMarker(inner, in: frame)
             return close + 1
         }
-        guard let target = destination(inner: inner, after: close + 1, end: end) else {
+        guard let target = destination(inner: inner, after: close + 1, end: frame.end) else {
             return nil
         }
-        flush(style: style, link: link)
+        flush(frame)
         if image {
-            emitImage(inner, target: link ?? target.link, style: style)
+            emitImage(inner, target: frame.link ?? target.link, style: frame.style)
         } else {
-            parse(inner, style: style, link: target.link, depth: depth + 1)
+            parse(
+                from: inner.lowerBound,
+                in: frame.nested(end: inner.upperBound, style: frame.style, link: target.link))
         }
         return target.end
     }
 
-    private mutating func emitFootnoteMarker(
-        _ inner: Range<Int>, style: MarkdownStyle, link: MarkdownLink?
-    ) {
-        flush(style: style, link: link)
+    private mutating func emitFootnoteMarker(_ inner: Range<Int>, in frame: Frame) {
+        flush(frame)
         let label = String(
             decoding: bytes[(inner.lowerBound + 1)..<inner.upperBound], as: UTF8.self)
         output.append(
             MarkdownRun(
-                text: label, style: style.union(.footnoteMarker),
+                text: label, style: frame.style.union(.footnoteMarker),
                 link: MarkdownLink(destination: "#fn-\(label)")))
     }
 
@@ -435,7 +445,7 @@ extension InlineScanner {
     private func destination(inner: Range<Int>, after: Int, end: Int)
         -> (link: MarkdownLink, end: Int)?
     {
-        if after < end, bytes[after] == Ascii.leftParen,
+        if has(Ascii.leftParen, at: after, end: end),
             let inline = inlineDestination(from: after, end: end)
         {
             return inline
@@ -458,21 +468,30 @@ extension InlineScanner {
 
     /// The destination itself: either `<anything but a newline>` or a run without whitespace.
     private func destinationText(from cursor: Int, end: Int) -> (text: String, end: Int)? {
-        if cursor < end, bytes[cursor] == Ascii.lessThan {
-            var stop = cursor + 1
-            while stop < end, bytes[stop] != Ascii.greaterThan, bytes[stop] != Ascii.newline {
-                stop += 1
-            }
-            guard stop < end, bytes[stop] == Ascii.greaterThan else { return nil }
-            return (String(decoding: bytes[(cursor + 1)..<stop], as: UTF8.self), stop + 1)
+        guard has(Ascii.lessThan, at: cursor, end: end) else {
+            return bareDestination(from: cursor, end: end)
         }
+        return angledDestination(from: cursor, end: end)
+    }
+
+    /// `<…>`: anything but a newline up to the first `>`, which must be there.
+    private func angledDestination(from cursor: Int, end: Int) -> (text: String, end: Int)? {
+        var stop = cursor + 1
+        while stop < end, bytes[stop] != Ascii.greaterThan, bytes[stop] != Ascii.newline {
+            stop += 1
+        }
+        guard has(Ascii.greaterThan, at: stop, end: end) else { return nil }
+        return (String(decoding: bytes[(cursor + 1)..<stop], as: UTF8.self), stop + 1)
+    }
+
+    /// A run without whitespace whose parentheses balance; an unopened `)` ends it.
+    private func bareDestination(from cursor: Int, end: Int) -> (text: String, end: Int) {
         var stop = cursor
         var depth = 0
-        while stop < end {
-            let byte = bytes[stop]
-            if Ascii.isSpace(byte) || byte == Ascii.newline { break }
-            if byte == Ascii.leftParen { depth += 1 }
-            if byte == Ascii.rightParen {
+        while stop < end, !Ascii.isSpace(bytes[stop]), bytes[stop] != Ascii.newline {
+            if bytes[stop] == Ascii.leftParen {
+                depth += 1
+            } else if bytes[stop] == Ascii.rightParen {
                 if depth == 0 { break }
                 depth -= 1
             }
@@ -484,7 +503,7 @@ extension InlineScanner {
     private func referenceDestination(inner: Range<Int>, after: Int, end: Int)
         -> (link: MarkdownLink, end: Int)?
     {
-        if after < end, bytes[after] == Ascii.leftBracket,
+        if has(Ascii.leftBracket, at: after, end: end),
             let close = matchingBracket(from: after, end: end)
         {
             let label = String(decoding: bytes[(after + 1)..<close], as: UTF8.self)
@@ -507,22 +526,22 @@ extension InlineScanner {
 extension InlineScanner {
     /// `<https://…>` and `<user@host>` become links; a recognised HTML tag is dropped so its
     /// markup does not show as prose; anything else stays literal.
-    fileprivate mutating func angle(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?
-    ) -> Int? {
+    fileprivate mutating func angle(at cursor: Int, in frame: Frame) -> Int? {
         let stop = autolinkStop(from: cursor + 1)
-        guard stop < end, bytes[stop] == Ascii.greaterThan else {
-            return htmlTag(at: cursor, end: end)
+        guard has(Ascii.greaterThan, at: stop, end: frame.end) else {
+            return htmlTag(at: cursor, end: frame.end)
         }
         let content = String(decoding: bytes[(cursor + 1)..<stop], as: UTF8.self)
-        guard link == nil, Self.isAutolink(content) else { return htmlTag(at: cursor, end: end) }
-        flush(style: style, link: link)
+        guard frame.link == nil, Self.isAutolink(content) else {
+            return htmlTag(at: cursor, end: frame.end)
+        }
+        flush(frame)
         let destination =
             content.contains("@") && !content.contains(":")
             ? "mailto:\(content)" : content
         output.append(
             MarkdownRun(
-                text: content, style: style, link: MarkdownLink(destination: destination)))
+                text: content, style: frame.style, link: MarkdownLink(destination: destination)))
         return stop + 1
     }
 
@@ -544,7 +563,7 @@ extension InlineScanner {
     /// well-formed attributes, and anything else returns nil so the `<` stays literal prose.
     private mutating func htmlTag(at cursor: Int, end: Int) -> Int? {
         var position = cursor + 1
-        let closing = position < end && bytes[position] == Ascii.slash
+        let closing = has(Ascii.slash, at: position, end: end)
         if closing { position += 1 }
         guard position < end, Ascii.isLetter(bytes[position]) else { return nil }
         var nameEnd = position + 1
@@ -562,7 +581,7 @@ extension InlineScanner {
     /// The index of the `>` ending a closing tag: only whitespace may follow its name.
     private func closingTagEnd(from start: Int, end: Int) -> Int? {
         let close = skipTagSpace(from: start, end: end)
-        return close < end && bytes[close] == Ascii.greaterThan ? close : nil
+        return has(Ascii.greaterThan, at: close, end: end) ? close : nil
     }
 
     /// The index of the `>` ending an open tag: attributes, each after whitespace, then an
@@ -574,8 +593,7 @@ extension InlineScanner {
             guard next < end else { return nil }
             if bytes[next] == Ascii.greaterThan { return next }
             if bytes[next] == Ascii.slash {
-                let close = next + 1
-                return close < end && bytes[close] == Ascii.greaterThan ? close : nil
+                return has(Ascii.greaterThan, at: next + 1, end: end) ? next + 1 : nil
             }
             guard next > position, let attributeEnd = attributeEnd(from: next, end: end) else {
                 return nil
@@ -590,7 +608,7 @@ extension InlineScanner {
         var nameEnd = start + 1
         while nameEnd < end, Self.isAttributeNameByte(bytes[nameEnd]) { nameEnd += 1 }
         let equals = skipTagSpace(from: nameEnd, end: end)
-        guard equals < end, bytes[equals] == Ascii.equals else { return nameEnd }
+        guard has(Ascii.equals, at: equals, end: end) else { return nameEnd }
         return attributeValueEnd(from: skipTagSpace(from: equals + 1, end: end), end: end)
     }
 
@@ -655,10 +673,11 @@ extension InlineScanner {
     }
 
     /// GFM linkifies bare URLs. Only outside an existing link, and never mid-word.
-    fileprivate mutating func bareURL(
-        at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?
-    ) -> Int? {
-        guard link == nil, cursor == 0 || !Ascii.isLetter(bytes[cursor - 1]) else { return nil }
+    fileprivate mutating func bareURL(at cursor: Int, in frame: Frame) -> Int? {
+        let end = frame.end
+        guard frame.link == nil, cursor == 0 || !Ascii.isLetter(bytes[cursor - 1]) else {
+            return nil
+        }
         guard let prefix = Self.urlPrefixes.first(where: { matches($0, at: cursor, end: end) })
         else { return nil }
         var stop = cursor + prefix.count
@@ -670,11 +689,11 @@ extension InlineScanner {
         }
         guard stop > cursor + prefix.count else { return nil }
         let visible = String(decoding: bytes[cursor..<stop], as: UTF8.self)
-        flush(style: style, link: link)
+        flush(frame)
         let destination = visible.lowercased().hasPrefix("www.") ? "https://\(visible)" : visible
         output.append(
             MarkdownRun(
-                text: visible, style: style, link: MarkdownLink(destination: destination)))
+                text: visible, style: frame.style, link: MarkdownLink(destination: destination)))
         return stop
     }
 

@@ -258,19 +258,13 @@ struct MarkdownBlockParser {
     {
         if indent >= codeIndent {
             consumeIndentedCode(baseIndent: codeIndent)
-        } else if let fence = fenceInfo(body) {
-            consumeFence(fence, indent: indent)
-        } else if let level = atxLevel(body) {
-            emit(.heading(level: level), runs: inlineRuns(text(atxContent(body, level: level))))
-            index += 1
-        } else if isThematicBreak(body) {
-            emit(.thematicBreak)
-            index += 1
-        } else if listIndents.count < Self.maximumListDepth,
-            let item = listItem(body, indent: indent)
-        {
+            return nil
+        }
+        if dispatchLeaf(body: body, indent: indent) { return nil }
+        if listIndents.count < Self.maximumListDepth, let item = listItem(body, indent: indent) {
             return beginListItem(item)
-        } else if let footnote = footnoteDefinition(body) {
+        }
+        if let footnote = footnoteDefinition(body) {
             beginPending(kind: .footnote(label: footnote.label), first: text(footnote.rest))
             index += 1
         } else if isReferenceDefinition(body) {
@@ -282,6 +276,22 @@ struct MarkdownBlockParser {
             index += 1
         }
         return nil
+    }
+
+    /// Consumes a fence, an ATX heading or a thematic break; false when the line is none.
+    private mutating func dispatchLeaf(body: Range<Int>, indent: Int) -> Bool {
+        if let fence = fenceInfo(body) {
+            consumeFence(fence, indent: indent)
+        } else if let level = atxLevel(body) {
+            emit(.heading(level: level), runs: inlineRuns(text(atxContent(body, level: level))))
+            index += 1
+        } else if isThematicBreak(body) {
+            emit(.thematicBreak)
+            index += 1
+        } else {
+            return false
+        }
+        return true
     }
 
     /// True when the line opens a block of its own, so it cannot continue a paragraph.
@@ -765,9 +775,17 @@ extension MarkdownBlockParser {
         }
         if escaped { current.append("\\") }
         cells.append(current)
-        if trimmed.hasPrefix("|"), !cells.isEmpty { cells.removeFirst() }
-        if trimmed.hasSuffix("|"), !cells.isEmpty { cells.removeLast() }
-        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+        return droppingOuterPipeCells(cells, of: trimmed).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+    /// Drops the empty cell before a leading `|` and after a trailing one.
+    private static func droppingOuterPipeCells(_ cells: [String], of row: String) -> [String] {
+        var cells = cells[...]
+        if row.hasPrefix("|"), !cells.isEmpty { cells.removeFirst() }
+        if row.hasSuffix("|"), !cells.isEmpty { cells.removeLast() }
+        return Array(cells)
     }
 
     fileprivate static func alignment(of cell: String) -> MarkdownTable.Alignment {
