@@ -153,6 +153,37 @@ import Testing
             repo.lock.withLock { repo.statusCalls } == 1, "a cancel drops the queued re-run")
     }
 
+    @Test func theSelectionSurvivesARescanInFlight() async {
+        await model.loadStatus()
+        let before = model.statusState
+        let gate = CallGate()
+        repo.statusGate = gate
+        async let rescan: Void = model.loadStatus()
+        await gate.waitUntilArrived()
+        #expect(model.statusState == before, "the list keeps the last report while it rescans")
+        #expect(
+            model.selections == [
+                .whole(path: "a.txt"), .whole(path: "b.txt"),
+                .whole(path: "gone.txt"),
+            ])
+        #expect(model.tickedPaths == ["a.txt", "b.txt", "gone.txt"])
+        gate.open()
+        await rescan
+    }
+
+    @Test func aCancelledRescanDropsTheOldReport() async {
+        await model.loadStatus()
+        let gate = CallGate()
+        repo.statusGate = gate
+        async let rescan: Void = model.loadStatus()
+        await gate.waitUntilArrived()
+        model.cancelScans()
+        #expect(model.statusState == .idle, "the tab reloads on the next switch back")
+        gate.open()
+        await rescan
+        #expect(model.statusState == .idle, "the cancelled scan's result never lands")
+    }
+
     @Test func filesAreTickedByDefaultAndUnticksSurviveRefresh() async {
         await model.loadStatus()
         #expect(model.isTicked("a.txt"))

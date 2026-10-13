@@ -100,25 +100,32 @@ public final class ChangesModel {
     }
 
     /// Cancels the queued re-scan and drops whatever is in flight, leaving the list idle so
-    /// the next switch back to the Changes tab reloads it. The repository call already handed
-    /// to the walk runs to completion — it is a synchronous FFI call and cannot be
-    /// interrupted — but its result is dropped by the generation check.
+    /// the next switch back to the Changes tab reloads it — a rescan's previous report is
+    /// dropped too, since the scan that would have replaced it never lands. The repository
+    /// call already handed to the walk runs to completion — it is a synchronous FFI call and
+    /// cannot be interrupted — but its result is dropped by the generation check.
     public func cancelScans() {
         statusPending = false
         stashPending = false
         statusGeneration += 1
         stashGeneration += 1
-        if case .loading = statusState {
+        if statusScanning, statusState != .idle {
             statusState = .idle
             onStatusChanged?()
         }
     }
 
+    /// A rescan keeps the last loaded report in `statusState` until the new one lands, so the
+    /// list and the commit and stash selections stay what the user sees. Acting on it is safe:
+    /// the guard re-checks `expectedHead` and every hunk stamp.
     private func runStatusScan() async {
         statusGeneration += 1
         let generation = statusGeneration
-        statusState = .loading
-        onStatusChanged?()
+        let hasReport = if case .loaded = statusState { true } else { false }
+        if !hasReport {
+            statusState = .loading
+            onStatusChanged?()
+        }
         let repository = repository
         let showsHidden = showsHiddenFiles
         let result = await RepositoryError.run {

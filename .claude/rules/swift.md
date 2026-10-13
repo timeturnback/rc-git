@@ -164,5 +164,7 @@ paths: mac/**
   (`docs/solutions/runtime-errors/task-per-watch-event-backlog.md`).
 - `cancelScans()` is the most a cancel can do here: the repository call is synchronous FFI and
   runs to completion. It drops the queued re-run, bumps the generation so the in-flight result
-  never lands, and resets `.loading` to `.idle` so the next switch back to the tab reloads
-  rather than showing a spinner nothing will ever fill.
+  never lands, and resets the list to `.idle` when a scan was in flight so the next switch
+  back to the tab reloads rather than showing a spinner, or a report, nothing will refresh. A
+  rescan keeps the last `.loaded` report (only a first scan shows `.loading`), so the commit
+  and stash selections never read empty mid-scan.
