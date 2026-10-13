@@ -177,9 +177,13 @@ public struct CommitFilter: Sendable, Hashable {
     public var message: String?
     /// Case-insensitive (ASCII) substring of the author name or email.
     public var author: String?
-    /// Only commits at or after this time, seconds since the Unix epoch. Also stops the walk.
+    /// Only commits whose committer time is at or after this time, seconds since the Unix
+    /// epoch, as `git log --since` compares. Also stops the walk at the first commit committed
+    /// before it, so clock skew can hide newer ancestors. Committer time can differ from the
+    /// author time a `CommitSummary` carries.
     public var after: Int64?
-    /// Only commits at or before this time, seconds since the Unix epoch.
+    /// Only commits whose committer time is at or before this time, seconds since the Unix
+    /// epoch, as `git log --until` compares.
     public var before: Int64?
     /// Only commits that changed the entry at this path, as path history judges it.
     public var path: String?

@@ -420,7 +420,7 @@ fn commit_details_keeps_author_and_committer_offsets_apart() {
 }
 
 #[test]
-fn time_filters_use_committer_time() {
+fn search_time_filter_reads_committer_time() {
     let fx = merge_fixture();
     commit_with_dates(
         &fx,

@@ -412,8 +412,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         fieldRow.alignment = .centerY
         fieldRow.spacing = 6
 
-        for (check, title) in [(sinceCheck, "Since"), (untilCheck, "Until")] {
+        // The filter compares committer time, as `git log --since/--until` does, while the
+        // Date column shows author time, so the labels name the date they filter on.
+        for (check, title) in [(sinceCheck, "Committed since"), (untilCheck, "Committed until")] {
             check.title = title
+            check.toolTip =
+                "Filters on the commit date. The Date column shows the author date, which "
+                + "differs for rebased or cherry-picked commits."
             check.setButtonType(.switch)
             check.target = self
             check.action = #selector(searchOptionsChanged(_:))
