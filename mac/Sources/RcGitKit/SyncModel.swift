@@ -131,14 +131,20 @@ public struct SyncSummary: Sendable, Hashable {
     public let pushedCommits: Int
     /// The branch a workflow switched to, `nil` when it switched nothing.
     public let switchedTo: String?
+    /// The step after which a cancel stopped the workflow, `nil` when it ran to the end.
+    /// Set when the cancel landed during a step that cannot stop (checkout, pull): that step
+    /// finished, and what it did is still reported.
+    public let cancelledAfter: SyncStep?
 
     public init(
-        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, switchedTo: String? = nil
+        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, switchedTo: String? = nil,
+        cancelledAfter: SyncStep? = nil
     ) {
         self.fetchedRefs = fetchedRefs
         self.pulledFiles = pulledFiles
         self.pushedCommits = pushedCommits
         self.switchedTo = switchedTo
+        self.cancelledAfter = cancelledAfter
     }
 }
 
@@ -189,10 +195,15 @@ public final class SyncModel {
         }
     }
 
-    /// Whether the running workflow can still be asked to stop.
+    /// Whether the running workflow can still be asked to stop. Not during a checkout or a
+    /// pull: those writes take no cancel and always run to completion.
     public var isCancellable: Bool {
-        if case .running = state { return true }
-        return false
+        switch state {
+        case .running(.fetch), .running(.push): true
+        case .running(.checkout), .running(.pull), .idle, .cancelling, .done, .diverged,
+            .failed:
+            false
+        }
     }
 
     public var onStateChanged: (() -> Void)?
@@ -283,8 +294,9 @@ public final class SyncModel {
     /// Asks the running workflow to stop. The flag reaches the step itself — the ssh
     /// transport wakes out of its read, an HTTPS step stops being waited for and its
     /// curl thread is left to time out on its own — so this does not wait for a dead
-    /// connection to time out. A no-op when nothing is
-    /// running or a cancel is already under way.
+    /// connection to time out. A cancel that lands during a checkout or a pull lets that
+    /// write finish and stops the workflow at the next step, which still reports what the
+    /// write did. A no-op when nothing is running or a cancel is already under way.
     public func cancelRunning() {
         guard case let .running(step) = state else { return }
         cancel.signal()
@@ -320,6 +332,12 @@ public final class SyncModel {
         await workflow(start: .checkout, checkUpstream: false) { model -> SyncSummary? in
             let branch = try await model.resolveDefaultBranch()
             let switched = try await model.runCheckout(branch)
+            let switchedTo = switched.alreadyOnBranch ? nil : switched.branch
+            if model.cancel.isSignalled {
+                return SyncSummary(
+                    fetchedRefs: 0, pulledFiles: switched.filesChanged, pushedCommits: 0,
+                    switchedTo: switchedTo, cancelledAfter: .checkout)
+            }
             try await model.adoptFreshUpstream(.fetch)
             let fetched = try await model.runFetch()
             let pulled = try await model.runPull()
@@ -327,7 +345,7 @@ public final class SyncModel {
                 fetchedRefs: fetched.updatedRefs,
                 pulledFiles: pulled.filesChanged + switched.filesChanged,
                 pushedCommits: 0,
-                switchedTo: switched.alreadyOnBranch ? nil : switched.branch
+                switchedTo: switchedTo
             )
         }
     }
@@ -345,6 +363,11 @@ public final class SyncModel {
         await workflow(start: .fetch) { model -> SyncSummary? in
             let fetched = try await model.runFetch()
             let pulled = try await model.runPull()
+            if model.cancel.isSignalled {
+                return SyncSummary(
+                    fetchedRefs: fetched.updatedRefs, pulledFiles: pulled.filesChanged,
+                    pushedCommits: 0, cancelledAfter: .pull)
+            }
             let pushed = try await model.runPush()
             return SyncSummary(
                 fetchedRefs: fetched.updatedRefs,
@@ -503,6 +526,7 @@ public final class SyncModel {
     }
 
     private func runCheckout(_ branch: String) async throws -> CheckoutOutcome {
+        try bailIfCancelled(.checkout)
         enter(.checkout)
         let performer = performer
         let repoPath = repoPath
@@ -537,6 +561,7 @@ public final class SyncModel {
     }
 
     private func runPull() async throws -> PullOutcome {
+        try bailIfCancelled(.pull)
         enter(.pull)
         let performer = performer
         let repoPath = repoPath

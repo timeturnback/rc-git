@@ -31,6 +31,9 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     /// Called on the step's own thread, with that step's token, before the step
     /// answers. A test uses it to cancel exactly while the transfer is in flight.
     var duringStep: (@Sendable (CancelToken) -> Void)?
+    /// Called on the step's own thread before a checkout or a pull answers. Those steps take
+    /// no token, so a test cancels through the model while this holds the step open.
+    var duringLocalStep: (@Sendable () -> Void)?
 
     init(script: Script) {
         self.script = script
@@ -82,6 +85,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     }
 
     func checkout(repoPath: String, branch: String) throws(SyncError) -> CheckoutOutcome {
+        duringLocalStep?()
         lock.lock()
         defer { lock.unlock() }
         checkoutBranches.append(branch)
@@ -107,6 +111,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     }
 
     func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome {
+        duringLocalStep?()
         lock.lock()
         defer { lock.unlock() }
         pullCalls += 1
@@ -696,6 +701,92 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(prompts == 0, "the user already said stop")
         #expect(model.state == .idle)
         #expect(performer.fetchCredentials.count == 1, "no retry after a cancel")
+    }
+
+    /// Cancels through the model from inside the performer's checkout or pull, the way the
+    /// toolbar would, after checking the toolbar does not offer it. The step's thread hops to
+    /// the main actor, which is free while the model awaits the step.
+    private func cancelDuringLocalStep(
+        _ step: SyncStep, model: SyncModel, performer: StubSyncPerformer
+    ) {
+        performer.duringLocalStep = {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    #expect(model.state == .running(step))
+                    #expect(
+                        !model.isCancellable, "a \(step) cannot stop; the toolbar must not offer it"
+                    )
+                    model.cancelRunning()
+                }
+            }
+        }
+    }
+
+    @Test func aCancelDuringTheSwitchStillReportsItAndSkipsTheNetwork() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                checkouts: [.success(switchedToMain)]
+            ))
+        await model.refreshStatus()
+        cancelDuringLocalStep(.checkout, model: model, performer: performer)
+        await model.backToDefaultBranch()
+
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 0, pulledFiles: 4, pushedCommits: 0, switchedTo: "main",
+                        cancelledAfter: .checkout)),
+            "the switch landed, so the browser must still follow it"
+        )
+        #expect(performer.fetchCredentials.isEmpty, "the cancel stops the workflow after it")
+        #expect(performer.pullCalls == 0)
+    }
+
+    @Test func aCancelDuringThePullKeepsItsFilesAndSkipsThePush() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(ahead: 1, behind: 1)],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(cleanPush)]
+            ))
+        await model.refreshStatus()
+        cancelDuringLocalStep(.pull, model: model, performer: performer)
+        await model.sync()
+
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 1, pulledFiles: 2, pushedCommits: 0, cancelledAfter: .pull)
+                ))
+        #expect(performer.pushCalls == 0, "the cancel stops the workflow before the push")
+        #expect(!model.isBusy)
+    }
+
+    @Test func aCancelBeforeTheSwitchStartsSwitchesNothing() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                checkouts: [.success(switchedToMain)]
+            ))
+        var cancelled = false
+        model.onStateChanged = {
+            if !cancelled, model.state == .running(.checkout) {
+                cancelled = true
+                model.cancelRunning()
+            }
+        }
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        #expect(cancelled)
+        #expect(model.state == .idle)
+        #expect(performer.checkoutBranches.isEmpty, "a cancel before the write runs it never")
     }
 
     @Test func backToDefaultSwitchesThenFetchesAndFastForwards() async {
