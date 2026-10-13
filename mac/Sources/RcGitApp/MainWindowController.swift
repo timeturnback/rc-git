@@ -675,7 +675,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 historyController.setScope(path: nil)
             }
             historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
-            historyController.reload(model.history, complete: model.historyComplete)
+            historyController.reload(
+                model.history, complete: model.historyComplete, error: model.historyError)
         }
         model.onDiffChanged = { [weak self] in
             guard let self else { return }
@@ -719,7 +720,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             historyController.renderSearch(
                 active: model.searchFilter != nil, results: model.searchResults,
                 scanned: model.searchScanned, complete: model.searchComplete,
-                searching: model.isSearching)
+                searching: model.isSearching, error: model.searchError)
         }
         historyController.onSearchFilterChanged = { [weak self] filter in
             guard let self else { return }
@@ -748,6 +749,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         historyController.onNeedsMore = { [weak self] in
             guard let self else { return }
             Task { await self.model.loadMoreHistory() }
+        }
+        historyController.onRetryHistory = { [weak self] in
+            guard let self else { return }
+            Task { await self.model.retryHistory() }
         }
         historyController.onBrowseCommit = { [weak self] commit in
             guard let self else { return }

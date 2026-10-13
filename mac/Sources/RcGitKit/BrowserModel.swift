@@ -92,6 +92,9 @@ public final class BrowserModel {
     /// True once a page came back shorter than `historyPageSize`, or a filtered walk ended.
     public private(set) var historyComplete = false
     public private(set) var isLoadingHistory = false
+    /// Why the last history page failed, or `nil`. Paging refuses while it is set, so a
+    /// scroll or resize does not re-walk into the same failure; `retryHistory` clears it.
+    public private(set) var historyError: String?
     /// Whether the history pane shows everything or one path's commits.
     public private(set) var historyScope: HistoryScope = .all
     /// How many commits one call to `loadMoreHistory` fetches.
@@ -110,6 +113,9 @@ public final class BrowserModel {
     /// True when the search walked to the end of history.
     public private(set) var searchComplete = false
     public private(set) var isSearching = false
+    /// Why the active search stopped, or `nil`. Paging refuses while it is set; a new
+    /// filter or `clearSearch` clears it.
+    public private(set) var searchError: String?
 
     /// Fired after refs, HEAD, or the selected ref changed.
     public var onRefsChanged: (() -> Void)?
@@ -708,7 +714,7 @@ public final class BrowserModel {
     /// Fetches the next page of commits for the history pane. Does nothing while a page is
     /// loading, after the last page, or when nothing is selected. Pages accumulate in a
     /// cache keyed by the tip — and the path when scoped — so switching away and back does
-    /// not re-walk.
+    /// not re-walk. Refuses after a failed page until `retryHistory`.
     public func loadMoreHistory() async {
         switch historyScope {
         case .all:
@@ -718,8 +724,17 @@ public final class BrowserModel {
         }
     }
 
+    /// Clears a failed history page and asks for it again. Does nothing without a failure.
+    public func retryHistory() async {
+        guard historyError != nil else { return }
+        historyError = nil
+        onHistoryChanged?()
+        await loadMoreHistory()
+    }
+
     private func loadMoreLog() async {
-        guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete
+        guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete,
+            historyError == nil
         else { return }
         isLoadingHistory = true
         let generation = historyGeneration
@@ -739,6 +754,8 @@ public final class BrowserModel {
                 commits: history, complete: historyComplete, graph: graph)
             onHistoryChanged?()
         case let .failure(error):
+            historyError = error.message
+            onHistoryChanged?()
             fail(error.message)
         }
     }
@@ -757,7 +774,8 @@ public final class BrowserModel {
     /// match never blocks a repository handle and a scope change between chunks drops the
     /// rest.
     private func loadMorePathHistory(_ path: String) async {
-        guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete
+        guard let repository, let tip = historyAnchor, !isLoadingHistory, !historyComplete,
+            historyError == nil
         else { return }
         isLoadingHistory = true
         let generation = historyGeneration
@@ -780,10 +798,10 @@ public final class BrowserModel {
                 pathHistoryCache[key] = (history, skip + page.scanned, page.complete)
                 onHistoryChanged?()
             case let .failure(error):
-                // Keep the commits already shown and stop paging, so a scroll or resize does
-                // not re-walk into the same failure. Not cached: scoping again retries.
+                // Keep the commits already shown; the error stops paging. Not cached:
+                // scoping again or `retryHistory` retries.
                 isLoadingHistory = false
-                historyComplete = true
+                historyError = error.message
                 onHistoryChanged?()
                 fail(error.message)
                 return
@@ -811,6 +829,7 @@ public final class BrowserModel {
         guard repository != nil, let tip = historyAnchor else { return false }
         historyGeneration += 1
         isLoadingHistory = false
+        historyError = nil
         historyScope = .path(path)
         clearSearch()
         clearCommitDetail()
@@ -859,14 +878,18 @@ public final class BrowserModel {
         searchResults = []
         searchScanned = 0
         searchComplete = false
+        searchError = nil
         isSearching = true
         onSearchChanged?()
         await continueSearch(target: Self.historyPageSize)
     }
 
-    /// Fetches the next page of matches for the active search.
+    /// Fetches the next page of matches for the active search. Refuses after a failed chunk:
+    /// only a new filter searches again.
     public func loadMoreSearchResults() async {
-        guard searchFilter != nil, !isSearching, !searchComplete else { return }
+        guard searchFilter != nil, !isSearching, !searchComplete, searchError == nil else {
+            return
+        }
         isSearching = true
         onSearchChanged?()
         await continueSearch(target: searchResults.count + Self.historyPageSize)
@@ -880,6 +903,7 @@ public final class BrowserModel {
         searchResults = []
         searchScanned = 0
         searchComplete = false
+        searchError = nil
         isSearching = false
         if hadSearch {
             onSearchChanged?()
@@ -928,6 +952,7 @@ public final class BrowserModel {
                 onSearchChanged?()
             case let .failure(error):
                 isSearching = false
+                searchError = error.message
                 onSearchChanged?()
                 fail(error.message)
                 return
@@ -941,6 +966,7 @@ public final class BrowserModel {
     private func resetHistory(anchor: Oid?) {
         historyGeneration += 1
         isLoadingHistory = false
+        historyError = nil
         historyAnchor = anchor
         historyScope = .all
         clearSearch()

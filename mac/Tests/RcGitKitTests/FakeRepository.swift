@@ -51,6 +51,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Per oid, holds the next `commit` call for it, then clears itself.
     var commitGates: [Oid: CallGate] = [:]
     var searchCalls = 0
+    var logCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
     var diffBlobsCalls = 0
@@ -169,7 +170,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func log(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary] {
-        let (list, delay) = lock.withLock { (commits[tip], delays[tip] ?? 0) }
+        let (list, delay) = lock.withLock {
+            logCalls += 1
+            return (commits[tip], delays[tip] ?? 0)
+        }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let list else {
             throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")

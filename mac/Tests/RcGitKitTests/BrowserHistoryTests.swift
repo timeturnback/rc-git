@@ -187,7 +187,8 @@ import Testing
         model.onError = { _ in reports += 1 }
         await model.loadMoreHistory()
         #expect(model.history.count == 100, "the commits already shown stay")
-        #expect(model.historyComplete, "a failed walk stops paging")
+        #expect(model.historyError != nil, "a failed walk stops paging")
+        #expect(!model.historyComplete, "a failure is not the end of history")
         #expect(!model.isLoadingHistory)
         let calls = repo.lock.withLock { repo.pathHistoryCalls }
         await model.loadMoreHistory()
@@ -216,6 +217,63 @@ import Testing
         await model.loadMoreHistory()
         #expect(reported?.contains("start commit walk") == true)
         #expect(!model.isLoadingHistory)
+    }
+
+    @Test func aFailedHistoryPageIsNotRetriedUntilAsked() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.commits[mainCommit] = nil }
+        var reports = 0
+        var events = 0
+        model.onError = { _ in reports += 1 }
+        model.onHistoryChanged = { events += 1 }
+        await model.loadMoreHistory()
+        await model.loadMoreHistory()
+        #expect(repo.lock.withLock { repo.logCalls } == 1, "a scroll does not re-walk")
+        #expect(reports == 1, "one alert, not one per scroll")
+        #expect(model.historyError?.contains("start commit walk") == true)
+        #expect(!model.historyComplete)
+        #expect(events >= 1, "the failure renders")
+
+        repo.lock.withLock {
+            repo.commits[mainCommit] = [commitSummary(mainCommit, title: "main 0")]
+        }
+        await model.retryHistory()
+        #expect(repo.lock.withLock { repo.logCalls } == 2, "retry walks again")
+        #expect(model.historyError == nil)
+        #expect(model.history.count == 1)
+    }
+
+    @Test func searchErrorsSurface() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.commits[mainCommit] = nil }
+        var reported: String?
+        model.onError = { reported = $0 }
+        var failedOnRender = false
+        model.onSearchChanged = { [model] in
+            if model.searchError != nil { failedOnRender = true }
+        }
+        await model.search(CommitFilter(message: "x"))
+        #expect(reported?.contains("start commit walk") == true)
+        #expect(!model.isSearching)
+        #expect(!model.searchComplete)
+        #expect(failedOnRender, "onSearchChanged fired after the failure")
+    }
+
+    @Test func aFailedSearchIsNotRetriedUntilTheFilterChanges() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.commits[mainCommit] = nil }
+        var reports = 0
+        model.onError = { _ in reports += 1 }
+        await model.search(CommitFilter(message: "main"))
+        await model.loadMoreSearchResults()
+        #expect(repo.lock.withLock { repo.searchCalls } == 1, "no automatic retry")
+        #expect(reports == 1, "one alert, not one per render")
+        #expect(model.searchError != nil)
+
+        await model.search(CommitFilter(message: "other"))
+        #expect(repo.lock.withLock { repo.searchCalls } == 2, "a new filter searches again")
+        model.clearSearch()
+        #expect(model.searchError == nil)
     }
 
     @Test func browsingACommitDetachesTheSelectionAndKeepsHistory() async {

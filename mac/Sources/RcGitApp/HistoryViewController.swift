@@ -10,6 +10,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate, NSSplitViewDelegate
 {
     var onNeedsMore: (() -> Void)?
+    var onRetryHistory: (() -> Void)?
     var onBrowseCommit: ((CommitSummary) -> Void)?
     var onSelectCommit: ((CommitSummary) -> Void)?
     var onSelectChange: ((TreeChange) -> Void)?
@@ -42,6 +43,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let diffPlaceholder = NSTextField(labelWithString: "Select a file")
     private var commits: [CommitSummary] = []
     private var complete = false
+    /// Why the last history page failed; automatic paging stops while it is set.
+    private var historyError: String?
     private var changes: [TreeChange] = []
     /// The changed files under the current grouping, rebuilt when the commit or the grouping
     /// changes.
@@ -54,6 +57,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let scopeBar = NSStackView()
     private let scopeLabel = NSTextField(labelWithString: "")
     private var scopedPath: String?
+
+    private let errorBar = NSStackView()
+    private let errorLabel = NSTextField(labelWithString: "")
 
     private let searchArea = NSStackView()
     private let searchField = NSSearchField()
@@ -69,6 +75,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var searchActive = false
     private var searchResults: [CommitSummary] = []
     private var searchComplete = false
+    private var searchFailed = false
 
     /// The rows the commit table shows: search matches while a search is active.
     private var displayed: [CommitSummary] { searchActive ? searchResults : commits }
@@ -136,12 +143,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         placeholder.translatesAutoresizingMaskIntoConstraints = false
 
         buildScopeBar()
+        buildErrorBar()
         buildSearchArea()
 
         // A stack with detachesHiddenViews, so the hidden scope bar costs no height and
         // never fights a collapse constraint. The list keeps a minimum width so the detail
         // drawer can never crush it to nothing.
-        let commitsStack = NSStackView(views: [searchArea, scopeBar, scroll])
+        let commitsStack = NSStackView(views: [searchArea, scopeBar, errorBar, scroll])
         commitsStack.orientation = .vertical
         commitsStack.alignment = .leading
         commitsStack.distribution = .fill
@@ -150,6 +158,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         scroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
         searchArea.setContentHuggingPriority(.defaultHigh, for: .vertical)
         scopeBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        errorBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
 
         let commitsPane = NSView()
         commitsStack.translatesAutoresizingMaskIntoConstraints = false
@@ -162,6 +171,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             commitsStack.trailingAnchor.constraint(equalTo: commitsPane.trailingAnchor),
             searchArea.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scopeBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
+            errorBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
             placeholder.centerXAnchor.constraint(equalTo: commitsPane.centerXAnchor),
@@ -344,6 +354,37 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         onClearScope?()
     }
 
+    private func buildErrorBar() {
+        errorLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        errorLabel.textColor = .secondaryLabelColor
+        errorLabel.lineBreakMode = .byTruncatingTail
+        errorLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let retry = NSButton(
+            title: "Retry", target: self, action: #selector(retryHistoryClicked(_:)))
+        retry.bezelStyle = .accessoryBarAction
+        retry.controlSize = .small
+        errorBar.orientation = .horizontal
+        errorBar.alignment = .centerY
+        errorBar.spacing = 6
+        errorBar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        errorBar.addArrangedSubview(errorLabel)
+        errorBar.addArrangedSubview(retry)
+        errorBar.isHidden = true
+    }
+
+    /// Shows the failed history page in place of the list's end, or hides the bar. Hidden
+    /// while a search shows its own results.
+    private func renderHistoryError() {
+        let message = searchActive ? nil : historyError
+        errorLabel.stringValue = message.map { "Could not load history: \($0)" } ?? ""
+        errorLabel.toolTip = message
+        errorBar.isHidden = message == nil
+    }
+
+    @objc private func retryHistoryClicked(_ sender: Any?) {
+        onRetryHistory?()
+    }
+
     private func buildSearchArea() {
         searchField.placeholderString = "Search commits"
         searchField.delegate = self
@@ -415,25 +456,36 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Renders search state: swaps the table to the matches while a search is active.
+    /// A non-nil `error` means the search stopped on a failure: the count gives way to the
+    /// message, and no further page is asked for.
     func renderSearch(
-        active: Bool, results: [CommitSummary], scanned: Int, complete: Bool, searching: Bool
+        active: Bool, results: [CommitSummary], scanned: Int, complete: Bool, searching: Bool,
+        error: String?
     ) {
         let wasActive = searchActive
         searchActive = active
         searchResults = results
         searchComplete = complete
+        searchFailed = error != nil
         if active {
-            searchProgress.stringValue =
-                searching
-                ? "Searched \(scanned) commits…"
-                : "\(results.count) matches in \(scanned) commits"
+            if let error {
+                searchProgress.stringValue = "Search stopped: \(error)"
+            } else {
+                searchProgress.stringValue =
+                    searching
+                    ? "Searched \(scanned) commits…"
+                    : "\(results.count) matches in \(scanned) commits"
+            }
+            searchProgress.toolTip = error
             placeholder.stringValue = "No matching commits"
-            placeholder.isHidden = !results.isEmpty || searching
+            placeholder.isHidden = !results.isEmpty || searching || error != nil
         } else {
             searchProgress.stringValue = ""
+            searchProgress.toolTip = nil
             setScope(path: scopedPath)
-            placeholder.isHidden = !commits.isEmpty
+            placeholder.isHidden = !commits.isEmpty || !complete || historyError != nil
         }
+        renderHistoryError()
         isReloading = true
         table.reloadData()
         isReloading = false
@@ -692,12 +744,16 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Replaces the rows. Called with the accumulated pages, so a reload keeps the scroll
     /// position: only rows below the previous end are new.
-    func reload(_ commits: [CommitSummary], complete: Bool) {
+    /// A non-nil `error` means the last page failed: the error bar offers a retry and no
+    /// further page is asked for until then.
+    func reload(_ commits: [CommitSummary], complete: Bool, error: String?) {
         self.commits = commits
         self.complete = complete
+        historyError = error
         guard !searchActive else { return }
+        renderHistoryError()
         let selected = table.selectedRow
-        placeholder.isHidden = !commits.isEmpty || !complete
+        placeholder.isHidden = !commits.isEmpty || !complete || error != nil
         isReloading = true
         table.reloadData()
         if selected >= 0, selected < commits.count {
@@ -882,7 +938,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func requestMoreIfNearEnd() {
-        let done = searchActive ? searchComplete : complete
+        let done =
+            searchActive ? searchComplete || searchFailed : complete || historyError != nil
         guard !done, view.window != nil else { return }
         let visible = scroll.contentView.documentVisibleRect
         let height = table.frame.height
