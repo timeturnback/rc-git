@@ -196,13 +196,39 @@ import Testing
         #expect(!model.isSearching)
     }
 
+    @Test func aSearchUnderAPathScopeMatchesOnlyCommitsTouchingIt() async {
+        await model.attach(repo)
+        let all = repo.commits[mainCommit] ?? []
+        let touching = [all[3], all[60], all[95]]
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "src/a.rs")] =
+                touching
+        }
+        await model.showPathHistory("src/a.rs")
+        await model.search(CommitFilter(message: "main 9"))
+        #expect(model.searchFilter?.path == "src/a.rs", "the scope rides along with the search")
+        #expect(model.searchResults.map(\.oid) == [all[95].oid], "only main 95 is both")
+        #expect(model.historyScope == .path("src/a.rs"), "searching keeps the scope")
+        let touched = Set(touching.map(\.oid))
+        #expect(model.searchResults.allSatisfy { touched.contains($0.oid) })
+
+        model.clearHistoryScope()
+        await model.search(CommitFilter(message: "main 9"))
+        #expect(model.searchFilter?.path == nil, "the unscoped list searches everything")
+        #expect(model.searchResults.count == 11, "main 9 and main 90-99")
+    }
+
     @Test func refSwitchAndEmptyFilterClearTheSearch() async {
         await model.attach(repo)
         await model.search(CommitFilter(message: "main"))
         #expect(model.searchFilter != nil)
+        var droppedReported = false
+        model.onSearchChanged = { droppedReported = self.model.searchFilter == nil }
         await model.select(model.refs.refs[0])
         #expect(model.searchFilter == nil)
         #expect(model.searchResults.isEmpty)
+        #expect(droppedReported, "the view hears the drop, so it can clear its query")
+        model.onSearchChanged = nil
 
         await model.search(CommitFilter(message: "feature"))
         #expect(model.searchFilter != nil)

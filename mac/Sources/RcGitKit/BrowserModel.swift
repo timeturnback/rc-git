@@ -902,13 +902,18 @@ public final class BrowserModel {
     // MARK: Search
 
     /// Starts a search over the current anchor's history, streaming matches in scan chunks.
-    /// An empty filter clears instead. A newer search, scope change, or ref switch between
-    /// chunks drops the rest of the walk.
+    /// Under a path scope it searches only the commits that changed that path. An empty
+    /// filter clears instead. A newer search, scope change, or ref switch between chunks
+    /// drops the rest of the walk, and `onSearchChanged` reports the drop.
     public func search(_ filter: CommitFilter) async {
         guard repository != nil, historyAnchor != nil else { return }
         if filter.isEmpty {
             clearSearch()
             return
+        }
+        var filter = filter
+        if case let .path(path) = historyScope {
+            filter.path = path
         }
         searchGeneration += 1
         searchFilter = filter

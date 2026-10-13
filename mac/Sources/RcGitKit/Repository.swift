@@ -219,7 +219,8 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     }
 
     /// Commits reachable from `tip` matching every set field of `filter`, newest first.
-    /// Pages like `pathHistory`; a set `after` also terminates the walk at that time.
+    /// Pages like `pathHistory`; a set `after` also terminates the walk at that time, and a
+    /// set `path` keeps only the commits `pathHistory` would list for it.
     public func searchCommits(
         tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int
     ) throws -> CommitPage {
@@ -227,14 +228,17 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         let page = tip.withC { tipPtr in
             Repository.withOptionalCString(filter.message) { messagePtr in
                 Repository.withOptionalCString(filter.author) { authorPtr in
-                    let cFilter = RcGitCommitFilter(
-                        message: messagePtr, author: authorPtr,
-                        has_after: filter.after != nil, after: filter.after ?? 0,
-                        has_before: filter.before != nil, before: filter.before ?? 0)
-                    return rcgit_search_commits(
-                        handle, tipPtr, cFilter,
-                        RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan),
-                        &error)
+                    Repository.withOptionalCString(filter.path) { pathPtr in
+                        let cFilter = RcGitCommitFilter(
+                            message: messagePtr, author: authorPtr,
+                            has_after: filter.after != nil, after: filter.after ?? 0,
+                            has_before: filter.before != nil, before: filter.before ?? 0,
+                            path: pathPtr)
+                        return rcgit_search_commits(
+                            handle, tipPtr, cFilter,
+                            RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan),
+                            &error)
+                    }
                 }
             }
         }

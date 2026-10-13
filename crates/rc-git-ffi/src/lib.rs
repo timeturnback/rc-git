@@ -2053,6 +2053,9 @@ pub struct RcGitCommitFilter {
     pub has_before: bool,
     /// Latest committer time, seconds since the Unix epoch.
     pub before: i64,
+    /// Only commits that changed the entry at this path, judged as `rcgit_path_history`
+    /// judges it, or NULL for any.
+    pub path: *const c_char,
 }
 
 /// Commits reachable from `tip` that match `filter`, newest first. Pages like
@@ -2060,8 +2063,8 @@ pub struct RcGitCommitFilter {
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
-/// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
-/// or valid for writing a `char *`.
+/// `filter.message`, `filter.author` and `filter.path` are NULL or NUL-terminated strings.
+/// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_search_commits(
     repo: *const RcGitRepo,
@@ -2072,12 +2075,13 @@ pub unsafe extern "C" fn rcgit_search_commits(
 ) -> *mut RcGitCommitPage {
     const OP: &str = "rcgit_search_commits";
     // SAFETY: forwarded from this function's contract.
-    let (repo, tip, message, author, error) = unsafe {
+    let (repo, tip, message, author, path, error) = unsafe {
         (
             repo_arg(repo),
             oid_arg(tip),
             bytes_arg(filter.message),
             bytes_arg(filter.author),
+            bytes_arg(filter.path),
             Out::new(error),
         )
     };
@@ -2092,6 +2096,7 @@ pub unsafe extern "C" fn rcgit_search_commits(
         author: author.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
         after: filter.has_after.then_some(filter.after),
         before: filter.has_before.then_some(filter.before),
+        path: path.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
     };
     match repo.search_commits(tip, &core_filter, page.scan_skip, page.limit, page.max_scan) {
         Ok(page) => export(RcGitCommitPage::export(page)),
@@ -4951,6 +4956,7 @@ mod tests {
             after: 0,
             has_before: false,
             before: 0,
+            path: ptr::null(),
         }
     }
 
@@ -5046,6 +5052,30 @@ mod tests {
         };
         assert_eq!(unsafe { &*all }.len, 2, "NULL filters match everything");
         unsafe { rcgit_commit_page_free(all) };
+
+        for (path, expected) in [("src/lib.rs", 1), ("README.md", 0)] {
+            let path = CString::new(path).unwrap();
+            let scoped = RcGitCommitFilter {
+                path: path.as_ptr(),
+                ..text_filter(needle.as_ptr(), ptr::null())
+            };
+            let page = unsafe {
+                rcgit_search_commits(
+                    repo,
+                    &raw const tip,
+                    scoped,
+                    scan_page(0, 10, 100),
+                    &raw mut error,
+                )
+            };
+            assert!(!page.is_null(), "{}", take_error(&mut error));
+            assert_eq!(
+                unsafe { &*page }.len,
+                expected,
+                "{path:?} scopes the search"
+            );
+            unsafe { rcgit_commit_page_free(page) };
+        }
 
         let before_epoch = RcGitCommitFilter {
             has_before: true,

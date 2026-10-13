@@ -180,19 +180,23 @@ public struct CommitFilter: Sendable, Hashable {
     public var after: Int64?
     /// Only commits at or before this time, seconds since the Unix epoch.
     public var before: Int64?
+    /// Only commits that changed the entry at this path, as path history judges it.
+    public var path: String?
 
     public init(
-        message: String? = nil, author: String? = nil, after: Int64? = nil, before: Int64? = nil
+        message: String? = nil, author: String? = nil, after: Int64? = nil,
+        before: Int64? = nil, path: String? = nil
     ) {
         self.message = message
         self.author = author
         self.after = after
         self.before = before
+        self.path = path
     }
 
     /// True when no field is set, which would match every commit.
     public var isEmpty: Bool {
-        message == nil && author == nil && after == nil && before == nil
+        message == nil && author == nil && after == nil && before == nil && path == nil
     }
 }
 

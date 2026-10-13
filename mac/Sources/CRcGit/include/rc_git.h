@@ -382,6 +382,9 @@ typedef struct RcGitCommitFilter {
   bool has_before;
   /// Latest committer time, seconds since the Unix epoch.
   int64_t before;
+  /// Only commits that changed the entry at this path, judged as `rcgit_path_history`
+  /// judges it, or NULL for any.
+  const char *path;
 } RcGitCommitFilter;
 
 /// One changed file between two trees.
@@ -999,8 +1002,8 @@ void rcgit_commit_page_free(struct RcGitCommitPage *page);
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
-/// `filter.message` and `filter.author` are NULL or NUL-terminated strings. `error` is NULL
-/// or valid for writing a `char *`.
+/// `filter.message`, `filter.author` and `filter.path` are NULL or NUL-terminated strings.
+/// `error` is NULL or valid for writing a `char *`.
 struct RcGitCommitPage *rcgit_search_commits(const struct RcGitRepo *repo,
                                              const struct RcGitOid *tip,
                                              struct RcGitCommitFilter filter,

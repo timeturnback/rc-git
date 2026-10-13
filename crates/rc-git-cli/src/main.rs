@@ -876,6 +876,7 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         author: args.value(&["--author"]).map(str::to_owned),
         after: epoch(&args, "--since")?,
         before: epoch(&args, "--until")?,
+        path: None,
     };
     let tip = repo.resolve(rev)?;
     let page = repo.search_commits(tip, &filter, 0, limit, max_scan)?;

@@ -189,6 +189,15 @@ import Testing
             tip: tip, filter: CommitFilter(message: "zzz"), scanSkip: 0, limit: 10, maxScan: 100)
         #expect(nothing.commits.isEmpty)
         #expect(nothing.complete)
+
+        let inLibrary = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(message: "docs", path: "src/lib.rs"), scanSkip: 0,
+            limit: 10, maxScan: 100)
+        #expect(inLibrary.commits.map(\.title) == ["Add docs and library"])
+        let inReadme = try repo.searchCommits(
+            tip: tip, filter: CommitFilter(message: "docs", path: "README.md"), scanSkip: 0,
+            limit: 10, maxScan: 100)
+        #expect(inReadme.commits.isEmpty, "the docs commit never touched README.md")
     }
 
     @Test func readsCommitDetails() throws {

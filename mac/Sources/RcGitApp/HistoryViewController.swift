@@ -482,6 +482,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         } else {
             searchProgress.stringValue = ""
             searchProgress.toolTip = nil
+            clearDroppedSearchControls()
             setScope(path: scopedPath)
             placeholder.isHidden = !commits.isEmpty || !complete || historyError != nil
         }
@@ -499,7 +500,23 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         searchScopeControl.selectedSegment == 1 ? .author : .message
     }
 
+    /// The model dropped the search (a ref pick, a moved tip, a path scope) while the
+    /// controls still hold one: clear them, so the field never shows a query over the
+    /// unfiltered list.
+    private func clearDroppedSearchControls() {
+        guard !controlsFilter().isEmpty else { return }
+        searchField.stringValue = ""
+        datesToggle.state = .off
+        datesRow.isHidden = true
+    }
+
     private func emitFilter() {
+        let filter = controlsFilter()
+        onSearchFilterChanged?(filter.isEmpty ? nil : filter)
+    }
+
+    /// The filter the search controls describe right now.
+    private func controlsFilter() -> CommitFilter {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
         var filter = CommitFilter()
         if !query.isEmpty {
@@ -516,7 +533,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                 filter.before = Int64(untilPicker.dateValue.timeIntervalSince1970)
             }
         }
-        onSearchFilterChanged?(filter.isEmpty ? nil : filter)
+        return filter
     }
 
     func controlTextDidChange(_ notification: Notification) {

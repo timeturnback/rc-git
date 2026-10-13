@@ -238,14 +238,19 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         "\(tip.hex):\(path)"
     }
 
-    /// Filters the commits stored for `tip` by title and author, one scanned per stored
-    /// commit, so `scanSkip` indexes the unfiltered list.
+    /// Filters the commits stored for `tip` by title, author, and membership in the stored
+    /// path history for `filter.path`, one scanned per stored commit, so `scanSkip` indexes
+    /// the unfiltered list.
     func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
         throws -> CommitPage
     {
-        let (found, delay) = lock.withLock { () -> ([CommitSummary]?, TimeInterval) in
+        let (found, delay, touching) = lock.withLock {
+            () -> ([CommitSummary]?, TimeInterval, Set<Oid>?) in
             searchCalls += 1
-            return (commits[tip], delays[tip] ?? 0)
+            let touching = filter.path.map { path in
+                Set((pathHistories[FakeRepository.pathKey(tip: tip, path: path)] ?? []).map(\.oid))
+            }
+            return (commits[tip], delays[tip] ?? 0, touching)
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
@@ -261,7 +266,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
                 commit.authorName.localizedCaseInsensitiveContains($0)
                     || commit.authorEmail.localizedCaseInsensitiveContains($0)
             }
-            if messageOK ?? true, authorOK ?? true {
+            let pathOK = touching.map { $0.contains(commit.oid) }
+            if messageOK ?? true, authorOK ?? true, pathOK ?? true {
                 matched.append(commit)
                 if matched.count >= limit { break }
             }

@@ -40,6 +40,10 @@ pub struct CommitFilter {
     /// Only commits whose committer time is at or before this time, seconds since the Unix
     /// epoch. Committer time can differ from the author time the CLI and UI show.
     pub before: Option<i64>,
+    /// Only commits that changed the entry at this path, judged as
+    /// [`path_history`](Repository::path_history) judges it. Checked last, since it reads two
+    /// tree entries per commit.
+    pub path: Option<String>,
 }
 
 impl Repository {
@@ -72,11 +76,6 @@ impl Repository {
         max_scan: usize,
     ) -> Result<CommitPage> {
         let max_scan = max_scan.max(1);
-        let segments: Vec<Vec<u8>> = path
-            .split('/')
-            .filter(|segment| !segment.is_empty() && *segment != ".")
-            .map(|segment| segment.as_bytes().to_vec())
-            .collect();
         self.with(|repo| {
             let tip = peel_to_commit(repo, tip)?.id;
             let walk = repo
@@ -84,8 +83,7 @@ impl Repository {
                 .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
                 .all()
                 .map_err(git("start commit walk"))?;
-            let shallow = repo.shallow_commits().map_err(git("read shallow file"))?;
-            let mut lookup = Lookup::default();
+            let mut test = PathTest::new(repo, path)?;
             let mut commits = Vec::new();
             let mut scanned = 0;
             let mut complete = true;
@@ -98,18 +96,7 @@ impl Repository {
                 let info = info.map_err(git("walk commits"))?;
                 let oid = Oid::from_gix(info.id);
                 let commit = info.object().map_err(object("read commit", oid))?;
-                let tree = commit
-                    .tree_id()
-                    .map_err(object("decode commit", oid))?
-                    .detach();
-                lookup.trees.insert(info.id, tree);
-                // A shallow boundary lists parents the clone does not have; git judges it as a
-                // root. A parent missing anywhere else is corruption and still errors.
-                let is_boundary = shallow
-                    .as_ref()
-                    .is_some_and(|commits| commits.binary_search(&info.id).is_ok());
-                let parents: &[ObjectId] = if is_boundary { &[] } else { &info.parent_ids };
-                if lookup.touches(repo, tree, parents, &segments)? {
+                if test.touches(repo, &info, &commit)? {
                     commits.push(summarize(&commit)?);
                 }
             }
@@ -123,7 +110,8 @@ impl Repository {
 
     /// Commits reachable from `tip` that match every set field of `filter`, newest commit
     /// time first. A time floor (`after`) terminates the walk instead of filtering, so dated
-    /// searches never scan past their window.
+    /// searches never scan past their window. A `path` keeps only the commits
+    /// [`path_history`](Self::path_history) would list for it.
     ///
     /// Pages like [`path_history`](Self::path_history): at most `max_scan` commits are
     /// examined past `scan_skip`, and the page reports how many, so the caller loops until
@@ -135,8 +123,9 @@ impl Repository {
     /// # Errors
     /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
     /// annotated tag is followed to its commit.
-    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance,
-    /// [`Error::Object`](crate::Error::Object) when a commit on the way is unreadable.
+    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or, with a
+    /// `path`, the shallow file is unreadable; [`Error::Object`](crate::Error::Object) when a
+    /// commit, or with a `path` a tree, on the way is unreadable.
     pub fn search_commits(
         &self,
         tip: Oid,
@@ -160,6 +149,10 @@ impl Repository {
                 .sorting(sorting)
                 .all()
                 .map_err(git("start commit walk"))?;
+            let mut path_test = match &filter.path {
+                Some(path) => Some(PathTest::new(repo, path)?),
+                None => None,
+            };
             let mut commits = Vec::new();
             let mut scanned = 0;
             let mut complete = true;
@@ -180,9 +173,15 @@ impl Repository {
                 }
                 let commit = info.object().map_err(object("read commit", oid))?;
                 let summary = summarize(&commit)?;
-                if matches(filter, &commit, &summary).map_err(object("decode commit", oid))? {
-                    commits.push(summary);
+                if !matches(filter, &commit, &summary).map_err(object("decode commit", oid))? {
+                    continue;
                 }
+                if let Some(test) = path_test.as_mut()
+                    && !test.touches(repo, &info, &commit)?
+                {
+                    continue;
+                }
+                commits.push(summary);
             }
             Ok(CommitPage {
                 commits,
@@ -226,6 +225,54 @@ fn contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// The per-commit path-change test of one walk: which commits changed the entry at a path.
+struct PathTest {
+    /// The path split on `/`, empty and `.` segments dropped.
+    segments: Vec<Vec<u8>>,
+    /// The shallow boundary commits, sorted, or `None` in a complete clone.
+    shallow: Option<gix::shallow::Commits>,
+    lookup: Lookup,
+}
+
+impl PathTest {
+    fn new(repo: &gix::Repository, path: &str) -> Result<Self> {
+        let segments = path
+            .split('/')
+            .filter(|segment| !segment.is_empty() && *segment != ".")
+            .map(|segment| segment.as_bytes().to_vec())
+            .collect();
+        let shallow = repo.shallow_commits().map_err(git("read shallow file"))?;
+        Ok(Self {
+            segments,
+            shallow,
+            lookup: Lookup::default(),
+        })
+    }
+
+    /// Whether `commit`, walked as `info`, changed the entry at the path.
+    fn touches(
+        &mut self,
+        repo: &gix::Repository,
+        info: &gix::revision::walk::Info<'_>,
+        commit: &gix::Commit<'_>,
+    ) -> Result<bool> {
+        let oid = Oid::from_gix(info.id);
+        let tree = commit
+            .tree_id()
+            .map_err(object("decode commit", oid))?
+            .detach();
+        self.lookup.trees.insert(info.id, tree);
+        // A shallow boundary lists parents the clone does not have; git judges it as a root.
+        // A parent missing anywhere else is corruption and still errors.
+        let is_boundary = self
+            .shallow
+            .as_ref()
+            .is_some_and(|commits| commits.binary_search(&info.id).is_ok());
+        let parents: &[ObjectId] = if is_boundary { &[] } else { &info.parent_ids };
+        self.lookup.touches(repo, tree, parents, &self.segments)
+    }
 }
 
 /// Memoized tree-entry lookups for one walk. Both maps die with the call; nothing here is a

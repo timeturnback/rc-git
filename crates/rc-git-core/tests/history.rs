@@ -213,6 +213,42 @@ fn search_matches_message_title_and_body_case_insensitively() {
 }
 
 #[test]
+fn search_under_a_path_keeps_only_commits_that_changed_it() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let search = |message: Option<&str>, path: &str| {
+        let filter = CommitFilter {
+            message: message.map(str::to_owned),
+            path: Some(path.to_owned()),
+            ..CommitFilter::default()
+        };
+        repo.search_commits(tip, &filter, 0, 100, 1000).unwrap()
+    };
+
+    let page = search(Some("change"), "file.txt");
+    assert_eq!(
+        titles(&page),
+        ["topic change"],
+        "main and hack changes miss file.txt"
+    );
+    let page = search(Some("merge"), "file.txt");
+    assert_eq!(titles(&page), ["evil merge"], "a clean merge stays hidden");
+    assert!(page.complete);
+    let page = search(Some("change"), "./dir/a.txt");
+    assert_eq!(titles(&page), ["main change"]);
+
+    let path_only = search(None, "file.txt");
+    let walked = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    assert_eq!(
+        titles(&path_only),
+        titles(&walked),
+        "the same test as path_history"
+    );
+    assert_eq!(path_only.scanned, walked.scanned);
+}
+
+#[test]
 fn search_matches_author_name_and_email() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();

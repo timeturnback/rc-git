@@ -133,6 +133,11 @@ fn every_operation_leaves_the_repository_untouched() {
             .commits
             .is_empty()
     );
+    let scoped = rc_git_core::CommitFilter {
+        path: Some("README.md".to_owned()),
+        ..filter
+    };
+    repo.search_commits(tip, &scoped, 0, 100, 1000).unwrap();
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(
