@@ -8,6 +8,47 @@ public enum ChangesState: Sendable, Hashable {
     case failed(String)
 }
 
+/// What the change list shows besides its rows: the line in place of them, and whether the
+/// rows on screen are the state's own.
+public struct ChangesListNotice: Sendable, Hashable {
+    /// The line shown over the list; `nil` when the rows stand alone.
+    public let placeholder: String?
+    /// Whether the rows on screen came from the current state; `false` while they are left
+    /// over from a report a scan that has not landed yet will replace.
+    public let isCurrent: Bool
+
+    public init(placeholder: String?, isCurrent: Bool) {
+        self.placeholder = placeholder
+        self.isCurrent = isCurrent
+    }
+}
+
+extension ChangesState {
+    /// What the list shows while no scan has landed: the walk can take seconds on a large
+    /// checkout, and "No changes" in that time reads as a clean tree.
+    public static let scanningPlaceholder = "Scanning the working tree…"
+    public static let cleanPlaceholder = "No changes"
+
+    /// The list's notice in this state. Only a loaded report with no entries says the tree
+    /// is clean; before one lands, the list says it is scanning, and rows left from an earlier
+    /// report stay but are not current.
+    ///
+    /// - Parameter showingRows: Whether the list still holds rows from an earlier report.
+    public func notice(showingRows: Bool) -> ChangesListNotice {
+        switch self {
+        case .idle, .loading:
+            ChangesListNotice(
+                placeholder: showingRows ? nil : Self.scanningPlaceholder, isCurrent: false)
+        case let .loaded(report):
+            ChangesListNotice(
+                placeholder: report.entries.isEmpty ? Self.cleanPlaceholder : nil,
+                isCurrent: true)
+        case let .failed(message):
+            ChangesListNotice(placeholder: message, isCurrent: true)
+        }
+    }
+}
+
 /// The worktree diff pane's load state, keyed by the path it shows.
 public enum WorktreeDiffState: Sendable, Hashable {
     case idle

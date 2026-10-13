@@ -74,7 +74,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private let filesOutline = NSOutlineView()
     private let filesScroll = NSScrollView()
-    private let filesPlaceholder = NSTextField(wrappingLabelWithString: "No changes")
+    private let filesPlaceholder = NSTextField(
+        wrappingLabelWithString: ChangesState.idle.notice(showingRows: false).placeholder ?? "")
     private let groupingControl = NSSegmentedControl()
     private let truncationLabel = NSTextField(labelWithString: "")
     private let authorLabel = NSTextField(labelWithString: "")
@@ -101,6 +102,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private typealias StatusNode = ChangeNode<StatusEntry>
 
     private var entries: [StatusEntry] = []
+    /// Whether `entries` came from the model's current report; while a scan has not landed,
+    /// the rows left from an earlier one stay, but the summary dims and acts on nothing.
+    private var listIsCurrent = false
     /// The change list's rows under the current grouping, rebuilt on every status render.
     private var fileNodes: [StatusNode] = []
     /// Folder rows are expanded unless the user closed them; reload rebuilds the nodes, so
@@ -436,23 +440,26 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     func renderStatus(_ state: ChangesState) {
         switch state {
         case .idle, .loading:
-            return
+            break
         case let .loaded(report):
             entries = report.entries
-            filesPlaceholder.isHidden = !entries.isEmpty
-            filesPlaceholder.stringValue = "No changes"
-            filesPlaceholder.toolTip = nil
             showTruncation(
                 report.truncated
                     ? "Scan stopped after \(report.scanned) entries; the list is incomplete."
                     : nil)
-        case let .failed(message):
+        case .failed:
             entries = []
-            filesPlaceholder.isHidden = false
-            filesPlaceholder.stringValue = message
-            filesPlaceholder.toolTip = message
             showTruncation(nil)
         }
+        let notice = state.notice(showingRows: !entries.isEmpty)
+        filesPlaceholder.isHidden = notice.placeholder == nil
+        filesPlaceholder.stringValue = notice.placeholder ?? ""
+        if case let .failed(message) = state {
+            filesPlaceholder.toolTip = message
+        } else {
+            filesPlaceholder.toolTip = nil
+        }
+        listIsCurrent = notice.isCurrent
         reloadFiles()
         refreshSummary()
     }
@@ -620,6 +627,12 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func refreshSummary() {
+        summaryLabel.textColor = listIsCurrent ? .secondaryLabelColor : .tertiaryLabelColor
+        guard listIsCurrent else {
+            commitButton.isEnabled = false
+            stashButton.isEnabled = false
+            return
+        }
         let summary = tickSummary?() ?? TickSummary(text: "", hasSelection: false)
         summaryLabel.stringValue = summary.text
         commitButton.isEnabled = summary.hasSelection
