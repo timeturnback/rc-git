@@ -246,7 +246,7 @@ import Testing
 
     @Test func aPackageImportOpensNothingAndLeavesTheFileInPlace() async {
         await model.attach(repo)
-        #expect(await model.openPath("src/App.tsx"))
+        #expect(await model.openPath("src/App.tsx") == .opened)
         #expect(!(await model.openImport("react", from: "src/App.tsx")))
         #expect(!(await model.openImport("./missing", from: "src/App.tsx")))
         #expect(model.openedFilePath == "src/App.tsx")

@@ -853,11 +853,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             setMode(.files)
             Task {
-                guard await self.model.openPath(path) else {
+                switch await self.model.openPath(path) {
+                case .opened:
+                    self.recordStop()
+                case .missing:
                     self.presentError("\(path) is not in this tree.")
-                    return
+                case let .failed(message):
+                    self.presentError(message)
                 }
-                self.recordStop()
             }
         }
     }

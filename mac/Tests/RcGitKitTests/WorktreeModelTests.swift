@@ -147,6 +147,38 @@ import Testing
         #expect(message.contains("gone.txt"))
     }
 
+    @Test func aDeadLinkInTheWorkingTreeLeavesTheOpenFileInPlace() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        #expect(await model.openPath("new.txt") == .opened)
+        let state = model.fileState
+        var reports = 0
+        model.onLocationChanged = { reports += 1 }
+        #expect(await model.openPath("missing.md") == .missing)
+        #expect(await model.openPath("gone.txt") == .missing, "a deleted file is not on disk")
+        #expect(await model.openPath("src") == .missing, "a directory is not a file")
+        #expect(await model.openPath("new.txt/deeper") == .missing)
+        #expect(model.fileState == state)
+        #expect(model.openedFilePath == "new.txt")
+        #expect(reports == 0)
+    }
+
+    @Test func aWorkingTreeListingFailureIsNotADeadLink() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        #expect(await model.openPath("new.txt") == .opened)
+        var reports = 0
+        model.onLocationChanged = { reports += 1 }
+        let outcome = await model.openPath("src/lib.rs")
+        guard case let .failed(message) = outcome else {
+            Issue.record("expected a failure, got \(outcome)")
+            return
+        }
+        #expect(message.contains("list working tree"))
+        #expect(model.openedFilePath == "new.txt")
+        #expect(reports == 0)
+    }
+
     @Test func loadAnywayRereadsATooLargeDiskFileFromDisk() async {
         repo.worktreeFiles["big.txt"] = textBlob("big file\n")
         await model.attach(repo)

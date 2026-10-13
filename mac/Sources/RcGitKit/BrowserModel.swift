@@ -31,6 +31,14 @@ public enum CommitDetailState: Equatable, Sendable {
     case failed(CommitSummary, String)
 }
 
+/// How `openPath` ended: the file is open, nothing openable lives at the path, or reading
+/// the trees or directories on the way failed with the core's message.
+public enum OpenPathOutcome: Equatable, Sendable {
+    case opened
+    case missing
+    case failed(String)
+}
+
 /// State for one browser window: the open repository, its refs, the selected ref's root tree,
 /// the commit history of that ref, and the file being viewed. All members are main-actor;
 /// work runs on background tasks and comes back through the callbacks, which fire on the
@@ -604,25 +612,75 @@ public final class BrowserModel {
     }
 
     /// Opens the file at a repository-relative path, the way a markdown link in the file pane
-    /// asks for one. Returns `false` when the path names nothing openable, so the caller can
-    /// say the link is dead instead of leaving the pane on the previous file.
+    /// asks for one. Answers `.missing` when the path names nothing openable, so the caller can
+    /// say the link is dead, and `.failed` when a read on the way failed; either way the pane
+    /// and `location` stay on the previous file.
     ///
-    /// Resolution reads one tree object per path component, so a deep link costs its depth and
-    /// not the size of the tree; every directory it reads lands in the shared cache.
+    /// Resolution reads one tree object, or one working-tree directory, per path component, so
+    /// a deep link costs its depth and not the size of the tree; every tree object it reads
+    /// lands in the shared cache.
     @discardableResult
-    public func openPath(_ path: String) async -> Bool {
-        guard repository != nil, !path.isEmpty else { return false }
+    public func openPath(_ path: String) async -> OpenPathOutcome {
+        guard let repository, let root = rootTree, !path.isEmpty else { return .missing }
         if browsingWorkingTree {
-            let name = path.split(separator: "/").last.map(String.init) ?? path
-            await openWorktreeFile(name: name, path: path)
-            if case .failed = fileState { return false }
-            return true
+            return await openWorktreePath(path, repository: repository, root: root)
         }
-        guard let root = rootTree, let entry = try? await blob(at: path, in: root) else {
-            return false
+        let found: TreeEntry?
+        do {
+            found = try await blob(at: path, in: root)
+        } catch {
+            return .failed(RepositoryError(wrapping: error).message)
         }
+        guard let entry = found else { return .missing }
         await openFile(entry, path: path)
-        return true
+        return .opened
+    }
+
+    /// `openPath` over the working directory: confirms on disk that `path` names a file
+    /// before the pane changes, so a dead link neither replaces the open file nor records a
+    /// stop.
+    private func openWorktreePath(
+        _ path: String, repository: any RepositoryReading, root: Oid
+    ) async -> OpenPathOutcome {
+        let lookup = await RepositoryError.run {
+            try Self.worktreeFileExists(at: path, repository: repository, root: root)
+        }
+        switch lookup {
+        case let .failure(error):
+            return .failed(error.message)
+        case .success(false):
+            return .missing
+        case .success(true):
+            break
+        }
+        let name = path.split(separator: "/").last.map(String.init) ?? path
+        await openWorktreeFile(name: name, path: path)
+        if case let .failed(_, message) = fileState { return .failed(message) }
+        return .opened
+    }
+
+    /// Whether `path` names a file in the working directory, listing one directory per
+    /// component. `false` when a component is missing or the path names a directory.
+    nonisolated private static func worktreeFileExists(
+        at path: String, repository: any RepositoryReading, root: Oid
+    ) throws -> Bool {
+        let components = path.split(separator: "/").map(String.init)
+        var dir = ""
+        for (offset, component) in components.enumerated() {
+            let listing = try repository.worktreeEntries(tree: root, dir: dir)
+            // An inexact name only looks like `component`; the name on disk differs.
+            guard
+                let match = listing.entries.first(where: {
+                    $0.hasExactName && $0.name == component
+                })
+            else { return false }
+            if offset == components.count - 1 {
+                return !match.kind.isDirectory
+            }
+            guard match.kind.isDirectory else { return false }
+            dir = dir.isEmpty ? component : dir + "/" + component
+        }
+        return false
     }
 
     /// The blob at `path` below `tree`, walking one directory at a time. `nil` when a
@@ -1169,7 +1227,7 @@ public final class BrowserModel {
         if openedFilePath != target.filePath {
             var opened = false
             if let path = target.filePath {
-                opened = await openPath(path)
+                opened = await openPath(path) == .opened
             }
             // A file that is gone empties the pane: the file of the stop left behind, still
             // open, would read as the one this stop named.
@@ -1339,7 +1397,7 @@ public final class BrowserModel {
         // The user opened something else, or switched ref, while this resolved.
         guard fileToken == fileGeneration, rootToken == rootGeneration else { return true }
         guard let path else { return false }
-        return await openPath(path)
+        return await openPath(path) == .opened
     }
 
     /// A resolver over a committed tree: one tree object per directory on the way to a path,

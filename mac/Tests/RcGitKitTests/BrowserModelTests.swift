@@ -96,17 +96,34 @@ import Testing
 
     @Test func openPathWalksTheTreeAndReportsDeadLinks() async {
         await model.attach(repo)
-        #expect(await model.openPath("src/main.rs"))
+        #expect(await model.openPath("src/main.rs") == .opened)
         #expect(model.openedFilePath == "src/main.rs")
         guard case let .text(entry, _) = model.fileState else {
             Issue.record("expected text state")
             return
         }
         #expect(entry.name == "main.rs")
-        #expect(!(await model.openPath("src/missing.rs")))
-        #expect(!(await model.openPath("src")))
-        #expect(!(await model.openPath("src/main.rs/deeper")))
+        #expect(await model.openPath("src/missing.rs") == .missing)
+        #expect(await model.openPath("src") == .missing)
+        #expect(await model.openPath("src/main.rs/deeper") == .missing)
         #expect(model.openedFilePath == "src/main.rs")
+    }
+
+    @Test func openPathReportsAFailedTreeReadApartFromADeadLink() async {
+        await model.attach(repo)
+        #expect(await model.openPath("README.md") == .opened)
+        let before = model.location
+        var reports = 0
+        model.onLocationChanged = { reports += 1 }
+        repo.failNextTree = true
+        let outcome = await model.openPath("src/main.rs")
+        guard case let .failed(message) = outcome else {
+            Issue.record("expected a failure, got \(outcome)")
+            return
+        }
+        #expect(message.contains("read tree"), "the core message names the operation")
+        #expect(model.location == before)
+        #expect(reports == 0)
     }
 
     @Test func loadAnywayReadsTheWorkingTreeFile() async {
@@ -253,7 +270,9 @@ import Testing
             TreeEntry(name: "README.md", oid: readme, kind: .blob),
         ]
         await model.attach(repo)
-        #expect(await !model.openPath(inexact), "the U+FFFD spelling names no stored file")
+        #expect(
+            await model.openPath(inexact) == .missing,
+            "the U+FFFD spelling names no stored file")
     }
 
     @Test func staleBlameIsDroppedAfterTheOpenFileChanges() async {
@@ -357,7 +376,7 @@ import Testing
 
     @Test func selectingARefWhoseTreeCannotBeReadKeepsThePaneConsistent() async {
         await model.attach(repo)
-        #expect(await model.openPath("README.md"))
+        #expect(await model.openPath("README.md") == .opened)
         let before = model.location
         var reported: [String] = []
         model.onError = { reported.append($0) }

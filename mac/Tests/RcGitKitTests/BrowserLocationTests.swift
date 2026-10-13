@@ -69,6 +69,9 @@ import Testing
     @Test func aCheckoutOpensOnTheWorkingTreeAndReturnsToIt() async {
         repo.workDir = "/work"
         repo.worktreeFiles["README.md"] = textBlob("# on disk\n")
+        repo.worktreeListings[""] = WorktreeListing(entries: [
+            WorktreeEntry(name: "README.md", kind: .blob, status: .modified, oid: readme, size: 10)
+        ])
         await model.attach(repo)
         #expect(model.location == BrowserLocation(tree: .workingTree))
         await model.openPath("README.md")
