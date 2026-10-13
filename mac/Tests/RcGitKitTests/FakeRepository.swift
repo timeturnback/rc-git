@@ -83,17 +83,20 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var treeEntryCalls = 0
     var failNextTree = false
     var failNextRefs = false
+    /// How long each `refs` call takes, for racing a ref refresh against another move.
+    var refsDelay: TimeInterval = 0
 
     var workingDirectory: String? { lock.withLock { workDir } }
 
     func head() throws -> Head { lock.withLock { headValue } }
 
     func refs() throws -> RefListing {
-        let (result, fail) = lock.withLock { () -> (RefListing, Bool) in
+        let (result, fail, delay) = lock.withLock { () -> (RefListing, Bool, TimeInterval) in
             let fail = failNextRefs
             failNextRefs = false
-            return (listing, fail)
+            return (listing, fail, refsDelay)
         }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if fail { throw RepositoryError("cannot list refs: transient lock") }
         return result
     }

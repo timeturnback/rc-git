@@ -296,4 +296,62 @@ import Testing
         #expect(model.location == atReadme, "opened against main's tree, once it had loaded")
         #expect(reported == [atReadme], "one report, where the pair ended")
     }
+
+    @Test func aRestoreEndingDuringARefreshLeavesNoReportForLater() async {
+        await model.attach(repo)
+        await model.openPath("README.md")
+        repo.lock.withLock { repo.refsDelay = 1 }
+        async let refresh: Void = model.refreshRefs()
+        try? await Task.sleep(for: .milliseconds(20))
+        var reports = 0
+        model.onLocationChanged = { reports += 1 }
+        await model.restore(BrowserLocation(tree: .ref(main), filePath: "gone.txt"))
+        let reportsAtReturn = reports
+        await refresh
+        #expect(model.openedFilePath == nil)
+        #expect(reports == reportsAtReturn, "a report after the restore returned is a new stop")
+    }
+
+    @Test func aRestoreDuringARefreshOfAMovedRefKeepsItsFile() async {
+        await model.attach(repo)
+        await model.openPath("src/main.rs")
+        let movedCommit = oid(0x13)
+        repo.lock.withLock {
+            repo.listing = RefListing(refs: [
+                branch("feature", at: featureCommit),
+                branch("main", at: movedCommit),
+            ])
+            repo.treeOfMap[movedCommit] = mainTree
+            repo.delays[movedCommit] = 1
+        }
+        async let refresh: Void = model.refreshRefs()
+        try? await Task.sleep(for: .milliseconds(20))
+        var reports = 0
+        model.onLocationChanged = { reports += 1 }
+        await model.restore(BrowserLocation(tree: .ref(main), filePath: "README.md"))
+        let reportsAtReturn = reports
+        await refresh
+        #expect(model.selectedRef?.target == movedCommit)
+        #expect(model.openedFilePath == "README.md", "the moved ref's root load closes no file")
+        #expect(reports == reportsAtReturn, "a report after the restore returned is a new stop")
+    }
+
+    @Test func aRefreshAskedForDuringARestoreRunsAfterIt() async throws {
+        await model.attach(repo)
+        await model.openPath("README.md")
+        let onMain = model.location
+        await model.select(featureRef)
+        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        async let slowRestore: Void = model.restore(onMain)
+        try? await Task.sleep(for: .milliseconds(20))
+        repo.lock.withLock { repo.listing.refs.append(branch("topic", at: featureCommit)) }
+        await model.refreshRefs()
+        #expect(model.refs.refs.count == 2, "the restore is still opening main's tree")
+        await slowRestore
+        #expect(model.location == onMain)
+        for _ in 0..<100 where model.refs.refs.count == 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.refs.refs.count == 3, "the refresh ran once the restore was done")
+    }
 }

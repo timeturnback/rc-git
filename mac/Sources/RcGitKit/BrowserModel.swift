@@ -131,6 +131,11 @@ public final class BrowserModel {
     /// meanwhile replaces `pendingRestore` and returns; the running one picks it up.
     private var isRestoring = false
     private var pendingRestore: BrowserLocation?
+    /// The ref refresh running, and whether another is wanted. Refreshes and restores share
+    /// one queue: a restore waits for `refreshRun`, and a refresh asked for during a restore
+    /// sets `refreshPending` for the restore to start once it ends.
+    private var refreshRun: Task<Void, Never>?
+    private var refreshPending = false
     /// How many moves are under way. `location` is half changed while one is.
     private var moveDepth = 0
     /// The location `onLocationChanged` last fired for.
@@ -235,7 +240,34 @@ public final class BrowserModel {
     /// same way `attach` chooses one. A failed refresh keeps the last good listing, marks it
     /// stale through `refsStale` and `onRefsChanged`, and does not alert: the watcher fires
     /// during ref updates, when transient lock errors are normal.
+    ///
+    /// Refreshes never overlap each other or a restore. One asked for while another runs
+    /// joins it, and the running one reads the refs once more when it lands. One asked for
+    /// during a restore returns at once and runs after the restore, so its root load never
+    /// replaces the root the restore is opening a file against.
     public func refreshRefs() async {
+        guard repository != nil else { return }
+        refreshPending = true
+        guard !isRestoring else { return }
+        if let refreshRun {
+            await refreshRun.value
+            return
+        }
+        let run = Task { await self.runRefreshes() }
+        refreshRun = run
+        await run.value
+    }
+
+    /// Reads the refs until no refresh is pending, stopping early for a restore that waits.
+    private func runRefreshes() async {
+        while refreshPending, !isRestoring {
+            refreshPending = false
+            await reloadRefs()
+        }
+        refreshRun = nil
+    }
+
+    private func reloadRefs() async {
         guard let repository else { return }
         beginMove()
         defer { endMove() }
@@ -1021,16 +1053,28 @@ public final class BrowserModel {
     ///
     /// Restores never overlap. One asked for while another runs returns at once; the running
     /// one stops at its next step and goes on to the newest location asked for, so two quick
-    /// steps back end on the second whichever load finishes first.
+    /// steps back end on the second whichever load finishes first. A restore waits for a ref
+    /// refresh under way, and a refresh asked for meanwhile starts once the restore returns.
     public func restore(_ target: BrowserLocation) async {
         guard repository != nil else { return }
         pendingRestore = target
         guard !isRestoring else { return }
         isRestoring = true
+        if let refreshRun {
+            await refreshRun.value
+        }
         beginMove()
         defer {
             isRestoring = false
             endMove()
+            // Another move still under way would report where this restore ended once it
+            // lands, after the restore returned, and that report would read as a new stop.
+            if moveDepth > 0 {
+                reportedLocation = location
+            }
+            if refreshPending {
+                Task { await self.refreshRefs() }
+            }
         }
         while let next = pendingRestore {
             pendingRestore = nil

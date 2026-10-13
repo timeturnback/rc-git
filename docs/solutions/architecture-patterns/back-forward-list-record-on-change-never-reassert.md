@@ -104,13 +104,6 @@ Accepted gap: a tab with no repository has no stop, since `currentStop` is `nil`
 (`MainWindowController.swift:224-230`). Coming to the front records nothing, and the list's mark
 stays on the tab the user left. Back pressed in the empty tab goes to the stop before that one.
 
-A second gap, read from the source and not covered by a test: `refreshRefs` brackets itself in
-`beginMove`/`endMove` as well (`BrowserModel.swift:214-215`). When a watcher-driven refresh is
-still under way as a restore ends, the restore's `endMove` reports nothing and
-`restoresInFlight` returns to zero. The refresh's own `endMove` then reports where the restore
-ended, and `AppDelegate.record` accepts it. After a restore that fell short, that report is a
-stop that differs from the current one, so it drops the stops ahead.
-
 ## When to Apply
 
 - Adding a `BrowserModel` method that changes the tree, the open file, the history scope or the
