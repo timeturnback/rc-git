@@ -85,6 +85,10 @@ private struct MarkdownBuilder {
     private var anchors: [String: Int] = [:]
     /// One anchor per heading, in document order, from `MarkdownDocument.headingAnchors`.
     private var headingAnchors: IndexingIterator<[String]> = [].makeIterator()
+    /// The quote blocks of the enclosing `>` levels, outermost first. Consecutive paragraphs
+    /// share these instances: TextKit joins paragraphs into one block only by identity, so a
+    /// fresh block per paragraph would break the quote bar between them.
+    private var openQuotes: [NSTextBlock] = []
 
     mutating func append(_ document: MarkdownDocument) {
         headingAnchors = MarkdownDocument.headingAnchors(for: document.blocks).makeIterator()
@@ -273,8 +277,9 @@ private struct MarkdownBuilder {
 
     // MARK: Layout
 
-    private func paragraphStyle(for block: MarkdownBlock, hanging: Bool) -> NSMutableParagraphStyle
-    {
+    private mutating func paragraphStyle(
+        for block: MarkdownBlock, hanging: Bool
+    ) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
         let indent = CGFloat(block.listDepth) * MarkdownRenderer.Theme.listIndent
         style.firstLineHeadIndent = indent
@@ -282,11 +287,11 @@ private struct MarkdownBuilder {
         style.paragraphSpacing = MarkdownRenderer.Theme.blockSpacing
         style.lineSpacing = 2
         if !hanging, block.listDepth > 0 { style.firstLineHeadIndent = style.headIndent }
-        if block.quoteDepth > 0 {
-            style.textBlocks = (0..<block.quoteDepth).map { _ in
-                MarkdownRenderer.Theme.quoteBlock()
-            }
+        openQuotes.removeLast(max(openQuotes.count - block.quoteDepth, 0))
+        while openQuotes.count < block.quoteDepth {
+            openQuotes.append(MarkdownRenderer.Theme.quoteBlock())
         }
+        style.textBlocks = openQuotes
         return style
     }
 
@@ -294,7 +299,7 @@ private struct MarkdownBuilder {
     /// Paragraph indents apply inside a block, so a list item's indent goes on an enclosing
     /// block instead; the drawn block then starts under the item's text, not under its marker.
     /// Pass one `listItem` to every paragraph that must share the same enclosing block.
-    private func blockStyle(
+    private mutating func blockStyle(
         for block: MarkdownBlock, listItem: NSTextBlock? = nil
     ) -> NSMutableParagraphStyle {
         let style = paragraphStyle(for: block, hanging: false)
