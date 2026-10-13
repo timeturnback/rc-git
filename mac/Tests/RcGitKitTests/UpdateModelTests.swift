@@ -87,8 +87,10 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     }
 }
 
-/// Holds the toolchain probe until the test releases it, so a test can act while the model
-/// sits in `.running(.preflight)`. Every other step fails fast; only the probe count matters.
+/// Holds the first toolchain probe until the test releases it, so a test can act while the
+/// model sits in `.running(.preflight)`. A later probe answers at once, so a second attempt
+/// the model failed to refuse shows up as a failure instead of a hang. Every other step fails
+/// fast; only the probe count matters.
 private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sendable {
     let entered = Signal()
     let release = Signal()
@@ -102,7 +104,11 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
     }
 
     func toolchain() async -> ToolchainCheck {
-        lock.withLock { calls += 1 }
+        let call = lock.withLock {
+            calls += 1
+            return calls
+        }
+        guard call == 1 else { return .failure("a second probe ran") }
         entered.signal()
         await release.wait()
         return .failure("released")
@@ -444,6 +450,19 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(!environment.calls.contains("reclaim"))
     }
 
+    /// The checkout is read again after the fetch; a read that fails there is the fetch
+    /// step's failure, and nothing is built from a checkout nobody could read.
+    @Test func anUnreadableCheckoutAfterTheFetchFailsTheSyncStep() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                .failure("x"),
+            ]))
+        await model.start()
+        #expect(model.state == .failed(step: .sync, message: "x"))
+        #expect(!environment.calls.contains("install"))
+    }
+
     @Test func anUnreadableCheckoutFailsPreflight() async {
         let (model, _) = Self.model(.init(sourceStates: [.failure("cannot open /checkout")]))
         await model.start()
@@ -519,6 +538,14 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         await model.start()
         model.reset()
         #expect(model.state == .idle)
+    }
+
+    @Test func aSecondAttemptStartsWithAFreshLog() async {
+        let (model, _) = Self.model(.init(toolchain: .missing(["cargo"])))
+        await model.start()
+        model.reset()
+        await model.start()
+        #expect(model.log.filter { $0 == "checking the toolchain" }.count == 1)
     }
 
     @Test func theLogStaysBounded() async {
@@ -608,6 +635,25 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         environment.release.signal()
         await first.value
         #expect(environment.toolchainCalls == 1)
+    }
+
+    /// A second start or a reset while an attempt runs is ignored: two builds never run
+    /// into the same staging folder, and the running attempt keeps its state and its log.
+    @Test func aSecondStartWhileRunningIsIgnored() async {
+        let environment = GatedToolchainEnvironment()
+        let model = UpdateModel(build: Self.build(), environment: environment)
+        let first = Task { await model.start() }
+        await environment.entered.wait()
+        #expect(model.isBusy)
+        await model.start()
+        model.reset()
+        #expect(model.isBusy)
+        #expect(model.state == .running(.preflight))
+        #expect(model.log.contains("checking the toolchain"))
+        environment.release.signal()
+        await first.value
+        #expect(environment.toolchainCalls == 1)
+        #expect(model.state == .failed(step: .preflight, message: "released"))
     }
 
     // MARK: cancel()
