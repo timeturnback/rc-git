@@ -284,11 +284,7 @@ public final class BrowserModel {
             self.head = head
             refsStale = false
             if browsingWorkingTree {
-                if head.target != previousHead {
-                    await selectWorkingTree()
-                } else {
-                    onRefsChanged?()
-                }
+                await refreshWorkingTree(listing: listing, head: head, previousHead: previousHead)
                 return
             }
             guard let current = selectedRef else {
@@ -315,6 +311,28 @@ public final class BrowserModel {
             // The message is dropped on purpose: a lock during a ref update is the usual cause
             // and heals on the next event, so the views show the quiet stale state instead.
             refsStale = true
+            onRefsChanged?()
+        }
+    }
+
+    /// Follows a moved HEAD while the working tree is browsed. An unborn HEAD has no tree to
+    /// compare against, so the model leaves the working tree for the ref `attach` would pick.
+    private func refreshWorkingTree(listing: RefListing, head: Head, previousHead: Oid?) async {
+        guard head.target != nil else {
+            browsingWorkingTree = false
+            if let fallback = initialRef(listing: listing, head: head) {
+                await select(fallback)
+            } else {
+                rootTree = nil
+                resetHistory(anchor: nil)
+                onRefsChanged?()
+                onRootChanged?()
+            }
+            return
+        }
+        if head.target != previousHead {
+            await selectWorkingTree()
+        } else {
             onRefsChanged?()
         }
     }

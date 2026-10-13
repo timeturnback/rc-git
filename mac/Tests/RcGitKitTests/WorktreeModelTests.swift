@@ -171,4 +171,42 @@ import Testing
         #expect(model.rootTree == movedTree)
         #expect(rootEvents == 1)
     }
+
+    @Test func refreshToAnUnbornHeadLeavesTheWorkingTree() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        var refsEvents = 0
+        model.onRefsChanged = { refsEvents += 1 }
+
+        repo.lock.withLock {
+            repo.headValue = Head(refName: "refs/heads/orphan", target: nil)
+        }
+        await model.refreshRefs()
+        #expect(!model.browsingWorkingTree, "an unborn HEAD has no working tree to compare")
+        #expect(model.selectedRef?.shortName == "main", "falls back the way attach chooses")
+        #expect(model.rootTree == mainTree)
+        #expect(refsEvents >= 1)
+    }
+
+    @Test func refreshToAnUnbornHeadWithNoRefsClearsTheRoot() async {
+        repo.workDir = "/checkout"
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        var refsEvents = 0
+        var rootEvents = 0
+        model.onRefsChanged = { refsEvents += 1 }
+        model.onRootChanged = { rootEvents += 1 }
+
+        repo.lock.withLock {
+            repo.headValue = Head(refName: "refs/heads/orphan", target: nil)
+            repo.listing = RefListing(refs: [])
+        }
+        await model.refreshRefs()
+        #expect(!model.browsingWorkingTree)
+        #expect(model.selectedRef == nil)
+        #expect(model.rootTree == nil)
+        #expect(refsEvents == 1)
+        #expect(rootEvents == 1)
+    }
 }
