@@ -95,6 +95,23 @@ import Testing
         #expect(none == nil, "misaligned offsets are worse than plain text")
     }
 
+    @Test func aBlobUnderAnotherExtensionIsHighlightedForThatName() async {
+        let model = BrowserModel()
+        await model.attach(FakeRepository())
+
+        let document = TextDocument(
+            bytes: Array("fn f() {}\n".utf8), lineStarts: [0], validUTF8: true)
+        let rust = await model.highlights(
+            for: TreeEntry(name: "a.rs", oid: oid(0x51), kind: .blob), document: document)
+        #expect(rust?.isEmpty == false)
+        let backup = await model.highlights(
+            for: TreeEntry(name: "a.bak", oid: oid(0x51), kind: .blob), document: document)
+        #expect(backup == nil, "the same blob under an unknown extension has no language")
+        let upper = await model.highlights(
+            for: TreeEntry(name: "A.RS", oid: oid(0x51), kind: .blob), document: document)
+        #expect(upper == rust)
+    }
+
     @Test func markdownHighlightsCrossTheBridge() {
         let data = Array("# Title\n\n```rust\nfn f() {}\n```\n".utf8)
         let spans = Highlighter.highlight(name: "README.md", data: data)

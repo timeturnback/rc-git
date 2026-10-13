@@ -210,16 +210,17 @@ public final class BrowserModel {
     private var worktreeIndex: PathIndex?
     private var worktreeIndexBuild: (generation: Int, task: Task<PathIndex, any Error>)?
     private var worktreeIndexGeneration = 0
-    /// Syntax spans, per blob. Content-addressed like every other cache, but bounded: span
-    /// arrays for large files run to megabytes, so the least recently used entries are
-    /// evicted past `Self.highlightCacheLimit` files or `Self.highlightCacheSpanLimit` spans.
-    private var highlightCache: [Oid: [HighlightSpan]] = [:]
+    /// Syntax spans, per blob and file extension. Content-addressed like every other cache,
+    /// but bounded: span arrays for large files run to megabytes, so the least recently used
+    /// entries are evicted past `Self.highlightCacheLimit` files or
+    /// `Self.highlightCacheSpanLimit` spans.
+    private var highlightCache: [HighlightKey: [HighlightSpan]] = [:]
     /// Least recently used first.
-    private var highlightCacheOrder: [Oid] = []
+    private var highlightCacheOrder: [HighlightKey] = []
     private var highlightCacheSpanCount = 0
-    /// Import links, per blob. They live and die with the blob's highlight spans, so the
-    /// bounds above cover them too and they need no bookkeeping of their own.
-    private var importLinkCache: [Oid: [ImportLink]] = [:]
+    /// Import links, per blob and file extension. They live and die with the entry's highlight
+    /// spans, so the bounds above cover them too and they need no bookkeeping of their own.
+    private var importLinkCache: [HighlightKey: [ImportLink]] = [:]
     static let highlightCacheLimit = 16
     static let highlightCacheSpanLimit = 1_500_000
 
@@ -1390,18 +1391,20 @@ public final class BrowserModel {
 
     // MARK: Highlighting
 
-    /// Syntax spans for a text file, computed in the background and cached by blob id, so a
-    /// file parses once however often it is reopened. `nil` for unknown languages, files
-    /// whose bytes did not decode cleanly (offsets would misalign), or oversized files.
+    /// Syntax spans for a text file, computed in the background and cached by blob id and
+    /// extension, so a file parses once however often it is reopened. `nil` for unknown
+    /// languages, files whose bytes did not decode cleanly (offsets would misalign), or
+    /// oversized files.
     public func highlights(for entry: TreeEntry, document: TextDocument) async
         -> [HighlightSpan]?
     {
         guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
         let cacheable = !entry.oid.isUnhashed
-        if cacheable, let cached = highlightCache[entry.oid] {
-            if let index = highlightCacheOrder.firstIndex(of: entry.oid) {
+        let key = HighlightKey(entry)
+        if cacheable, let cached = highlightCache[key] {
+            if let index = highlightCacheOrder.firstIndex(of: key) {
                 highlightCacheOrder.remove(at: index)
-                highlightCacheOrder.append(entry.oid)
+                highlightCacheOrder.append(key)
             }
             return cached
         }
@@ -1411,17 +1414,17 @@ public final class BrowserModel {
             Highlighter.highlight(name: name, data: Array(text.utf8))
         }.value
         if cacheable, let spans {
-            storeHighlights(spans, for: entry.oid)
+            storeHighlights(spans, for: key)
         }
         return spans
     }
 
     /// Inserts one entry and evicts from the least recently used end until both caps hold.
-    private func storeHighlights(_ spans: [HighlightSpan], for oid: Oid) {
-        if highlightCache[oid] == nil {
-            highlightCacheOrder.append(oid)
+    private func storeHighlights(_ spans: [HighlightSpan], for key: HighlightKey) {
+        if highlightCache[key] == nil {
+            highlightCacheOrder.append(key)
             highlightCacheSpanCount += spans.count
-            highlightCache[oid] = spans
+            highlightCache[key] = spans
         }
         while highlightCacheOrder.count > Self.highlightCacheLimit
             || highlightCacheSpanCount > Self.highlightCacheSpanLimit
@@ -1435,20 +1438,21 @@ public final class BrowserModel {
 
     // MARK: Import links
 
-    /// The import links of a text file, found in the background. Cached by blob id for as
-    /// long as the blob's highlight spans are, so going back and forth between two files
-    /// parses neither again. `nil` under the same conditions as `highlights`.
+    /// The import links of a text file, found in the background. Cached by blob id and
+    /// extension for as long as the entry's highlight spans are, so going back and forth
+    /// between two files parses neither again. `nil` under the same conditions as `highlights`.
     public func importLinks(for entry: TreeEntry, document: TextDocument) async -> [ImportLink]? {
         guard !document.isLossy, document.byteCount <= Highlighter.byteLimit else { return nil }
         let cacheable = !entry.oid.isUnhashed
-        if cacheable, let cached = importLinkCache[entry.oid] { return cached }
+        let key = HighlightKey(entry)
+        if cacheable, let cached = importLinkCache[key] { return cached }
         let name = entry.name
         let text = document.text
         let links = await Task.detached(priority: .utility) {
             ImportLinks.find(name: name, text: text)
         }.value
-        if cacheable, let links, highlightCache[entry.oid] != nil {
-            importLinkCache[entry.oid] = links
+        if cacheable, let links, highlightCache[key] != nil {
+            importLinkCache[key] = links
         }
         return links
     }
@@ -1644,5 +1648,22 @@ public final class BrowserModel {
 
     private func fail(_ message: String) {
         onError?(message)
+    }
+}
+
+/// A highlight cache key: the blob plus the part of its name the core picks a language from,
+/// the lowercased text after the last `.`. Identical bytes under `LICENSE.md` and `LICENSE`
+/// share an oid but not a grammar, so the oid alone would hand one the other's colors.
+private struct HighlightKey: Hashable {
+    let oid: Oid
+    let ext: String
+
+    init(_ entry: TreeEntry) {
+        oid = entry.oid
+        if let dot = entry.name.lastIndex(of: ".") {
+            ext = entry.name[entry.name.index(after: dot)...].lowercased()
+        } else {
+            ext = ""
+        }
     }
 }
