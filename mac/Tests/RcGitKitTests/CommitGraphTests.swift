@@ -41,6 +41,9 @@ import Testing
         #expect(rows.map(\.colorIndex) == [0, 0, 1, 0])
         #expect(rows.map(\.isMerge) == [true, false, false, false])
         #expect(rows.map(\.laneCount) == [2, 2, 2, 2])
+        #expect(
+            rows[1].edges.contains(GraphEdge(from: 1, to: 1, colorIndex: 1, phase: .through)),
+            "b's lane stays right of a's continuing lane")
         let joins = rows[3].edges.filter { $0.phase == .into }
         #expect(
             Set(joins) == [
