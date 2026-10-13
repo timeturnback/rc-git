@@ -8,7 +8,10 @@ import RcGitKit
 final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSource,
     NSTableViewDelegate
 {
-    var provider: ((String) async throws -> PathSearchResult)?
+    var provider: PathSearchSession.Provider? {
+        get { session.provider }
+        set { session.provider = newValue }
+    }
     var onOpen: ((PathIndexEntry) -> Void)?
 
     private let panel: NSPanel
@@ -16,8 +19,8 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
     private let table = NSTableView()
     private let footer = NSTextField(labelWithString: PathSearchResult.truncationNote)
     private let failure = NSTextField(wrappingLabelWithString: "")
-    private var results: [PathIndexEntry] = []
-    private var searchGeneration = 0
+    private let session = PathSearchSession()
+    private var results: [PathIndexEntry] { session.results }
 
     override init() {
         panel = NSPanel(
@@ -25,6 +28,12 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init()
+        session.onUpdate = { [weak self] update in self?.render(update) }
+        session.onOpen = { [weak self] entry in
+            guard let self else { return }
+            close()
+            onOpen?(entry)
+        }
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
@@ -88,53 +97,40 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
             panel.center()
         }
         field.stringValue = ""
-        results = []
+        session.reset()
         footer.isHidden = true
         failure.isHidden = true
         table.reloadData()
         panel.makeKeyAndOrderFront(nil)
         field.becomeFirstResponder()
-        search("")
+        session.search("")
     }
 
     func close() {
+        session.cancelPendingOpen()
         panel.orderOut(nil)
     }
 
-    private func search(_ query: String) {
-        guard let provider else { return }
-        searchGeneration += 1
-        let generation = searchGeneration
-        Task { @MainActor in
-            do {
-                let result = try await provider(query)
-                guard generation == self.searchGeneration else { return }
-                let matches = result.entries
-                self.results = matches
-                self.footer.isHidden = !result.truncated
-                self.failure.isHidden = true
-                self.table.reloadData()
-                if !matches.isEmpty {
-                    self.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-                    self.table.scrollRowToVisible(0)
-                }
-            } catch is CancellationError {
-            } catch {
-                guard generation == self.searchGeneration else { return }
-                self.results = []
-                self.footer.isHidden = true
-                self.failure.stringValue = "Cannot list files: \(String(describing: error))"
-                self.failure.isHidden = false
-                self.table.reloadData()
+    private func render(_ update: PathSearchSession.Update) {
+        switch update {
+        case .results(let truncated):
+            footer.isHidden = !truncated
+            failure.isHidden = true
+            table.reloadData()
+            if !results.isEmpty {
+                table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                table.scrollRowToVisible(0)
             }
+        case .failed(let error):
+            footer.isHidden = true
+            failure.stringValue = "Cannot list files: \(String(describing: error))"
+            failure.isHidden = false
+            table.reloadData()
         }
     }
 
     private func openSelection() {
-        let row = table.selectedRow >= 0 ? table.selectedRow : 0
-        guard results.indices.contains(row) else { return }
-        close()
-        onOpen?(results[row])
+        session.open(row: table.selectedRow >= 0 ? table.selectedRow : 0)
     }
 
     @objc private func openClicked(_ sender: Any?) {
@@ -152,7 +148,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
     // MARK: NSTextFieldDelegate
 
     func controlTextDidChange(_ notification: Notification) {
-        search(field.stringValue)
+        session.search(field.stringValue)
     }
 
     func control(
