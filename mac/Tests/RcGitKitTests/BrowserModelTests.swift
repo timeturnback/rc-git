@@ -122,6 +122,30 @@ import Testing
         #expect(model.openedFilePath == "src/main.rs")
     }
 
+    @Test func openPathThatFailsDropsItsFragment() async {
+        await model.attach(repo)
+        #expect(await model.openPath("README.md", fragment: "usage") == .opened)
+        #expect(model.pendingFragment == "usage", "a link that opens keeps its fragment")
+        #expect(await model.openPath("missing.md", fragment: "install") == .missing)
+        #expect(model.pendingFragment == nil, "a dead link leaves no fragment behind")
+        #expect(await model.openPath("src/main.rs") == .opened)
+        #expect(model.pendingFragment == nil, "the next file opens at the top")
+        #expect(model.takePendingFragment() == nil)
+    }
+
+    @Test func openingAnotherFileClearsAnUntakenFragment() async throws {
+        await model.attach(repo)
+        #expect(await model.openPath("README.md", fragment: "usage") == .opened)
+        #expect(model.takePendingFragment() == "usage")
+        #expect(model.pendingFragment == nil, "taking the fragment forgets it")
+        #expect(await model.openPath("README.md", fragment: "usage") == .opened)
+        let root = try #require(model.rootTree)
+        let entries = try await model.children(of: root)
+        let entry = try #require(entries.first { $0.name == "README.md" })
+        await model.openFile(entry, path: "README.md")
+        #expect(model.pendingFragment == nil, "a tree open is not the link's file")
+    }
+
     @Test func openPathReportsAFailedTreeReadApartFromADeadLink() async {
         await model.attach(repo)
         #expect(await model.openPath("README.md") == .opened)

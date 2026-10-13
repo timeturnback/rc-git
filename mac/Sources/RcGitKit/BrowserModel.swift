@@ -76,6 +76,13 @@ public final class BrowserModel {
     /// is not, the path carries U+FFFD replacements and the core would resolve it to whatever
     /// has that spelling, so blame and file history refuse it.
     public private(set) var openedPathIsExact = true
+    /// The `#fragment` of the repository link that opened the file loading or on screen, for
+    /// the pane to scroll to once it paints. Every other open, a dead link included, clears it,
+    /// so a fragment never lands on a file it was not asked for.
+    public private(set) var pendingFragment: String?
+    /// The fragment `openPath` hands to the load it is about to start; `loadFile` moves it to
+    /// `pendingFragment`, so a load started any other way clears that instead.
+    private var fragmentForNextLoad: String?
     /// The size limit the file pane last read with, which blame honors too.
     private var openedFileLimit = Repository.defaultBlobLimit
     /// Where the file in the file pane was read from, so `loadAnyway` re-reads the same place.
@@ -254,6 +261,7 @@ public final class BrowserModel {
         browsingWorkingTree = false
         resetHistory(anchor: nil)
         fileState = .empty
+        pendingFragment = nil
         openedFilePath = nil
         openedFileSource = nil
         onFileChanged?()
@@ -534,6 +542,8 @@ public final class BrowserModel {
         guard let repository else { return }
         fileGeneration += 1
         let generation = fileGeneration
+        pendingFragment = fragmentForNextLoad
+        fragmentForNextLoad = nil
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
@@ -546,6 +556,7 @@ public final class BrowserModel {
         case let .success(state):
             fileState = state
         case let .failure(error):
+            pendingFragment = nil
             fileState = .failed(entry, error.message)
         }
         onFileChanged?()
@@ -584,6 +595,7 @@ public final class BrowserModel {
         case let .success(tree):
             rootTree = tree
             fileState = .empty
+            pendingFragment = nil
             openedFilePath = nil
             openedFileSource = nil
             onFileChanged?()
@@ -656,16 +668,19 @@ public final class BrowserModel {
     /// Opens the file at a repository-relative path, the way a markdown link in the file pane
     /// asks for one. Answers `.missing` when the path names nothing openable, so the caller can
     /// say the link is dead, and `.failed` when a read on the way failed; either way the pane
-    /// and `location` stay on the previous file.
+    /// and `location` stay on the previous file. `fragment` becomes `pendingFragment` only once
+    /// the file load starts; a dead or failed link leaves `pendingFragment` empty.
     ///
     /// Resolution reads one tree object, or one working-tree directory, per path component, so
     /// a deep link costs its depth and not the size of the tree; every tree object it reads
     /// lands in the shared cache.
     @discardableResult
-    public func openPath(_ path: String) async -> OpenPathOutcome {
+    public func openPath(_ path: String, fragment: String? = nil) async -> OpenPathOutcome {
+        pendingFragment = nil
         guard let repository, let root = rootTree, !path.isEmpty else { return .missing }
         if browsingWorkingTree {
-            return await openWorktreePath(path, repository: repository, root: root)
+            return await openWorktreePath(
+                path, fragment: fragment, repository: repository, root: root)
         }
         let found: TreeEntry?
         do {
@@ -674,15 +689,24 @@ public final class BrowserModel {
             return .failed(RepositoryError(wrapping: error).message)
         }
         guard let entry = found else { return .missing }
+        fragmentForNextLoad = fragment
         await openFile(entry, path: path)
+        fragmentForNextLoad = nil
         return .opened
+    }
+
+    /// Hands the pane the fragment to scroll to once the file it was asked for has painted, and
+    /// forgets it, so a repaint of the same file does not jump back.
+    public func takePendingFragment() -> String? {
+        defer { pendingFragment = nil }
+        return pendingFragment
     }
 
     /// `openPath` over the working directory: confirms on disk that `path` names a file
     /// before the pane changes, so a dead link neither replaces the open file nor records a
     /// stop.
     private func openWorktreePath(
-        _ path: String, repository: any RepositoryReading, root: Oid
+        _ path: String, fragment: String?, repository: any RepositoryReading, root: Oid
     ) async -> OpenPathOutcome {
         let lookup = await RepositoryError.run {
             try Self.worktreeFileStatus(at: path, repository: repository, root: root)
@@ -697,7 +721,9 @@ public final class BrowserModel {
             status = found
         }
         let name = path.split(separator: "/").last.map(String.init) ?? path
+        fragmentForNextLoad = fragment
         await openWorktreeFile(name: name, path: path, status: status)
+        fragmentForNextLoad = nil
         if case let .failed(_, message) = fileState { return .failed(message) }
         return .opened
     }
@@ -1405,6 +1431,7 @@ public final class BrowserModel {
     private func closeFile() {
         fileGeneration += 1
         fileState = .empty
+        pendingFragment = nil
         openedFilePath = nil
         openedFileSource = nil
         onFileChanged?()

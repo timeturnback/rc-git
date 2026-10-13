@@ -68,7 +68,9 @@ paths: mac/**
   `repositoryPath`. Do not read a destination anywhere else: telling a repository path, a URL
   and a `#fragment` apart in one place is what keeps clicking, the context menu and
   "Copy Link" from disagreeing. A repository link opens through `BrowserModel.openPath`, which
-  walks one tree object per component.
+  walks one tree object per component. Its `#fragment` goes with it: the model keeps it as
+  `pendingFragment` only once the load starts, and the pane takes it after it paints. Never
+  hold a fragment in the view — a dead link would leave it for the next file to scroll to.
 - Import links in source mode never enter the text storage: `LinkTextView` asks its owner
   which range a character falls in and draws the hover underline as a temporary attribute. A
   `.link` attribute would be a storage edit, which invalidates layout for every range it

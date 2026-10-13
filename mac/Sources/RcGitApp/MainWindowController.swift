@@ -874,6 +874,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         treeController.onContentWidthChanged = { [weak self] width in
             self?.fitSidebarWidth(to: width)
         }
+        fileController.takePendingFragment = { [weak self] in
+            self?.model.takePendingFragment()
+        }
         fileController.onLoadAnyway = { [weak self] limit in
             guard let self else { return }
             Task { await self.model.loadAnyway(limit: limit) }
@@ -896,11 +899,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 }
             }
         }
-        fileController.onOpenRepositoryPath = { [weak self] path in
+        fileController.onOpenRepositoryPath = { [weak self] path, fragment in
             guard let self else { return }
             setMode(.files)
             Task {
-                switch await self.model.openPath(path) {
+                switch await self.model.openPath(path, fragment: fragment) {
                 case .opened:
                     self.recordStop()
                 case .missing:

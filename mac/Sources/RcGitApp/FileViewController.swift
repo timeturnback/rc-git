@@ -12,9 +12,12 @@ final class FileViewController: NSViewController {
     var onLoadAnyway: ((UInt64) -> Void)?
     /// Asked for syntax spans after a text file painted; `nil` means stay plain.
     var highlightProvider: ((TreeEntry, TextDocument) async -> [HighlightSpan]?)?
-    /// A markdown link that pointed inside the repository was clicked; the argument is the
-    /// repository-relative path it resolved to.
-    var onOpenRepositoryPath: ((String) -> Void)?
+    /// A markdown link that pointed inside the repository was clicked; the arguments are the
+    /// repository-relative path it resolved to and the `#fragment` it carried, if any.
+    var onOpenRepositoryPath: ((String, String?) -> Void)?
+    /// Asked once a file has painted for the heading a repository link wants it scrolled to;
+    /// the model owns the request and forgets it on answering.
+    var takePendingFragment: (() -> String?)?
     /// Asked for the import links of a source file; `nil` means it has none to follow.
     var importLinkProvider: ((TreeEntry, TextDocument) async -> [ImportLink]?)?
     /// An import link was clicked; the arguments are the module specifier as written and the
@@ -58,8 +61,6 @@ final class FileViewController: NSViewController {
     private var appliedChunks = IndexSet()
     /// Heading anchors of the preview on screen, for `#fragment` links.
     private var anchors: [String: Int] = [:]
-    /// A heading a link asked for in a file that was still loading, applied once it paints.
-    private var pendingAnchor: String?
     /// True while the text on screen is the source of `current`, which is when the pointer
     /// may ask about import links.
     private var showsSource = false
@@ -289,7 +290,9 @@ final class FileViewController: NSViewController {
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
             }
-            self.applyPendingAnchor()
+            if let name = self.takePendingFragment?() {
+                self.scroll(toAnchor: name)
+            }
         }
     }
 
@@ -343,7 +346,6 @@ final class FileViewController: NSViewController {
         contentGeneration += 1
         anchors = [:]
         linkSource = nil
-        pendingAnchor = nil
         clearHighlights()
         clearImportLinks()
         placeholder.stringValue = message
@@ -569,11 +571,9 @@ extension FileViewController: NSTextViewDelegate {
         case let .otherScheme(url):
             confirmOpen(url)
         case let .repositoryPath(path, fragment):
-            pendingAnchor = fragment
-            onOpenRepositoryPath?(path)
+            onOpenRepositoryPath?(path, fragment)
         case let .fragment(name):
-            pendingAnchor = name
-            applyPendingAnchor()
+            scroll(toAnchor: name)
         }
     }
 
@@ -624,11 +624,9 @@ extension FileViewController: NSTextViewDelegate {
         return ""
     }
 
-    /// Scrolls to the heading a `#fragment` asked for, once the file that has it is on screen.
-    /// The request survives the load, so a link into another file lands on its section.
-    private func applyPendingAnchor() {
-        guard let name = pendingAnchor else { return }
-        pendingAnchor = nil
+    /// Scrolls to the heading a `#fragment` names in the file on screen; a name with no
+    /// heading leaves the scroll where it is.
+    private func scroll(toAnchor name: String) {
         guard let location = anchors[MarkdownDocument.anchor(for: name)] else { return }
         guard let layoutManager = textView.layoutManager, let container = textView.textContainer,
             location < textStorage.length
