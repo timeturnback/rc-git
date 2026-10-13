@@ -20,7 +20,9 @@ public enum WorktreeDiffState: Sendable, Hashable {
 /// stash list, and the tick state that becomes a commit or stash selection. Reads only —
 /// guarded actions run in the window controller, which calls `refresh()` afterwards.
 ///
-/// Files are ticked by default; unticks and partial hunk ticks survive a refresh by path.
+/// Files are ticked by default; unticks survive a refresh by path. Partial hunk ticks survive
+/// one too, but only the stamps that still match a hunk of the file's fresh diff: a stamp that
+/// matches nothing would make the guard refuse every later commit.
 /// Working-tree data is never cached: disk is the one thing content addressing cannot cover.
 ///
 /// Untracked files `HiddenFiles` names are left out of the list while hidden files are hidden,
@@ -128,23 +130,28 @@ public final class ChangesModel {
         }
         let repository = repository
         let showsHidden = showsHiddenFiles
+        let partialPaths = Set(tickedHunks.keys)
         let result = await RepositoryError.run {
             // One HEAD read feeds both the tree and the expected head, so they always agree.
             let target = try repository.head().target
             let tree = try target.map { try repository.treeOf($0) }
-            let report = try repository.worktreeStatus(
-                tree: tree, maxScan: Repository.defaultStatusScanCap)
-            return (Self.listed(report, showsHidden: showsHidden), target)
+            let report = Self.listed(
+                try repository.worktreeStatus(
+                    tree: tree, maxScan: Repository.defaultStatusScanCap),
+                showsHidden: showsHidden)
+            let hunks = Self.currentHunks(of: partialPaths, in: report, repository: repository)
+            return (report, target, hunks)
         }
         guard generation == statusGeneration else { return }
         switch result {
-        case let .success((report, head)):
+        case let .success((report, head, hunks)):
             statusState = .loaded(report)
             expectedHead = head
             inexactPaths = Set(report.entries.filter { !$0.hasExactPath }.map(\.path))
             let current = Set(report.entries.map(\.path))
             untickedPaths.formIntersection(current)
             tickedHunks = tickedHunks.filter { current.contains($0.key) }
+            revalidateHunkTicks(hunks)
             if let selectedPath, !current.contains(selectedPath) {
                 self.selectedPath = nil
                 diffState = .idle
@@ -154,6 +161,56 @@ public final class ChangesModel {
             statusState = .failed(error.message)
         }
         onStatusChanged?()
+    }
+
+    /// Each partially ticked path's current hunk stamps, read from the fresh report's entry:
+    /// one diff per partially ticked file, so the cost is bounded by what the user picked,
+    /// never by the repository. A file whose diff cannot be read, or is not text, maps to its
+    /// read error or to no stamps, and either way its partial tick is dropped.
+    nonisolated private static func currentHunks(
+        of paths: Set<String>, in report: StatusReport, repository: RepositoryReading
+    ) -> [String: Result<Set<HunkStamp>, RepositoryError>] {
+        var hunks: [String: Result<Set<HunkStamp>, RepositoryError>] = [:]
+        for entry in report.entries where paths.contains(entry.path) {
+            hunks[entry.path] = Result {
+                guard case let .text(fileHunks) = try worktreeDiff(entry, repository: repository)
+                else { return [] }
+                return Set(
+                    fileHunks.map {
+                        HunkStamp(
+                            oldStart: $0.oldStart, oldLines: $0.oldLines,
+                            newStart: $0.newStart, newLines: $0.newLines)
+                    })
+            }.mapError { RepositoryError(wrapping: $0) }
+        }
+        return hunks
+    }
+
+    /// Keeps only the ticked stamps that still name a current hunk. Ticking the rest of what
+    /// is left collapses to a whole-file tick; nothing left unticks the file rather than
+    /// widening the tick to hunks the user never picked. A failed read drops the tick the same
+    /// way and is reported.
+    private func revalidateHunkTicks(_ hunks: [String: Result<Set<HunkStamp>, RepositoryError>]) {
+        for (path, read) in hunks {
+            guard let ticked = tickedHunks[path] else { continue }
+            let current: Set<HunkStamp>
+            switch read {
+            case let .success(stamps):
+                current = stamps
+            case let .failure(error):
+                current = []
+                onError?(error.message)
+            }
+            let kept = ticked.intersection(current)
+            if kept.isEmpty {
+                untickedPaths.insert(path)
+                tickedHunks[path] = nil
+            } else if kept == current {
+                tickedHunks[path] = nil
+            } else {
+                tickedHunks[path] = kept
+            }
+        }
     }
 
     /// Reloads the stash list. Coalesced the same way as `loadStatus()`, and with the same
@@ -196,17 +253,7 @@ public final class ChangesModel {
         onDiffChanged?()
         let repository = repository
         let result = await RepositoryError.run {
-            if entry.status == .deleted {
-                return try repository.diffBlobs(
-                    old: entry.oid, new: nil,
-                    limit: Repository.defaultBlobLimit, context: 3)
-            }
-            guard entry.hasExactPath else {
-                throw RepositoryError(InexactName.pathRefusal("diff", entry.path))
-            }
-            return try repository.diffWorktreeFile(
-                path: entry.path, old: entry.oid,
-                limit: Repository.defaultBlobLimit, context: 3)
+            try Self.worktreeDiff(entry, repository: repository)
         }
         guard generation == diffGeneration, selectedPath == entry.path else { return }
         switch result {
@@ -216,6 +263,22 @@ public final class ChangesModel {
             diffState = .failed(entry.path, error.message)
         }
         onDiffChanged?()
+    }
+
+    /// `entry`'s diff against `HEAD`: the old blob alone for a deleted file, else the file on
+    /// disk, which is refused when its path is not exact.
+    nonisolated private static func worktreeDiff(
+        _ entry: StatusEntry, repository: RepositoryReading
+    ) throws -> BlobDiff {
+        if entry.status == .deleted {
+            return try repository.diffBlobs(
+                old: entry.oid, new: nil, limit: Repository.defaultBlobLimit, context: 3)
+        }
+        guard entry.hasExactPath else {
+            throw RepositoryError(InexactName.pathRefusal("diff", entry.path))
+        }
+        return try repository.diffWorktreeFile(
+            path: entry.path, old: entry.oid, limit: Repository.defaultBlobLimit, context: 3)
     }
 
     // MARK: - Tick state

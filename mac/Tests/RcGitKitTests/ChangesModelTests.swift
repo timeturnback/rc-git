@@ -236,6 +236,81 @@ import Testing
         #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
     }
 
+    private static let firstHunk = DiffHunk(
+        oldStart: 1, oldLines: 3, newStart: 1, newLines: 3,
+        lines: [DiffLine(kind: .added, text: "first")])
+    private static let secondHunk = DiffHunk(
+        oldStart: 8, oldLines: 2, newStart: 8, newLines: 3,
+        lines: [DiffLine(kind: .added, text: "second")])
+
+    private static func stamp(_ hunk: DiffHunk) -> HunkStamp {
+        HunkStamp(
+            oldStart: hunk.oldStart, oldLines: hunk.oldLines,
+            newStart: hunk.newStart, newLines: hunk.newLines)
+    }
+
+    private func reportWith(aTxt: Bool) -> StatusReport {
+        var entries = [
+            StatusEntry(path: "b.txt", kind: .blob, status: .untracked, oid: nil, size: 2)
+        ]
+        if aTxt {
+            entries.insert(
+                StatusEntry(
+                    path: "a.txt", kind: .blob, status: .modified, oid: oid(0x01), size: 3),
+                at: 0)
+        }
+        return StatusReport(entries: entries, scanned: 2, truncated: false)
+    }
+
+    @Test func aHunkTickThatNoLongerMatchesIsDroppedOnRefresh() async {
+        let first = Self.stamp(Self.firstHunk)
+        let second = Self.stamp(Self.secondHunk)
+        await model.loadStatus()
+        model.toggleHunk("a.txt", second, all: [first, second])
+        #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
+
+        // The ticked hunk was committed; only the unticked one is left on disk.
+        repo.lock.withLock { repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.secondHunk]) }
+        await model.loadStatus()
+        #expect(!model.selections.contains(.hunks(path: "a.txt", stamps: [first])))
+        #expect(!model.isTicked("a.txt"), "never widened to hunks the user did not tick")
+        #expect(model.selections == [.whole(path: "b.txt"), .whole(path: "gone.txt")])
+    }
+
+    @Test func aHunkTickWhoseDiffCannotBeReadIsDroppedAndReported() async {
+        let first = Self.stamp(Self.firstHunk)
+        let second = Self.stamp(Self.secondHunk)
+        var errors: [String] = []
+        model.onError = { errors.append($0) }
+        await model.loadStatus()
+        model.toggleHunk("a.txt", second, all: [first, second])
+        await model.loadStatus()
+        #expect(!model.isTicked("a.txt"))
+        #expect(errors == ["read working tree file: 'a.txt': missing"])
+    }
+
+    @Test func partialHunkTicksSurviveARefreshAndDropWithTheirPath() async {
+        let first = Self.stamp(Self.firstHunk)
+        let second = Self.stamp(Self.secondHunk)
+        repo.lock.withLock {
+            repo.statusReport = reportWith(aTxt: true)
+            repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk, Self.secondHunk])
+        }
+        await model.loadStatus()
+        model.toggleHunk("a.txt", second, all: [first, second])
+
+        await model.loadStatus()
+        #expect(model.isPartiallyTicked("a.txt"))
+        #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
+
+        repo.lock.withLock { repo.statusReport = reportWith(aTxt: false) }
+        await model.loadStatus()
+        repo.lock.withLock { repo.statusReport = reportWith(aTxt: true) }
+        await model.loadStatus()
+        #expect(!model.isPartiallyTicked("a.txt"))
+        #expect(model.selections.first == .whole(path: "a.txt"))
+    }
+
     @Test func aLaterFileSelectionWins() async {
         await model.loadStatus()
         let staleHunk = DiffHunk(
