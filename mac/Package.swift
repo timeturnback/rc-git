@@ -42,5 +42,12 @@ let package = Package(
             dependencies: ["RcGitKit"],
             path: "Tests/RcGitKitTests"
         ),
+
+        // The markdown renderer decides preview layout, so its tests measure that layout.
+        .testTarget(
+            name: "RcGitAppTests",
+            dependencies: ["RcGitApp"],
+            path: "Tests/RcGitAppTests"
+        ),
     ]
 )

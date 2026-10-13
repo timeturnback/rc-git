@@ -107,6 +107,10 @@ block or the container, so it stays correct under nesting and resizing.
 - Rule going forward: any `NSTextBlock` that is not an `NSTextTableBlock` gets a content
   width at construction. Build them through one factory so a new block kind cannot be added
   without it.
+- Both are enforced: `MarkdownRendererTests.standaloneBlocksFillThePane`
+  (`mac/Tests/RcGitAppTests`) fails when any block's `lineFragmentRect` is 100 points or
+  narrower in a 600-point container, and the "preview text blocks" step of `scripts/check.sh`
+  fails when `mac/Sources` holds any `NSTextBlock()` besides the one in `fullWidthBlock()`.
 
 ## Related Issues
 

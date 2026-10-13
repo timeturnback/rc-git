@@ -89,6 +89,17 @@ if grep -rnE --include='*.swift' 'textField[?!]?\.font[[:space:]]*=' mac/Sources
   echo 'error: style the label, not the textField outlet (.claude/rules/swift.md)' >&2
   exit 1
 fi
+step "preview text blocks"
+# A bare NSTextBlock lays out one glyph per line; MarkdownRenderer.Theme.fullWidthBlock() is
+# the one place allowed to build one.
+# grep finding none exits 1, which pipefail would turn into a silent exit; zero is a count here.
+text_blocks="$({ grep -rF 'NSTextBlock()' mac/Sources || true; } | wc -l | tr -d ' ')"
+if [[ $text_blocks != 1 ]]; then
+  echo "error: found $text_blocks NSTextBlock() calls in mac/Sources, expected 1;" \
+    'build every NSTextBlock through MarkdownRenderer.Theme.fullWidthBlock()' \
+    '(docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md)' >&2
+  exit 1
+fi
 step "guard write funnel"
 # Writes live on the guard's Writer (built only from a Confirmation); network I/O in remote/.
 if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |
