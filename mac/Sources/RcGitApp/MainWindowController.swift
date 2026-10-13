@@ -452,7 +452,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showBlame(_ sender: Any?) {
         guard model.canBlameOpenedFile else { return }
-        Task { await model.requestBlame() }
+        Task { [model] in await model.requestBlame() }
     }
 
     @objc func searchCommits(_ sender: Any?) {
@@ -566,6 +566,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changesModel?.cancelScans()
         syncModel = nil
         goToFileController.close()
+        model.cancelBlame()
         blamePanel.close()
         closeRefPicker()
         onClose?()
@@ -827,10 +828,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return }
             switch model.blame {
             case .empty:
-                break
+                blamePanel.close()
+            case let .loading(_, title):
+                blamePanel.show([], title: title, over: window)
             case let .loaded(_, spans, title):
                 blamePanel.show(spans, title: title, over: window)
             case let .failed(message):
+                blamePanel.close()
                 presentError(message)
             }
         }

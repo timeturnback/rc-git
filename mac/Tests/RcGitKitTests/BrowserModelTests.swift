@@ -293,8 +293,8 @@ import Testing
         stubBlame("README.md")
         await model.openFile(
             TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
-        var events = 0
-        model.onBlameChanged = { events += 1 }
+        var states: [BlameState] = []
+        model.onBlameChanged = { states.append(self.model.blame) }
         let gate = CallGate()
         repo.blameGate = gate
         let readmeBlame = Task { await model.requestBlame() }
@@ -304,8 +304,33 @@ import Testing
         gate.open()
         await readmeBlame.value
 
-        #expect(events == 0, "the README walk finished after the user opened another file")
+        #expect(
+            states == [.loading(path: "README.md", title: "Blaming README.md…"), .empty],
+            "the README walk finished after the user opened another file")
         #expect(model.blame == .empty)
+    }
+
+    @Test func aCancelledBlameNeverLands() async {
+        await model.attach(repo)
+        stubBlame("README.md")
+        await model.openFile(
+            TreeEntry(name: "README.md", oid: readme, kind: .blob), path: "README.md")
+        var states: [BlameState] = []
+        model.onBlameChanged = { states.append(self.model.blame) }
+        let gate = CallGate()
+        repo.blameGate = gate
+        let blame = Task { await model.requestBlame() }
+        await gate.waitUntilArrived()
+        model.cancelBlame()
+        gate.open()
+        await blame.value
+
+        #expect(
+            states == [.loading(path: "README.md", title: "Blaming README.md…"), .empty],
+            "the walk finished after its window closed")
+        #expect(model.blame == .empty)
+        await model.requestBlame()
+        #expect(repo.blameLimits.count == 2, "a cancelled walk is no longer joined")
     }
 
     @Test func aSupersededBlameLeavesTheNewerWalkInFlight() async {
@@ -329,7 +354,11 @@ import Testing
         await mainGate.waitUntilArrived()
         readmeGate.open()
         await readmeBlame.value
-        #expect(states.isEmpty, "the README walk was superseded by the main.rs request")
+        #expect(
+            states == [
+                .loading(path: "README.md", title: "Blaming README.md…"),
+                .loading(path: "src/main.rs", title: "Blaming src/main.rs…"),
+            ], "the README walk was superseded by the main.rs request")
 
         await model.requestBlame()
         mainGate.open()
@@ -340,7 +369,9 @@ import Testing
                 commit: commitSummary(mainCommit, title: "main"))
         ]
         #expect(
-            states == [.loaded(path: "src/main.rs", spans: spans, title: "Blame — src/main.rs")])
+            states.last
+                == .loaded(path: "src/main.rs", spans: spans, title: "Blame — src/main.rs"))
+        #expect(states.count == 3)
         #expect(repo.blameLimits.count == 2, "the repeat joined the main.rs walk")
     }
 
@@ -361,7 +392,7 @@ import Testing
         await first.value
 
         #expect(repo.blameLimits.count == 1)
-        #expect(events == 1)
+        #expect(events == 2, "one walk: loading, then loaded")
         guard case let .loaded(path, spans, _) = model.blame else {
             Issue.record("expected a loaded blame, got \(model.blame)")
             return

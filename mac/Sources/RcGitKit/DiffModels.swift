@@ -196,9 +196,13 @@ public struct BlameSpan: Sendable, Hashable {
     }
 }
 
-/// The blame the model last finished for the open file, for the blame panel to present.
+/// The blame the model last started or finished for the open file, for the blame panel to
+/// present.
 public enum BlameState: Sendable, Hashable {
+    /// No blame is showing: none was asked for, or the one running was dropped or cancelled.
     case empty
+    /// A walk of the file at `path` is running; `title` says so while the panel waits.
+    case loading(path: String, title: String)
     /// Every range of the file at `path`, paired with its commit, and the panel's title.
     case loaded(path: String, spans: [BlameSpan], title: String)
     case failed(String)

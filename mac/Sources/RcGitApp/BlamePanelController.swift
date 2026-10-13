@@ -49,12 +49,13 @@ final class BlamePanelController: NSObject, NSTableViewDataSource, NSTableViewDe
         panel.contentView = scroll
     }
 
-    /// Shows the ranges under `title`, replacing whatever the panel showed before.
+    /// Shows the ranges under `title`, replacing whatever the panel showed before. A panel
+    /// already on screen stays where it is; a hidden one opens centered over `window`.
     func show(_ spans: [BlameSpan], title: String, over window: NSWindow?) {
         self.spans = spans
         panel.title = title
         table.reloadData()
-        if let frame = window?.frame {
+        if !panel.isVisible, let frame = window?.frame {
             let size = panel.frame.size
             panel.setFrameOrigin(
                 NSPoint(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2))

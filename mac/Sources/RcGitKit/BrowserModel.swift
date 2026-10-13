@@ -96,7 +96,7 @@ public final class BrowserModel {
     public private(set) var fileDiff: FileDiffState = .empty
     /// Full message, committer, and refs of `diffCommit`.
     public private(set) var commitDetail: CommitDetailState = .empty
-    /// The blame `requestBlame` last finished for the open file.
+    /// The blame `requestBlame` last started or finished for the open file.
     public private(set) var blame: BlameState = .empty
 
     /// Commits of the selected ref loaded so far, newest first.
@@ -1151,8 +1151,9 @@ public final class BrowserModel {
     /// The file at the tip is sized against the limit the file pane read it with, so a file
     /// the pane declined as too large is declined here too instead of decoded whole. A request
     /// for the file and revision a walk is already running for joins that walk instead of
-    /// starting another. A result is dropped when a newer request superseded it or the open
-    /// file or revision changed while it ran. Failures publish `.failed`.
+    /// starting another. `.loading` is published when a walk starts. A result is dropped when
+    /// a newer request or `cancelBlame` superseded it; when the open file or revision changed
+    /// while it ran, `.empty` is published instead. Failures publish `.failed`.
     public func requestBlame() async {
         guard let repository else { return publishBlame(.failed("no repository is open")) }
         guard let target = blameTarget() else {
@@ -1172,12 +1173,13 @@ public final class BrowserModel {
         blameGeneration += 1
         let generation = blameGeneration
         blameInFlight = target
+        publishBlame(.loading(path: target.path, title: Self.blamingTitle(path: target.path)))
         let result = await RepositoryError.run {
             try Self.blameSpans(repository, target: target)
         }
         guard generation == blameGeneration else { return }
         blameInFlight = nil
-        guard target == blameTarget() else { return }
+        guard target == blameTarget() else { return publishBlame(.empty) }
         switch result {
         case let .success(spans):
             let title = Self.blameTitle(path: target.path, atHead: target.atHead)
@@ -1185,6 +1187,14 @@ public final class BrowserModel {
         case let .failure(error):
             publishBlame(.failed(error.message))
         }
+    }
+
+    /// Drops the running blame walk's result, so it never reaches a closed window. A blame
+    /// still loading becomes `.empty`; a finished one is left as it is.
+    public func cancelBlame() {
+        blameGeneration += 1
+        blameInFlight = nil
+        if case .loading = blame { publishBlame(.empty) }
     }
 
     /// Whether Show Blame can run on the file in the file pane: a file with a known path is
@@ -1215,6 +1225,11 @@ public final class BrowserModel {
     /// stood in for a revision.
     public nonisolated static func blameTitle(path: String, atHead: Bool) -> String {
         atHead ? "Blame — \(path) at HEAD" : "Blame — \(path)"
+    }
+
+    /// The blame panel's title while the walk for `path` runs.
+    public nonisolated static func blamingTitle(path: String) -> String {
+        "Blaming \(path)…"
     }
 
     /// How far back blame walks: two years (730 days), in seconds.
