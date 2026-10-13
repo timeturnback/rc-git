@@ -510,6 +510,15 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     @Test func inlineTagsAreDroppedAndBreaksSurvive() {
         #expect(plain(runs("a <span>b</span> c")) == "a b c")
         #expect(plain(runs("a<br>b")) == "a\nb")
+        #expect(plain(runs("a <img src=\"x.png\" alt='y' width=10 hidden/> b")) == "a  b")
+    }
+
+    @Test func proseBetweenAngleBracketsStaysLiteral() {
+        #expect(plain(runs("Returns Result<T, E> on error")) == "Returns Result<T, E> on error")
+        #expect(plain(runs("if a<b && c>d then")) == "if a<b && c>d then")
+        #expect(plain(runs("Use it when n<10 and m>5 holds.")) == "Use it when n<10 and m>5 holds.")
+        #expect(plain(runs("a<1>b")) == "a<1>b")
+        #expect(plain(runs("a</b c>d")) == "a</b c>d")
     }
 
     @Test func linkTextKeepsItsOwnFormatting() {

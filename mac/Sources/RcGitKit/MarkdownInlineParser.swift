@@ -480,24 +480,101 @@ extension InlineScanner {
         return stop + 1
     }
 
+    /// A CommonMark open or closing tag: the name starts with a letter, an open tag carries only
+    /// well-formed attributes, and anything else returns nil so the `<` stays literal prose.
     private mutating func htmlTag(at cursor: Int, end: Int) -> Int? {
         var position = cursor + 1
-        guard position < end else { return nil }
-        if bytes[position] == Ascii.slash { position += 1 }
-        var nameEnd = position
-        while nameEnd < end, Ascii.isLetter(bytes[nameEnd]) || Ascii.isDigit(bytes[nameEnd]) {
-            nameEnd += 1
-        }
-        guard nameEnd > position else { return nil }
-        var close = nameEnd
-        while close < end, bytes[close] != Ascii.greaterThan, bytes[close] != Ascii.newline {
-            close += 1
-        }
-        guard close < end, bytes[close] == Ascii.greaterThan else { return nil }
+        let closing = position < end && bytes[position] == Ascii.slash
+        if closing { position += 1 }
+        guard position < end, Ascii.isLetter(bytes[position]) else { return nil }
+        var nameEnd = position + 1
+        while nameEnd < end, Self.isTagNameByte(bytes[nameEnd]) { nameEnd += 1 }
+        let found =
+            closing
+            ? closingTagEnd(from: nameEnd, end: end) : openTagEnd(from: nameEnd, end: end)
+        guard let close = found else { return nil }
         if String(decoding: bytes[position..<nameEnd], as: UTF8.self).lowercased() == "br" {
             buffer.append(Ascii.newline)
         }
         return close + 1
+    }
+
+    /// The index of the `>` ending a closing tag: only whitespace may follow its name.
+    private func closingTagEnd(from start: Int, end: Int) -> Int? {
+        let close = skipTagSpace(from: start, end: end)
+        return close < end && bytes[close] == Ascii.greaterThan ? close : nil
+    }
+
+    /// The index of the `>` ending an open tag: attributes, each after whitespace, then an
+    /// optional `/`.
+    private func openTagEnd(from start: Int, end: Int) -> Int? {
+        var position = start
+        while true {
+            let next = skipTagSpace(from: position, end: end)
+            guard next < end else { return nil }
+            if bytes[next] == Ascii.greaterThan { return next }
+            if bytes[next] == Ascii.slash {
+                let close = next + 1
+                return close < end && bytes[close] == Ascii.greaterThan ? close : nil
+            }
+            guard next > position, let attributeEnd = attributeEnd(from: next, end: end) else {
+                return nil
+            }
+            position = attributeEnd
+        }
+    }
+
+    /// One attribute: a name `[A-Za-z_:][A-Za-z0-9_.:-]*`, optionally `=` and a value.
+    private func attributeEnd(from start: Int, end: Int) -> Int? {
+        guard Self.isAttributeNameStart(bytes[start]) else { return nil }
+        var nameEnd = start + 1
+        while nameEnd < end, Self.isAttributeNameByte(bytes[nameEnd]) { nameEnd += 1 }
+        let equals = skipTagSpace(from: nameEnd, end: end)
+        guard equals < end, bytes[equals] == Ascii.equals else { return nameEnd }
+        return attributeValueEnd(from: skipTagSpace(from: equals + 1, end: end), end: end)
+    }
+
+    /// A single-quoted, double-quoted or unquoted attribute value.
+    private func attributeValueEnd(from start: Int, end: Int) -> Int? {
+        guard start < end else { return nil }
+        let quote = bytes[start]
+        if quote == Ascii.quote || quote == Ascii.apostrophe {
+            var stop = start + 1
+            while stop < end, bytes[stop] != quote { stop += 1 }
+            return stop < end ? stop + 1 : nil
+        }
+        var stop = start
+        while stop < end, Self.isUnquotedValueByte(bytes[stop]) { stop += 1 }
+        return stop > start ? stop : nil
+    }
+
+    private func skipTagSpace(from start: Int, end: Int) -> Int {
+        var position = start
+        while position < end, Self.isTagSpace(bytes[position]) { position += 1 }
+        return position
+    }
+
+    private static func isTagSpace(_ byte: UInt8) -> Bool {
+        Ascii.isSpace(byte) || byte == Ascii.newline || byte == Ascii.carriageReturn
+    }
+
+    private static func isTagNameByte(_ byte: UInt8) -> Bool {
+        Ascii.isLetter(byte) || Ascii.isDigit(byte) || byte == Ascii.hyphen
+    }
+
+    private static func isAttributeNameStart(_ byte: UInt8) -> Bool {
+        Ascii.isLetter(byte) || byte == Ascii.underscore || byte == Ascii.colon
+    }
+
+    private static func isAttributeNameByte(_ byte: UInt8) -> Bool {
+        isAttributeNameStart(byte) || Ascii.isDigit(byte) || byte == Ascii.dot
+            || byte == Ascii.hyphen
+    }
+
+    private static func isUnquotedValueByte(_ byte: UInt8) -> Bool {
+        !isTagSpace(byte) && byte != Ascii.quote && byte != Ascii.apostrophe
+            && byte != Ascii.equals && byte != Ascii.lessThan && byte != Ascii.greaterThan
+            && byte != Ascii.backtick
     }
 
     /// A newline inside a block: two trailing spaces or a trailing backslash keep the break,
