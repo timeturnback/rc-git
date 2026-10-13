@@ -13,6 +13,9 @@ enum Style {
     static let barPadding: CGFloat = 8
     /// The gap between a row's symbol and its label, and between the label and a badge.
     static let rowGap: CGFloat = 6
+    /// How far each folder level of a path outline indents, so a folder sits at the same depth
+    /// in the Files tree, the Changes list, and a commit's changed files.
+    static let folderIndent: CGFloat = 12
 
     /// Makes `table` a sidebar list: a source list drawn over the sidebar's material, whose
     /// rows — height, text, and symbol — follow the sidebar size set in System Settings unless

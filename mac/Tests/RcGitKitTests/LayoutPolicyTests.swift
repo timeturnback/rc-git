@@ -43,6 +43,30 @@ import Testing
         #expect(LayoutPolicy.sidebarMinimumWidth < LayoutPolicy.sidebarMaximumWidth)
     }
 
+    @Test func theSidebarOpensOnlyWhereBothPaneFloorsAndTheDividerFit() {
+        #expect(
+            LayoutPolicy.sidebarWindowWidth
+                >= LayoutPolicy.sidebarMinimumWidth + LayoutPolicy.contentMinimumWidth + 1)
+    }
+
+    @Test func theSmallestWindowHoldsTheDetailPaneAndCanCollapseTheSidebar() {
+        #expect(LayoutPolicy.windowMinimumWidth >= LayoutPolicy.contentMinimumWidth)
+        #expect(LayoutPolicy.windowMinimumWidth < LayoutPolicy.sidebarWindowWidth)
+        let smallest = CGSize(
+            width: LayoutPolicy.windowMinimumWidth, height: LayoutPolicy.windowMinimumHeight)
+        #expect(!LayoutPolicy.layout(for: smallest).showsSidebar)
+    }
+
+    @Test func theChangesFloorsFitTheSmallestWindow() {
+        #expect(LayoutPolicy.changesDiffFloor > 0)
+        #expect(LayoutPolicy.changesDiffFloor <= LayoutPolicy.windowMinimumHeight)
+        let commitColumn =
+            LayoutPolicy.changesFilesFloor + LayoutPolicy.changesStashHeight
+            + LayoutPolicy.changesMessageHeight
+        #expect(LayoutPolicy.changesFilesFloor > 0)
+        #expect(commitColumn <= LayoutPolicy.windowMinimumHeight)
+    }
+
     @Test func splitPaneKeepsADividerBothFloorsAllow() {
         #expect(
             LayoutPolicy.splitPane(

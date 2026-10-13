@@ -81,7 +81,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             backing: .buffered,
             defer: false
         )
-        window.minSize = NSSize(width: 440, height: 320)
+        window.minSize = NSSize(
+            width: LayoutPolicy.windowMinimumWidth, height: LayoutPolicy.windowMinimumHeight)
         window.title = "rc-git"
         // Every repository lives in its own tab of one window group. A tab that is not
         // selected keeps its whole view hierarchy, model, and watchers, so switching
@@ -636,7 +637,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         contentTabs.addTabViewItem(NSTabViewItem(viewController: changesController))
 
         let content = NSSplitViewItem(viewController: contentTabs)
-        content.minimumThickness = 240
+        content.minimumThickness = LayoutPolicy.contentMinimumWidth
         outerSplit.addSplitViewItem(sidebar)
         outerSplit.onToggleSidebar = { [weak self] in self?.sidebarCollapse.userToggled() }
         outerSplit.addSplitViewItem(content)

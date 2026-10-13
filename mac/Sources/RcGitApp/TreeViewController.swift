@@ -64,7 +64,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.dataSource = self
         outline.delegate = self
         Style.sidebarList(outline)
-        outline.indentationPerLevel = 14
+        outline.indentationPerLevel = Style.folderIndent
         outline.autoresizesOutlineColumn = true
         outline.allowsEmptySelection = true
         outline.target = self

@@ -148,7 +148,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         // Dense rows: every one carries a tick box, and the list shares the sidebar with the
         // commit box.
         Style.sidebarList(filesOutline, rowSize: .small)
-        filesOutline.indentationPerLevel = 12
+        filesOutline.indentationPerLevel = Style.folderIndent
         // The list has no horizontal scroller: the column stays the pane's width and the
         // labels truncate inside it.
         filesOutline.autoresizesOutlineColumn = false
@@ -325,7 +325,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let inset = Self.sectionInset
         // The list keeps a usable height, but yields before the layout breaks: it shares
         // the sidebar with the ref list now.
-        let filesFloor = filesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150)
+        let filesFloor = filesScroll.heightAnchor.constraint(
+            greaterThanOrEqualToConstant: LayoutPolicy.changesFilesFloor)
         filesFloor.priority = NSLayoutConstraint.Priority(rawValue: 700)
         NSLayoutConstraint.activate([
             syncRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
@@ -341,8 +342,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             authorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
             filesFloor,
-            stashScroll.heightAnchor.constraint(equalToConstant: 96),
-            messageScroll.heightAnchor.constraint(equalToConstant: 64),
+            stashScroll.heightAnchor.constraint(
+                equalToConstant: LayoutPolicy.changesStashHeight),
+            messageScroll.heightAnchor.constraint(
+                equalToConstant: LayoutPolicy.changesMessageHeight),
             filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),
             filesPlaceholder.centerYAnchor.constraint(equalTo: filesScroll.centerYAnchor),
             // The text container's own inset, so the placeholder sits on the caret.
@@ -385,7 +388,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             diffScroll.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
             diffScroll.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
             diffScroll.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
-            diffScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            diffScroll.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: LayoutPolicy.changesDiffFloor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: pane.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: pane.centerYAnchor),
         ])

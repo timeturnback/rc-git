@@ -224,7 +224,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         changesOutline.outlineTableColumn = column
         changesOutline.headerView = nil
         changesOutline.rowSizeStyle = .small
-        changesOutline.indentationPerLevel = 12
+        changesOutline.indentationPerLevel = Style.folderIndent
         // No horizontal scroller: the column stays the pane's width and labels truncate.
         changesOutline.autoresizesOutlineColumn = false
         changesOutline.dataSource = self

@@ -24,6 +24,12 @@ public enum LayoutPolicy {
     /// The widest the sidebar goes, however long its rows are. Past this the detail pane
     /// matters more than a path read in full.
     public static let sidebarMaximumWidth: CGFloat = 460
+    /// The narrowest the detail pane beside the sidebar goes. The sidebar threshold leaves room
+    /// for both floors and the divider between them.
+    public static let contentMinimumWidth: CGFloat = 240
+    /// The smallest window: the detail pane alone, with the sidebar collapsed, still usable.
+    public static let windowMinimumWidth: CGFloat = 440
+    public static let windowMinimumHeight: CGFloat = 320
     /// The height neither pane of History's left column may drop below: the commit list on
     /// top, the open commit's detail — header and changed files — under it. A pane at zero
     /// reads as a missing feature, and `NSSplitView` autosave records the zero and re-imposes
@@ -32,6 +38,14 @@ public enum LayoutPolicy {
     public static let historyDetailFloor: CGFloat = 200
     /// The share of the left column a commit detail opens at when it has no height of its own.
     public static let historyDetailShare: CGFloat = 0.45
+    /// The height the Changes tab's file list keeps while the sidebar has room for it. It
+    /// yields before the commit box does, since it shares the sidebar with the ref list.
+    public static let changesFilesFloor: CGFloat = 150
+    /// The fixed heights of the Changes tab's stash list and commit message box.
+    public static let changesStashHeight: CGFloat = 96
+    public static let changesMessageHeight: CGFloat = 64
+    /// The height the Changes tab's diff never drops below.
+    public static let changesDiffFloor: CGFloat = 150
 
     public static func layout(for size: CGSize) -> Layout {
         Layout(showsSidebar: size.width >= sidebarWindowWidth)
