@@ -15,6 +15,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
     private let field = NSTextField()
     private let table = NSTableView()
     private let footer = NSTextField(labelWithString: PathSearchResult.truncationNote)
+    private let failure = NSTextField(wrappingLabelWithString: "")
     private var results: [PathIndexEntry] = []
     private var searchGeneration = 0
 
@@ -63,7 +64,11 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         footer.textColor = .secondaryLabelColor
         footer.isHidden = true
 
-        let stack = NSStackView(views: [field, separator, scroll, footer])
+        failure.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        failure.textColor = .secondaryLabelColor
+        failure.isHidden = true
+
+        let stack = NSStackView(views: [field, failure, separator, scroll, footer])
         stack.orientation = .vertical
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 8, right: 12)
@@ -85,6 +90,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         field.stringValue = ""
         results = []
         footer.isHidden = true
+        failure.isHidden = true
         table.reloadData()
         panel.makeKeyAndOrderFront(nil)
         field.becomeFirstResponder()
@@ -106,6 +112,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
                 let matches = result.entries
                 self.results = matches
                 self.footer.isHidden = !result.truncated
+                self.failure.isHidden = true
                 self.table.reloadData()
                 if !matches.isEmpty {
                     self.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -116,6 +123,8 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
                 guard generation == self.searchGeneration else { return }
                 self.results = []
                 self.footer.isHidden = true
+                self.failure.stringValue = "Cannot list files: \(String(describing: error))"
+                self.failure.isHidden = false
                 self.table.reloadData()
             }
         }
