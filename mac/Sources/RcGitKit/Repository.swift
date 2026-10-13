@@ -7,6 +7,11 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     /// Default cap for `readBlob`: 8 MiB, matching the core.
     public static let defaultBlobLimit: UInt64 = 8 * 1024 * 1024
 
+    /// Default context lines around each diff hunk: 3, matching the core's
+    /// `DEFAULT_DIFF_CONTEXT`. The guard recomputes hunk stamps with the core constant, so a
+    /// stamp taken at any other context fails as a hunk mismatch.
+    public static let defaultDiffContext: UInt32 = 3
+
     /// Default cap for `worktreeStatus`, matching the path-search precedent.
     public static let defaultStatusScanCap = 200_000
 
@@ -274,7 +279,8 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     /// Line diff between two blobs; pass `nil` for the absent side of an added or deleted
     /// file.
     public func diffBlobs(
-        old: Oid?, new: Oid?, limit: UInt64 = Repository.defaultBlobLimit, context: UInt32 = 3
+        old: Oid?, new: Oid?, limit: UInt64 = Repository.defaultBlobLimit,
+        context: UInt32 = Repository.defaultDiffContext
     ) throws -> BlobDiff {
         var error: UnsafeMutablePointer<CChar>? = nil
         let diff = withOptionalOid(old) { oldPtr in
@@ -292,7 +298,8 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
     /// bytes. `nil` for `old` renders an untracked file as pure additions.
     public func diffWorktreeFile(
-        path: String, old: Oid?, limit: UInt64 = Repository.defaultBlobLimit, context: UInt32 = 3
+        path: String, old: Oid?, limit: UInt64 = Repository.defaultBlobLimit,
+        context: UInt32 = Repository.defaultDiffContext
     ) throws -> BlobDiff {
         var error: UnsafeMutablePointer<CChar>? = nil
         let diff = withOptionalOid(old) { oldPtr in

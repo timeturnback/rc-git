@@ -314,13 +314,15 @@ public final class ChangesModel {
     ) throws -> BlobDiff {
         if entry.status == .deleted {
             return try repository.diffBlobs(
-                old: entry.oid, new: nil, limit: Repository.defaultBlobLimit, context: 3)
+                old: entry.oid, new: nil, limit: Repository.defaultBlobLimit,
+                context: Repository.defaultDiffContext)
         }
         guard entry.hasExactPath else {
             throw RepositoryError(InexactName.pathRefusal("diff", entry.path))
         }
         return try repository.diffWorktreeFile(
-            path: entry.path, old: entry.oid, limit: Repository.defaultBlobLimit, context: 3)
+            path: entry.path, old: entry.oid, limit: Repository.defaultBlobLimit,
+            context: Repository.defaultDiffContext)
     }
 
     // MARK: - Tick state
