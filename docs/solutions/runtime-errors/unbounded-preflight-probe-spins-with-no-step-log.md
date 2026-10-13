@@ -88,7 +88,11 @@ private static func drain(_ handle: FileHandle, into collector: LineCollector) -
 **A limit on the probe.** `Shell.run` takes an optional `timeout`; a watchdog `Task` sends
 `SIGTERM` at the limit and `SIGKILL` two seconds later, and the outcome carries `timedOut`.
 The post-exit drain is bounded the same way (`await drained.wait(upTo: drainGrace)`), so a
-grandchild holding the write end costs two seconds rather than the session.
+grandchild holding the write end costs two seconds rather than the session. The bound frees
+the run, not the grandchild: both signals go to the process group, since zsh dies on `SIGTERM`
+without forwarding it and its stuck child would otherwise live on, holding the pipe and the
+drain thread. The kill runs in a task of its own, so the leader's exit does not call off the
+`SIGKILL` a grandchild ignoring `SIGTERM` still needs.
 
 **A probe that can report its own failure.** `UpdateEnvironment.missingTools() -> [String]`
 became `toolchain() -> ToolchainCheck`, which is `.ready`, `.missing([String])`, or

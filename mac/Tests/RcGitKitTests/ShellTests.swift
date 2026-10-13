@@ -38,7 +38,7 @@ import Testing
     /// long before the wall clock would.
     @Test func aSilentCommandIsStoppedByTheIdleClock() async {
         let (outcome, elapsed) = await Self.run(
-            "echo waiting; sleep 30", timeout: .seconds(30), idleTimeout: .seconds(1))
+            "echo waiting; exec sleep 30", timeout: .seconds(30), idleTimeout: .seconds(1))
         #expect(outcome.stopped == .idle)
         #expect(outcome.lines == ["waiting"])
         #expect(elapsed < .seconds(6))
@@ -68,6 +68,33 @@ import Testing
         #expect(outcome.stopped == .cancelled)
         let grandchild = try #require(outcome.lines.first.flatMap { Int32($0) })
         #expect(await Self.isGone(grandchild))
+    }
+
+    /// The shell dies on `SIGTERM` and its grandchild ignores it; the leader's exit does not
+    /// call off the `SIGKILL` the group gets after the grace.
+    @Test func aTimeoutKillsAGrandchildThatIgnoresSigterm() async throws {
+        let (outcome, elapsed) = await Self.run(
+            "(trap '' TERM; exec sleep 30) & echo $!; wait", timeout: .milliseconds(500))
+        #expect(outcome.stopped == .timedOut)
+        let grandchild = try #require(outcome.lines.first.flatMap { Int32($0) })
+        #expect(await Self.isGone(grandchild))
+        #expect(elapsed < .seconds(6))
+    }
+
+    /// A leader that moved itself into another group leaves its own group empty; the kill
+    /// falls back to the pid instead of finding no group and letting it run.
+    @Test func aLeaderThatLeftItsGroupIsStillKilled() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let script =
+            "$| = 1; setpgid(0, getpgrp(getppid())) or die $!; "
+            + "print qq(moved\\n); sleep 30"
+        let outcome = await Shell.run(
+            "/usr/bin/perl", ["-MPOSIX", "-e", script], in: Self.directory,
+            timeout: .milliseconds(500))
+        #expect(outcome.lines == ["moved"])
+        #expect(outcome.stopped == .timedOut)
+        #expect(clock.now - start < .seconds(6))
     }
 
     /// A Task cancelled before the command starts still stops it at once.

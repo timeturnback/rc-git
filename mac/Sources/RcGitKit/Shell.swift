@@ -26,7 +26,9 @@ public enum Shell {
     }
 
     /// How long the last bytes get to arrive after the process exits. A grandchild that
-    /// inherited the pipe keeps it open, so this wait is bounded like every other.
+    /// inherited the pipe keeps it open, so this wait is bounded like every other. Bounding
+    /// the wait does not end the grandchild or the drain thread: a killed run takes the
+    /// grandchild down with its group, and only then does the thread see EOF.
     static let drainGrace = Duration.seconds(2)
     /// How long a killed process group gets to die before `SIGKILL`.
     static let killGrace = Duration.seconds(2)
@@ -59,7 +61,7 @@ public enum Shell {
         }
 
         let drained = drain(pipe.fileHandleForReading, into: collector)
-        let killer = GroupKiller(process.processIdentifier)
+        let killer = GroupKiller(process.processIdentifier, exited: exited)
         let watchdogs = [
             timeout.map { limit in wallClock(limit, killer) },
             idleTimeout.map { limit in idleClock(limit, collector, killer) },
@@ -79,7 +81,9 @@ public enum Shell {
     /// Reads the pipe to EOF on a thread of its own. `availableData` blocks, and a blocked
     /// cooperative thread stalls every other task in the app; one reader also keeps this
     /// off the `readabilityHandler`/`readDataToEndOfFile` pair, which read the same
-    /// descriptor from two places. The thread ends at EOF.
+    /// descriptor from two places. The thread ends at EOF, which a grandchild holding the
+    /// write end delays until it exits: a kill reaches it through the group, while one left
+    /// running by a command that exited on its own keeps this thread until it ends.
     private static func drain(_ handle: FileHandle, into collector: LineCollector) -> Signal {
         let finished = Signal()
         Thread.detachNewThread {
@@ -127,12 +131,15 @@ public enum Shell {
 /// grace. The first `stop` records why; later ones are no-ops. Thread-safe through `lock`.
 final class GroupKiller: @unchecked Sendable {
     private let pid: Int32
+    private let exited: Signal
     private let lock = NSLock()
     private var stopReason: Shell.Stop?
     private var task: Task<Void, Never>?
 
-    init(_ pid: Int32) {
+    /// `exited` fires once the leader is reaped, after which its pid may belong to anyone.
+    init(_ pid: Int32, exited: Signal) {
         self.pid = pid
+        self.exited = exited
     }
 
     var reason: Shell.Stop? {
@@ -146,16 +153,15 @@ final class GroupKiller: @unchecked Sendable {
         defer { lock.unlock() }
         guard stopReason == nil else { return }
         stopReason = reason
-        let pid = pid
-        task = Task.detached {
-            Self.signal(pid, SIGTERM)
+        task = Task.detached { [self] in
+            signal(SIGTERM)
             let clock = ContinuousClock()
             let deadline = clock.now + Shell.killGrace
-            while clock.now < deadline, Darwin.kill(-pid, 0) == 0 {
+            while clock.now < deadline, isAlive {
                 // Cancellation is never requested on this task; the sleep cannot fail early.
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            Self.signal(pid, SIGKILL)
+            signal(SIGKILL)
         }
     }
 
@@ -166,12 +172,19 @@ final class GroupKiller: @unchecked Sendable {
         await running?.value
     }
 
+    /// Whether anything the kill targets is left: the group, or a leader not yet reaped.
+    private var isAlive: Bool {
+        Darwin.kill(-pid, 0) == 0 || !exited.fired
+    }
+
     /// Signals the group. The group outlives its leader while a grandchild is in it, and a
     /// group id is not reused while the group exists, so a signal sent after the leader
-    /// exited reaches only what it left behind.
-    private static func signal(_ pid: Int32, _ signal: Int32) {
-        // ESRCH means the group is already gone, which is what the kill is for.
-        _ = Darwin.kill(-pid, signal)
+    /// exited reaches only what it left behind. A leader that moved itself into another
+    /// group leaves its own empty, so `ESRCH` falls back to the pid while it is unreaped.
+    private func signal(_ signal: Int32) {
+        guard Darwin.kill(-pid, signal) != 0, errno == ESRCH, !exited.fired else { return }
+        // ESRCH here means the leader died since the check, which is what the kill is for.
+        _ = Darwin.kill(pid, signal)
     }
 }
 
@@ -233,6 +246,11 @@ final class Signal: @unchecked Sendable {
     private let lock = NSLock()
     private var signaled = false
     private var continuation: CheckedContinuation<Void, Never>?
+
+    /// Whether `signal` has been called.
+    var fired: Bool {
+        lock.withLock { signaled }
+    }
 
     func signal() {
         lock.lock()
