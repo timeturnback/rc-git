@@ -1,5 +1,6 @@
 import AppKit
 import RcGitKit
+import os
 
 /// One browser window: a sidebar carrying the refs and the mode's navigation — the directory
 /// tree, or the change list and commit box — beside the detail pane. Owns a `BrowserModel`
@@ -8,6 +9,9 @@ import RcGitKit
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate,
     NSMenuItemValidation, NSPopoverDelegate
 {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "window")
+
     let model = BrowserModel()
     var onClose: (() -> Void)?
     /// Fires with where this tab is after each move, for the app-wide back/forward list.
@@ -1610,6 +1614,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         _ message: String, title: String = RepositoryGuard.readFailureTitle,
         style: NSAlert.Style = .warning
     ) {
+        let repo = repositoryPath ?? "no repository"
+        Self.logger.error(
+            "\(repo, privacy: .public): \(title, privacy: .public): \(message, privacy: .public)")
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = title

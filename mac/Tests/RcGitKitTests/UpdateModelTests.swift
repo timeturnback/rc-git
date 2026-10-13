@@ -442,6 +442,28 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(model.log.contains("error: linker error"))
     }
 
+    /// A failed build reaches the unified log at `.error`, with the step and the last build
+    /// lines, so the evidence outlives the window and the process.
+    @Test func aFailedBuildIsLoggedWithItsLastOutput() async throws {
+        let marker = UUID().uuidString
+        let (model, _) = Self.model(
+            .init(
+                sourceStates: [
+                    .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                    .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+                ],
+                installFailure: "linker error \(marker)",
+                installOutput: ["==> building \(marker)"]
+            ))
+        let since = UnifiedLog.mark()
+        await model.start()
+        let errors = try await UnifiedLog.errors(category: "update", since: since)
+            .filter { $0.contains(marker) }
+        #expect(errors.contains("install failed: linker error \(marker)"))
+        let tails = errors.filter { $0.hasPrefix("last build output:") }
+        #expect(tails.contains { $0.contains("\n==> building \(marker)") })
+    }
+
     /// The bundle is in place but the new instance did not come up: that is still a
     /// failure the window has to show, not a silent success.
     @Test func aFailedRelaunchReportsTheRelaunchStep() async {

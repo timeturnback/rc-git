@@ -184,11 +184,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 tab.controller.showWindow(nil)
                 return tab.controller
             }
+            Self.logger.notice("opened \(path, privacy: .public)")
             recents.note(path)
             rebuildRecentMenu()
             saveTabs()
             return tab.controller
         } catch {
+            let message = "open: could not open \(path): \(error)"
+            Self.logger.error("\(message, privacy: .public)")
             let alert = NSAlert()
             alert.messageText = "Could not open repository"
             alert.informativeText = String(describing: error)
@@ -331,6 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
         let live = tabState().paths
+        Self.logger.notice(
+            "restore tabs: \(saved.count) saved, \(live.count) open, \(failed.count) failed")
         let kept = OpenTabs.restoredPaths(opened: live, failed: failed)
         for path in failed where !kept.contains(path) {
             Self.logger.notice("restore tab: dropped \(path, privacy: .public) from the saved tabs")

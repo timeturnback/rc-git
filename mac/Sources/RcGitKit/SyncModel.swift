@@ -370,6 +370,7 @@ public final class SyncModel {
             remoteStatus = value
             statusError = nil
         case let .failure(error):
+            Self.logger.notice("status read failed: \(error.message, privacy: .public)")
             remoteStatus = nil
             statusError = error.message
         }
@@ -541,6 +542,7 @@ public final class SyncModel {
                 cancel.isSignalled
                 ? .idle : .failed(step: .fetch, message: withNotice("\(error)"))
         }
+        Self.logger.notice("finished: \(String(describing: self.state), privacy: .public)")
         onStateChanged?()
         await refreshStatus()
     }
@@ -950,6 +952,7 @@ public final class SyncModel {
     /// Moves the toolbar to `step`. Once a cancel is signalled the workflow only unwinds, so
     /// the step shows as cancelling and never offers Stop again.
     private func enter(_ step: SyncStep) {
+        Self.logger.notice("step: \(String(describing: step), privacy: .public)")
         state = cancel.isSignalled ? .cancelling(step) : .running(step)
         onStateChanged?()
     }

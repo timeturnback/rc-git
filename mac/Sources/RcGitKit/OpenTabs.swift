@@ -1,10 +1,14 @@
 import Foundation
+import os
 
 /// The repositories open in tabs, in tab order plus which tab was selected, persisted
 /// through `UserDefaults` so a relaunch reopens the same tabs.
 public struct OpenTabs {
     public static let pathsKey = "rc-git.openTabs"
     public static let selectedKey = "rc-git.openTabs.selected"
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "tabs")
 
     private let defaults: UserDefaults
 
@@ -43,7 +47,13 @@ public struct OpenTabs {
     /// reads an older list and opens an empty window.
     public func handOff(live: [String], selectedIndex: Int) {
         record(live: live, selectedIndex: selectedIndex)
-        defaults.synchronize()
+        let count = live.count
+        if defaults.synchronize() {
+            Self.logger.notice("hand-off: flushed \(count) open tabs")
+        } else {
+            Self.logger.error(
+                "hand-off: could not flush \(count) open tabs; the new build may read older tabs")
+        }
     }
 
     /// The tabs on screen followed by the saved ones that are not open any more, each path

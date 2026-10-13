@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// What the file pane shows.
 public enum FileState: Equatable, Sendable {
@@ -60,6 +61,9 @@ public enum OpenPathOutcome: Equatable, Sendable {
 /// finishes, the stale result is dropped instead of overwriting the newer state.
 @MainActor
 public final class BrowserModel {
+    private nonisolated static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "browser")
+
     public private(set) var repository: (any RepositoryReading)?
     public private(set) var refs = RefListing(refs: [])
     public private(set) var head: Head?
@@ -275,7 +279,7 @@ public final class BrowserModel {
         let loaded = await Task.detached(priority: .userInitiated) {
             Self.loadListing(from: repository)
         }.value
-        guard generation == rootGeneration else { return }
+        guard isCurrent(generation, rootGeneration, load: "root") else { return }
         switch loaded {
         case let .success((listing, head)):
             refs = listing
@@ -339,7 +343,7 @@ public final class BrowserModel {
         let loaded = await Task.detached(priority: .userInitiated) {
             Self.loadListing(from: repository)
         }.value
-        guard generation == refreshGeneration else { return }
+        guard isCurrent(generation, refreshGeneration, load: "refresh") else { return }
         switch loaded {
         case let .success((listing, head)):
             let previousHead = self.head?.target
@@ -560,7 +564,7 @@ public final class BrowserModel {
             let content = try read(repository)
             return Self.state(for: entry, content: content)
         }
-        guard generation == fileGeneration else { return }
+        guard isCurrent(generation, fileGeneration, load: "file") else { return }
         switch result {
         case let .success(state):
             fileState = state
@@ -599,7 +603,7 @@ public final class BrowserModel {
         let result = await RepositoryError.run {
             try repository.treeOf(target)
         }
-        guard generation == rootGeneration else { return }
+        guard isCurrent(generation, rootGeneration, load: "root") else { return }
         switch result {
         case let .success(tree):
             rootTree = tree
@@ -815,7 +819,7 @@ public final class BrowserModel {
         let result = await RepositoryError.run {
             try repository.log(tip: tip, skip: skip, limit: pageSize)
         }
-        guard generation == historyGeneration else { return }
+        guard isCurrent(generation, historyGeneration, load: "history") else { return }
         isLoadingHistory = false
         switch result {
         case let .success(page):
@@ -862,7 +866,7 @@ public final class BrowserModel {
                     tip: tip, path: path, scanSkip: skip, limit: remaining,
                     maxScan: chunk)
             }
-            guard generation == historyGeneration else { return }
+            guard isCurrent(generation, historyGeneration, load: "history") else { return }
             switch result {
             case let .success(page):
                 history += page.commits
@@ -888,7 +892,7 @@ public final class BrowserModel {
     /// would show another file's history.
     public func showPathHistory(_ path: String, pathIsExact: Bool = true) async {
         guard pathIsExact else {
-            onError?(InexactName.pathRefusal("show the history of", path))
+            fail(InexactName.pathRefusal("show the history of", path))
             return
         }
         guard scopeHistory(to: path), !historyComplete else { return }
@@ -921,7 +925,7 @@ public final class BrowserModel {
     /// through `onError`: its U+FFFD spelling names a different file, or none.
     public func copyablePath(_ path: String, pathIsExact: Bool) -> String? {
         guard pathIsExact else {
-            onError?(InexactName.pathRefusal("copy the path of", path))
+            fail(InexactName.pathRefusal("copy the path of", path))
             return nil
         }
         return path
@@ -998,7 +1002,7 @@ public final class BrowserModel {
             try repository.resolve(spec)
         }
         // Another commit was picked during the read.
-        guard generation == diffGeneration else { return false }
+        guard isCurrent(generation, diffGeneration, load: "diff") else { return false }
         switch result {
         case let .success(oid):
             await jumpToCommit(oid)
@@ -1022,7 +1026,7 @@ public final class BrowserModel {
                     tip: tip, filter: filter, scanSkip: skip, limit: remaining,
                     maxScan: chunk)
             }
-            guard generation == searchGeneration else { return }
+            guard isCurrent(generation, searchGeneration, load: "search") else { return }
             switch result {
             case let .success(page):
                 searchResults += page.commits
@@ -1037,7 +1041,7 @@ public final class BrowserModel {
                 return
             }
         }
-        guard generation == searchGeneration else { return }
+        guard isCurrent(generation, searchGeneration, load: "search") else { return }
         isSearching = false
         onSearchChanged?()
     }
@@ -1101,7 +1105,7 @@ public final class BrowserModel {
             let detail = try repository.commitDetails(target)
             return (changes, detail)
         }
-        guard generation == diffGeneration else { return }
+        guard isCurrent(generation, diffGeneration, load: "diff") else { return }
         switch result {
         case let .success((changes, detail)):
             commitChanges = changes
@@ -1168,7 +1172,7 @@ public final class BrowserModel {
                 old: change.old, new: change.new,
                 limit: Repository.defaultBlobLimit, context: 3)
         }
-        guard generation == diffGeneration else { return }
+        guard isCurrent(generation, diffGeneration, load: "diff") else { return }
         switch result {
         case let .success(diff):
             fileDiff = .loaded(change, diff)
@@ -1219,7 +1223,7 @@ public final class BrowserModel {
         let result = await RepositoryError.run {
             try Self.blameSpans(repository, target: target)
         }
-        guard generation == blameGeneration else { return }
+        guard isCurrent(generation, blameGeneration, load: "blame") else { return }
         blameInFlight = nil
         guard target == blameTarget() else { return publishBlame(.empty) }
         switch result {
@@ -1725,8 +1729,20 @@ public final class BrowserModel {
         }
     }
 
+    /// Logs the message, then shows it through `onError`.
     private func fail(_ message: String) {
+        Self.logger.error("\(message, privacy: .public)")
         onError?(message)
+    }
+
+    /// Whether a load started under `generation` still owns `current`. A load that lost is
+    /// logged as dropped, so a stale result that never landed still leaves a trace.
+    private func isCurrent(_ generation: Int, _ current: Int, load: String) -> Bool {
+        guard generation == current else {
+            Self.logger.notice("dropped a stale \(load, privacy: .public) load")
+            return false
+        }
+        return true
     }
 }
 

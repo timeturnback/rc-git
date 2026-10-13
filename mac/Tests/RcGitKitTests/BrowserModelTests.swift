@@ -301,6 +301,16 @@ import Testing
             ])
     }
 
+    /// A refusal shown through `onError` is also in the unified log, so it outlives the sheet.
+    @Test func aShownErrorIsLogged() async throws {
+        let marker = UUID().uuidString
+        let since = UnifiedLog.mark()
+        let model = BrowserModel()
+        #expect(model.copyablePath("\(marker)\u{FFFD}", pathIsExact: false) == nil)
+        let logged = try await UnifiedLog.errors(category: "browser", since: since)
+        #expect(logged.contains { $0.hasPrefix("cannot copy the path of '\(marker)") })
+    }
+
     @Test func inexactNameNeverAnswersALinkByPath() async {
         repo.trees[mainTree] = [
             TreeEntry(name: inexact, oid: binary, kind: .blob, hasExactName: false),

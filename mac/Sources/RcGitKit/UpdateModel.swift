@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The stages of a self-update, in the order they run.
 public enum UpdateStep: Sendable, Hashable {
@@ -141,6 +142,12 @@ public final class UpdateModel {
     /// Kept bounded like every other buffer in the app: a build log is not a reason to
     /// grow without limit.
     public static let maxLogLines = 5000
+    /// How much build output a failed install copies into the unified log. The rest of the
+    /// output stays at `.info`, which the system keeps in memory only.
+    static let failureTailLines = 20
+
+    private nonisolated static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "update")
 
     public private(set) var state: UpdateState = .idle
     public private(set) var log: [String] = []
@@ -321,6 +328,7 @@ public final class UpdateModel {
         guard let after = await readSource(step: .sync) else { return false }
         note("checkout is at \(String(after.commit.prefix(7)))")
         if !force, !build.dirty, after.commit == build.commit {
+            Self.logger.notice("checkout is already at this build; nothing to install")
             state = .upToDate
             onChanged?()
             return false
@@ -336,7 +344,7 @@ public final class UpdateModel {
         let message = await environment.install(onOutput: { [weak self] line in
             Task { @MainActor in
                 guard let self, self.attempt == current else { return }
-                self.note(line)
+                self.output(line)
             }
         })
         guard !stoppedByCancel(.install) else { return }
@@ -395,17 +403,39 @@ public final class UpdateModel {
     }
 
     private func enter(_ step: UpdateStep) {
+        Self.logger.notice("step: \(String(describing: step), privacy: .public)")
         state = .running(step)
         onChanged?()
     }
 
+    /// Logs the failure at `.error`, after the last build lines when the install failed: the
+    /// output itself is only logged at `.info`, which is gone once the app quits.
     private func fail(_ step: UpdateStep, _ message: String) {
-        note("error: \(message)")
+        if step == .install {
+            let tail = log.suffix(Self.failureTailLines).joined(separator: "\n")
+            Self.logger.error("last build output:\n\(tail, privacy: .public)")
+        }
+        let stepName = String(describing: step)
+        Self.logger.error("\(stepName, privacy: .public) failed: \(message, privacy: .public)")
+        append("error: \(message)")
         state = .failed(step: step, message: message)
         onChanged?()
     }
 
+    /// A step line: kept in the window's log and in the unified log.
     private func note(_ line: String) {
+        Self.logger.notice("\(line, privacy: .public)")
+        append(line)
+    }
+
+    /// One line of build output: kept in the window's log, and only at `.info` in the
+    /// unified log, so a build does not push thousands of lines into it.
+    private func output(_ line: String) {
+        Self.logger.info("\(line, privacy: .public)")
+        append(line)
+    }
+
+    private func append(_ line: String) {
         log.append(line)
         if log.count > Self.maxLogLines {
             log.removeFirst(log.count - Self.maxLogLines)

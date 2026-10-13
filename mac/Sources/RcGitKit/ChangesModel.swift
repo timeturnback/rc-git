@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The change list's load state.
 public enum ChangesState: Sendable, Hashable {
@@ -109,6 +110,9 @@ public struct TickSummary: Sendable, Hashable {
 /// so they are never part of a commit or stash selection the user cannot see.
 @MainActor
 public final class ChangesModel {
+    private nonisolated static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "changes")
+
     private let repository: RepositoryReading
     /// Whether untracked hidden files are listed. Takes effect on the next scan.
     public var showsHiddenFiles: Bool
@@ -339,7 +343,7 @@ public final class ChangesModel {
                 current = stamps
             case let .failure(error):
                 current = []
-                onError?(error.message)
+                report(error.message)
             }
             let kept = ticked.intersection(current)
             if kept.isEmpty {
@@ -385,10 +389,16 @@ public final class ChangesModel {
             stashState = .failed(error.message)
             if reportedStashFailure != error.message {
                 reportedStashFailure = error.message
-                onError?(error.message)
+                report(error.message)
             }
         }
         onStashChanged?()
+    }
+
+    /// Logs a failure, then shows it through `onError`.
+    private func report(_ message: String) {
+        Self.logger.error("\(message, privacy: .public)")
+        onError?(message)
     }
 
     /// Shows `entry`'s diff against `HEAD` in the detail pane. A file on disk whose path is
