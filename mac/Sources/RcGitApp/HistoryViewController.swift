@@ -40,7 +40,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let groupingStore = ChangeGroupingStore.commit()
     private let diffText = NSTextView()
     private let diffPath = NSTextField(labelWithString: "")
-    private let diffPlaceholder = NSTextField(labelWithString: "Select a file")
+    private let diffPlaceholder = NSTextField(wrappingLabelWithString: "Select a file")
     private var commits: [CommitSummary] = []
     private var complete = false
     /// Why the last history page failed; automatic paging stops while it is set.
@@ -305,6 +305,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         diffPath.lineBreakMode = .byTruncatingHead
         diffPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        diffPlaceholder.alignment = .center
         diffPlaceholder.textColor = .secondaryLabelColor
 
         let container = NSView()
@@ -325,6 +326,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             diffScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: diffScroll.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: diffScroll.centerYAnchor),
+            diffPlaceholder.widthAnchor.constraint(
+                lessThanOrEqualTo: diffScroll.widthAnchor, constant: -2 * Style.margin),
         ])
         return container
     }
@@ -640,7 +643,10 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         case let .failed(summary, message):
             detailHeader.isHidden = false
             fillHeader(summary: summary, detail: nil, refs: [], canGoBack: canGoBack)
-            detailAuthor.stringValue = message
+            // The body is the header's wrapping label; the error names its object at the end.
+            detailBody.stringValue = message
+            detailBody.toolTip = message
+            detailBody.isHidden = false
             changesCount.stringValue = ""
         }
     }
@@ -682,6 +688,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             detailCommitter.isHidden = true
         }
         detailBody.stringValue = detail?.body ?? ""
+        detailBody.toolTip = nil
         detailBody.isHidden = detail?.body.isEmpty ?? true
         rebuildParentsRow(summary: summary, canGoBack: canGoBack)
     }
@@ -864,6 +871,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private func showDiffPlaceholder(_ message: String) {
         diffPlaceholder.stringValue = message
+        diffPlaceholder.toolTip = message
         diffPlaceholder.isHidden = false
         diffText.textStorage?.setAttributedString(NSAttributedString(string: ""))
     }
