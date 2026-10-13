@@ -80,6 +80,25 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[0].kind == .code(language: nil, text: "# not a heading\n- not a list"))
     }
 
+    @Test func aShorterFenceDoesNotCloseALongerOne() {
+        let blocks = MarkdownDocument.parse("````md\n```js\nx\n```\n````\n\nafter\n").blocks
+        #expect(
+            blocks == [
+                MarkdownBlock(kind: .code(language: "md", text: "```js\nx\n```")),
+                MarkdownBlock(kind: .paragraph, runs: [MarkdownRun(text: "after")]),
+            ])
+    }
+
+    @Test func aFenceLineWithAnInfoStringDoesNotClose() {
+        let blocks = MarkdownDocument.parse("```\n```js\nx\n```\n").blocks
+        #expect(blocks == [MarkdownBlock(kind: .code(language: nil, text: "```js\nx"))])
+    }
+
+    @Test func tildeFencesOpenCode() {
+        let blocks = MarkdownDocument.parse("~~~sh\nls\n~~~\n").blocks
+        #expect(blocks == [MarkdownBlock(kind: .code(language: "sh", text: "ls"))])
+    }
+
     @Test func fencedCodeKeepsLeadingGreaterThanSigns() {
         let repl = MarkdownDocument.parse("```python\n>>> import os\n```\n").blocks
         #expect(repl.map(\.kind) == [.code(language: "python", text: ">>> import os")])
