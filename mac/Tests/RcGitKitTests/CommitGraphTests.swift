@@ -129,6 +129,35 @@ import Testing
         #expect(last.edges.allSatisfy { $0.phase != .through })
     }
 
+    @Test func aMergeParentAlreadyExpectedReusesItsLane() {
+        let x = oid(0x27)
+        let builder = build([
+            commitSummary(x, parents: [b]),
+            commitSummary(m, parents: [a, b]),
+            commitSummary(a, parents: [r]),
+            commitSummary(b, parents: [r]),
+            commitSummary(r),
+        ])
+        #expect(
+            builder.rows[1].edges.filter { $0.phase == .out } == [
+                GraphEdge(from: 1, to: 1, colorIndex: 1, phase: .out),
+                GraphEdge(from: 1, to: 0, colorIndex: 0, phase: .out),
+            ], "m's edge to b joins x's lane instead of opening a third")
+        #expect(builder.rows[1].laneCount == 2)
+        #expect(builder.maxLaneCount == 2)
+
+        let (e, d) = (oid(0x28), oid(0x29))
+        let nested = build([
+            commitSummary(e, parents: [b, d]),
+            commitSummary(d, parents: [c, b]),
+            commitSummary(c, parents: [a]),
+            commitSummary(b, parents: [a]),
+            commitSummary(a),
+        ]).rows
+        #expect(nested[1].edges.contains(GraphEdge(from: 1, to: 0, colorIndex: 0, phase: .out)))
+        #expect(nested.map(\.laneCount).max() == 2, "no third lane opens for b")
+    }
+
     @Test func truncationLeavesLanesOpen() {
         let builder = build([commitSummary(m, parents: [a, b])])
         #expect(builder.rows[0].laneCount == 2, "both parent lanes stay open past the last row")
