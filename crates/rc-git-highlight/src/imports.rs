@@ -235,7 +235,11 @@ impl<'a> Collector<'a> {
             match child.kind() {
                 "identifier" => self.bind(child, child, specifier),
                 "namespace_import" => {
-                    if let Some(name) = child.named_child(0) {
+                    let mut names = child.walk();
+                    let name = child
+                        .named_children(&mut names)
+                        .find(|name| name.kind() == "identifier");
+                    if let Some(name) = name {
                         self.bind(child, name, specifier);
                     }
                 }
@@ -301,7 +305,11 @@ impl<'a> Collector<'a> {
         if !loads_a_module {
             return None;
         }
-        let first = node.child_by_field_name("arguments")?.named_child(0)?;
+        let arguments = node.child_by_field_name("arguments")?;
+        let mut cursor = arguments.walk();
+        let first = arguments
+            .named_children(&mut cursor)
+            .find(|child| !child.is_extra())?;
         Self::specifier(first)
     }
 
@@ -499,6 +507,30 @@ mod tests {
                 ("./pages/Page", "./pages/Page"),
                 ("./Chart", "./Chart"),
                 ("Chart", "./Chart"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comment_before_the_specifier_keeps_the_link() {
+        let source = "const Page = lazy(() => import(/* webpackChunkName: \"page\" */ './Page'));\n\
+                      const x = require(\n  // why\n  './x'\n);\n\
+                      const v = <Page />;\n";
+        assert_eq!(
+            links(source, Language::Tsx),
+            vec![("./Page", "./Page"), ("./x", "./x"), ("Page", "./Page")]
+        );
+    }
+
+    #[test]
+    fn a_comment_inside_a_namespace_import_keeps_the_binding() {
+        let source = "import * as /* c */ ns from './a';\nconst v = <ns.Panel />;\n";
+        assert_eq!(
+            links(source, Language::Tsx),
+            vec![
+                ("* as /* c */ ns", "./a"),
+                ("./a", "./a"),
+                ("ns.Panel", "./a"),
             ]
         );
     }
