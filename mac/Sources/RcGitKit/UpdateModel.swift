@@ -220,6 +220,11 @@ public final class UpdateModel {
             if !before.dirtyPaths.isEmpty {
                 note("uncommitted work goes in: \(Self.list(before.dirtyPaths))")
             }
+            if !before.scanComplete {
+                note(
+                    "the status scan stopped at its cap, so more uncommitted work may go in "
+                        + "than is listed")
+            }
         }
         await buildAndRelaunch(mode: mode)
     }

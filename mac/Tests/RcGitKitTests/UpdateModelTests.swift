@@ -467,6 +467,27 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
                 "toolchain", "sourceState", "install", "handOff", "relaunch", "quit",
             ])
         #expect(model.log.contains("uncommitted work goes in: a.rs"))
+        #expect(!model.log.contains { $0.contains("stopped at its cap") })
+    }
+
+    /// A rebuild still builds the tree as it stands, but a scan that stopped at its cap
+    /// says the dirty list it logged may be short.
+    @Test func aRebuildAfterATruncatedScanSaysTheListIsPartial() async {
+        let (model, _) = Self.model(
+            .init(sourceStates: [
+                .state(
+                    SourceState(
+                        commit: Self.head, branch: "master", dirtyPaths: ["a.rs"],
+                        scanComplete: false))
+            ]),
+            build: Self.build(variant: .dev))
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(model.log.contains("uncommitted work goes in: a.rs"))
+        #expect(
+            model.log.contains(
+                "the status scan stopped at its cap, so more uncommitted work may go in "
+                    + "than is listed"))
     }
 
     @Test func aDevBundleWithNoStampNamesTheDevScript() async {
