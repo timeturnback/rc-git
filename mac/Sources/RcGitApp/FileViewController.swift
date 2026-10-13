@@ -20,8 +20,9 @@ final class FileViewController: NSViewController {
     /// An import link was clicked; the arguments are the module specifier as written and the
     /// repository-relative path of the file it is written in.
     var onOpenImport: ((String, String) -> Void)?
-    /// The repository-relative path of the file on screen, which is what a relative markdown
-    /// link or import is resolved against. `nil` when the opener did not know it.
+    /// The repository-relative path of the file being opened, set before `render`. A `.text`
+    /// state captures it as the base its relative markdown links and imports resolve against.
+    /// `nil` when the opener did not know it.
     var repositoryPath: String?
 
     /// Files above this size are never offered for display, even with "Load anyway".
@@ -48,7 +49,12 @@ final class FileViewController: NSViewController {
 
     /// Bumped on every content change; every background build checks it before applying.
     private var contentGeneration = 0
-    private var current: (entry: TreeEntry, document: TextDocument)?
+    /// The file being shown, with the repository path its links resolve against, captured
+    /// when it rendered so a later `repositoryPath` for the next file never applies to it.
+    private var current: (entry: TreeEntry, document: TextDocument, path: String?)?
+    /// Set once the text on screen is `current`'s; `nil` while a file loads or a build is in
+    /// flight, when the painted text belongs to another file and its links are ignored.
+    private var linkSource: LinkSource?
     /// Whether the markdown pane shows the rendered preview; remembered across files.
     private var markdownPrefersPreview = true
     /// UTF-16 highlight ranges for the whole document, sorted and non-overlapping.
@@ -198,6 +204,14 @@ final class FileViewController: NSViewController {
             pathLabel.stringValue = ""
             detailLabel.stringValue = ""
         case let .loading(entry):
+            // Drops an in-flight build for the previous file, and stops its picker and links
+            // acting on the text still painted under the new name.
+            contentGeneration += 1
+            current = nil
+            modePicker.isHidden = true
+            anchors = [:]
+            linkSource = nil
+            clearImportLinks()
             pathLabel.stringValue = entry.name
             detailLabel.stringValue = "Loading…"
         case let .text(entry, document):
@@ -206,7 +220,7 @@ final class FileViewController: NSViewController {
                 "\(document.lineCount) lines · \(ByteFormat.string(UInt64(document.byteCount)))"
             if document.isLossy { details += " · not valid UTF-8" }
             detailLabel.stringValue = details
-            current = (entry, document)
+            current = (entry, document, repositoryPath)
             presentContent()
         case let .binary(entry, size):
             current = nil
@@ -255,9 +269,10 @@ final class FileViewController: NSViewController {
     /// Shows the current document in the chosen mode. The attributed string is built off the
     /// main actor; a stale build is dropped by generation.
     private func presentContent() {
-        guard let (entry, document) = current else { return }
+        guard let (entry, document, path) = current else { return }
         contentGeneration += 1
         let generation = contentGeneration
+        linkSource = nil
         clearHighlights()
         clearImportLinks()
         let previewable =
@@ -279,6 +294,7 @@ final class FileViewController: NSViewController {
             }.value
             guard let self, generation == self.contentGeneration else { return }
             self.anchors = built.anchors
+            self.linkSource = LinkSource(path: path)
             self.show(built.text, asPreview: preview, document: document)
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
@@ -336,6 +352,7 @@ final class FileViewController: NSViewController {
     private func showPlaceholder(_ message: String) {
         contentGeneration += 1
         anchors = [:]
+        linkSource = nil
         pendingAnchor = nil
         clearHighlights()
         clearImportLinks()
@@ -436,6 +453,12 @@ final class FileViewController: NSViewController {
     }
 }
 
+/// Where the links of the painted text resolve from: the repository path of the file it was
+/// built for, `nil` inside when the opener did not know it.
+private struct LinkSource {
+    let path: String?
+}
+
 // MARK: - Import links
 
 extension FileViewController {
@@ -443,7 +466,7 @@ extension FileViewController {
     /// a file starts the search for its links, so a file that is only read is never parsed
     /// for them; until they land the answer is `nil`.
     fileprivate func importLink(at index: Int) -> ImportLinkMap.Hit? {
-        guard showsSource, repositoryPath != nil else { return nil }
+        guard showsSource, linkSource?.path != nil else { return nil }
         if !importLinksRequested {
             importLinksRequested = true
             fetchImportLinks()
@@ -454,7 +477,7 @@ extension FileViewController {
     /// Finds the links in the background and maps them to UTF-16 off the main actor. A
     /// result for a file the pane has moved on from is dropped by generation.
     private func fetchImportLinks() {
-        guard let importLinkProvider, let (entry, document) = current else { return }
+        guard let importLinkProvider, let (entry, document, _) = current else { return }
         let generation = contentGeneration
         Task { [weak self] in
             guard let links = await importLinkProvider(entry, document), !links.isEmpty else {
@@ -470,7 +493,7 @@ extension FileViewController {
     }
 
     fileprivate func followImport(at index: Int) {
-        guard let hit = importLinks?.hit(at: index), let path = repositoryPath else { return }
+        guard let hit = importLinks?.hit(at: index), let path = linkSource?.path else { return }
         onOpenImport?(hit.specifier, path)
     }
 
@@ -496,11 +519,11 @@ extension FileViewController: NSTextViewDelegate {
     func textView(
         _ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int
     ) -> NSMenu? {
-        guard charIndex < textStorage.length,
+        guard let linkSource, charIndex < textStorage.length,
             let attribute = textStorage.attribute(.link, at: charIndex, effectiveRange: nil)
         else { return menu }
         let destination = Self.destination(of: attribute)
-        guard let target = MarkdownLinkTarget.resolve(destination, from: repositoryPath) else {
+        guard let target = MarkdownLinkTarget.resolve(destination, from: linkSource.path) else {
             return menu
         }
         var items: [NSMenuItem] = []
@@ -544,7 +567,9 @@ extension FileViewController: NSTextViewDelegate {
     /// opens only after the user confirms the sheet naming it, a repository path is handed up
     /// so the pane can show that file, and a bare fragment scrolls this one.
     private func open(destination: String) {
-        guard let target = MarkdownLinkTarget.resolve(destination, from: repositoryPath) else {
+        guard let linkSource,
+            let target = MarkdownLinkTarget.resolve(destination, from: linkSource.path)
+        else {
             NSSound.beep()
             return
         }
