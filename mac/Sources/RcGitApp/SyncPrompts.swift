@@ -51,7 +51,17 @@ enum SyncPrompts {
         }
         alert.addButton(withTitle: kind == .httpsToken ? "Sign In" : "Unlock")
         alert.addButton(withTitle: "Cancel")
+        let watcher = FieldWatcher([userField, secretField]) {
+            let entry = CredentialEntry.check(
+                kind: kind, username: userField.stringValue, secret: secretField.stringValue)
+            if case .valid = entry {
+                alert.buttons.first?.isEnabled = true
+            } else {
+                alert.buttons.first?.isEnabled = false
+            }
+        }
         alert.beginSheetModal(for: window) { response in
+            withExtendedLifetime(watcher) {}
             guard response == .alertFirstButtonReturn else {
                 completion(.cancelled)
                 return
@@ -90,5 +100,28 @@ enum SyncPrompts {
         alert.beginSheetModal(for: window) { response in
             completion(response == .alertFirstButtonReturn ? .trusted : .refused)
         }
+    }
+}
+
+/// Re-runs `update` on every edit to `fields`, so a sheet's confirm button follows what the
+/// fields hold and the sheet cannot close on an incomplete answer. The sheet's completion
+/// handler keeps the watcher alive; its observers go with it.
+@MainActor
+final class FieldWatcher: NSObject {
+    private let update: () -> Void
+
+    init(_ fields: [NSTextField], update: @escaping () -> Void) {
+        self.update = update
+        super.init()
+        for field in fields {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(fieldChanged(_:)),
+                name: NSControl.textDidChangeNotification, object: field)
+        }
+        update()
+    }
+
+    @objc private func fieldChanged(_ notification: Notification) {
+        update()
     }
 }

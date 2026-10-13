@@ -107,6 +107,14 @@ public enum RepositoryGuard {
         "rc-git could not \(verb.lowercased())"
     }
 
+    /// The branch or tag name a name sheet hands on: the field without surrounding
+    /// whitespace, or `nil` while nothing is left, which keeps the sheet's Create disabled.
+    /// Whether git accepts the name is the guard's call, made when the ref is created.
+    public static func enteredRefName(_ raw: String) -> String? {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
     /// What deleting a branch would need.
     public static func planBranchDelete(repoPath: String, name: String) throws -> GuardDecision {
         var error: UnsafeMutablePointer<CChar>? = nil

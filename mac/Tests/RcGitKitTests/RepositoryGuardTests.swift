@@ -397,6 +397,16 @@ import Testing
     }
 }
 
+/// A ref-name sheet enables Create only once a name is left after trimming.
+@Suite struct EnteredRefNameTests {
+    @Test func aRefNameSheetNeedsANameLeftAfterTrimming() {
+        #expect(RepositoryGuard.enteredRefName("") == nil)
+        #expect(RepositoryGuard.enteredRefName("  \t\n") == nil)
+        #expect(RepositoryGuard.enteredRefName(" topic\n") == "topic")
+        #expect(RepositoryGuard.enteredRefName("v1.0") == "v1.0")
+    }
+}
+
 /// A token must not leak through any way Swift turns a value into text.
 @Suite struct CredentialsRedactionTests {
     private enum Holder {

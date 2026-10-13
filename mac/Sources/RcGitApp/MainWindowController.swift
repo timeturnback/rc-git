@@ -1533,7 +1533,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// Asks for a ref name with a one-field sheet.
+    /// Asks for a ref name with a one-field sheet. Create stays disabled until a name is
+    /// entered; a sheet that still closes without one says so instead of dropping the action.
     private func promptForName(
         title: String, message: String, completion: @escaping (String) -> Void
     ) {
@@ -1546,9 +1547,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         alert.accessoryView = field
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard response == .alertFirstButtonReturn, !name.isEmpty else { return }
+        let watcher = FieldWatcher([field]) {
+            let name = RepositoryGuard.enteredRefName(field.stringValue)
+            alert.buttons.first?.isEnabled = name != nil
+        }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            withExtendedLifetime(watcher) {}
+            guard response == .alertFirstButtonReturn else { return }
+            guard let name = RepositoryGuard.enteredRefName(field.stringValue) else {
+                self?.presentError("No name was entered, so nothing was created.", title: title)
+                return
+            }
             completion(name)
         }
     }
