@@ -662,6 +662,49 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(!model.isBusy)
     }
 
+    @Test func aCancelDuringAFetchThatSucceedsStillSkipsThePull() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(behind: 1)],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)]
+            ))
+        // The stop lands after the transfer's last poll, so the fetch still succeeds.
+        performer.duringStep = { cancel in cancel.signal() }
+        await model.refreshStatus()
+        await model.pull()
+
+        #expect(model.state == .idle)
+        #expect(performer.pullCalls == 0, "the user said stop before the working tree moved")
+    }
+
+    @Test func aCancelledWorkflowNeverOffersStopAgain() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(behind: 1)],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)]
+            ))
+        await model.refreshStatus()
+        var states: [SyncState] = []
+        model.onStateChanged = {
+            states.append(model.state)
+            if states.count == 1, model.state == .running(.fetch) {
+                model.cancelRunning()
+            }
+        }
+        await model.pull()
+
+        let afterCancel = states.drop { $0 != .cancelling(.fetch) }
+        #expect(!afterCancel.isEmpty, "the cancel must land: \(states)")
+        #expect(
+            !afterCancel.contains { if case .running = $0 { true } else { false } },
+            "a step entered after Stop must stay cancelling: \(states)")
+        #expect(model.state == .idle)
+        #expect(performer.fetchCredentials.isEmpty)
+        #expect(performer.pullCalls == 0)
+    }
+
     @Test func cancellingIsRefusedWhenNothingIsRunningAndTheNextSyncStillWorks() async {
         let (model, performer, _) = model(
             .init(

@@ -484,6 +484,7 @@ public final class SyncModel {
     /// one, because there is then no sensible branch to switch to, and with the cause when the
     /// repository could not be read.
     private func resolveDefaultBranch() async throws -> String {
+        try bailIfCancelled(.checkout)
         enter(.checkout)
         if let branch = defaultBranch {
             return branch
@@ -734,8 +735,10 @@ public final class SyncModel {
         }
     }
 
+    /// Moves the toolbar to `step`. Once a cancel is signalled the workflow only unwinds, so
+    /// the step shows as cancelling and never offers Stop again.
     private func enter(_ step: SyncStep) {
-        state = .running(step)
+        state = cancel.isSignalled ? .cancelling(step) : .running(step)
         onStateChanged?()
     }
 
