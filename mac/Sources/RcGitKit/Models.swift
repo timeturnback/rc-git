@@ -1,4 +1,5 @@
 import CRcGit
+import Foundation
 
 /// Namespace of a reference.
 public enum RefKind: Sendable, Hashable {
@@ -197,6 +198,24 @@ public struct CommitFilter: Sendable, Hashable {
     /// True when no field is set, which would match every commit.
     public var isEmpty: Bool {
         message == nil && author == nil && after == nil && before == nil && path == nil
+    }
+
+    /// The `after` and `before` instants for a Since/Until day pick: the first second of the
+    /// `since` day and the last second of the `until` day in `calendar`, whatever time of day
+    /// the picked dates carry. The day end is the next day's start less one second, so a day a
+    /// DST change makes 23 or 25 hours long is covered whole.
+    public static func dayBounds(
+        since: Date?, until: Date?, calendar: Calendar
+    ) -> (after: Int64?, before: Int64?) {
+        let after = since.map { Int64(calendar.startOfDay(for: $0).timeIntervalSince1970) }
+        let before = until.flatMap { day -> Int64? in
+            let start = calendar.startOfDay(for: day)
+            // Adding one day to a day start only fails for dates outside the calendar's range,
+            // which a date picker cannot produce.
+            guard let next = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+            return Int64(next.timeIntervalSince1970) - 1
+        }
+        return (after, before)
     }
 }
 

@@ -526,12 +526,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             }
         }
         if !datesRow.isHidden {
-            if sinceCheck.state == .on {
-                filter.after = Int64(sincePicker.dateValue.timeIntervalSince1970)
-            }
-            if untilCheck.state == .on {
-                filter.before = Int64(untilPicker.dateValue.timeIntervalSince1970)
-            }
+            let bounds = CommitFilter.dayBounds(
+                since: sinceCheck.state == .on ? sincePicker.dateValue : nil,
+                until: untilCheck.state == .on ? untilPicker.dateValue : nil,
+                calendar: .current)
+            filter.after = bounds.after
+            filter.before = bounds.before
         }
         return filter
     }
@@ -547,6 +547,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     @objc private func datesToggled(_ sender: Any?) {
         datesRow.isHidden = datesToggle.state != .on
+        if datesToggle.state == .on {
+            untilPicker.dateValue = Date()
+        }
         emitFilter()
     }
 
