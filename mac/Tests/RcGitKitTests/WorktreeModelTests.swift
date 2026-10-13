@@ -190,6 +190,60 @@ import Testing
         #expect(reports == 0)
     }
 
+    @Test func aWorkingTreeRowOnDiskOpensFromDisk() async {
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        let row = BrowseRow(
+            entry: TreeEntry(name: "new.txt", oid: .unhashed, kind: .blob), status: .untracked)
+        await model.openTreeRow(row, path: "new.txt")
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry.name == "new.txt")
+        #expect(document.text == "new\n")
+        #expect(model.openedFilePath == "new.txt")
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 0)
+    }
+
+    @Test func aMissingWorkingTreeRowOpensItsBlobAndLoadAnywayStaysThere() async {
+        let gone = TreeEntry(name: "gone.txt", oid: oid(0x50), kind: .blob)
+        repo.blobs[gone.oid] = textBlob("deleted on disk\n")
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        await model.openTreeRow(BrowseRow(entry: gone, missing: true), path: "gone.txt")
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry == gone, "a file gone from disk reads its HEAD blob")
+        #expect(document.text == "deleted on disk\n")
+
+        await model.loadAnyway(limit: 1 << 20)
+        guard case let .text(reread, _) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(reread == gone)
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 2)
+    }
+
+    @Test func aRowOfACommitOpensItsBlob() async {
+        repo.blobs[readme] = textBlob("readme\n")
+        await model.attach(repo)
+        #expect(!model.browsingWorkingTree)
+        let row = BrowseRow(entry: TreeEntry(name: "README.md", oid: readme, kind: .blob))
+        await model.openTreeRow(row, path: "README.md")
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry.oid == readme)
+        #expect(document.text == "readme\n")
+        #expect(model.openedFilePath == "README.md")
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 1)
+    }
+
     @Test func loadAnywayRereadsATooLargeDiskFileFromDisk() async {
         repo.worktreeFiles["big.txt"] = textBlob("big file\n")
         await model.attach(repo)

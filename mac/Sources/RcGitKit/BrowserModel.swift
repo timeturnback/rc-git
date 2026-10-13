@@ -498,22 +498,46 @@ public final class BrowserModel {
         name: String, path: String, pathIsExact: Bool = true, status: WorktreeStatus? = nil,
         limit: UInt64 = Repository.defaultBlobLimit
     ) async {
-        guard let repository else { return }
+        guard repository != nil else { return }
         let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob, hasExactName: pathIsExact)
-        fileGeneration += 1
-        let generation = fileGeneration
         openedFileSource = .disk(name: name, status: status)
         openedFilePath = path
         openedPathIsExact = pathIsExact
         openedFileLimit = limit
+        await loadFile(entry) { repository in
+            guard pathIsExact else {
+                throw RepositoryError(InexactName.pathRefusal("read", path))
+            }
+            return try repository.worktreeFile(path: path, limit: limit)
+        }
+    }
+
+    /// Opens a row of the file tree. A working-tree row that is still on disk reads from
+    /// disk; every other row, a file deleted from disk included, reads its blob.
+    public func openTreeRow(_ row: BrowseRow, path: String, pathIsExact: Bool = true) async {
+        if browsingWorkingTree, !row.missing {
+            await openWorktreeFile(
+                name: row.entry.name, path: path, pathIsExact: pathIsExact, status: row.status)
+        } else {
+            await openFile(row.entry, path: path, pathIsExact: pathIsExact)
+        }
+    }
+
+    /// The load steps every file open shares: a new generation, the loading state, a history
+    /// stop, then `read` off the main actor, applied only while no newer open has started.
+    /// The caller records the source, path and limit first.
+    private func loadFile(
+        _ entry: TreeEntry,
+        read: @escaping @Sendable (any RepositoryReading) throws -> BlobContent
+    ) async {
+        guard let repository else { return }
+        fileGeneration += 1
+        let generation = fileGeneration
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
         let result = await RepositoryError.run {
-            guard pathIsExact else {
-                throw RepositoryError(InexactName.pathRefusal("read", path))
-            }
-            let content = try repository.worktreeFile(path: path, limit: limit)
+            let content = try read(repository)
             return Self.state(for: entry, content: content)
         }
         guard generation == fileGeneration else { return }
@@ -598,30 +622,16 @@ public final class BrowserModel {
         _ entry: TreeEntry, path: String? = nil, pathIsExact: Bool = true,
         limit: UInt64 = Repository.defaultBlobLimit
     ) async {
-        guard let repository, !entry.kind.isDirectory else { return }
-        fileGeneration += 1
-        let generation = fileGeneration
+        guard repository != nil, !entry.kind.isDirectory else { return }
         openedFileSource = .blob(entry)
         if let path {
             openedFilePath = path
             openedPathIsExact = pathIsExact && entry.hasExactName
         }
         openedFileLimit = limit
-        fileState = .loading(entry)
-        onFileChanged?()
-        noteLocation()
-        let result = await RepositoryError.run {
-            let content = try repository.readBlob(entry.oid, limit: limit)
-            return Self.state(for: entry, content: content)
+        await loadFile(entry) { repository in
+            try repository.readBlob(entry.oid, limit: limit)
         }
-        guard generation == fileGeneration else { return }
-        switch result {
-        case let .success(state):
-            fileState = state
-        case let .failure(error):
-            fileState = .failed(entry, error.message)
-        }
-        onFileChanged?()
     }
 
     /// Re-reads the file on screen with a larger `limit`, from where it was opened: the

@@ -815,15 +815,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         treeController.onOpenFile = { [weak self] row, path, pathIsExact in
             guard let self else { return }
-            if model.browsingWorkingTree, !row.missing {
-                Task {
-                    await self.model.openWorktreeFile(
-                        name: row.entry.name, path: path, pathIsExact: pathIsExact,
-                        status: row.status)
-                }
-            } else {
-                Task { await self.model.openFile(row.entry, path: path, pathIsExact: pathIsExact) }
-            }
+            Task { await self.model.openTreeRow(row, path: path, pathIsExact: pathIsExact) }
         }
         treeController.isRowVisible = { [weak self] row in
             self?.model.isVisible(row) ?? true
