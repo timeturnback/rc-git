@@ -383,7 +383,8 @@ public final class BrowserModel {
         }
     }
 
-    /// The branch `HEAD` is on, else the first local branch, else the first ref of any kind.
+    /// The branch `HEAD` is on, else the first ref pointing at `HEAD`'s commit, else the first
+    /// local branch, else the first ref of any kind.
     public func initialRef(listing: RefListing, head: Head) -> RefEntry? {
         if let name = head.refName, let entry = listing.refs.first(where: { $0.fullName == name }) {
             return entry

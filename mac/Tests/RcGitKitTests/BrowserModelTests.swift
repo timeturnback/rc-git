@@ -68,6 +68,15 @@ import Testing
         let empty = model.initialRef(
             listing: RefListing(refs: []), head: Head(refName: nil, target: nil))
         #expect(empty == nil)
+        let noLocal = RefListing(refs: [
+            RefEntry(
+                fullName: "refs/remotes/origin/main", shortName: "origin/main",
+                kind: .remoteBranch, target: featureCommit),
+            RefEntry(fullName: "refs/tags/v1", shortName: "v1", kind: .tag, target: mainCommit),
+        ])
+        let noLocalBranch = model.initialRef(
+            listing: noLocal, head: Head(refName: nil, target: nil))
+        #expect(noLocalBranch?.shortName == "origin/main", "first ref of any kind")
     }
 
     @Test func childrenAreCachedByTreeIdAcrossRefs() async throws {
