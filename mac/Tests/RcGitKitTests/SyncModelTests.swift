@@ -835,7 +835,12 @@ private let alreadyOnMain = CheckoutOutcome(
         async let second: Void = model.sync()
         _ = await (first, second)
 
-        #expect(performer.pushCalls <= 1, "the busy gate must drop the overlapping sync")
+        #expect(
+            performer.fetchCredentials.count == 1, "the overlapping sync never reached the network")
+        #expect(performer.pushCalls == 1)
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1)))
     }
 
     @Test func upToDateSyncReportsZeros() async {
