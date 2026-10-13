@@ -155,12 +155,13 @@ public struct ImportResolver {
     }
 
     /// The `paths` entry a specifier falls under and the text its `*` stands for. An exact
-    /// pattern wins; among wildcard patterns the longest prefix does, as in TypeScript.
+    /// pattern wins; among wildcard patterns the longest prefix does, as in TypeScript. A tie
+    /// goes to the longer suffix, since JSONSerialization does not keep declaration order.
     private static func match(_ specifier: String, in patterns: [String: [String]])
         -> (targets: [String], wildcard: String)?
     {
         if let exact = patterns[specifier] { return (exact, "") }
-        var best: (targets: [String], wildcard: String, prefix: Int)?
+        var best: (targets: [String], wildcard: String, prefix: Int, suffix: Int)?
         for (pattern, targets) in patterns {
             let parts = pattern.split(
                 separator: "*", maxSplits: 1, omittingEmptySubsequences: false)
@@ -169,9 +170,14 @@ public struct ImportResolver {
             guard specifier.count >= prefix.count + suffix.count, specifier.hasPrefix(prefix),
                 specifier.hasSuffix(suffix)
             else { continue }
-            if let best, best.prefix >= prefix.count { continue }
+            if let best,
+                !(prefix.count > best.prefix
+                    || (prefix.count == best.prefix && suffix.count > best.suffix))
+            {
+                continue
+            }
             let wildcard = specifier.dropFirst(prefix.count).dropLast(suffix.count)
-            best = (targets, String(wildcard), prefix.count)
+            best = (targets, String(wildcard), prefix.count, suffix.count)
         }
         return best.map { ($0.targets, $0.wildcard) }
     }

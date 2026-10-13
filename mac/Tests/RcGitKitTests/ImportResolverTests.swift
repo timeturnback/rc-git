@@ -115,6 +115,20 @@ import Testing
         #expect(tree.resolve("@/only", from: "main.ts") == "fallback/only.ts")
     }
 
+    @Test func equalPrefixPatternsPickTheLongerSuffix() {
+        var files = sources(
+            "s1/a.css", "s2/a.css", "s3/a.css", "s4/a.css", "s5/a.css", "s6/a.css", "main.ts")
+        files["tsconfig.json"] = """
+            {"compilerOptions": {"paths": {
+              "@/*": ["./s1/*"], "@/*s": ["./s2/*s"], "@/*ss": ["./s3/*ss"],
+              "@/*css": ["./s4/*css"], "@/*.css": ["./s5/*.css"], "@/*a.css": ["./s6/*a.css"]
+            }}}
+            """
+        for _ in 0..<20 {
+            #expect(resolver(files).resolve("@/a.css", from: "main.ts") == "s6/a.css")
+        }
+    }
+
     @Test func baseUrlPlacesBareSpecifiersAndPathTargets() {
         var files = sources("app/src/components/Button.tsx", "app/src/lib/x.ts", "app/src/main.ts")
         files["app/jsconfig.json"] = """
