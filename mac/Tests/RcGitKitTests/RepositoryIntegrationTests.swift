@@ -61,6 +61,29 @@ import Testing
         #expect(names == ["main", "feature", "origin/main", "v0.9", "v1.0"])
     }
 
+    @Test func headCrossesDetachedAndUnbornAndABareRepositoryHasNoWorkingDirectory() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.git(["checkout", "-q", "--detach", "HEAD"])
+        let detached = try Repository(path: fixture.path).head()
+        #expect(detached.refName == nil)
+        #expect(try detached.target?.hex == fixture.revParse("HEAD"))
+
+        let unbornFixture = try GitFixture.emptyDirectory()
+        defer { unbornFixture.remove() }
+        try unbornFixture.git(["init", "-q", "-b", "work"])
+        let unborn = try Repository(path: unbornFixture.path).head()
+        #expect(unborn.target == nil)
+        #expect(unborn.refName == "refs/heads/work")
+
+        let outside = try GitFixture.emptyDirectory()
+        defer { outside.remove() }
+        let barePath = outside.path + "/bare.git"
+        try fixture.git(["clone", "--bare", "--quiet", ".", barePath])
+        let bare = try Repository(path: barePath)
+        #expect(bare.workingDirectory == nil)
+    }
+
     @Test func readsRefsTreesBlobsAndHistory() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
@@ -270,15 +293,11 @@ import Testing
 
         let root = try repo.resolveTree("main")
         let bin = try #require(try repo.entry(at: "bin.dat", under: root))
-        guard case .binary = try repo.diffBlobs(old: bin.oid, new: guide.new) else {
-            Issue.record("expected binary")
-            return
-        }
-        guard case .tooLarge = try repo.diffBlobs(old: guide.new, new: guide.new, limit: 2)
-        else {
-            Issue.record("expected too large")
-            return
-        }
+        #expect(
+            try repo.diffBlobs(old: bin.oid, new: guide.new) == .binary(oldSize: 12, newSize: 6))
+        #expect(
+            try repo.diffBlobs(old: guide.new, new: guide.new, limit: 2)
+                == .tooLarge(size: 6, limit: 2))
 
         guard case let .ranges(spans) = try repo.blame(tip: new, path: "README.md") else {
             Issue.record("expected ranges")
@@ -339,11 +358,14 @@ import Testing
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("untracked.txt", "new\n")
+        try FileManager.default.removeItem(
+            at: URL(fileURLWithPath: fixture.path).appendingPathComponent("Zeta.txt"))
         let repo = try Repository(path: fixture.path)
         let tree = try repo.resolveTree("HEAD")
 
         let listing = try repo.worktreeEntries(tree: tree, dir: "")
-        #expect(listing.missing.isEmpty)
+        #expect(listing.missing.map(\.name) == ["Zeta.txt"])
+        #expect(try listing.missing.first?.oid.hex == fixture.revParse("HEAD:Zeta.txt"))
         let untracked = try #require(listing.entries.first { $0.name == "untracked.txt" })
         #expect(untracked.status == .untracked)
         #expect(untracked.oid == nil)

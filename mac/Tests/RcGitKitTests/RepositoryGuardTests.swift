@@ -100,6 +100,32 @@ import Testing
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 
+    @Test func createsATagAndAppliesAndDropsAStashThroughTheBridge() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+
+        try RepositoryGuard.createTag(repoPath: fixture.path, name: "v2.0", revspec: "main~1")
+        #expect(try fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
+        #expect(throws: RepositoryError.self) {
+            try RepositoryGuard.createTag(repoPath: fixture.path, name: "v2.0", revspec: "main")
+        }
+        #expect(try fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
+
+        try fixture.write("alpha.txt", "stashed\n")
+        try fixture.git(["stash", "push", "-q", "-m", "kept"])
+        let entry = try #require(try Repository(path: fixture.path).stashList().first)
+        try RepositoryGuard.stashApply(repoPath: fixture.path, entry: entry, input: nil)
+        #expect(
+            try String(contentsOfFile: fixture.path + "/alpha.txt", encoding: .utf8)
+                == "stashed\n")
+        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: kept")
+
+        let backup = try RepositoryGuard.stashDrop(
+            repoPath: fixture.path, entry: entry, input: "drop")
+        #expect(backup == "refs/rc-git/backup/stash/0")
+        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
+    }
+
     @Test func hunkSelectionsCommitAndDiscardThroughTheBridge() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
@@ -336,6 +362,36 @@ import Testing
             #expect(message.contains("1 ahead and 1 behind"), "\(message)")
         }
         #expect(try fixture.revParse("HEAD") == head)
+    }
+
+    @Test func pushMapsACancelAndARefusedRemoteThroughTheBridge() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try configureUpstream(fixture)
+
+        let cancel = CancelToken()
+        cancel.signal()
+        do {
+            _ = try RepositoryGuard.push(repoPath: fixture.path, credentials: nil, cancel: cancel)
+            Issue.record("expected the push to be cancelled")
+        } catch {
+            guard case .cancelled = error else {
+                Issue.record("expected .cancelled, got \(error)")
+                return
+            }
+        }
+
+        try fixture.git(["remote", "set-url", "origin", "git://example.com/x.git"])
+        do {
+            _ = try RepositoryGuard.push(repoPath: fixture.path, credentials: nil)
+            Issue.record("expected a git:// push to be refused")
+        } catch {
+            guard case .failure(let message) = error else {
+                Issue.record("expected .failure, got \(error)")
+                return
+            }
+            #expect(message.contains("git"), "\(message)")
+        }
     }
 
     @Test func anScpLikeOriginReportsSshThoughItsUrlLostTheUser() throws {

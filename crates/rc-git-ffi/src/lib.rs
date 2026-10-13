@@ -4558,6 +4558,7 @@ mod tests {
         reason = "tests exercise the C contract directly"
     )]
 
+    use std::collections::BTreeSet;
     use std::ffi::CString;
 
     use rc_git_testkit::{BIN_DAT, COMMIT_1_TITLE, COMMIT_2_TITLE, Fixture, MAIN_RS, README};
@@ -4599,6 +4600,13 @@ mod tests {
         unsafe { rcgit_string_free(*error) };
         *error = ptr::null_mut();
         message
+    }
+
+    /// The value behind a fallible call's result, failing the test with the call's error
+    /// rather than dereferencing NULL, which would abort the whole test binary.
+    fn deref<'a, T>(ptr: *const T, error: &mut *mut c_char) -> &'a T {
+        assert!(!ptr.is_null(), "{}", take_error(error));
+        unsafe { &*ptr }
     }
 
     fn text(ptr: *const c_char) -> String {
@@ -4663,8 +4671,11 @@ mod tests {
             Path::new(&git_dir).file_name().and_then(OsStr::to_str),
             Some(".git")
         );
-        assert!(!unsafe { rcgit_repo_work_dir(repo) }.is_null());
+        let work_dir = take_string(unsafe { rcgit_repo_work_dir(repo) });
+        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(canonical(Path::new(&work_dir)), canonical(fx.path()));
         assert!(unsafe { rcgit_repo_git_dir(ptr::null()) }.is_null());
+        assert!(unsafe { rcgit_repo_work_dir(ptr::null()) }.is_null());
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -4719,6 +4730,41 @@ mod tests {
         assert!(unsafe { rcgit_head(ptr::null(), &raw mut error) }.is_null());
         assert_eq!(take_error(&mut error), "rcgit_head: repo is NULL");
         unsafe { rcgit_repo_free(repo) };
+
+        fx.git(&["checkout", "-q", "--detach", "HEAD"]);
+        let repo = open(&fx);
+        let head = unsafe { rcgit_head(repo, &raw mut error) };
+        let head_ref = deref(head, &mut error);
+        assert!(
+            head_ref.ref_name.is_null(),
+            "a detached HEAD names no branch"
+        );
+        assert!(head_ref.has_target);
+        assert_eq!(hex(&head_ref.target), fx.rev_parse("HEAD"));
+        unsafe { rcgit_head_free(head) };
+        unsafe { rcgit_repo_free(repo) };
+
+        let unborn = Fixture::empty_dir();
+        unborn.git(&["init", "-q", "-b", "work"]);
+        let repo = open(&unborn);
+        let head = unsafe { rcgit_head(repo, &raw mut error) };
+        let head_ref = deref(head, &mut error);
+        assert!(!head_ref.has_target, "an unborn branch has no commit");
+        assert_eq!(text(head_ref.ref_name), "refs/heads/work");
+        unsafe { rcgit_head_free(head) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn a_bare_repository_has_no_work_dir() {
+        let fx = Fixture::standard();
+        let (_bare, bare_path) = fx.bare_copy();
+        let path = CString::new(bare_path.as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+        let repo = unsafe { rcgit_repo_open(path.as_ptr(), &raw mut error) };
+        assert!(!repo.is_null(), "{}", take_error(&mut error));
+        assert!(unsafe { rcgit_repo_work_dir(repo) }.is_null());
+        unsafe { rcgit_repo_free(repo) };
     }
 
     #[test]
@@ -4745,6 +4791,30 @@ mod tests {
         assert!(refs.iter().any(|r| r.kind == RcGitRefKind::RemoteBranch));
         unsafe { rcgit_ref_list_free(list) };
         unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn a_broken_ref_is_exported_with_its_name_and_error() {
+        let fx = Fixture::standard();
+        fx.write(
+            ".git/refs/heads/broken",
+            b"0000000000000000000000000000000000000001\n",
+        );
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let list = unsafe { rcgit_refs(repo, &raw mut error) };
+        let list_ref = deref(list, &mut error);
+        assert_eq!(list_ref.len, 5, "the broken ref hides none of the rest");
+        assert_eq!(list_ref.broken_len, 1);
+        let broken = unsafe { std::slice::from_raw_parts(list_ref.broken, list_ref.broken_len) };
+        assert_eq!(text(broken[0].full_name), "refs/heads/broken");
+        assert_ne!(text(broken[0].error), "");
+        assert_ne!(text(broken[0].error), "refs/heads/broken");
+        unsafe { rcgit_ref_list_free(list) };
+        unsafe { rcgit_repo_free(repo) };
+
+        assert!(unsafe { rcgit_refs(ptr::null(), &raw mut error) }.is_null());
+        assert_eq!(take_error(&mut error), "rcgit_refs: repo is NULL");
     }
 
     #[test]
@@ -4857,9 +4927,13 @@ mod tests {
         assert!(blob_ref.valid_utf8);
         unsafe { rcgit_blob_free(blob) };
 
+        let blob = unsafe { rcgit_blob_read(repo, &raw const main_rs, u64::MAX, &raw mut error) };
+        assert_eq!(deref(blob, &mut error).limit, u64::from(u32::MAX));
+        unsafe { rcgit_blob_free(blob) };
+
         let bin = resolve(repo, "main:bin.dat");
         let blob = unsafe { rcgit_blob_read(repo, &raw const bin, 1 << 20, &raw mut error) };
-        let blob_ref = unsafe { &*blob };
+        let blob_ref = deref(blob, &mut error);
         assert_eq!(blob_ref.kind, RcGitBlobKind::Binary);
         assert_eq!(blob_ref.size, BIN_DAT.len() as u64);
         assert!(blob_ref.data.is_null());
@@ -4867,7 +4941,7 @@ mod tests {
 
         let readme = resolve(repo, "main:README.md");
         let blob = unsafe { rcgit_blob_read(repo, &raw const readme, 3, &raw mut error) };
-        let blob_ref = unsafe { &*blob };
+        let blob_ref = deref(blob, &mut error);
         assert_eq!(blob_ref.kind, RcGitBlobKind::TooLarge);
         assert_eq!((blob_ref.size, blob_ref.limit), (README.len() as u64, 3));
         unsafe { rcgit_blob_free(blob) };
@@ -4934,7 +5008,7 @@ mod tests {
         unsafe { rcgit_commit_free(commit) };
 
         let page = unsafe { rcgit_log(repo, &raw const tip, 1, 10, &raw mut error) };
-        assert_eq!(unsafe { &*page }.len, 1);
+        assert_eq!(deref(page, &mut error).len, 1);
         unsafe { rcgit_commit_list_free(page) };
         unsafe { rcgit_repo_free(repo) };
 
@@ -5016,7 +5090,7 @@ mod tests {
                 &raw mut error,
             )
         };
-        let capped_ref = unsafe { &*capped };
+        let capped_ref = deref(capped, &mut error);
         assert_eq!(capped_ref.scanned, 1);
         assert!(!capped_ref.complete);
         unsafe { rcgit_commit_page_free(capped) };
@@ -5071,7 +5145,11 @@ mod tests {
                 &raw mut error,
             )
         };
-        assert_eq!(unsafe { &*all }.len, 2, "NULL filters match everything");
+        assert_eq!(
+            deref(all, &mut error).len,
+            2,
+            "NULL filters match everything"
+        );
         unsafe { rcgit_commit_page_free(all) };
 
         for (path, expected) in [("src/lib.rs", 1), ("README.md", 0)] {
@@ -5209,25 +5287,115 @@ mod tests {
     }
 
     #[test]
+    fn core_reads_report_a_null_repo() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let tip = resolve(repo, "main");
+        let tree = resolve(repo, "main^{tree}");
+        let blob = resolve(repo, "main:README.md");
+        unsafe { rcgit_repo_free(repo) };
+        let path = CString::new("README.md").unwrap();
+        let spec = CString::new("main").unwrap();
+        let mut out = RcGitOid::empty();
+        let mut size = 0;
+        let mut error = ptr::null_mut();
+        let null_repo = |op: &str, failed: bool, error: &mut *mut c_char| {
+            assert!(failed, "{op} succeeded with a NULL repo");
+            assert_eq!(take_error(error), format!("{op}: repo is NULL"));
+        };
+
+        let blame = unsafe {
+            rcgit_blame(
+                ptr::null(),
+                &raw const tip,
+                path.as_ptr(),
+                1 << 20,
+                i64::MIN,
+                &raw mut error,
+            )
+        };
+        null_repo("rcgit_blame", blame.is_null(), &mut error);
+        let read =
+            unsafe { rcgit_blob_read(ptr::null(), &raw const blob, 1 << 20, &raw mut error) };
+        null_repo("rcgit_blob_read", read.is_null(), &mut error);
+        let status =
+            unsafe { rcgit_blob_size(ptr::null(), &raw const blob, &raw mut size, &raw mut error) };
+        null_repo("rcgit_blob_size", status == RCGIT_ERROR, &mut error);
+        let commit = unsafe { rcgit_commit(ptr::null(), &raw const tip, &raw mut error) };
+        null_repo("rcgit_commit", commit.is_null(), &mut error);
+        let log = unsafe { rcgit_log(ptr::null(), &raw const tip, 0, 10, &raw mut error) };
+        null_repo("rcgit_log", log.is_null(), &mut error);
+        let refs = unsafe { rcgit_refs(ptr::null(), &raw mut error) };
+        null_repo("rcgit_refs", refs.is_null(), &mut error);
+        let status =
+            unsafe { rcgit_resolve_tree(ptr::null(), spec.as_ptr(), &raw mut out, &raw mut error) };
+        null_repo("rcgit_resolve_tree", status == RCGIT_ERROR, &mut error);
+        let entries = unsafe { rcgit_tree_entries(ptr::null(), &raw const tree, &raw mut error) };
+        null_repo("rcgit_tree_entries", entries.is_null(), &mut error);
+        let file =
+            unsafe { rcgit_worktree_read(ptr::null(), path.as_ptr(), 1 << 20, &raw mut error) };
+        null_repo("rcgit_worktree_read", file.is_null(), &mut error);
+        assert!(unsafe { rcgit_repo_work_dir(ptr::null()) }.is_null());
+    }
+
+    /// Each named free function, called with NULL.
+    macro_rules! null_frees {
+        ($($free:ident),* $(,)?) => {
+            [$((stringify!($free), (|| unsafe { $free(ptr::null_mut()) }) as fn())),*]
+        };
+    }
+
+    /// The `_free` functions the committed C header declares.
+    fn header_frees() -> BTreeSet<String> {
+        let header = include_str!("../../../mac/Sources/CRcGit/include/rc_git.h");
+        let mut frees = BTreeSet::new();
+        for (end, _) in header.match_indices("_free(") {
+            let head = &header[..end];
+            let start = head
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |at| at + 1);
+            frees.insert(format!("{}_free", &head[start..]));
+        }
+        frees
+    }
+
+    #[test]
     fn free_functions_accept_null() {
-        unsafe {
-            rcgit_string_free(ptr::null_mut());
-            rcgit_repo_free(ptr::null_mut());
-            rcgit_head_free(ptr::null_mut());
-            rcgit_ref_list_free(ptr::null_mut());
-            rcgit_tree_list_free(ptr::null_mut());
-            rcgit_tree_entry_free(ptr::null_mut());
-            rcgit_blob_free(ptr::null_mut());
-            rcgit_commit_list_free(ptr::null_mut());
-            rcgit_commit_free(ptr::null_mut());
-            rcgit_tree_change_list_free(ptr::null_mut());
-            rcgit_blob_diff_free(ptr::null_mut());
-            rcgit_blame_list_free(ptr::null_mut());
-            rcgit_worktree_list_free(ptr::null_mut());
-            rcgit_worktree_file_list_free(ptr::null_mut());
-            rcgit_highlight_list_free(ptr::null_mut());
-            rcgit_import_link_list_free(ptr::null_mut());
-            rcgit_guard_decision_free(ptr::null_mut());
+        let frees = null_frees![
+            rcgit_blame_list_free,
+            rcgit_blob_diff_free,
+            rcgit_blob_free,
+            rcgit_cancel_free,
+            rcgit_commit_detail_free,
+            rcgit_commit_free,
+            rcgit_commit_list_free,
+            rcgit_commit_page_free,
+            rcgit_commit_result_free,
+            rcgit_guard_decision_free,
+            rcgit_head_free,
+            rcgit_highlight_list_free,
+            rcgit_identity_free,
+            rcgit_import_link_list_free,
+            rcgit_ref_list_free,
+            rcgit_remote_status_free,
+            rcgit_repo_free,
+            rcgit_stash_list_free,
+            rcgit_status_list_free,
+            rcgit_string_free,
+            rcgit_tree_change_list_free,
+            rcgit_tree_entry_free,
+            rcgit_tree_list_free,
+            rcgit_worktree_file_list_free,
+            rcgit_worktree_list_free,
+        ];
+        let named: BTreeSet<String> = frees.iter().map(|(name, _)| (*name).to_owned()).collect();
+        assert_eq!(
+            named,
+            header_frees(),
+            "every free in the header is called with NULL"
+        );
+        for (_, free) in frees {
+            free();
         }
         assert!(unsafe { rcgit_oid_hex(ptr::null()) }.is_null());
     }
@@ -5279,20 +5447,6 @@ mod tests {
         assert_eq!(lines[0].eol, RcGitLineEnd::Lf);
         unsafe { rcgit_blob_diff_free(diff) };
 
-        let bin = resolve(repo, "main:bin.dat");
-        let diff = unsafe {
-            rcgit_diff_blobs(
-                repo,
-                &raw const bin,
-                &raw const added_blob,
-                1 << 20,
-                3,
-                &raw mut error,
-            )
-        };
-        assert_eq!(unsafe { &*diff }.kind, RcGitBlobDiffKind::Binary);
-        unsafe { rcgit_blob_diff_free(diff) };
-
         let list = unsafe { rcgit_diff_trees(repo, ptr::null(), &raw const old, &raw mut error) };
         assert!(!list.is_null(), "NULL from means the empty tree");
         assert_eq!(
@@ -5325,6 +5479,34 @@ mod tests {
             take_error(&mut error),
             "rcgit_diff_blobs: old is malformed (len 33)"
         );
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn binary_and_too_large_diffs_carry_their_sizes() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let bin = resolve(repo, "main:bin.dat");
+        let guide = resolve(repo, "main:docs/guide.md");
+        let diff_blobs = |old: &RcGitOid, limit: u64, error: &mut *mut c_char| unsafe {
+            rcgit_diff_blobs(repo, old, &raw const guide, limit, 3, error)
+        };
+
+        let diff = diff_blobs(&bin, 1 << 20, &mut error);
+        let diff_ref = deref(diff, &mut error);
+        assert_eq!(diff_ref.kind, RcGitBlobDiffKind::Binary);
+        assert_eq!(
+            (diff_ref.old_size, diff_ref.new_size),
+            (BIN_DAT.len() as u64, 6)
+        );
+        unsafe { rcgit_blob_diff_free(diff) };
+
+        let diff = diff_blobs(&guide, 2, &mut error);
+        let diff_ref = deref(diff, &mut error);
+        assert_eq!(diff_ref.kind, RcGitBlobDiffKind::TooLarge);
+        assert_eq!((diff_ref.size, diff_ref.limit), (6, 2));
+        unsafe { rcgit_blob_diff_free(diff) };
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -5398,13 +5580,17 @@ mod tests {
         let mut error = ptr::null_mut();
         let tree = resolve(repo, "HEAD^{tree}");
         fx.write("untracked.txt", b"new\n");
+        fx.remove("Zeta.txt");
 
         let dir = CString::new("").unwrap();
         let list =
             unsafe { rcgit_worktree_entries(repo, &raw const tree, dir.as_ptr(), &raw mut error) };
         assert!(!list.is_null(), "{}", take_error(&mut error));
         let list_ref = unsafe { &*list };
-        assert_eq!(list_ref.missing_len, 0);
+        assert_eq!(list_ref.missing_len, 1);
+        let missing = unsafe { std::slice::from_raw_parts(list_ref.missing, list_ref.missing_len) };
+        assert_eq!(text(missing[0].name), "Zeta.txt");
+        assert_eq!(hex(&missing[0].oid), fx.rev_parse("HEAD:Zeta.txt"));
         let entries = unsafe { std::slice::from_raw_parts(list_ref.entries, list_ref.len) };
         let untracked = entries
             .iter()
@@ -6491,6 +6677,317 @@ mod tests {
             fx.rev_parse("HEAD"),
             head,
             "a refused commit writes nothing"
+        );
+    }
+
+    #[test]
+    fn tag_create_stash_apply_and_drop_cross_the_boundary() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+
+        let tag = CString::new("v2.0").unwrap();
+        let create = |rev: &str, error: &mut *mut c_char| {
+            let rev = CString::new(rev).unwrap();
+            unsafe { rcgit_guard_tag_create(repo_path.as_ptr(), tag.as_ptr(), rev.as_ptr(), error) }
+        };
+        assert_eq!(
+            create("main~1", &mut error),
+            RCGIT_OK,
+            "{}",
+            take_error(&mut error)
+        );
+        assert!(error.is_null(), "success must leave error untouched");
+        assert_eq!(fx.rev_parse("refs/tags/v2.0"), fx.rev_parse("main~1"));
+        assert_eq!(
+            create("main", &mut error),
+            RCGIT_ERROR,
+            "an existing tag is never moved"
+        );
+        assert!(take_error(&mut error).contains("v2.0"));
+        assert_eq!(fx.rev_parse("refs/tags/v2.0"), fx.rev_parse("main~1"));
+
+        fx.write("alpha.txt", b"stashed\n");
+        fx.git(&["stash", "push", "-q", "-m", "kept"]);
+        let shown = commit_id(&fx.rev_parse("stash@{0}"));
+        let status = unsafe {
+            rcgit_guard_stash_apply(
+                repo_path.as_ptr(),
+                0,
+                &raw const shown,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stashed\n"
+        );
+        assert_eq!(
+            fx.git_output(&["stash", "list", "--format=%gs"]),
+            "On main: kept",
+            "apply keeps the entry"
+        );
+
+        let drop = CString::new("drop").unwrap();
+        let mut backup = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_stash_drop(
+                repo_path.as_ptr(),
+                0,
+                &raw const shown,
+                drop.as_ptr(),
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_OK, "{}", take_error(&mut error));
+        assert_eq!(take_string(backup), "refs/rc-git/backup/stash/0");
+        assert_eq!(fx.git_output(&["stash", "list"]), "");
+    }
+
+    #[test]
+    fn guarded_actions_report_a_null_repo_path() {
+        let name = CString::new("feature").unwrap();
+        let path = CString::new("alpha.txt").unwrap();
+        let paths = [path.as_ptr()];
+        let oid = commit_id("0123456789abcdef0123456789abcdef01234567");
+        let stash = RcGitStashRequest {
+            paths: paths.as_ptr(),
+            path_count: 1,
+            message: ptr::null(),
+            fallback: ptr::null(),
+        };
+        let mut backup = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let null_path = |op: &str, status: i32, error: &mut *mut c_char| {
+            assert_eq!(status, RCGIT_ERROR, "{op}");
+            assert_eq!(take_error(error), format!("{op}: repo_path is NULL"));
+        };
+        let p = ptr::null();
+
+        let plan = unsafe { rcgit_guard_plan_branch_delete(p, name.as_ptr(), &raw mut error) };
+        assert!(plan.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_plan_branch_delete: repo_path is NULL"
+        );
+        let status = unsafe {
+            rcgit_guard_branch_delete(p, name.as_ptr(), p, &raw mut backup, &raw mut error)
+        };
+        null_path("rcgit_guard_branch_delete", status, &mut error);
+        let status =
+            unsafe { rcgit_guard_tag_delete(p, name.as_ptr(), p, &raw mut backup, &raw mut error) };
+        null_path("rcgit_guard_tag_delete", status, &mut error);
+        let status =
+            unsafe { rcgit_guard_tag_create(p, name.as_ptr(), name.as_ptr(), &raw mut error) };
+        null_path("rcgit_guard_tag_create", status, &mut error);
+        let status = unsafe { rcgit_guard_discard(p, paths.as_ptr(), 1, p, &raw mut error) };
+        null_path("rcgit_guard_discard", status, &mut error);
+        let status = unsafe { rcgit_guard_stash_push(p, &raw const stash, p, &raw mut error) };
+        null_path("rcgit_guard_stash_push", status, &mut error);
+        let status = unsafe { rcgit_guard_stash_apply(p, 0, &raw const oid, p, &raw mut error) };
+        null_path("rcgit_guard_stash_apply", status, &mut error);
+        let status = unsafe {
+            rcgit_guard_stash_pop(p, 0, &raw const oid, p, &raw mut backup, &raw mut error)
+        };
+        null_path("rcgit_guard_stash_pop", status, &mut error);
+        let status = unsafe {
+            rcgit_guard_stash_drop(p, 0, &raw const oid, p, &raw mut backup, &raw mut error)
+        };
+        null_path("rcgit_guard_stash_drop", status, &mut error);
+        assert!(backup.is_null(), "a refused call writes no backup name");
+
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let status = unsafe {
+            rcgit_guard_stash_drop(
+                repo_path.as_ptr(),
+                0,
+                ptr::null(),
+                p,
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_stash_drop: expected is NULL"
+        );
+        let status = unsafe {
+            rcgit_guard_stash_apply(repo_path.as_ptr(), 0, ptr::null(), p, &raw mut error)
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_stash_apply: expected is NULL"
+        );
+        let status =
+            unsafe { rcgit_guard_tag_create(repo_path.as_ptr(), p, name.as_ptr(), &raw mut error) };
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_tag_create: name is NULL"
+        );
+    }
+
+    /// Discards `paths` through the C entry point; returns the status and the error message
+    /// (empty when none was set).
+    fn ffi_discard(repo_path: &CString, paths: *const *const c_char, len: usize) -> (i32, String) {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_discard(repo_path.as_ptr(), paths, len, ptr::null(), &raw mut error)
+        };
+        let message = if error.is_null() {
+            String::new()
+        } else {
+            take_error(&mut error)
+        };
+        (status, message)
+    }
+
+    /// Stashes `paths` through the C entry point; returns as `ffi_discard`.
+    fn ffi_stash_push(
+        repo_path: &CString,
+        paths: *const *const c_char,
+        len: usize,
+    ) -> (i32, String) {
+        let name = CString::new("FFI User").unwrap();
+        let email = CString::new("ffi@example.com").unwrap();
+        let fallback = RcGitFallbackIdentity {
+            name: name.as_ptr(),
+            email: email.as_ptr(),
+        };
+        let request = RcGitStashRequest {
+            paths,
+            path_count: len,
+            message: ptr::null(),
+            fallback: &raw const fallback,
+        };
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_stash_push(
+                repo_path.as_ptr(),
+                &raw const request,
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        let message = if error.is_null() {
+            String::new()
+        } else {
+            take_error(&mut error)
+        };
+        (status, message)
+    }
+
+    /// Commits `message` and `files` through the C entry point, with a fallback identity, against
+    /// the current `HEAD`; asserts the commit is refused and returns its error message.
+    fn ffi_commit_refused(
+        fx: &Fixture,
+        message: *const c_char,
+        files: *const RcGitCommitFile,
+        len: usize,
+    ) -> String {
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let head = commit_id(&fx.rev_parse("HEAD"));
+        let name = CString::new("FFI User").unwrap();
+        let email = CString::new("ffi@example.com").unwrap();
+        let mut result = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            rcgit_guard_commit(
+                repo_path.as_ptr(),
+                &RcGitCommitRequest {
+                    message,
+                    fallback: &RcGitFallbackIdentity {
+                        name: name.as_ptr(),
+                        email: email.as_ptr(),
+                    },
+                    expected_head: &raw const head,
+                    files,
+                    file_count: len,
+                },
+                ptr::null(),
+                &raw mut result,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, RCGIT_ERROR);
+        assert!(result.is_null());
+        take_error(&mut error)
+    }
+
+    #[test]
+    fn selection_arrays_reject_null_entries() {
+        let fx = Fixture::standard();
+        let repo_path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        fx.write("alpha.txt", b"kept\n");
+        let null_entry = [ptr::null::<c_char>()];
+
+        let refused = [
+            (
+                ffi_discard(&repo_path, null_entry.as_ptr(), 1),
+                "rcgit_guard_discard: paths[0] is NULL",
+            ),
+            (
+                ffi_discard(&repo_path, ptr::null(), 2),
+                "rcgit_guard_discard: paths is NULL",
+            ),
+            (
+                ffi_stash_push(&repo_path, null_entry.as_ptr(), 1),
+                "rcgit_guard_stash_push: request.paths[0] is NULL",
+            ),
+            (
+                ffi_stash_push(&repo_path, ptr::null(), 2),
+                "rcgit_guard_stash_push: request.paths is NULL",
+            ),
+        ];
+        for ((status, message), expected) in refused {
+            assert_eq!(status, RCGIT_ERROR, "{expected}");
+            assert_eq!(message, expected);
+        }
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"kept\n"
+        );
+        assert_eq!(fx.git_output(&["stash", "list"]), "");
+
+        for (status, message) in [
+            ffi_discard(&repo_path, ptr::null(), 0),
+            ffi_stash_push(&repo_path, ptr::null(), 0),
+        ] {
+            assert!(
+                status == RCGIT_OK || !message.contains("is NULL"),
+                "an empty list reaches the guard: {message}"
+            );
+        }
+
+        let message = CString::new("msg").unwrap();
+        let null_path = RcGitCommitFile {
+            path: ptr::null(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        let path = CString::new("alpha.txt").unwrap();
+        let whole = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 0,
+        };
+        assert_eq!(
+            ffi_commit_refused(&fx, message.as_ptr(), &raw const null_path, 1),
+            "rcgit_guard_commit: request.files[0].path is NULL"
+        );
+        assert_eq!(
+            ffi_commit_refused(&fx, message.as_ptr(), ptr::null(), 1),
+            "rcgit_guard_commit: request.files is NULL"
+        );
+        assert_eq!(
+            ffi_commit_refused(&fx, ptr::null(), &raw const whole, 1),
+            "rcgit_guard_commit: request.message is NULL"
         );
     }
 
