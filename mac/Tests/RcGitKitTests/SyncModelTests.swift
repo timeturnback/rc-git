@@ -870,6 +870,31 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(hostKeys.stored["git.example.com"] == "SHA256:abc123")
     }
 
+    @Test func aHostKeyStillUnknownAfterTrustFailsWithoutASecondPrompt() async {
+        let unknown = SyncError.hostKeyUnknown(
+            message: "still not a known host", hostKey: "ssh-ed25519 SHA256:abc123")
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [.failure(unknown), .failure(unknown)]))
+        var prompts = 0
+        model.onHostKeyNeeded = { _, _, resume in
+            prompts += 1
+            resume(.trusted)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(prompts == 1, "a key the guard still rejects after trust must not ask again")
+        #expect(performer.fetchHostKeys == [nil, "SHA256:abc123"])
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message == "still not a known host")
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+    }
+
     @Test func decliningTheHostKeyFailsTheStep() async {
         let hostKeys = InMemoryHostKeyStore()
         let (model, _, _) = model(
