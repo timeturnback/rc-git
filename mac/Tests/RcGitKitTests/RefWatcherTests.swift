@@ -13,13 +13,39 @@ import Testing
         defer { fixture.remove() }
         let repository = try Repository(path: fixture.path)
         let fired = DispatchSemaphore(value: 0)
-        let watcher = RefWatcher(gitDir: repository.gitDirectory, latency: 0.05) {
+        let watcher = RefWatcher(
+            gitDir: repository.gitDirectory, commonDir: repository.commonDirectory, latency: 0.05
+        ) {
             fired.signal()
         }
         try watcher.start()
         defer { watcher.stop() }
 
         try fixture.git(["update-ref", "refs/heads/x", "HEAD"])
+
+        #expect(fired.wait(timeout: .now() + Self.bound) == .success)
+    }
+
+    @Test func aCommitInALinkedWorktreeFiresOnChange() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let outside = try GitFixture.emptyDirectory()
+        defer { outside.remove() }
+        let linkedPath = outside.path + "/linked"
+        try fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
+        let linked = GitFixture(path: linkedPath)
+        let repository = try Repository(path: linkedPath)
+        #expect(repository.commonDirectory != repository.gitDirectory)
+        let fired = DispatchSemaphore(value: 0)
+        let watcher = RefWatcher(
+            gitDir: repository.gitDirectory, commonDir: repository.commonDirectory, latency: 0.05
+        ) {
+            fired.signal()
+        }
+        try watcher.start()
+        defer { watcher.stop() }
+
+        try linked.git(["commit", "-q", "--allow-empty", "-m", "x"])
 
         #expect(fired.wait(timeout: .now() + Self.bound) == .success)
     }
@@ -52,7 +78,9 @@ import Testing
             atPath: link, withDestinationPath: fixture.path)
         defer { try? FileManager.default.removeItem(atPath: link) }
         let fired = DispatchSemaphore(value: 0)
-        let watcher = RefWatcher(gitDir: link + "/.git", latency: 0.05) { fired.signal() }
+        let watcher = RefWatcher(gitDir: link + "/.git", commonDir: link + "/.git", latency: 0.05) {
+            fired.signal()
+        }
         try watcher.start()
         defer { watcher.stop() }
 

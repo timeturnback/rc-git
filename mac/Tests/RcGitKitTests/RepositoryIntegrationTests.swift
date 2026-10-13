@@ -24,6 +24,29 @@ import Testing
         }
     }
 
+    @Test func commonDirectoryIsTheSharedGitDirOfALinkedWorktree() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let outside = try GitFixture.emptyDirectory()
+        defer { outside.remove() }
+        let main = try Repository(path: fixture.path)
+        #expect(main.commonDirectory == main.gitDirectory)
+
+        let linkedPath = outside.path + "/linked"
+        try fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
+        let linked = try Repository(path: linkedPath)
+        let expected = try GitFixture(path: linkedPath).gitOutput([
+            "rev-parse", "--path-format=absolute", "--git-common-dir",
+        ])
+        #expect(
+            RefWatcher.canonical(linked.commonDirectory)
+                == RefWatcher.canonical(
+                    expected.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(
+            RefWatcher.canonical(linked.gitDirectory)
+                != RefWatcher.canonical(linked.commonDirectory))
+    }
+
     @Test func readsRefsTreesBlobsAndHistory() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

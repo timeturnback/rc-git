@@ -1,30 +1,49 @@
 import CoreServices
 import Foundation
 
-/// Decides which filesystem events inside `.git` mean the refs or their upstreams may have
-/// changed.
+/// Decides which filesystem events inside a repository's git directories mean the refs or
+/// their upstreams may have changed.
 ///
-/// The watcher observes the whole `.git` directory, because `HEAD`, `packed-refs` and `config`
-/// (remotes and upstreams) live at its top level while branches and tags live anywhere under
-/// `refs/`. Everything else in the directory (objects, index, logs) changes far more often and
-/// never affects the ref listing, so those events are filtered out here. Pure, so the filter
-/// is testable without FSEvents.
+/// A worktree has two git directories. `gitDir` is this worktree's own: `HEAD` and the
+/// per-worktree refs (`refs/bisect`, `refs/worktree`, `refs/rewritten`). `commonDir` is shared
+/// by every worktree: branches, tags, remotes and the stash under `refs/`, plus `packed-refs`
+/// and `config` (remotes and upstreams). They are the same directory except in a linked
+/// worktree, where `gitDir` is `<commonDir>/worktrees/<name>`. Everything else (objects,
+/// index, logs, another worktree's `HEAD`) changes far more often and never affects this
+/// worktree's ref listing, so those events are filtered out here. Pure, so the filter is
+/// testable without FSEvents.
 public enum RefWatchFilter {
     /// Whether an event at `path` can change the outcome of `refs()`, `head()`, or the
     /// upstream status.
-    public static func isRelevant(_ path: String, gitDir: String) -> Bool {
-        let root = gitDir.hasSuffix("/") ? String(gitDir.dropLast()) : gitDir
-        guard path == root || path.hasPrefix(root + "/") else { return false }
+    public static func isRelevant(_ path: String, gitDir: String, commonDir: String) -> Bool {
+        if let own = relative(path, to: gitDir), !own.hasSuffix(".lock"),
+            own == "HEAD" || isRefs(own)
+        {
+            return true
+        }
+        guard let shared = relative(path, to: commonDir), !shared.hasSuffix(".lock") else {
+            return false
+        }
+        // The directory itself: `packed-refs` rewrites and ref packs land as events here.
+        // `config` names the remotes and upstreams the sync status reads: `git remote add`
+        // and `git branch -u` change nothing else.
+        return shared.isEmpty || shared == "packed-refs" || shared == "config" || isRefs(shared)
+    }
+
+    private static func isRefs(_ relative: String) -> Bool {
+        relative == "refs" || relative.hasPrefix("refs/")
+    }
+
+    /// `path` relative to `root` without leading or trailing slashes, or `nil` when `path` is
+    /// not `root` or inside it. Matches on a path-component boundary, so `.gitrefs` is not
+    /// inside `.git`.
+    private static func relative(_ path: String, to root: String) -> String? {
+        let root = root.hasSuffix("/") ? String(root.dropLast()) : root
+        guard path == root || path.hasPrefix(root + "/") else { return nil }
         var relative = String(path.dropFirst(root.count))
         if relative.hasPrefix("/") { relative.removeFirst() }
         while relative.hasSuffix("/") { relative.removeLast() }
-        if relative.hasSuffix(".lock") { return false }
-        // The directory itself: `packed-refs` rewrites and ref packs land as events here.
-        if relative.isEmpty { return true }
-        // `config` names the remotes and upstreams the sync status reads: `git remote add`
-        // and `git branch -u` change nothing else.
-        return relative == "HEAD" || relative == "packed-refs" || relative == "config"
-            || relative == "refs" || relative.hasPrefix("refs/")
+        return relative
     }
 }
 
@@ -40,26 +59,31 @@ public struct WatcherStartError: Error, CustomStringConvertible {
     }
 }
 
-/// Watches a repository's `.git` directory with FSEvents and reports when its refs may have
-/// changed. Events are coalesced by FSEvents' own latency window and filtered through
-/// `RefWatchFilter`, so one `git commit` or `git fetch` produces one callback, not a storm.
+/// Watches a repository's git directories with FSEvents and reports when its refs may have
+/// changed. One stream rooted at the common dir covers both: a linked worktree's own git
+/// directory is always `<commonDir>/worktrees/<name>`. Events are coalesced by FSEvents' own
+/// latency window and filtered through `RefWatchFilter`, so one `git commit` or `git fetch`
+/// produces one callback, not a storm.
 ///
-/// FSEvents reports canonical realpaths (`/private/tmp/...`, symlinks resolved), so the watched
-/// directory is resolved with `realpath(3)` once at init and that spelling is both watched and
-/// filtered against.
+/// FSEvents reports canonical realpaths (`/private/tmp/...`, symlinks resolved), so both
+/// directories are resolved with `realpath(3)` once at init and that spelling is both watched
+/// and filtered against.
 ///
 /// `onChange` fires on a private queue; hop to the main actor before touching models.
 public final class RefWatcher: @unchecked Sendable {
     private let gitDir: String
+    private let commonDir: String
     private let latency: TimeInterval
     private let onChange: @Sendable () -> Void
     private let queue = DispatchQueue(label: "rc-git.ref-watcher")
     private var stream: FSEventStreamRef?
 
     public init(
-        gitDir: String, latency: TimeInterval = 0.2, onChange: @escaping @Sendable () -> Void
+        gitDir: String, commonDir: String, latency: TimeInterval = 0.2,
+        onChange: @escaping @Sendable () -> Void
     ) {
         self.gitDir = Self.canonical(gitDir)
+        self.commonDir = Self.canonical(commonDir)
         self.latency = latency
         self.onChange = onChange
     }
@@ -93,14 +117,14 @@ public final class RefWatcher: @unchecked Sendable {
             guard
                 let created = FSEventStreamCreate(
                     kCFAllocatorDefault, eventCallback, &context,
-                    [gitDir] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                    [commonDir] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                     latency, flags)
-            else { throw WatcherStartError(call: "FSEventStreamCreate", path: gitDir) }
+            else { throw WatcherStartError(call: "FSEventStreamCreate", path: commonDir) }
             FSEventStreamSetDispatchQueue(created, queue)
             guard FSEventStreamStart(created) else {
                 FSEventStreamInvalidate(created)
                 FSEventStreamRelease(created)
-                throw WatcherStartError(call: "FSEventStreamStart", path: gitDir)
+                throw WatcherStartError(call: "FSEventStreamStart", path: commonDir)
             }
             stream = created
         }
@@ -119,7 +143,10 @@ public final class RefWatcher: @unchecked Sendable {
     }
 
     fileprivate func handle(paths: [String]) {
-        if paths.contains(where: { RefWatchFilter.isRelevant($0, gitDir: gitDir) }) {
+        let relevant = paths.contains {
+            RefWatchFilter.isRelevant($0, gitDir: gitDir, commonDir: commonDir)
+        }
+        if relevant {
             onChange()
         }
     }

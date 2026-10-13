@@ -37,6 +37,42 @@ fn opens_from_work_dir_and_from_git_dir() {
 }
 
 #[test]
+fn common_dir_of_a_linked_worktree_is_the_shared_git_dir() {
+    let fx = Fixture::standard();
+    assert_eq!(
+        Repository::open(fx.path()).unwrap().common_dir(),
+        Repository::open(fx.path()).unwrap().git_dir(),
+        "the main worktree's common dir is its git dir"
+    );
+
+    let outside = Fixture::empty_dir();
+    let linked = outside.path().join("linked");
+    fx.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt",
+        linked.to_str().unwrap(),
+    ]);
+    let repo = Repository::open(&linked).unwrap();
+    let expected = fx.git_output(&[
+        "-C",
+        linked.to_str().unwrap(),
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ]);
+    let canonical = |path: &std::path::Path| std::fs::canonicalize(path).unwrap();
+    assert_eq!(
+        canonical(repo.common_dir()),
+        canonical(std::path::Path::new(expected.trim()))
+    );
+    assert_ne!(canonical(repo.git_dir()), canonical(repo.common_dir()));
+    assert!(format!("{repo:?}").contains("common_dir"));
+}
+
+#[test]
 fn open_names_the_path_when_not_a_repository() {
     let fx = Fixture::empty_dir();
     let err = Repository::open(fx.path()).unwrap_err();

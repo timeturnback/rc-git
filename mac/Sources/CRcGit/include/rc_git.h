@@ -814,11 +814,19 @@ struct RcGitRepo *rcgit_repo_open(const char *path, char **error);
 /// `repo` is NULL or came from `rcgit_repo_open` and is not freed twice or used afterwards.
 void rcgit_repo_free(struct RcGitRepo *repo);
 
-/// The `.git` directory. Release with `rcgit_string_free`.
+/// This worktree's git directory: `.git`, or `.git/worktrees/<name>` for a linked worktree.
+/// Release with `rcgit_string_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`.
 char *rcgit_repo_git_dir(const struct RcGitRepo *repo);
+
+/// The git directory every worktree shares, where branches, tags and `packed-refs` live.
+/// Equal to `rcgit_repo_git_dir` except in a linked worktree. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`.
+char *rcgit_repo_common_dir(const struct RcGitRepo *repo);
 
 /// The working directory, or NULL for a bare repository. Release with `rcgit_string_free`.
 ///

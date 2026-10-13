@@ -22,6 +22,7 @@ pub struct Repository {
     shared: gix::ThreadSafeRepository,
     pool: Box<[Mutex<gix::Repository>]>,
     git_dir: PathBuf,
+    common_dir: PathBuf,
     work_dir: Option<PathBuf>,
 }
 
@@ -165,6 +166,7 @@ impl Repository {
                 .map(Vec::as_slice),
         )?;
         let git_dir = probe.git_dir().to_path_buf();
+        let common_dir = probe.common_dir().to_path_buf();
         let work_dir = probe.workdir().map(Path::to_path_buf);
         require_work_tree_at(
             path,
@@ -183,14 +185,23 @@ impl Repository {
             shared,
             pool: pool.into_boxed_slice(),
             git_dir,
+            common_dir,
             work_dir,
         })
     }
 
-    /// The `.git` directory.
+    /// This worktree's git directory: `.git` for the main worktree, `.git/worktrees/<name>`
+    /// for a linked one. It holds this worktree's `HEAD` and index.
     #[must_use]
     pub fn git_dir(&self) -> &Path {
         &self.git_dir
+    }
+
+    /// The git directory every worktree shares: branches, tags, `packed-refs` and `config`
+    /// live here. Equal to [`Repository::git_dir`] except in a linked worktree.
+    #[must_use]
+    pub fn common_dir(&self) -> &Path {
+        &self.common_dir
     }
 
     /// The working directory, or `None` for a bare repository.
@@ -272,6 +283,7 @@ impl std::fmt::Debug for Repository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Repository")
             .field("git_dir", &self.git_dir)
+            .field("common_dir", &self.common_dir)
             .field("work_dir", &self.work_dir)
             .field("pool_slots", &self.pool.len())
             .finish_non_exhaustive()

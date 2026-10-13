@@ -122,7 +122,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         renderBanner()
         showWindow(nil)
         refWatcher?.stop()
-        let watcher = RefWatcher(gitDir: repository.gitDirectory) { [weak self] in
+        let watcher = RefWatcher(
+            gitDir: repository.gitDirectory, commonDir: repository.commonDirectory
+        ) { [weak self] in
             Task { @MainActor [weak self] in
                 await self?.model.refreshRefs()
                 // A commit or stash from the terminal moves refs and the change list both.

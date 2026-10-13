@@ -1447,7 +1447,8 @@ pub unsafe extern "C" fn rcgit_repo_free(repo: *mut RcGitRepo) {
     unsafe { release(repo) };
 }
 
-/// The `.git` directory. Release with `rcgit_string_free`.
+/// This worktree's git directory: `.git`, or `.git/worktrees/<name>` for a linked worktree.
+/// Release with `rcgit_string_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`.
@@ -1458,6 +1459,20 @@ pub unsafe extern "C" fn rcgit_repo_git_dir(repo: *const RcGitRepo) -> *mut c_ch
         return ptr::null_mut();
     };
     export_string(repo.git_dir().as_os_str().as_bytes())
+}
+
+/// The git directory every worktree shares, where branches, tags and `packed-refs` live.
+/// Equal to `rcgit_repo_git_dir` except in a linked worktree. Release with `rcgit_string_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_repo_common_dir(repo: *const RcGitRepo) -> *mut c_char {
+    // SAFETY: forwarded from this function's contract.
+    let Some(repo) = (unsafe { repo_arg(repo) }) else {
+        return ptr::null_mut();
+    };
+    export_string(repo.common_dir().as_os_str().as_bytes())
 }
 
 /// The working directory, or NULL for a bare repository. Release with `rcgit_string_free`.
@@ -4624,6 +4639,40 @@ mod tests {
         );
         assert!(!unsafe { rcgit_repo_work_dir(repo) }.is_null());
         assert!(unsafe { rcgit_repo_git_dir(ptr::null()) }.is_null());
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn common_dir_names_the_shared_git_dir_of_a_linked_worktree() {
+        let fx = Fixture::standard();
+        let main = open(&fx);
+        let main_git_dir = take_string(unsafe { rcgit_repo_git_dir(main) });
+        assert_eq!(
+            take_string(unsafe { rcgit_repo_common_dir(main) }),
+            main_git_dir
+        );
+        unsafe { rcgit_repo_free(main) };
+
+        let outside = Fixture::empty_dir();
+        let linked = outside.path().join("linked");
+        fx.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            linked.to_str().unwrap(),
+        ]);
+        let path = CString::new(linked.as_os_str().as_bytes()).unwrap();
+        let mut error = ptr::null_mut();
+        let repo = unsafe { rcgit_repo_open(path.as_ptr(), &raw mut error) };
+        assert!(!repo.is_null() && error.is_null());
+        let common = take_string(unsafe { rcgit_repo_common_dir(repo) });
+        let git_dir = take_string(unsafe { rcgit_repo_git_dir(repo) });
+        let canonical = |p: &str| std::fs::canonicalize(p).unwrap();
+        assert_eq!(canonical(&common), canonical(&main_git_dir));
+        assert_ne!(canonical(&git_dir), canonical(&common));
+        assert!(unsafe { rcgit_repo_common_dir(ptr::null()) }.is_null());
         unsafe { rcgit_repo_free(repo) };
     }
 

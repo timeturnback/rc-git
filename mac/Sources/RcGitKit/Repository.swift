@@ -35,9 +35,15 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         String(cString: rcgit_version())
     }
 
-    /// The `.git` directory.
+    /// This worktree's git directory: `.git`, or `.git/worktrees/<name>` for a linked worktree.
     public var gitDirectory: String {
         RepositoryError.takeString(rcgit_repo_git_dir(handle)) ?? ""
+    }
+
+    /// The git directory every worktree shares, where branches, tags and `packed-refs` live.
+    /// Equal to `gitDirectory` except in a linked worktree.
+    public var commonDirectory: String {
+        RepositoryError.takeString(rcgit_repo_common_dir(handle)) ?? ""
     }
 
     /// The working directory, or `nil` for a bare repository.
