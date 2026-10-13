@@ -57,6 +57,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var sidebarCollapsedByPolicy = false
     /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
     private static let sidebarWidthPinnedKey = "rc-git.sidebar-width-pinned"
+    /// The defaults name every tab saves its window frame under and the next window restores.
+    private static let frameName = "rc-git.window"
     private var repositoryName = ""
     private(set) var repositoryPath: String?
     /// The checkout's root, `nil` for a bare repository.
@@ -99,7 +101,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         renderBanner()
         model.setShowsHiddenFiles(UserDefaults.standard.bool(forKey: HiddenFiles.preferenceKey))
         window.center()
-        window.setFrameAutosaveName("rc-git.window")
+        // The frame is saved by name rather than through `setFrameAutosaveName`: AppKit
+        // grants an autosave name to one live window only, and every tab is its own window.
+        // False only means no frame was saved yet, and the centered default stands.
+        _ = window.setFrameUsingName(Self.frameName)
         // A frame saved on a display that is now detached restores fully off-screen.
         if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
             window.center()
@@ -524,9 +529,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func windowDidResize(_ notification: Notification) {
         applyLayout()
+        saveFrame()
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        saveFrame()
+    }
+
+    /// Saves the frame of the tab in front, so whichever tab survives a close or moves to
+    /// its own window keeps the frame the next launch restores. Full screen is not a frame.
+    private func saveFrame() {
+        guard let window, window.isMainWindow, !window.styleMask.contains(.fullScreen) else {
+            return
+        }
+        window.saveFrame(usingName: Self.frameName)
     }
 
     func windowWillClose(_ notification: Notification) {
+        saveFrame()
         NotificationCenter.default.removeObserver(
             self, name: NSSplitView.didResizeSubviewsNotification,
             object: outerSplit.splitView)
