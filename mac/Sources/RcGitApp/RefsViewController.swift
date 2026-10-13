@@ -68,6 +68,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private var selected: RefEntry?
     private let workingTreeRow = WorkingTreeRow()
     private var showsWorkingTree = false
+    /// Whether the Working Tree row is in the list now: shown, and kept by the filter.
+    private var listsWorkingTree = false
     private var workingTreeSelected = false
     private var isReloading = false
 
@@ -148,6 +150,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     private func rebuild() {
         let filter = search.stringValue
+        listsWorkingTree = showsWorkingTree && RefListing.workingTreeMatches(filter)
         sections = listing.sections(matching: filter).map {
             Section(title: $0.title, refs: $0.refs)
         }
@@ -163,19 +166,24 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         outline.reloadData()
         outline.expandItem(nil, expandChildren: true)
         if behavior == .picker, RefListing.query(from: filter) != nil {
-            // Typing narrows the list; Return takes the best match, not the row browsed now.
-            highlight(row: listing.bestMatch(for: filter).flatMap { rowOf($0) })
-        } else if workingTreeSelected, showsWorkingTree {
-            let row = outline.row(forItem: workingTreeRow)
-            if row >= 0 {
-                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            }
+            // Typing narrows the list; Return takes the best match, not the row browsed now. A
+            // filter only the Working Tree row matches highlights that row.
+            let best = listing.bestMatch(for: filter).flatMap { rowOf($0) }
+            highlight(row: best ?? workingTreeRowIndex)
+        } else if workingTreeSelected, let row = workingTreeRowIndex {
+            outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else if let selected, let row = rowOf(selected) {
             outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else {
             outline.deselectAll(nil)
         }
         isReloading = false
+    }
+
+    /// The Working Tree row's index, or `nil` when the list does not show it.
+    private var workingTreeRowIndex: Int? {
+        let row = outline.row(forItem: workingTreeRow)
+        return row >= 0 ? row : nil
     }
 
     private func firstRow(where matches: (Any?) -> Bool) -> Int? {
@@ -293,10 +301,12 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         return true
     }
 
-    /// Picks the highlighted row, or the first row when nothing is highlighted.
+    /// Picks the highlighted row, or the first row when nothing is highlighted and no filter is
+    /// typed. A filter that highlights nothing matched nothing, so Return does nothing.
     private func pickHighlighted() {
         let highlighted = outline.selectedRow >= 0 ? outline.selectedRow : nil
-        if let row = highlighted ?? firstRow(where: isPickable) {
+        let unfiltered = RefListing.query(from: search.stringValue) == nil
+        if let row = highlighted ?? (unfiltered ? firstRow(where: isPickable) : nil) {
             pick(row: row)
         }
     }
@@ -353,7 +363,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     // MARK: NSOutlineViewDataSource
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        if item == nil { return sections.count + (showsWorkingTree ? 1 : 0) }
+        if item == nil { return sections.count + (listsWorkingTree ? 1 : 0) }
         if let section = item as? Section { return section.refs.count + section.broken.count }
         return 0
     }
@@ -363,7 +373,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             if index < section.refs.count { return section.refs[index] }
             return section.broken[index - section.refs.count]
         }
-        if showsWorkingTree {
+        if listsWorkingTree {
             return index == 0 ? workingTreeRow : sections[index - 1]
         }
         return sections[index]

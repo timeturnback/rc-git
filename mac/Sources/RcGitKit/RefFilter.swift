@@ -45,6 +45,12 @@ extension RefListing {
         return query.isEmpty ? nil : query
     }
 
+    /// Whether the Working Tree row stays listed under `filter`: always for a blank filter,
+    /// otherwise only when "working tree" contains it, ignoring case, like every ref row.
+    public static func workingTreeMatches(_ filter: String) -> Bool {
+        query(from: filter).map { "working tree".contains($0) } ?? true
+    }
+
     /// The refs whose short name contains `filter`, ignoring case, grouped in section order
     /// and sorted naturally (`v2` before `v10`) within each. Empty sections are dropped; a
     /// blank filter keeps every ref.

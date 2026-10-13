@@ -126,4 +126,15 @@ private func names(_ sections: [RefSection]) -> [[String]] {
     @Test func noBrokenRefsLeavesTheUnreadableSectionOut() {
         #expect(mixed.unreadable(matching: "").isEmpty)
     }
+
+    @Test func theWorkingTreeRowFollowsTheFilter() {
+        #expect(RefListing.workingTreeMatches(""))
+        #expect(RefListing.workingTreeMatches("  \t "))
+        #expect(RefListing.workingTreeMatches("Work"))
+        #expect(RefListing.workingTreeMatches(" tree "))
+        #expect(RefListing.workingTreeMatches("working tree"))
+        #expect(!RefListing.workingTreeMatches("zzzz"))
+        #expect(!RefListing.workingTreeMatches("mian"))
+        #expect(!RefListing.workingTreeMatches("working trees"))
+    }
 }
