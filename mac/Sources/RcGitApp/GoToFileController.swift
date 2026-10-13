@@ -196,7 +196,6 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
             let imageView = NSImageView()
             imageView.translatesAutoresizingMaskIntoConstraints = false
             let label = NSTextField(labelWithString: "")
-            label.lineBreakMode = .byTruncatingMiddle
             label.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(imageView)
             cell.addSubview(label)
@@ -214,11 +213,14 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         }
         let treeEntry = TreeEntry(name: entry.name, oid: entry.oid, kind: entry.kind)
         cell.imageView?.image = Icons.image(for: treeEntry)
+        let truncation = NSMutableParagraphStyle()
+        truncation.lineBreakMode = .byTruncatingMiddle
         let text = NSMutableAttributedString(
             string: entry.name,
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
                 .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: truncation,
             ])
         text.append(
             NSAttributedString(
@@ -226,6 +228,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
                 attributes: [
                     .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                     .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: truncation,
                 ]))
         cell.textField?.attributedStringValue = text
         return cell
