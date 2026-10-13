@@ -822,7 +822,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onRootChanged = { [weak self] in
             guard let self else { return }
-            treeController.reload(root: model.rootTree)
+            treeController.reload(root: model.rootTree, placeholder: model.treePlaceholder)
         }
         model.onFileChanged = { [weak self] in
             guard let self else { return }

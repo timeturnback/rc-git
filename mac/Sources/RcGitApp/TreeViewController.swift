@@ -41,10 +41,9 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     private let outline = NSOutlineView()
     private let scroll = NSScrollView()
-    private static let noRepositoryText = "Open a repository (⌘O)"
     private static let unreadableTreeText = "Could not read this tree"
     private let placeholder = NSTextField(
-        labelWithString: TreeViewController.noRepositoryText)
+        labelWithString: TreePlaceholder.noRepository)
     private var allRoots: [Node] = []
     private var roots: [Node] = []
     private var generation = 0
@@ -97,14 +96,15 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         view = container
     }
 
-    /// Replaces the whole tree with the root of another ref or commit.
-    func reload(root: Oid?) {
+    /// Replaces the whole tree with the root of another ref or commit, or with `placeholder`
+    /// (the model's `treePlaceholder`) when there is no root.
+    func reload(root: Oid?, placeholder text: String) {
         generation += 1
         allRoots = []
         roots = []
         outline.reloadData()
         guard let root else {
-            placeholder.stringValue = Self.noRepositoryText
+            placeholder.stringValue = text
             placeholder.isHidden = false
             reportContentWidth()
             return

@@ -69,6 +69,10 @@ public final class BrowserModel {
     /// True while the tree pane shows the working directory instead of a committed tree.
     public private(set) var browsingWorkingTree = false
     public private(set) var rootTree: Oid?
+    /// What the tree says while `rootTree` is `nil`.
+    public var treePlaceholder: String {
+        TreePlaceholder.text(attached: repository != nil, head: head)
+    }
     public private(set) var fileState: FileState = .empty
     /// Repository-relative path of the file in the file pane, when the opener knew it.
     public private(set) var openedFilePath: String?
@@ -282,8 +286,13 @@ public final class BrowserModel {
                 await selectWorkingTree()
             } else if let current = initialRef(listing: listing, head: head) {
                 await select(current)
+            } else {
+                rootTree = nil
+                onRootChanged?()
             }
         case let .failure(error):
+            rootTree = nil
+            onRootChanged?()
             fail(error.message)
         }
     }
