@@ -60,6 +60,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private static let frameName = "rc-git.window"
     private var repositoryName = ""
     private(set) var repositoryPath: String?
+    /// The `Repository.tabKey` of the repository on show: what tells two tabs apart.
+    private(set) var repositoryKey: String?
     /// The checkout's root, `nil` for a bare repository.
     private var workingDirectory: String?
     private var hasWorkingTree: Bool { workingDirectory != nil }
@@ -117,8 +119,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Attaches a repository and starts loading. The window title becomes the repository
     /// name, and a watcher starts re-reading refs whenever they change on disk.
-    func show(_ repository: Repository, path: String) {
+    func show(_ repository: Repository, path: String, key: String) {
         isEmpty = false
+        repositoryKey = key
         repositoryName = (path as NSString).lastPathComponent
         window?.title = repositoryName
         window?.representedURL = URL(fileURLWithPath: path)

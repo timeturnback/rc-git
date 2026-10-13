@@ -199,28 +199,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// The one opener every arrival goes through — a menu, Finder, argv, a restore. Dedupes
-    /// on the canonical path: a repository that is already open returns its tab, not a second.
+    /// on `Repository.tabKey`: a repository that is already open, under any spelling of its
+    /// working directory or its `.git`, returns its tab, not a second.
+    ///
+    /// The path is canonical (`CanonicalPath.resolve`), so tabs, recents and the sync sheet's
+    /// `cd` hold neither a relative path nor a `/private`-stripped one. The same path as an
+    /// open tab skips opening the repository again.
     ///
     /// - Throws: The error `Repository(path:)` throws when `path` does not open.
     private func openTab(_ path: String) throws -> (controller: MainWindowController, isNew: Bool) {
-        let path = canonicalPath(path)
+        let path = CanonicalPath.resolve(path)
         if let existing = controllers.first(where: { $0.repositoryPath == path }) {
             return (existing, false)
         }
         let repository = try Repository(path: path)
+        let key = repository.tabKey
+        if let existing = controllers.first(where: { $0.repositoryKey == key }) {
+            return (existing, false)
+        }
         let controller = controllers.first(where: { $0.isEmpty }) ?? newWindow()
-        controller.show(repository, path: path)
+        controller.show(repository, path: path, key: key)
         return (controller, true)
-    }
-
-    /// The realpath of `path`, so tabs, recents and the sync sheet's `cd` hold neither a
-    /// relative path nor a `/private`-stripped one. A relative path resolves against the
-    /// working directory first, so `.` never reaches the tab list even when it does not resolve.
-    private func canonicalPath(_ path: String) -> String {
-        let absolute = URL(fileURLWithPath: path).standardizedFileURL.path
-        guard let resolved = realpath(absolute, nil) else { return absolute }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     @discardableResult
