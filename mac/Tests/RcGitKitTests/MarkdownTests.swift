@@ -142,6 +142,36 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[1].kind == .footnote(label: "a"))
         #expect(plain(blocks[1].runs) == "Because.")
     }
+
+    @Test func proseAfterABracketedLabelStaysAParagraph() {
+        let blocks = MarkdownDocument.parse("[Note]: this is not done\n\nSee [Note].\n").blocks
+        #expect(blocks.count == 2)
+        #expect(plain(blocks[0].runs) == "[Note]: this is not done")
+        #expect(blocks[1].runs.allSatisfy { $0.link == nil })
+    }
+
+    @Test func aFenceLineWithInfoDoesNotCloseTheFence() {
+        let source = "```\n```js\n[a]: https://example.com\n```\n\nSee [a].\n"
+        let blocks = MarkdownDocument.parse(source).blocks
+        #expect(blocks.count == 2)
+        #expect(blocks[0].kind == .code(language: nil, text: "```js\n[a]: https://example.com"))
+        #expect(blocks[1].runs.allSatisfy { $0.link == nil })
+    }
+
+    @Test func aDefinitionAfterAFenceWithAnInfoLineStillDefines() {
+        let source = "```\n```js\n```\n\n[a]: /real\n\nSee [a].\n"
+        let blocks = MarkdownDocument.parse(source).blocks
+        #expect(blocks.count == 2)
+        #expect(blocks[1].runs.contains { $0.link?.destination == "/real" })
+    }
+
+    @Test func indentedAndContinuationDefinitionsDefineNothing() {
+        let indented = MarkdownDocument.parse("    [a]: /x\n\nSee [a].\n").blocks
+        #expect(indented.last?.runs.allSatisfy { $0.link == nil } == true)
+        let continued = MarkdownDocument.parse("Text\n[a]: /x\n\nSee [a].\n").blocks
+        #expect(plain(continued[0].runs) == "Text [a]: /x")
+        #expect(continued.last?.runs.allSatisfy { $0.link == nil } == true)
+    }
 }
 
 @Suite struct MarkdownAnchorTests {
@@ -305,6 +335,24 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(before.first?.link?.destination == "https://example.com")
         let collapsed = MarkdownDocument.parse("[ref]: https://example.com\n\n[ref][]\n")
         #expect(collapsed.blocks.first?.runs.first?.link?.destination == "https://example.com")
+    }
+
+    @Test func aDefinitionInsideAFenceDefinesNothing() {
+        let plainFence = MarkdownDocument.parse("```\n[ref]: https://x\n```\n\n[a][ref]\n")
+        #expect(plainFence.blocks.last?.runs.first?.link == nil)
+        let source = "```md\n```js\n[ref]: https://sample.example\n```\n\n[docs][ref]\n"
+        let nested = MarkdownDocument.parse(source)
+        #expect(nested.blocks.last?.runs.first?.link == nil)
+    }
+
+    @Test func theFirstDefinitionOfALabelWins() {
+        let parsed = runs("[a][ref]\n\n[ref]: https://one\n[ref]: https://two\n")
+        #expect(parsed.first?.link?.destination == "https://one")
+    }
+
+    @Test func labelsMatchIgnoringCase() {
+        let parsed = runs("[a][REF]\n\n[ref]: https://example.com\n")
+        #expect(parsed.first?.link?.destination == "https://example.com")
     }
 
     @Test func autolinksAndBareURLsBecomeLinks() {

@@ -470,7 +470,9 @@ extension MarkdownBlockParser {
         var end = after.lowerBound
         while end < after.upperBound, !Ascii.isSpace(bytes[end]) { end += 1 }
         let destination = MarkdownInlineParser.unangled(text(after.lowerBound..<end))
-        let title = quotedTitle(trimmedEnd(of: trimmedStart(of: end..<after.upperBound)))
+        let trailing = trimmedEnd(of: trimmedStart(of: end..<after.upperBound))
+        let title = quotedTitle(trailing)
+        guard trailing.isEmpty || title != nil else { return nil }
         return (label, MarkdownLink(destination: destination, title: title))
     }
 
@@ -546,28 +548,44 @@ extension MarkdownBlockParser {
     }
 
     /// Collects `[label]: target` definitions before the main pass, because a reference may be
-    /// used above the line that defines it. Fenced code is skipped so a sample cannot define one.
+    /// used above the line that defines it. Fenced and indented code is skipped so a sample
+    /// cannot define one, and so is a line that continues a paragraph, which the main pass
+    /// shows as text.
     private mutating func collectReferences() {
         var fence: (marker: UInt8, count: Int)?
+        var inParagraph = false
         for line in lines {
-            let body = trimmedStart(of: strippingQuotes(line).rest)
+            let rest = strippingQuotes(line).rest
+            let body = trimmedStart(of: rest)
             if let open = fence {
-                if let closing = fenceInfo(body), closing.marker == open.marker,
-                    closing.count >= open.count
-                {
-                    fence = nil
+                if closesFence(body, opening: open) { fence = nil }
+                continue
+            }
+            if body.isEmpty {
+                inParagraph = false
+                continue
+            }
+            if indentWidth(of: rest) >= 4 { continue }
+            if let opening = fenceInfo(body) {
+                fence = (opening.marker, opening.count)
+                inParagraph = false
+                continue
+            }
+            if !inParagraph, let definition = referenceDefinition(body) {
+                if references[definition.label] == nil {
+                    references[definition.label] = definition.link
                 }
                 continue
             }
-            if let opening = fenceInfo(body) {
-                fence = (opening.marker, opening.count)
-                continue
-            }
-            guard let definition = referenceDefinition(body) else { continue }
-            if references[definition.label] == nil {
-                references[definition.label] = definition.link
-            }
+            inParagraph = atxLevel(body) == nil && !isThematicBreak(body)
         }
+    }
+
+    /// True when the line closes `opening`: the same marker, at least as many of it, no info.
+    private func closesFence(_ body: Range<Int>, opening: (marker: UInt8, count: Int)) -> Bool {
+        guard let closing = fenceInfo(body) else { return false }
+        return closing.marker == opening.marker && closing.count >= opening.count
+            && closing.info.isEmpty
     }
 
     private mutating func beginListItem(_ item: ListItem) {
@@ -591,9 +609,7 @@ extension MarkdownBlockParser {
         while index < lines.count {
             let rest = strippingQuotes(lines[index]).rest
             let trimmed = trimmedStart(of: rest)
-            if let closing = fenceInfo(trimmed), closing.marker == fence.marker,
-                closing.count >= fence.count, closing.info.isEmpty
-            {
+            if closesFence(trimmed, opening: (fence.marker, fence.count)) {
                 index += 1
                 break
             }
