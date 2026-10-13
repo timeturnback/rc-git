@@ -16,7 +16,8 @@ public enum UpdateStep: Sendable, Hashable {
 /// What an update does, which is decided by the bundle running it.
 public enum UpdateMode: Sendable, Hashable {
     /// The release bundle: fetch, fast-forward, rebuild, install into `/Applications`,
-    /// relaunch. Refuses a dirty checkout, and stops early when the commit has not moved.
+    /// relaunch. Refuses a dirty checkout, and stops early when the commit has not moved and
+    /// the bundle was built clean.
     case update
     /// The dev bundle: rebuild from the working tree as it stands and relaunch. No fetch
     /// and no dirty check — putting work in progress into the running app is the point.
@@ -314,7 +315,7 @@ public final class UpdateModel {
         note("reading the checkout after the fetch")
         guard let after = await readSource(step: .sync) else { return false }
         note("checkout is at \(String(after.commit.prefix(7)))")
-        if !force, after.commit == build.commit {
+        if !force, !build.dirty, after.commit == build.commit {
             state = .upToDate
             onChanged?()
             return false

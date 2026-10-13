@@ -196,11 +196,11 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
 
     private static func build(
         variant: AppVariant = .release, sourceRoot: String? = "/checkout",
-        commit: String? = head
+        commit: String? = head, dirty: Bool = false
     ) -> AppBuild {
         AppBuild(
             variant: variant, name: "rc-git", version: "0.1.0", build: "42",
-            sourceRoot: sourceRoot, commit: commit, dirty: false, buildDate: nil)
+            sourceRoot: sourceRoot, commit: commit, dirty: dirty, buildDate: nil)
     }
 
     private static func model(
@@ -252,6 +252,19 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         await model.start()
         #expect(model.state == .upToDate)
         #expect(!environment.calls.contains("install"))
+    }
+
+    /// A bundle built from uncommitted work holds code in no commit, so the same commit is no
+    /// reason to skip the rebuild.
+    @Test func aDirtyBuildAtTheSameCommitRebuilds() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
+            ]),
+            build: Self.build(dirty: true))
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(environment.calls.contains("install"))
     }
 
     @Test func forceRebuildsAnUnchangedCheckout() async {
