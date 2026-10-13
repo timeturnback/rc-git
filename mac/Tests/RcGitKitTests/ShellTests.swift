@@ -146,6 +146,24 @@ import Testing
         #expect(outcome.failure == "was killed by signal 9 (SIGKILL)")
     }
 
+    /// A checkout that moved fails the start the same way a missing executable does; the
+    /// outcome blames the directory, not the shell.
+    @Test func aMissingWorkingDirectoryIsNamed() async throws {
+        let missing = Self.directory + "/rc-git-moved-\(UUID().uuidString)"
+        let outcome = await Shell.run("/bin/sh", ["-c", "true"], in: missing)
+        #expect(outcome.status == -1)
+        #expect(!outcome.succeeded)
+        let line = try #require(outcome.lines.first)
+        #expect(line.hasPrefix("working directory \(missing) does not exist: "))
+    }
+
+    @Test func aMissingExecutableIsNamed() async throws {
+        let outcome = await Shell.run("/nonexistent/rc-git-shell", [], in: Self.directory)
+        #expect(outcome.status == -1)
+        let line = try #require(outcome.lines.first)
+        #expect(line.hasPrefix("cannot run /nonexistent/rc-git-shell: "))
+    }
+
     @Test func anUnlistedSignalIsNamedByItsNumber() {
         #expect(Shell.signalName(SIGTERM) == "SIGTERM")
         #expect(Shell.signalName(31) == "SIG31")

@@ -87,7 +87,7 @@ public enum Shell {
         do {
             try process.run()
         } catch {
-            collector.take(Data("cannot run \(executable): \(error)\n".utf8))
+            collector.take(Data("\(startFailure(executable, in: directory)): \(error)\n".utf8))
             return Outcome(status: -1, reason: .exit, lines: collector.finish(), stopped: nil)
         }
 
@@ -108,6 +108,17 @@ public enum Shell {
         return Outcome(
             status: process.terminationStatus, reason: process.terminationReason,
             lines: collector.finish(), stopped: killer.reason)
+    }
+
+    /// What a run that could not start blames. A missing working directory fails the start
+    /// with the same Cocoa error as a missing executable, so it is named first: blaming the
+    /// executable points the reader at the wrong thing.
+    static func startFailure(_ executable: String, in directory: String) -> String {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else { return "working directory \(directory) does not exist" }
+        return "cannot run \(executable)"
     }
 
     /// Reads the pipe to EOF on a thread of its own. `availableData` blocks, and a blocked

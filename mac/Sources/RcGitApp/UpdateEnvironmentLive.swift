@@ -57,6 +57,14 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         """
 
     func toolchain() async -> ToolchainCheck {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceRoot, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            return .failure(
+                "the checkout this bundle was built from is gone: \(sourceRoot); "
+                    + "rebuild from its new location with scripts/install-app.sh")
+        }
         let outcome = await Self.login(
             Self.toolchainProbe, in: sourceRoot,
             timeout: .seconds(Self.toolchainTimeoutSeconds))
