@@ -12,9 +12,10 @@ import Testing
         try RepositoryGuard.createBranch(
             repoPath: fixture.path, name: "topic", revspec: "main~1")
         #expect(try fixture.revParse("refs/heads/topic") == fixture.revParse("main~1"))
-        #expect(throws: RepositoryError.self) {
+        let duplicate = #expect(throws: RepositoryError.self) {
             try RepositoryGuard.createBranch(repoPath: fixture.path, name: "topic", revspec: "main")
         }
+        #expect(duplicate?.message.contains("refs/heads/topic") == true)
 
         let plan = try RepositoryGuard.planBranchDelete(repoPath: fixture.path, name: "feature")
         #expect(plan.kind == .confirm)
@@ -23,13 +24,17 @@ import Testing
         #expect(plan.backupRef)
         #expect(!plan.merged)
 
-        #expect(throws: RepositoryError.self) {
+        let refused = #expect(throws: RepositoryError.self) {
             try RepositoryGuard.deleteBranch(
                 repoPath: fixture.path, name: "feature", input: "wrong")
         }
+        #expect(refused?.message.contains("typed confirmation did not match") == true)
+        let oldTip = try fixture.revParse("refs/heads/feature")
         let backup = try RepositoryGuard.deleteBranch(
             repoPath: fixture.path, name: "feature", input: "feature")
         #expect(backup == "refs/rc-git/backup/branch/feature")
+        #expect(throws: FixtureError.self) { try fixture.revParse("refs/heads/feature") }
+        #expect(try fixture.revParse(try #require(backup)) == oldTip)
 
         let denied = try RepositoryGuard.planBranchDelete(repoPath: fixture.path, name: "main")
         #expect(denied.kind == .deny)
@@ -37,9 +42,13 @@ import Testing
 
         let tagPlan = RepositoryGuard.planTagDelete(name: "v1.0")
         #expect(tagPlan?.typedPhrase == "v1.0")
+        // The backup stores the unpeeled target: the annotated tag object, not its commit.
+        let oldTag = try fixture.revParse("refs/tags/v1.0")
         let tagBackup = try RepositoryGuard.deleteTag(
             repoPath: fixture.path, name: "v1.0", input: "v1.0")
         #expect(tagBackup == "refs/rc-git/backup/tag/v1.0")
+        #expect(throws: FixtureError.self) { try fixture.revParse("refs/tags/v1.0") }
+        #expect(try fixture.revParse(try #require(tagBackup)) == oldTag)
     }
 
     @Test func plansCarryTheChangesTabPolicy() {
@@ -93,8 +102,15 @@ import Testing
             try RepositoryGuard.stashDrop(repoPath: fixture.path, entry: elsewhere, input: "drop")
         }
         #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        let stashTip = try fixture.revParse("stash@{0}")
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, entry: shown, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
+        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
+        #expect(try fixture.revParse(try #require(backup)) == stashTip)
+        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+        #expect(
+            try String(contentsOfFile: fixture.path + "/alpha.txt", encoding: .utf8)
+                == "stash via bridge\n")
 
         try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
@@ -154,6 +170,23 @@ import Testing
         try RepositoryGuard.discardHunks(
             repoPath: fixture.path, path: "hunky.txt", stamps: remaining, input: nil)
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+    }
+
+    @Test func aCommitAgainstAMovedHeadThrowsAndCommitsNothing() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("alpha.txt", "judged against an old head\n")
+        let head = try fixture.revParse("HEAD")
+
+        #expect(throws: RepositoryError.self) {
+            _ = try RepositoryGuard.commit(
+                repoPath: fixture.path, message: "Stale",
+                fallback: CommitIdentity(name: "Bridge User", email: "bridge@example.com"),
+                expectedHead: try commitID(fixture.revParse("HEAD~1")),
+                selections: [.whole(path: "alpha.txt")], input: nil)
+        }
+        #expect(try fixture.revParse("HEAD") == head)
+        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
     }
 
     @Test func anEmptyHunkSelectionThrowsAndCommitsNothing() throws {
@@ -246,11 +279,13 @@ import Testing
     @Test func checkoutSwitchesBranchesAndRefusesADirtyPath() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
+        let expected = try fixture.gitOutput(["diff", "--name-only", "main", "feature"])
+            .split(separator: "\n").count
 
         let outcome = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
         #expect(outcome.branch == "feature")
         #expect(!outcome.alreadyOnBranch)
-        #expect(outcome.filesChanged > 0)
+        #expect(outcome.filesChanged == expected)
         #expect(try outcome.newHead.hex == fixture.revParse("feature"))
         #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
         #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
@@ -261,8 +296,14 @@ import Testing
 
         // feature.txt exists only on `feature`, so switching away must delete it.
         try fixture.write("feature.txt", "work in progress\n")
-        #expect(throws: SyncError.self) {
+        let dirty = #expect(throws: SyncError.self) {
             try RepositoryGuard.checkout(repoPath: fixture.path, branch: "main")
+        }
+        if case .failure(let message)? = dirty {
+            #expect(message.contains("feature.txt"), "\(message)")
+            #expect(message.contains("checkout"), "\(message)")
+        } else {
+            Issue.record("expected .failure, got \(String(describing: dirty))")
         }
         #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
     }
@@ -391,6 +432,22 @@ import Testing
                 return
             }
             #expect(message.contains("git"), "\(message)")
+        }
+    }
+
+    @Test func pushWithoutARemoteNamesTheMissingRemote() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+
+        do {
+            _ = try RepositoryGuard.push(repoPath: fixture.path, credentials: nil)
+            Issue.record("expected a push with no remote to be refused")
+        } catch {
+            guard case .failure(let message) = error else {
+                Issue.record("expected .failure, got \(error)")
+                return
+            }
+            #expect(message.contains("has no remote to use"), "\(message)")
         }
     }
 
