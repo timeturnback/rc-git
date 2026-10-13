@@ -531,7 +531,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let selected = selectedKeys
         fileNodes = ChangeTree.nodes(entries, grouping: grouping)
         filesOutline.reloadData()
-        expandFolders()
+        expandFolders(fileNodes)
         select(keys: selected)
         isReloading = false
     }
@@ -559,8 +559,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Folders open by default: a change list is short, and a closed tree hides the files
     /// the tick boxes are for. Only what the user closed stays closed.
-    private func expandFolders() {
-        var pending = fileNodes
+    private func expandFolders(_ nodes: [StatusNode]) {
+        var pending = nodes
         while let node = pending.popLast() {
             guard node.isFolder, !collapsedFolders.contains(node.key) else { continue }
             filesOutline.expandItem(node)
@@ -803,13 +803,26 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         return cell
     }
 
+    /// Opening a folder re-opens the subfolders the user left open: AppKit closed them with
+    /// it, and nodes rebuilt while it was closed have no expansion state of their own.
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
         collapsedFolders.remove(node.key)
+        guard !isReloading else { return }
+        isReloading = true
+        expandFolders(node.children)
+        isReloading = false
     }
 
+    /// Records only the folder the user closed. AppKit also posts a collapse for every open
+    /// folder beneath it, after marking the parent closed; those are not the user's choice.
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
+        guard !isReloading,
+            let node = notification.userInfo?["NSObject"] as? StatusNode
+        else { return }
+        if let parent = filesOutline.parent(forItem: node), !filesOutline.isItemExpanded(parent) {
+            return
+        }
         collapsedFolders.insert(node.key)
     }
 
