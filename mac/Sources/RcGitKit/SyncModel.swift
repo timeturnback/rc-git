@@ -129,21 +129,17 @@ public struct SyncSummary: Sendable, Hashable {
     public let fetchedRefs: Int
     public let pulledFiles: Int
     public let pushedCommits: Int
-    /// The branch a workflow switched to, `nil` when it switched nothing.
-    public let switchedTo: String?
     /// The step after which a cancel stopped the workflow, `nil` when it ran to the end.
     /// Set when the cancel landed during a step that cannot stop (checkout, pull): that step
     /// finished, and what it did is still reported.
     public let cancelledAfter: SyncStep?
 
     public init(
-        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, switchedTo: String? = nil,
-        cancelledAfter: SyncStep? = nil
+        fetchedRefs: Int, pulledFiles: Int, pushedCommits: Int, cancelledAfter: SyncStep? = nil
     ) {
         self.fetchedRefs = fetchedRefs
         self.pulledFiles = pulledFiles
         self.pushedCommits = pushedCommits
-        self.switchedTo = switchedTo
         self.cancelledAfter = cancelledAfter
     }
 }
@@ -187,6 +183,10 @@ public final class SyncModel {
     private var statusPending = false
     /// Bumped before every status read; a read that finds it moved drops its answer.
     private var statusGeneration = 0
+    /// The branch the last workflow checked out, set the moment the switch lands and kept
+    /// whatever ends the workflow — done, diverged, failed or cancelled — because HEAD and
+    /// the working tree have moved either way. Cleared when a workflow starts.
+    private var switchedBranch: String?
 
     public var isBusy: Bool {
         switch state {
@@ -284,6 +284,14 @@ public final class SyncModel {
         onStateChanged?()
     }
 
+    /// The branch a workflow switched to, once: the caller follows it, and a second call
+    /// answers `nil`. `nil` while a workflow runs and when the last one switched nothing.
+    public func takeSwitchedBranch() -> String? {
+        guard !isBusy else { return nil }
+        defer { switchedBranch = nil }
+        return switchedBranch
+    }
+
     /// Returns terminal states to `.idle` so the next workflow starts clean.
     public func reset() {
         guard !isBusy else { return }
@@ -332,11 +340,13 @@ public final class SyncModel {
         await workflow(start: .checkout, checkUpstream: false) { model -> SyncSummary? in
             let branch = try await model.resolveDefaultBranch()
             let switched = try await model.runCheckout(branch)
-            let switchedTo = switched.alreadyOnBranch ? nil : switched.branch
+            if !switched.alreadyOnBranch {
+                model.switchedBranch = switched.branch
+            }
             if model.cancel.isSignalled {
                 return SyncSummary(
                     fetchedRefs: 0, pulledFiles: switched.filesChanged, pushedCommits: 0,
-                    switchedTo: switchedTo, cancelledAfter: .checkout)
+                    cancelledAfter: .checkout)
             }
             try await model.adoptFreshUpstream(.fetch)
             let fetched = try await model.runFetch()
@@ -344,8 +354,7 @@ public final class SyncModel {
             return SyncSummary(
                 fetchedRefs: fetched.updatedRefs,
                 pulledFiles: pulled.filesChanged + switched.filesChanged,
-                pushedCommits: 0,
-                switchedTo: switchedTo
+                pushedCommits: 0
             )
         }
     }
@@ -398,6 +407,7 @@ public final class SyncModel {
         generation += 1
         let generation = generation
         cancel = CancelToken()
+        switchedBranch = nil
         enter(start)
         do {
             if checkUpstream {

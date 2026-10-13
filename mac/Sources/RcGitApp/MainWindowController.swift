@@ -1209,9 +1209,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             if summary.pulledFiles > 0 {
                 changeListIsStale()
             }
-            if let branch = summary.switchedTo {
-                follow(branch: branch)
-            }
             sync.reset()
         case let .diverged(message):
             showSyncSpinner(false)
@@ -1221,6 +1218,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             showSyncSpinner(false)
             presentError(message, title: "rc-git could not sync")
             sync.reset()
+        }
+        // A switch that landed is followed however the workflow ended: a fetch that fails
+        // after it still leaves HEAD and the working tree on the new branch.
+        if let branch = sync.takeSwitchedBranch() {
+            follow(branch: branch)
         }
     }
 

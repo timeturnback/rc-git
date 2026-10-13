@@ -738,10 +738,11 @@ private let alreadyOnMain = CheckoutOutcome(
             model.state
                 == .done(
                     SyncSummary(
-                        fetchedRefs: 0, pulledFiles: 4, pushedCommits: 0, switchedTo: "main",
-                        cancelledAfter: .checkout)),
-            "the switch landed, so the browser must still follow it"
-        )
+                        fetchedRefs: 0, pulledFiles: 4, pushedCommits: 0,
+                        cancelledAfter: .checkout)))
+        #expect(
+            model.takeSwitchedBranch() == "main",
+            "the switch landed, so the browser must still follow it")
         #expect(performer.fetchCredentials.isEmpty, "the cancel stops the workflow after it")
         #expect(performer.pullCalls == 0)
     }
@@ -816,9 +817,11 @@ private let alreadyOnMain = CheckoutOutcome(
             model.state
                 == .done(
                     SyncSummary(
-                        fetchedRefs: 1, pulledFiles: 6, pushedCommits: 0, switchedTo: "main")),
+                        fetchedRefs: 1, pulledFiles: 6, pushedCommits: 0)),
             "the files the switch wrote and the ones the pull wrote both count"
         )
+        #expect(model.takeSwitchedBranch() == "main")
+        #expect(model.takeSwitchedBranch() == nil, "a switch is followed once")
     }
 
     @Test func backToDefaultOnTheBranchAlreadyStillFetchesButReportsNoSwitch() async {
@@ -838,6 +841,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 0)),
             "nothing was switched, so nothing to follow in the UI"
         )
+        #expect(model.takeSwitchedBranch() == nil)
     }
 
     @Test func aRefusedSwitchStopsBeforeAnyNetworkStep() async {
@@ -903,6 +907,44 @@ private let alreadyOnMain = CheckoutOutcome(
             Issue.record("expected failed, got \(model.state)")
         }
         #expect(performer.fetchCredentials.isEmpty, "no network step may run")
+        #expect(
+            model.takeSwitchedBranch() == "main",
+            "HEAD moved before the failure, so the browser must still follow it")
+    }
+
+    @Test func aFetchThatFailsAfterTheSwitchStillReportsTheSwitch() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.failure(message: "offline"))],
+                checkouts: [.success(switchedToMain)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message.contains("offline"))
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.pullCalls == 0)
+        #expect(model.takeSwitchedBranch() == "main")
+    }
+
+    @Test func aNewWorkflowForgetsASwitchNobodyFollowed() async {
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.failure(message: "offline")), .success(cleanFetch)],
+                checkouts: [.success(switchedToMain)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+        await model.fetch()
+
+        #expect(model.state == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0)))
+        #expect(model.takeSwitchedBranch() == nil, "the fetch switched nothing")
     }
 
     @Test func aFailedRefreshClearsTheStaleStatusAndSaysWhy() async {
