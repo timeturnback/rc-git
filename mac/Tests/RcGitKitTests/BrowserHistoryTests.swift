@@ -593,17 +593,20 @@ import Testing
             repo.resolves["abc1"] = parentCommit
             repo.treeDiffs[parentCommit] = []
         }
-        await model.jumpToRevision("abc1")
+        #expect(await model.jumpToRevision("abc1"))
         #expect(model.diffCommit?.oid == parentCommit)
+    }
 
+    @Test func anUnresolvedRevisionFailsQuietly() async {
+        await model.attach(repo)
         var readFailure: String?
         var inputError: (title: String, message: String)?
         model.onError = { readFailure = $0 }
         model.onInputError = { inputError = ($0, $1) }
-        await model.jumpToRevision("nope")
-        #expect(inputError?.title == BrowserModel.revisionNotFoundTitle)
-        #expect(inputError?.message.contains("not a revision") == true)
+        #expect(await model.jumpToRevision("2024") == false)
+        #expect(model.diffCommit == nil)
         #expect(readFailure == nil)
+        #expect(inputError == nil)
     }
 
     @Test func aClickDuringARevisionResolveWins() async {
@@ -616,11 +619,11 @@ import Testing
         }
         var shown: [Oid?] = []
         model.onDiffChanged = { shown.append(self.model.diffCommit?.oid) }
-        async let jump: Void = model.jumpToRevision("abc1")
+        async let jump = model.jumpToRevision("abc1")
         await gate.waitUntilArrived()
         await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
         gate.open()
-        await jump
+        #expect(await jump == false, "a dropped jump reports no jump")
 
         #expect(model.diffCommit?.oid == mainCommit, "the later click stands")
         #expect(!shown.contains(parentCommit), "the stale jump never lands")

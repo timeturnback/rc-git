@@ -390,7 +390,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchSubmitted(_:))
-        searchField.sendsWholeSearchString = false
+        searchField.sendsWholeSearchString = true
         searchScopeControl.selectedSegment = 0
         searchScopeControl.target = self
         searchScopeControl.action = #selector(searchOptionsChanged(_:))
@@ -495,14 +495,17 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         requestMoreIfNearEnd()
     }
 
+    private var searchScope: CommitSearchScope {
+        searchScopeControl.selectedSegment == 1 ? .author : .message
+    }
+
     private func emitFilter() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
         var filter = CommitFilter()
         if !query.isEmpty {
-            if searchScopeControl.selectedSegment == 1 {
-                filter.author = query
-            } else {
-                filter.message = query
+            switch searchScope {
+            case .author: filter.author = query
+            case .message: filter.message = query
             }
         }
         if !datesRow.isHidden {
@@ -531,10 +534,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func searchSubmitted(_ sender: Any?) {
-        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
-        let isHex = query.count >= 4 && query.allSatisfy(\.isHexDigit)
-        if isHex {
-            onJumpToRevision?(query)
+        if let revision = CommitSearchQuery.revision(searchField.stringValue, scope: searchScope) {
+            onJumpToRevision?(revision)
         } else {
             emitFilter()
         }

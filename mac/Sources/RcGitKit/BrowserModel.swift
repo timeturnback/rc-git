@@ -948,25 +948,27 @@ public final class BrowserModel {
     }
 
     /// Resolves a revision — an abbreviated hash, a ref name, anything `rev-parse` accepts —
-    /// and shows that commit's detail.
-    public func jumpToRevision(_ spec: String) async {
-        guard let repository else { return }
+    /// and shows that commit's detail. Returns false, reporting nothing, when the spec does not
+    /// resolve or another commit was picked during the read.
+    @discardableResult
+    public func jumpToRevision(_ spec: String) async -> Bool {
+        guard let repository else { return false }
         let generation = diffGeneration
         let result = await RepositoryError.run {
             try repository.resolve(spec)
         }
         // Another commit was picked during the read.
-        guard generation == diffGeneration else { return }
+        guard generation == diffGeneration else { return false }
         switch result {
         case let .success(oid):
             await jumpToCommit(oid)
-        case let .failure(error):
-            onInputError?(Self.revisionNotFoundTitle, error.message)
+            return true
+        case .failure:
+            // Benign: the search box submits any hex-looking word ("2024", "added") as a
+            // revision, and the message search for the same text is already running.
+            return false
         }
     }
-
-    /// Title for a revision the jump field could not resolve.
-    public static let revisionNotFoundTitle = "No such revision"
 
     private func continueSearch(target: Int) async {
         guard let repository, let tip = historyAnchor, let filter = searchFilter else { return }

@@ -196,6 +196,41 @@ public struct CommitFilter: Sendable, Hashable {
     }
 }
 
+/// Which commit field the History search box matches.
+public enum CommitSearchScope: Sendable, Hashable {
+    case message
+    case author
+}
+
+/// Decides whether a submitted History search names a revision to jump to.
+public enum CommitSearchQuery {
+    /// How many hex digits a submitted query may hold and still count as an abbreviated hash.
+    public static let revisionLengths = 4...40
+
+    /// The revision to try for a submitted `query`, or nil when it is only search text: 4 to 40
+    /// ASCII hex digits once trimmed, and never in the author scope. `Character.isHexDigit`
+    /// would also accept fullwidth digits, so the check runs over the UTF-8 bytes.
+    public static func revision(_ query: String, scope: CommitSearchScope) -> String? {
+        guard scope == .message else { return nil }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let bytes = trimmed.utf8
+        guard revisionLengths.contains(bytes.count), bytes.allSatisfy(isASCIIHexDigit) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "a")...UInt8(ascii: "f"),
+            UInt8(ascii: "A")...UInt8(ascii: "F"):
+            true
+        default:
+            false
+        }
+    }
+}
+
 /// One page of a filtered history walk.
 public struct CommitPage: Sendable, Hashable {
     /// The commits that matched, newest first.
