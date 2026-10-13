@@ -505,6 +505,26 @@ import Testing
         #expect(repo.lock.withLock { repo.stashCalls } == 1, "a cancel drops the queued re-run")
     }
 
+    @Test func aRefreshBurstCostsTwoOfEach() async {
+        let gate = CallGate()
+        repo.statusGate = gate
+        repo.lock.withLock { repo.stashDelay = 1 }
+        async let inFlight: Void = model.refresh()
+        await gate.waitUntilArrived()
+        try? await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<20 {
+            await model.refresh()
+        }
+        gate.open()
+        await inFlight
+        #expect(
+            repo.lock.withLock { repo.statusCalls } == 2,
+            "the scan in flight plus one re-run, however many refreshes arrived")
+        #expect(
+            repo.lock.withLock { repo.stashCalls } == 2,
+            "the stash read in flight plus one re-run, however many refreshes arrived")
+    }
+
     @Test func refreshLoadsTheChangeListAndTheStashes() async {
         let stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
         repo.lock.withLock { repo.stashes = stashes }
