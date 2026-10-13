@@ -42,12 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         rebuildRecentMenu()
         watchNavigationButtons()
         NSApp.activate(ignoringOtherApps: true)
-        let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-        if paths.isEmpty {
-            restoreTabs()
-        } else {
-            for path in paths { open(path: path) }
-        }
+        // AppKit has already handed every argv path to `application(_:openFile:)`, skipping
+        // `-Key value` pairs, so argv is not read here; `restoreTabs` keeps that tab selected.
+        restoreTabs()
         hasFinishedLaunching = true
     }
 
@@ -217,9 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// The realpath of `path`, so tabs, recents and the sync sheet's `cd` hold neither a
-    /// relative path nor a `/private`-stripped one; `path` itself when it does not resolve.
+    /// relative path nor a `/private`-stripped one. A relative path resolves against the
+    /// working directory first, so `.` never reaches the tab list even when it does not resolve.
     private func canonicalPath(_ path: String) -> String {
-        guard let resolved = realpath(path, nil) else { return path }
+        let absolute = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let resolved = realpath(absolute, nil) else { return absolute }
         defer { free(resolved) }
         return String(cString: resolved)
     }
