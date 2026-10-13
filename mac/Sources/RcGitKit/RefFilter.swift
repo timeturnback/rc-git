@@ -23,6 +23,21 @@ extension RefListing {
         ("Other", .other),
     ]
 
+    /// The title of the ref list's last section: the references whose target could not be
+    /// read. Its rows are listed so a broken ref does not look like a missing one, and are
+    /// never picked.
+    public static let unreadableTitle = "Unreadable"
+
+    /// The broken refs whose full name contains `filter`, ignoring case, sorted naturally. A
+    /// blank filter keeps every one; an empty result means the section is left out.
+    public func unreadable(matching filter: String) -> [BrokenRef] {
+        let query = Self.query(from: filter)
+        return
+            broken
+            .filter { ref in query.map { ref.fullName.lowercased().contains($0) } ?? true }
+            .sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
+    }
+
     /// The filter as matching uses it: trimmed and lowercased, or `nil` when it is blank and
     /// so filters nothing.
     public static func query(from filter: String) -> String? {

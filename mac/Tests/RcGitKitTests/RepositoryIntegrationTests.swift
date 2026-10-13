@@ -47,6 +47,20 @@ import Testing
                 != RefWatcher.canonical(linked.commonDirectory))
     }
 
+    @Test func brokenRefIsReportedWithoutHidingTheRest() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write(".git/refs/heads/x", "not a ref\n")
+        let listing = try Repository(path: fixture.path).refs()
+        #expect(listing.broken.count == 1)
+        let broken = try #require(listing.broken.first)
+        #expect(broken.fullName == "refs/heads/x")
+        #expect(!broken.error.isEmpty)
+        #expect(listing.unreadable(matching: "").map(\.fullName) == ["refs/heads/x"])
+        let names = Set(listing.refs.map(\.shortName))
+        #expect(names == ["main", "feature", "origin/main", "v0.9", "v1.0"])
+    }
+
     @Test func readsRefsTreesBlobsAndHistory() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

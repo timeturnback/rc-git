@@ -103,4 +103,27 @@ private func names(_ sections: [RefSection]) -> [[String]] {
         let listing = RefListing(refs: [ref("main-10"), ref("main-2")])
         #expect(listing.bestMatch(for: "main")?.shortName == "main-2")
     }
+
+    @Test func brokenRefsAreUnreadableInNaturalOrderAndNeverPicked() {
+        let listing = RefListing(
+            refs: [ref("main")],
+            broken: [
+                BrokenRef(fullName: "refs/tags/v10", error: "missing object"),
+                BrokenRef(fullName: "refs/remotes/origin/HEAD", error: "dangling symref"),
+                BrokenRef(fullName: "refs/tags/v2", error: "missing object"),
+            ])
+        #expect(
+            listing.unreadable(matching: " ").map(\.fullName) == [
+                "refs/remotes/origin/HEAD", "refs/tags/v2", "refs/tags/v10",
+            ])
+        #expect(
+            listing.unreadable(matching: "ORIGIN").map(\.fullName) == ["refs/remotes/origin/HEAD"])
+        #expect(listing.unreadable(matching: "nothing").isEmpty)
+        #expect(names(listing.sections(matching: "")) == [["main"]])
+        #expect(listing.bestMatch(for: "v2") == nil)
+    }
+
+    @Test func noBrokenRefsLeavesTheUnreadableSectionOut() {
+        #expect(mixed.unreadable(matching: "").isEmpty)
+    }
 }

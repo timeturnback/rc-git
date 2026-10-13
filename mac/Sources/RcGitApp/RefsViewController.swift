@@ -33,10 +33,18 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private final class Section {
         let title: String
         let refs: [RefEntry]
-        init(title: String, refs: [RefEntry]) {
+        let broken: [BrokenRow]
+        init(title: String, refs: [RefEntry], broken: [BrokenRow] = []) {
             self.title = title
             self.refs = refs
+            self.broken = broken
         }
+    }
+
+    /// A ref whose target could not be read: listed so it does not look missing, never picked.
+    private final class BrokenRow {
+        let ref: BrokenRef
+        init(_ ref: BrokenRef) { self.ref = ref }
     }
 
     /// The one pseudo-row above the sections: the files on disk.
@@ -142,6 +150,13 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         let filter = search.stringValue
         sections = listing.sections(matching: filter).map {
             Section(title: $0.title, refs: $0.refs)
+        }
+        let broken = listing.unreadable(matching: filter)
+        if !broken.isEmpty {
+            sections.append(
+                Section(
+                    title: RefListing.unreadableTitle, refs: [],
+                    broken: broken.map(BrokenRow.init)))
         }
 
         isReloading = true
@@ -318,12 +333,15 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if item == nil { return sections.count + (showsWorkingTree ? 1 : 0) }
-        if let section = item as? Section { return section.refs.count }
+        if let section = item as? Section { return section.refs.count + section.broken.count }
         return 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        if let section = item as? Section { return section.refs[index] }
+        if let section = item as? Section {
+            if index < section.refs.count { return section.refs[index] }
+            return section.broken[index - section.refs.count]
+        }
         if showsWorkingTree {
             return index == 0 ? workingTreeRow : sections[index - 1]
         }
@@ -360,6 +378,14 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             cell.toolTip = "Files on disk, compared with HEAD"
             return cell
         }
+        if let row = item as? BrokenRow {
+            let cell = refCell()
+            cell.imageView?.image = Icons.unreadableRef
+            cell.label.stringValue = row.ref.fullName
+            cell.isEmphasized = false
+            cell.toolTip = row.ref.error
+            return cell
+        }
         guard let ref = item as? RefEntry else { return nil }
         let cell = refCell()
         cell.imageView?.image = Icons.symbol(for: ref.kind)
@@ -377,6 +403,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         _ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any
     ) -> String? {
         if item is WorkingTreeRow { return "Working Tree" }
+        if let row = item as? BrokenRow { return row.ref.fullName }
         return (item as? RefEntry)?.shortName
     }
 
