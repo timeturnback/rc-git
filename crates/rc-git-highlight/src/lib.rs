@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn markdown_merged_spans_stay_ordered_and_disjoint() {
-        let data = b"# A *bold* title\n\n---\nkey: value\n---\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
+        let data = b"---\nkey: value\n---\n\n# A *bold* title\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
         let spans = highlight(data, Language::Markdown, None).unwrap();
         assert_ne!(spans.len(), 0);
         for window in spans.windows(2) {
@@ -1081,6 +1081,31 @@ mod tests {
         }
         assert!(classes_at(&spans, data, "bold").contains(&Class::Emphasis));
         assert!(classes_at(&spans, data, "title").contains(&Class::Heading));
+        assert!(classes_at(&spans, data, "key").contains(&Class::Property));
+    }
+
+    #[test]
+    fn markdown_front_matter_highlights_as_yaml_and_toml() {
+        let documents: [&[u8]; 2] = [
+            b"---\ntitle: 42\n---\n# H\n",
+            b"+++\ntitle = 42\n+++\n# H\n",
+        ];
+        for data in documents {
+            let spans = highlight(data, Language::Markdown, None).unwrap();
+            let text = String::from_utf8_lossy(data);
+            assert!(
+                classes_at(&spans, data, "title").contains(&Class::Property),
+                "front matter key is a Property in {text:?}"
+            );
+            assert!(
+                classes_at(&spans, data, "42").contains(&Class::Number),
+                "front matter value is a Number in {text:?}"
+            );
+            assert!(
+                classes_at(&spans, data, "H").contains(&Class::Heading),
+                "heading after front matter stays a Heading in {text:?}"
+            );
+        }
     }
 
     #[test]
