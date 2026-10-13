@@ -224,6 +224,15 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.map(\.listDepth) == [1, 2, 1])
     }
 
+    @Test func aLineOfMarkersNestsNoDeeperThanTheCap() throws {
+        let source = String(repeating: "+ ", count: 10_000) + "x"
+        let blocks = MarkdownDocument.parse(source).blocks
+        let block = try #require(blocks.first)
+        #expect(blocks.count == 1)
+        #expect(block.listDepth == MarkdownBlockParser.maximumListDepth)
+        #expect(plain(block.runs).hasSuffix("+ + x"))
+    }
+
     @Test func aSecondParagraphStaysInsideTheItem() {
         let blocks = MarkdownDocument.parse("- one\n\n  more\n\nafter\n").blocks
         #expect(blocks[1].listDepth == 1)

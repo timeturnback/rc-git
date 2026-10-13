@@ -56,6 +56,9 @@ struct MarkdownBlockParser {
     private var index = 0
     /// Content indents of the list items currently open, outermost first.
     private var listIndents: [Int] = []
+    /// The deepest list nesting opened. A marker past it reads as text, so a crafted line of
+    /// markers cannot push the renderer's indent off the page.
+    static let maximumListDepth = 32
     private var quoteDepth = 0
     private var pending: Pending?
     /// Carried by the first block of a list item and cleared there, so one bullet is drawn.
@@ -237,7 +240,19 @@ struct MarkdownBlockParser {
     /// The indent at which a line outside a paragraph is indented code, whatever it starts with.
     private var codeIndent: Int { (listIndents.last ?? 0) + 4 }
 
+    /// Reads one line outside a paragraph. A list marker opens its item and the rest of the line
+    /// goes round again, so `- - - x` nests in a loop rather than by recursion.
     private mutating func dispatch(body: Range<Int>, indent: Int) {
+        var line: (body: Range<Int>, indent: Int)? = (body, indent)
+        while let (body, indent) = line {
+            line = dispatchOnce(body: body, indent: indent)
+        }
+    }
+
+    /// Reads the line's first block; returns what follows a list marker when one opened an item.
+    private mutating func dispatchOnce(body: Range<Int>, indent: Int)
+        -> (body: Range<Int>, indent: Int)?
+    {
         if indent >= codeIndent {
             consumeIndentedCode(baseIndent: codeIndent)
         } else if let fence = fenceInfo(body) {
@@ -248,8 +263,10 @@ struct MarkdownBlockParser {
         } else if isThematicBreak(body) {
             emit(.thematicBreak)
             index += 1
-        } else if let item = listItem(body, indent: indent) {
-            beginListItem(item)
+        } else if listIndents.count < Self.maximumListDepth,
+            let item = listItem(body, indent: indent)
+        {
+            return beginListItem(item)
         } else if let footnote = footnoteDefinition(body) {
             beginPending(kind: .footnote(label: footnote.label), first: text(footnote.rest))
             index += 1
@@ -261,6 +278,7 @@ struct MarkdownBlockParser {
             beginPending(kind: .paragraph, first: text(body))
             index += 1
         }
+        return nil
     }
 
     /// True when the line opens a block of its own, so it cannot continue a paragraph.
@@ -594,15 +612,16 @@ extension MarkdownBlockParser {
             && closing.info.isEmpty
     }
 
-    private mutating func beginListItem(_ item: ListItem) {
+    /// Opens the item and returns the rest of its line, or nil when the marker ends the line.
+    private mutating func beginListItem(_ item: ListItem) -> (body: Range<Int>, indent: Int)? {
         listIndents.append(item.contentIndent)
         nextMarker = item.marker
         let rest = trimmedStart(of: item.rest)
         guard !rest.isEmpty else {
             index += 1
-            return
+            return nil
         }
-        dispatch(body: rest, indent: item.contentIndent)
+        return (rest, item.contentIndent)
     }
 
     private mutating func consumeFence(
