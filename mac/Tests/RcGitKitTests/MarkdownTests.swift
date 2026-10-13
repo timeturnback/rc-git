@@ -413,6 +413,27 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(parsed.allSatisfy { !$0.style.contains(.code) })
     }
 
+    @Test func emphasisDoesNotCloseInsideACodeSpan() {
+        let parsed = runs("*a `x*y` b*")
+        #expect(parsed.map(\.text) == ["a ", "x*y", " b"])
+        #expect(parsed.map(\.style) == [.emphasis, [.emphasis, .code], .emphasis])
+        let underscores = runs("_see `__init__` here_")
+        #expect(underscores.map(\.text) == ["see ", "__init__", " here"])
+        #expect(underscores.allSatisfy { $0.style.contains(.emphasis) })
+    }
+
+    @Test func linkTextDoesNotCloseInsideACodeSpan() {
+        let parsed = runs("[see `]` here](x.md)")
+        #expect(plain(parsed) == "see ] here")
+        #expect(parsed.allSatisfy { $0.link?.destination == "x.md" })
+    }
+
+    @Test func anEscapedBacktickOpensNoCodeSpanForTheCloserSearch() {
+        let parsed = runs("*a \\` b `c* d`")
+        #expect(parsed.map(\.text) == ["*a ` b ", "c* d"])
+        #expect(parsed.map(\.style) == [[], .code])
+    }
+
     @Test func escapesProduceTheLiteralCharacter() {
         #expect(plain(runs("\\*not emphasis\\*")) == "*not emphasis*")
     }

@@ -37,8 +37,58 @@ enum MarkdownInlineParser {
 struct InlineScanner {
     let bytes: [UInt8]
     let references: [String: MarkdownLink]
+    /// Where each code span that opens at a backtick ends (one past its closing run). Code spans
+    /// bind tighter than emphasis and brackets, so the closer searches jump over them.
+    let codeSpanEnds: [Int: Int]
     var output: [MarkdownRun] = []
     private var buffer: [UInt8] = []
+
+    init(bytes: [UInt8], references: [String: MarkdownLink]) {
+        self.bytes = bytes
+        self.references = references
+        self.codeSpanEnds = Self.codeSpans(in: bytes)
+    }
+
+    /// Pairs backtick runs by exact width, left to right, skipping escaped bytes outside spans.
+    private static func codeSpans(in bytes: [UInt8]) -> [Int: Int] {
+        var spans: [Int: Int] = [:]
+        var cursor = 0
+        while cursor < bytes.count {
+            switch bytes[cursor] {
+            case Ascii.backslash:
+                cursor += 2
+            case Ascii.backtick:
+                var open = cursor
+                while open < bytes.count, bytes[open] == Ascii.backtick { open += 1 }
+                guard let close = closingBackticks(in: bytes, width: open - cursor, from: open)
+                else {
+                    cursor = open
+                    continue
+                }
+                spans[cursor] = close
+                cursor = close
+            default:
+                cursor += 1
+            }
+        }
+        return spans
+    }
+
+    /// One past the first backtick run of exactly `width` at or after `from`.
+    private static func closingBackticks(in bytes: [UInt8], width: Int, from: Int) -> Int? {
+        var search = from
+        while search < bytes.count {
+            guard bytes[search] == Ascii.backtick else {
+                search += 1
+                continue
+            }
+            var close = search
+            while close < bytes.count, bytes[close] == Ascii.backtick { close += 1 }
+            if close - search == width { return close }
+            search = close
+        }
+        return nil
+    }
 
     mutating func parse(
         _ range: Range<Int>, style: MarkdownStyle, link: MarkdownLink?, depth: Int
@@ -192,6 +242,10 @@ struct InlineScanner {
         while cursor < end {
             if bytes[cursor] == Ascii.backslash {
                 cursor += 2
+                continue
+            }
+            if let spanEnd = codeSpanEnds[cursor], spanEnd <= end {
+                cursor = spanEnd
                 continue
             }
             guard bytes[cursor] == marker else {
@@ -355,6 +409,8 @@ extension InlineScanner {
             switch bytes[position] {
             case Ascii.backslash:
                 position += 1
+            case Ascii.backtick:
+                if let spanEnd = codeSpanEnds[position], spanEnd <= end { position = spanEnd - 1 }
             case Ascii.leftBracket:
                 depth += 1
             case Ascii.rightBracket:
