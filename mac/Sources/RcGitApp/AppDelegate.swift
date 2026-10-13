@@ -29,6 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Set while ⇧⌘W closes a window group and once the app is quitting: tabs closed then
     /// stay in the saved list. A tab closed on its own leaves it.
     private var keepingClosedTabs = false
+    /// False until `applicationDidFinishLaunching` returns. A document that arrives before
+    /// then (Finder, the Dock, `open -a`) is what launched the app.
+    private var hasFinishedLaunching = false
+    /// The repository a document opened before launch finished; `restoreTabs` keeps its tab
+    /// selected over the saved selection.
+    private var launchDocument: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(
@@ -42,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         } else {
             for path in paths { open(path: path) }
         }
+        hasFinishedLaunching = true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -54,7 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        open(path: filename)
+        let controller = open(path: filename)
+        if !hasFinishedLaunching, let path = controller?.repositoryPath {
+            launchDocument = path
+        }
         return true
     }
 
@@ -167,27 +177,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Opens a repository in an empty tab, or a new one when every tab is in use. A
-    /// repository that is already open gets its existing tab selected instead.
-    func open(path: String) {
-        let path = canonicalPath(path)
-        if let existing = controllers.first(where: { $0.repositoryPath == path }) {
-            existing.showWindow(nil)
-            return
-        }
+    /// repository that is already open gets its existing tab selected instead. Returns the
+    /// tab, or nil after alerting that the repository did not open.
+    @discardableResult
+    func open(path: String) -> MainWindowController? {
         do {
-            let repository = try Repository(path: path)
+            let tab = try openTab(path)
+            guard tab.isNew, let path = tab.controller.repositoryPath else {
+                tab.controller.showWindow(nil)
+                return tab.controller
+            }
             recents.note(path)
             rebuildRecentMenu()
-            let controller = controllers.first(where: { $0.isEmpty }) ?? newWindow()
-            controller.show(repository, path: path)
             saveTabs()
+            return tab.controller
         } catch {
             let alert = NSAlert()
             alert.messageText = "Could not open repository"
             alert.informativeText = String(describing: error)
             alert.alertStyle = .warning
             alert.runModal()
+            return nil
         }
+    }
+
+    /// The one opener every arrival goes through — a menu, Finder, argv, a restore. Dedupes
+    /// on the canonical path: a repository that is already open returns its tab, not a second.
+    ///
+    /// - Throws: The error `Repository(path:)` throws when `path` does not open.
+    private func openTab(_ path: String) throws -> (controller: MainWindowController, isNew: Bool) {
+        let path = canonicalPath(path)
+        if let existing = controllers.first(where: { $0.repositoryPath == path }) {
+            return (existing, false)
+        }
+        let repository = try Repository(path: path)
+        let controller = controllers.first(where: { $0.isEmpty }) ?? newWindow()
+        controller.show(repository, path: path)
+        return (controller, true)
     }
 
     /// The realpath of `path`, so tabs, recents and the sync sheet's `cd` hold neither a
@@ -306,27 +332,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // MARK: Tab persistence
 
     /// Reopens the tabs of the previous run, silently skipping repositories that no longer
-    /// open, and selects the tab that was selected then. Falls back to one empty tab.
+    /// open, and selects the tab that was selected then — or the launch document's tab, when
+    /// opening one launched the app. Falls back to one empty tab.
     ///
-    /// A path that no longer opens is dropped here, so it is not retried on every launch.
+    /// Restore goes through `openTab`, so a repository a launch document already opened is
+    /// not opened twice. The saved list becomes the tabs now on screen, launch document
+    /// included: a path that no longer opens is dropped here, so it is not retried on every
+    /// launch.
     private func restoreTabs() {
-        var opened: [MainWindowController] = []
-        for path in openTabs.paths {
-            guard let repository = try? Repository(path: path) else { continue }
-            let controller = newWindow()
-            controller.show(repository, path: path)
-            opened.append(controller)
+        let saved = openTabs.paths
+        let savedSelection = openTabs.selectedIndex
+        for path in saved {
+            // Benign: a repository moved or deleted since the last run is expected, and
+            // alerting once per stale tab at every launch would be noise. It leaves the list
+            // below.
+            _ = try? openTab(path)
         }
-        guard !opened.isEmpty else {
+        let live = tabState().paths
+        guard !live.isEmpty else {
             openTabs.clear()
             newWindow().showWindow(nil)
             return
         }
-        let openedPaths = opened.compactMap(\.repositoryPath)
         let selected = OpenTabs.restoredSelection(
-            saved: openTabs.paths, selectedIndex: openTabs.selectedIndex, opened: openedPaths)
-        opened[selected].showWindow(nil)
-        openTabs.save(paths: openedPaths, selectedIndex: selected)
+            saved: saved, selectedIndex: savedSelection, opened: live,
+            launchDocument: launchDocument)
+        controllers.first { $0.repositoryPath == live[selected] }?.showWindow(nil)
+        openTabs.save(paths: live, selectedIndex: selected)
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on

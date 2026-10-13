@@ -123,6 +123,20 @@ import Testing
         #expect(OpenTabs.restoredSelection(saved: saved, selectedIndex: 9, opened: ["/a"]) == 0)
     }
 
+    @Test func restoredSelectionKeepsTheLaunchDocument() {
+        let saved = ["/a", "/b", "/c"]
+        #expect(
+            OpenTabs.restoredSelection(
+                saved: saved, selectedIndex: 0, opened: saved, launchDocument: "/c") == 2)
+        #expect(
+            OpenTabs.restoredSelection(
+                saved: saved, selectedIndex: 1, opened: ["/a", "/b"], launchDocument: "/gone")
+                == 1)
+        #expect(
+            OpenTabs.restoredSelection(
+                saved: [], selectedIndex: 0, opened: ["/launch"], launchDocument: "/launch") == 0)
+    }
+
     /// Another build under the same bundle id may have written these keys with another type;
     /// that reads as no tabs, never as a crash.
     @Test func aWronglyTypedStoredListReadsAsEmpty() throws {

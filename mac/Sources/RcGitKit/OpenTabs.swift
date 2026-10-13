@@ -63,9 +63,15 @@ public struct OpenTabs {
     /// The selection after a restore that skipped repositories which no longer open: the
     /// index in `opened` of the path that was selected in `saved`, or the first tab when that
     /// path is the one that failed to open.
-    public static func restoredSelection(saved: [String], selectedIndex: Int, opened: [String])
-        -> Int
-    {
+    ///
+    /// `launchDocument` is the repository whose opening launched the app (Finder, the Dock,
+    /// `open -a`). It is what the user asked for, so it stays selected over the saved choice.
+    public static func restoredSelection(
+        saved: [String], selectedIndex: Int, opened: [String], launchDocument: String? = nil
+    ) -> Int {
+        if let launchDocument, let index = opened.firstIndex(of: launchDocument) {
+            return index
+        }
         guard !saved.isEmpty else { return 0 }
         let path = saved[clampedSelection(selectedIndex, count: saved.count)]
         return opened.firstIndex(of: path) ?? 0
