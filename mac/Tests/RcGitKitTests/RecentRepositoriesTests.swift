@@ -28,4 +28,20 @@ import Testing
             #expect(recents.paths.isEmpty)
         }
     }
+
+    /// Another build under the same bundle id may have written this key with another type;
+    /// that reads as no recents, and the next open replaces it.
+    @Test func aWronglyTypedStoredListReadsAsEmpty() throws {
+        try withScratchDefaults { defaults in
+            let recents = RecentRepositories(defaults: defaults)
+            defaults.set("oops", forKey: RecentRepositories.key)
+            #expect(recents.paths.isEmpty)
+
+            defaults.set(["/a", 3] as [Any], forKey: RecentRepositories.key)
+            #expect(recents.paths.isEmpty)
+
+            recents.note("/b")
+            #expect(recents.paths == ["/b"])
+        }
+    }
 }

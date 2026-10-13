@@ -123,6 +123,24 @@ import Testing
         #expect(OpenTabs.restoredSelection(saved: saved, selectedIndex: 9, opened: ["/a"]) == 0)
     }
 
+    /// Another build under the same bundle id may have written these keys with another type;
+    /// that reads as no tabs, never as a crash.
+    @Test func aWronglyTypedStoredListReadsAsEmpty() throws {
+        try withScratchDefaults { defaults in
+            let tabs = OpenTabs(defaults: defaults)
+            defaults.set("oops", forKey: OpenTabs.pathsKey)
+            defaults.set("x", forKey: OpenTabs.selectedKey)
+            #expect(tabs.paths.isEmpty)
+            #expect(tabs.selectedIndex == 0)
+
+            defaults.set(["/a", 3] as [Any], forKey: OpenTabs.pathsKey)
+            #expect(tabs.paths.isEmpty)
+
+            defaults.set(["/a", "/b"], forKey: OpenTabs.pathsKey)
+            #expect(tabs.selectedIndex == 0)
+        }
+    }
+
     @Test func savedSelectionOutsideTheListFallsBackToFirst() throws {
         try withScratchDefaults { defaults in
             let tabs = OpenTabs(defaults: defaults)
