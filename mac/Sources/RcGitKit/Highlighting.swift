@@ -69,7 +69,7 @@ public enum Highlighter {
         guard data.count <= byteLimit else { return nil }
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = data.withUnsafeBufferPointer { buffer in
-            rcgit_highlight(name, buffer.baseAddress, buffer.count, &error)
+            rcgit_highlight(name, buffer.baseAddress, buffer.count, nil, &error)
         }
         if let error { HighlightFailureLog.report(error) }
         guard let list else { return nil }

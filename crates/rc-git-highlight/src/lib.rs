@@ -10,7 +10,9 @@
 mod imports;
 
 use std::borrow::Cow;
+use std::ops::ControlFlow;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use imports::{ImportLink, import_links};
 
@@ -284,7 +286,8 @@ pub enum Error {
         /// against the range this tree-sitter accepts.
         detail: String,
     },
-    /// The parse itself failed, for instance on a cancelled or oversized input.
+    /// The parse failed: the caller raised the cancellation flag (`Cancelled`), or the
+    /// grammar's ABI was rejected when the parse started (`InvalidLanguage`).
     #[error("highlighting {}: {source}", language.name())]
     Parse {
         /// The language being highlighted.
@@ -305,13 +308,21 @@ pub enum Error {
 /// Markdown additionally highlights its inline prose and fenced code blocks whose language
 /// it knows; an unknown fence language stays plain.
 ///
+/// `cancel` stops the work once it holds a nonzero value; the parse and the event walk poll
+/// it, so another thread can abandon a highlight of a file the user has already left.
+///
 /// # Errors
 /// [`Error::Grammar`] when the language cannot be loaded, [`Error::Parse`] when parsing
-/// fails outright. An unparseable region inside an otherwise fine file is not an error;
-/// tree-sitter recovers and the region simply gets no spans.
-pub fn highlight(data: &[u8], language: Language) -> Result<Vec<Span>, Error> {
+/// fails outright, wrapping `Cancelled` when `cancel` was raised. An unparseable region
+/// inside an otherwise fine file is not an error; tree-sitter recovers and the region simply
+/// gets no spans.
+pub fn highlight(
+    data: &[u8],
+    language: Language,
+    cancel: Option<&AtomicUsize>,
+) -> Result<Vec<Span>, Error> {
     match language {
-        Language::Markdown => highlight_markdown(data, 0),
+        Language::Markdown => highlight_markdown(data, Nesting { depth: 0, cancel }),
         Language::Bash
         | Language::C
         | Language::JavaScript
@@ -322,7 +333,7 @@ pub fn highlight(data: &[u8], language: Language) -> Result<Vec<Span>, Error> {
         | Language::Toml
         | Language::Tsx
         | Language::TypeScript
-        | Language::Yaml => single_layer(language.configuration()?, data, language),
+        | Language::Yaml => single_layer(language.configuration()?, data, language, cancel),
     }
 }
 
@@ -336,10 +347,12 @@ fn single_layer(
     config: &HighlightConfiguration,
     data: &[u8],
     language: Language,
+    cancel: Option<&AtomicUsize>,
 ) -> Result<Vec<Span>, Error> {
+    check_cancel(cancel, language)?;
     let mut highlighter = Highlighter::new();
     let events = highlighter
-        .highlight(config, data, None, None, |_| None)
+        .highlight(config, data, None, cancel, |_| None)
         .map_err(|source| Error::Parse { language, source })?;
     let mut spans = Vec::new();
     let mut stack: Vec<Option<Class>> = Vec::new();
@@ -374,14 +387,37 @@ fn single_layer(
 /// stays plain instead of recursing further.
 const MARKDOWN_FENCE_DEPTH: u8 = 3;
 
+/// Where a markdown pass sits: how deep in nested markdown fences, and the caller's flag.
+#[derive(Clone, Copy)]
+struct Nesting<'a> {
+    depth: u8,
+    cancel: Option<&'a AtomicUsize>,
+}
+
+fn is_raised(cancel: Option<&AtomicUsize>) -> bool {
+    cancel.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0)
+}
+
+/// Fails with `Cancelled` when the flag is already raised. tree-sitter polls the flag only
+/// every so many parse steps and events, so a short input would otherwise finish anyway.
+fn check_cancel(cancel: Option<&AtomicUsize>, language: Language) -> Result<(), Error> {
+    if is_raised(cancel) {
+        return Err(Error::Parse {
+            language,
+            source: tree_sitter_highlight::Error::Cancelled,
+        });
+    }
+    Ok(())
+}
+
 /// Highlights markdown: the block grammar for structure, the inline grammar for prose inside
 /// every `inline` node, and the named language for every fenced code block and metadata
 /// section. Inner spans win over the block layer's, so emphasis inside a heading and keywords
 /// inside a fence keep their own class.
-fn highlight_markdown(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
+fn highlight_markdown(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> {
     let config = Language::Markdown.configuration()?;
-    let base = single_layer(config, data, Language::Markdown)?;
-    let overlays = markdown_overlays(data, depth)?;
+    let base = single_layer(config, data, Language::Markdown, nesting.cancel)?;
+    let overlays = markdown_overlays(data, nesting)?;
     Ok(merge_overlays(base, overlays))
 }
 
@@ -391,7 +427,8 @@ fn highlight_markdown(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
 /// # Errors
 /// [`Error::Grammar`] when the block grammar or a region's grammar fails to load, so a
 /// packaging problem reaches the caller instead of quietly dropping the prose color.
-fn markdown_overlays(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
+/// [`Error::Parse`] wrapping `Cancelled` when the caller's flag is raised.
+fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_md::LANGUAGE.into())
@@ -399,7 +436,18 @@ fn markdown_overlays(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
             language: Language::Markdown,
             detail: error.to_string(),
         })?;
-    let Some(tree) = parser.parse(data, None) else {
+    check_cancel(nesting.cancel, Language::Markdown)?;
+    let mut progress = |_: &tree_sitter::ParseState| {
+        if is_raised(nesting.cancel) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
+    let mut read = |offset: usize, _| data.get(offset..).unwrap_or_default();
+    let Some(tree) = parser.parse_with_options(&mut read, None, Some(options)) else {
+        check_cancel(nesting.cancel, Language::Markdown)?;
         return Ok(Vec::new());
     };
     let mut overlays = Vec::new();
@@ -414,22 +462,22 @@ fn markdown_overlays(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
                     data,
                     node.byte_range(),
                     Region::Inline,
-                    depth,
+                    nesting,
                 )?;
                 descend = false;
             }
             "fenced_code_block" => {
-                append_fence(&mut overlays, data, node, depth)?;
+                append_fence(&mut overlays, data, node, nesting)?;
                 descend = false;
             }
             "minus_metadata" => {
                 let region = Region::Fence(Language::Yaml);
-                append_region(&mut overlays, data, node.byte_range(), region, depth)?;
+                append_region(&mut overlays, data, node.byte_range(), region, nesting)?;
                 descend = false;
             }
             "plus_metadata" => {
                 let region = Region::Fence(Language::Toml);
-                append_region(&mut overlays, data, node.byte_range(), region, depth)?;
+                append_region(&mut overlays, data, node.byte_range(), region, nesting)?;
                 descend = false;
             }
             _ => {}
@@ -464,7 +512,7 @@ fn append_fence(
     overlays: &mut Vec<Span>,
     data: &[u8],
     node: tree_sitter::Node,
-    depth: u8,
+    nesting: Nesting,
 ) -> Result<(), Error> {
     let mut language = None;
     let mut content = None;
@@ -488,40 +536,51 @@ fn append_fence(
     let (Some(language), Some(content)) = (language, content) else {
         return Ok(());
     };
-    append_region(overlays, data, content, Region::Fence(language), depth)
+    append_region(overlays, data, content, Region::Fence(language), nesting)
 }
 
 /// Highlights one region's slice and appends its spans shifted back to document offsets.
 ///
 /// # Errors
-/// [`Error::Grammar`] when the region's grammar fails to load. A region whose parse fails
+/// [`Error::Grammar`] when the region's grammar fails to load, and [`Error::Parse`] wrapping
+/// `Cancelled` when the caller's flag is raised. A region whose parse fails otherwise
 /// contributes no spans and is not an error.
 fn append_region(
     overlays: &mut Vec<Span>,
     data: &[u8],
     range: std::ops::Range<usize>,
     region: Region,
-    depth: u8,
+    nesting: Nesting,
 ) -> Result<(), Error> {
     let Some(slice) = data.get(range.clone()) else {
         return Ok(());
     };
     let spans = match region {
         Region::Inline => markdown_inline_configuration()
-            .and_then(|config| single_layer(config, slice, Language::Markdown)),
+            .and_then(|config| single_layer(config, slice, Language::Markdown, nesting.cancel)),
         Region::Fence(Language::Markdown) => {
-            if depth >= MARKDOWN_FENCE_DEPTH {
+            if nesting.depth >= MARKDOWN_FENCE_DEPTH {
                 return Ok(());
             }
-            highlight_markdown(slice, depth + 1)
+            let inner = Nesting {
+                depth: nesting.depth + 1,
+                cancel: nesting.cancel,
+            };
+            highlight_markdown(slice, inner)
         }
         Region::Fence(language) => language
             .configuration()
-            .and_then(|config| single_layer(config, slice, language)),
+            .and_then(|config| single_layer(config, slice, language, nesting.cancel)),
     };
     let spans = match spans {
         Ok(spans) => spans,
-        Err(error @ Error::Grammar { .. }) => return Err(error),
+        Err(
+            error @ (Error::Grammar { .. }
+            | Error::Parse {
+                source: tree_sitter_highlight::Error::Cancelled,
+                ..
+            }),
+        ) => return Err(error),
         // A region tree-sitter cannot parse leaves its text plain; the rest of the file keeps
         // its color, as an unparseable stretch of any other file does.
         Err(Error::Parse { .. } | Error::Imports { .. }) => return Ok(()),
@@ -727,7 +786,7 @@ mod tests {
     #[test]
     fn rust_keywords_strings_and_comments_are_classified() {
         let data = b"// note\nfn main() {\n    let x = \"hi\";\n}\n";
-        let spans = highlight(data, Language::Rust).unwrap();
+        let spans = highlight(data, Language::Rust, None).unwrap();
         assert_ne!(spans.len(), 0);
         assert!(classes_at(&spans, data, "// note").contains(&Class::Comment));
         assert!(classes_at(&spans, data, "fn").contains(&Class::Keyword));
@@ -772,16 +831,16 @@ mod tests {
     #[test]
     fn swift_func_is_keyword_and_booleans_are_constants() {
         let swift = b"func f() {}\nlet x = true\n";
-        let spans = highlight(swift, Language::Swift).unwrap();
+        let spans = highlight(swift, Language::Swift, None).unwrap();
         assert_eq!(classes_at(&spans, swift, "func"), vec![Class::Keyword]);
         assert_eq!(classes_at(&spans, swift, "true"), vec![Class::Constant]);
 
         let yaml = b"a: true\n";
-        let spans = highlight(yaml, Language::Yaml).unwrap();
+        let spans = highlight(yaml, Language::Yaml, None).unwrap();
         assert_eq!(classes_at(&spans, yaml, "true"), vec![Class::Constant]);
 
         let toml = b"a = true\n";
-        let spans = highlight(toml, Language::Toml).unwrap();
+        let spans = highlight(toml, Language::Toml, None).unwrap();
         assert_eq!(classes_at(&spans, toml, "true"), vec![Class::Constant]);
     }
 
@@ -807,7 +866,7 @@ mod tests {
     #[test]
     fn swift_line_block_and_doc_comments_are_classified() {
         let data = b"// line\n/* block */\n/// doc\nlet x = 1\n";
-        let spans = highlight(data, Language::Swift).unwrap();
+        let spans = highlight(data, Language::Swift, None).unwrap();
         assert_eq!(classes_at(&spans, data, "// line"), vec![Class::Comment]);
         assert_eq!(
             classes_at(&spans, data, "/* block */"),
@@ -819,12 +878,12 @@ mod tests {
     #[test]
     fn c_delimiters_and_swift_wildcards_are_classified() {
         let c = b"int x = s.y;\n";
-        let spans = highlight(c, Language::C).unwrap();
+        let spans = highlight(c, Language::C, None).unwrap();
         assert_eq!(classes_at(&spans, c, ";"), vec![Class::Punctuation]);
         assert_eq!(classes_at(&spans, c, "."), vec![Class::Punctuation]);
 
         let swift = b"let _ = f()\n";
-        let spans = highlight(swift, Language::Swift).unwrap();
+        let spans = highlight(swift, Language::Swift, None).unwrap();
         assert_eq!(classes_at(&spans, swift, "_"), vec![Class::String]);
     }
 
@@ -845,7 +904,7 @@ mod tests {
                 Language::TypeScript => b"const x: number = 1; // c\n",
                 Language::Yaml => b"key: value\nlist:\n  - 1\n",
             };
-            let spans = highlight(data, language)
+            let spans = highlight(data, language, None)
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             assert_ne!(spans.len(), 0, "{} produced no spans", language.name());
         }
@@ -866,7 +925,7 @@ mod tests {
     #[test]
     fn typescript_types_keywords_and_constants_are_classified() {
         let data = b"interface Shape { readonly side: number }\nconst MAX_SIZE = 4;\nexport function area(shape: Shape): number { return shape.side ** 2; }\n";
-        let spans = highlight(data, Language::TypeScript).unwrap();
+        let spans = highlight(data, Language::TypeScript, None).unwrap();
         assert!(classes_at(&spans, data, "interface").contains(&Class::Keyword));
         assert!(classes_at(&spans, data, "readonly").contains(&Class::Keyword));
         assert!(classes_at(&spans, data, "Shape {").contains(&Class::Type));
@@ -882,11 +941,11 @@ mod tests {
     #[test]
     fn typescript_casts_parse_in_ts_and_jsx_parses_in_tsx() {
         let cast = b"const n = <number>value;\nconst f = <T>(x: T) => x;\n";
-        let spans = highlight(cast, Language::TypeScript).unwrap();
+        let spans = highlight(cast, Language::TypeScript, None).unwrap();
         assert!(classes_at(&spans, cast, "number").contains(&Class::Type));
 
         let jsx = b"const view = <Panel title=\"a\">{count}</Panel>;\n";
-        let spans = highlight(jsx, Language::Tsx).unwrap();
+        let spans = highlight(jsx, Language::Tsx, None).unwrap();
         assert!(classes_at(&spans, jsx, "Panel title").contains(&Class::Type));
         assert!(classes_at(&spans, jsx, "\"a\"").contains(&Class::String));
         assert!(classes_at(&spans, jsx, "title").contains(&Class::Property));
@@ -895,7 +954,7 @@ mod tests {
     #[test]
     fn markdown_fences_highlight_typescript() {
         let data = b"```ts\nconst x: number = 1;\n```\n";
-        let spans = highlight(data, Language::Markdown).unwrap();
+        let spans = highlight(data, Language::Markdown, None).unwrap();
         assert!(classes_at(&spans, data, "const").contains(&Class::Keyword));
         assert!(classes_at(&spans, data, "number").contains(&Class::Type));
     }
@@ -940,7 +999,7 @@ mod tests {
     #[test]
     fn markdown_prose_is_classified() {
         let data = b"# Title\n\nSome *soft* and **hard** emphasis, a `span`,\nand a [link](https://example.com).\n";
-        let spans = highlight(data, Language::Markdown).unwrap();
+        let spans = highlight(data, Language::Markdown, None).unwrap();
         assert!(classes_at(&spans, data, "Title").contains(&Class::Heading));
         assert!(classes_at(&spans, data, "soft").contains(&Class::Emphasis));
         assert!(classes_at(&spans, data, "hard").contains(&Class::Strong));
@@ -951,7 +1010,7 @@ mod tests {
     #[test]
     fn markdown_code_fences_highlight_in_their_own_language() {
         let data = b"# Doc\n\n```rust\nfn fenced() -> u32 { 1 }\n```\n\n```nosuchlang\nfn ignored() {}\n```\n";
-        let spans = highlight(data, Language::Markdown).unwrap();
+        let spans = highlight(data, Language::Markdown, None).unwrap();
         assert!(classes_at(&spans, data, "fn fenced").contains(&Class::Keyword));
         assert!(classes_at(&spans, data, "fenced").contains(&Class::Function));
         assert!(
@@ -963,7 +1022,7 @@ mod tests {
     #[test]
     fn markdown_merged_spans_stay_ordered_and_disjoint() {
         let data = b"# A *bold* title\n\n---\nkey: value\n---\n\nProse with `code` and *emphasis*.\n\n```toml\n[table]\nkey = \"v\"\n```\n";
-        let spans = highlight(data, Language::Markdown).unwrap();
+        let spans = highlight(data, Language::Markdown, None).unwrap();
         assert_ne!(spans.len(), 0);
         for window in spans.windows(2) {
             assert!(
@@ -980,12 +1039,69 @@ mod tests {
     #[test]
     fn broken_input_still_highlights_the_intact_parts() {
         let data = b"fn ok() {}\n%%%%\nfn also_ok() {}\n";
-        let spans = highlight(data, Language::Rust).unwrap();
+        let spans = highlight(data, Language::Rust, None).unwrap();
         assert!(classes_at(&spans, data, "also_ok").contains(&Class::Function));
     }
 
     #[test]
     fn empty_input_yields_no_spans() {
-        assert_eq!(highlight(b"", Language::Json).unwrap(), Vec::new());
+        assert_eq!(highlight(b"", Language::Json, None).unwrap(), Vec::new());
+    }
+
+    fn assert_cancelled(result: Result<Vec<Span>, Error>, message: &str) {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Parse {
+                    source: tree_sitter_highlight::Error::Cancelled,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), message);
+    }
+
+    #[test]
+    fn a_raised_cancel_flag_stops_highlighting() {
+        let raised = AtomicUsize::new(1);
+        let rust = b"fn main() {}\n";
+        assert_cancelled(
+            highlight(rust, Language::Rust, Some(&raised)),
+            "highlighting rust: Cancelled",
+        );
+        let markdown = b"# Title\n\n```rust\nfn main() {}\n```\n";
+        assert_cancelled(
+            highlight(markdown, Language::Markdown, Some(&raised)),
+            "highlighting markdown: Cancelled",
+        );
+    }
+
+    #[test]
+    fn a_lowered_cancel_flag_changes_nothing() {
+        let lowered = AtomicUsize::new(0);
+        let data = b"# Title\n\n```rust\nfn main() {}\n```\n";
+        assert_eq!(
+            highlight(data, Language::Markdown, Some(&lowered)).unwrap(),
+            highlight(data, Language::Markdown, None).unwrap()
+        );
+    }
+
+    #[test]
+    fn markdown_regions_pass_a_cancel_through_instead_of_going_plain() {
+        let raised = AtomicUsize::new(1);
+        let nesting = Nesting {
+            depth: 0,
+            cancel: Some(&raised),
+        };
+        let data = b"some *prose* here\n";
+        assert_cancelled(
+            markdown_overlays(data, nesting),
+            "highlighting markdown: Cancelled",
+        );
+        let mut overlays = Vec::new();
+        let error = append_region(&mut overlays, data, 0..data.len(), Region::Inline, nesting);
+        assert_cancelled(error.map(|()| overlays), "highlighting markdown: Cancelled");
     }
 }

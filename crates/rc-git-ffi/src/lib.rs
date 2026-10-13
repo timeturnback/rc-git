@@ -17,6 +17,7 @@ use std::fmt::Display;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage,
@@ -2650,21 +2651,31 @@ pub unsafe extern "C" fn rcgit_stash_list_free(list: *mut RcGitStashList) {
 /// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
 /// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
 /// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
-/// repository. Release with `rcgit_highlight_list_free`.
+/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
+/// when `cancel` was signalled. `cancel` may be NULL when the caller has no way to cancel.
+/// Needs no repository. Release with `rcgit_highlight_list_free`.
 ///
 /// # Safety
 /// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `cancel` is NULL or came from `rcgit_cancel_new` and is not freed before this returns.
 /// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_highlight(
     name: *const c_char,
     data: *const u8,
     len: usize,
+    cancel: *const RcGitCancel,
     error: *mut *mut c_char,
 ) -> *mut RcGitHighlightList {
     // SAFETY: forwarded from this function's contract.
-    let (name, data, error) = unsafe { (bytes_arg(name), slice_arg(data, len), Out::new(error)) };
+    let (name, data, cancel, error) = unsafe {
+        (
+            bytes_arg(name),
+            slice_arg(data, len),
+            cancel_flags(cancel),
+            Out::new(error),
+        )
+    };
     let Some(name) = error.required("rcgit_highlight", "name", name) else {
         return ptr::null_mut();
     };
@@ -2676,7 +2687,8 @@ pub unsafe extern "C" fn rcgit_highlight(
     else {
         return ptr::null_mut();
     };
-    match rc_git_highlight::highlight(data, language) {
+    let cancel = cancel.map(|cancel| &cancel.highlight);
+    match rc_git_highlight::highlight(data, language, cancel) {
         Ok(spans) => {
             let mut exported = Vec::with_capacity(spans.len());
             for span in spans {
@@ -4286,18 +4298,25 @@ pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus
     unsafe { release(status) }
 }
 
-/// A cancellation flag for one remote operation. Opaque: create with
-/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
-/// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
-/// once the operation has returned.
-pub struct RcGitCancel(Cancel);
+/// A cancellation flag for one remote operation or one highlight. Opaque: create with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push` or
+/// `rcgit_highlight`, set it from any thread with `rcgit_cancel_signal`, release it with
+/// `rcgit_cancel_free` once the operation has returned.
+pub struct RcGitCancel {
+    remote: Cancel,
+    /// The same signal in the shape tree-sitter polls, which is a nonzero `AtomicUsize`.
+    highlight: AtomicUsize,
+}
 
 const _: () = assert_send_sync::<RcGitCancel>();
 
 /// A fresh flag, nobody having cancelled yet. Release with `rcgit_cancel_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rcgit_cancel_new() -> *mut RcGitCancel {
-    export(RcGitCancel(Cancel::new()))
+    export(RcGitCancel {
+        remote: Cancel::new(),
+        highlight: AtomicUsize::new(0),
+    })
 }
 
 /// Asks the operation holding `cancel` to stop. Safe to call from a thread other than
@@ -4309,8 +4328,9 @@ pub extern "C" fn rcgit_cancel_new() -> *mut RcGitCancel {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_cancel_signal(cancel: *const RcGitCancel) {
     // SAFETY: forwarded from this function's contract.
-    if let Some(cancel) = unsafe { cancel_arg(cancel) } {
-        cancel.signal();
+    if let Some(cancel) = unsafe { cancel_flags(cancel) } {
+        cancel.remote.signal();
+        cancel.highlight.store(1, Ordering::Relaxed);
     }
 }
 
@@ -4318,7 +4338,7 @@ pub unsafe extern "C" fn rcgit_cancel_signal(cancel: *const RcGitCancel) {
 ///
 /// # Safety
 /// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
-/// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
+/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push` or `rcgit_highlight`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_cancel_free(cancel: *mut RcGitCancel) {
     // SAFETY: forwarded from this function's contract.
@@ -4327,12 +4347,19 @@ pub unsafe extern "C" fn rcgit_cancel_free(cancel: *mut RcGitCancel) {
 
 /// # Safety
 /// `cancel` is NULL or a pointer from `rcgit_cancel_new` that has not been freed.
-unsafe fn cancel_arg<'a>(cancel: *const RcGitCancel) -> Option<&'a Cancel> {
+unsafe fn cancel_flags<'a>(cancel: *const RcGitCancel) -> Option<&'a RcGitCancel> {
     if cancel.is_null() {
         return None;
     }
     // SAFETY: forwarded from this function's contract.
-    Some(&unsafe { &*cancel }.0)
+    Some(unsafe { &*cancel })
+}
+
+/// # Safety
+/// `cancel` is NULL or a pointer from `rcgit_cancel_new` that has not been freed.
+unsafe fn cancel_arg<'a>(cancel: *const RcGitCancel) -> Option<&'a Cancel> {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { cancel_flags(cancel) }.map(|cancel| &cancel.remote)
 }
 
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
@@ -6679,8 +6706,15 @@ mod tests {
         let mut error = ptr::null_mut();
         let name = CString::new("main.rs").unwrap();
         let data = b"fn main() {}\n";
-        let list =
-            unsafe { rcgit_highlight(name.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        let list = unsafe {
+            rcgit_highlight(
+                name.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
         assert!(!list.is_null());
         assert!(error.is_null());
         let list_ref = unsafe { &*list };
@@ -6695,31 +6729,82 @@ mod tests {
         unsafe { rcgit_highlight_list_free(list) };
 
         let fence = CString::new("rust").unwrap();
-        let list =
-            unsafe { rcgit_highlight(fence.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        let list = unsafe {
+            rcgit_highlight(
+                fence.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
         assert!(!list.is_null(), "a fence info string names a language too");
         assert!(error.is_null());
         unsafe { rcgit_highlight_list_free(list) };
 
         let unknown = CString::new("photo.png").unwrap();
-        let list =
-            unsafe { rcgit_highlight(unknown.as_ptr(), data.as_ptr(), data.len(), &raw mut error) };
+        let list = unsafe {
+            rcgit_highlight(
+                unknown.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
         assert!(list.is_null());
         assert!(error.is_null(), "an unknown language is not an error");
 
-        let list = unsafe { rcgit_highlight(ptr::null(), data.as_ptr(), 0, &raw mut error) };
+        let list =
+            unsafe { rcgit_highlight(ptr::null(), data.as_ptr(), 0, ptr::null(), &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "rcgit_highlight: name is NULL");
 
-        let list = unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 0, &raw mut error) };
+        let list =
+            unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 0, ptr::null(), &raw mut error) };
         assert!(!list.is_null(), "no bytes means no spans");
         assert_eq!(unsafe { &*list }.len, 0);
         assert!(error.is_null());
         unsafe { rcgit_highlight_list_free(list) };
 
-        let list = unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 5, &raw mut error) };
+        let list =
+            unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 5, ptr::null(), &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "rcgit_highlight: data is NULL");
+    }
+
+    #[test]
+    fn a_signalled_cancel_stops_highlighting() {
+        let mut error = ptr::null_mut();
+        let name = CString::new("main.rs").unwrap();
+        let data = b"fn main() {}\n";
+        let cancel = rcgit_cancel_new();
+        let list = unsafe {
+            rcgit_highlight(
+                name.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                cancel,
+                &raw mut error,
+            )
+        };
+        assert!(!list.is_null(), "an unsignalled flag changes nothing");
+        assert!(error.is_null());
+        unsafe { rcgit_highlight_list_free(list) };
+
+        unsafe { rcgit_cancel_signal(cancel) };
+        let list = unsafe {
+            rcgit_highlight(
+                name.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                cancel,
+                &raw mut error,
+            )
+        };
+        assert!(list.is_null());
+        assert_eq!(take_error(&mut error), "highlighting rust: Cancelled");
+        unsafe { rcgit_cancel_free(cancel) };
     }
 
     #[test]

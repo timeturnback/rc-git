@@ -31,7 +31,7 @@ in Swift value types.
 - A status the app branches on is a named code from an exhaustive match on the error, never
   text the app searches for in the message.
 - `RcGitCancel` is the one handle meant to be touched from a second thread: the thread
-  inside a transfer cannot ask itself to stop. `rcgit_cancel_new` before the call,
+  inside a transfer or a highlight cannot ask itself to stop. `rcgit_cancel_new` before the call,
   `rcgit_cancel_signal` from the UI thread while it runs, `rcgit_cancel_free` after it
   returns — never before, since the call borrows it for its whole life. `NULL` is
   accepted and means the caller has no way to cancel.

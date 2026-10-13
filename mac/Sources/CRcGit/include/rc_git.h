@@ -195,10 +195,10 @@ typedef enum RcGitRisk {
   RcGitRisk_Destructive = 2,
 } RcGitRisk;
 
-/// A cancellation flag for one remote operation. Opaque: create with
-/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch` or `rcgit_guard_push`, set it
-/// from any thread with `rcgit_cancel_signal`, release it with `rcgit_cancel_free`
-/// once the operation has returned.
+/// A cancellation flag for one remote operation or one highlight. Opaque: create with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push` or
+/// `rcgit_highlight`, set it from any thread with `rcgit_cancel_signal`, release it with
+/// `rcgit_cancel_free` once the operation has returned.
 typedef struct RcGitCancel RcGitCancel;
 
 /// An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
@@ -1160,15 +1160,18 @@ void rcgit_stash_list_free(struct RcGitStashList *list);
 /// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
 /// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
 /// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails. Needs no
-/// repository. Release with `rcgit_highlight_list_free`.
+/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
+/// when `cancel` was signalled. `cancel` may be NULL when the caller has no way to cancel.
+/// Needs no repository. Release with `rcgit_highlight_list_free`.
 ///
 /// # Safety
 /// `name` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `cancel` is NULL or came from `rcgit_cancel_new` and is not freed before this returns.
 /// `error` is NULL or valid for writing a `char *`.
 struct RcGitHighlightList *rcgit_highlight(const char *name,
                                            const uint8_t *data,
                                            size_t len,
+                                           const struct RcGitCancel *cancel,
                                            char **error);
 
 /// Releases a value from `rcgit_highlight`.
@@ -1493,7 +1496,7 @@ void rcgit_cancel_signal(const struct RcGitCancel *cancel);
 ///
 /// # Safety
 /// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
-/// in use by a running `rcgit_guard_fetch` or `rcgit_guard_push`.
+/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push` or `rcgit_highlight`.
 void rcgit_cancel_free(struct RcGitCancel *cancel);
 
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
