@@ -9,19 +9,28 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
         self.bytes = bytes
     }
 
-    /// Parses a full lowercase or uppercase hex id. `nil` for anything else.
+    /// Parses a full 40-digit lowercase or uppercase hex id. `nil` for anything else.
     public init?(hex: String) {
-        guard hex.count % 2 == 0, hex.count == 40 || hex.count == 64 else { return nil }
+        let units = Array(hex.utf8)
+        guard units.count == 40 else { return nil }
         var bytes: [UInt8] = []
-        bytes.reserveCapacity(hex.count / 2)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
+        bytes.reserveCapacity(units.count / 2)
+        for pair in stride(from: 0, to: units.count, by: 2) {
+            guard let high = Self.nibble(units[pair]), let low = Self.nibble(units[pair + 1])
+            else { return nil }
+            bytes.append(high << 4 | low)
         }
         self.bytes = bytes
+    }
+
+    /// The value of one ASCII hex digit, or `nil` for any other code unit.
+    private static func nibble(_ unit: UInt8) -> UInt8? {
+        switch unit {
+        case 0x30...0x39: return unit - 0x30
+        case 0x41...0x46: return unit - 0x41 + 10
+        case 0x61...0x66: return unit - 0x61 + 10
+        default: return nil
+        }
     }
 
     init(c: RcGitOid) {
