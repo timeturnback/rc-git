@@ -17,6 +17,13 @@ import Testing
         #expect(Highlighter.highlight(name: "noext", data: data) == nil)
     }
 
+    @Test func aFailureMessageIsLoggedOnce() {
+        let message = "highlighting test-\(UUID()): the grammar failed to load: query"
+        #expect(HighlightFailureLog.isFirst(message))
+        #expect(!HighlightFailureLog.isFirst(message))
+        #expect(HighlightFailureLog.isFirst(message + " again"))
+    }
+
     @Test func oversizedInputStaysPlain() {
         let big = [UInt8](repeating: UInt8(ascii: "a"), count: Highlighter.byteLimit + 1)
         #expect(Highlighter.highlight(name: "big.rs", data: big) == nil)

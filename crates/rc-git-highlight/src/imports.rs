@@ -76,7 +76,10 @@ pub fn import_links(data: &[u8], language: Language) -> Result<Vec<ImportLink>, 
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&grammar)
-        .map_err(|_| Error::Grammar { language })?;
+        .map_err(|error| Error::Grammar {
+            language,
+            detail: error.to_string(),
+        })?;
     let tree = parser
         .parse(data, None)
         .ok_or(Error::Imports { language })?;

@@ -1,5 +1,6 @@
 import CRcGit
 import Foundation
+import os
 
 /// What a highlighted region means. Mirrors the Rust highlighter's classes.
 public enum HighlightClass: Sendable, Hashable {
@@ -70,7 +71,7 @@ public enum Highlighter {
         let list = data.withUnsafeBufferPointer { buffer in
             rcgit_highlight(name, buffer.baseAddress, buffer.count, &error)
         }
-        if let error { rcgit_string_free(error) }
+        if let error { HighlightFailureLog.report(error) }
         guard let list else { return nil }
         defer { rcgit_highlight_list_free(list) }
         var spans: [HighlightSpan] = []
@@ -81,6 +82,28 @@ public enum Highlighter {
                 HighlightSpan(start: c.start, end: c.end, class: HighlightClass(c: c.kind)))
         }
         return spans
+    }
+}
+
+/// Logs why the core could not highlight or link a file, once per distinct message. The
+/// caller still shows plain text; the log is what makes a grammar or query that stopped
+/// loading after a dependency bump visible, with its query row and column or ABI versions.
+enum HighlightFailureLog {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "highlight")
+    private static let logged = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    /// Takes ownership of a core error string: frees it, then logs it unless already logged.
+    static func report(_ error: UnsafeMutablePointer<CChar>) {
+        let message = String(cString: error)
+        rcgit_string_free(error)
+        guard isFirst(message) else { return }
+        logger.error("\(message, privacy: .public)")
+    }
+
+    /// Whether `message` is seen here for the first time; records it when it is.
+    static func isFirst(_ message: String) -> Bool {
+        logged.withLock { $0.insert(message).inserted }
     }
 }
 

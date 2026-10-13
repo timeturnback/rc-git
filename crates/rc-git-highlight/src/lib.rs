@@ -112,35 +112,49 @@ impl Language {
     }
 
     fn configuration(self) -> Result<&'static HighlightConfiguration, Error> {
-        static CONFIGS: [OnceLock<Option<HighlightConfiguration>>; LANGUAGE_COUNT] =
+        static CONFIGS: [OnceLock<Loaded>; LANGUAGE_COUNT] =
             [const { OnceLock::new() }; LANGUAGE_COUNT];
         CONFIGS[self as usize]
-            .get_or_init(|| build_configuration(self).ok())
+            .get_or_init(|| build_configuration(self))
             .as_ref()
-            .ok_or(Error::Grammar { language: self })
+            .map_err(|detail| Error::Grammar {
+                language: self,
+                detail: detail.clone(),
+            })
     }
 }
 
 const LANGUAGE_COUNT: usize = 12;
 
+/// A grammar's configuration as first loaded, or why it failed to: the query error with its
+/// row and column, or the ABI version mismatch. Cached either way, so the cause is kept.
+type Loaded = Result<HighlightConfiguration, String>;
+
 /// The markdown inline grammar, reachable only through markdown's injections. Configured with
 /// the same capture names as every other grammar, so classes mean the same thing everywhere.
-fn markdown_inline_configuration() -> Option<&'static HighlightConfiguration> {
-    static CONFIG: OnceLock<Option<HighlightConfiguration>> = OnceLock::new();
+fn markdown_inline_configuration() -> Result<&'static HighlightConfiguration, Error> {
+    static CONFIG: OnceLock<Loaded> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let mut config = HighlightConfiguration::new(
+            load(
                 tree_sitter_md::INLINE_LANGUAGE.into(),
                 "markdown_inline",
                 tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
-                "",
-                "",
             )
-            .ok()?;
-            config.configure(&CAPTURE_NAMES);
-            Some(config)
         })
         .as_ref()
+        .map_err(|detail| Error::Grammar {
+            language: Language::Markdown,
+            detail: detail.clone(),
+        })
+}
+
+/// Builds one grammar's configuration with the shared capture names.
+fn load(grammar: tree_sitter::Language, name: &str, query: &str) -> Loaded {
+    let mut config = HighlightConfiguration::new(grammar, name, query, "", "")
+        .map_err(|error| format!("{name} query: {error}"))?;
+    config.configure(&CAPTURE_NAMES);
+    Ok(config)
 }
 
 /// What a span means, for the view to color. One flat set for every language.
@@ -241,10 +255,13 @@ pub struct Span {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The grammar or its highlight query failed to load; a packaging problem, not an input one.
-    #[error("highlighting {}: the grammar failed to load", language.name())]
+    #[error("highlighting {}: the grammar failed to load: {detail}", language.name())]
     Grammar {
         /// The language whose grammar failed.
         language: Language,
+        /// Why: the query error with its row and column, or the grammar's ABI version
+        /// against the range this tree-sitter accepts.
+        detail: String,
     },
     /// The parse itself failed, for instance on a cancelled or oversized input.
     #[error("highlighting {}: {source}", language.name())]
@@ -343,22 +360,26 @@ const MARKDOWN_FENCE_DEPTH: u8 = 3;
 fn highlight_markdown(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
     let config = Language::Markdown.configuration()?;
     let base = single_layer(config, data, Language::Markdown)?;
-    let overlays = markdown_overlays(data, depth);
+    let overlays = markdown_overlays(data, depth)?;
     Ok(merge_overlays(base, overlays))
 }
 
 /// Collects spans from every injected region of a markdown document. A region that fails to
 /// parse simply contributes nothing; the file still shows its block-level color.
-fn markdown_overlays(data: &[u8], depth: u8) -> Vec<Span> {
+///
+/// # Errors
+/// [`Error::Grammar`] when the block grammar or a region's grammar fails to load, so a
+/// packaging problem reaches the caller instead of quietly dropping the prose color.
+fn markdown_overlays(data: &[u8], depth: u8) -> Result<Vec<Span>, Error> {
     let mut parser = tree_sitter::Parser::new();
-    if parser
+    parser
         .set_language(&tree_sitter_md::LANGUAGE.into())
-        .is_err()
-    {
-        return Vec::new();
-    }
+        .map_err(|error| Error::Grammar {
+            language: Language::Markdown,
+            detail: error.to_string(),
+        })?;
     let Some(tree) = parser.parse(data, None) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut overlays = Vec::new();
     let mut cursor = tree.walk();
@@ -373,21 +394,21 @@ fn markdown_overlays(data: &[u8], depth: u8) -> Vec<Span> {
                     node.byte_range(),
                     Region::Inline,
                     depth,
-                );
+                )?;
                 descend = false;
             }
             "fenced_code_block" => {
-                append_fence(&mut overlays, data, node, depth);
+                append_fence(&mut overlays, data, node, depth)?;
                 descend = false;
             }
             "minus_metadata" => {
                 let region = Region::Fence(Language::Yaml);
-                append_region(&mut overlays, data, node.byte_range(), region, depth);
+                append_region(&mut overlays, data, node.byte_range(), region, depth)?;
                 descend = false;
             }
             "plus_metadata" => {
                 let region = Region::Fence(Language::Toml);
-                append_region(&mut overlays, data, node.byte_range(), region, depth);
+                append_region(&mut overlays, data, node.byte_range(), region, depth)?;
                 descend = false;
             }
             _ => {}
@@ -405,7 +426,7 @@ fn markdown_overlays(data: &[u8], depth: u8) -> Vec<Span> {
         }
     }
     overlays.sort_unstable_by_key(|span| span.start);
-    overlays
+    Ok(overlays)
 }
 
 /// What fills an injected markdown region.
@@ -418,7 +439,12 @@ enum Region {
 }
 
 /// Reads a fence's info string and highlights its content in that language, when known.
-fn append_fence(overlays: &mut Vec<Span>, data: &[u8], node: tree_sitter::Node, depth: u8) {
+fn append_fence(
+    overlays: &mut Vec<Span>,
+    data: &[u8],
+    node: tree_sitter::Node,
+    depth: u8,
+) -> Result<(), Error> {
     let mut language = None;
     let mut content = None;
     let mut cursor = node.walk();
@@ -439,31 +465,32 @@ fn append_fence(overlays: &mut Vec<Span>, data: &[u8], node: tree_sitter::Node, 
         }
     }
     let (Some(language), Some(content)) = (language, content) else {
-        return;
+        return Ok(());
     };
-    append_region(overlays, data, content, Region::Fence(language), depth);
+    append_region(overlays, data, content, Region::Fence(language), depth)
 }
 
 /// Highlights one region's slice and appends its spans shifted back to document offsets.
+///
+/// # Errors
+/// [`Error::Grammar`] when the region's grammar fails to load. A region whose parse fails
+/// contributes no spans and is not an error.
 fn append_region(
     overlays: &mut Vec<Span>,
     data: &[u8],
     range: std::ops::Range<usize>,
     region: Region,
     depth: u8,
-) {
+) -> Result<(), Error> {
     let Some(slice) = data.get(range.clone()) else {
-        return;
+        return Ok(());
     };
     let spans = match region {
         Region::Inline => markdown_inline_configuration()
-            .ok_or(Error::Grammar {
-                language: Language::Markdown,
-            })
             .and_then(|config| single_layer(config, slice, Language::Markdown)),
         Region::Fence(Language::Markdown) => {
             if depth >= MARKDOWN_FENCE_DEPTH {
-                return;
+                return Ok(());
             }
             highlight_markdown(slice, depth + 1)
         }
@@ -471,7 +498,13 @@ fn append_region(
             .configuration()
             .and_then(|config| single_layer(config, slice, language)),
     };
-    let Ok(spans) = spans else { return };
+    let spans = match spans {
+        Ok(spans) => spans,
+        Err(error @ Error::Grammar { .. }) => return Err(error),
+        // A region tree-sitter cannot parse leaves its text plain; the rest of the file keeps
+        // its color, as an unparseable stretch of any other file does.
+        Err(Error::Parse { .. } | Error::Imports { .. }) => return Ok(()),
+    };
     let offset = u32::try_from(range.start).unwrap_or(u32::MAX);
     for span in spans {
         overlays.push(Span {
@@ -480,6 +513,7 @@ fn append_region(
             class: span.class,
         });
     }
+    Ok(())
 }
 
 /// Merges overlay spans into base spans, both sorted and internally non-overlapping. An
@@ -540,9 +574,7 @@ fn merge_overlays(base: Vec<Span>, overlays: Vec<Span>) -> Vec<Span> {
     merged
 }
 
-fn build_configuration(
-    language: Language,
-) -> Result<HighlightConfiguration, Box<dyn std::error::Error>> {
+fn build_configuration(language: Language) -> Loaded {
     let (grammar, query): (tree_sitter::Language, Cow<'static, str>) = match language {
         Language::Bash => (
             tree_sitter_bash::LANGUAGE.into(),
@@ -590,9 +622,7 @@ fn build_configuration(
             tree_sitter_yaml::HIGHLIGHTS_QUERY.into(),
         ),
     };
-    let mut config = HighlightConfiguration::new(grammar, language.name(), &query, "", "")?;
-    config.configure(&CAPTURE_NAMES);
-    Ok(config)
+    load(grammar, language.name(), &query)
 }
 
 /// The TypeScript grammars extend JavaScript's, and their highlight query only covers what
@@ -720,7 +750,8 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             configs.push((language.name(), config));
         }
-        let inline = markdown_inline_configuration().expect("markdown_inline loads");
+        let inline =
+            markdown_inline_configuration().unwrap_or_else(|err| panic!("markdown_inline: {err}"));
         configs.push(("markdown_inline", inline));
         for (language, config) in configs {
             for name in config.names() {
@@ -860,6 +891,32 @@ mod tests {
             error.to_string(),
             "finding imports in tsx: the parser returned no tree"
         );
+    }
+
+    #[test]
+    fn the_grammar_error_carries_its_cause() {
+        let error = Error::Grammar {
+            language: Language::Swift,
+            detail: "swift query: Query error at 3:7. Invalid node type foo".to_owned(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "highlighting swift: the grammar failed to load: \
+             swift query: Query error at 3:7. Invalid node type foo"
+        );
+    }
+
+    #[test]
+    fn a_broken_query_names_its_row_and_column() {
+        let query = "(identifier) @variable\n(no_such_node) @keyword\n";
+        let Err(detail) = load(tree_sitter_rust::LANGUAGE.into(), "rust", query) else {
+            panic!("a query naming an unknown node type loaded");
+        };
+        assert!(
+            detail.starts_with("rust query: Query error at 2:2."),
+            "{detail}"
+        );
+        assert!(detail.contains("no_such_node"), "{detail}");
     }
 
     #[test]

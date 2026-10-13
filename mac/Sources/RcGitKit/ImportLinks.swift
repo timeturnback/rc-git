@@ -30,7 +30,7 @@ public enum ImportLinks {
             guard buffer.count <= Highlighter.byteLimit else { return nil }
             var error: UnsafeMutablePointer<CChar>? = nil
             let list = rcgit_import_links(name, buffer.baseAddress, buffer.count, &error)
-            if let error { rcgit_string_free(error) }
+            if let error { HighlightFailureLog.report(error) }
             guard let list else { return nil }
             defer { rcgit_import_link_list_free(list) }
             var links: [ImportLink] = []
