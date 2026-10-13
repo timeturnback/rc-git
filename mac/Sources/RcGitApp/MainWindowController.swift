@@ -897,7 +897,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 case .opened:
                     self.recordStop()
                 case .missing:
-                    self.presentError("\(path) is not in this tree.")
+                    self.presentError(
+                        "\(path) is not in this tree.", title: "rc-git could not open the link")
                 case let .failed(message):
                     self.presentError(message)
                 }
@@ -1007,7 +1008,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         changesController.onDiscard = { [weak self] paths in
             if let refusal = self?.changesModel?.discardRefusal(paths) {
-                self?.presentError(refusal)
+                self?.presentError(
+                    refusal, title: RepositoryGuard.failureTitle(verb: "Discard Changes"))
                 return
             }
             self?.performStashAction(
@@ -1027,7 +1029,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         changesController.onDiscardHunk = { [weak self] filePath, stamp in
             if let refusal = self?.changesModel?.discardRefusal([filePath]) {
-                self?.presentError(refusal)
+                self?.presentError(
+                    refusal, title: RepositoryGuard.failureTitle(verb: "Discard Hunk"))
                 return
             }
             self?.performStashAction(
@@ -1049,7 +1052,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let selections = changes.selections
         guard !selections.isEmpty else { return }
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            presentError("Enter a commit message first.")
+            presentError(
+                "Enter a commit message first.", title: "No commit message",
+                style: .informational)
             return
         }
         guard let decision = RepositoryGuard.planCommit(files: selections.count) else { return }
@@ -1076,7 +1081,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self?.performCommit(message, prompted: identity)
                 }
             } else {
-                self?.presentError(Self.failureMessage(error))
+                self?.presentError(
+                    Self.failureMessage(error), title: RepositoryGuard.failureTitle(verb: "Commit"))
             }
         }
     }
@@ -1113,7 +1119,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self?.performStashPush(prompted: identity)
                 }
             } else {
-                self?.presentError(Self.failureMessage(error))
+                self?.presentError(
+                    Self.failureMessage(error), title: RepositoryGuard.failureTitle(verb: "Stash"))
             }
         }
     }
@@ -1412,7 +1419,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 title: "New Branch",
                 message: "Create a branch at “\(ref.shortName)” (\(ref.target.short))."
             ) { [weak self] name in
-                self?.runGuarded {
+                self?.runGuarded(verb: "Create Branch") {
                     try RepositoryGuard.createBranch(
                         repoPath: path, name: name, revspec: ref.target.hex)
                 }
@@ -1422,7 +1429,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 title: "New Tag",
                 message: "Create a tag at “\(ref.shortName)” (\(ref.target.short))."
             ) { [weak self] name in
-                self?.runGuarded {
+                self?.runGuarded(verb: "Create Tag") {
                     try RepositoryGuard.createTag(
                         repoPath: path, name: name, revspec: ref.target.hex)
                 }
@@ -1441,7 +1448,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                             repoPath: path, name: name, input: input)
                     }
                 case let .failure(error):
-                    presentError(String(describing: error))
+                    presentError(
+                        String(describing: error),
+                        title: RepositoryGuard.failureTitle(verb: "Delete Branch"))
                 }
             }
         case .deleteTag:
@@ -1476,11 +1485,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     ) {
         switch decision.kind {
         case .allow:
-            runGuarded({ try perform(nil) }, onSuccess: onSuccess, onFailure: onFailure)
+            runGuarded(
+                verb: verb, { try perform(nil) }, onSuccess: onSuccess, onFailure: onFailure)
         case .confirm:
             presentChallenge(decision, verb: verb) { [weak self] input in
                 self?.runGuarded(
-                    { try perform(input) }, onSuccess: onSuccess, onFailure: onFailure)
+                    verb: verb, { try perform(input) }, onSuccess: onSuccess,
+                    onFailure: onFailure)
             }
         case .deny:
             guard let window else { return }
@@ -1544,8 +1555,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     /// Runs one guarded mutation off the main thread. By default success needs no handling —
-    /// the watchers see the change and refresh — and failure shows the standard alert.
+    /// the watchers see the change and refresh — and failure shows an alert titled by `verb`.
     private func runGuarded(
+        verb: String,
         _ work: @escaping @Sendable () throws -> Void,
         onSuccess: (() -> Void)? = nil,
         onFailure: ((any Error) -> Void)? = nil
@@ -1559,7 +1571,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 if let onFailure {
                     onFailure(error)
                 } else {
-                    self?.presentError(Self.failureMessage(error))
+                    self?.presentError(
+                        Self.failureMessage(error),
+                        title: RepositoryGuard.failureTitle(verb: verb))
                 }
             }
         }
@@ -1571,13 +1585,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     private func presentError(
-        _ message: String, title: String = "rc-git could not read the repository"
+        _ message: String, title: String = RepositoryGuard.readFailureTitle,
+        style: NSAlert.Style = .warning
     ) {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.alertStyle = .warning
+        alert.alertStyle = style
         alert.beginSheetModal(for: window)
     }
 

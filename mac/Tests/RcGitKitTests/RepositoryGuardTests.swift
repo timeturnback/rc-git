@@ -382,6 +382,21 @@ import Testing
     }
 }
 
+/// A failed or refused action is titled by what was attempted, never as a failed read.
+@Suite struct GuardFailureTitleTests {
+    @Test func namesTheVerbInLowerCase() {
+        #expect(
+            RepositoryGuard.failureTitle(verb: "Delete Branch") == "rc-git could not delete branch")
+        #expect(RepositoryGuard.failureTitle(verb: "Commit") == "rc-git could not commit")
+    }
+
+    @Test func neverReadsAsAFailedRead() {
+        for verb in ["Create Branch", "Delete Tag", "Stash", "Discard Hunk", "Commit"] {
+            #expect(RepositoryGuard.failureTitle(verb: verb) != RepositoryGuard.readFailureTitle)
+        }
+    }
+}
+
 /// A token must not leak through any way Swift turns a value into text.
 @Suite struct CredentialsRedactionTests {
     private enum Holder {

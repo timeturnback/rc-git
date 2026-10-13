@@ -97,6 +97,16 @@ public struct CommitOutcome: Sendable, Hashable {
 /// The one write path: branch and tag management, gated by the guard crate's policy. Every
 /// call opens the repository fresh by path, so nothing here can touch the read-only handles.
 public enum RepositoryGuard {
+    /// Title for an alert about a failed read of the repository.
+    public static let readFailureTitle = "rc-git could not read the repository"
+
+    /// Title for an alert about a guarded action that failed or was refused, named by the
+    /// verb its button and challenge carry: "Delete Branch" titles "rc-git could not delete
+    /// branch".
+    public static func failureTitle(verb: String) -> String {
+        "rc-git could not \(verb.lowercased())"
+    }
+
     /// What deleting a branch would need.
     public static func planBranchDelete(repoPath: String, name: String) throws -> GuardDecision {
         var error: UnsafeMutablePointer<CChar>? = nil
