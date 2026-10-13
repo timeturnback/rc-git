@@ -19,18 +19,29 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
 
     private var script: Script
     private(set) var calls: [String] = []
+    /// Reads the model's last log line. Set, each step records what the log said as it
+    /// started, so a test can tell a note logged before its step from one logged after.
+    var lastLine: (@MainActor @Sendable () -> String?)?
+    private(set) var lastLines: [String?] = []
 
     init(_ script: Script) {
         self.script = script
     }
 
+    private func probe() async {
+        guard let lastLine else { return }
+        lastLines.append(await lastLine())
+    }
+
     func toolchain() async -> ToolchainCheck {
+        await probe()
         calls.append("toolchain")
         return script.toolchain
     }
 
     /// Answers each call with the next scripted state, repeating the last one.
     func sourceState() async -> SourceStateResult {
+        await probe()
         calls.append("sourceState")
         guard !script.sourceStates.isEmpty else { return .failure("no source state scripted") }
         return script.sourceStates.count > 1
@@ -38,25 +49,30 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     }
 
     func sync() async -> String? {
+        await probe()
         calls.append("sync")
         return script.syncFailure
     }
 
     func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
+        await probe()
         calls.append("install")
         for line in script.installOutput { onOutput(line) }
         return script.installFailure
     }
 
     func handOff() async {
+        await probe()
         calls.append("handOff")
     }
 
     func reclaim() async {
+        await probe()
         calls.append("reclaim")
     }
 
     func relaunch() async -> String? {
+        await probe()
         calls.append("relaunch")
         return script.relaunchFailure
     }
@@ -247,18 +263,41 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(environment.calls == ["toolchain"])
     }
 
-    /// Each half of preflight is logged before it runs, so a stall in either one says which.
-    @Test func preflightLogsBothHalvesBeforeRunningThem() async {
-        let (model, _) = Self.model(
+    /// Every step outside the process is logged before it runs, so the log's last line names
+    /// a step that stalls. The stub reads the log as each step starts: a note moved after its
+    /// await would leave the previous step's line there.
+    @Test func everyOutsideStepIsLoggedBeforeItRuns() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+            ]))
+        environment.lastLine = { [weak model] in model?.log.last }
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(
+            environment.lastLines == [
+                "checking the toolchain", "reading the checkout", "fetching and fast-forwarding",
+                "reading the checkout after the fetch", "building", "launching the new build",
+                "launching the new build",
+            ])
+    }
+
+    /// The dev bundle names its build for what it is: the working tree, not a fetched commit.
+    @Test func aRebuildLogsTheWorkingTreeBuildBeforeRunningIt() async {
+        let (model, environment) = Self.model(
             .init(sourceStates: [
                 .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: []))
-            ]))
-        await model.start(force: true)
-        #expect(model.log.contains("checking the toolchain"))
-        #expect(model.log.contains("reading the checkout"))
-        let toolchain = model.log.firstIndex(of: "checking the toolchain")
-        let checkout = model.log.firstIndex(of: "reading the checkout")
-        #expect(toolchain ?? 0 < checkout ?? 0)
+            ]),
+            build: Self.build(variant: .dev))
+        environment.lastLine = { [weak model] in model?.log.last }
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(
+            environment.lastLines == [
+                "checking the toolchain", "reading the checkout", "rebuilding the working tree",
+                "launching the new build", "launching the new build",
+            ])
     }
 
     @Test func uncommittedWorkStopsTheUpdate() async {

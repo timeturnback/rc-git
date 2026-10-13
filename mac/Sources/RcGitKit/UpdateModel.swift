@@ -215,7 +215,7 @@ public final class UpdateModel {
                 note("uncommitted work goes in: \(Self.list(before.dirtyPaths))")
             }
         }
-        await buildAndRelaunch()
+        await buildAndRelaunch(mode: mode)
     }
 
     /// Returns terminal states to `.idle` so the window can start a second attempt.
@@ -306,6 +306,7 @@ public final class UpdateModel {
             fail(.sync, message)
             return false
         }
+        note("reading the checkout after the fetch")
         guard let after = await readSource(step: .sync) else { return false }
         note("checkout is at \(String(after.commit.prefix(7)))")
         if !force, after.commit == build.commit {
@@ -317,8 +318,9 @@ public final class UpdateModel {
     }
 
     /// Builds the bundle, puts it in place, and launches it.
-    private func buildAndRelaunch() async {
+    private func buildAndRelaunch(mode: UpdateMode) async {
         enter(.install)
+        note(mode == .update ? "building" : "rebuilding the working tree")
         let current = attempt
         let message = await environment.install(onOutput: { [weak self] line in
             Task { @MainActor in
