@@ -23,6 +23,38 @@ public enum StashListState: Sendable, Hashable {
     case failed(String)
 }
 
+/// A change list row's tick box. A file with only some hunks ticked is `mixed`, like a folder
+/// with only some files ticked: the row never claims more than the commit will take.
+public enum TickState: Sendable, Hashable {
+    case off
+    case mixed
+    case on
+}
+
+/// What a change list row's tick box shows, and whether it takes a click: a row whose every
+/// path is inexact has nothing it could tick.
+public struct RowTick: Sendable, Hashable {
+    public let state: TickState
+    public let isEnabled: Bool
+
+    public init(state: TickState, isEnabled: Bool) {
+        self.state = state
+        self.isEnabled = isEnabled
+    }
+}
+
+/// The line under the change list and whether Commit and Stash have anything to take.
+public struct TickSummary: Sendable, Hashable {
+    /// "2 of 3 selected", or empty when the list is.
+    public let text: String
+    public let hasSelection: Bool
+
+    public init(text: String, hasSelection: Bool) {
+        self.text = text
+        self.hasSelection = hasSelection
+    }
+}
+
 /// State for the Changes tab: the flat change list, one file's diff against `HEAD`, the
 /// stash list, and the tick state that becomes a commit or stash selection. Reads only —
 /// guarded actions run in the window controller, which calls `refresh()` afterwards.
@@ -40,7 +72,9 @@ public final class ChangesModel {
     /// Whether untracked hidden files are listed. Takes effect on the next scan.
     public var showsHiddenFiles: Bool
 
-    public private(set) var statusState: ChangesState = .idle
+    public private(set) var statusState: ChangesState = .idle {
+        didSet { cachedTickCounts = nil }
+    }
     public private(set) var diffState: WorktreeDiffState = .idle
     public private(set) var stashes: [StashEntry] = []
     public private(set) var stashState: StashListState = .loaded
@@ -49,13 +83,22 @@ public final class ChangesModel {
     /// Guarded commits pass it back so a moved `HEAD` is refused instead of raced.
     public private(set) var expectedHead: Oid?
 
-    private var untickedPaths: Set<String> = []
+    private var untickedPaths: Set<String> = [] {
+        didSet { cachedTickCounts = nil }
+    }
     /// Paths some status entry carries with U+FFFD replacements. The core reads a path
     /// argument as UTF-8, so such a path would act on a twin with the valid spelling, and the
     /// twin shares the string: every entry with one of these paths stays out of commit, stash
     /// and discard.
-    private var inexactPaths: Set<String> = []
-    private var tickedHunks: [String: Set<HunkStamp>] = [:]
+    private var inexactPaths: Set<String> = [] {
+        didSet { cachedTickCounts = nil }
+    }
+    private var tickedHunks: [String: Set<HunkStamp>] = [:] {
+        didSet { cachedTickCounts = nil }
+    }
+    /// Tick counts per folder path, built once per change to the tick state or the list, so
+    /// rendering a folder row reads one entry instead of walking every path beneath it.
+    private var cachedTickCounts: TickCounts?
 
     private var statusGeneration = 0
     private var diffGeneration = 0
@@ -421,6 +464,47 @@ public final class ChangesModel {
         onStatusChanged?()
     }
 
+    /// The tick box of one change list row: a file's own state, or the sum of every file
+    /// beneath a folder.
+    public func rowTick(of node: ChangeNode<StatusEntry>) -> RowTick {
+        let count =
+            node.isFolder ? tickCounts.folders[node.path] ?? TickCount() : tickCount(node.path)
+        return RowTick(state: count.state, isEnabled: count.actionable > 0)
+    }
+
+    /// How many files are in the selection, partially ticked ones included.
+    public var tickSummary: TickSummary {
+        let all = tickCounts.all
+        return TickSummary(
+            text: all.total == 0 ? "" : "\(all.ticked) of \(all.total) selected",
+            hasSelection: all.ticked > 0)
+    }
+
+    private var tickCounts: TickCounts {
+        if let cachedTickCounts { return cachedTickCounts }
+        var counts = TickCounts()
+        if case let .loaded(report) = statusState {
+            for entry in report.entries {
+                let one = tickCount(entry.path)
+                counts.all.add(one)
+                let path = entry.path
+                for index in path.utf8.indices where path.utf8[index] == UInt8(ascii: "/") {
+                    counts.folders[String(path[..<index]), default: TickCount()].add(one)
+                }
+            }
+        }
+        cachedTickCounts = counts
+        return counts
+    }
+
+    private func tickCount(_ path: String) -> TickCount {
+        let ticked = isTicked(path)
+        return TickCount(
+            total: 1, ticked: ticked ? 1 : 0,
+            whole: ticked && !isPartiallyTicked(path) ? 1 : 0,
+            actionable: isActionable(path) ? 1 : 0)
+    }
+
     /// The ticked paths, for stash and discard.
     public var tickedPaths: [String] {
         guard case let .loaded(report) = statusState else { return [] }
@@ -453,4 +537,31 @@ public final class ChangesModel {
         }
         return StatusReport(entries: entries, scanned: report.scanned, truncated: report.truncated)
     }
+}
+
+/// Files at or below one row: how many there are, how many are in the selection at all, how
+/// many wholly, and how many could be.
+private struct TickCount {
+    var total = 0
+    var ticked = 0
+    var whole = 0
+    var actionable = 0
+
+    var state: TickState {
+        if ticked == 0 { return .off }
+        return whole == total ? .on : .mixed
+    }
+
+    mutating func add(_ other: TickCount) {
+        total += other.total
+        ticked += other.ticked
+        whole += other.whole
+        actionable += other.actionable
+    }
+}
+
+/// Every folder path's tick count, and the whole list's.
+private struct TickCounts {
+    var folders: [String: TickCount] = [:]
+    var all = TickCount()
 }

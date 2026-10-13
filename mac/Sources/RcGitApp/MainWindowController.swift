@@ -964,8 +964,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changes.onError = { [weak self] message in
             self?.presentError(message)
         }
-        changesController.isTicked = { [weak self] path in
-            self?.changesModel?.isTicked(path) ?? true
+        changesController.rowTick = { [weak self] node in
+            self?.changesModel?.rowTick(of: node) ?? RowTick(state: .off, isEnabled: false)
+        }
+        changesController.tickSummary = { [weak self] in
+            self?.changesModel?.tickSummary ?? TickSummary(text: "", hasSelection: false)
         }
         changesController.isHunkTicked = { [weak self] path, stamp in
             self?.changesModel?.isHunkTicked(path, stamp) ?? true
@@ -1006,9 +1009,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             ) { path, input in
                 _ = try RepositoryGuard.stashDrop(repoPath: path, entry: entry, input: input)
             }
-        }
-        changesController.isActionable = { [weak self] path in
-            self?.changesModel?.isActionable(path) ?? true
         }
         changesController.onDiscard = { [weak self] paths in
             if let refusal = self?.changesModel?.discardRefusal(paths) {

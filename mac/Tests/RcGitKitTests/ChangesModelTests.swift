@@ -288,6 +288,80 @@ import Testing
         #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
     }
 
+    private func folderReport() -> StatusReport {
+        let paths = ["src/a.txt", "src/b.txt", "src/deep/c.txt", "top.txt"]
+        return StatusReport(
+            entries: paths.map {
+                StatusEntry(path: $0, kind: .blob, status: .modified, oid: oid(0x01), size: 3)
+            }, scanned: 4, truncated: false)
+    }
+
+    private func row(_ key: String) throws -> ChangeNode<StatusEntry> {
+        guard case let .loaded(report) = model.statusState else {
+            throw RepositoryError("not loaded: \(model.statusState)")
+        }
+        var pending = ChangeTree.nodes(report.entries, grouping: .folders)
+        while let node = pending.popLast() {
+            if node.key == key { return node }
+            pending += node.children
+        }
+        throw RepositoryError("no row \(key)")
+    }
+
+    @Test func rowTicksCountEveryFileBeneathAFolder() async throws {
+        repo.statusReport = folderReport()
+        await model.loadStatus()
+        #expect(try model.rowTick(of: row("src/")) == RowTick(state: .on, isEnabled: true))
+        #expect(model.tickSummary == TickSummary(text: "4 of 4 selected", hasSelection: true))
+
+        model.setTicked(["src/deep/c.txt"], false)
+        #expect(try model.rowTick(of: row("src/")).state == .mixed, "some files ticked")
+        #expect(try model.rowTick(of: row("src/deep/")).state == .off)
+        #expect(try model.rowTick(of: row("src/a.txt")).state == .on)
+        #expect(model.tickSummary == TickSummary(text: "3 of 4 selected", hasSelection: true))
+
+        model.setTicked(["src/a.txt", "src/b.txt", "top.txt"], false)
+        #expect(try model.rowTick(of: row("src/")).state == .off, "no file ticked")
+        #expect(model.tickSummary == TickSummary(text: "0 of 4 selected", hasSelection: false))
+    }
+
+    @Test func aFileWithSomeHunksTickedIsMixedAndSoIsItsFolder() async throws {
+        repo.statusReport = folderReport()
+        await model.loadStatus()
+        let first = Self.firstHunk.stamp
+        let second = Self.secondHunk.stamp
+        model.toggleHunk("src/a.txt", second, all: [first, second])
+        #expect(try model.rowTick(of: row("src/a.txt")).state == .mixed)
+        #expect(try model.rowTick(of: row("src/")).state == .mixed)
+        #expect(model.tickSummary.text == "4 of 4 selected", "a partial file is still selected")
+
+        model.toggleHunk("src/a.txt", second, all: [first, second])
+        #expect(try model.rowTick(of: row("src/a.txt")).state == .on)
+        #expect(try model.rowTick(of: row("src/")).state == .on)
+    }
+
+    @Test func aRowOfOnlyInexactPathsTakesNoClick() async throws {
+        let spelling = "dir/f\u{FFFD}o"
+        repo.statusReport = StatusReport(
+            entries: [
+                StatusEntry(
+                    path: spelling, kind: .blob, status: .deleted, oid: oid(0x02), size: 0,
+                    hasExactPath: false),
+                StatusEntry(path: "top.txt", kind: .blob, status: .untracked, oid: nil, size: 1),
+            ], scanned: 2, truncated: false)
+        await model.loadStatus()
+        #expect(try model.rowTick(of: row("dir/")) == RowTick(state: .off, isEnabled: false))
+        #expect(try model.rowTick(of: row(spelling)) == RowTick(state: .off, isEnabled: false))
+        #expect(model.tickSummary == TickSummary(text: "1 of 2 selected", hasSelection: true))
+    }
+
+    @Test func anEmptyListHasNoSummaryAndNothingToCommit() async {
+        #expect(model.tickSummary == TickSummary(text: "", hasSelection: false), "not loaded")
+        repo.statusReport = StatusReport(entries: [], scanned: 0, truncated: false)
+        await model.loadStatus()
+        #expect(model.tickSummary == TickSummary(text: "", hasSelection: false))
+    }
+
     @Test func aHunkStampCarriesEachHeaderRangeInItsOwnField() {
         let hunk = DiffHunk(
             oldStart: 3, oldLines: 5, newStart: 7, newLines: 11,

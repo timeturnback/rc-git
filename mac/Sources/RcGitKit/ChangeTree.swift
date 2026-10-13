@@ -30,9 +30,13 @@ public final class ChangeNode<Entry: ChangeListEntry> {
     /// The change itself; `nil` on a folder row.
     public let entry: Entry?
     public let children: [ChangeNode]
-    /// Every changed path at or below this row, in row order. Precomputed: the tick state of
-    /// a folder row reads it on every render.
-    public let filePaths: [String]
+
+    /// Every changed path at or below this row, in row order. Walked on each read: only a
+    /// click on a row or a Discard asks, never a render.
+    public var filePaths: [String] {
+        guard let entry else { return children.flatMap(\.filePaths) }
+        return [entry.path]
+    }
 
     public var isFolder: Bool { entry == nil }
 
@@ -45,7 +49,6 @@ public final class ChangeNode<Entry: ChangeListEntry> {
         self.path = path
         self.entry = entry
         self.children = children
-        self.filePaths = entry.map { [$0.path] } ?? children.flatMap(\.filePaths)
     }
 }
 

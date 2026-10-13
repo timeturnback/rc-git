@@ -63,10 +63,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var onPull: (() -> Void)?
     var onPush: (() -> Void)?
     /// The model's tick state, injected so rendering never duplicates it.
-    var isTicked: ((String) -> Bool)?
+    var rowTick: ((ChangeNode<StatusEntry>) -> RowTick)?
+    var tickSummary: (() -> TickSummary)?
     var isHunkTicked: ((String, HunkStamp) -> Bool)?
-    /// Whether a path may be ticked at all; the model holds inexact paths out.
-    var isActionable: ((String) -> Bool)?
 
     private enum DiffRow {
         case header(stamp: HunkStamp, all: [HunkStamp])
@@ -593,10 +592,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func refreshSummary() {
-        let ticked = entries.filter { isTicked?($0.path) ?? true }.count
-        summaryLabel.stringValue = entries.isEmpty ? "" : "\(ticked) of \(entries.count) selected"
-        commitButton.isEnabled = ticked > 0
-        stashButton.isEnabled = ticked > 0
+        let summary = tickSummary?() ?? TickSummary(text: "", hasSelection: false)
+        summaryLabel.stringValue = summary.text
+        commitButton.isEnabled = summary.hasSelection
+        stashButton.isEnabled = summary.hasSelection
     }
 
     /// Shows the scan-truncation note, or hides it.
@@ -698,19 +697,22 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         onDiscardHunk?(diffPath, stamp)
     }
 
-    /// The box's own next state is ignored: a folder row with some files ticked has three
-    /// states to cycle through and only one sensible answer — tick what is not ticked yet.
+    /// The box's own next state is ignored: a mixed row, a folder with some files ticked or a
+    /// file with some hunks ticked, has three states to cycle through and only one sensible
+    /// answer — tick what is not ticked yet.
     @objc private func fileTickToggled(_ sender: NSButton) {
-        guard let node = filesOutline.item(atRow: filesOutline.row(for: sender)) as? StatusNode
+        guard let node = filesOutline.item(atRow: filesOutline.row(for: sender)) as? StatusNode,
+            let tick = rowTick?(node)
         else { return }
-        onTogglePaths?(node.filePaths, tickState(of: node) != .on)
+        onTogglePaths?(node.filePaths, tick.state != .on)
     }
 
-    /// A folder row is ticked when every file under it is, mixed when only some are.
-    private func tickState(of node: StatusNode) -> NSControl.StateValue {
-        let ticked = node.filePaths.filter { isTicked?($0) ?? true }.count
-        if ticked == 0 { return .off }
-        return ticked == node.filePaths.count ? .on : .mixed
+    private static func buttonState(_ state: TickState) -> NSControl.StateValue {
+        switch state {
+        case .off: .off
+        case .mixed: .mixed
+        case .on: .on
+        }
     }
 
     @objc private func hunkTickToggled(_ sender: NSButton) {
@@ -779,9 +781,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 made.identifier = id
                 return made
             }()
-        cell.tick.allowsMixedState = node.isFolder
-        cell.tick.state = tickState(of: node)
-        cell.tick.isEnabled = node.filePaths.contains { isActionable?($0) ?? true }
+        let tick = rowTick?(node) ?? RowTick(state: .off, isEnabled: false)
+        cell.tick.allowsMixedState = true
+        cell.tick.state = Self.buttonState(tick.state)
+        cell.tick.isEnabled = tick.isEnabled
         cell.label.attributedStringValue = Self.label(for: node)
         cell.toolTip = node.path
         return cell
