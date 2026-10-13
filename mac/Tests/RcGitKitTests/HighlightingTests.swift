@@ -85,8 +85,9 @@ import Testing
             bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
         let first = await model.highlights(for: entry, document: document)
         #expect(first?.isEmpty == false)
-        let second = await model.highlights(for: entry, document: document)
-        #expect(first == second)
+        // Same blob id, different text: only a cache hit answers with the first parse.
+        let other = TextDocument(bytes: Array("x\n".utf8), lineStarts: [0], validUTF8: true)
+        #expect(await model.highlights(for: entry, document: other) == first)
 
         let lossy = TextDocument(bytes: [0x66, 0xFF, 0x6F], lineStarts: [0], validUTF8: false)
         #expect(lossy.isLossy)
@@ -121,20 +122,52 @@ import Testing
 
     @Test func spanCacheEvictsLeastRecentlyUsedPastTheEntryCap() async {
         let model = BrowserModel()
-        let repo = FakeRepository()
-        await model.attach(repo)
+        await model.attach(FakeRepository())
+        let limit = model.highlightCacheLimit
+        #expect(spansA != spansB(seed: 1), "the probe tells a hit from a miss")
 
-        let document = TextDocument(
-            bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
-        for seed in 0...BrowserModel.highlightCacheLimit {
-            let entry = TreeEntry(name: "f\(seed).rs", oid: oid(UInt8(seed + 1)), kind: .blob)
-            let spans = await model.highlights(for: entry, document: document)
-            #expect(spans?.isEmpty == false)
+        for seed in 1...limit + 1 {
+            #expect(await model.highlights(for: rust(seed), document: plainA)?.isEmpty == false)
         }
-        // One over the cap: the first entry was evicted, everything still answers.
-        let again = await model.highlights(
-            for: TreeEntry(name: "f0.rs", oid: oid(1), kind: .blob), document: document)
-        #expect(again?.isEmpty == false)
+        // A miss parses the new text: the oldest entry was evicted.
+        #expect(await model.highlights(for: rust(1), document: plainB) == spansB(seed: 1))
+        // A hit answers with the first parse: the newest entry stayed.
+        #expect(await model.highlights(for: rust(limit + 1), document: plainB) == spansA)
+    }
+
+    @Test func aCacheHitMovesTheEntryToTheRecentEnd() async {
+        let model = BrowserModel()
+        await model.attach(FakeRepository())
+        let limit = model.highlightCacheLimit
+
+        for seed in 1...limit {
+            _ = await model.highlights(for: rust(seed), document: plainA)
+        }
+        _ = await model.highlights(for: rust(1), document: plainA)
+        _ = await model.highlights(for: rust(limit + 1), document: plainA)
+        #expect(await model.highlights(for: rust(1), document: plainB) == spansA, "touched")
+        #expect(
+            await model.highlights(for: rust(2), document: plainB) == spansB(seed: 2),
+            "the least recently used entry goes instead")
+    }
+
+    @Test func spanCacheEvictsPastTheSpanCapButKeepsOneEntry() async throws {
+        let model = BrowserModel(highlightCacheLimit: 16, highlightCacheSpanLimit: 10)
+        await model.attach(FakeRepository())
+        let small = TextDocument(bytes: Array("fn f() {}\n".utf8), lineStarts: [0], validUTF8: true)
+        let smallSpans = try #require(await model.highlights(for: rust(1), document: small))
+        #expect(smallSpans.count > 5 && smallSpans.count <= 10, "two entries overflow the cap")
+
+        _ = await model.highlights(for: rust(2), document: small)
+        #expect(await model.highlights(for: rust(2), document: plainB) == smallSpans)
+        #expect(await model.highlights(for: rust(1), document: plainB) == spansB(seed: 1))
+
+        let tiny = BrowserModel(highlightCacheLimit: 16, highlightCacheSpanLimit: 1)
+        await tiny.attach(FakeRepository())
+        _ = await tiny.highlights(for: rust(1), document: small)
+        #expect(
+            await tiny.highlights(for: rust(1), document: plainB) == smallSpans,
+            "a single entry over the cap is still cached")
     }
 
     @Test func unhashedWorkingTreeFilesEachGetTheirOwnSpans() async throws {
@@ -154,5 +187,21 @@ import Testing
         #expect(first == Highlighter.highlight(name: "a.rs", data: shortBytes))
         #expect(second == Highlighter.highlight(name: "b.rs", data: longBytes))
         #expect(first != second, "two disk files must not share one cache slot")
+    }
+
+    private let plainA = TextDocument(
+        bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
+    private let plainB = TextDocument(
+        bytes: Array("let s = \"hi\";\n".utf8), lineStarts: [0], validUTF8: true)
+    private var spansA: [HighlightSpan]? {
+        Highlighter.highlight(name: "f.rs", data: Array(plainA.text.utf8))
+    }
+
+    private func spansB(seed: Int) -> [HighlightSpan]? {
+        Highlighter.highlight(name: rust(seed).name, data: Array(plainB.text.utf8))
+    }
+
+    private func rust(_ seed: Int) -> TreeEntry {
+        TreeEntry(name: "f\(seed).rs", oid: oid(UInt8(seed)), kind: .blob)
     }
 }

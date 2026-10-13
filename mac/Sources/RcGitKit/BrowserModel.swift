@@ -212,8 +212,7 @@ public final class BrowserModel {
     private var worktreeIndexGeneration = 0
     /// Syntax spans, per blob and file extension. Content-addressed like every other cache,
     /// but bounded: span arrays for large files run to megabytes, so the least recently used
-    /// entries are evicted past `Self.highlightCacheLimit` files or
-    /// `Self.highlightCacheSpanLimit` spans.
+    /// entries are evicted past `highlightCacheLimit` files or `highlightCacheSpanLimit` spans.
     private var highlightCache: [HighlightKey: [HighlightSpan]] = [:]
     /// Least recently used first.
     private var highlightCacheOrder: [HighlightKey] = []
@@ -221,10 +220,19 @@ public final class BrowserModel {
     /// Import links, per blob and file extension. They live and die with the entry's highlight
     /// spans, so the bounds above cover them too and they need no bookkeeping of their own.
     private var importLinkCache: [HighlightKey: [ImportLink]] = [:]
-    static let highlightCacheLimit = 16
-    static let highlightCacheSpanLimit = 1_500_000
+    let highlightCacheLimit: Int
+    let highlightCacheSpanLimit: Int
 
-    public init() {}
+    public convenience init() {
+        self.init(highlightCacheLimit: 16, highlightCacheSpanLimit: 1_500_000)
+    }
+
+    /// A model with its highlight cache bounded at `highlightCacheLimit` files and
+    /// `highlightCacheSpanLimit` spans, so tests can reach both caps with small inputs.
+    init(highlightCacheLimit: Int, highlightCacheSpanLimit: Int) {
+        self.highlightCacheLimit = highlightCacheLimit
+        self.highlightCacheSpanLimit = highlightCacheSpanLimit
+    }
 
     /// Attaches a repository and loads refs and HEAD, then selects the branch HEAD is on.
     public func attach(_ repository: any RepositoryReading) async {
@@ -1426,8 +1434,8 @@ public final class BrowserModel {
             highlightCacheSpanCount += spans.count
             highlightCache[key] = spans
         }
-        while highlightCacheOrder.count > Self.highlightCacheLimit
-            || highlightCacheSpanCount > Self.highlightCacheSpanLimit
+        while highlightCacheOrder.count > highlightCacheLimit
+            || highlightCacheSpanCount > highlightCacheSpanLimit
         {
             guard highlightCacheOrder.count > 1 else { break }
             let evicted = highlightCacheOrder.removeFirst()

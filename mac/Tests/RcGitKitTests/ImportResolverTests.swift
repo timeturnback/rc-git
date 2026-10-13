@@ -311,4 +311,43 @@ import Testing
             for: TreeEntry(name: "bad.ts", oid: oid(0x43), kind: .blob), document: lossy)
         #expect(none == nil, "byte offsets into lossy text would misalign")
     }
+
+    @Test func linksAreEvictedWithTheirHighlightSpans() async {
+        await model.attach(repo)
+        let entry = TreeEntry(name: "App.tsx", oid: app, kind: .blob)
+        let document = typescript("import Button from './Button';\n")
+        _ = await model.highlights(for: entry, document: document)
+        let first = await model.importLinks(for: entry, document: document)
+        #expect(first?.isEmpty == false)
+
+        let filler = TextDocument(
+            bytes: Array("fn f() {}\n".utf8), lineStarts: [0], validUTF8: true)
+        for seed in 1...model.highlightCacheLimit {
+            let other = TreeEntry(name: "f\(seed).rs", oid: oid(0x80 + UInt8(seed)), kind: .blob)
+            _ = await model.highlights(for: other, document: filler)
+        }
+        let changedText = "import Other from './Other';\n"
+        let changed = await model.importLinks(for: entry, document: typescript(changedText))
+        #expect(changed == ImportLinks.find(name: "App.tsx", text: changedText))
+        #expect(changed != first, "an evicted entry's links are parsed again")
+    }
+
+    @Test func unhashedWorkingTreeFilesEachGetTheirOwnLinks() async {
+        await model.attach(repo)
+        let aText = "import Button from './Button';\n"
+        let bText = "import { x } from '../lib/x';\nimport y from 'y';\n"
+        let a = TreeEntry(name: "a.ts", oid: Oid(bytes: []), kind: .blob)
+        let b = TreeEntry(name: "b.ts", oid: Oid(bytes: []), kind: .blob)
+        _ = await model.highlights(for: a, document: typescript(aText))
+        let aLinks = await model.importLinks(for: a, document: typescript(aText))
+        _ = await model.highlights(for: b, document: typescript(bText))
+        let bLinks = await model.importLinks(for: b, document: typescript(bText))
+        #expect(aLinks == ImportLinks.find(name: "a.ts", text: aText))
+        #expect(bLinks == ImportLinks.find(name: "b.ts", text: bText))
+        #expect(aLinks != bLinks, "two disk files must not share one cache slot")
+    }
+
+    private func typescript(_ text: String) -> TextDocument {
+        TextDocument(bytes: Array(text.utf8), lineStarts: [0], validUTF8: true)
+    }
 }
