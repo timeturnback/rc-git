@@ -1,5 +1,6 @@
 import AppKit
 import RcGitKit
+import os
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
@@ -7,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// the keychain once per launch rather than once per network step.
     nonisolated static let credentialStore: CredentialStoring = CachingCredentialStore(
         wrapping: KeychainCredentialStore())
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "rcgit", category: "tabs")
 
     private var controllers: [MainWindowController] = []
     private let recents = RecentRepositories()
@@ -329,26 +333,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Tab persistence
 
-    /// Reopens the tabs of the previous run, silently skipping repositories that no longer
-    /// open, and selects the tab that was selected then — or the launch document's tab, when
-    /// opening one launched the app. Falls back to one empty tab.
+    /// Reopens the tabs of the previous run and selects the tab that was selected then — or
+    /// the launch document's tab, when opening one launched the app. Falls back to one empty
+    /// tab.
     ///
     /// Restore goes through `openTab`, so a repository a launch document already opened is
     /// not opened twice. The saved list becomes the tabs now on screen, launch document
-    /// included: a path that no longer opens is dropped here, so it is not retried on every
-    /// launch.
+    /// included, followed by the repositories whose volume is not mounted yet; one that is
+    /// gone from a reachable folder is dropped, so it is not retried on every launch (see
+    /// `OpenTabs.restoredPaths`). Each repository that failed to open is logged once.
     private func restoreTabs() {
         let saved = openTabs.paths
         let savedSelection = openTabs.selectedIndex
+        var failed: [String] = []
         for path in saved {
-            // Benign: a repository moved or deleted since the last run is expected, and
-            // alerting once per stale tab at every launch would be noise. It leaves the list
-            // below.
-            _ = try? openTab(path)
+            do {
+                _ = try openTab(path)
+            } catch {
+                failed.append(path)
+                let message = "restore tab: could not open \(path): \(error)"
+                Self.logger.error("\(message, privacy: .public)")
+            }
         }
         let live = tabState().paths
+        let kept = OpenTabs.restoredPaths(opened: live, failed: failed)
+        for path in failed where !kept.contains(path) {
+            Self.logger.notice("restore tab: dropped \(path, privacy: .public) from the saved tabs")
+        }
         guard !live.isEmpty else {
-            openTabs.clear()
+            openTabs.save(paths: kept, selectedIndex: 0)
             newWindow().showWindow(nil)
             return
         }
@@ -356,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             saved: saved, selectedIndex: savedSelection, opened: live,
             launchDocument: launchDocument)
         controllers.first { $0.repositoryPath == live[selected] }?.showWindow(nil)
-        openTabs.save(paths: live, selectedIndex: selected)
+        openTabs.save(paths: kept, selectedIndex: selected)
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on

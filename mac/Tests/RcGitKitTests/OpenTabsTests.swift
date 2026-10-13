@@ -22,7 +22,7 @@ import Testing
             tabs.save(paths: ["/one", "/two", "/three"], selectedIndex: 2)
             #expect(tabs.paths == ["/one", "/two", "/three"])
             #expect(tabs.selectedIndex == 2)
-            tabs.clear()
+            tabs.save(paths: [], selectedIndex: 2)
             #expect(tabs.paths.isEmpty)
             #expect(tabs.selectedIndex == 0)
         }
@@ -47,6 +47,49 @@ import Testing
         #expect(OpenTabs.merged(live: [], saved: ["/one", "/two"]) == ["/one", "/two"])
         #expect(OpenTabs.merged(live: ["/one"], saved: []) == ["/one"])
         #expect(OpenTabs.merged(live: ["/one", "/one"], saved: ["/one"]) == ["/one"])
+    }
+
+    /// A repository that failed to open survives the restore only while the folder that
+    /// holds it is unreachable — a disk or share not mounted yet at launch.
+    @Test func restoreKeepsFailedPathsWhoseParentIsUnreachable() {
+        let paths = OpenTabs.restoredPaths(
+            opened: ["/Users/me/open"],
+            failed: ["/Volumes/Ext/repo", "/Users/me/gone", "/Volumes/Share/other"],
+            parentExists: { !$0.hasPrefix("/Volumes/") })
+        #expect(paths == ["/Users/me/open", "/Volumes/Ext/repo", "/Volumes/Share/other"])
+    }
+
+    /// Nothing opening is not a reason to forget the list: every unmounted repository waits
+    /// for the next launch, and only the ones gone from a reachable folder are dropped.
+    @Test func restoreWithNothingOpenedKeepsUnreachablePaths() {
+        let paths = OpenTabs.restoredPaths(
+            opened: [], failed: ["/Volumes/Ext/a", "/Users/me/gone"],
+            parentExists: { !$0.hasPrefix("/Volumes/") })
+        #expect(paths == ["/Volumes/Ext/a"])
+        #expect(
+            OpenTabs.restoredPaths(opened: [], failed: ["/a"], parentExists: { _ in true }).isEmpty)
+        #expect(OpenTabs.restoredPaths(opened: [], failed: []).isEmpty)
+    }
+
+    @Test func parentDirectoryExistsLooksAtTheContainingFolder() throws {
+        let folder = URL.temporaryDirectory.appending(path: "rc-git-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                Issue.record("could not remove scratch folder \(folder.path): \(error)")
+            }
+        }
+        let file = folder.appending(path: "file")
+        try Data().write(to: file)
+
+        let missingRepository = folder.appending(path: "repo").path(percentEncoded: false)
+        #expect(OpenTabs.parentDirectoryExists(missingRepository))
+        let underMissingFolder = folder.appending(path: "nope/repo").path(percentEncoded: false)
+        #expect(!OpenTabs.parentDirectoryExists(underMissingFolder))
+        let underFile = file.appending(path: "repo").path(percentEncoded: false)
+        #expect(!OpenTabs.parentDirectoryExists(underFile))
     }
 
     /// Without `dropping` — ⇧⌘W and ⌘Q — what is recorded is the live order plus everything

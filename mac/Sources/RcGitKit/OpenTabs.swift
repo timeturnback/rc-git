@@ -21,7 +21,7 @@ public struct OpenTabs {
     }
 
     /// Replaces the list. Only the restore at launch writes this way, to drop a repository
-    /// that no longer opens; everything else records through `record`.
+    /// that no longer opens (see `restoredPaths`); everything else records through `record`.
     public func save(paths: [String], selectedIndex: Int) {
         defaults.set(paths, forKey: Self.pathsKey)
         defaults.set(
@@ -46,11 +46,6 @@ public struct OpenTabs {
         defaults.synchronize()
     }
 
-    public func clear() {
-        defaults.removeObject(forKey: Self.pathsKey)
-        defaults.removeObject(forKey: Self.selectedKey)
-    }
-
     /// The tabs on screen followed by the saved ones that are not open any more, each path
     /// once. Live order comes first, which is what records a drag reorder; a closed tab keeps
     /// its place after them, so the selected index still counts from the live tabs.
@@ -58,6 +53,27 @@ public struct OpenTabs {
         var result: [String] = []
         for path in live + saved where !result.contains(path) { result.append(path) }
         return result
+    }
+
+    /// The list to save after a launch restore: the tabs that opened, then each saved path
+    /// that failed to open while its parent folder was unreachable — an external disk or a
+    /// network share not mounted yet. Such a path is kept for the next launch. A failed path
+    /// whose parent folder exists is dropped: the volume is there and the repository is not,
+    /// so retrying it on every launch would fail the same way.
+    public static func restoredPaths(
+        opened: [String], failed: [String],
+        parentExists: (String) -> Bool = parentDirectoryExists
+    ) -> [String] {
+        merged(live: opened, saved: failed.filter { !parentExists($0) })
+    }
+
+    /// Whether the folder that contains `path` exists, which is what tells a repository that
+    /// is gone from one whose volume is not mounted.
+    public static func parentDirectoryExists(_ path: String) -> Bool {
+        let parent = URL(filePath: path).deletingLastPathComponent().path(percentEncoded: false)
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: parent, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     /// The selection after a restore that skipped repositories which no longer open: the

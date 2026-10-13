@@ -99,11 +99,16 @@ therefore read a pre-save snapshot of the domain, found no tabs, and opened an e
 `synchronize()` forces the commit before the launch, which is exactly the cross-process
 handover case the method still exists for.
 
-Why the value was nonetheless on disk afterwards: `restoreTabs()`
-(`mac/Sources/RcGitApp/AppDelegate.swift:130`) returns *without* saving when it restores
-nothing, so the new process never clobbered the list; the old process then wrote it again from
-`applicationWillTerminate`. The symptom is a lost session, never a lost list — which is why the
-next manual launch looks fine and hides the bug.
+Why the value was nonetheless on disk afterwards: at the time, `restoreTabs()` returned
+without saving when it restored nothing, so the new process never clobbered the list; the old
+process then wrote it again from `applicationWillTerminate`. The symptom was a lost session,
+never a lost list — which is why the next manual launch looked fine and hid the bug.
+
+`restoreTabs()` (`mac/Sources/RcGitApp/AppDelegate.swift`) now always saves the list that
+`OpenTabs.restoredPaths` decides: the tabs that opened, then each repository that failed to
+open while its parent folder was unreachable (a volume not mounted yet). It drops only a
+repository gone from a folder that exists, logs every failure under the `tabs` category, and
+never clears the list because nothing opened.
 
 `tabsHandedOff` closes the mirror image of the same window: the old process outlives the new
 one's launch, and its termination write would otherwise land on top of whatever the new process
