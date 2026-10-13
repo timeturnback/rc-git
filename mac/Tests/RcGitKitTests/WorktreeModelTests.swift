@@ -83,6 +83,7 @@ import Testing
     @Test func pathSearchOnABranchSearchesItsTree() async throws {
         repo.workDir = "/checkout"
         await model.attach(repo)
+        try #require(model.refs.refs.count >= 1)
         await model.select(model.refs.refs[0])
         let result = try await model.searchPaths("")
         #expect(result.entries.map(\.path) == ["README.md"])
@@ -114,13 +115,14 @@ import Testing
         #expect(model.openedFilePath == "new.txt")
     }
 
-    @Test func selectingTheWorkingTreeRootsAtHead() async {
+    @Test func selectingTheWorkingTreeRootsAtHead() async throws {
         await model.attach(repo)
         await model.selectWorkingTree()
         #expect(model.browsingWorkingTree)
         #expect(model.selectedRef == nil)
         #expect(model.rootTree == mainTree)
 
+        try #require(model.refs.refs.count >= 1)
         await model.select(model.refs.refs[0])
         #expect(!model.browsingWorkingTree, "picking a ref leaves the working tree")
     }
@@ -132,6 +134,7 @@ import Testing
         #expect(
             rows.map(\.entry.name) == ["src", "gone.txt", "new.txt", "README.md"],
             "directories first, then names, deleted files in their place")
+        try #require(rows.count == 4)
         #expect(rows[1].missing)
         #expect(rows[2].status == .untracked)
         #expect(rows[3].status == .modified)

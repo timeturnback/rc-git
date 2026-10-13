@@ -29,20 +29,20 @@ import Testing
         #expect(Highlighter.highlight(name: "big.rs", data: big) == nil)
     }
 
-    @Test func mapperConvertsAsciiOffsetsOneToOne() {
+    @Test func mapperConvertsAsciiOffsetsOneToOne() throws {
         let text = "fn main() {}"
         let spans = [
             HighlightSpan(start: 0, end: 2, class: .keyword),
             HighlightSpan(start: 3, end: 7, class: .function),
         ]
         let ranges = HighlightMapper.utf16Ranges(for: spans, in: text)
-        #expect(ranges.count == 2)
+        try #require(ranges.count == 2)
         #expect(ranges[0].range == NSRange(location: 0, length: 2))
         #expect(ranges[0].class == .keyword)
         #expect(ranges[1].range == NSRange(location: 3, length: 4))
     }
 
-    @Test func mapperAccountsForMultibyteCharacters() {
+    @Test func mapperAccountsForMultibyteCharacters() throws {
         // "é" is 2 UTF-8 bytes, 1 UTF-16 unit; "🙂" is 4 UTF-8 bytes, 2 UTF-16 units.
         let text = "é🙂x = 1"
         let bytes = Array(text.utf8)
@@ -53,19 +53,19 @@ import Testing
             HighlightSpan(start: 10, end: 11, class: .number),
         ]
         let ranges = HighlightMapper.utf16Ranges(for: spans, in: text)
-        #expect(ranges.count == 2)
+        try #require(ranges.count == 2)
         #expect(ranges[0].range == NSRange(location: 3, length: 1), "é=1, 🙂=2 UTF-16 units")
         #expect(ranges[1].range == NSRange(location: 7, length: 1))
     }
 
-    @Test func mapperDropsEmptyAndHandlesEndOfText() {
+    @Test func mapperDropsEmptyAndHandlesEndOfText() throws {
         let text = "abc"
         let spans = [
             HighlightSpan(start: 1, end: 1, class: .keyword),
             HighlightSpan(start: 2, end: 3, class: .string),
         ]
         let ranges = HighlightMapper.utf16Ranges(for: spans, in: text)
-        #expect(ranges.count == 1, "zero-length spans are dropped")
+        try #require(ranges.count == 1, "zero-length spans are dropped")
         #expect(ranges[0].range == NSRange(location: 2, length: 1))
         #expect(HighlightMapper.utf16Ranges(for: [], in: "x").isEmpty)
         #expect(HighlightMapper.utf16Ranges(for: spans, in: "").isEmpty)

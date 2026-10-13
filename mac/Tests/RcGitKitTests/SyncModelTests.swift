@@ -317,7 +317,7 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.pushCalls == 1)
     }
 
-    @Test func authRetryPromptsStoresOnlyOnSuccess() async {
+    @Test func authRetryPromptsStoresOnlyOnSuccess() async throws {
         let store = InMemoryCredentialStore()
         let (model, performer, _) = model(
             .init(
@@ -340,7 +340,8 @@ private let alreadyOnMain = CheckoutOutcome(
         } else {
             Issue.record("expected done, got \(model.state)")
         }
-        #expect(performer.fetchCredentials[0] == nil, "the first attempt is anonymous")
+        let first = try #require(performer.fetchCredentials.first)
+        #expect(first == nil, "the first attempt is anonymous")
         #expect(performer.fetchCredentials.last??.username == "user")
         #expect(store.stored["git.example.com"]?.token == "sekret")
     }
@@ -438,7 +439,7 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.pushCredentials.map { $0?.token } == ["typed"])
     }
 
-    @Test func aFailedStoreReadStillPromptsAndTheFailureIsReported() async {
+    @Test func aFailedStoreReadStillPromptsAndTheFailureIsReported() async throws {
         let store = InMemoryCredentialStore(failsReads: true)
         let (model, performer, _) = model(
             .init(
@@ -456,7 +457,8 @@ private let alreadyOnMain = CheckoutOutcome(
         await model.sync()
 
         #expect(prompts == 1)
-        #expect(performer.fetchCredentials[0] == nil, "falls back to anonymous")
+        let first = try #require(performer.fetchCredentials.first)
+        #expect(first == nil, "falls back to anonymous")
         #expect(performer.pushCredentials.map { $0?.token } == ["typed"])
         guard case let .done(summary) = model.state else {
             Issue.record("expected done, got \(model.state)")

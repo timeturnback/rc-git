@@ -3,6 +3,11 @@ import Testing
 
 @testable import RcGitKit
 
+@MainActor
+private func listedRef(in model: BrowserModel, named name: String) throws -> RefEntry {
+    try #require(model.refs.refs.first { $0.shortName == name }, "no ref named \(name)")
+}
+
 /// History paging, commit browsing, and the refs refresh driven by the file watcher.
 @MainActor
 @Suite(.timeLimit(.minutes(1))) struct BrowserHistoryTests {
@@ -108,17 +113,17 @@ import Testing
         #expect(model.historyComplete)
     }
 
-    @Test func graphRowsFollowThePagedHistoryAndItsCache() async {
+    @Test func graphRowsFollowThePagedHistoryAndItsCache() async throws {
         await model.attach(repo)
         await model.loadMoreHistory()
         #expect(model.graphRows.count == 100, "one graph row per paged commit")
         await model.loadMoreHistory()
         #expect(model.graphRows.count == 150)
 
-        await model.select(model.refs.refs[0])
+        try await model.select(listedRef(in: model, named: "feature"))
         #expect(model.graphRows.count <= 1, "another tip starts its own graph")
         let calls = repo.lock.withLock { repo.logCalls }
-        await model.select(model.refs.refs[1])
+        try await model.select(listedRef(in: model, named: "main"))
         #expect(model.graphRows.count == 150, "the cached graph returns with the pages")
         #expect(
             repo.lock.withLock { repo.logCalls } == calls,
@@ -161,12 +166,12 @@ import Testing
         #expect(model.searchComplete)
     }
 
-    @Test func aHistoryPageForAnEarlierTipIsDropped() async {
+    @Test func aHistoryPageForAnEarlierTipIsDropped() async throws {
         await model.attach(repo)
         repo.lock.withLock { repo.delays[mainCommit] = 1 }
         async let slowPage: Void = model.loadMoreHistory()
         try? await Task.sleep(for: .milliseconds(20))
-        await model.select(model.refs.refs[0])
+        try await model.select(listedRef(in: model, named: "feature"))
         await slowPage
         repo.lock.withLock { repo.delays[mainCommit] = nil }
         #expect(model.history.isEmpty, "main's page never lands on feature")
@@ -174,7 +179,7 @@ import Testing
         #expect(model.history.map(\.title) == ["feature 0"])
         #expect(model.historyComplete)
 
-        await model.select(model.refs.refs[1])
+        try await model.select(listedRef(in: model, named: "main"))
         #expect(model.history.isEmpty, "the dropped page was never cached under main's tip")
     }
 
@@ -218,13 +223,13 @@ import Testing
         #expect(model.searchResults.count == 11, "main 9 and main 90-99")
     }
 
-    @Test func refSwitchAndEmptyFilterClearTheSearch() async {
+    @Test func refSwitchAndEmptyFilterClearTheSearch() async throws {
         await model.attach(repo)
         await model.search(CommitFilter(message: "main"))
         #expect(model.searchFilter != nil)
         var droppedReported = false
         model.onSearchChanged = { droppedReported = self.model.searchFilter == nil }
-        await model.select(model.refs.refs[0])
+        try await model.select(listedRef(in: model, named: "feature"))
         #expect(model.searchFilter == nil)
         #expect(model.searchResults.isEmpty)
         #expect(droppedReported, "the view hears the drop, so it can clear its query")
@@ -268,17 +273,17 @@ import Testing
         #expect(reports == 1, "one alert, not one per scroll")
     }
 
-    @Test func historyIsCachedPerTipAcrossReselection() async {
+    @Test func historyIsCachedPerTipAcrossReselection() async throws {
         await model.attach(repo)
         await model.loadMoreHistory()
         #expect(model.history.count == 100)
-        await model.select(model.refs.refs[0])
+        try await model.select(listedRef(in: model, named: "feature"))
         #expect(model.history.isEmpty, "another tip starts fresh")
         await model.loadMoreHistory()
         #expect(model.history.count == 1)
         #expect(model.historyComplete)
         let calls = repo.lock.withLock { repo.logCalls }
-        await model.select(model.refs.refs[1])
+        try await model.select(listedRef(in: model, named: "main"))
         #expect(model.history.count == 100, "cached pages come back without a walk")
         #expect(
             repo.lock.withLock { repo.logCalls } == calls, "cached pages come back without a walk")
@@ -351,7 +356,7 @@ import Testing
         #expect(model.searchError == nil)
     }
 
-    @Test func browsingACommitDetachesTheSelectionAndKeepsHistory() async {
+    @Test func browsingACommitDetachesTheSelectionAndKeepsHistory() async throws {
         await model.attach(repo)
         await model.loadMoreHistory()
         let commit = commitSummary(featureCommit, title: "feature 0")
@@ -360,7 +365,7 @@ import Testing
         #expect(model.browsedCommit == commit)
         #expect(model.rootTree == featureTree)
         #expect(model.history.count == 100, "the history pane keeps showing the ref's walk")
-        await model.select(model.refs.refs[1])
+        try await model.select(listedRef(in: model, named: "main"))
         #expect(model.browsedCommit == nil)
         #expect(model.rootTree == mainTree)
     }
@@ -776,17 +781,17 @@ import Testing
         #expect(events == 1, "closing an already-empty detail is silent")
     }
 
-    @Test func switchingRefsClearsTheCommitDetail() async {
+    @Test func switchingRefsClearsTheCommitDetail() async throws {
         await model.attach(repo)
         await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
         #expect(model.diffCommit != nil)
-        await model.select(model.refs.refs[0])
+        try await model.select(listedRef(in: model, named: "main"))
         #expect(model.diffCommit == nil)
         #expect(model.commitChanges.isEmpty)
         #expect(model.commitDetail == .empty)
     }
 
-    @Test func blameNeedsAnOpenFileWithAKnownPath() async {
+    @Test func blameNeedsAnOpenFileWithAKnownPath() async throws {
         await model.attach(repo)
         await model.requestBlame()
         #expect(model.blame == .failed("no file with a known path is open"))
@@ -799,7 +804,7 @@ import Testing
             return
         }
         #expect(path == "a.txt")
-        #expect(spans.count == 1)
+        try #require(spans.count == 1)
         #expect(spans[0].commit.title == "parent")
         #expect(spans[0].range.lineCount == 1)
         #expect(spans[0].olderThan == nil, "a traced range is not older than the floor")

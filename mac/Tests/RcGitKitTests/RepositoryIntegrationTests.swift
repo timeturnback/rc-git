@@ -115,6 +115,7 @@ import Testing
             entries.map(\.name) == [
                 "docs", "src", "alpha.txt", "bin.dat", "link", "README.md", "Zeta.txt",
             ])
+        try #require(entries.count == 7)
         #expect(entries[0].kind == .tree)
         #expect(entries[4].kind == .symlink)
 
@@ -141,6 +142,7 @@ import Testing
         let tip = try repo.resolve("main")
         let commits = try repo.log(tip: tip)
         #expect(commits.map(\.title) == ["Add docs and library", "Initial import"])
+        try #require(commits.count == 2)
         #expect(commits[0].parents == [commits[1].oid])
         #expect(commits[1].authorName == "Test Author")
         #expect(commits[1].authorTime == 1_704_067_200)
@@ -290,7 +292,7 @@ import Testing
             Issue.record("expected a text diff")
             return
         }
-        #expect(hunks.count == 1)
+        try #require(hunks.count == 1)
         #expect(hunks[0].lines == [DiffLine(kind: .added, text: "guide")])
         #expect((hunks[0].newStart, hunks[0].newLines) == (1, 1))
 
@@ -306,7 +308,7 @@ import Testing
             Issue.record("expected ranges")
             return
         }
-        #expect(spans.count == 1)
+        try #require(spans.count == 1)
         #expect(spans[0].startLine == 1)
         #expect(spans[0].lineCount == 3)
         #expect(try spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
@@ -482,6 +484,7 @@ import Testing
         let rows = report.entries.map { ($0.path, $0.status) }
         #expect(rows.map(\.0) == ["Zeta.txt", "alpha.txt", "untracked.txt"])
         #expect(rows.map(\.1) == [.deleted, .modified, .untracked])
+        try #require(report.entries.count == 3)
         let modified = report.entries[1]
         #expect(try modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
 
@@ -498,7 +501,7 @@ import Testing
         }
 
         let stashes = try repo.stashList()
-        #expect(stashes.count == 1)
+        try #require(stashes.count == 1)
         #expect(stashes[0].index == 0)
         #expect(stashes[0].message.hasSuffix("kept"))
         #expect(try stashes[0].oid.hex == fixture.revParse("stash@{0}"))

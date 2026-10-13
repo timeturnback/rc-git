@@ -14,17 +14,18 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
 }
 
 @Suite struct MarkdownBlockTests {
-    @Test func atxHeadingsCarryTheirLevel() {
+    @Test func atxHeadingsCarryTheirLevel() throws {
         let blocks = MarkdownDocument.parse("# One\n\n### Three ###\n").blocks
-        #expect(blocks.count == 2)
+        try #require(blocks.count == 2)
         #expect(blocks[0].kind == .heading(level: 1))
         #expect(plain(blocks[0].runs) == "One")
         #expect(blocks[1].kind == .heading(level: 3))
         #expect(plain(blocks[1].runs) == "Three")
     }
 
-    @Test func setextUnderlinesRetitleTheParagraph() {
+    @Test func setextUnderlinesRetitleTheParagraph() throws {
         let blocks = MarkdownDocument.parse("Title\n=====\n\nOther\n-----\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks[0].kind == .heading(level: 1))
         #expect(plain(blocks[0].runs) == "Title")
         #expect(blocks[1].kind == .heading(level: 2))
@@ -43,28 +44,32 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.map(\.listDepth) == [1])
     }
 
-    @Test func softBreaksFoldAndTrailingSpacesKeepTheBreak() {
+    @Test func softBreaksFoldAndTrailingSpacesKeepTheBreak() throws {
         let blocks = MarkdownDocument.parse("one\ntwo\n\nthree  \nfour\n").blocks
+        try #require(blocks.count == 2)
         #expect(plain(blocks[0].runs) == "one two")
         #expect(plain(blocks[1].runs) == "three\nfour")
     }
 
-    @Test func aSoftBreakAfterAnInlineConstructKeepsTheSpace() {
+    @Test func aSoftBreakAfterAnInlineConstructKeepsTheSpace() throws {
         let source = "Run `make`\nthen read [the docs](docs/a.md)\nnext *line*\nend"
-        let text = plain(MarkdownDocument.parse(source).blocks[0].runs)
+        let text = plain(try #require(MarkdownDocument.parse(source).blocks.first).runs)
         #expect(text == "Run make then read the docs next line end")
     }
 
-    @Test func aHardBreakAfterALinkKeepsTheBreak() {
-        #expect(plain(MarkdownDocument.parse("a [x](y)  \nb").blocks[0].runs) == "a x\nb")
+    @Test func aHardBreakAfterALinkKeepsTheBreak() throws {
+        let block = try #require(MarkdownDocument.parse("a [x](y)  \nb").blocks.first)
+        #expect(plain(block.runs) == "a x\nb")
     }
 
-    @Test func aBreakTagAtTheEndOfALineGainsNoSpace() {
-        #expect(plain(MarkdownDocument.parse("a<br>\nb").blocks[0].runs) == "a\nb")
+    @Test func aBreakTagAtTheEndOfALineGainsNoSpace() throws {
+        let block = try #require(MarkdownDocument.parse("a<br>\nb").blocks.first)
+        #expect(plain(block.runs) == "a\nb")
     }
 
-    @Test func thematicBreaksAreNotListItems() {
+    @Test func thematicBreaksAreNotListItems() throws {
         let blocks = MarkdownDocument.parse("a\n\n---\n\n* * *\n").blocks
+        try #require(blocks.count == 3)
         #expect(blocks[1].kind == .thematicBreak)
         #expect(blocks[2].kind == .thematicBreak)
     }
@@ -74,9 +79,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks == [MarkdownBlock(kind: .code(language: "rust", text: "fn main() {}"))])
     }
 
-    @Test func fencedCodeIsNotReadAsMarkdown() {
+    @Test func fencedCodeIsNotReadAsMarkdown() throws {
         let blocks = MarkdownDocument.parse("```\n# not a heading\n- not a list\n```\n").blocks
-        #expect(blocks.count == 1)
+        try #require(blocks.count == 1)
         #expect(blocks[0].kind == .code(language: nil, text: "# not a heading\n- not a list"))
     }
 
@@ -125,8 +130,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.last?.runs.contains { $0.link?.destination == "/real" } == true)
     }
 
-    @Test func indentedCodeStopsAtTheNextParagraph() {
+    @Test func indentedCodeStopsAtTheNextParagraph() throws {
         let blocks = MarkdownDocument.parse("intro\n\n    code line\n\nafter\n").blocks
+        try #require(blocks.count == 3)
         #expect(blocks[1].kind == .code(language: nil, text: "code line"))
         #expect(plain(blocks[2].runs) == "after")
     }
@@ -143,8 +149,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(try #require(blocks.first).runs) == "Text # not heading")
     }
 
-    @Test func blockQuotesCarryTheirDepth() {
+    @Test func blockQuotesCarryTheirDepth() throws {
         let blocks = MarkdownDocument.parse("> one\n\n>> two\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks[0].quoteDepth == 1)
         #expect(blocks[1].quoteDepth == 2)
         #expect(plain(blocks[1].runs) == "two")
@@ -164,9 +171,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.last?.kind == .heading(level: 1))
     }
 
-    @Test func htmlBlocksStayRaw() {
+    @Test func htmlBlocksStayRaw() throws {
         let blocks = MarkdownDocument.parse("<div class=\"x\">\ntext\n</div>\n").blocks
-        #expect(blocks.count == 1)
+        try #require(blocks.count == 1)
         #expect(blocks[0].kind == .html(text: "<div class=\"x\">\ntext\n</div>"))
     }
 
@@ -204,34 +211,37 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.first?.marker == .bullet)
     }
 
-    @Test func frontMatterIsItsOwnBlock() {
+    @Test func frontMatterIsItsOwnBlock() throws {
         let blocks = MarkdownDocument.parse("---\nmodule: core\n---\n\n# Title\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks[0].kind == .frontMatter(text: "module: core"))
         #expect(blocks[1].kind == .heading(level: 1))
     }
 
-    @Test func aByteOrderMarkDoesNotHideALeadingHeading() {
+    @Test func aByteOrderMarkDoesNotHideALeadingHeading() throws {
         let blocks = MarkdownDocument.parse("\u{FEFF}# Title\n").blocks
-        #expect(blocks.count == 1)
+        try #require(blocks.count == 1)
         #expect(blocks[0].kind == .heading(level: 1))
         #expect(plain(blocks[0].runs) == "Title")
     }
 
-    @Test func aByteOrderMarkDoesNotHideFrontMatter() {
+    @Test func aByteOrderMarkDoesNotHideFrontMatter() throws {
         let blocks = MarkdownDocument.parse("\u{FEFF}---\ntitle: x\n---\n").blocks
-        #expect(blocks.count == 1)
+        try #require(blocks.count == 1)
         #expect(blocks[0].kind == .frontMatter(text: "title: x"))
     }
 
-    @Test func aLeadingRuleWithoutACloserIsNotFrontMatter() {
+    @Test func aLeadingRuleWithoutACloserIsNotFrontMatter() throws {
         let blocks = MarkdownDocument.parse("---\n\ntext\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks[0].kind == .thematicBreak)
     }
 
-    @Test func footnotesSplitIntoMarkerAndDefinition() {
+    @Test func footnotesSplitIntoMarkerAndDefinition() throws {
         let blocks = MarkdownDocument.parse("See it[^a].\n\n[^a]: Because.\n").blocks
         let marker = firstRun(blocks) { $0.style.contains(.footnoteMarker) }
         #expect(marker?.text == "a")
+        try #require(blocks.count == 2)
         #expect(blocks[1].kind == .footnote(label: "a"))
         #expect(plain(blocks[1].runs) == "Because.")
     }
@@ -254,25 +264,25 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
                 == MarkdownDocument.footnoteAnchor(for: "Note"))
     }
 
-    @Test func proseAfterABracketedLabelStaysAParagraph() {
+    @Test func proseAfterABracketedLabelStaysAParagraph() throws {
         let blocks = MarkdownDocument.parse("[Note]: this is not done\n\nSee [Note].\n").blocks
-        #expect(blocks.count == 2)
+        try #require(blocks.count == 2)
         #expect(plain(blocks[0].runs) == "[Note]: this is not done")
         #expect(blocks[1].runs.allSatisfy { $0.link == nil })
     }
 
-    @Test func aFenceLineWithInfoDoesNotCloseTheFence() {
+    @Test func aFenceLineWithInfoDoesNotCloseTheFence() throws {
         let source = "```\n```js\n[a]: https://example.com\n```\n\nSee [a].\n"
         let blocks = MarkdownDocument.parse(source).blocks
-        #expect(blocks.count == 2)
+        try #require(blocks.count == 2)
         #expect(blocks[0].kind == .code(language: nil, text: "```js\n[a]: https://example.com"))
         #expect(blocks[1].runs.allSatisfy { $0.link == nil })
     }
 
-    @Test func aDefinitionAfterAFenceWithAnInfoLineStillDefines() {
+    @Test func aDefinitionAfterAFenceWithAnInfoLineStillDefines() throws {
         let source = "```\n```js\n```\n\n[a]: /real\n\nSee [a].\n"
         let blocks = MarkdownDocument.parse(source).blocks
-        #expect(blocks.count == 2)
+        try #require(blocks.count == 2)
         #expect(blocks[1].runs.contains { $0.link?.destination == "/real" })
     }
 
@@ -352,15 +362,17 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(block.runs).hasSuffix("+ + x"))
     }
 
-    @Test func aSecondParagraphStaysInsideTheItem() {
+    @Test func aSecondParagraphStaysInsideTheItem() throws {
         let blocks = MarkdownDocument.parse("- one\n\n  more\n\nafter\n").blocks
+        try #require(blocks.count == 3)
         #expect(blocks[1].listDepth == 1)
         #expect(blocks[1].marker == nil)
         #expect(blocks[2].listDepth == 0)
     }
 
-    @Test func taskItemsRecordWhetherTheyAreDone() {
+    @Test func taskItemsRecordWhetherTheyAreDone() throws {
         let blocks = MarkdownDocument.parse("- [ ] open\n- [x] done\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks.map(\.marker) == [.task(done: false), .task(done: true)])
         #expect(plain(blocks[1].runs) == "done")
     }
@@ -382,8 +394,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.first?.listDepth == 1)
     }
 
-    @Test func codeInsideAnItemKeepsTheBullet() {
+    @Test func codeInsideAnItemKeepsTheBullet() throws {
         let blocks = MarkdownDocument.parse("- item\n\n  ```sh\n  ls\n  ```\n").blocks
+        try #require(blocks.count == 2)
         #expect(blocks[1].kind == .code(language: "sh", text: "ls"))
         #expect(blocks[1].listDepth == 1)
     }
@@ -425,9 +438,9 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(parsed?.rows.first?.first?.first?.link?.destination == "x.md")
     }
 
-    @Test func aTableEndsAtTheNextBlock() {
+    @Test func aTableEndsAtTheNextBlock() throws {
         let blocks = MarkdownDocument.parse("| a |\n|---|\n| 1 |\n\n# After\n").blocks
-        #expect(blocks.count == 2)
+        try #require(blocks.count == 2)
         #expect(blocks[1].kind == .heading(level: 1))
     }
 }

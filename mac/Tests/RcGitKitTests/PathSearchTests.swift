@@ -18,11 +18,10 @@ import Testing
         #expect(FuzzyMatch.score("readme.md", query: "README") != nil)
     }
 
-    @Test func fileNameMatchesBeatDirectoryMatches() {
-        let inName = FuzzyMatch.score("docs/guide.md", query: "guide")
-        let inDirectory = FuzzyMatch.score("guide/notes.md", query: "guide")
-        #expect(inName != nil && inDirectory != nil)
-        #expect(inName! > inDirectory!)
+    @Test func fileNameMatchesBeatDirectoryMatches() throws {
+        let inName = try #require(FuzzyMatch.score("docs/guide.md", query: "guide"))
+        let inDirectory = try #require(FuzzyMatch.score("guide/notes.md", query: "guide"))
+        #expect(inName > inDirectory)
     }
 
     @Test func fileNamedLikeItsFolderKeepsTheFileNameBonus() throws {
@@ -31,10 +30,10 @@ import Testing
         #expect(named > sibling)
     }
 
-    @Test func consecutiveRunsBeatScatteredMatches() {
-        let run = FuzzyMatch.score("browser.swift", query: "brow")
-        let scattered = FuzzyMatch.score("b_r_o_w_x.swift", query: "brow")
-        #expect(run! > scattered!)
+    @Test func consecutiveRunsBeatScatteredMatches() throws {
+        let run = try #require(FuzzyMatch.score("browser.swift", query: "brow"))
+        let scattered = try #require(FuzzyMatch.score("b_r_o_w_x.swift", query: "brow"))
+        #expect(run > scattered)
     }
 
     @Test func nonAsciiQueriesMatchWholeCharacters() {
@@ -70,7 +69,7 @@ import Testing
 
     @Test func buildFlattensEveryFileAndSkipsSubmodules() throws {
         let fixed = trees()
-        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
         let paths = index.entries.map(\.path)
         #expect(
             paths == ["src/nested/link", "src/main.rs", "src/run.sh", "README.md"],
@@ -91,9 +90,9 @@ import Testing
             first: [TreeEntry(name: "x", oid: oid(0x23), kind: .blob)],
             second: [TreeEntry(name: "y", oid: oid(0x24), kind: .blob)],
         ]
-        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
         #expect(index.search("").map(\.path) == ["a/x", "b/y", "z.txt"])
-        let capped = try PathIndex.build(root: root, limit: 1) { fixed[$0]! }
+        let capped = try PathIndex.build(root: root, limit: 1) { try #require(fixed[$0]) }
         #expect(capped.entries.map(\.path) == ["a/x"], "the cut keeps the first folder")
     }
 
@@ -102,7 +101,7 @@ import Testing
         fixed[root]?[0] = TreeEntry(name: "s\u{FFFD}c", oid: sub, kind: .tree, hasExactName: false)
         fixed[root]?.append(
             TreeEntry(name: "f\u{FFFD}o", oid: oid(0x14), kind: .blob, hasExactName: false))
-        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
         let inexact = index.entries.filter { !$0.hasExactPath }.map(\.path).sorted()
         #expect(
             inexact == [
@@ -113,7 +112,7 @@ import Testing
 
     @Test func searchRanksAndLimits() throws {
         let fixed = trees()
-        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
         let matches = index.search("mainrs")
         #expect(matches.first?.path == "src/main.rs")
         #expect(index.search("zzz").isEmpty)
@@ -153,7 +152,7 @@ import Testing
             TreeEntry(name: ".env", oid: oid(0x72), kind: .blob),
         ]
         fixed[meta] = [TreeEntry(name: "HEAD", oid: oid(0x73), kind: .blob)]
-        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
         let hidden = index.entries.filter(\.hidden).map(\.path).sorted()
         #expect(hidden == [".DS_Store", ".git/HEAD"], "a hidden folder hides what is inside it")
 
@@ -170,13 +169,13 @@ import Testing
 
     @Test func buildStopsAtTheLimitAndSaysSo() throws {
         let fixed = trees()
-        let capped = try PathIndex.build(root: root, limit: 2) { fixed[$0]! }
+        let capped = try PathIndex.build(root: root, limit: 2) { try #require(fixed[$0]) }
         #expect(capped.entries.count == 2)
         #expect(capped.truncated, "a walk cut at the limit is flagged")
-        let whole = try PathIndex.build(root: root, limit: 4) { fixed[$0]! }
+        let whole = try PathIndex.build(root: root, limit: 4) { try #require(fixed[$0]) }
         #expect(whole.entries.count == 4)
         #expect(!whole.truncated, "a walk that fits the limit exactly drops nothing")
-        let roomy = try PathIndex.build(root: root, limit: 5) { fixed[$0]! }
+        let roomy = try PathIndex.build(root: root, limit: 5) { try #require(fixed[$0]) }
         #expect(roomy.entries.count == 4)
         #expect(!roomy.truncated)
     }
@@ -209,7 +208,7 @@ import Testing
         await #expect(throws: CancellationError.self) { try await task.value }
     }
 
-    @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() {
+    @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() throws {
         let list = WorktreeFileList(
             files: [
                 WorktreeFile(path: ".env", kind: .blob),
@@ -222,6 +221,7 @@ import Testing
         #expect(index.entries.map(\.path) == [".env", "sub/.DS_Store", "run.sh"])
         #expect(index.entries.map(\.hidden) == [false, true, false])
         #expect(index.entries.allSatisfy { $0.oid.bytes.isEmpty })
+        try #require(index.entries.count == 3)
         #expect(index.entries[2].kind == .executableBlob)
     }
 
@@ -253,7 +253,7 @@ import Testing
         var reads = 0
         let index = try PathIndex.build(root: root) { tree in
             reads += 1
-            return wide[tree]!
+            return try #require(wide[tree])
         }
         #expect(reads == 51, "one read per directory")
         #expect(index.entries.count == 5000)

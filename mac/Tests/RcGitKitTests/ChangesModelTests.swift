@@ -438,7 +438,7 @@ import Testing
         #expect(model.selections.first == .whole(path: "a.txt"))
     }
 
-    @Test func aLaterFileSelectionWins() async {
+    @Test func aLaterFileSelectionWins() async throws {
         await model.loadStatus()
         let staleHunk = DiffHunk(
             oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
@@ -457,6 +457,7 @@ import Testing
         }
         var shown: [WorktreeDiffState] = []
         model.onDiffChanged = { shown.append(self.model.diffState) }
+        try #require(report.entries.count == 3)
         async let slowSelect: Void = model.select(report.entries[0])
         try? await Task.sleep(for: .milliseconds(20))
         await model.select(report.entries[1])
@@ -469,7 +470,7 @@ import Testing
             "the slow selection's diff never rendered")
     }
 
-    @Test func selectingAFileLoadsItsWorktreeDiff() async {
+    @Test func selectingAFileLoadsItsWorktreeDiff() async throws {
         await model.loadStatus()
         let hunk = DiffHunk(
             oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
@@ -483,6 +484,7 @@ import Testing
             Issue.record("expected loaded")
             return
         }
+        try #require(report.entries.count == 3)
         await model.select(report.entries[0])
         guard case let .loaded(path, diff) = model.diffState else {
             Issue.record("expected a loaded diff, got \(model.diffState)")
