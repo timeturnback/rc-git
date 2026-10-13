@@ -44,9 +44,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var refPickerCloseTimestamp: TimeInterval?
     private var refWatcher: RefWatcher?
     private var worktreeWatcher: WorktreeWatcher?
-    /// Set when the working tree changed while another tab was frontmost; the switch to
-    /// the Changes tab pays the rescan then.
-    private var changesDirty = false
     private var modeControl: NSSegmentedControl?
     private var navigationControl: NSSegmentedControl?
     /// The back/forward list as the app delegate last rendered it here.
@@ -156,7 +153,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         syncModel = sync
         wireSync(sync)
         Task { await sync.refreshStatus() }
-        changesDirty = true
+        syncChangesVisibility()
         worktreeWatcher?.stop()
         worktreeWatcher = nil
         if let workDir = repository.workingDirectory {
@@ -182,15 +179,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// The change list no longer matches disk or the hidden-files setting: rescan now when
-    /// the Changes tab is frontmost, otherwise remember to rescan on the next switch to it.
+    /// The change list no longer matches disk or the hidden-files setting: the model rescans
+    /// now when the list is on screen, otherwise it remembers to rescan when it is shown.
     private func changeListIsStale() {
         guard let changesModel else { return }
-        if contentTabs.selectedTabViewItemIndex == ContentMode.changes.rawValue {
-            Task { await changesModel.refresh() }
-        } else {
-            changesDirty = true
-        }
+        Task { await changesModel.markStale() }
+    }
+
+    /// Whether the change list can be seen: this tab is on Changes, the window is the
+    /// selected tab of its tab group, and some of it is on screen.
+    private var changesOnScreen: Bool {
+        guard let window, contentTabs.selectedTabViewItemIndex == ContentMode.changes.rawValue
+        else { return false }
+        let frontTab = window.tabGroup.map { $0.selectedWindow === window } ?? true
+        return frontTab && window.occlusionState.contains(.visible)
+    }
+
+    /// Tells the change list whether it is on screen, so a hidden one scans nothing and a
+    /// shown one catches up on what it missed.
+    private func syncChangesVisibility() {
+        guard let changesModel else { return }
+        let visible = changesOnScreen
+        Task { await changesModel.setVisible(visible) }
     }
 
     /// Shows the file pane, the commit history, or the working-tree changes, and puts the
@@ -209,20 +219,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if mode == .history, model.history.isEmpty {
             Task { await model.loadMoreHistory() }
         }
-        if mode == .changes, let changesModel {
-            let needsLoad = changesDirty || changesModel.statusState == .idle
-            changesDirty = false
-            if needsLoad {
-                Task { await changesModel.refresh() }
-            }
+        syncChangesVisibility()
+        if mode == .changes {
             // The sync row shows commit counts; re-read them on every switch to the tab.
             Task { await syncModel?.refreshStatus() }
             // The author line reads .git/config, which no watcher covers.
             refreshAuthor()
-        } else {
-            // Nothing is watching the change list any more, and the watcher will mark the tab
-            // dirty for the next switch back, so a scan still running is work for no one.
-            changesModel?.cancelScans()
         }
     }
 
@@ -289,7 +291,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func windowDidBecomeMain(_ notification: Notification) {
+        syncChangesVisibility()
         onBecomeMain?()
+    }
+
+    /// A tab moved behind another, a miniaturized window, or one covered by another app:
+    /// the change list stops or resumes scanning with it.
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        syncChangesVisibility()
     }
 
     /// Lets a scroll view that is already at its edge hand a sideways scroll up the responder

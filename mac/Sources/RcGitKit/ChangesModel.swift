@@ -73,6 +73,11 @@ public final class ChangesModel {
     private var statusPending = false
     private var stashScanning = false
     private var stashPending = false
+    /// Whether the list is on screen, as the window last said through `setVisible`, and
+    /// whether the disk moved while it was not. A hidden list scans nothing: it remembers it
+    /// is stale and pays one rescan when it is shown again.
+    public private(set) var isVisible = false
+    public private(set) var isStale = false
 
     public var onStatusChanged: (() -> Void)?
     public var onDiffChanged: (() -> Void)?
@@ -89,6 +94,32 @@ public final class ChangesModel {
         async let status: Void = loadStatus()
         async let stash: Void = loadStashes()
         _ = await (status, stash)
+    }
+
+    /// The working tree, the refs or the hidden-files setting changed. A visible list
+    /// rescans now; a hidden one only remembers, so a burst of events while it is off screen
+    /// costs no scan at all.
+    public func markStale() async {
+        guard isVisible else {
+            isStale = true
+            return
+        }
+        await refresh()
+    }
+
+    /// Shows or hides the list. Showing it rescans when it went stale while hidden or has
+    /// never loaded; hiding it cancels the running scan, which is work for no one.
+    public func setVisible(_ visible: Bool) async {
+        isVisible = visible
+        guard visible else {
+            cancelScans()
+            return
+        }
+        let needsLoad = isStale || statusState == .idle
+        isStale = false
+        if needsLoad {
+            await refresh()
+        }
     }
 
     /// Reloads only the change list, capturing the `HEAD` it was built against.

@@ -184,6 +184,58 @@ import Testing
         #expect(model.statusState == .idle, "the cancelled scan's result never lands")
     }
 
+    @Test func staleMarksWhileHiddenCostNoScanAndOneOnShow() async {
+        await model.setVisible(true)
+        await model.setVisible(false)
+        let before = repo.lock.withLock { (repo.statusCalls, repo.stashCalls) }
+        for _ in 0..<20 {
+            await model.markStale()
+        }
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0, "a hidden list scans nothing")
+        #expect(repo.lock.withLock { repo.stashCalls } == before.1)
+        #expect(model.isStale)
+
+        await model.setVisible(true)
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0 + 1, "one rescan on show")
+        #expect(repo.lock.withLock { repo.stashCalls } == before.1 + 1)
+        #expect(!model.isStale, "showing consumes the stale mark")
+
+        await model.setVisible(true)
+        #expect(
+            repo.lock.withLock { repo.statusCalls } == before.0 + 1,
+            "showing a list that is current does not rescan")
+    }
+
+    @Test func aVisibleListRescansOnEveryStaleMark() async {
+        await model.setVisible(true)
+        await model.markStale()
+        await model.markStale()
+        #expect(repo.lock.withLock { repo.statusCalls } == 3)
+        #expect(!model.isStale)
+    }
+
+    @Test func showingANeverLoadedListLoadsIt() async {
+        #expect(!model.isStale)
+        await model.setVisible(true)
+        #expect(repo.lock.withLock { repo.statusCalls } == 1, "an idle list loads on show")
+    }
+
+    @Test func hidingCancelsTheScanInFlight() async {
+        await model.setVisible(true)
+        let gate = CallGate()
+        repo.statusGate = gate
+        async let rescan: Void = model.markStale()
+        await gate.waitUntilArrived()
+        await model.setVisible(false)
+        #expect(model.statusState == .idle, "the list reloads when shown again")
+        gate.open()
+        await rescan
+        #expect(model.statusState == .idle, "the cancelled scan's result never lands")
+
+        await model.setVisible(true)
+        #expect(repo.lock.withLock { repo.statusCalls } == 3, "the idle list reloads on show")
+    }
+
     @Test func filesAreTickedByDefaultAndUnticksSurviveRefresh() async {
         await model.loadStatus()
         #expect(model.isTicked("a.txt"))
