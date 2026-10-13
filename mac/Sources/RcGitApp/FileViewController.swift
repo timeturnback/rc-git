@@ -9,7 +9,7 @@ import RcGitKit
 /// Import links in source mode are found the first time the pointer moves over the text.
 @MainActor
 final class FileViewController: NSViewController {
-    var onLoadAnyway: ((TreeEntry, UInt64) -> Void)?
+    var onLoadAnyway: ((UInt64) -> Void)?
     /// Asked for syntax spans after a text file painted; `nil` means stay plain.
     var highlightProvider: ((TreeEntry, TextDocument) async -> [HighlightSpan]?)?
     /// A markdown link that pointed inside the repository was clicked; the argument is the
@@ -44,7 +44,7 @@ final class FileViewController: NSViewController {
     private let textStorage = NSTextStorage()
     private var textView: LinkTextView!
     private var ruler: LineNumberRulerView!
-    private var tooLargeEntry: (TreeEntry, UInt64)?
+    private var tooLargeSize: UInt64?
 
     /// Bumped on every content change; every background build checks it before applying.
     private var contentGeneration = 0
@@ -181,7 +181,7 @@ final class FileViewController: NSViewController {
     }
 
     func render(_ state: FileState) {
-        tooLargeEntry = nil
+        tooLargeSize = nil
         loadAnyway.isHidden = true
         // No file, no bar: an empty strip over "Select a file" reads as a missing title.
         header.isHidden = state == .empty
@@ -219,7 +219,7 @@ final class FileViewController: NSViewController {
                 BlobDiff.tooLargePlaceholder(path: entry.name, size: size, limit: limit)
             )
             if size <= FileViewController.hardLimit {
-                tooLargeEntry = (entry, size)
+                tooLargeSize = size
                 loadAnyway.isHidden = false
             }
         case let .failed(entry, message):
@@ -232,8 +232,8 @@ final class FileViewController: NSViewController {
     }
 
     @objc private func loadAnywayPressed(_ sender: Any?) {
-        guard let (entry, size) = tooLargeEntry else { return }
-        onLoadAnyway?(entry, size)
+        guard let size = tooLargeSize else { return }
+        onLoadAnyway?(size)
     }
 
     @objc private func modeChanged(_ sender: Any?) {

@@ -147,6 +147,46 @@ import Testing
         #expect(message.contains("gone.txt"))
     }
 
+    @Test func loadAnywayRereadsATooLargeDiskFileFromDisk() async {
+        repo.worktreeFiles["big.txt"] = textBlob("big file\n")
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        await model.openWorktreeFile(name: "big.txt", path: "big.txt", limit: 2)
+        guard case .tooLarge = model.fileState else {
+            Issue.record("expected too large, got \(model.fileState)")
+            return
+        }
+
+        await model.loadAnyway(limit: 1 << 20)
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry.name == "big.txt")
+        #expect(document.text == "big file\n")
+        #expect(model.openedFilePath == "big.txt")
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 0)
+    }
+
+    @Test func loadAnywayRereadsAMissingRowFromItsBlob() async {
+        let gone = TreeEntry(name: "gone.txt", oid: oid(0x50), kind: .blob)
+        repo.blobs[gone.oid] = textBlob("deleted on disk\n")
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        await model.openFile(gone, path: "gone.txt", limit: 2)
+        #expect(model.fileState == .tooLarge(gone, size: 16, limit: 2))
+
+        await model.loadAnyway(limit: 1 << 20)
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry == gone, "a file gone from disk reads its HEAD blob, not the disk")
+        #expect(document.text == "deleted on disk\n")
+        #expect(model.openedFilePath == "gone.txt")
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 2)
+    }
+
     @Test func refreshFollowsHeadWhileBrowsingTheWorkingTree() async {
         await model.attach(repo)
         await model.selectWorkingTree()

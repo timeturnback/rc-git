@@ -10,6 +10,12 @@ public enum FileState: Equatable, Sendable {
     case failed(TreeEntry, String)
 }
 
+/// Where the open file's bytes came from: a working-tree file read by path, or a blob.
+private enum OpenedFileSource {
+    case disk(name: String)
+    case blob(TreeEntry)
+}
+
 /// What the history pane lists: everything reachable from the anchor, or only the commits
 /// that changed one path.
 public enum HistoryScope: Equatable, Sendable {
@@ -52,6 +58,8 @@ public final class BrowserModel {
     public private(set) var openedPathIsExact = true
     /// The size limit the file pane last read with, which blame honors too.
     private var openedFileLimit = Repository.defaultBlobLimit
+    /// Where the file in the file pane was read from, so `loadAnyway` re-reads the same place.
+    private var openedFileSource: OpenedFileSource?
     /// True after a ref refresh failed: `refs`, `head` and the selection are the last listing
     /// that read, kept but no longer known to be current. The next successful read clears it.
     public private(set) var refsStale = false
@@ -210,6 +218,7 @@ public final class BrowserModel {
         resetHistory(anchor: nil)
         fileState = .empty
         openedFilePath = nil
+        openedFileSource = nil
         onFileChanged?()
         rootGeneration += 1
         refreshGeneration += 1
@@ -452,6 +461,7 @@ public final class BrowserModel {
         let entry = TreeEntry(name: name, oid: .unhashed, kind: .blob, hasExactName: pathIsExact)
         fileGeneration += 1
         let generation = fileGeneration
+        openedFileSource = .disk(name: name)
         openedFilePath = path
         openedPathIsExact = pathIsExact
         openedFileLimit = limit
@@ -491,6 +501,7 @@ public final class BrowserModel {
             rootTree = tree
             fileState = .empty
             openedFilePath = nil
+            openedFileSource = nil
             onFileChanged?()
             onRootChanged?()
         case let .failure(error):
@@ -520,6 +531,7 @@ public final class BrowserModel {
         guard let repository, !entry.kind.isDirectory else { return }
         fileGeneration += 1
         let generation = fileGeneration
+        openedFileSource = .blob(entry)
         if let path {
             openedFilePath = path
             openedPathIsExact = pathIsExact && entry.hasExactName
@@ -540,6 +552,23 @@ public final class BrowserModel {
             fileState = .failed(entry, error.message)
         }
         onFileChanged?()
+    }
+
+    /// Re-reads the file on screen with a larger `limit`, from where it was opened: the
+    /// working directory for a file read from disk, its blob otherwise. A file deleted from
+    /// disk opened through its HEAD blob, so `browsingWorkingTree` cannot decide this.
+    public func loadAnyway(limit: UInt64) async {
+        switch openedFileSource {
+        case nil:
+            return
+        case let .disk(name):
+            guard let path = openedFilePath else { return }
+            await openWorktreeFile(
+                name: name, path: path, pathIsExact: openedPathIsExact, limit: limit)
+        case let .blob(entry):
+            await openFile(
+                entry, path: openedFilePath, pathIsExact: openedPathIsExact, limit: limit)
+        }
     }
 
     /// Opens the file at a repository-relative path, the way a markdown link in the file pane
@@ -1164,6 +1193,7 @@ public final class BrowserModel {
         fileGeneration += 1
         fileState = .empty
         openedFilePath = nil
+        openedFileSource = nil
         onFileChanged?()
         noteLocation()
     }

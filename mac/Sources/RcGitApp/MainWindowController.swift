@@ -827,9 +827,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         treeController.onContentWidthChanged = { [weak self] width in
             self?.fitSidebarWidth(to: width)
         }
-        fileController.onLoadAnyway = { [weak self] entry, limit in
+        fileController.onLoadAnyway = { [weak self] limit in
             guard let self else { return }
-            Task { await self.model.openFile(entry, limit: limit) }
+            Task { await self.model.loadAnyway(limit: limit) }
         }
         fileController.highlightProvider = { [weak self] entry, document in
             guard let self else { return nil }

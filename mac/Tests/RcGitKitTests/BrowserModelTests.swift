@@ -109,6 +109,28 @@ import Testing
         #expect(model.openedFilePath == "src/main.rs")
     }
 
+    @Test func loadAnywayReadsTheWorkingTreeFile() async {
+        let big = String(repeating: "x", count: Int(Repository.defaultBlobLimit) + 1)
+        repo.worktreeFiles["big.txt"] = textBlob(big)
+        await model.attach(repo)
+        await model.selectWorkingTree()
+        await model.openWorktreeFile(name: "big.txt", path: "big.txt")
+        guard case let .tooLarge(_, size, limit) = model.fileState else {
+            Issue.record("expected too large, got \(model.fileState)")
+            return
+        }
+        #expect(limit == Repository.defaultBlobLimit)
+
+        await model.loadAnyway(limit: size)
+        guard case let .text(entry, document) = model.fileState else {
+            Issue.record("expected text, got \(model.fileState)")
+            return
+        }
+        #expect(entry.name == "big.txt")
+        #expect(document.byteCount == big.utf8.count)
+        #expect(repo.lock.withLock { repo.readBlobCalls } == 0, "the disk file is no blob")
+    }
+
     @Test func openFileProducesTextBinaryAndTooLargeStates() async {
         await model.attach(repo)
         let readmeEntry = TreeEntry(name: "README.md", oid: readme, kind: .blob)

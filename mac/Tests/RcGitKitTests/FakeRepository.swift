@@ -35,6 +35,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     let lock = NSLock()
     var trees: [Oid: [TreeEntry]] = [:]
     var blobs: [Oid: BlobContent] = [:]
+    var readBlobCalls = 0
     var commits: [Oid: [CommitSummary]] = [:]
     var summaries: [Oid: CommitSummary] = [:]
     var details: [Oid: CommitDetail] = [:]
@@ -145,7 +146,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
 
     func readBlob(_ oid: Oid, limit: UInt64) throws -> BlobContent {
         let (content, delay, gate) = lock.withLock {
-            (blobs[oid], delays[oid] ?? 0, gates.removeValue(forKey: oid))
+            readBlobCalls += 1
+            return (blobs[oid], delays[oid] ?? 0, gates.removeValue(forKey: oid))
         }
         gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
