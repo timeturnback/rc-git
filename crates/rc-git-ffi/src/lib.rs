@@ -5944,8 +5944,9 @@ mod tests {
         let cancel = rcgit_cancel_new();
         assert!(!cancel.is_null());
 
+        // A closed loopback port: a regression that dials fails at once, never leaving the machine.
         let fx = Fixture::standard();
-        fx.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        fx.git(&["remote", "add", "origin", "https://127.0.0.1:9/x.git"]);
         fx.git(&["config", "branch.main.remote", "origin"]);
         fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
         let path = CString::new(fx.path().to_str().unwrap()).unwrap();

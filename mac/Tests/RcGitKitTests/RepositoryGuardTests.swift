@@ -467,7 +467,7 @@ import Testing
     @Test func aSignalledTokenStopsAFetchBeforeItReachesTheNetwork() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(["remote", "add", "origin", "https://example.com/repo.git"])
+        try fixture.git(["remote", "add", "origin", "http://127.0.0.1:9/repo.git"])
         try fixture.git(["config", "branch.main.remote", "origin"])
         try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
 
@@ -476,8 +476,8 @@ import Testing
         cancel.signal()
         #expect(cancel.isSignalled)
 
-        // example.com is never dialled: the guard checks the flag before connecting,
-        // which is also what proves the pointer crossed the ABI intact.
+        // The closed loopback port is never dialled: the guard checks the flag before
+        // connecting, which is also what proves the pointer crossed the ABI intact.
         do {
             _ = try RepositoryGuard.fetch(
                 repoPath: fixture.path, credentials: nil, cancel: cancel)
