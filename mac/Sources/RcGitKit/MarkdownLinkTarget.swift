@@ -34,11 +34,12 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
     private static func repositoryTarget(_ destination: String, from sourcePath: String?)
         -> MarkdownLinkTarget?
     {
-        let withoutQuery = destination.split(separator: "?", maxSplits: 1)[0]
-        let parts = withoutQuery.split(
-            separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-        let fragment = parts.count > 1 && !parts[1].isEmpty ? String(parts[1]) : nil
-        let rawPath = String(parts[0]).removingPercentEncoding ?? String(parts[0])
+        let hash = destination.firstIndex(of: "#")
+        let fragmentText = hash.map { destination[destination.index(after: $0)...] }
+        let fragment = fragmentText.flatMap { $0.isEmpty ? nil : String($0) }
+        let beforeFragment = hash.map { destination[..<$0] } ?? destination[...]
+        let pathText = String(beforeFragment.prefix { $0 != "?" })
+        let rawPath = pathText.removingPercentEncoding ?? pathText
         guard !rawPath.isEmpty else {
             return fragment.map(Self.fragment)
         }

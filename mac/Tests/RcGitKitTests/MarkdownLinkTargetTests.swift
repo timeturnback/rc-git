@@ -42,6 +42,22 @@ import Testing
     @Test func fragmentsAndQueriesAreSplitOff() {
         #expect(resolve("../ffi.md#errors") == .repositoryPath("docs/ffi.md", fragment: "errors"))
         #expect(resolve("other.md?raw=1") == .repositoryPath("docs/guide/other.md", fragment: nil))
+        #expect(
+            resolve("other.md?raw=1#errors")
+                == .repositoryPath("docs/guide/other.md", fragment: "errors"))
+        #expect(
+            resolve("other.md?plain=1#errors")
+                == .repositoryPath("docs/guide/other.md", fragment: "errors"))
+    }
+
+    @Test func aQueryOnlyDestinationIsNoFile() {
+        #expect(resolve("?") == nil)
+        #expect(resolve("??") == nil)
+        #expect(resolve(" ? ") == nil)
+        #expect(resolve("?a=b") == nil)
+        #expect(resolve("?raw=1") == nil)
+        #expect(resolve("?tab=1") == nil)
+        #expect(resolve("?x#sec") == .fragment("sec"))
     }
 
     @Test func percentEscapesAreDecoded() {
