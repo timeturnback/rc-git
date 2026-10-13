@@ -98,4 +98,19 @@ import Testing
         #expect(BranchBanner(symbol: .ref(.localBranch), title: "main").summary == "main")
         #expect(BranchBanner.nothing.summary == "")
     }
+
+    // MARK: Stale refs
+
+    @Test func staleRefsReplaceTheDetailAndKeepTheName() {
+        let banner = BranchBanner(symbol: .workingTree, title: "Working Tree", detail: "on main")
+        #expect(banner.markingRefsStale(false) == banner)
+        #expect(
+            banner.markingRefsStale(true)
+                == BranchBanner(
+                    symbol: .workingTree, title: "Working Tree",
+                    detail: BranchBanner.staleRefsDetail))
+        #expect(
+            BranchBanner(symbol: .ref(.localBranch), title: "main").markingRefsStale(true).summary
+                == "main — Refs could not be re-read")
+    }
 }

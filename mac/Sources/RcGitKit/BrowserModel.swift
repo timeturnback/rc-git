@@ -52,7 +52,9 @@ public final class BrowserModel {
     public private(set) var openedPathIsExact = true
     /// The size limit the file pane last read with, which blame honors too.
     private var openedFileLimit = Repository.defaultBlobLimit
-    public private(set) var lastError: String?
+    /// True after a ref refresh failed: `refs`, `head` and the selection are the last listing
+    /// that read, kept but no longer known to be current. The next successful read clears it.
+    public private(set) var refsStale = false
     /// Whether the file lists show entries `HiddenFiles` names. The window applies the
     /// app-wide preference; the model decides what that hides.
     public private(set) var showsHiddenFiles = false
@@ -110,7 +112,7 @@ public final class BrowserModel {
     /// Fired when a background operation failed with a message worth showing.
     public var onError: ((String) -> Void)?
     /// Fired when something the user typed named nothing in the repository: a title for what
-    /// was wrong, then the detail. Not a read failure, so it never sets `lastError`.
+    /// was wrong, then the detail. Not a read failure, so it never fires `onError`.
     public var onInputError: ((_ title: String, _ message: String) -> Void)?
     /// Fired after `location` changed, once per move: a ref switch that also closes the open
     /// file reports where it ended up, never the step in between.
@@ -215,7 +217,7 @@ public final class BrowserModel {
         case let .success((listing, head)):
             refs = listing
             self.head = head
-            lastError = nil
+            refsStale = false
             onRefsChanged?()
             if repository.workingDirectory != nil, head.target != nil {
                 await selectWorkingTree()
@@ -230,8 +232,9 @@ public final class BrowserModel {
     /// Reloads refs and HEAD after the repository changed on disk, keeping every object
     /// cache: only refs can move. The selection survives by name; when its target moved the
     /// root tree and history reload, and when it disappeared the selection falls back the
-    /// same way `attach` chooses one. A failed refresh keeps the last good listing and does
-    /// not alert: the watcher fires during ref updates, when transient lock errors are normal.
+    /// same way `attach` chooses one. A failed refresh keeps the last good listing, marks it
+    /// stale through `refsStale` and `onRefsChanged`, and does not alert: the watcher fires
+    /// during ref updates, when transient lock errors are normal.
     public func refreshRefs() async {
         guard let repository else { return }
         beginMove()
@@ -247,7 +250,7 @@ public final class BrowserModel {
             let previousHead = self.head?.target
             refs = listing
             self.head = head
-            lastError = nil
+            refsStale = false
             if browsingWorkingTree {
                 if head.target != previousHead {
                     await selectWorkingTree()
@@ -276,8 +279,11 @@ public final class BrowserModel {
                 onRefsChanged?()
                 onRootChanged?()
             }
-        case let .failure(error):
-            lastError = error.message
+        case .failure:
+            // The message is dropped on purpose: a lock during a ref update is the usual cause
+            // and heals on the next event, so the views show the quiet stale state instead.
+            refsStale = true
+            onRefsChanged?()
         }
     }
 
@@ -1374,7 +1380,6 @@ public final class BrowserModel {
     }
 
     private func fail(_ message: String) {
-        lastError = message
         onError?(message)
     }
 }

@@ -871,7 +871,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func browsingBanner() -> BranchBanner {
         BranchBanner.browsing(
             selectedRef: model.selectedRef, browsedCommit: model.browsedCommit,
-            browsingWorkingTree: model.browsingWorkingTree, head: model.head)
+            browsingWorkingTree: model.browsingWorkingTree, head: model.head
+        ).markingRefsStale(model.refsStale)
     }
 
     /// Names what Files browses and opens the picker on a click. Changes names the branch
@@ -883,7 +884,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             banner.render(BranchBanner(symbol: .nothing, title: "No repository"), clickable: false)
             banner.toolTip = nil
         } else if mode == .changes {
-            banner.render(BranchBanner.checkedOut(head: model.head), clickable: false)
+            banner.render(
+                BranchBanner.checkedOut(head: model.head).markingRefsStale(model.refsStale),
+                clickable: false)
             banner.toolTip = "The checked-out branch. Changes compare the working tree with it."
         } else {
             banner.render(browsingBanner(), clickable: true)

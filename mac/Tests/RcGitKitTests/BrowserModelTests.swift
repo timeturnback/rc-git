@@ -47,7 +47,7 @@ import Testing
         #expect(model.rootTree == mainTree)
         #expect(refsEvents == 2, "once for the listing, once for the selection")
         #expect(rootEvents == 1)
-        #expect(model.lastError == nil)
+        #expect(!model.refsStale)
     }
 
     @Test func initialRefFallsBackFromDetachedHead() {
@@ -344,6 +344,5 @@ import Testing
         broken.failNextRefs = true
         await model.attach(broken)
         #expect(reported == "cannot list refs: transient lock")
-        #expect(model.lastError == "cannot list refs: transient lock")
     }
 }

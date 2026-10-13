@@ -282,11 +282,25 @@ import Testing
         failing.lock.withLock { failing.failNextRefs = true }
         var reported: String?
         model.onError = { reported = $0 }
+        var refsEvents = 0
+        model.onRefsChanged = { refsEvents += 1 }
         await model.refreshRefs()
         #expect(reported == nil, "transient lock errors during a ref update must not alert")
-        #expect(model.lastError?.contains("refs") == true)
+        #expect(model.refsStale, "the kept listing must not read as current")
+        #expect(refsEvents == 1, "the views re-render to show the stale state")
         #expect(model.refs.refs.count == 2)
         #expect(model.selectedRef?.shortName == "main")
+
+        failing.lock.withLock {
+            failing.listing.refs.append(
+                RefEntry(
+                    fullName: "refs/tags/v2", shortName: "v2", kind: .tag, target: mainCommit))
+        }
+        await model.refreshRefs()
+        #expect(!model.refsStale, "a successful read clears the stale state")
+        #expect(model.refs.refs.count == 3)
+        #expect(model.selectedRef?.shortName == "main")
+        #expect(reported == nil)
     }
 }
 
@@ -391,7 +405,6 @@ import Testing
         #expect(inputError?.title == BrowserModel.revisionNotFoundTitle)
         #expect(inputError?.message.contains("not a revision") == true)
         #expect(readFailure == nil)
-        #expect(model.lastError == nil)
     }
 
     @Test func commitWithNoChangesShowsEmptyDetail() async {

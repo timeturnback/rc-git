@@ -33,6 +33,16 @@ public struct BranchBanner: Equatable, Sendable {
         return "\(title) — \(detail)"
     }
 
+    /// The detail a banner carries while the refs it names could not be re-read.
+    public static let staleRefsDetail = "Refs could not be re-read"
+
+    /// This banner, with its detail replaced by `staleRefsDetail` when `stale`: the last
+    /// listing stays on screen but no longer reads as current.
+    public func markingRefsStale(_ stale: Bool) -> BranchBanner {
+        guard stale else { return self }
+        return BranchBanner(symbol: symbol, title: title, detail: Self.staleRefsDetail)
+    }
+
     /// What Files browses, in the order the model holds it: the working tree, then a commit
     /// from the history, then the selected ref.
     public static func browsing(
