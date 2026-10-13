@@ -737,10 +737,15 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         onCloseDetail?()
     }
 
-    /// Highlights the row of a commit reached by a parent link or back jump, when loaded.
+    /// Highlights the row of a commit reached by a parent link or back jump, when loaded. A
+    /// commit with no row here (not a search match, not paged in yet) drops the highlight, so
+    /// the previously clicked row can be picked again.
     func selectCommitRow(_ oid: Oid) {
-        guard let row = displayed.firstIndex(where: { $0.oid == oid }), table.selectedRow != row
-        else { return }
+        guard let row = displayed.firstIndex(where: { $0.oid == oid }) else {
+            deselectCommitRow()
+            return
+        }
+        guard table.selectedRow != row else { return }
         isReloading = true
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         table.scrollRowToVisible(row)
