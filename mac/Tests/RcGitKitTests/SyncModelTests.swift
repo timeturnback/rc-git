@@ -759,6 +759,53 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.pushCalls == 0, "a diverged pull must stop the push")
     }
 
+    @Test func pushAloneRunsNoFetchOrPull() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(ahead: 1)],
+                pushes: [.success(cleanPush)]
+            ))
+        await model.push()
+
+        #expect(performer.fetchCredentials.isEmpty, "push must not fetch first")
+        #expect(performer.pullCalls == 0)
+        #expect(performer.pushCalls == 1)
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 1)))
+    }
+
+    @Test func pullFetchesThenFastForwardsAndNeverPushes() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(behind: 1)],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)]
+            ))
+        await model.pull()
+
+        #expect(performer.fetchCredentials.count == 1)
+        #expect(performer.pullCalls == 1)
+        #expect(performer.pushCalls == 0)
+        #expect(
+            model.state
+                == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 0)))
+    }
+
+    @Test func aRejectedPushEndsDivergedNotFailed() async {
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(ahead: 1)],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.failure(.diverged(message: "push rejected: not a fast-forward"))]
+            ))
+        await model.sync()
+
+        #expect(performer.pushCalls == 1)
+        #expect(model.state == .diverged(message: "push rejected: not a fast-forward"))
+    }
+
     @Test func noUpstreamFailsFastWithoutNetwork() async {
         let status = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
