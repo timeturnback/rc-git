@@ -411,9 +411,9 @@ fn check_cancel(cancel: Option<&AtomicUsize>, language: Language) -> Result<(), 
 }
 
 /// Highlights markdown: the block grammar for structure, the inline grammar for prose inside
-/// every `inline` node, and the named language for every fenced code block and metadata
-/// section. Inner spans win over the block layer's, so emphasis inside a heading and keywords
-/// inside a fence keep their own class.
+/// every `inline` node and table cell, and the named language for every fenced code block and
+/// metadata section. Inner spans win over the block layer's, so emphasis inside a heading and
+/// keywords inside a fence keep their own class.
 fn highlight_markdown(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> {
     let config = Language::Markdown.configuration()?;
     let base = single_layer(config, data, Language::Markdown, nesting.cancel)?;
@@ -456,7 +456,7 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
         let node = cursor.node();
         let mut descend = true;
         match node.kind() {
-            "inline" => {
+            "inline" | "pipe_table_cell" => {
                 append_region(
                     &mut overlays,
                     data,
@@ -1004,6 +1004,16 @@ mod tests {
         assert!(classes_at(&spans, data, "soft").contains(&Class::Emphasis));
         assert!(classes_at(&spans, data, "hard").contains(&Class::Strong));
         assert!(classes_at(&spans, data, "`span`").contains(&Class::String));
+        assert!(classes_at(&spans, data, "https://example.com").contains(&Class::Link));
+    }
+
+    #[test]
+    fn markdown_table_cells_highlight_inline_prose() {
+        let data =
+            b"| name | note |\n|---|---|\n| *em* | `cell` |\n| x | [link](https://example.com) |\n";
+        let spans = highlight(data, Language::Markdown, None).unwrap();
+        assert!(classes_at(&spans, data, "em*").contains(&Class::Emphasis));
+        assert!(classes_at(&spans, data, "`cell`").contains(&Class::String));
         assert!(classes_at(&spans, data, "https://example.com").contains(&Class::Link));
     }
 
