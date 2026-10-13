@@ -465,9 +465,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             if let placeholder = diff.placeholder(path: path) {
                 showDiffPlaceholder(placeholder)
             } else if case let .text(hunks) = diff {
-                let all = hunks.map(Self.stamp(of:))
+                let all = hunks.map(\.stamp)
                 for hunk in hunks {
-                    diffRows.append(.header(stamp: Self.stamp(of: hunk), all: all))
+                    diffRows.append(.header(stamp: hunk.stamp, all: all))
                     for line in hunk.lines {
                         diffRows.append(.line(line))
                     }
@@ -624,12 +624,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         diffPlaceholder.stringValue = message
         diffPlaceholder.isHidden = false
         diffScroll.isHidden = true
-    }
-
-    private static func stamp(of hunk: DiffHunk) -> HunkStamp {
-        HunkStamp(
-            oldStart: hunk.oldStart, oldLines: hunk.oldLines,
-            newStart: hunk.newStart, newLines: hunk.newLines)
     }
 
     // MARK: Actions

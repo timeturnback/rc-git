@@ -132,6 +132,13 @@ public struct DiffHunk: Sendable, Hashable {
     }
 }
 
+extension DiffHunk {
+    /// The hunk's header ranges, which is how the guard and `ChangesModel` name a hunk.
+    public var stamp: HunkStamp {
+        HunkStamp(oldStart: oldStart, oldLines: oldLines, newStart: newStart, newLines: newLines)
+    }
+}
+
 /// What a blob diff produced.
 public enum BlobDiff: Sendable, Hashable {
     /// Both sides are text; empty `hunks` means identical content.

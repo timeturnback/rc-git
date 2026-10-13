@@ -156,11 +156,7 @@ import Testing
         guard case let .text(hunks) = try repository.diffWorktreeFile(path: path, old: old) else {
             throw RepositoryError("expected a text diff of '\(path)'")
         }
-        return hunks.map {
-            HunkStamp(
-                oldStart: $0.oldStart, oldLines: $0.oldLines, newStart: $0.newStart,
-                newLines: $0.newLines)
-        }
+        return hunks.map(\.stamp)
     }
 
     @Test func aSavedFallbackNeverOverridesTheRepositoryEmail() throws {

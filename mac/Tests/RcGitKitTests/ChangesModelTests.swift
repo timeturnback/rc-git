@@ -288,18 +288,19 @@ import Testing
         #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
     }
 
+    @Test func aHunkStampCarriesEachHeaderRangeInItsOwnField() {
+        let hunk = DiffHunk(
+            oldStart: 3, oldLines: 5, newStart: 7, newLines: 11,
+            lines: [DiffLine(kind: .added, text: "x")])
+        #expect(hunk.stamp == HunkStamp(oldStart: 3, oldLines: 5, newStart: 7, newLines: 11))
+    }
+
     private static let firstHunk = DiffHunk(
         oldStart: 1, oldLines: 3, newStart: 1, newLines: 3,
         lines: [DiffLine(kind: .added, text: "first")])
     private static let secondHunk = DiffHunk(
         oldStart: 8, oldLines: 2, newStart: 8, newLines: 3,
         lines: [DiffLine(kind: .added, text: "second")])
-
-    private static func stamp(_ hunk: DiffHunk) -> HunkStamp {
-        HunkStamp(
-            oldStart: hunk.oldStart, oldLines: hunk.oldLines,
-            newStart: hunk.newStart, newLines: hunk.newLines)
-    }
 
     private func reportWith(aTxt: Bool) -> StatusReport {
         var entries = [
@@ -315,8 +316,8 @@ import Testing
     }
 
     @Test func aHunkTickThatNoLongerMatchesIsDroppedOnRefresh() async {
-        let first = Self.stamp(Self.firstHunk)
-        let second = Self.stamp(Self.secondHunk)
+        let first = Self.firstHunk.stamp
+        let second = Self.secondHunk.stamp
         await model.loadStatus()
         model.toggleHunk("a.txt", second, all: [first, second])
         #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
@@ -330,8 +331,8 @@ import Testing
     }
 
     @Test func aHunkTickWhoseDiffCannotBeReadIsDroppedAndReported() async {
-        let first = Self.stamp(Self.firstHunk)
-        let second = Self.stamp(Self.secondHunk)
+        let first = Self.firstHunk.stamp
+        let second = Self.secondHunk.stamp
         var errors: [String] = []
         model.onError = { errors.append($0) }
         await model.loadStatus()
@@ -342,8 +343,8 @@ import Testing
     }
 
     @Test func partialHunkTicksSurviveARefreshAndDropWithTheirPath() async {
-        let first = Self.stamp(Self.firstHunk)
-        let second = Self.stamp(Self.secondHunk)
+        let first = Self.firstHunk.stamp
+        let second = Self.secondHunk.stamp
         repo.lock.withLock {
             repo.statusReport = reportWith(aTxt: true)
             repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk, Self.secondHunk])

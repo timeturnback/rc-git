@@ -236,12 +236,7 @@ public final class ChangesModel {
             hunks[entry.path] = Result {
                 guard case let .text(fileHunks) = try worktreeDiff(entry, repository: repository)
                 else { return [] }
-                return Set(
-                    fileHunks.map {
-                        HunkStamp(
-                            oldStart: $0.oldStart, oldLines: $0.oldLines,
-                            newStart: $0.newStart, newLines: $0.newLines)
-                    })
+                return Set(fileHunks.map(\.stamp))
             }.mapError { RepositoryError(wrapping: $0) }
         }
         return hunks
