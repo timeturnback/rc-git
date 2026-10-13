@@ -200,9 +200,10 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         !workingTreeSelected && ref.fullName == selected?.fullName
     }
 
-    // MARK: Picker
+    // MARK: Keyboard
 
-    /// Moves the picker's highlight to the next pickable row, stepping over group headers.
+    /// Moves the highlight to the next pickable row, stepping over group headers. In the
+    /// sidebar the highlight is the selection, so this browses the row.
     private func moveHighlight(by step: Int) {
         var row = outline.selectedRow + step
         while outline.item(atRow: row) != nil, !isPickable(outline.item(atRow: row)) {
@@ -271,28 +272,48 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         rebuild()
     }
 
-    /// The picker's keys, typed in the filter: the arrows move the highlight, Return picks
-    /// it — or the first row when nothing is highlighted — and Escape closes.
+    /// Keys typed in the filter: the arrows move the highlight, which in the sidebar browses
+    /// as it moves. Return picks in the picker; in the sidebar it browses the best match and
+    /// moves focus to the list. Escape closes the picker and clears the sidebar's filter.
     func control(
         _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
     ) -> Bool {
-        guard behavior == .picker else { return false }
         switch selector {
         case #selector(NSResponder.moveDown(_:)):
             moveHighlight(by: 1)
         case #selector(NSResponder.moveUp(_:)):
             moveHighlight(by: -1)
         case #selector(NSResponder.insertNewline(_:)):
-            let highlighted = outline.selectedRow >= 0 ? outline.selectedRow : nil
-            if let row = highlighted ?? firstRow(where: isPickable) {
-                pick(row: row)
-            }
+            if behavior == .picker { pickHighlighted() } else { browseBestMatch() }
         case #selector(NSResponder.cancelOperation(_:)):
-            onClose?()
+            if behavior == .picker { onClose?() } else { clearFilter() }
         default:
             return false
         }
         return true
+    }
+
+    /// Picks the highlighted row, or the first row when nothing is highlighted.
+    private func pickHighlighted() {
+        let highlighted = outline.selectedRow >= 0 ? outline.selectedRow : nil
+        if let row = highlighted ?? firstRow(where: isPickable) {
+            pick(row: row)
+        }
+    }
+
+    /// Selects the filter's best match, or the first pickable row, which browses it, then
+    /// hands the keyboard to the list.
+    private func browseBestMatch() {
+        let best = listing.bestMatch(for: search.stringValue).flatMap { rowOf($0) }
+        if let row = best ?? firstRow(where: isPickable) {
+            highlight(row: row)
+        }
+        view.window?.makeFirstResponder(outline)
+    }
+
+    private func clearFilter() {
+        search.stringValue = ""
+        rebuild()
     }
 
     // MARK: NSMenuDelegate
