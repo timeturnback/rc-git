@@ -45,7 +45,7 @@ private final class ChangeCellView: NSTableCellView {
 /// mutation itself.
 @MainActor
 final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextViewDelegate
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextViewDelegate, NSMenuItemValidation
 {
     var onSelectEntry: ((StatusEntry) -> Void)?
     /// Ticks or unticks whole files: one path from a file row, every path beneath a folder row.
@@ -109,6 +109,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let groupingStore = ChangeGroupingStore.worktree()
     private var stashes: [StashEntry] = []
     private var diffRows: [DiffRow] = []
+    /// The hunks `diffRows` shows, so a row's hunk is decided by `DiffHunk.owning`.
+    private var diffHunks: [DiffHunk] = []
     private var diffPath: String?
     private var isReloading = false
     /// Re-made every time their row shows: the stack gives no width to a view it has not laid
@@ -445,6 +447,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func renderDiff(_ state: WorktreeDiffState) {
+        diffHunks = []
         switch state {
         case .idle:
             diffPath = nil
@@ -464,6 +467,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             if let placeholder = diff.placeholder(path: path) {
                 showDiffPlaceholder(placeholder)
             } else if case let .text(hunks) = diff {
+                diffHunks = hunks
                 let all = hunks.map(\.stamp)
                 for hunk in hunks {
                     diffRows.append(.header(stamp: hunk.stamp, all: all))
@@ -689,12 +693,21 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    /// The hunk the diff table's context menu was opened on, from any of its rows.
+    private var clickedHunk: DiffHunk? {
+        DiffHunk.owning(row: diffTable.clickedRow, in: diffHunks)
+    }
+
     @objc private func discardHunkClicked(_ sender: Any?) {
-        let row = diffTable.clickedRow
-        guard let diffPath, diffRows.indices.contains(row),
-            case let .header(stamp, _) = diffRows[row]
-        else { return }
-        onDiscardHunk?(diffPath, stamp)
+        guard let diffPath, let hunk = clickedHunk else { return }
+        onDiscardHunk?(diffPath, hunk.stamp)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(discardHunkClicked(_:)) {
+            return clickedHunk != nil
+        }
+        return true
     }
 
     /// The box's own next state is ignored: a mixed row, a folder with some files ticked or a

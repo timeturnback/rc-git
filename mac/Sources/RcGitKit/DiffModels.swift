@@ -137,6 +137,19 @@ extension DiffHunk {
     public var stamp: HunkStamp {
         HunkStamp(oldStart: oldStart, oldLines: oldLines, newStart: newStart, newLines: newLines)
     }
+
+    /// The hunk that owns `row` of a diff pane that shows each hunk as its header row followed
+    /// by one row per line, so an action on any row of a hunk acts on that hunk. Nil for a row
+    /// outside the pane.
+    public static func owning(row: Int, in hunks: [DiffHunk]) -> DiffHunk? {
+        guard row >= 0 else { return nil }
+        var end = 0
+        for hunk in hunks {
+            end += 1 + hunk.lines.count
+            if row < end { return hunk }
+        }
+        return nil
+    }
 }
 
 /// What a blob diff produced.
