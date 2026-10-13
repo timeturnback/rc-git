@@ -60,6 +60,17 @@ public struct OpenTabs {
         return result
     }
 
+    /// The selection after a restore that skipped repositories which no longer open: the
+    /// index in `opened` of the path that was selected in `saved`, or the first tab when that
+    /// path is the one that failed to open.
+    public static func restoredSelection(saved: [String], selectedIndex: Int, opened: [String])
+        -> Int
+    {
+        guard !saved.isEmpty else { return 0 }
+        let path = saved[clampedSelection(selectedIndex, count: saved.count)]
+        return opened.firstIndex(of: path) ?? 0
+    }
+
     /// Keeps a selection inside the list: a saved index that no longer exists (the
     /// repository failed to reopen, the list shrank) falls back to the first tab.
     public static func clampedSelection(_ index: Int, count: Int) -> Int {

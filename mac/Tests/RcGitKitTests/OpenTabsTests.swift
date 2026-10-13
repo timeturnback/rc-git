@@ -89,10 +89,36 @@ import Testing
         try withScratchDefaults { defaults in
             let tabs = OpenTabs(defaults: defaults)
             tabs.record(live: ["/one", "/gone", "/two"], selectedIndex: 2)
-            tabs.save(paths: ["/one", "/two"], selectedIndex: 1)
+            let opened = ["/one", "/two"]
+            let selected = OpenTabs.restoredSelection(
+                saved: tabs.paths, selectedIndex: tabs.selectedIndex, opened: opened)
+            tabs.save(paths: opened, selectedIndex: selected)
             #expect(tabs.paths == ["/one", "/two"])
             #expect(tabs.selectedIndex == 1)
         }
+    }
+
+    @Test func restoredSelectionFollowsTheSelectedPath() {
+        let saved = ["/a", "/b", "/c"]
+        #expect(
+            OpenTabs.restoredSelection(saved: saved, selectedIndex: 2, opened: ["/b", "/c"]) == 1)
+        #expect(
+            OpenTabs.restoredSelection(saved: saved, selectedIndex: 1, opened: ["/a", "/b"]) == 1)
+        #expect(
+            OpenTabs.restoredSelection(
+                saved: ["/a", "/gone", "/b", "/c"], selectedIndex: 2, opened: ["/a", "/b", "/c"])
+                == 1)
+        #expect(OpenTabs.restoredSelection(saved: saved, selectedIndex: 2, opened: saved) == 2)
+    }
+
+    @Test func restoredSelectionFallsBackToFirstWhenTheSelectedPathFailed() {
+        let saved = ["/a", "/b", "/c"]
+        #expect(
+            OpenTabs.restoredSelection(saved: saved, selectedIndex: 0, opened: ["/b", "/c"]) == 0)
+        #expect(
+            OpenTabs.restoredSelection(saved: saved, selectedIndex: 2, opened: ["/a", "/b"]) == 0)
+        #expect(OpenTabs.restoredSelection(saved: [], selectedIndex: 0, opened: []) == 0)
+        #expect(OpenTabs.restoredSelection(saved: saved, selectedIndex: 9, opened: ["/a"]) == 0)
     }
 
     @Test func savedSelectionOutsideTheListFallsBackToFirst() throws {

@@ -323,9 +323,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             newWindow().showWindow(nil)
             return
         }
-        let selected = OpenTabs.clampedSelection(openTabs.selectedIndex, count: opened.count)
+        let openedPaths = opened.compactMap(\.repositoryPath)
+        let selected = OpenTabs.restoredSelection(
+            saved: openTabs.paths, selectedIndex: openTabs.selectedIndex, opened: openedPaths)
         opened[selected].showWindow(nil)
-        openTabs.save(paths: opened.compactMap(\.repositoryPath), selectedIndex: selected)
+        openTabs.save(paths: openedPaths, selectedIndex: selected)
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on
