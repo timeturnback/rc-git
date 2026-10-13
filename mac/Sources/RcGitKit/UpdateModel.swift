@@ -29,7 +29,8 @@ public enum UpdateState: Sendable, Hashable {
     case running(UpdateStep)
     /// The checkout is already at the commit this bundle was built from.
     case upToDate
-    /// The new bundle is in place; the app is relaunching into it.
+    /// The new bundle is in place and launched. Shown just before this instance quits, so
+    /// the window says the update finished rather than vanishing mid-build.
     case installed
     case failed(step: UpdateStep, message: String)
 }
@@ -119,8 +120,12 @@ public protocol UpdateEnvironment: Sendable {
     /// Takes back what `handOff()` gave away, after a relaunch that failed: this process
     /// keeps running, so it records its state again.
     func reclaim() async
-    /// Launches the installed bundle and quits this instance. `nil` on success.
+    /// Launches the installed bundle. `nil` on success. This instance keeps running, so
+    /// the model can show `.installed` before `quit()`.
     func relaunch() async -> String?
+    /// Quits this instance on a later run-loop turn, so the window draws `.installed`
+    /// first. Runs only after `relaunch()` succeeded.
+    func quit() async
 }
 
 /// Drives one update: preflight, fetch and fast-forward, build, install, relaunch. The
@@ -317,7 +322,7 @@ public final class UpdateModel {
         return true
     }
 
-    /// Builds the bundle, puts it in place, and launches it.
+    /// Builds the bundle, puts it in place, launches it, and quits this instance.
     private func buildAndRelaunch(mode: UpdateMode) async {
         enter(.install)
         note(mode == .update ? "building" : "rebuilding the working tree")
@@ -343,6 +348,8 @@ public final class UpdateModel {
         }
         state = .installed
         onChanged?()
+        note("quitting this instance")
+        await environment.quit()
     }
 
     /// Why a checkout that is not clean stops the update: the paths when there are any,

@@ -171,8 +171,15 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         } catch {
             return "built, but could not launch \(target.path): \(error)"
         }
-        await MainActor.run { NSApp.terminate(nil) }
         return nil
+    }
+
+    /// `terminate` never returns here (the delegate answers `.terminateNow`), so it is
+    /// deferred a run-loop turn to let the window draw `.installed` first.
+    func quit() async {
+        await MainActor.run {
+            NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+        }
     }
 
     @MainActor

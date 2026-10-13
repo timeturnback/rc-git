@@ -200,4 +200,5 @@ private struct UnavailableUpdateEnvironment: UpdateEnvironment {
     func handOff() async {}
     func reclaim() async {}
     func relaunch() async -> String? { Self.reason }
+    func quit() async {}
 }

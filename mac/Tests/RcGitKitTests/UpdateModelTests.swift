@@ -23,6 +23,9 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
     /// started, so a test can tell a note logged before its step from one logged after.
     var lastLine: (@MainActor @Sendable () -> String?)?
     private(set) var lastLines: [String?] = []
+    /// Reads the model's state. Set, `quit()` records what the window showed as it quit.
+    var currentState: (@MainActor @Sendable () -> UpdateState)?
+    private(set) var stateAtQuit: UpdateState?
 
     init(_ script: Script) {
         self.script = script
@@ -76,6 +79,12 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         calls.append("relaunch")
         return script.relaunchFailure
     }
+
+    func quit() async {
+        await probe()
+        calls.append("quit")
+        if let currentState { stateAtQuit = await currentState() }
+    }
 }
 
 /// Holds the toolchain probe until the test releases it, so a test can act while the model
@@ -105,6 +114,7 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
     func handOff() async {}
     func reclaim() async {}
     func relaunch() async -> String? { "unused" }
+    func quit() async {}
 }
 
 /// A fetch or a build that never returns on its own: the first call to the `hanging` step
@@ -153,6 +163,10 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
     func relaunch() async -> String? {
         calls.append("relaunch")
         return nil
+    }
+
+    func quit() async {
+        calls.append("quit")
     }
 
     /// Suspends until cancelled when `step` is the hanging one and this is its first call.
@@ -210,10 +224,23 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(
             environment.calls == [
                 "toolchain", "sourceState", "sync", "sourceState", "install", "handOff",
-                "relaunch",
+                "relaunch", "quit",
             ])
         #expect(model.log.contains("on master"))
         #expect(model.log.contains("built RCGit.app"))
+    }
+
+    /// Quitting never returns, so the window has to read `.installed` before the quit, not
+    /// after it.
+    @Test func theInstalledStateIsShownBeforeQuitting() async {
+        let (model, environment) = Self.model(
+            .init(sourceStates: [
+                .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+            ]))
+        environment.currentState = { [weak model] in model?.state ?? .idle }
+        await model.start()
+        #expect(environment.stateAtQuit == .installed)
     }
 
     /// The commit did not move, so the minutes-long rebuild is skipped.
@@ -279,7 +306,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             environment.lastLines == [
                 "checking the toolchain", "reading the checkout", "fetching and fast-forwarding",
                 "reading the checkout after the fetch", "building", "launching the new build",
-                "launching the new build",
+                "launching the new build", "quitting this instance",
             ])
     }
 
@@ -296,7 +323,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(
             environment.lastLines == [
                 "checking the toolchain", "reading the checkout", "rebuilding the working tree",
-                "launching the new build", "launching the new build",
+                "launching the new build", "launching the new build", "quitting this instance",
             ])
     }
 
@@ -386,6 +413,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             ))
         await model.start()
         #expect(environment.calls.suffix(3) == ["handOff", "relaunch", "reclaim"])
+        #expect(!environment.calls.contains("quit"))
     }
 
     /// A build that never relaunches never hands its state over either.
@@ -422,7 +450,9 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         await model.start()
         #expect(model.state == .installed)
         #expect(
-            environment.calls == ["toolchain", "sourceState", "install", "handOff", "relaunch"])
+            environment.calls == [
+                "toolchain", "sourceState", "install", "handOff", "relaunch", "quit",
+            ])
         #expect(model.log.contains("uncommitted work goes in: a.rs"))
     }
 
@@ -469,8 +499,10 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         await model.start()
         #expect(model.log.count == UpdateModel.maxLogLines)
         #expect(
-            model.log.suffix(2)
-                == ["line \(UpdateModel.maxLogLines + 499)", "launching the new build"])
+            model.log.suffix(3) == [
+                "line \(UpdateModel.maxLogLines + 499)", "launching the new build",
+                "quitting this instance",
+            ])
     }
 
     // MARK: proceed()
