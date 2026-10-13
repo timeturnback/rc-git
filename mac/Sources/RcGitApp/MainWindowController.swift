@@ -1537,6 +1537,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if #available(macOS 11.0, *) {
             alert.buttons.first?.hasDestructiveAction = decision.risk == .destructive
         }
+        alert.layout()
+        alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { response in
             guard response == .alertFirstButtonReturn else { return }
             completion(field?.stringValue)
@@ -1561,6 +1563,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let name = RepositoryGuard.enteredRefName(field.stringValue)
             alert.buttons.first?.isEnabled = name != nil
         }
+        alert.layout()
+        alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in
             withExtendedLifetime(watcher) {}
             guard response == .alertFirstButtonReturn else { return }

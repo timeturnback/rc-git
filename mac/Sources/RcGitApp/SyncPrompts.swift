@@ -60,6 +60,9 @@ enum SyncPrompts {
                 alert.buttons.first?.isEnabled = false
             }
         }
+        alert.layout()
+        alert.window.initialFirstResponder =
+            kind == .httpsToken && userField.stringValue.isEmpty ? userField : secretField
         alert.beginSheetModal(for: window) { response in
             withExtendedLifetime(watcher) {}
             guard response == .alertFirstButtonReturn else {
