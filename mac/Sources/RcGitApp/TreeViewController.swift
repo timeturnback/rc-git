@@ -41,7 +41,10 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     private let outline = NSOutlineView()
     private let scroll = NSScrollView()
-    private let placeholder = NSTextField(labelWithString: "Open a repository (⌘O)")
+    private static let noRepositoryText = "Open a repository (⌘O)"
+    private static let unreadableTreeText = "Could not read this tree"
+    private let placeholder = NSTextField(
+        labelWithString: TreeViewController.noRepositoryText)
     private var allRoots: [Node] = []
     private var roots: [Node] = []
     private var generation = 0
@@ -101,6 +104,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         roots = []
         outline.reloadData()
         guard let root else {
+            placeholder.stringValue = Self.noRepositoryText
             placeholder.isHidden = false
             reportContentWidth()
             return
@@ -162,9 +166,24 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 reportContentWidth()
             } catch {
                 guard generation == self.generation else { return }
-                parent?.isLoading = false
+                showLoadFailure(in: parent)
                 onError?(String(describing: error))
             }
+        }
+    }
+
+    /// Keeps a failed load from reading as an empty folder or tree. A folder collapses with
+    /// `children` still nil, so expanding it again retries; a root shows the failure where
+    /// the rows would be.
+    private func showLoadFailure(in parent: Node?) {
+        guard let parent else {
+            placeholder.stringValue = Self.unreadableTreeText
+            placeholder.isHidden = false
+            return
+        }
+        parent.isLoading = false
+        if outline.row(forItem: parent) >= 0 {
+            outline.collapseItem(parent)
         }
     }
 

@@ -363,12 +363,13 @@ public final class BrowserModel {
         guard repository != nil else { return }
         beginMove()
         defer { endMove() }
+        let previous = currentSelection
         selectedRef = ref
         browsedCommit = nil
         browsingWorkingTree = false
         onRefsChanged?()
         resetHistory(anchor: ref.target)
-        await loadRoot(of: ref.target)
+        await loadRoot(of: ref.target, rollingBackTo: previous)
     }
 
     /// Shows the tree of one commit, picked from the history pane. The sidebar deselects and
@@ -378,11 +379,12 @@ public final class BrowserModel {
         guard repository != nil else { return }
         beginMove()
         defer { endMove() }
+        let previous = currentSelection
         selectedRef = nil
         browsedCommit = commit
         browsingWorkingTree = false
         onRefsChanged?()
-        await loadRoot(of: commit.oid)
+        await loadRoot(of: commit.oid, rollingBackTo: previous)
     }
 
     /// Shows the files on disk with a status overlay against `HEAD`. Reads only; nothing in
@@ -391,12 +393,13 @@ public final class BrowserModel {
         guard repository != nil, let target = head?.target else { return }
         beginMove()
         defer { endMove() }
+        let previous = currentSelection
         selectedRef = nil
         browsedCommit = nil
         browsingWorkingTree = true
         onRefsChanged?()
         resetHistory(anchor: target)
-        await loadRoot(of: target)
+        await loadRoot(of: target, rollingBackTo: previous)
     }
 
     /// Shows or hides the entries `HiddenFiles` names in the tree and path search. Nothing
@@ -485,7 +488,25 @@ public final class BrowserModel {
         onFileChanged?()
     }
 
-    private func loadRoot(of target: Oid) async {
+    /// What the sidebar and history show as browsed, kept so a root that cannot be read
+    /// can hand the selection back to the tree still on screen.
+    private struct Selection {
+        let ref: RefEntry?
+        let commit: CommitSummary?
+        let workingTree: Bool
+        let historyAnchor: Oid?
+    }
+
+    private var currentSelection: Selection {
+        Selection(
+            ref: selectedRef, commit: browsedCommit, workingTree: browsingWorkingTree,
+            historyAnchor: historyAnchor)
+    }
+
+    /// Loads the root tree of a new selection. When the tree cannot be read (a ref to a blob,
+    /// a tree missing from a partial clone) the selection rolls back to `previous`, so the
+    /// sidebar, history and `location` keep naming the tree and file still on screen.
+    private func loadRoot(of target: Oid, rollingBackTo previous: Selection) async {
         guard let repository else { return }
         rootGeneration += 1
         let generation = rootGeneration
@@ -505,8 +526,19 @@ public final class BrowserModel {
             onFileChanged?()
             onRootChanged?()
         case let .failure(error):
+            rollBack(to: previous)
             fail(error.message)
         }
+    }
+
+    private func rollBack(to previous: Selection) {
+        selectedRef = previous.ref
+        browsedCommit = previous.commit
+        browsingWorkingTree = previous.workingTree
+        if historyAnchor != previous.historyAnchor {
+            resetHistory(anchor: previous.historyAnchor)
+        }
+        onRefsChanged?()
     }
 
     /// Children of a directory, from the cache when possible. Safe to call for any tree id,

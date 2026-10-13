@@ -355,6 +355,29 @@ import Testing
         #expect(model.rootTree == featureTree)
     }
 
+    @Test func selectingARefWhoseTreeCannotBeReadKeepsThePaneConsistent() async {
+        await model.attach(repo)
+        #expect(await model.openPath("README.md"))
+        let before = model.location
+        var reported: [String] = []
+        model.onError = { reported.append($0) }
+        let blobTag = RefEntry(
+            fullName: "refs/tags/blob", shortName: "blob", kind: .tag, target: oid(0x70))
+        await model.select(blobTag)
+        #expect(reported.count == 1)
+        #expect(reported.first?.contains("expected a tree") == true)
+        #expect(model.selectedRef?.shortName == "main", "the click does not take")
+        #expect(model.rootTree == mainTree)
+        #expect(model.openedFilePath == "README.md")
+        #expect(model.location == before)
+
+        await model.browseCommit(commitSummary(oid(0x71), title: "tree missing"))
+        #expect(reported.count == 2)
+        #expect(model.browsedCommit == nil)
+        #expect(model.selectedRef?.shortName == "main")
+        #expect(model.location == before)
+    }
+
     @Test func attachFailureReportsAnError() async {
         let broken = FakeRepository()
         var reported: String?
