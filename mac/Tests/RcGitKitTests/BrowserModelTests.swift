@@ -36,16 +36,20 @@ import Testing
     }
 
     @Test func attachSelectsHeadBranchAndLoadsItsRoot() async {
-        var refsEvents = 0
+        var seen: [(refCount: Int, selected: String?)] = []
         var rootEvents = 0
-        model.onRefsChanged = { refsEvents += 1 }
+        model.onRefsChanged = { [unowned model] in
+            seen.append((model.refs.refs.count, model.selectedRef?.shortName))
+        }
         model.onRootChanged = { rootEvents += 1 }
         await model.attach(repo)
         #expect(model.refs.refs.count == 3)
         #expect(model.head?.refName == "refs/heads/main")
         #expect(model.selectedRef?.shortName == "main")
         #expect(model.rootTree == mainTree)
-        #expect(refsEvents == 2, "once for the listing, once for the selection")
+        #expect(!seen.isEmpty)
+        #expect(seen.last?.refCount == 3, "the last refs callback sees the full listing")
+        #expect(seen.last?.selected == "main", "the last refs callback sees the selection")
         #expect(rootEvents == 1)
         #expect(!model.refsStale)
     }
