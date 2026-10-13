@@ -474,15 +474,14 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         diffTable.reloadData()
     }
 
-    /// Re-renders the sync row from the last preflight: commit counts in the button
-    /// titles, everything disabled while a workflow runs, pull/push enabled only once a
-    /// preflight has named an upstream.
-    func renderSync(status: RemoteStatus?, busy: Bool) {
+    /// Re-renders the sync row: commit counts from the last preflight in the button titles,
+    /// enabled state from `availability`.
+    func renderSync(status: RemoteStatus?, availability: SyncAvailability) {
         pullButton.title = SyncTitles.pull(status)
         pushButton.title = SyncTitles.push(status)
-        fetchButton.isEnabled = !busy
-        pullButton.isEnabled = SyncTitles.canPull(status: status, busy: busy)
-        pushButton.isEnabled = SyncTitles.canPush(status: status, busy: busy)
+        fetchButton.isEnabled = availability.canFetch
+        pullButton.isEnabled = availability.canPull
+        pushButton.isEnabled = availability.canPush
     }
 
     /// Shows the stash list, or, when the last read failed, its error in place of a list that

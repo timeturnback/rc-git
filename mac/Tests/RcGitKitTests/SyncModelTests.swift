@@ -1603,8 +1603,12 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(model.statusError == "preflight failed")
         #expect(changes == 1, "the views hear about the failure")
         #expect(SyncTitles.push(model.remoteStatus) == "Push")
-        #expect(!SyncTitles.canPull(status: model.remoteStatus, busy: false))
-        #expect(!SyncTitles.canPush(status: model.remoteStatus, busy: false))
+        let availability = SyncAvailability(
+            status: model.remoteStatus, busy: false, cancellable: false, hasRepository: true,
+            hasWorkingTree: true)
+        #expect(!availability.canPull)
+        #expect(!availability.canPush)
+        #expect(!availability.canSync)
         #expect(
             SyncTitles.idleSyncTooltip(status: model.remoteStatus, error: model.statusError)
                 == "Sync — couldn't read upstream status: preflight failed")
@@ -1775,19 +1779,69 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(SyncTitles.pull(status) == "Pull 1 Commit")
     }
 
-    @Test func pullAndPushNeedAKnownUpstreamAndAnIdleModel() {
+    private func availability(
+        _ status: RemoteStatus?, busy: Bool = false, cancellable: Bool = false,
+        hasRepository: Bool = true, hasWorkingTree: Bool = true
+    ) -> SyncAvailability {
+        SyncAvailability(
+            status: status, busy: busy, cancellable: cancellable, hasRepository: hasRepository,
+            hasWorkingTree: hasWorkingTree)
+    }
+
+    /// Whether Fetch, Pull, Push and Sync are all enabled, or all disabled; `nil` when the
+    /// four disagree, which no surface may ever see.
+    private func remoteControls(_ availability: SyncAvailability) -> Bool? {
+        let all = [
+            availability.canFetch, availability.canPull, availability.canPush,
+            availability.canSync,
+        ]
+        return Set(all).count == 1 ? all.first : nil
+    }
+
+    @Test func remoteControlsNeedAKnownUpstreamAndAnIdleModel() {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
             ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
         let upstream = StubSyncPerformer.upstream()
-        #expect(!SyncTitles.canPull(status: nil, busy: false), "no status read yet")
-        #expect(!SyncTitles.canPush(status: nil, busy: false))
-        #expect(!SyncTitles.canPull(status: noUpstream, busy: false))
-        #expect(!SyncTitles.canPush(status: noUpstream, busy: false))
-        #expect(!SyncTitles.canPull(status: upstream, busy: true))
-        #expect(!SyncTitles.canPush(status: upstream, busy: true))
-        #expect(SyncTitles.canPull(status: upstream, busy: false))
-        #expect(SyncTitles.canPush(status: upstream, busy: false))
+        #expect(remoteControls(availability(upstream)) == true)
+        #expect(remoteControls(availability(nil)) == false, "no status read yet")
+        #expect(
+            remoteControls(availability(noUpstream)) == false,
+            "fetch, pull, push and sync all refuse a branch with no upstream")
+        #expect(remoteControls(availability(upstream, busy: true)) == false)
+        #expect(
+            remoteControls(availability(upstream, hasRepository: false)) == false,
+            "an empty window has nothing to sync")
+    }
+
+    @Test func backToDefaultNeedsAnIdleCheckoutButNoUpstream() {
+        let noUpstream = RemoteStatus(
+            remote: "", url: "", host: "", branch: "topic",
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+        #expect(availability(noUpstream).canBackToDefault)
+        #expect(availability(nil).canBackToDefault, "the switch needs no status read")
+        #expect(!availability(nil, hasWorkingTree: false).canBackToDefault, "a bare repository")
+        #expect(!availability(nil, busy: true).canBackToDefault)
+        #expect(!availability(nil, hasRepository: false).canBackToDefault, "an empty window")
+    }
+
+    @Test func theSyncButtonIsCancelWhileACancellableStepRuns() {
+        let upstream = StubSyncPerformer.upstream()
+        let noUpstream = RemoteStatus(
+            remote: "", url: "", host: "", branch: "main",
+            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+        #expect(availability(upstream).syncButtonEnabled)
+        #expect(!availability(noUpstream).syncButtonEnabled, "agrees with the Sync menu item")
+        #expect(!availability(nil).syncButtonEnabled)
+        #expect(!availability(upstream, hasRepository: false).syncButtonEnabled)
+        let fetching = availability(upstream, busy: true, cancellable: true)
+        #expect(fetching.canCancel)
+        #expect(fetching.syncButtonEnabled)
+        #expect(!fetching.canSync)
+        let pulling = availability(upstream, busy: true, cancellable: false)
+        #expect(!pulling.canCancel)
+        #expect(!pulling.syncButtonEnabled, "a pull or checkout runs to completion")
+        #expect(!availability(upstream, cancellable: true).canCancel, "nothing is running")
     }
 
     @Test func theIdleTooltipReadsTheLastPreflight() {

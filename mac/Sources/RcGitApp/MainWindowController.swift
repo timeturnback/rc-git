@@ -503,38 +503,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if menuItem.action == #selector(chooseRef(_:)) {
             return !isEmpty && mode != .changes && refPicker == nil
         }
-        let syncSelectors = [
-            #selector(fetchRemote(_:)), #selector(pullRemote(_:)),
-            #selector(pushRemote(_:)), #selector(syncRepository(_:)),
-        ]
-        if menuItem.action == #selector(cancelSync(_:)) {
-            return syncModel?.isCancellable ?? false
-        }
-        if menuItem.action == #selector(backToDefaultBranch(_:)) {
+        return validateSyncItem(menuItem) ?? true
+    }
+
+    /// Titles and enables the sync menu items from `syncAvailability`; `nil` for any other item.
+    private func validateSyncItem(_ menuItem: NSMenuItem) -> Bool? {
+        let availability = syncAvailability
+        switch menuItem.action {
+        case #selector(cancelSync(_:)):
+            return availability.canCancel
+        case #selector(backToDefaultBranch(_:)):
             menuItem.title = SyncTitles.backToDefault(syncModel?.defaultBranch)
-            guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
-            // No upstream check: the switch is local, and the branch switched to is the one
-            // whose upstream decides whether the fetch can run.
-            return hasWorkingTree
+            return availability.canBackToDefault
+        case #selector(fetchRemote(_:)):
+            return availability.canFetch
+        case #selector(pullRemote(_:)):
+            menuItem.title = SyncTitles.pull(syncModel?.remoteStatus)
+            return availability.canPull
+        case #selector(pushRemote(_:)):
+            menuItem.title = SyncTitles.push(syncModel?.remoteStatus)
+            return availability.canPush
+        case #selector(syncRepository(_:)):
+            return availability.canSync
+        default:
+            return nil
         }
-        if let action = menuItem.action, syncSelectors.contains(action) {
-            guard repositoryPath != nil, let syncModel, !syncModel.isBusy else { return false }
-            let status = syncModel.remoteStatus
-            if action == #selector(pullRemote(_:)) {
-                menuItem.title = SyncTitles.pull(status)
-            }
-            if action == #selector(pushRemote(_:)) {
-                menuItem.title = SyncTitles.push(status)
-            }
-            if action == #selector(fetchRemote(_:)) {
-                return true
-            }
-            if action == #selector(pushRemote(_:)) {
-                return SyncTitles.canPush(status: status, busy: syncModel.isBusy)
-            }
-            return SyncTitles.canPull(status: status, busy: syncModel.isBusy)
-        }
-        return true
+    }
+
+    /// What the sync controls can do now; every surface that shows one reads this.
+    private var syncAvailability: SyncAvailability {
+        SyncAvailability(
+            status: syncModel?.remoteStatus, busy: syncModel?.isBusy ?? false,
+            cancellable: syncModel?.isCancellable ?? false,
+            hasRepository: repositoryPath != nil && syncModel != nil,
+            hasWorkingTree: hasWorkingTree)
     }
 
     // MARK: Layout
@@ -1235,9 +1237,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func renderSyncState() {
         guard let sync = syncModel else { return }
-        changesController.renderSync(status: sync.remoteStatus, busy: sync.isBusy)
-        // A bare repository has no working tree to switch, exactly as the menu item decides.
-        backToDefaultButton?.isEnabled = !sync.isBusy && hasWorkingTree
+        let availability = syncAvailability
+        changesController.renderSync(status: sync.remoteStatus, availability: availability)
+        backToDefaultButton?.isEnabled = availability.canBackToDefault
         backToDefaultToolbarItem?.toolTip = backToDefaultTooltip()
         switch sync.state {
         case .idle:
@@ -1303,12 +1305,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// to stop it; the spinner sits beside it rather than replacing it. Hiding the
     /// button while busy is what used to leave a stuck sync with nothing to click.
     private func showSyncSpinner(_ busy: Bool) {
-        let cancellable = syncModel?.isCancellable ?? false
         syncButton?.image = NSImage(
             systemSymbolName: busy ? "stop.circle" : "arrow.triangle.2.circlepath",
             accessibilityDescription: busy ? "Cancel Sync" : "Sync")
         syncButton?.action = busy ? #selector(cancelSync(_:)) : #selector(syncRepository(_:))
-        syncButton?.isEnabled = !busy || cancellable
+        syncButton?.isEnabled = syncAvailability.syncButtonEnabled
         syncSpinner?.isHidden = !busy
         if busy {
             syncSpinner?.startAnimation(nil)
@@ -1665,6 +1666,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     accessibilityDescription: "Back to the default branch")!,
                 target: self, action: #selector(backToDefaultBranch(_:)))
             button.bezelStyle = .texturedRounded
+            button.isEnabled = syncAvailability.canBackToDefault
             backToDefaultButton = button
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = button
@@ -1679,6 +1681,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     accessibilityDescription: "Sync")!,
                 target: self, action: #selector(syncRepository(_:)))
             button.bezelStyle = .texturedRounded
+            button.isEnabled = syncAvailability.syncButtonEnabled
             let spinner = NSProgressIndicator()
             spinner.style = .spinning
             spinner.controlSize = .small

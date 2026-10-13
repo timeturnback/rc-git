@@ -62,9 +62,50 @@ public struct GuardSyncPerformer: SyncPerforming {
     }
 }
 
-/// Titles and enabled state for the Pull and Push controls: the bare verb, or the verb with
-/// the commit count from the last preflight. The button row and the menu both ask here, so
-/// they cannot disagree.
+/// Which sync controls can run now. The menu, the toolbar and the Changes button row all read
+/// this, so a control one surface disables is never clickable on another.
+public struct SyncAvailability: Sendable, Hashable {
+    /// Fetch, Pull, Push and Sync each re-read the upstream first and refuse without one, so
+    /// all four need a known upstream: false before the first status, after a failed read,
+    /// without an upstream, and while a workflow runs.
+    public let canFetch: Bool
+    public let canPull: Bool
+    public let canPush: Bool
+    public let canSync: Bool
+    /// The switch is local and the branch switched to decides the fetch, so no upstream check;
+    /// a bare repository has no working tree to switch.
+    public let canBackToDefault: Bool
+    /// A running fetch or push can still be asked to stop.
+    public let canCancel: Bool
+
+    /// - Parameters:
+    ///   - status: The last preflight, `nil` before the first one and after a failed one.
+    ///   - busy: A workflow is running or cancelling.
+    ///   - cancellable: The running step takes a cancel.
+    ///   - hasRepository: The window holds a repository and its sync model.
+    ///   - hasWorkingTree: The repository has a checkout (it is not bare).
+    public init(
+        status: RemoteStatus?, busy: Bool, cancellable: Bool, hasRepository: Bool,
+        hasWorkingTree: Bool
+    ) {
+        let idle = hasRepository && !busy
+        let remote = idle && status?.hasUpstream == true
+        canFetch = remote
+        canPull = remote
+        canPush = remote
+        canSync = remote
+        canBackToDefault = idle && hasWorkingTree
+        canCancel = hasRepository && busy && cancellable
+    }
+
+    /// The toolbar Sync button becomes Cancel while a workflow runs.
+    public var syncButtonEnabled: Bool {
+        canSync || canCancel
+    }
+}
+
+/// Titles for the Pull and Push controls: the bare verb, or the verb with the commit count
+/// from the last preflight. The button row and the menu both ask here, so they cannot disagree.
 public enum SyncTitles {
     public static func pull(_ status: RemoteStatus?) -> String {
         title("Pull", count: status?.behind ?? 0)
@@ -72,17 +113,6 @@ public enum SyncTitles {
 
     public static func push(_ status: RemoteStatus?) -> String {
         title("Push", count: status?.ahead ?? 0)
-    }
-
-    /// Pull needs a known upstream: false before the first status, after a failed read,
-    /// without an upstream, and while a workflow runs.
-    public static func canPull(status: RemoteStatus?, busy: Bool) -> Bool {
-        !busy && status?.hasUpstream == true
-    }
-
-    /// Push needs exactly what Pull needs.
-    public static func canPush(status: RemoteStatus?, busy: Bool) -> Bool {
-        canPull(status: status, busy: busy)
     }
 
     /// "Sync — 2 to push, 3 to pull" while idle, from the last preflight; when the last read
