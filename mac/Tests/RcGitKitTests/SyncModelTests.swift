@@ -143,6 +143,7 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
     private let lock = NSLock()
     private var items: [String: Credentials] = [:]
     private var queries: [String] = []
+    private var writes = 0
     private let failsReads: Bool
     private let failsWrites: Bool
 
@@ -178,10 +179,18 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
     func store(_ credentials: Credentials, host: String, kind: CredentialKind) throws {
         lock.lock()
         defer { lock.unlock() }
+        writes += 1
         if failsWrites {
             throw RepositoryError("keychain write failed for '\(host)' (status -25293)")
         }
         items[key(host, kind)] = credentials
+    }
+
+    /// How many times `store(_:host:kind:)` was called, failed writes included.
+    var writeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
     }
 
     func delete(host: String, kind: CredentialKind) throws {
@@ -321,6 +330,59 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(store.queriedHosts == ["example.com"])
         #expect(performer.fetchCredentials.map { $0?.token } == ["saved"])
         #expect(performer.pushCredentials.map { $0?.token } == ["saved"])
+    }
+
+    @Test func storedCredentialsAreTriedFirstWithoutAPrompt() async {
+        let saved = Credentials(username: "u", token: "t")
+        let store = InMemoryCredentialStore(["git.example.com": saved])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(host: "git.example.com")],
+                fetches: [.success(cleanFetch)]
+            ), store: store)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(.cancelled)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .done(summary) = model.state else {
+            Issue.record("expected done, got \(model.state)")
+            return
+        }
+        #expect(summary.fetchedRefs == 1)
+        #expect(performer.fetchCredentials.first??.token == "t")
+        #expect(prompts == 0)
+        #expect(store.writeCount == 0, "credentials nobody typed are never written back")
+    }
+
+    @Test func storedSshPassphraseIsTriedFirstAndNeverTheHttpsToken() async {
+        let https = Credentials(username: "u", token: "https-token")
+        let ssh = Credentials(username: "", token: "passphrase")
+        let store = InMemoryCredentialStore([
+            "git.example.com": https, "git.example.com#ssh": ssh,
+        ])
+        let (model, performer, _) = model(
+            .init(preflights: [Self.sshUpstream()], fetches: [.success(cleanFetch)]),
+            store: store)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(.cancelled)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .done(summary) = model.state else {
+            Issue.record("expected done, got \(model.state)")
+            return
+        }
+        #expect(summary.fetchedRefs == 1)
+        #expect(performer.fetchCredentials.map { $0?.token } == ["passphrase"])
+        #expect(prompts == 0)
+        #expect(store.writeCount == 0)
     }
 
     @Test func aPromptedTokenCarriesFromTheFetchToThePushOfOneSync() async {
