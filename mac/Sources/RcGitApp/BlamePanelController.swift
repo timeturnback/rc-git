@@ -103,16 +103,19 @@ final class BlamePanelController: NSObject, NSTableViewDataSource, NSTableViewDe
         switch identifier.rawValue {
         case "lines":
             let last = span.range.startLine + span.range.lineCount - 1
-            cell.textField?.stringValue =
+            let lines =
                 span.range.lineCount == 1
                 ? "\(span.range.startLine)" : "\(span.range.startLine)–\(last)"
-            cell.textField?.font = NSFont.monospacedDigitSystemFont(
-                ofSize: NSFont.smallSystemFontSize, weight: .regular)
+            cell.textField?.attributedStringValue = CellText.make(
+                lines,
+                font: NSFont.monospacedDigitSystemFont(
+                    ofSize: NSFont.smallSystemFontSize, weight: .regular))
         case "hash":
-            cell.textField?.stringValue = span.commit.oid.short
-            cell.textField?.font = NSFont.monospacedSystemFont(
-                ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            cell.textField?.textColor = .secondaryLabelColor
+            cell.textField?.attributedStringValue = CellText.make(
+                span.commit.oid.short,
+                font: NSFont.monospacedSystemFont(
+                    ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                color: .secondaryLabelColor)
         case "author":
             cell.textField?.stringValue = span.commit.authorName
         case "date":

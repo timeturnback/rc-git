@@ -83,6 +83,12 @@ if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI
   echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
   exit 1
 fi
+step "table cell fonts"
+# NSTableCellView resets its textField outlet's font at layout; see .claude/rules/swift.md.
+if grep -rnE --include='*.swift' 'textField[?!]?\.font[[:space:]]*=' mac/Sources/RcGitApp; then
+  echo 'error: style the label, not the textField outlet (.claude/rules/swift.md)' >&2
+  exit 1
+fi
 step "guard write funnel"
 # Writes live on the guard's Writer (built only from a Confirmation); network I/O in remote/.
 if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |

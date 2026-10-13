@@ -1106,18 +1106,18 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let cell = reusableCell(in: table, for: tableColumn.identifier)
         switch tableColumn.identifier.rawValue {
         case "hash":
-            cell.textField?.stringValue = commit.oid.short
-            cell.textField?.font = DiffRendering.monoFont
-            cell.textField?.textColor = .secondaryLabelColor
+            cell.textField?.attributedStringValue = CellText.make(
+                commit.oid.short, font: DiffRendering.monoFont, color: .secondaryLabelColor)
         case "title":
-            cell.textField?.stringValue = commit.title
+            cell.textField?.attributedStringValue = CellText.make(commit.title)
             cell.toolTip = commit.title
         case "author":
-            cell.textField?.stringValue = commit.authorName
+            cell.textField?.attributedStringValue = CellText.make(commit.authorName)
             cell.toolTip = "\(commit.authorName) <\(commit.authorEmail)>"
         default:
             let date = Date(timeIntervalSince1970: TimeInterval(commit.authorTime))
-            cell.textField?.stringValue = Self.dateFormatter.string(from: date)
+            cell.textField?.attributedStringValue = CellText.make(
+                Self.dateFormatter.string(from: date))
         }
         return cell
     }

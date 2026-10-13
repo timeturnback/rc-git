@@ -70,3 +70,21 @@ enum ChangeRowLabel {
         return paragraph
     }
 }
+
+/// The text of a plain table cell's label, with its font in the string. `NSTableCellView` resets
+/// the font of its `textField` outlet to the row size's system font at every layout unless the
+/// table's `rowSizeStyle` is `.custom`; a `.font` run survives. The truncation lives in the
+/// paragraph style, since the field's own `lineBreakMode` does not apply to an attributed string.
+enum CellText {
+    static func make(
+        _ string: String,
+        font: NSFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+        color: NSColor = .labelColor
+    ) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        return NSAttributedString(
+            string: string,
+            attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+    }
+}

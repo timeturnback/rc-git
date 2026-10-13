@@ -185,19 +185,6 @@ kept a monospaced-bold letter and a medium-weight path through layout in both `.
 purpose (`RefsViewController.swift:409`); there, the source list's own header styling is what
 is wanted.
 
-### Known instances not fixed by this change
-
-The same reset hits cells outside the sidebar that still style a plain-string outlet:
-
-- `mac/Sources/RcGitApp/HistoryViewController.swift:841` sets a monospaced font on the commit
-  hash column, in a table at `.default` row size (`HistoryViewController.swift:110`), and the
-  reusable cell's 11 pt default font is reset the same way. In the user's screenshot of the
-  History tab the hashes draw in the proportional system font.
-- `HistoryViewController.swift:818` sets the same monospaced font on the changed-files rows of
-  the commit drawer.
-- `mac/Sources/RcGitApp/BlamePanelController.swift:108` and `:112` set monospaced fonts on the
-  blame panel's line and hash columns, in a `.small` table.
-
 ## Prevention
 
 - Never style a plain-string `textField` outlet per row in a table whose `rowSizeStyle` is not
