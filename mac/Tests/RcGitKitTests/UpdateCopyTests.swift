@@ -111,6 +111,22 @@ import Testing
         #expect(preflight.status == "Preflight failed: y")
     }
 
+    /// The bundle built and is in place; only the launch failed, so neither bundle blames
+    /// the build or the install, and the launch is not something the button can cancel.
+    @Test func theRelaunchIsNamedApartFromTheBuild() {
+        for build in [Self.release, Self.dev] {
+            let running = UpdateCopy(build: build, state: .running(.relaunch))
+            #expect(running.status == "Launching the new build…", "\(build.variant)")
+            #expect(running.spinning, "\(build.variant)")
+            #expect(!running.actionCancels, "\(build.variant)")
+            #expect(!running.actionEnabled, "\(build.variant)")
+            let failed = UpdateCopy(
+                build: build, state: .failed(step: .relaunch, message: "could not launch"))
+            #expect(failed.status == "Relaunch failed: could not launch", "\(build.variant)")
+            #expect(failed.actionTitle == "Try Again", "\(build.variant)")
+        }
+    }
+
     /// The tooltip belongs to the failure: every other state clears it.
     @Test func noStateButAFailureHasATooltip() {
         for state in [UpdateState.idle, .upToDate, .installed, .running(.preflight)] {

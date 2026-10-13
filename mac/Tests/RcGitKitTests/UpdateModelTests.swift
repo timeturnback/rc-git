@@ -316,7 +316,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
 
     /// The bundle is in place but the new instance did not come up: that is still a
     /// failure the window has to show, not a silent success.
-    @Test func aFailedRelaunchReportsTheInstallStep() async {
+    @Test func aFailedRelaunchReportsTheRelaunchStep() async {
         let (model, _) = Self.model(
             .init(
                 sourceStates: [
@@ -327,10 +327,10 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             ))
         await model.start()
         guard case let .failed(step, message) = model.state else {
-            Issue.record("expected an install failure, got \(model.state)")
+            Issue.record("expected a relaunch failure, got \(model.state)")
             return
         }
-        #expect(step == .install)
+        #expect(step == .relaunch)
         #expect(message.contains("/Applications/RCGit.app"))
     }
 
@@ -429,7 +429,9 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             ))
         await model.start()
         #expect(model.log.count == UpdateModel.maxLogLines)
-        #expect(model.log.last == "line \(UpdateModel.maxLogLines + 499)")
+        #expect(
+            model.log.suffix(2)
+                == ["line \(UpdateModel.maxLogLines + 499)", "launching the new build"])
     }
 
     // MARK: proceed()

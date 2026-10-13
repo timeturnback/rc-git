@@ -9,6 +9,8 @@ public enum UpdateStep: Sendable, Hashable {
     case sync
     /// Build the bundle and put it in place.
     case install
+    /// Hand the open tabs over and launch the new bundle. The bundle is already in place.
+    case relaunch
 }
 
 /// What an update does, which is decided by the bundle running it.
@@ -184,7 +186,8 @@ public final class UpdateModel {
     nonisolated public static func isCancellable(state: UpdateState) -> Bool {
         switch state {
         case .running(.sync), .running(.install): true
-        case .running(.preflight), .idle, .upToDate, .installed, .failed: false
+        case .running(.preflight), .running(.relaunch), .idle, .upToDate, .installed, .failed:
+            false
         }
     }
 
@@ -328,10 +331,12 @@ public final class UpdateModel {
             fail(.install, message)
             return
         }
+        enter(.relaunch)
+        note("launching the new build")
         await environment.handOff()
         if let message = await environment.relaunch() {
             await environment.reclaim()
-            fail(.install, message)
+            fail(.relaunch, message)
             return
         }
         state = .installed

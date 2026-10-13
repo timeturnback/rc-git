@@ -77,6 +77,7 @@ public struct UpdateCopy: Sendable, Hashable {
             rebuild
                 ? "Building the dev bundle — this takes a moment…"
                 : "Building and installing — this takes a few minutes…"
+        case .relaunch: "Launching the new build…"
         }
     }
 
@@ -85,6 +86,7 @@ public struct UpdateCopy: Sendable, Hashable {
         case .preflight: "Preflight"
         case .sync: "Fetch"
         case .install: rebuild ? "Build" : "Install"
+        case .relaunch: "Relaunch"
         }
     }
 }
