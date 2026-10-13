@@ -565,7 +565,7 @@ extension FileViewController: NSTextViewDelegate {
         }
         switch target {
         case let .web(url):
-            NSWorkspace.shared.open(url)
+            if !NSWorkspace.shared.open(url) { NSSound.beep() }
         case let .otherScheme(url):
             confirmOpen(url)
         case let .repositoryPath(path, fragment):
@@ -599,7 +599,7 @@ extension FileViewController: NSTextViewDelegate {
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { response in
             guard response == .alertFirstButtonReturn else { return }
-            NSWorkspace.shared.open(url)
+            if !NSWorkspace.shared.open(url) { NSSound.beep() }
         }
     }
 
