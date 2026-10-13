@@ -128,7 +128,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         table.usesAlternatingRowBackgroundColors = true
         table.allowsColumnReordering = false
         table.target = self
-        table.doubleAction = #selector(browseClicked(_:))
+        table.doubleAction = #selector(browseDoubleClicked(_:))
         table.menu = buildMenu()
 
         scroll.documentView = table
@@ -1000,6 +1000,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private var actedRow: Int {
         table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
+    }
+
+    @objc private func browseDoubleClicked(_ sender: Any?) {
+        let row = table.clickedRow
+        guard row >= 0, displayed.indices.contains(row) else { return }
+        onBrowseCommit?(displayed[row])
     }
 
     @objc private func browseClicked(_ sender: Any?) {
