@@ -133,6 +133,42 @@ import Testing
                 == LayoutPolicy.historyCommitsFloor)
     }
 
+    @Test func historyKeepsADiffWidthBothFloorsAllow() {
+        #expect(LayoutPolicy.historyListWidth(available: 1000, diffWidth: 400) == 600)
+        #expect(
+            LayoutPolicy.historyListWidth(
+                available: 1000, diffWidth: LayoutPolicy.historyDiffMinWidth)
+                == 1000 - LayoutPolicy.historyDiffMinWidth)
+    }
+
+    @Test func historyOpensAnUnsizedDiffAtItsShare() {
+        // Hidden until a commit opened: the diff arrives at zero, or just under its floor.
+        let expected = 1000 - 1000 * LayoutPolicy.historyDiffShare
+        #expect(LayoutPolicy.historyListWidth(available: 1000, diffWidth: 0) == expected)
+        #expect(
+            LayoutPolicy.historyListWidth(
+                available: 1000, diffWidth: LayoutPolicy.historyDiffMinWidth - 1) == expected)
+    }
+
+    @Test func historyKeepsTheListOffItsWidthFloor() {
+        // A diff dragged or restored wider than the split leaves the list its floor.
+        #expect(
+            LayoutPolicy.historyListWidth(available: 900, diffWidth: 900)
+                == LayoutPolicy.historyListMinWidth)
+    }
+
+    @Test func historyKeepsBothPanesOffZeroInANarrowContentPane() {
+        // The narrowest content pane beside the sidebar is far below both width floors.
+        let available = LayoutPolicy.contentMinimumWidth - 1
+        let list = LayoutPolicy.historyListWidth(available: available, diffWidth: 500)
+        #expect(list > 0)
+        #expect(available - list > 0)
+        let share =
+            LayoutPolicy.historyListMinWidth
+            / (LayoutPolicy.historyListMinWidth + LayoutPolicy.historyDiffMinWidth)
+        #expect(abs(list - available * share) < 0.001)
+    }
+
     private static let wide = Layout(showsSidebar: true)
     private static let narrow = Layout(showsSidebar: false)
 

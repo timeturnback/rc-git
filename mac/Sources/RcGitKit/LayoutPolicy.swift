@@ -38,6 +38,12 @@ public enum LayoutPolicy {
     public static let historyDetailFloor: CGFloat = 200
     /// The share of the left column a commit detail opens at when it has no height of its own.
     public static let historyDetailShare: CGFloat = 0.45
+    /// The width neither pane of History's outer split may drop below while a commit is open:
+    /// the left column (commit list over the detail) and the diff of the picked file beside it.
+    public static let historyListMinWidth: CGFloat = 320
+    public static let historyDiffMinWidth: CGFloat = 340
+    /// The share of History's width the diff pane opens at when it has no width of its own.
+    public static let historyDiffShare: CGFloat = 0.5
     /// The height the Changes tab's file list keeps while the sidebar has room for it. It
     /// yields before the commit box does, since it shares the sidebar with the ref list.
     public static let changesFilesFloor: CGFloat = 150
@@ -87,6 +93,20 @@ public enum LayoutPolicy {
         return splitPane(
             available: available, preferred: available - detail,
             firstFloor: historyCommitsFloor, secondFloor: historyDetailFloor)
+    }
+
+    /// The left column's width in History's outer split, out of the `available` width it
+    /// shares with the diff pane beside it.
+    ///
+    /// `diffWidth` is the diff pane's width now, kept whenever both floors allow it, so a
+    /// window resize moves the column and leaves the diff alone. A diff below its floor has
+    /// never been sized — it was hidden until a commit opened — so it opens at
+    /// `historyDiffShare` of the width instead of squeezed onto the floor.
+    public static func historyListWidth(available: CGFloat, diffWidth: CGFloat) -> CGFloat {
+        let diff = diffWidth >= historyDiffMinWidth ? diffWidth : available * historyDiffShare
+        return splitPane(
+            available: available, preferred: available - diff,
+            firstFloor: historyListMinWidth, secondFloor: historyDiffMinWidth)
     }
 }
 

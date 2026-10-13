@@ -92,6 +92,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var detailPane: NSView?
     private var diffPane: NSView?
     private var columnSplit: NSSplitView?
+    private var outerSplit: NSSplitView?
     private var parentOids: [Oid] = []
 
     private static let dateFormatter: DateFormatter = {
@@ -147,8 +148,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         buildSearchArea()
 
         // A stack with detachesHiddenViews, so the hidden scope bar costs no height and
-        // never fights a collapse constraint. The list keeps a minimum width so the detail
-        // drawer can never crush it to nothing.
+        // never fights a collapse constraint. Its width floor belongs to the outer split, which
+        // places its panes through `layoutOuterPanes`.
         let commitsStack = NSStackView(views: [searchArea, scopeBar, errorBar, scroll])
         commitsStack.orientation = .vertical
         commitsStack.alignment = .leading
@@ -173,7 +174,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             scopeBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             errorBar.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: commitsStack.widthAnchor),
-            scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
             placeholder.centerXAnchor.constraint(equalTo: commitsPane.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: commitsPane.centerYAnchor),
         ])
@@ -210,9 +210,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         split.dividerStyle = .thin
         // v5: the right pane used to be the whole commit drawer; it is now the diff alone.
         split.autosaveName = "rc-git.history.v5"
+        // No width floor on the split: the diff is hidden until a commit opens, and a floor
+        // for both panes would widen the bare list's minimum for nothing. `layoutOuterPanes`
+        // keeps both panes off zero instead.
+        split.delegate = self
         split.addArrangedSubview(column)
         split.addArrangedSubview(diff)
-        split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 251), forSubviewAt: 1)
+        outerSplit = split
         view = split
     }
 
@@ -321,7 +325,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             diffScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             diffPlaceholder.centerXAnchor.constraint(equalTo: diffScroll.centerXAnchor),
             diffPlaceholder.centerYAnchor.constraint(equalTo: diffScroll.centerYAnchor),
-            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
         return container
     }
@@ -656,6 +659,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         guard detailPane?.isHidden == open else { return }
         detailPane?.isHidden = !open
         diffPane?.isHidden = !open
+        layoutOuterPanes()
         layoutColumnPanes()
         view.needsLayout = true
     }
@@ -895,11 +899,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    /// Re-clamps the left column after every layout pass, which is where a divider position
-    /// restored from the autosave first reaches the screen. `layoutColumnPanes` keeps a legal
-    /// position untouched, so this converges on the first pass.
+    /// Re-clamps both splits after every layout pass, which is where a divider position
+    /// restored from the autosave first reaches the screen. Both layouts keep a legal position
+    /// untouched, so this converges on the first pass.
     override func viewDidLayout() {
         super.viewDidLayout()
+        layoutOuterPanes()
         layoutColumnPanes()
     }
 
@@ -910,11 +915,38 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// `adjustSubviews`, and never for the position the autosave restores. Owning the resize
     /// is what puts a zero-height pane out of reach; the clamps alone did not.
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-        guard splitView === columnSplit else {
+        if splitView === columnSplit {
+            layoutColumnPanes()
+        } else if splitView === outerSplit {
+            layoutOuterPanes()
+        } else {
             splitView.adjustSubviews()
+        }
+    }
+
+    /// Lays the outer split out: the left column alone while no commit is open, else the
+    /// column and the diff side by side, each kept off zero by `LayoutPolicy.historyListWidth`.
+    private func layoutOuterPanes() {
+        guard let split = outerSplit, let column = columnSplit, let diff = diffPane,
+            split.bounds.height > 0
+        else { return }
+        guard !diff.isHidden else {
+            placeAcross(column, x: 0, width: split.bounds.width, in: split)
             return
         }
-        layoutColumnPanes()
+        let divider = split.dividerThickness
+        let available = split.bounds.width - divider
+        guard available > 0 else { return }
+        let columnWidth = LayoutPolicy.historyListWidth(
+            available: available, diffWidth: diff.frame.width)
+        placeAcross(column, x: 0, width: columnWidth, in: split)
+        placeAcross(diff, x: columnWidth + divider, width: available - columnWidth, in: split)
+    }
+
+    private func placeAcross(_ view: NSView, x: CGFloat, width: CGFloat, in split: NSSplitView) {
+        let frame = NSRect(x: x, y: 0, width: width, height: split.bounds.height)
+        guard view.frame != frame else { return }
+        view.frame = frame
     }
 
     private func layoutColumnPanes() {
@@ -945,12 +977,16 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Keeps a divider drag inside the two floors, so a drag cannot end where
-    /// `layoutColumnPanes` would have to pull it back from. Drags are all these two methods
-    /// govern: AppKit asks them nothing about a resize or about the position it restores.
+    /// `layoutOuterPanes` or `layoutColumnPanes` would have to pull it back from. Drags are all
+    /// these two methods govern: AppKit asks them nothing about a resize or about the position
+    /// it restores.
     func splitView(
         _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
+        if splitView === outerSplit {
+            return max(proposedMinimumPosition, LayoutPolicy.historyListMinWidth)
+        }
         guard splitView === columnSplit else { return proposedMinimumPosition }
         return max(proposedMinimumPosition, Self.commitsPaneFloor)
     }
@@ -959,6 +995,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
+        if splitView === outerSplit {
+            let lastOpen =
+                splitView.bounds.width - splitView.dividerThickness
+                - LayoutPolicy.historyDiffMinWidth
+            return min(proposedMaximumPosition, max(LayoutPolicy.historyListMinWidth, lastOpen))
+        }
         guard splitView === columnSplit else { return proposedMaximumPosition }
         let lastOpen =
             splitView.bounds.height - splitView.dividerThickness - Self.detailPaneFloor

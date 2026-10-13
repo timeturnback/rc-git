@@ -388,9 +388,11 @@ no pixels. The user saw the loading state and never the result.
   flash-then-nothing symptom *with* a visible loading state is evidence the load worked and the
   render target is the problem.
 - **Know every autosaving split in the app, and fix them as a set.** There are exactly three
-  `autosaveName` sites: the two in `HistoryViewController` (`rc-git.history.v4` and
-  `rc-git.history-detail.v5`, both fixed here) and `MainWindowController` (`rc-git.main.v2`, an
-  `NSSplitViewController` covered by `minimumThickness`). The Changes tab is *not* one of them
+  `autosaveName` sites: the two in `HistoryViewController` (`rc-git.history.v5`, the commit
+  column beside the diff, and `rc-git.history-column.v1`, the commit list over the detail; the
+  controller is the delegate of both and places their panes through `LayoutPolicy.splitPane`)
+  and `MainWindowController` (`rc-git.main.v2`, an `NSSplitViewController` covered by
+  `minimumThickness`). The Changes tab is *not* one of them
   despite being modeled on `HistoryViewController` — it has no `NSSplitView` at all, so its
   `>= 150` floors are ordinary constraints on plain subviews. A fix applied to only one site is
   the shape of this recurrence.
