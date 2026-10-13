@@ -171,6 +171,44 @@ public enum SyncState: Sendable, Hashable {
     case failed(step: SyncStep, message: String)
 }
 
+/// What a credentials prompt answered: a secret to retry with, a user who declined, or no
+/// way to ask at all (no handler, no window to put the sheet on).
+public enum CredentialReply: Sendable {
+    case provided(Credentials)
+    case cancelled
+    case unavailable
+}
+
+/// What an unknown-host-key prompt answered, with the same split between a user who
+/// refused and nobody to ask.
+public enum HostKeyReply: Sendable, Equatable {
+    case trusted
+    case refused
+    case unavailable
+}
+
+/// What the credentials sheet holds when the user confirms it: credentials to try, or what
+/// is missing, which the sheet shows before asking again. An HTTPS token needs a username;
+/// an ssh passphrase has none.
+public enum CredentialEntry: Sendable {
+    case valid(Credentials)
+    case invalid(String)
+
+    public static func check(kind: CredentialKind, username: String, secret: String)
+        -> CredentialEntry
+    {
+        let username = username.trimmingCharacters(in: .whitespaces)
+        switch kind {
+        case .httpsToken:
+            if username.isEmpty { return .invalid("Enter a username.") }
+            if secret.isEmpty { return .invalid("Enter a token.") }
+        case .sshPassphrase:
+            if secret.isEmpty { return .invalid("Enter the passphrase.") }
+        }
+        return .valid(Credentials(username: username, token: secret))
+    }
+}
+
 /// State machine for fetch/pull/push/sync: busy-gated, credential-negotiating, with every
 /// blocking call on a detached task. Guarded actions run here (through the injected
 /// performer); the window controller renders the state.
@@ -233,13 +271,13 @@ public final class SyncModel {
     public var onStateChanged: (() -> Void)?
     /// Fires on the main actor when a network step needs credentials for `host`. The
     /// kind says what to ask for: an HTTPS token, or an ssh key passphrase, with the
-    /// locked key file's path (`nil` for HTTPS). Resume with `nil` to cancel the flow;
-    /// the model retries otherwise.
+    /// locked key file's path (`nil` for HTTPS). Resume with `.provided` to retry,
+    /// `.cancelled` when the user declined, `.unavailable` when nobody could be asked.
     public var onCredentialsNeeded:
-        ((String, CredentialKind, String?, @escaping (Credentials?) -> Void) -> Void)?
+        ((String, CredentialKind, String?, @escaping (CredentialReply) -> Void) -> Void)?
     /// Fires on the main actor when an ssh host is unknown: host and
-    /// `"<key type> <fingerprint>"`. Resume with `true` to trust and retry.
-    public var onHostKeyNeeded: ((String, String, @escaping (Bool) -> Void) -> Void)?
+    /// `"<key type> <fingerprint>"`. Resume with `.trusted` to trust and retry.
+    public var onHostKeyNeeded: ((String, String, @escaping (HostKeyReply) -> Void) -> Void)?
 
     private let repoPath: String
     private let performer: SyncPerforming
@@ -703,9 +741,16 @@ public final class SyncModel {
                     throw StepFailure(step: step, message: message, diverged: false)
                 }
                 hostKeyPrompted = true
-                guard await promptForHostKey(host: host, hostKey: hostKey) else {
+                switch await promptForHostKey(host: host, hostKey: hostKey) {
+                case .trusted:
+                    break
+                case .refused:
                     throw StepFailure(
                         step: step, message: "host not trusted", diverged: false)
+                case .unavailable:
+                    throw StepFailure(
+                        step: step, message: "\(message); no prompt is available to approve it",
+                        diverged: false)
                 }
                 hostKeys.store(fingerprint: fingerprint, host: host)
                 acceptedHostKey = fingerprint
@@ -720,18 +765,24 @@ public final class SyncModel {
                 guard authAttempts < Self.attemptLimit else {
                     throw StepFailure(
                         step: step,
-                        message: "'\(host)' kept rejecting the credentials: \(error.message)",
+                        message: "\(error.message) (gave up after \(authAttempts) attempts)",
                         diverged: false
                     )
                 }
-                guard
-                    let prompted = await promptForCredentials(host: host, kind: kind, key: key)
-                else {
+                switch await promptForCredentials(host: host, kind: kind, key: key) {
+                case let .provided(prompted):
+                    credentials = prompted
+                    fromPrompt = true
+                case .cancelled:
                     throw StepFailure(
                         step: step, message: "authentication canceled", diverged: false)
+                case .unavailable:
+                    throw StepFailure(
+                        step: step,
+                        message: Self.noPromptMessage(
+                            host: host, hadCredentials: credentials != nil, reason: error.message),
+                        diverged: false)
                 }
-                credentials = prompted
-                fromPrompt = true
             }
         }
     }
@@ -838,22 +889,30 @@ public final class SyncModel {
         }
     }
 
+    /// Why a step that needed a secret stopped when nobody could be asked for one: nothing
+    /// was stored, or what was tried failed. The guard's reason rides along either way.
+    static func noPromptMessage(host: String, hadCredentials: Bool, reason: String) -> String {
+        hadCredentials
+            ? "\(reason); no prompt is available to ask again"
+            : "credentials required for '\(host)' and none are stored: \(reason)"
+    }
+
     private func promptForCredentials(host: String, kind: CredentialKind, key: String?) async
-        -> Credentials?
+        -> CredentialReply
     {
-        guard let onCredentialsNeeded else { return nil }
+        guard let onCredentialsNeeded else { return .unavailable }
         return await withCheckedContinuation { continuation in
-            onCredentialsNeeded(host, kind, key) { credentials in
-                continuation.resume(returning: credentials)
+            onCredentialsNeeded(host, kind, key) { reply in
+                continuation.resume(returning: reply)
             }
         }
     }
 
-    private func promptForHostKey(host: String, hostKey: String) async -> Bool {
-        guard let onHostKeyNeeded else { return false }
+    private func promptForHostKey(host: String, hostKey: String) async -> HostKeyReply {
+        guard let onHostKeyNeeded else { return .unavailable }
         return await withCheckedContinuation { continuation in
-            onHostKeyNeeded(host, hostKey) { trusted in
-                continuation.resume(returning: trusted)
+            onHostKeyNeeded(host, hostKey) { reply in
+                continuation.resume(returning: reply)
             }
         }
     }

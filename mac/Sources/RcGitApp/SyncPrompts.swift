@@ -8,18 +8,21 @@ import RcGitKit
 enum SyncPrompts {
     /// Asks for a username and token (HTTPS) or the passphrase of the key file at `key`
     /// (ssh) for `host`. The secret field is secure; what the server accepts is
-    /// remembered in the login keychain by the model.
+    /// remembered in the login keychain by the model. A confirmed sheet with a field left
+    /// empty comes back with `problem` saying what is missing and the username kept.
     static func credentials(
         on window: NSWindow?, host: String, kind: CredentialKind, key: String?,
-        completion: @escaping (Credentials?) -> Void
+        problem: String? = nil, username: String = "",
+        completion: @escaping (CredentialReply) -> Void
     ) {
         guard let window else {
-            completion(nil)
+            completion(.unavailable)
             return
         }
         let alert = NSAlert()
         let userField = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
         userField.placeholderString = "Username"
+        userField.stringValue = username
         let secretField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         switch kind {
         case .httpsToken:
@@ -43,30 +46,36 @@ enum SyncPrompts {
             box.addSubview(secretField)
             alert.accessoryView = box
         }
+        if let problem {
+            alert.informativeText = problem + "\n\n" + alert.informativeText
+        }
         alert.addButton(withTitle: kind == .httpsToken ? "Sign In" : "Unlock")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { response in
-            let username = userField.stringValue.trimmingCharacters(in: .whitespaces)
-            let secret = secretField.stringValue
-            guard response == .alertFirstButtonReturn, !secret.isEmpty else {
-                completion(nil)
+            guard response == .alertFirstButtonReturn else {
+                completion(.cancelled)
                 return
             }
-            if kind == .httpsToken, username.isEmpty {
-                completion(nil)
-                return
+            let entry = CredentialEntry.check(
+                kind: kind, username: userField.stringValue, secret: secretField.stringValue)
+            switch entry {
+            case let .valid(entered):
+                completion(.provided(entered))
+            case let .invalid(missing):
+                Self.credentials(
+                    on: window, host: host, kind: kind, key: key, problem: missing,
+                    username: userField.stringValue, completion: completion)
             }
-            completion(Credentials(username: username, token: secret))
         }
     }
 
     /// Shows an unknown ssh host key for the user to verify before trusting.
     static func hostKey(
         on window: NSWindow?, host: String, hostKey: String,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (HostKeyReply) -> Void
     ) {
         guard let window else {
-            completion(false)
+            completion(.unavailable)
             return
         }
         let alert = NSAlert()
@@ -79,7 +88,7 @@ enum SyncPrompts {
         alert.addButton(withTitle: "Trust and Continue")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { response in
-            completion(response == .alertFirstButtonReturn)
+            completion(response == .alertFirstButtonReturn ? .trusted : .refused)
         }
     }
 }

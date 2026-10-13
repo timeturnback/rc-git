@@ -1180,10 +1180,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.renderSyncState()
         }
         sync.onCredentialsNeeded = { [weak self] host, kind, key, resume in
-            self?.promptForCredentials(host: host, kind: kind, key: key, completion: resume)
+            guard let self else { return resume(.unavailable) }
+            promptForCredentials(host: host, kind: kind, key: key, completion: resume)
         }
         sync.onHostKeyNeeded = { [weak self] host, hostKey, resume in
-            self?.promptForHostKey(host: host, hostKey: hostKey, completion: resume)
+            guard let self else { return resume(.unavailable) }
+            promptForHostKey(host: host, hostKey: hostKey, completion: resume)
         }
     }
 
@@ -1348,14 +1350,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func promptForCredentials(
         host: String, kind: CredentialKind, key: String?,
-        completion: @escaping (Credentials?) -> Void
+        completion: @escaping (CredentialReply) -> Void
     ) {
         SyncPrompts.credentials(
             on: window, host: host, kind: kind, key: key, completion: completion)
     }
 
     private func promptForHostKey(
-        host: String, hostKey: String, completion: @escaping (Bool) -> Void
+        host: String, hostKey: String, completion: @escaping (HostKeyReply) -> Void
     ) {
         SyncPrompts.hostKey(on: window, host: host, hostKey: hostKey, completion: completion)
     }

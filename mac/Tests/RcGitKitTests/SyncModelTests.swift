@@ -290,7 +290,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var promptedHost: String?
         model.onCredentialsNeeded = { host, _, _, resume in
             promptedHost = host
-            resume(Credentials(username: "user", token: "sekret"))
+            resume(.provided(Credentials(username: "user", token: "sekret")))
         }
         await model.refreshStatus()
         await model.fetch()
@@ -335,7 +335,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "typed"))
+            resume(.provided(Credentials(username: "user", token: "typed")))
         }
         await model.refreshStatus()
         await model.sync()
@@ -357,7 +357,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "typed"))
+            resume(.provided(Credentials(username: "user", token: "typed")))
         }
         await model.refreshStatus()
         await model.sync()
@@ -382,7 +382,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 preflights: [StubSyncPerformer.upstream()],
                 fetches: [.failure(.authRequired(message: "401"))]
             ), store: store)
-        model.onCredentialsNeeded = { _, _, _, resume in resume(nil) }
+        model.onCredentialsNeeded = { _, _, _, resume in resume(.cancelled) }
         await model.refreshStatus()
         await model.fetch()
 
@@ -406,7 +406,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "typed"))
+            resume(.provided(Credentials(username: "user", token: "typed")))
         }
         await model.refreshStatus()
         await model.sync()
@@ -472,11 +472,11 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "typed"))
+            resume(.provided(Credentials(username: "user", token: "typed")))
         }
         model.onHostKeyNeeded = { _, _, resume in
             prompts += 1
-            resume(true)
+            resume(.trusted)
         }
         await model.refreshStatus()
         await model.fetch()
@@ -527,13 +527,14 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "wrong"))
+            resume(.provided(Credentials(username: "user", token: "wrong")))
         }
         await model.refreshStatus()
         await model.fetch()
 
-        if case let .failed(step, _) = model.state {
+        if case let .failed(step, message) = model.state {
             #expect(step == .fetch)
+            #expect(message == "401 (gave up after 3 attempts)", "the guard's reason is kept")
         } else {
             Issue.record("expected failed, got \(model.state)")
         }
@@ -547,7 +548,7 @@ private let alreadyOnMain = CheckoutOutcome(
                 preflights: [StubSyncPerformer.upstream()],
                 fetches: [.failure(.authRequired(message: "401"))]
             ))
-        model.onCredentialsNeeded = { _, _, _, resume in resume(nil) }
+        model.onCredentialsNeeded = { _, _, _, resume in resume(.cancelled) }
         await model.refreshStatus()
         await model.fetch()
 
@@ -557,6 +558,125 @@ private let alreadyOnMain = CheckoutOutcome(
             Issue.record("expected failed, got \(model.state)")
         }
         #expect(store.stored.isEmpty)
+    }
+
+    @Test func aLockedKeyThatNeverUnlocksNamesTheKeyNotTheHost() async {
+        let locked = SyncError.passphraseRequired(
+            message: "the key '/k/id' for 'git.example.com' is encrypted; enter its passphrase",
+            key: "/k/id")
+        let (model, _, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [.failure(locked), .failure(locked), .failure(locked)]
+            ))
+        model.onCredentialsNeeded = { _, _, _, resume in
+            resume(.provided(Credentials(username: "", token: "wrong")))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .failed(_, message) = model.state else {
+            Issue.record("expected failed, got \(model.state)")
+            return
+        }
+        #expect(message.contains("the key '/k/id'"))
+        #expect(message.contains("gave up after 3 attempts"))
+        #expect(!message.contains("rejecting"))
+    }
+
+    @Test func noPromptHandlerSaysNoneAreStoredRatherThanCanceled() async {
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401"))]
+            ))
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .failed(_, message) = model.state else {
+            Issue.record("expected failed, got \(model.state)")
+            return
+        }
+        #expect(message == "credentials required for 'example.com' and none are stored: 401")
+    }
+
+    @Test func anUnavailablePromptAfterStoredCredentialsKeepsTheReason() async {
+        let saved = Credentials(username: "user", token: "stale")
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.failure(.authRequired(message: "401"))]
+            ), store: InMemoryCredentialStore(["example.com": saved]))
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(.unavailable)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(prompts == 1)
+        guard case let .failed(_, message) = model.state else {
+            Issue.record("expected failed, got \(model.state)")
+            return
+        }
+        #expect(message == "401; no prompt is available to ask again")
+    }
+
+    @Test func noHostKeyHandlerIsNotReportedAsARefusal() async {
+        let hostKeys = InMemoryHostKeyStore()
+        let (model, _, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(
+                        .hostKeyUnknown(
+                            message: "not a known host",
+                            hostKey: "ssh-ed25519 SHA256:abc123"))
+                ]
+            ), hostKeys: hostKeys)
+        await model.refreshStatus()
+        await model.fetch()
+
+        guard case let .failed(_, message) = model.state else {
+            Issue.record("expected failed, got \(model.state)")
+            return
+        }
+        #expect(message == "not a known host; no prompt is available to approve it")
+        #expect(hostKeys.stored.isEmpty)
+    }
+
+    @Test func theCredentialSheetRefusesEmptyFields() {
+        func problem(_ entry: CredentialEntry) -> String? {
+            if case let .invalid(missing) = entry { return missing }
+            return nil
+        }
+        #expect(
+            problem(CredentialEntry.check(kind: .httpsToken, username: " ", secret: "t"))
+                == "Enter a username.")
+        #expect(
+            problem(CredentialEntry.check(kind: .httpsToken, username: "u", secret: ""))
+                == "Enter a token.")
+        #expect(
+            problem(CredentialEntry.check(kind: .sshPassphrase, username: "", secret: ""))
+                == "Enter the passphrase.")
+        guard
+            case let .valid(https) = CredentialEntry.check(
+                kind: .httpsToken, username: " u ", secret: "t")
+        else {
+            Issue.record("a username and token are valid")
+            return
+        }
+        #expect(https.username == "u")
+        #expect(https.token == "t")
+        guard
+            case let .valid(ssh) = CredentialEntry.check(
+                kind: .sshPassphrase, username: "", secret: "p")
+        else {
+            Issue.record("a passphrase alone is valid over ssh")
+            return
+        }
+        #expect(ssh.token == "p")
     }
 
     @Test func divergenceStopsTheSyncBeforePush() async {
@@ -674,7 +794,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var promptedKey: String?
         model.onHostKeyNeeded = { _, hostKey, resume in
             promptedKey = hostKey
-            resume(true)
+            resume(.trusted)
         }
         await model.refreshStatus()
         await model.fetch()
@@ -700,7 +820,7 @@ private let alreadyOnMain = CheckoutOutcome(
                             hostKey: "ssh-ed25519 SHA256:abc123"))
                 ]
             ), hostKeys: hostKeys)
-        model.onHostKeyNeeded = { _, _, resume in resume(false) }
+        model.onHostKeyNeeded = { _, _, resume in resume(.refused) }
         await model.refreshStatus()
         await model.fetch()
 
@@ -722,7 +842,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompted = false
         model.onHostKeyNeeded = { _, _, resume in
             prompted = true
-            resume(true)
+            resume(.trusted)
         }
         await model.refreshStatus()
         await model.fetch()
@@ -746,7 +866,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompted = false
         model.onHostKeyNeeded = { _, _, resume in
             prompted = true
-            resume(true)
+            resume(.trusted)
         }
         await model.refreshStatus()
         await model.fetch()
@@ -778,7 +898,7 @@ private let alreadyOnMain = CheckoutOutcome(
         model.onCredentialsNeeded = { _, kind, key, resume in
             promptedKind = kind
             promptedKey = key
-            resume(Credentials(username: "", token: "opensesame"))
+            resume(.provided(Credentials(username: "", token: "opensesame")))
         }
         await model.refreshStatus()
         await model.fetch()
@@ -808,7 +928,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "", token: "opensesame"))
+            resume(.provided(Credentials(username: "", token: "opensesame")))
         }
         await model.refreshStatus()
         await model.fetch()
@@ -859,7 +979,7 @@ private let alreadyOnMain = CheckoutOutcome(
         model.onCredentialsNeeded = { _, kind, key, resume in
             promptedKind = kind
             promptedKey = key
-            resume(Credentials(username: "", token: "opensesame"))
+            resume(.provided(Credentials(username: "", token: "opensesame")))
         }
         await model.refreshStatus()
         await model.fetch()
@@ -966,7 +1086,7 @@ private let alreadyOnMain = CheckoutOutcome(
         var prompts = 0
         model.onCredentialsNeeded = { _, _, _, resume in
             prompts += 1
-            resume(Credentials(username: "user", token: "token"))
+            resume(.provided(Credentials(username: "user", token: "token")))
         }
         performer.duringStep = { cancel in cancel.signal() }
         await model.refreshStatus()
