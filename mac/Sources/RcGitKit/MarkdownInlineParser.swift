@@ -670,10 +670,19 @@ extension InlineScanner {
     static func isAutolink(_ content: String) -> Bool {
         guard !content.isEmpty, !content.contains(" ") else { return false }
         if let colon = content.firstIndex(of: ":") {
-            let scheme = content[content.startIndex..<colon]
-            return scheme.count >= 2 && scheme.allSatisfy { $0.isLetter || $0 == "+" || $0 == "-" }
+            return isAutolinkScheme(Array(content[content.startIndex..<colon].utf8))
         }
         guard let at = content.firstIndex(of: "@") else { return false }
         return at != content.startIndex && content[at...].contains(".")
+    }
+
+    /// CommonMark's scheme rule: an ASCII letter, then 1-31 ASCII letters, digits, `+`, `.` or `-`.
+    private static func isAutolinkScheme(_ scheme: [UInt8]) -> Bool {
+        guard (2...32).contains(scheme.count), let first = scheme.first, Ascii.isLetter(first)
+        else { return false }
+        return scheme.dropFirst().allSatisfy {
+            Ascii.isLetter($0) || Ascii.isDigit($0) || $0 == Ascii.plus || $0 == Ascii.dot
+                || $0 == Ascii.hyphen
+        }
     }
 }

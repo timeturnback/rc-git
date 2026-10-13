@@ -506,6 +506,18 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(bare) == "see https://example.com/x. done")
     }
 
+    @Test func autolinkSchemeFollowsTheCommonMarkRule() {
+        let digits = runs("get <s3://bucket/key> now")
+        #expect(digits.compactMap { $0.link?.destination } == ["s3://bucket/key"])
+        #expect(plain(digits) == "get s3://bucket/key now")
+        #expect(runs("<a.b-c+d://x>").first?.link?.destination == "a.b-c+d://x")
+        #expect(runs("<3d://x>").allSatisfy { $0.link == nil })
+        #expect(runs("<é1://x>").allSatisfy { $0.link == nil })
+        let longest = String(repeating: "a", count: 32)
+        #expect(runs("<\(longest)://x>").first?.link?.destination == "\(longest)://x")
+        #expect(runs("<a\(longest)://x>").allSatisfy { $0.link == nil })
+    }
+
     @Test func bareWWWURLGetsHTTPSWhateverItsCase() {
         let upper = runs("Visit WWW.Example.com today")
         #expect(upper.compactMap { $0.link?.destination } == ["https://WWW.Example.com"])
