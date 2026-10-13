@@ -407,6 +407,12 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(runs("`` a ` b ``").first?.text == "a ` b")
     }
 
+    @Test func anUnclosedBacktickRunStaysLiteralAsAWhole() {
+        let parsed = runs("x ``` y `` z")
+        #expect(plain(parsed) == "x ``` y `` z")
+        #expect(parsed.allSatisfy { !$0.style.contains(.code) })
+    }
+
     @Test func escapesProduceTheLiteralCharacter() {
         #expect(plain(runs("\\*not emphasis\\*")) == "*not emphasis*")
     }

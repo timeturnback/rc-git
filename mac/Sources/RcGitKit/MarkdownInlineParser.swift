@@ -108,7 +108,8 @@ struct InlineScanner {
     }
 
     /// A backtick run closes only on a run of exactly the same length, which is what lets
-    /// ``a ` b`` hold a backtick.
+    /// ``a ` b`` hold a backtick. A run with no closer is literal as a whole, never reopened
+    /// one byte later as a narrower one.
     private mutating func codeSpan(
         at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?
     ) -> Int? {
@@ -129,7 +130,8 @@ struct InlineScanner {
             }
             search = close
         }
-        return nil
+        buffer.append(contentsOf: bytes[cursor..<open])
+        return open
     }
 
     private mutating func emitCode(
