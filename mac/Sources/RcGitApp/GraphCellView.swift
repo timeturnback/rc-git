@@ -3,8 +3,9 @@ import RcGitKit
 
 /// Draws one `GraphRow`: the commit dot plus the lane segments crossing the row. Lanes past
 /// `maxDrawnLanes` clamp to the last drawn column, so a pathological repository widens
-/// nothing.
-final class GraphCellView: NSView {
+/// nothing. On an emphasized (selected) row everything draws in the selected-text color,
+/// since some palette colors sit too close to the selection background to see.
+final class GraphCellView: NSTableCellView {
     static let laneWidth: CGFloat = 10
     static let leadingPad: CGFloat = 4
     static let maxDrawnLanes = 12
@@ -22,6 +23,12 @@ final class GraphCellView: NSView {
         }
     }
 
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            if backgroundStyle != oldValue { needsDisplay = true }
+        }
+    }
+
     override var isFlipped: Bool { true }
 
     /// The column width that fits `lanes` lanes, clamped to the drawing cap.
@@ -34,8 +41,9 @@ final class GraphCellView: NSView {
             + Self.laneWidth / 2
     }
 
-    private static func color(_ index: Int) -> NSColor {
-        palette[index % palette.count]
+    private func color(_ index: Int) -> NSColor {
+        if backgroundStyle == .emphasized { return .alternateSelectedControlTextColor }
+        return Self.palette[index % Self.palette.count]
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -71,14 +79,14 @@ final class GraphCellView: NSView {
                     controlPoint1: NSPoint(x: fromX, y: midY + midY / 2),
                     controlPoint2: NSPoint(x: toX, y: midY))
             }
-            Self.color(edge.colorIndex).setStroke()
+            color(edge.colorIndex).setStroke()
             path.stroke()
         }
         let radius: CGFloat = row.isMerge ? 4 : 3
         let dot = NSRect(
             x: x(row.commitLane) - radius, y: midY - radius,
             width: radius * 2, height: radius * 2)
-        Self.color(row.colorIndex).setFill()
+        color(row.colorIndex).setFill()
         NSBezierPath(ovalIn: dot).fill()
     }
 }
