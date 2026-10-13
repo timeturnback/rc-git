@@ -137,6 +137,33 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks[0].kind == .html(text: "<div class=\"x\">\ntext\n</div>"))
     }
 
+    @Test func anHTMLCommentRunsPastABlankLineToItsCloser() {
+        let blocks = MarkdownDocument.parse("<!-- note\n\n# hidden -->\nafter\n").blocks
+        #expect(blocks.count == 2)
+        #expect(blocks.first?.kind == .html(text: "<!-- note\n\n# hidden -->"))
+        #expect(blocks.last?.kind == .paragraph)
+    }
+
+    @Test func aOneLineHTMLCommentEndsOnItsOwnLine() {
+        let blocks = MarkdownDocument.parse("<!-- note -->\n# Title\n").blocks
+        #expect(blocks.count == 2)
+        #expect(blocks.first?.kind == .html(text: "<!-- note -->"))
+        #expect(blocks.last?.kind == .heading(level: 1))
+    }
+
+    @Test func aPreBlockRunsPastABlankLineToItsClosingTag() {
+        let blocks = MarkdownDocument.parse("<PRE>\nline\n\nmore\n</Pre>\n\ntext\n").blocks
+        #expect(blocks.count == 2)
+        #expect(blocks.first?.kind == .html(text: "<PRE>\nline\n\nmore\n</Pre>"))
+        #expect(blocks.last?.kind == .paragraph)
+    }
+
+    @Test func aPlainBlockTagStillEndsAtABlankLine() {
+        let blocks = MarkdownDocument.parse("<div>\nx\n\n# Title\n").blocks
+        #expect(blocks.count == 2)
+        #expect(blocks.last?.kind == .heading(level: 1))
+    }
+
     @Test func anHTMLBlockInAListItemLeavesTheMarkerOutOfItsText() {
         let blocks = MarkdownDocument.parse("- <details>\n  <summary>More</summary>\n").blocks
         #expect(blocks.count == 1)

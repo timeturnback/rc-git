@@ -526,8 +526,12 @@ extension MarkdownBlockParser {
         "dd", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
         "h5", "h6", "header", "hr", "iframe", "li", "main", "nav", "ol", "p", "picture", "pre",
         "script", "section", "style", "summary", "table", "tbody", "td", "tfoot", "th", "thead",
-        "tr", "ul", "video",
+        "textarea", "tr", "ul", "video",
     ]
+
+    /// Tags whose block runs to the matching closing tag, blank lines included, as CommonMark's
+    /// first kind of HTML block does.
+    private static let rawHTMLTags = ["pre", "script", "style", "textarea"]
 
     private func isHTMLBlockStart(_ body: Range<Int>) -> Bool {
         guard body.count >= 2, bytes[body.lowerBound] == Ascii.lessThan else { return false }
@@ -540,6 +544,28 @@ extension MarkdownBlockParser {
         }
         guard end > cursor else { return false }
         return Self.htmlBlockTags.contains(text(cursor..<end).lowercased())
+    }
+
+    /// The text that ends the HTML block `body` opens, matched lowercased anywhere in a line, or
+    /// nil when the block ends at a blank line. Comments, processing instructions, CDATA,
+    /// declarations and raw-text tags may hold blank lines, so they run to their closing marker.
+    private func htmlBlockTerminator(_ body: Range<Int>) -> String? {
+        let line = text(body).lowercased()
+        if line.hasPrefix("<!--") { return "-->" }
+        if line.hasPrefix("<?") { return "?>" }
+        if line.hasPrefix("<![cdata[") { return "]]>" }
+        if line.hasPrefix("<!"), let next = line.utf8.dropFirst(2).first, Ascii.isLetter(next) {
+            return ">"
+        }
+        for tag in Self.rawHTMLTags where line.hasPrefix("<" + tag) {
+            let after = line.utf8.dropFirst(tag.utf8.count + 1).first
+            if after == nil || after == Ascii.space || after == Ascii.tab
+                || after == Ascii.greaterThan
+            {
+                return "</" + tag + ">"
+            }
+        }
+        return nil
     }
 
     private func isTableDelimiter(_ body: Range<Int>) -> Bool {
@@ -679,14 +705,21 @@ extension MarkdownBlockParser {
         emit(.code(language: nil, text: body.joined(separator: "\n")))
     }
 
-    /// Raw HTML up to the next blank line. The first line is `first`, the body already read past
-    /// any list marker, so an item's marker never lands in the block's text.
+    /// Raw HTML up to the line holding its closing marker, or to the next blank line for a block
+    /// with none (see `htmlBlockTerminator`). The first line is `first`, the body already read
+    /// past any list marker, so an item's marker never lands in the block's text.
     private mutating func consumeHTMLBlock(first: Range<Int>, indent: Int) {
+        let terminator = htmlBlockTerminator(first)
         var body = [text(first)]
+        var ended = terminator.map { text(first).lowercased().contains($0) } ?? false
         index += 1
-        while index < lines.count {
+        while index < lines.count, !ended {
             let rest = strippingQuotes(lines[index]).rest
-            if trimmedStart(of: rest).isEmpty { break }
+            if let terminator {
+                ended = text(rest).lowercased().contains(terminator)
+            } else if trimmedStart(of: rest).isEmpty {
+                break
+            }
             body.append(text(rest, droppingIndent: indent))
             index += 1
         }
