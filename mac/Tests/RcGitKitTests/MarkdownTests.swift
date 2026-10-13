@@ -391,6 +391,22 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(parsed.last?.style == [.strong, .emphasis])
     }
 
+    @Test func strongInsideEmphasisKeepsBoth() {
+        for source in ["*This is **important** text*", "_This is __important__ text_"] {
+            let parsed = runs(source)
+            #expect(plain(parsed) == "This is important text", "\(source)")
+            let important = parsed.first { $0.text == "important" }
+            #expect(important?.style == [.emphasis, .strong], "\(source)")
+            #expect(parsed.allSatisfy { $0.style.contains(.emphasis) }, "\(source)")
+        }
+    }
+
+    @Test func anInnerOpenerWithNoCloserStaysLiteral() {
+        let parsed = runs("*a **b c*")
+        #expect(plain(parsed) == "a **b c")
+        #expect(parsed.allSatisfy { $0.style == .emphasis })
+    }
+
     @Test func underscoresInsideAWordAreLiteral() {
         #expect(plain(runs("snake_case_name")) == "snake_case_name")
         #expect(runs("snake_case_name").allSatisfy { $0.style.isEmpty })

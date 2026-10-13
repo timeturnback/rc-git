@@ -236,8 +236,12 @@ struct InlineScanner {
         return !Ascii.isLetter(bytes[cursor - 1]) && !Ascii.isDigit(bytes[cursor - 1])
     }
 
-    /// Where the matching closing run starts, or `nil` when the delimiter never closes.
+    /// Where the matching closing run starts, or `nil` when the delimiter never closes. A
+    /// same-marker run that opens on the way is pushed, and a later run closes those inner
+    /// openers first, innermost out, so `*a **b** c*` keeps its strong run inside the
+    /// emphasis. An inner opener the closing run cannot fit stays literal.
     private func closingRun(marker: UInt8, width: Int, from: Int, end: Int) -> Int? {
+        var openers: [Int] = []
         var cursor = from
         while cursor < end {
             if bytes[cursor] == Ascii.backslash {
@@ -254,14 +258,36 @@ struct InlineScanner {
             }
             var stop = cursor
             while stop < end, bytes[stop] == marker { stop += 1 }
-            if stop - cursor >= width, cursor > from, !Ascii.isSpace(bytes[cursor - 1]),
-                bytes[cursor - 1] != Ascii.newline, closes(marker: marker, after: stop, end: end)
-            {
-                return cursor
+            if canClose(marker: marker, run: cursor..<stop, from: from, end: end) {
+                var remaining = stop - cursor
+                while let inner = openers.last, inner <= remaining {
+                    remaining -= inner
+                    openers.removeLast()
+                }
+                if remaining >= width { return stop - remaining }
+            } else if opensInside(run: cursor..<stop, from: from, end: end) {
+                openers.append(stop - cursor)
             }
             cursor = stop
         }
         return nil
+    }
+
+    private func canClose(marker: UInt8, run: Range<Int>, from: Int, end: Int) -> Bool {
+        guard run.lowerBound > from else { return false }
+        let before = bytes[run.lowerBound - 1]
+        guard !Ascii.isSpace(before), before != Ascii.newline else { return false }
+        return closes(marker: marker, after: run.upperBound, end: end)
+    }
+
+    /// A run inside a delimiter's span that opens a nested one of the same marker.
+    private func opensInside(run: Range<Int>, from: Int, end: Int) -> Bool {
+        guard run.upperBound < end else { return false }
+        let after = bytes[run.upperBound]
+        guard !Ascii.isSpace(after), after != Ascii.newline else { return false }
+        guard run.lowerBound > from else { return true }
+        let before = bytes[run.lowerBound - 1]
+        return Ascii.isSpace(before) || before == Ascii.newline
     }
 
     /// `_` does not close inside a word, which is what keeps `snake_case_name` intact.
