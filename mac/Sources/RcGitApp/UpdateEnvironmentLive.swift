@@ -57,12 +57,10 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }
         let missing = outcome.lines.filter { Self.requiredTools.contains($0) }
         guard missing.isEmpty else { return .missing(missing) }
-        guard outcome.status == 0 else {
+        guard outcome.succeeded else {
             let lastLine = outcome.lines.last(where: { !$0.isEmpty }) ?? "no output"
             return .failure(
-                "your login shell failed the toolchain check "
-                    + "(status \(outcome.status)): \(lastLine)"
-            )
+                "your login shell \(outcome.failure) during the toolchain check: \(lastLine)")
         }
         return .ready
     }
@@ -146,9 +144,8 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         case .cancelled:
             return "cancelled"
         case nil:
-            guard outcome.status != 0 else { return nil }
-            return "\(script.path)\(script.arguments) failed (status \(outcome.status)): "
-                + lastLine
+            guard !outcome.succeeded else { return nil }
+            return "\(script.path)\(script.arguments) \(outcome.failure): \(lastLine)"
         }
     }
 

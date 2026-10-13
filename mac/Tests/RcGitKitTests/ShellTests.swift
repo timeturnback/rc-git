@@ -130,6 +130,25 @@ import Testing
         #expect(outcome.status == 3)
         #expect(outcome.lines == ["nope"])
         #expect(outcome.stopped == nil)
+        #expect(!outcome.succeeded)
+        #expect(outcome.failure == "failed (status 3)")
+    }
+
+    /// A signal number is not an exit status: a build the system killed says so instead of
+    /// reading like a script that exited with 9.
+    @Test func aCommandKilledByASignalSaysSo() async {
+        let (outcome, _) = await Self.run("echo dying; kill -9 $$")
+        #expect(outcome.reason == .uncaughtSignal)
+        #expect(outcome.status == SIGKILL)
+        #expect(outcome.lines == ["dying"])
+        #expect(outcome.stopped == nil)
+        #expect(!outcome.succeeded)
+        #expect(outcome.failure == "was killed by signal 9 (SIGKILL)")
+    }
+
+    @Test func anUnlistedSignalIsNamedByItsNumber() {
+        #expect(Shell.signalName(SIGTERM) == "SIGTERM")
+        #expect(Shell.signalName(31) == "SIG31")
     }
 
     @Test func aCharacterSplitAcrossTwoReadsSurvives() throws {

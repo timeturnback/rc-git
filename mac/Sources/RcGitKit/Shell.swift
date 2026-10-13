@@ -19,10 +19,41 @@ public enum Shell {
     }
 
     public struct Outcome: Sendable {
+        /// The exit status, or the signal number when `reason` is `.uncaughtSignal`.
         public let status: Int32
+        /// Whether the process exited or a signal ended it.
+        public let reason: Process.TerminationReason
         public let lines: [String]
         /// Why the command was killed; `nil` when it exited on its own.
         public let stopped: Stop?
+
+        /// Whether the process exited on its own with status 0.
+        public var succeeded: Bool { reason == .exit && status == 0 }
+
+        /// How a run that did not succeed ended, worded to follow the command's name:
+        /// "failed (status 3)" or "was killed by signal 9 (SIGKILL)". A signal number reads
+        /// like an exit status, so a build the system killed would otherwise look like one
+        /// that failed by itself.
+        public var failure: String {
+            guard reason == .uncaughtSignal else { return "failed (status \(status))" }
+            return "was killed by signal \(status) (\(Shell.signalName(status)))"
+        }
+    }
+
+    /// The conventional name of a signal number, `SIGKILL` for 9; `SIG<n>` for one not listed.
+    static func signalName(_ number: Int32) -> String {
+        switch number {
+        case SIGHUP: "SIGHUP"
+        case SIGINT: "SIGINT"
+        case SIGQUIT: "SIGQUIT"
+        case SIGABRT: "SIGABRT"
+        case SIGKILL: "SIGKILL"
+        case SIGBUS: "SIGBUS"
+        case SIGSEGV: "SIGSEGV"
+        case SIGPIPE: "SIGPIPE"
+        case SIGTERM: "SIGTERM"
+        default: "SIG\(number)"
+        }
     }
 
     /// How long the last bytes get to arrive after the process exits. A grandchild that
@@ -57,7 +88,7 @@ public enum Shell {
             try process.run()
         } catch {
             collector.take(Data("cannot run \(executable): \(error)\n".utf8))
-            return Outcome(status: -1, lines: collector.finish(), stopped: nil)
+            return Outcome(status: -1, reason: .exit, lines: collector.finish(), stopped: nil)
         }
 
         let drained = drain(pipe.fileHandleForReading, into: collector)
@@ -75,7 +106,8 @@ public enum Shell {
         await killer.finish()
         await drained.wait(upTo: drainGrace)
         return Outcome(
-            status: process.terminationStatus, lines: collector.finish(), stopped: killer.reason)
+            status: process.terminationStatus, reason: process.terminationReason,
+            lines: collector.finish(), stopped: killer.reason)
     }
 
     /// Reads the pipe to EOF on a thread of its own. `availableData` blocks, and a blocked
