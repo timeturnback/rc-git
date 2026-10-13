@@ -121,6 +121,9 @@ import Testing
         let mainRs = try #require(try repo.entry(at: "src/main.rs", under: root))
         #expect(mainRs.kind == .blob)
         #expect(try repo.entry(at: "nope", under: root) == nil)
+        #expect(throws: RepositoryError.self) {
+            try repo.entry(at: "src/main.rs", under: try repo.resolve("main"))
+        }
         #expect(try repo.blobSize(mainRs.oid) == 34)
         guard case let .text(data, lineStarts, validUTF8) = try repo.readBlob(mainRs.oid) else {
             Issue.record("expected text")
@@ -323,6 +326,47 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.blame(tip: new, path: "nope.txt") }
     }
 
+    @Test func diffsModifiedDeletedAndRenamedPathsAndEditedLines() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("README.md", "# fixture\n\nhi\n")
+        try fixture.git(["mv", "alpha.txt", "beta.txt"])
+        try fixture.git(["rm", "-q", "Zeta.txt"])
+        try fixture.commit("Edit", date: "2024-01-05T00:00:00+0000")
+        let repo = try Repository(path: fixture.path)
+
+        let changes = try repo.diffTrees(from: try repo.resolve("main~1"), to: repo.resolve("HEAD"))
+        #expect(changes.map(\.path) == ["README.md", "Zeta.txt", "beta.txt"])
+        #expect(changes.map(\.kind) == [.modified, .deleted, .renamed])
+        let zeta = try #require(changes.first { $0.path == "Zeta.txt" })
+        #expect(zeta.new == nil)
+        #expect(zeta.old != nil)
+        let beta = try #require(changes.first { $0.path == "beta.txt" })
+        #expect(beta.sourcePath == "alpha.txt")
+
+        let readme = try #require(changes.first { $0.path == "README.md" })
+        guard case let .text(hunks) = try repo.diffBlobs(old: readme.old, new: readme.new) else {
+            Issue.record("expected a text diff")
+            return
+        }
+        #expect(
+            hunks.flatMap(\.lines) == [
+                DiffLine(kind: .context, text: "# fixture"),
+                DiffLine(kind: .context, text: ""),
+                DiffLine(kind: .removed, text: "hello"),
+                DiffLine(kind: .added, text: "hi"),
+            ])
+    }
+
+    @Test func defaultBranchIsNilWhenNothingNamesAMainline() throws {
+        let fixture = try GitFixture.emptyDirectory()
+        defer { fixture.remove() }
+        try fixture.git(["init", "-q", "-b", "trunk"])
+        try fixture.write("a.txt", "a\n")
+        try fixture.commit("one", date: "2024-01-01T00:00:00+0000")
+        #expect(try Repository(path: fixture.path).defaultBranch() == nil)
+    }
+
     @Test func diffLinesCarryTheirLineEnding() throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
@@ -358,6 +402,8 @@ import Testing
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("untracked.txt", "new\n")
+        try fixture.write(".gitignore", "ignored.txt\n")
+        try fixture.write("ignored.txt", "skip\n")
         try FileManager.default.removeItem(
             at: URL(fileURLWithPath: fixture.path).appendingPathComponent("Zeta.txt"))
         let repo = try Repository(path: fixture.path)
@@ -369,6 +415,8 @@ import Testing
         let untracked = try #require(listing.entries.first { $0.name == "untracked.txt" })
         #expect(untracked.status == .untracked)
         #expect(untracked.oid == nil)
+        let ignored = try #require(listing.entries.first { $0.name == "ignored.txt" })
+        #expect(ignored.status == .ignored)
         let readme = try #require(listing.entries.first { $0.name == "README.md" })
         #expect(readme.status == .unchanged)
         #expect(try readme.oid?.hex == fixture.revParse("HEAD:README.md"))
@@ -430,6 +478,7 @@ import Testing
         let report = try repo.worktreeStatus(tree: tree)
         #expect(!report.truncated)
         #expect(report.scanned > 0)
+        #expect(try repo.worktreeStatus(tree: tree, maxScan: 1).truncated)
         let rows = report.entries.map { ($0.path, $0.status) }
         #expect(rows.map(\.0) == ["Zeta.txt", "alpha.txt", "untracked.txt"])
         #expect(rows.map(\.1) == [.deleted, .modified, .untracked])
