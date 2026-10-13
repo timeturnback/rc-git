@@ -463,6 +463,45 @@ import Testing
         #expect(readFailure == nil)
     }
 
+    @Test func aClickDuringARevisionResolveWins() async {
+        await model.attach(repo)
+        let gate = CallGate()
+        repo.lock.withLock {
+            repo.resolves["abc1"] = parentCommit
+            repo.resolveGates["abc1"] = gate
+            repo.treeDiffs[parentCommit] = []
+        }
+        var shown: [Oid?] = []
+        model.onDiffChanged = { shown.append(self.model.diffCommit?.oid) }
+        async let jump: Void = model.jumpToRevision("abc1")
+        await gate.waitUntilArrived()
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        gate.open()
+        await jump
+
+        #expect(model.diffCommit?.oid == mainCommit, "the later click stands")
+        #expect(!shown.contains(parentCommit), "the stale jump never lands")
+    }
+
+    @Test func aClickDuringACommitReadWins() async {
+        await model.attach(repo)
+        let gate = CallGate()
+        repo.lock.withLock {
+            repo.commitGates[parentCommit] = gate
+            repo.treeDiffs[parentCommit] = []
+        }
+        var shown: [Oid?] = []
+        model.onDiffChanged = { shown.append(self.model.diffCommit?.oid) }
+        async let jump: Void = model.jumpToCommit(parentCommit)
+        await gate.waitUntilArrived()
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        gate.open()
+        await jump
+
+        #expect(model.diffCommit?.oid == mainCommit, "the later click stands")
+        #expect(!shown.contains(parentCommit), "the stale jump never lands")
+    }
+
     @Test func commitWithNoChangesShowsEmptyDetail() async {
         await model.attach(repo)
         let empty = oid(0x77)

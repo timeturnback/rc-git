@@ -890,9 +890,12 @@ public final class BrowserModel {
     /// and shows that commit's detail.
     public func jumpToRevision(_ spec: String) async {
         guard let repository else { return }
+        let generation = diffGeneration
         let result = await RepositoryError.run {
             try repository.resolve(spec)
         }
+        // Another commit was picked during the read.
+        guard generation == diffGeneration else { return }
         switch result {
         case let .success(oid):
             await jumpToCommit(oid)
@@ -1017,7 +1020,11 @@ public final class BrowserModel {
     /// Shows the detail of a commit reached by id — a parent link, a revision jump, or a
     /// stop of the back/forward list.
     public func jumpToCommit(_ oid: Oid) async {
-        guard let summary = await readCommit(oid) else { return }
+        let generation = diffGeneration
+        guard let summary = await readCommit(oid),
+            // Another commit was picked during the read.
+            generation == diffGeneration
+        else { return }
         await loadCommitChanges(summary)
     }
 

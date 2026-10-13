@@ -46,6 +46,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// When set, `pathHistory` fails for every `scanSkip` at or past this index.
     var pathHistoryFailFrom: Int?
     var resolves: [String: Oid] = [:]
+    /// Per spec, holds the next `resolve` call for it, then clears itself.
+    var resolveGates: [String: CallGate] = [:]
+    /// Per oid, holds the next `commit` call for it, then clears itself.
+    var commitGates: [Oid: CallGate] = [:]
     var searchCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
@@ -105,7 +109,11 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func resolve(_ spec: String) throws -> Oid {
-        guard let found = lock.withLock({ resolves[spec] }) else {
+        let (found, gate) = lock.withLock {
+            (resolves[spec], resolveGates.removeValue(forKey: spec))
+        }
+        gate?.pass()
+        guard let found else {
             throw RepositoryError("'\(spec)' is not a revision in this repository")
         }
         return found
@@ -170,9 +178,13 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func commit(_ oid: Oid) throws -> CommitSummary {
-        let found = lock.withLock {
-            summaries[oid] ?? commits.values.joined().first(where: { $0.oid == oid })
+        let (found, gate) = lock.withLock {
+            (
+                summaries[oid] ?? commits.values.joined().first(where: { $0.oid == oid }),
+                commitGates.removeValue(forKey: oid)
+            )
         }
+        gate?.pass()
         guard let found else {
             throw RepositoryError("read commit: object \(oid) is missing or unreadable")
         }
