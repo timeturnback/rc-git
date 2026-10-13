@@ -53,6 +53,18 @@ import Testing
         #expect(rows.last?.filePaths == ["a.txt"])
     }
 
+    @Test func aFileAndAFolderWithOneNameKeepDistinctKeys() throws {
+        let rows = ChangeTree.nodes([entry("a"), entry("a/b")], grouping: .folders)
+        try #require(rows.count == 2)
+        let folder = try #require(rows.first { $0.isFolder })
+        let file = try #require(rows.first { !$0.isFolder })
+        #expect(folder.path == "a")
+        #expect(file.path == "a")
+        #expect(folder.key != file.key)
+        #expect(folder.filePaths == ["a/b"])
+        #expect(file.filePaths == ["a"])
+    }
+
     @Test func emptyReportHasNoRows() {
         #expect(ChangeTree.nodes([StatusEntry](), grouping: .flat).isEmpty)
         #expect(ChangeTree.nodes([StatusEntry](), grouping: .folders).isEmpty)

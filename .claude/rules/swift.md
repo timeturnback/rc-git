@@ -43,7 +43,8 @@ paths: mac/**
   (`docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md`).
 - The Changes list is one `NSOutlineView` serving both groupings from `ChangeTree` (RcGitKit,
   pure and tested); flat rows are childless roots. Node identity dies on every reload, so
-  expansion and selection are restored by path, never by row index.
+  expansion and selection are restored by `ChangeNode.key`, never by row index or `path` (a
+  file and a folder can share one path).
 - The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
   line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
   `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.

@@ -105,7 +105,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The change list's rows under the current grouping, rebuilt on every status render.
     private var fileNodes: [StatusNode] = []
     /// Folder rows are expanded unless the user closed them; reload rebuilds the nodes, so
-    /// the state has to live by path rather than by row.
+    /// the state has to live by row key rather than by row.
     private var collapsedFolders: Set<String> = []
     private let groupingStore = ChangeGroupingStore.worktree()
     private var stashes: [StashEntry] = []
@@ -515,32 +515,32 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Rebuilds the rows for the current grouping and puts back what the reload drops:
-    /// the open folders and the selected path.
+    /// the open folders and the selected rows.
     private func reloadFiles() {
         isReloading = true
-        let selected = selectedPaths
+        let selected = selectedKeys
         fileNodes = ChangeTree.nodes(entries, grouping: grouping)
         filesOutline.reloadData()
         expandFolders()
-        select(paths: selected)
+        select(keys: selected)
         isReloading = false
     }
 
-    private var selectedPaths: Set<String> {
-        var paths: Set<String> = []
+    private var selectedKeys: Set<String> {
+        var keys: Set<String> = []
         for row in filesOutline.selectedRowIndexes {
             guard let node = filesOutline.item(atRow: row) as? StatusNode else { continue }
-            paths.insert(node.path)
+            keys.insert(node.key)
         }
-        return paths
+        return keys
     }
 
-    private func select(paths: Set<String>) {
-        guard !paths.isEmpty else { return }
+    private func select(keys: Set<String>) {
+        guard !keys.isEmpty else { return }
         var rows = IndexSet()
         for row in 0..<filesOutline.numberOfRows {
             guard let node = filesOutline.item(atRow: row) as? StatusNode,
-                paths.contains(node.path)
+                keys.contains(node.key)
             else { continue }
             rows.insert(row)
         }
@@ -552,7 +552,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private func expandFolders() {
         var pending = fileNodes
         while let node = pending.popLast() {
-            guard node.isFolder, !collapsedFolders.contains(node.path) else { continue }
+            guard node.isFolder, !collapsedFolders.contains(node.key) else { continue }
             filesOutline.expandItem(node)
             pending.append(contentsOf: node.children)
         }
@@ -794,12 +794,12 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
-        collapsedFolders.remove(node.path)
+        collapsedFolders.remove(node.key)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? StatusNode else { return }
-        collapsedFolders.insert(node.path)
+        collapsedFolders.insert(node.key)
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

@@ -36,6 +36,10 @@ public final class ChangeNode<Entry: ChangeListEntry> {
 
     public var isFolder: Bool { entry == nil }
 
+    /// Names this row uniquely in its list. A file and a folder can share `path` (a
+    /// directory replaced by a file of the same name), so a folder's key ends in `/`.
+    public var key: String { isFolder ? path + "/" : path }
+
     init(name: String, path: String, entry: Entry?, children: [ChangeNode]) {
         self.name = name
         self.path = path
