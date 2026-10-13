@@ -230,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func newWindow() -> MainWindowController {
         let controller = MainWindowController()
         if let window = controller.window,
-            let host = NSApp.mainWindow ?? controllers.last?.window
+            let host = controllers.first(where: { $0.window === NSApp.mainWindow })?.window
+                ?? controllers.last?.window
         {
             host.addTabbedWindow(window, ordered: .above)
         }

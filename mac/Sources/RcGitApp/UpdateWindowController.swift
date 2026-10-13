@@ -33,6 +33,7 @@ final class UpdateWindowController: NSWindowController {
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 440),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
+        window.tabbingMode = .disallowed
         var environment: AppUpdateEnvironment?
         if let sourceRoot = build.sourceRoot, let mode = build.updateMode,
             let relaunchPath = build.relaunchPath
