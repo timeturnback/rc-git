@@ -112,6 +112,19 @@ import Testing
         #expect(index.search("head").map(\.path) == [".git/HEAD"])
     }
 
+    @Test func buildStopsAtTheLimitAndSaysSo() throws {
+        let fixed = trees()
+        let capped = try PathIndex.build(root: root, limit: 2) { fixed[$0]! }
+        #expect(capped.entries.count == 2)
+        #expect(capped.truncated, "a walk cut at the limit is flagged")
+        let whole = try PathIndex.build(root: root, limit: 4) { fixed[$0]! }
+        #expect(whole.entries.count == 4)
+        #expect(whole.truncated, "reaching the limit exactly still stops the walk")
+        let roomy = try PathIndex.build(root: root, limit: 5) { fixed[$0]! }
+        #expect(roomy.entries.count == 4)
+        #expect(!roomy.truncated)
+    }
+
     @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() {
         let list = WorktreeFileList(
             files: [

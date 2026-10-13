@@ -1574,16 +1574,18 @@ public final class BrowserModel {
     /// The best matches for `query` among every file below the current root — on disk while
     /// browsing the working tree, so gitignored files such as `.env` are found too. Builds the
     /// index on first use; a query while a build for another root is running cancels it.
-    /// Hidden files match only while `showsHiddenFiles` is on.
-    public func searchPaths(_ query: String, limit: Int = 100) async throws -> [PathIndexEntry] {
-        guard let root = rootTree else { return [] }
+    /// Hidden files match only while `showsHiddenFiles` is on. The result carries the index's
+    /// `truncated` flag, so the panel can say matches may be missing.
+    public func searchPaths(_ query: String, limit: Int = 100) async throws -> PathSearchResult {
+        guard let root = rootTree else { return PathSearchResult(entries: [], truncated: false) }
         let index =
             browsingWorkingTree
             ? try await worktreePathIndex(comparedTo: root) : try await pathIndex(for: root)
         let includeHidden = showsHiddenFiles
-        return await Task.detached(priority: .userInitiated) {
+        let entries = await Task.detached(priority: .userInitiated) {
             index.search(query, limit: limit, includeHidden: includeHidden)
         }.value
+        return PathSearchResult(entries: entries, truncated: index.truncated)
     }
 
     /// Drops the working tree's path index so the next search walks the disk again. Called

@@ -68,10 +68,10 @@ import Testing
             ], scanned: 3, truncated: false)
         await model.attach(repo)
 
-        let visible = try await model.searchPaths("")
+        let visible = try await model.searchPaths("").entries
         #expect(visible.map(\.path) == [".env", "README.md"], "gitignored .env is found")
         model.setShowsHiddenFiles(true)
-        let all = try await model.searchPaths("")
+        let all = try await model.searchPaths("").entries
         #expect(all.map(\.path) == [".DS_Store", ".env", "README.md"])
         #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 1, "keystrokes reuse the walk")
 
@@ -84,9 +84,20 @@ import Testing
         repo.workDir = "/checkout"
         await model.attach(repo)
         await model.select(model.refs.refs[0])
-        let matches = try await model.searchPaths("")
-        #expect(matches.map(\.path) == ["README.md"])
+        let result = try await model.searchPaths("")
+        #expect(result.entries.map(\.path) == ["README.md"])
+        #expect(!result.truncated, "a ref whose walk finished is complete")
         #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 0)
+    }
+
+    @Test func aTruncatedWorkingTreeWalkReachesTheSearchResult() async throws {
+        repo.workDir = "/checkout"
+        repo.worktreeFileList = WorktreeFileList(
+            files: [WorktreeFile(path: "README.md", kind: .blob)], scanned: 1, truncated: true)
+        await model.attach(repo)
+        let result = try await model.searchPaths("")
+        #expect(result.entries.map(\.path) == ["README.md"])
+        #expect(result.truncated, "the panel must say matches may be missing")
     }
 
     @Test func aSearchPickOpensFromDiskInTheWorkingTree() async {

@@ -764,7 +764,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
         }
         goToFileController.provider = { [weak self] query in
-            guard let self else { return [] }
+            guard let self else { return PathSearchResult(entries: [], truncated: false) }
             return try await model.searchPaths(query)
         }
         goToFileController.onOpen = { [weak self] entry in

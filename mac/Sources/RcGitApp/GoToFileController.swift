@@ -8,12 +8,13 @@ import RcGitKit
 final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSource,
     NSTableViewDelegate
 {
-    var provider: ((String) async throws -> [PathIndexEntry])?
+    var provider: ((String) async throws -> PathSearchResult)?
     var onOpen: ((PathIndexEntry) -> Void)?
 
     private let panel: NSPanel
     private let field = NSTextField()
     private let table = NSTableView()
+    private let footer = NSTextField(labelWithString: PathSearchResult.truncationNote)
     private var results: [PathIndexEntry] = []
     private var searchGeneration = 0
 
@@ -55,7 +56,11 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         let separator = NSBox()
         separator.boxType = .separator
 
-        let stack = NSStackView(views: [field, separator, scroll])
+        footer.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        footer.textColor = .secondaryLabelColor
+        footer.isHidden = true
+
+        let stack = NSStackView(views: [field, separator, scroll, footer])
         stack.orientation = .vertical
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 8, right: 12)
@@ -76,6 +81,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         }
         field.stringValue = ""
         results = []
+        footer.isHidden = true
         table.reloadData()
         panel.makeKeyAndOrderFront(nil)
         field.becomeFirstResponder()
@@ -92,9 +98,11 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
         let generation = searchGeneration
         Task { @MainActor in
             do {
-                let matches = try await provider(query)
+                let result = try await provider(query)
                 guard generation == self.searchGeneration else { return }
+                let matches = result.entries
                 self.results = matches
+                self.footer.isHidden = !result.truncated
                 self.table.reloadData()
                 if !matches.isEmpty {
                     self.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -104,6 +112,7 @@ final class GoToFileController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
             } catch {
                 guard generation == self.searchGeneration else { return }
                 self.results = []
+                self.footer.isHidden = true
                 self.table.reloadData()
             }
         }

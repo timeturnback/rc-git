@@ -43,11 +43,11 @@ public struct PathIndex: Sendable {
         self.truncated = truncated
     }
 
-    /// Flattens the tree below `root`, one tree object per directory, depth-first. This is
-    /// the one operation that walks a whole tree, so it must run in the background and checks
-    /// for task cancellation between directory reads.
+    /// Flattens the tree below `root`, one tree object per directory, depth-first, stopping at
+    /// `limit` files. This is the one operation that walks a whole tree, so it must run in the
+    /// background and checks for task cancellation between directory reads.
     public static func build(
-        root: Oid, children: (Oid) throws -> [TreeEntry]
+        root: Oid, limit: Int = maxEntries, children: (Oid) throws -> [TreeEntry]
     ) throws -> PathIndex {
         var entries: [PathIndexEntry] = []
         var pending: [(tree: Oid, prefix: String, hidden: Bool, exact: Bool)] = [
@@ -67,7 +67,7 @@ public struct PathIndex: Sendable {
                         PathIndexEntry(
                             path: path, oid: entry.oid, kind: entry.kind, hidden: hidden,
                             hasExactPath: exact))
-                    if entries.count >= maxEntries {
+                    if entries.count >= limit {
                         return PathIndex(root: root, entries: entries, truncated: true)
                     }
                 case .submodule:
@@ -115,6 +115,24 @@ public struct PathIndex: Sendable {
             return $0.entry.path < $1.entry.path
         }
         return scored.prefix(limit).map(\.entry)
+    }
+}
+
+/// What one path search found, and whether the index it searched stopped short.
+public struct PathSearchResult: Sendable, Equatable {
+    public let entries: [PathIndexEntry]
+    /// True when the searched index stopped at `PathIndex.maxEntries`, so a file that exists
+    /// may be missing from `entries`.
+    public let truncated: Bool
+
+    /// The note to show while `truncated`. It says entries, not files: the working-tree walk
+    /// counts directories too, in disk order, so the cut is not "the first N files".
+    public static let truncationNote =
+        "Stopped indexing at 200,000 entries; some files may not be found"
+
+    public init(entries: [PathIndexEntry], truncated: Bool) {
+        self.entries = entries
+        self.truncated = truncated
     }
 }
 
