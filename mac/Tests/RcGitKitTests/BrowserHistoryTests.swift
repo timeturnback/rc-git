@@ -150,6 +150,41 @@ import Testing
         #expect(model.searchComplete)
     }
 
+    @Test func aHistoryPageForAnEarlierTipIsDropped() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        async let slowPage: Void = model.loadMoreHistory()
+        try? await Task.sleep(for: .milliseconds(20))
+        await model.select(model.refs.refs[0])
+        await slowPage
+        repo.lock.withLock { repo.delays[mainCommit] = nil }
+        #expect(model.history.isEmpty, "main's page never lands on feature")
+        await model.loadMoreHistory()
+        #expect(model.history.map(\.title) == ["feature 0"])
+        #expect(model.historyComplete)
+
+        await model.select(model.refs.refs[1])
+        #expect(model.history.isEmpty, "the dropped page was never cached under main's tip")
+    }
+
+    @Test func aNewerSearchDropsTheOlderWalk() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        var seen: [[String]] = []
+        model.onSearchChanged = { seen.append(self.model.searchResults.map(\.title)) }
+        async let slowSearch: Void = model.search(CommitFilter(message: "main"))
+        try? await Task.sleep(for: .milliseconds(20))
+        repo.lock.withLock { repo.delays[mainCommit] = nil }
+        await model.search(CommitFilter(message: "main 1"))
+        await slowSearch
+        #expect(model.searchResults.count == 61, "main 1, main 10-19, main 100-149")
+        #expect(model.searchResults.allSatisfy { $0.title.contains("main 1") })
+        #expect(
+            seen.allSatisfy { titles in titles.allSatisfy { $0.contains("main 1") } },
+            "the older filter's page never rendered")
+        #expect(!model.isSearching)
+    }
+
     @Test func refSwitchAndEmptyFilterClearTheSearch() async {
         await model.attach(repo)
         await model.search(CommitFilter(message: "main"))
@@ -594,6 +629,36 @@ import Testing
 
         #expect(model.diffCommit?.oid == mainCommit, "the later click stands")
         #expect(!shown.contains(parentCommit), "the stale jump never lands")
+    }
+
+    @Test func aLaterCommitDetailWins() async {
+        await model.attach(repo)
+        let staleChange = TreeChange(
+            kind: .added, path: "stale.txt", sourcePath: nil, old: nil, new: oid(0x43),
+            entry: .blob)
+        repo.lock.withLock {
+            repo.treeDiffs[parentCommit] = [staleChange]
+            repo.delays[parentCommit] = 1
+        }
+        var shown: [CommitDetailState] = []
+        model.onDiffChanged = { shown.append(self.model.commitDetail) }
+        async let slowLoad: Void = model.loadCommitChanges(commitSummary(parentCommit))
+        try? await Task.sleep(for: .milliseconds(20))
+        await model.loadCommitChanges(commitSummary(mainCommit, parents: [parentCommit]))
+        await slowLoad
+
+        #expect(model.diffCommit?.oid == mainCommit, "the later click stands")
+        #expect(model.commitChanges.map(\.path) == ["a.txt"])
+        guard case let .loaded(detail, _) = model.commitDetail else {
+            Issue.record("expected a loaded detail, got \(model.commitDetail)")
+            return
+        }
+        #expect(detail.summary.oid == mainCommit)
+        let staleLanded = shown.contains { state in
+            if case let .loaded(stale, _) = state { return stale.summary.oid == parentCommit }
+            return false
+        }
+        #expect(!staleLanded, "the slow commit's detail never rendered")
     }
 
     @Test func commitWithNoChangesShowsEmptyDetail() async {

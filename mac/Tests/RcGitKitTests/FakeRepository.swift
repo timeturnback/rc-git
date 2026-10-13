@@ -73,6 +73,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var failNextStatus = false
     /// Per path, the worktree-vs-blob diff.
     var worktreeDiffs: [String: BlobDiff] = [:]
+    /// Per path, how long each `diffWorktreeFile` call takes, for racing two selections.
+    var worktreeDiffDelays: [String: TimeInterval] = [:]
     var stashes: [StashEntry] = []
     /// Set to make the fake a checkout rather than a bare repository.
     var workDir: String?
@@ -234,10 +236,11 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
         throws -> CommitPage
     {
-        let found = lock.withLock { () -> [CommitSummary]? in
+        let (found, delay) = lock.withLock { () -> ([CommitSummary]?, TimeInterval) in
             searchCalls += 1
-            return commits[tip]
+            return (commits[tip], delays[tip] ?? 0)
         }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
             throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
         }
@@ -262,7 +265,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange] {
-        let found = lock.withLock { treeDiffs[to] }
+        let (found, delay) = lock.withLock { (treeDiffs[to], delays[to] ?? 0) }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
             throw RepositoryError("read tree: object \(to) is missing or unreadable")
         }
@@ -345,7 +349,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff
     {
-        let found = lock.withLock { worktreeDiffs[path] }
+        let (found, delay) = lock.withLock {
+            (worktreeDiffs[path], worktreeDiffDelays[path] ?? 0)
+        }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
             throw RepositoryError("read working tree file: '\(path)': missing")
         }

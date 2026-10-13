@@ -205,6 +205,37 @@ import Testing
         #expect(model.selections.first == .hunks(path: "a.txt", stamps: [first]))
     }
 
+    @Test func aLaterFileSelectionWins() async {
+        await model.loadStatus()
+        let staleHunk = DiffHunk(
+            oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
+            lines: [DiffLine(kind: .added, text: "stale")])
+        let laterHunk = DiffHunk(
+            oldStart: 0, oldLines: 0, newStart: 1, newLines: 1,
+            lines: [DiffLine(kind: .added, text: "later")])
+        repo.lock.withLock {
+            repo.worktreeDiffs["a.txt"] = .text(hunks: [staleHunk])
+            repo.worktreeDiffs["b.txt"] = .text(hunks: [laterHunk])
+            repo.worktreeDiffDelays["a.txt"] = 1
+        }
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        var shown: [WorktreeDiffState] = []
+        model.onDiffChanged = { shown.append(self.model.diffState) }
+        async let slowSelect: Void = model.select(report.entries[0])
+        try? await Task.sleep(for: .milliseconds(20))
+        await model.select(report.entries[1])
+        await slowSelect
+
+        #expect(model.selectedPath == "b.txt")
+        #expect(model.diffState == .loaded("b.txt", .text(hunks: [laterHunk])))
+        #expect(
+            !shown.contains(.loaded("a.txt", .text(hunks: [staleHunk]))),
+            "the slow selection's diff never rendered")
+    }
+
     @Test func selectingAFileLoadsItsWorktreeDiff() async {
         await model.loadStatus()
         let hunk = DiffHunk(
