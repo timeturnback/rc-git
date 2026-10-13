@@ -49,6 +49,20 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(blocks[1].runs) == "three\nfour")
     }
 
+    @Test func aSoftBreakAfterAnInlineConstructKeepsTheSpace() {
+        let source = "Run `make`\nthen read [the docs](docs/a.md)\nnext *line*\nend"
+        let text = plain(MarkdownDocument.parse(source).blocks[0].runs)
+        #expect(text == "Run make then read the docs next line end")
+    }
+
+    @Test func aHardBreakAfterALinkKeepsTheBreak() {
+        #expect(plain(MarkdownDocument.parse("a [x](y)  \nb").blocks[0].runs) == "a x\nb")
+    }
+
+    @Test func aBreakTagAtTheEndOfALineGainsNoSpace() {
+        #expect(plain(MarkdownDocument.parse("a<br>\nb").blocks[0].runs) == "a\nb")
+    }
+
     @Test func thematicBreaksAreNotListItems() {
         let blocks = MarkdownDocument.parse("a\n\n---\n\n* * *\n").blocks
         #expect(blocks[1].kind == .thematicBreak)

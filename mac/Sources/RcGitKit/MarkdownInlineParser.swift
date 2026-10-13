@@ -585,7 +585,10 @@ extension InlineScanner {
             trailing += 1
         }
         buffer.removeLast(trailing)
-        if !buffer.isEmpty { buffer.append(trailing >= 2 ? Ascii.newline : Ascii.space) }
+        let emitted = !buffer.isEmpty || !output.isEmpty
+        if emitted, buffer.last != Ascii.newline {
+            buffer.append(trailing >= 2 ? Ascii.newline : Ascii.space)
+        }
         var next = cursor + 1
         while next < end, Ascii.isSpace(bytes[next]) { next += 1 }
         return next
