@@ -286,15 +286,14 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     @objc private func toggleSelected(_ sender: Any?) {
-        guard let node = outline.item(atRow: outline.clickedRow) as? Node else { return }
-        if node.entry.kind.isDirectory, !node.row.missing {
-            if outline.isItemExpanded(node) {
-                outline.collapseItem(node)
-            } else {
-                outline.expandItem(node)
-            }
+        // Files open through selection alone; a double-click re-opening one resets the pane.
+        guard let node = outline.item(atRow: outline.clickedRow) as? Node,
+            node.entry.kind.isDirectory, !node.row.missing
+        else { return }
+        if outline.isItemExpanded(node) {
+            outline.collapseItem(node)
         } else {
-            onOpenFile?(node.row, node.path, node.pathIsExact)
+            outline.expandItem(node)
         }
     }
 
