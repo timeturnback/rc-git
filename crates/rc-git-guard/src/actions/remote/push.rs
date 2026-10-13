@@ -111,7 +111,11 @@ pub fn push_upstream(
         cancel: cancel.clone(),
     };
     let (transport, advertised) = {
-        let (link, creds) = (link.clone(), auth.creds.cloned());
+        let creds = (
+            auth.creds.cloned(),
+            auth.host.unwrap_or(&link.host).to_owned(),
+        );
+        let link = link.clone();
         run_detached(cancel, OP, move || advertise(transport, &link, creds))?
     };
     let (remote_old, haves) = remote_tips(&repo, &advertised.refs, &link.full_ref);
@@ -222,11 +226,12 @@ struct Advertised {
 }
 
 /// Handshakes with `git-receive-pack` on `transport` (on HTTPS, the `GET /info/refs`) and
-/// returns the transport with what the server advertised.
+/// returns the transport with what the server advertised. `creds` answer a 401 only from
+/// `creds_host`.
 fn advertise(
     mut transport: BoxedTransport,
     link: &Link,
-    creds: Option<Credentials>,
+    (creds, creds_host): (Option<Credentials>, String),
 ) -> ActionResult<(BoxedTransport, Advertised)> {
     #[expect(
         clippy::disallowed_methods,
@@ -235,7 +240,7 @@ fn advertise(
     let handshake = gix::protocol::handshake(
         &mut transport,
         gix::protocol::transport::Service::ReceivePack,
-        authenticate_with(creds),
+        authenticate_with(creds, creds_host),
         Vec::new(),
         &mut gix::progress::Discard,
     )

@@ -411,6 +411,47 @@ fn fetch_against_an_auth_server_requires_matching_credentials() {
     assert_ne!(outcome.updated_refs.len(), 0);
 }
 
+#[test]
+fn credentials_issued_for_another_host_are_never_sent() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let clone = Fixture::basic_auth_clone(&server, "user", "sekret");
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let creds = Credentials {
+        username: "user".to_owned(),
+        token: "sekret".to_owned(),
+    };
+    let elsewhere = RemoteAuth {
+        host: Some("elsewhere.example"),
+        ..auth(&creds)
+    };
+
+    let fetched = fetch_upstream(clone.path(), &Policy::default(), elsewhere, &Cancel::new());
+    assert!(
+        matches!(fetched, Err(ActionError::AuthRequired { .. })),
+        "{fetched:?}"
+    );
+    let pushed = push_upstream(clone.path(), &Policy::default(), elsewhere, &Cancel::new());
+    assert!(
+        matches!(pushed, Err(ActionError::AuthRequired { .. })),
+        "{pushed:?}"
+    );
+    assert_ne!(bare_rev(&bare, "main"), clone.rev_parse("HEAD"));
+
+    let status = upstream_status(clone.path()).expect("status");
+    let own_host = RemoteAuth {
+        host: Some(&status.host),
+        ..auth(&creds)
+    };
+    fetch_upstream(clone.path(), &Policy::default(), own_host, &Cancel::new())
+        .expect("fetch with credentials for the remote's own host");
+    let outcome = push_upstream(clone.path(), &Policy::default(), own_host, &Cancel::new())
+        .expect("push with credentials for the remote's own host");
+    assert_eq!(outcome.pushed_commits, 1);
+}
+
 /// Sets the mode of `path`, for the tests that make a directory unwritable.
 fn chmod(path: &Path, mode: u32) {
     #[expect(

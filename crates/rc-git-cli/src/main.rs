@@ -1484,6 +1484,7 @@ impl RemoteArgs {
     fn auth(&self) -> rc_git_guard::actions::RemoteAuth<'_> {
         rc_git_guard::actions::RemoteAuth {
             creds: self.creds.as_ref(),
+            host: None,
             accepted_hostkey: self.accepted_hostkey.as_deref(),
             ssh_dir: self.ssh_dir.as_deref(),
         }

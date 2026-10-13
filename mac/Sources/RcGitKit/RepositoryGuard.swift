@@ -564,21 +564,23 @@ extension RepositoryGuard {
     }
 
     /// Fetches from the branch's upstream remote. `credentials` may be `nil` for an
-    /// anonymous attempt (over ssh, the token field carries the key passphrase);
-    /// `acceptedHostKey` is a fingerprint the user approved for an unknown host.
+    /// anonymous attempt (over ssh, the token field carries the key passphrase); `host` is
+    /// the host they were issued for, and an HTTPS 401 from any other host gets none (`nil`:
+    /// the host the remote URL names); `acceptedHostKey` is a fingerprint the user approved
+    /// for an unknown host.
     public static func fetch(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil,
-        cancel: CancelToken? = nil
+        repoPath: String, credentials: Credentials?, host: String? = nil,
+        acceptedHostKey: String? = nil, cancel: CancelToken? = nil
     ) throws(SyncError) -> FetchOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
         var out = RcGitFetchOutcome(updated_refs: 0)
         let status = withOwnedCStrings([
-            credentials?.username, credentials?.token, acceptedHostKey,
+            credentials?.username, credentials?.token, host, acceptedHostKey,
         ]) { strings in
             var auth = RcGitRemoteAuth(
-                username: strings[0], token: strings[1], accepted_hostkey: strings[2],
-                ssh_dir: nil)
+                username: strings[0], token: strings[1], host: strings[2],
+                accepted_hostkey: strings[3], ssh_dir: nil)
             return rcgit_guard_fetch(repoPath, &auth, cancel.pointer, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {
@@ -624,20 +626,21 @@ extension RepositoryGuard {
         )
     }
 
-    /// Pushes the checked-out branch to its upstream. Plain push only.
+    /// Pushes the checked-out branch to its upstream. Plain push only. `credentials` and
+    /// `host` as for `fetch`.
     public static func push(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String? = nil,
-        cancel: CancelToken? = nil
+        repoPath: String, credentials: Credentials?, host: String? = nil,
+        acceptedHostKey: String? = nil, cancel: CancelToken? = nil
     ) throws(SyncError) -> PushOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
         var out = RcGitPushOutcome(pushed_commits: 0, already_up_to_date: false)
         let status = withOwnedCStrings([
-            credentials?.username, credentials?.token, acceptedHostKey,
+            credentials?.username, credentials?.token, host, acceptedHostKey,
         ]) { strings in
             var auth = RcGitRemoteAuth(
-                username: strings[0], token: strings[1], accepted_hostkey: strings[2],
-                ssh_dir: nil)
+                username: strings[0], token: strings[1], host: strings[2],
+                accepted_hostkey: strings[3], ssh_dir: nil)
             return rcgit_guard_push(repoPath, &auth, cancel.pointer, &out, &hostkey, &error)
         }
         guard status == RCGIT_OK else {

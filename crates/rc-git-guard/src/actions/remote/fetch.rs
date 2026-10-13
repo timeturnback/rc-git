@@ -84,7 +84,7 @@ pub fn fetch_upstream(
 
     let updated_refs = match scheme {
         RemoteScheme::Https => {
-            let creds = auth.creds.cloned();
+            let creds = (auth.creds.cloned(), auth.host.unwrap_or(&host).to_owned());
             let worker_cancel = cancel.clone();
             let (remote_name, host) = (remote_name.clone(), host.clone());
             run_detached(cancel, OP, move || {
@@ -112,7 +112,7 @@ pub fn fetch_upstream(
             )]
             let connection = remote
                 .to_connection_with_transport(transport)
-                .with_credentials(authenticate_with(None));
+                .with_credentials(authenticate_with(None, String::new()));
             let writer = Writer::new(&repo, &proof);
             updated_refs(&run_fetch(
                 &writer,
@@ -163,7 +163,7 @@ fn find_remote<'repo>(
 fn fetch_https(
     repo: &gix::Repository,
     proof: &Confirmation,
-    creds: Option<Credentials>,
+    (creds, creds_host): (Option<Credentials>, String),
     (remote_name, url, host): (&str, &gix::Url, &str),
     cancel: &Cancel,
 ) -> ActionResult<Vec<RefUpdate>> {
@@ -175,7 +175,7 @@ fn fetch_https(
     let connection = remote
         .connect(gix::remote::Direction::Fetch)
         .map_err(|source| map_network_error(Box::new(source), OP, remote_name, host))?;
-    let mut connection = connection.with_credentials(authenticate_with(creds));
+    let mut connection = connection.with_credentials(authenticate_with(creds, creds_host));
     connection.set_transport_options(Box::new(http_options(url, cancel)));
     let writer = Writer::new(repo, proof);
     Ok(updated_refs(&run_fetch(

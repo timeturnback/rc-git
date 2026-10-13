@@ -30,7 +30,8 @@ Four layers enforce it, and each catches what the others miss.
    tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The curl
    feature also compiles gix's credential-helper and prompt machinery into the binary;
    it is unreachable: every connection, HTTPS and ssh, installs a credential callback that
-   answers from caller-supplied credentials and never consults the helper cascade; fetch and
+   answers from caller-supplied credentials, only to a 401 from the host they were issued
+   for (`RemoteAuth::host`, else the remote URL's), and never consults the helper cascade; fetch and
    push build their HTTP options from code-owned defaults, so no repository `http.proxy`
    ever asks the cascade for a proxy password; and `Command::new` stays banned
    workspace-wide. The ssh side reads `~/.ssh` (config,

@@ -4178,14 +4178,17 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
 
 /// Authentication inputs for the remote functions. Every field may be NULL: `username`
 /// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
-/// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
-/// and `ssh_dir` to use `~/.ssh`.
+/// `username` is ignored), `host` to offer them to the host the remote URL names,
+/// `accepted_hostkey` when no fingerprint has been approved, and `ssh_dir` to use `~/.ssh`.
 #[repr(C)]
 pub struct RcGitRemoteAuth {
     /// HTTPS username, or NULL (empty when `token` is set).
     pub username: *const c_char,
     /// HTTPS token, or the ssh key passphrase, or NULL.
     pub token: *const c_char,
+    /// The host (`host` or `host:port`) the credentials were issued for: an HTTPS 401 from
+    /// any other host gets none. NULL for the host the remote URL names.
+    pub host: *const c_char,
     /// An approved `SHA256:...` host-key fingerprint, or NULL.
     pub accepted_hostkey: *const c_char,
     /// Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.
@@ -4197,6 +4200,7 @@ pub struct RcGitRemoteAuth {
 #[derive(Default)]
 struct OwnedRemoteAuth {
     creds: Option<Credentials>,
+    host: Option<String>,
     accepted_hostkey: Option<String>,
     ssh_dir: Option<std::path::PathBuf>,
 }
@@ -4211,10 +4215,11 @@ impl OwnedRemoteAuth {
             return Self::default();
         }
         // SAFETY: forwarded from this function's contract.
-        let (creds, accepted_hostkey, ssh_dir) = unsafe {
+        let (creds, host, accepted_hostkey, ssh_dir) = unsafe {
             let auth = &*auth;
             (
                 credentials_from(auth.username, auth.token),
+                bytes_arg(auth.host).map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
                 bytes_arg(auth.accepted_hostkey)
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
                 bytes_arg(auth.ssh_dir)
@@ -4223,6 +4228,7 @@ impl OwnedRemoteAuth {
         };
         Self {
             creds,
+            host,
             accepted_hostkey,
             ssh_dir,
         }
@@ -4231,6 +4237,7 @@ impl OwnedRemoteAuth {
     fn borrow(&self) -> RemoteAuth<'_> {
         RemoteAuth {
             creds: self.creds.as_ref(),
+            host: self.host.as_deref(),
             accepted_hostkey: self.accepted_hostkey.as_deref(),
             ssh_dir: self.ssh_dir.as_deref(),
         }
@@ -5710,6 +5717,7 @@ mod tests {
         let auth = RcGitRemoteAuth {
             username: ptr::null(),
             token: ptr::null(),
+            host: ptr::null(),
             accepted_hostkey: ptr::null(),
             ssh_dir: ssh_dir.as_ptr(),
         };
@@ -5759,6 +5767,7 @@ mod tests {
         let auth = RcGitRemoteAuth {
             username: ptr::null(),
             token: token.as_ptr(),
+            host: ptr::null(),
             accepted_hostkey: ptr::null(),
             ssh_dir: ptr::null(),
         };
@@ -5773,6 +5782,27 @@ mod tests {
         };
         let owned = unsafe { OwnedRemoteAuth::read(&raw const auth) };
         assert!(owned.creds.is_none());
+    }
+
+    #[test]
+    fn remote_auth_carries_the_credentials_host_to_the_guard() {
+        let host = CString::new("example.com:8443").unwrap();
+        let auth = RcGitRemoteAuth {
+            username: ptr::null(),
+            token: ptr::null(),
+            host: host.as_ptr(),
+            accepted_hostkey: ptr::null(),
+            ssh_dir: ptr::null(),
+        };
+        let owned = unsafe { OwnedRemoteAuth::read(&raw const auth) };
+        assert_eq!(owned.borrow().host, Some("example.com:8443"));
+
+        let auth = RcGitRemoteAuth {
+            host: ptr::null(),
+            ..auth
+        };
+        let owned = unsafe { OwnedRemoteAuth::read(&raw const auth) };
+        assert_eq!(owned.borrow().host, None);
     }
 
     /// Fetches `repo` through the C entry point; returns the status, the error message
@@ -5826,6 +5856,7 @@ mod tests {
         let auth = RcGitRemoteAuth {
             username: ptr::null(),
             token: ptr::null(),
+            host: ptr::null(),
             accepted_hostkey: ptr::null(),
             ssh_dir: ssh_dir.as_ptr(),
         };

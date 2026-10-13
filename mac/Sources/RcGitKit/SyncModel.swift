@@ -3,18 +3,21 @@ import Foundation
 /// The seam between the sync workflow and the FFI, so tests never open a socket. The
 /// network steps take the operation's `CancelToken`; it is the only way to reach a
 /// thread already blocked inside a transfer.
+///
+/// `host` on a network step is the host `credentials` were issued for; the guard offers them
+/// to no other.
 public protocol SyncPerforming: Sendable {
     func preflight(repoPath: String) throws -> RemoteStatus
     /// The repository's mainline branch, or `nil` when nothing names one. Local and cheap.
     func defaultBranch(repoPath: String) throws -> String?
     func fetch(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> FetchOutcome
     func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome
     func checkout(repoPath: String, branch: String) throws(SyncError) -> CheckoutOutcome
     func push(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> PushOutcome
 }
@@ -32,12 +35,12 @@ public struct GuardSyncPerformer: SyncPerforming {
     }
 
     public func fetch(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> FetchOutcome {
         try RepositoryGuard.fetch(
-            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
-            cancel: cancel)
+            repoPath: repoPath, credentials: credentials, host: host,
+            acceptedHostKey: acceptedHostKey, cancel: cancel)
     }
 
     public func pullFastForward(repoPath: String) throws(SyncError) -> PullOutcome {
@@ -49,12 +52,12 @@ public struct GuardSyncPerformer: SyncPerforming {
     }
 
     public func push(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> PushOutcome {
         try RepositoryGuard.push(
-            repoPath: repoPath, credentials: credentials, acceptedHostKey: acceptedHostKey,
-            cancel: cancel)
+            repoPath: repoPath, credentials: credentials, host: host,
+            acceptedHostKey: acceptedHostKey, cancel: cancel)
     }
 }
 
@@ -563,11 +566,12 @@ public final class SyncModel {
     }
 
     private func runFetch() async throws -> FetchOutcome {
-        try await networkStep(.fetch) {
-            (performer, repoPath, credentials, hostKey, cancel) throws(SyncError) -> FetchOutcome in
+        let repoPath = repoPath
+        return try await networkStep(.fetch) {
+            (performer, host, credentials, hostKey, cancel) throws(SyncError) -> FetchOutcome in
             try performer.fetch(
-                repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
-                cancel: cancel)
+                repoPath: repoPath, host: host, credentials: credentials,
+                acceptedHostKey: hostKey, cancel: cancel)
         }
     }
 
@@ -592,11 +596,12 @@ public final class SyncModel {
     }
 
     private func runPush() async throws -> PushOutcome {
-        try await networkStep(.push) {
-            (performer, repoPath, credentials, hostKey, cancel) throws(SyncError) -> PushOutcome in
+        let repoPath = repoPath
+        return try await networkStep(.push) {
+            (performer, host, credentials, hostKey, cancel) throws(SyncError) -> PushOutcome in
             try performer.push(
-                repoPath: repoPath, credentials: credentials, acceptedHostKey: hostKey,
-                cancel: cancel)
+                repoPath: repoPath, host: host, credentials: credentials,
+                acceptedHostKey: hostKey, cancel: cancel)
         }
     }
 
@@ -604,17 +609,18 @@ public final class SyncModel {
     /// first, then prompt-and-retry on what a secret can fix (`authRequired` over HTTPS,
     /// `passphraseRequired` over ssh), storing only what worked. An
     /// unknown ssh host key gets one trust prompt, separate from the credential
-    /// attempts; the accepted fingerprint persists in `hostKeys`.
+    /// attempts; the accepted fingerprint persists in `hostKeys`. An upstream that names no
+    /// host goes to `hostlessStep` instead, before anything keyed on a host is read.
     private func networkStep<Outcome: Sendable>(
         _ step: SyncStep,
-        _ operation:
-            @escaping @Sendable (SyncPerforming, String, Credentials?, String?, CancelToken)
-            throws(SyncError) -> Outcome
+        _ operation: @escaping NetworkOperation<Outcome>
     ) async throws -> Outcome {
         enter(step)
-        let host = remoteStatus?.host ?? ""
-        let kind: CredentialKind =
-            (remoteStatus?.usesSsh ?? false) ? .sshPassphrase : .httpsToken
+        guard let status = remoteStatus, !status.host.isEmpty else {
+            return try await hostlessStep(step, operation)
+        }
+        let host = status.host
+        let kind: CredentialKind = status.usesSsh ? .sshPassphrase : .httpsToken
         var credentials = (try? store.credentials(host: host, kind: kind)) ?? nil
         var acceptedHostKey = hostKeys.fingerprint(host: host)
         var fromPrompt = false
@@ -625,12 +631,11 @@ public final class SyncModel {
             // at a prompt must not start another attempt when they answer it.
             try bailIfCancelled(step)
             let performer = performer
-            let repoPath = repoPath
             let attemptCredentials = credentials
             let attemptHostKey = acceptedHostKey
             let cancel = cancel
             let result = await detached { () throws(SyncError) -> Outcome in
-                try operation(performer, repoPath, attemptCredentials, attemptHostKey, cancel)
+                try operation(performer, host, attemptCredentials, attemptHostKey, cancel)
             }
             switch result {
             case let .success(outcome):
@@ -685,6 +690,37 @@ public final class SyncModel {
                 credentials = prompted
                 fromPrompt = true
             }
+        }
+    }
+
+    /// One network attempt: the performer, the host the credentials belong to, the
+    /// credentials, the approved host key, and the workflow's cancel flag.
+    private typealias NetworkOperation<Outcome> =
+        @Sendable (SyncPerforming, String, Credentials?, String?, CancelToken)
+        throws(SyncError) -> Outcome
+
+    /// A step whose upstream names no host: a local upstream, whose fetch the guard skips,
+    /// or a URL the guard refuses by its scheme. One attempt with no credentials and no
+    /// approved host key, and no prompt: a secret or approval kept under an empty host would
+    /// be handed to every other upstream that names none, in any repository.
+    private func hostlessStep<Outcome: Sendable>(
+        _ step: SyncStep, _ operation: @escaping NetworkOperation<Outcome>
+    ) async throws -> Outcome {
+        try bailIfCancelled(step)
+        let performer = performer
+        let cancel = cancel
+        let result = await detached { () throws(SyncError) -> Outcome in
+            try operation(performer, "", nil, nil, cancel)
+        }
+        switch result {
+        case let .success(outcome):
+            return outcome
+        case .failure(.authRequired), .failure(.passphraseRequired), .failure(.hostKeyUnknown):
+            throw StepFailure(
+                step: step, message: "cannot tell which host the upstream is on",
+                diverged: false)
+        case let .failure(error):
+            throw StepFailure(step: step, message: error.message, diverged: isDiverged(error))
         }
     }
 

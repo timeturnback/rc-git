@@ -133,6 +133,10 @@ impl Cancel {
 pub struct RemoteAuth<'a> {
     /// HTTPS username/token, or SSH key passphrase in `token`.
     pub creds: Option<&'a Credentials>,
+    /// The host (`host` or `host:port`) `creds` were issued for. An HTTPS server's 401 gets
+    /// them only when it comes from this host; when `None`, only when it comes from the host
+    /// the remote URL names.
+    pub host: Option<&'a str>,
     /// A host-key fingerprint (`SHA256:...`) the user chose to trust.
     pub accepted_hostkey: Option<&'a str>,
     /// Where `config`, `known_hosts`, and default keys live; `~/.ssh` when `None`.
@@ -616,30 +620,46 @@ fn redacted(url: &gix::Url) -> String {
 
 /// The credential callback handed to gix: answers with the caller's credentials, or
 /// fails so the operation reports [`ActionError::AuthRequired`]. gix invokes it only
-/// after the server answered 401, so anonymous access to public remotes works.
+/// after the server answered 401, so anonymous access to public remotes works. The
+/// credentials go only to a 401 whose context names `host` (`host` or `host:port`, as
+/// [`host_of`] spells it): a request to any other host, or one naming no host, gets none.
 #[expect(
     clippy::result_large_err,
     reason = "the closure's signature is fixed by gix::remote::Connection::with_credentials"
 )]
 fn authenticate_with(
     creds: Option<Credentials>,
+    host: String,
 ) -> impl FnMut(gix::credentials::helper::Action) -> gix::credentials::protocol::Result {
     move |action| match action {
         gix::credentials::helper::Action::Get(context) => match creds.clone() {
-            Some(creds) => Ok(Some(gix::credentials::protocol::Outcome {
-                identity: gix::sec::identity::Account {
-                    username: creds.username,
-                    password: creds.token,
-                    oauth_refresh_token: None,
-                },
-                next: context.into(),
-            })),
-            None => Err(gix::credentials::protocol::Error::IdentityMissing { context }),
+            Some(creds) if context_host(&context).as_deref() == Some(host.as_str()) => {
+                Ok(Some(gix::credentials::protocol::Outcome {
+                    identity: gix::sec::identity::Account {
+                        username: creds.username,
+                        password: creds.token,
+                        oauth_refresh_token: None,
+                    },
+                    next: context.into(),
+                }))
+            }
+            Some(_) | None => Err(gix::credentials::protocol::Error::IdentityMissing { context }),
         },
         gix::credentials::helper::Action::Store(_) | gix::credentials::helper::Action::Erase(_) => {
             Ok(None)
         }
     }
+}
+
+/// The host a credential request is for, spelled as [`host_of`] spells it: parsed from the
+/// request's URL, else its `host` field. `None` when it names neither.
+fn context_host(context: &gix::credentials::protocol::Context) -> Option<String> {
+    if let Some(url) = &context.url {
+        return gix::url::parse(url.as_slice())
+            .ok()
+            .map(|url| host_of(&url));
+    }
+    context.host.clone()
 }
 
 /// Maps a network failure to [`ActionError::AuthRequired`] when the server demanded
@@ -869,6 +889,54 @@ mod tests {
             assert!(!printed.contains("secret-value"), "{printed}");
             assert!(printed.contains("<redacted>"), "{printed}");
         }
+    }
+
+    /// What the credential callback answers to a 401 for `url`, holding credentials
+    /// issued for `host`.
+    fn answer(host: &str, url: &str) -> Option<String> {
+        let creds = Credentials {
+            username: "u".into(),
+            token: "t".into(),
+        };
+        let mut callback = authenticate_with(Some(creds), host.to_owned());
+        let action = gix::credentials::helper::Action::get_for_url(url);
+        callback(action)
+            .ok()
+            .flatten()
+            .map(|outcome| outcome.identity.password)
+    }
+
+    #[test]
+    fn credentials_answer_only_a_401_from_their_own_host() {
+        assert_eq!(
+            answer("example.com", "https://example.com/repo.git"),
+            Some("t".to_owned())
+        );
+        assert_eq!(
+            answer("example.com:8443", "https://example.com:8443/repo.git"),
+            Some("t".to_owned())
+        );
+        for (host, url) in [
+            ("example.com", "https://other.example/repo.git"),
+            ("example.com", "https://example.com:8443/repo.git"),
+            ("example.com:8443", "https://example.com/repo.git"),
+            ("", "https://example.com/repo.git"),
+            ("example.com", "https://example.com.evil.test/repo.git"),
+        ] {
+            assert_eq!(answer(host, url), None, "{host} answered {url}");
+        }
+    }
+
+    #[test]
+    fn a_401_naming_no_host_gets_no_credentials() {
+        let creds = Credentials {
+            username: "u".into(),
+            token: "t".into(),
+        };
+        let mut callback = authenticate_with(Some(creds), String::new());
+        let context = gix::credentials::protocol::Context::default();
+        let answer = callback(gix::credentials::helper::Action::Get(context));
+        assert!(answer.is_err(), "{answer:?}");
     }
 
     fn map(error: Box<dyn std::error::Error + Send + Sync + 'static>) -> ActionError {

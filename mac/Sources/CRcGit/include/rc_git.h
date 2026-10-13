@@ -748,13 +748,16 @@ typedef struct RcGitRemoteStatus {
 
 /// Authentication inputs for the remote functions. Every field may be NULL: `username`
 /// and `token` for anonymous HTTPS (over ssh, `token` is the key passphrase and
-/// `username` is ignored), `accepted_hostkey` when no fingerprint has been approved,
-/// and `ssh_dir` to use `~/.ssh`.
+/// `username` is ignored), `host` to offer them to the host the remote URL names,
+/// `accepted_hostkey` when no fingerprint has been approved, and `ssh_dir` to use `~/.ssh`.
 typedef struct RcGitRemoteAuth {
   /// HTTPS username, or NULL (empty when `token` is set).
   const char *username;
   /// HTTPS token, or the ssh key passphrase, or NULL.
   const char *token;
+  /// The host (`host` or `host:port`) the credentials were issued for: an HTTPS 401 from
+  /// any other host gets none. NULL for the host the remote URL names.
+  const char *host;
   /// An approved `SHA256:...` host-key fingerprint, or NULL.
   const char *accepted_hostkey;
   /// Directory holding ssh `config`/`known_hosts`/keys, or NULL for `~/.ssh`.

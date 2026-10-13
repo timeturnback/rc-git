@@ -21,6 +21,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private let lock = NSLock()
     private var script: Script
     private(set) var fetchCredentials: [Credentials?] = []
+    private(set) var fetchHosts: [String] = []
     private(set) var fetchHostKeys: [String?] = []
     private(set) var pushCredentials: [Credentials?] = []
     private(set) var checkoutBranches: [String] = []
@@ -39,11 +40,11 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         self.script = script
     }
 
-    static func upstream(host: String = "example.com", ahead: Int = 0, behind: Int = 0)
-        -> RemoteStatus
-    {
+    static func upstream(
+        host: String = "example.com", remote: String = "origin", ahead: Int = 0, behind: Int = 0
+    ) -> RemoteStatus {
         RemoteStatus(
-            remote: "origin",
+            remote: remote,
             url: "https://\(host)/repo.git",
             host: host,
             branch: "main",
@@ -96,13 +97,14 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     }
 
     func fetch(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> FetchOutcome {
         duringStep?(cancel)
         lock.lock()
         defer { lock.unlock() }
         fetchCredentials.append(credentials)
+        fetchHosts.append(host)
         fetchHostKeys.append(acceptedHostKey)
         guard !script.fetches.isEmpty else {
             throw SyncError.failure(message: "unexpected fetch")
@@ -122,7 +124,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     }
 
     func push(
-        repoPath: String, credentials: Credentials?, acceptedHostKey: String?,
+        repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
     ) throws(SyncError) -> PushOutcome {
         duringStep?(cancel)
@@ -140,9 +142,17 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
 private final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String: Credentials] = [:]
+    private var queries: [String] = []
 
     init(_ items: [String: Credentials] = [:]) {
         self.items = items
+    }
+
+    /// Every host `credentials(host:kind:)` was asked for, in order.
+    var queriedHosts: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return queries
     }
 
     private func key(_ host: String, _ kind: CredentialKind) -> String {
@@ -152,6 +162,7 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
     func credentials(host: String, kind: CredentialKind) throws -> Credentials? {
         lock.lock()
         defer { lock.unlock() }
+        queries.append(host)
         return items[key(host, kind)]
     }
 
@@ -280,6 +291,79 @@ private let alreadyOnMain = CheckoutOutcome(
         #expect(performer.fetchCredentials[0] == nil, "the first attempt is anonymous")
         #expect(performer.fetchCredentials.last??.username == "user")
         #expect(store.stored["git.example.com"]?.token == "sekret")
+    }
+
+    @Test func fetchWithNoPriorRefreshKeysCredentialsOnTheRealHost() async {
+        let saved = Credentials(username: "user", token: "saved")
+        let store = InMemoryCredentialStore(["git.example.com": saved])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(host: "git.example.com")],
+                fetches: [.success(cleanFetch)]
+            ), store: store)
+        await model.fetch()
+
+        #expect(
+            model.state == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0)))
+        #expect(store.queriedHosts == ["git.example.com"])
+        #expect(performer.fetchHosts == ["git.example.com"])
+        #expect(performer.fetchCredentials.first??.token == "saved")
+    }
+
+    @Test func anEmptyHostNeverReadsStoresOrPromptsForSecrets() async throws {
+        let poisoned = Credentials(username: "user", token: "kept-under-empty-host")
+        let store = InMemoryCredentialStore(["": poisoned])
+        let hostKeys = InMemoryHostKeyStore(["": "SHA256:poisoned"])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(host: "")],
+                fetches: [
+                    .failure(.authRequired(message: "401")),
+                    .success(cleanFetch),
+                ]
+            ), store: store, hostKeys: hostKeys)
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(Credentials(username: "user", token: "typed"))
+        }
+        model.onHostKeyNeeded = { _, _, resume in
+            prompts += 1
+            resume(true)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(
+            model.state
+                == .failed(step: .fetch, message: "cannot tell which host the upstream is on"))
+        #expect(prompts == 0)
+        #expect(store.queriedHosts.isEmpty)
+        #expect(store.stored.count == 1, "nothing new is stored")
+        #expect(performer.fetchCredentials.count == 1, "one attempt, never retried")
+        let sent = try #require(performer.fetchCredentials.first)
+        #expect(sent == nil, "the poisoned item is never sent")
+        #expect(performer.fetchHostKeys == [nil])
+        #expect(hostKeys.stored == ["": "SHA256:poisoned"])
+    }
+
+    @Test func aLocalUpstreamStillPullsWithoutTouchingTheStore() async throws {
+        let store = InMemoryCredentialStore()
+        let (model, performer, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream(host: "", remote: ".")],
+                fetches: [.success(FetchOutcome(updatedRefs: 0))],
+                pulls: [.success(cleanPull)]
+            ), store: store)
+        await model.pull()
+
+        #expect(
+            model.state == .done(SyncSummary(fetchedRefs: 0, pulledFiles: 2, pushedCommits: 0)))
+        #expect(performer.fetchCredentials.count == 1)
+        let sent = try #require(performer.fetchCredentials.first)
+        #expect(sent == nil)
+        #expect(performer.pullCalls == 1)
+        #expect(store.queriedHosts.isEmpty)
     }
 
     @Test func rejectedCredentialsAreNeverStoredAndPromptsAreCapped() async {
@@ -986,7 +1070,8 @@ private let alreadyOnMain = CheckoutOutcome(
         await model.backToDefaultBranch()
         await model.fetch()
 
-        #expect(model.state == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0)))
+        #expect(
+            model.state == .done(SyncSummary(fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0)))
         #expect(model.takeSwitchedBranch() == nil, "the fetch switched nothing")
     }
 
