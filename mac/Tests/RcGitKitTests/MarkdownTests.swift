@@ -415,6 +415,34 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         }
     }
 
+    @Test func nestingPastTheDepthLimitStaysLiteral() {
+        let depth = 20
+        let links = runs(
+            String(repeating: "[", count: depth) + "x" + String(repeating: "](u)", count: depth))
+        let literal = depth - MarkdownInlineParser.maximumDepth
+        #expect(links.first?.text.hasPrefix(String(repeating: "[", count: literal) + "x") == true)
+        #expect(!links.isEmpty && links.allSatisfy { $0.link?.destination == "u" })
+
+        let markers = (0..<depth).map { $0.isMultiple(of: 2) ? "*" : "_" }
+        let source =
+            markers.map { "\($0)a " }.joined() + "x" + markers.reversed().map { " a\($0)" }.joined()
+        let emphasized = runs(source)
+        let innermost = markers.suffix(literal).map { "\($0)a " }.joined() + "x"
+        #expect(emphasized.contains { $0.text.hasPrefix("a " + innermost) })
+        #expect(!emphasized.isEmpty && emphasized.allSatisfy { $0.style == .emphasis })
+    }
+
+    /// Each unit leaves an opener unmatched; a closer search per opener that rescans to the end
+    /// of the block took 15-30 s here before the closers were paired once per block.
+    @Test func unmatchedOpenersParseInLinearTime() {
+        let clock = ContinuousClock()
+        for unit in ["x [y ", "a *b ", "[a](b ", "x<y ", "x<y", "*Note: x\n", "x [y](z(w "] {
+            let text = String(repeating: unit, count: 256 * 1024 / unit.utf8.count)
+            let elapsed = clock.measure { _ = MarkdownDocument.parse(text) }
+            #expect(elapsed < .seconds(2), "\(unit.debugDescription) took \(elapsed)")
+        }
+    }
+
     @Test func anInnerOpenerWithNoCloserStaysLiteral() {
         let parsed = runs("*a **b c*")
         #expect(plain(parsed) == "a **b c")

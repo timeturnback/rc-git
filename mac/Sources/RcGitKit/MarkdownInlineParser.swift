@@ -37,20 +37,55 @@ enum MarkdownInlineParser {
 struct InlineScanner {
     let bytes: [UInt8]
     let references: [String: MarkdownLink]
+    /// The start of every maximal backtick run, ascending, keyed by the run's width. A code span
+    /// closes on the next run of its own width, so each lookup is one binary search.
+    let backtickRuns: [Int: [Int]]
     /// Where each code span that opens at a backtick ends (one past its closing run). Code spans
     /// bind tighter than emphasis and brackets, so the closer searches jump over them.
     let codeSpanEnds: [Int: Int]
+    /// For each index, the first `]` at or after it that closes past the bracket depth there.
+    let bracketClosers: [Int32]
+    /// For each index, the first `)` at or after it that closes past the paren depth there.
+    let parenClosers: [Int32]
     var output: [MarkdownRun] = []
     private var buffer: [UInt8] = []
+    /// Per marker and range end, a start at or past which no emphasis run can close, learned
+    /// from a search that failed. Keeps a paragraph of unmatched openers linear.
+    private var unclosableFrom: [Int: Int] = [:]
+    /// The last scan for the byte ending an autolink: where it started and where it stopped.
+    private var autolinkScan = (from: 0, stop: -1)
 
     init(bytes: [UInt8], references: [String: MarkdownLink]) {
         self.bytes = bytes
         self.references = references
-        self.codeSpanEnds = Self.codeSpans(in: bytes)
+        let runs = Self.backtickRuns(in: bytes)
+        let spans = Self.codeSpans(in: bytes, runs: runs)
+        self.backtickRuns = runs
+        self.codeSpanEnds = spans
+        self.bracketClosers = Self.closers(
+            in: bytes, open: Ascii.leftBracket, close: Ascii.rightBracket, skipping: spans)
+        self.parenClosers = Self.closers(
+            in: bytes, open: Ascii.leftParen, close: Ascii.rightParen, skipping: [:])
+    }
+
+    private static func backtickRuns(in bytes: [UInt8]) -> [Int: [Int]] {
+        var runs: [Int: [Int]] = [:]
+        var cursor = 0
+        while cursor < bytes.count {
+            guard bytes[cursor] == Ascii.backtick else {
+                cursor += 1
+                continue
+            }
+            var stop = cursor
+            while stop < bytes.count, bytes[stop] == Ascii.backtick { stop += 1 }
+            runs[stop - cursor, default: []].append(cursor)
+            cursor = stop
+        }
+        return runs
     }
 
     /// Pairs backtick runs by exact width, left to right, skipping escaped bytes outside spans.
-    private static func codeSpans(in bytes: [UInt8]) -> [Int: Int] {
+    private static func codeSpans(in bytes: [UInt8], runs: [Int: [Int]]) -> [Int: Int] {
         var spans: [Int: Int] = [:]
         var cursor = 0
         while cursor < bytes.count {
@@ -60,13 +95,13 @@ struct InlineScanner {
             case Ascii.backtick:
                 var open = cursor
                 while open < bytes.count, bytes[open] == Ascii.backtick { open += 1 }
-                guard let close = closingBackticks(in: bytes, width: open - cursor, from: open)
-                else {
+                let width = open - cursor
+                guard let close = firstRun(of: width, atOrAfter: open, in: runs) else {
                     cursor = open
                     continue
                 }
-                spans[cursor] = close
-                cursor = close
+                spans[cursor] = close + width
+                cursor = close + width
             default:
                 cursor += 1
             }
@@ -74,20 +109,69 @@ struct InlineScanner {
         return spans
     }
 
-    /// One past the first backtick run of exactly `width` at or after `from`.
-    private static func closingBackticks(in bytes: [UInt8], width: Int, from: Int) -> Int? {
-        var search = from
-        while search < bytes.count {
-            guard bytes[search] == Ascii.backtick else {
-                search += 1
+    /// The start of the first backtick run of exactly `width` at or after `from`.
+    private static func firstRun(of width: Int, atOrAfter from: Int, in runs: [Int: [Int]])
+        -> Int?
+    {
+        guard let starts = runs[width] else { return nil }
+        var low = 0
+        var high = starts.count
+        while low < high {
+            let middle = (low + high) / 2
+            if starts[middle] < from { low = middle + 1 } else { high = middle }
+        }
+        return low < starts.count ? starts[low] : nil
+    }
+
+    /// For every index `i`, the first `close` at or after `i` that takes the depth below the
+    /// depth at `i`, or -1. Escaped bytes and the spans in `skipping` count as neither. Pairing
+    /// once per block is what keeps a run of unmatched openers from rescanning to the end.
+    private static func closers(
+        in bytes: [UInt8], open: UInt8, close: UInt8, skipping spans: [Int: Int]
+    ) -> [Int32] {
+        guard bytes.contains(open) else { return [] }
+        let depths = depths(in: bytes, open: open, close: close, skipping: spans)
+        let lowest = depths.min() ?? 0
+        let highest = depths.max() ?? 0
+        var firstAt = [Int32](repeating: -1, count: Int(highest - lowest) + 1)
+        var result = [Int32](repeating: -1, count: depths.count)
+        for index in stride(from: depths.count - 1, through: 0, by: -1) {
+            let level = Int(depths[index] - lowest)
+            if level > 0, firstAt[level - 1] > 0 { result[index] = firstAt[level - 1] - 1 }
+            firstAt[level] = Int32(index)
+        }
+        return result
+    }
+
+    /// The `open` minus `close` balance before each index, and once more after the last byte.
+    private static func depths(
+        in bytes: [UInt8], open: UInt8, close: UInt8, skipping spans: [Int: Int]
+    ) -> [Int32] {
+        var depths = [Int32](repeating: 0, count: bytes.count + 1)
+        var level: Int32 = 0
+        var cursor = 0
+        while cursor < bytes.count {
+            let skipTo =
+                bytes[cursor] == Ascii.backslash
+                ? min(cursor + 2, bytes.count) : spans[cursor] ?? cursor
+            if skipTo > cursor {
+                for index in cursor..<skipTo { depths[index] = level }
+                cursor = skipTo
                 continue
             }
-            var close = search
-            while close < bytes.count, bytes[close] == Ascii.backtick { close += 1 }
-            if close - search == width { return close }
-            search = close
+            depths[cursor] = level
+            if bytes[cursor] == open { level += 1 } else if bytes[cursor] == close { level -= 1 }
+            cursor += 1
         }
-        return nil
+        depths[bytes.count] = level
+        return depths
+    }
+
+    /// The closer `table` records for `index`, when it falls before `end`.
+    func closer(in table: [Int32], from index: Int, end: Int) -> Int? {
+        guard index < table.count else { return nil }
+        let found = Int(table[index])
+        return found >= 0 && found < end ? found : nil
     }
 
     mutating func parse(
@@ -166,19 +250,11 @@ struct InlineScanner {
         var open = cursor
         while open < end, bytes[open] == Ascii.backtick { open += 1 }
         let width = open - cursor
-        var search = open
-        while search < end {
-            guard bytes[search] == Ascii.backtick else {
-                search += 1
-                continue
-            }
-            var close = search
-            while close < end, bytes[close] == Ascii.backtick { close += 1 }
-            if close - search == width {
-                emitCode(open..<search, style: style, link: link)
-                return close
-            }
-            search = close
+        if let close = Self.firstRun(of: width, atOrAfter: open, in: backtickRuns),
+            close + width <= end
+        {
+            emitCode(open..<close, style: style, link: link)
+            return close + width
         }
         buffer.append(contentsOf: bytes[cursor..<open])
         return open
@@ -240,8 +316,14 @@ struct InlineScanner {
     /// same-marker run that opens on the way is pushed, and a later run closes those inner
     /// openers first, innermost out, so `*a **b** c*` keeps its strong run inside the
     /// emphasis. An inner opener the closing run cannot fit stays literal.
-    private func closingRun(marker: UInt8, width: Int, from: Int, end: Int) -> Int? {
+    ///
+    /// A failed search records the start of the last run that could close: a later search
+    /// starting there or past it sees no closer at all, so it fails without scanning.
+    private mutating func closingRun(marker: UInt8, width: Int, from: Int, end: Int) -> Int? {
+        let key = end << 8 | Int(marker)
+        if let limit = unclosableFrom[key], from >= limit { return nil }
         var openers: [Int] = []
+        var lastCloser = from
         var cursor = from
         while cursor < end {
             if bytes[cursor] == Ascii.backslash {
@@ -259,6 +341,7 @@ struct InlineScanner {
             var stop = cursor
             while stop < end, bytes[stop] == marker { stop += 1 }
             if canClose(marker: marker, run: cursor..<stop, from: from, end: end) {
+                lastCloser = cursor
                 var remaining = stop - cursor
                 while let inner = openers.last, inner <= remaining {
                     remaining -= inner
@@ -270,6 +353,7 @@ struct InlineScanner {
             }
             cursor = stop
         }
+        unclosableFrom[key] = min(unclosableFrom[key] ?? lastCloser, lastCloser)
         return nil
     }
 
@@ -366,21 +450,7 @@ extension InlineScanner {
         guard let target = destinationText(from: position, end: end) else { return nil }
         var tail = target.end
         while tail < end, Ascii.isSpace(bytes[tail]) || bytes[tail] == Ascii.newline { tail += 1 }
-        var titleEnd = tail
-        var depth = 1
-        while titleEnd < end {
-            if bytes[titleEnd] == Ascii.backslash {
-                titleEnd += 2
-                continue
-            }
-            if bytes[titleEnd] == Ascii.leftParen { depth += 1 }
-            if bytes[titleEnd] == Ascii.rightParen {
-                depth -= 1
-                if depth == 0 { break }
-            }
-            titleEnd += 1
-        }
-        guard titleEnd < end, depth == 0 else { return nil }
+        guard let titleEnd = closer(in: parenClosers, from: tail, end: end) else { return nil }
         let raw = String(decoding: bytes[tail..<titleEnd], as: UTF8.self)
             .trimmingCharacters(in: .whitespaces)
         let title = MarkdownInlineParser.unquoted(raw)
@@ -429,25 +499,7 @@ extension InlineScanner {
     }
 
     private func matchingBracket(from cursor: Int, end: Int) -> Int? {
-        var depth = 0
-        var position = cursor
-        while position < end {
-            switch bytes[position] {
-            case Ascii.backslash:
-                position += 1
-            case Ascii.backtick:
-                if let spanEnd = codeSpanEnds[position], spanEnd <= end { position = spanEnd - 1 }
-            case Ascii.leftBracket:
-                depth += 1
-            case Ascii.rightBracket:
-                depth -= 1
-                if depth == 0 { return position }
-            default:
-                break
-            }
-            position += 1
-        }
-        return nil
+        closer(in: bracketClosers, from: cursor + 1, end: end)
     }
 }
 
@@ -459,12 +511,7 @@ extension InlineScanner {
     fileprivate mutating func angle(
         at cursor: Int, end: Int, style: MarkdownStyle, link: MarkdownLink?
     ) -> Int? {
-        var stop = cursor + 1
-        while stop < end, bytes[stop] != Ascii.greaterThan, bytes[stop] != Ascii.newline,
-            bytes[stop] != Ascii.space
-        {
-            stop += 1
-        }
+        let stop = autolinkStop(from: cursor + 1)
         guard stop < end, bytes[stop] == Ascii.greaterThan else {
             return htmlTag(at: cursor, end: end)
         }
@@ -478,6 +525,20 @@ extension InlineScanner {
             MarkdownRun(
                 text: content, style: style, link: MarkdownLink(destination: destination)))
         return stop + 1
+    }
+
+    /// The first `>`, newline or space at or after `from`. Every `<` before that byte stops
+    /// there too, so the last scan answers them all.
+    private mutating func autolinkStop(from: Int) -> Int {
+        if from >= autolinkScan.from, from <= autolinkScan.stop { return autolinkScan.stop }
+        var stop = from
+        while stop < bytes.count, bytes[stop] != Ascii.greaterThan, bytes[stop] != Ascii.newline,
+            bytes[stop] != Ascii.space
+        {
+            stop += 1
+        }
+        autolinkScan = (from, stop)
+        return stop
     }
 
     /// A CommonMark open or closing tag: the name starts with a letter, an open tag carries only
