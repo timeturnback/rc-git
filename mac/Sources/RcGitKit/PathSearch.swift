@@ -44,38 +44,64 @@ public struct PathIndex: Sendable {
     }
 
     /// Flattens the tree below `root`, one tree object per directory, depth-first, stopping at
-    /// `limit` files. This is the one operation that walks a whole tree, so it must run in the
-    /// background and checks for task cancellation between directory reads.
+    /// `limit` files. Each directory lists its subdirectories first, each in full and in the
+    /// order `children` returns them, then its own files. This is the one operation that walks a
+    /// whole tree, so it must run in the background and checks for task cancellation between
+    /// directory reads.
     public static func build(
         root: Oid, limit: Int = maxEntries, children: (Oid) throws -> [TreeEntry]
     ) throws -> PathIndex {
         var entries: [PathIndexEntry] = []
-        var pending: [(tree: Oid, prefix: String, hidden: Bool, exact: Bool)] = [
-            (root, "", false, true)
-        ]
-        while let (tree, prefix, parentHidden, parentExact) = pending.popLast() {
-            try Task.checkCancellation()
-            for entry in try children(tree) {
-                let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
-                let hidden = parentHidden || HiddenFiles.isHidden(name: entry.name)
-                let exact = parentExact && entry.hasExactName
-                switch entry.kind {
-                case .tree:
-                    pending.append((entry.oid, path, hidden, exact))
-                case .blob, .executableBlob, .symlink:
-                    entries.append(
-                        PathIndexEntry(
-                            path: path, oid: entry.oid, kind: entry.kind, hidden: hidden,
-                            hasExactPath: exact))
+        var pending: [PendingWalk] = [.tree(root, prefix: "", hidden: false, exact: true)]
+        while let next = pending.popLast() {
+            switch next {
+            case .files(let files):
+                for file in files {
+                    entries.append(file)
                     if entries.count >= limit {
                         return PathIndex(root: root, entries: entries, truncated: true)
                     }
-                case .submodule:
-                    continue
                 }
+            case .tree(let tree, let prefix, let hidden, let exact):
+                try Task.checkCancellation()
+                let listed = try children(tree)
+                pending += readDirectory(listed, prefix: prefix, hidden: hidden, exact: exact)
             }
         }
         return PathIndex(root: root, entries: entries, truncated: false)
+    }
+
+    /// One step of `build`'s walk: a directory still to read, or files ready to emit.
+    private enum PendingWalk {
+        case tree(Oid, prefix: String, hidden: Bool, exact: Bool)
+        case files([PathIndexEntry])
+    }
+
+    /// The stack pushes for one directory: its files as one chunk, then its subdirectories in
+    /// reverse, so the first subdirectory pops next and the files pop after every subdirectory.
+    private static func readDirectory(
+        _ children: [TreeEntry], prefix: String, hidden parentHidden: Bool,
+        exact parentExact: Bool
+    ) -> [PendingWalk] {
+        var files: [PathIndexEntry] = []
+        var trees: [PendingWalk] = []
+        for entry in children {
+            let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
+            let hidden = parentHidden || HiddenFiles.isHidden(name: entry.name)
+            let exact = parentExact && entry.hasExactName
+            switch entry.kind {
+            case .tree:
+                trees.append(.tree(entry.oid, prefix: path, hidden: hidden, exact: exact))
+            case .blob, .executableBlob, .symlink:
+                files.append(
+                    PathIndexEntry(
+                        path: path, oid: entry.oid, kind: entry.kind, hidden: hidden,
+                        hasExactPath: exact))
+            case .submodule:
+                continue
+            }
+        }
+        return [.files(files)] + trees.reversed()
     }
 
     /// Every file a working-tree walk found, compared against the tree `root`. Disk files

@@ -58,10 +58,30 @@ import Testing
     @Test func buildFlattensEveryFileAndSkipsSubmodules() throws {
         let fixed = trees()
         let index = try PathIndex.build(root: root) { fixed[$0]! }
-        let paths = index.entries.map(\.path).sorted()
-        #expect(paths == ["README.md", "src/main.rs", "src/nested/link", "src/run.sh"])
+        let paths = index.entries.map(\.path)
+        #expect(
+            paths == ["src/nested/link", "src/main.rs", "src/run.sh", "README.md"],
+            "folders first, each in full and in order, then a folder's own files")
         #expect(!index.truncated)
         #expect(index.entries.first { $0.path == "src/main.rs" }?.name == "main.rs")
+    }
+
+    @Test func buildListsSiblingFoldersInOrderBeforeFiles() throws {
+        let first = oid(0x20)
+        let second = oid(0x21)
+        let fixed: [Oid: [TreeEntry]] = [
+            root: [
+                TreeEntry(name: "a", oid: first, kind: .tree),
+                TreeEntry(name: "b", oid: second, kind: .tree),
+                TreeEntry(name: "z.txt", oid: oid(0x22), kind: .blob),
+            ],
+            first: [TreeEntry(name: "x", oid: oid(0x23), kind: .blob)],
+            second: [TreeEntry(name: "y", oid: oid(0x24), kind: .blob)],
+        ]
+        let index = try PathIndex.build(root: root) { fixed[$0]! }
+        #expect(index.search("").map(\.path) == ["a/x", "b/y", "z.txt"])
+        let capped = try PathIndex.build(root: root, limit: 1) { fixed[$0]! }
+        #expect(capped.entries.map(\.path) == ["a/x"], "the cut keeps the first folder")
     }
 
     @Test func inexactNameMarksItsPathAndEveryPathBelowIt() throws {

@@ -46,7 +46,7 @@ import Testing
         async let first = model.searchPaths("")
         async let second = model.searchPaths("")
         let (a, b) = try await (first, second)
-        #expect(a.entries.map(\.path) == ["README.md", "src/main.rs"])
+        #expect(a.entries.map(\.path) == ["src/main.rs", "README.md"])
         #expect(b.entries.map(\.path) == a.entries.map(\.path))
         #expect(repo.lock.withLock { repo.treeEntryCalls } == 2, "one read per directory")
     }
