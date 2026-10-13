@@ -181,10 +181,12 @@ pub enum Class {
 }
 
 /// Every capture name the queries are matched against, paired with the class it colors as.
-/// Dotted capture names fall back to their longest prefix here, per tree-sitter's rules.
+/// tree-sitter-highlight matches a capture to an entry whose dot-parts all appear in the
+/// capture; the entry with the most parts wins, and the earlier entry breaks ties.
 /// A `None` class leaves the node plain, on purpose.
-const CAPTURES: [(&str, Option<Class>); 25] = [
+const CAPTURES: [(&str, Option<Class>); 27] = [
     ("attribute", Some(Class::Attribute)),
+    ("boolean", Some(Class::Constant)),
     ("character", Some(Class::String)),
     ("comment", Some(Class::Comment)),
     ("constant", Some(Class::Constant)),
@@ -194,6 +196,7 @@ const CAPTURES: [(&str, Option<Class>); 25] = [
     ("escape", Some(Class::String)),
     ("function", Some(Class::Function)),
     ("keyword", Some(Class::Keyword)),
+    ("keyword.function", Some(Class::Keyword)),
     ("label", Some(Class::Constant)),
     ("none", None),
     ("number", Some(Class::Number)),
@@ -693,10 +696,6 @@ mod tests {
         Language::Yaml,
     ];
 
-    /// Capture names a pinned query uses that no `CAPTURES` entry resolves yet. Each one is
-    /// a node that loses its color; P10-02 maps `boolean` and empties this list.
-    const KNOWN_UNRESOLVED: [&str; 1] = ["boolean"];
-
     /// tree-sitter-highlight's `configure` rule: a name resolves to a configured name whose
     /// dot-separated parts all appear among its own.
     fn resolves(name: &str) -> bool {
@@ -717,27 +716,30 @@ mod tests {
         }
         let inline = markdown_inline_configuration().expect("markdown_inline loads");
         configs.push(("markdown_inline", inline));
-        let mut unresolved = Vec::new();
         for (language, config) in configs {
             for name in config.names() {
-                if name.starts_with('_') || resolves(name) {
-                    continue;
-                }
-                if !unresolved.contains(name) {
-                    unresolved.push(*name);
-                }
                 assert!(
-                    KNOWN_UNRESOLVED.contains(name),
+                    name.starts_with('_') || resolves(name),
                     "{language} captures @{name}, which no CAPTURES entry resolves"
                 );
             }
         }
-        for name in KNOWN_UNRESOLVED {
-            assert!(
-                unresolved.contains(&name),
-                "@{name} resolves now; drop it from KNOWN_UNRESOLVED"
-            );
-        }
+    }
+
+    #[test]
+    fn swift_func_is_keyword_and_booleans_are_constants() {
+        let swift = b"func f() {}\nlet x = true\n";
+        let spans = highlight(swift, Language::Swift).unwrap();
+        assert_eq!(classes_at(&spans, swift, "func"), vec![Class::Keyword]);
+        assert_eq!(classes_at(&spans, swift, "true"), vec![Class::Constant]);
+
+        let yaml = b"a: true\n";
+        let spans = highlight(yaml, Language::Yaml).unwrap();
+        assert_eq!(classes_at(&spans, yaml, "true"), vec![Class::Constant]);
+
+        let toml = b"a = true\n";
+        let spans = highlight(toml, Language::Toml).unwrap();
+        assert_eq!(classes_at(&spans, toml, "true"), vec![Class::Constant]);
     }
 
     #[test]
