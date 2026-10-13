@@ -266,6 +266,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         }
 
         messageText.isRichText = false
+        messageText.isAutomaticQuoteSubstitutionEnabled = false
+        messageText.isAutomaticDashSubstitutionEnabled = false
+        messageText.isAutomaticTextReplacementEnabled = false
+        messageText.isAutomaticSpellingCorrectionEnabled = false
         messageText.allowsUndo = true
         messageText.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         messageText.isVerticallyResizable = true
