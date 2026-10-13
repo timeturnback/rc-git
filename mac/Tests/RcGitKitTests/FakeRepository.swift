@@ -81,6 +81,9 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// The full working-tree file walk result.
     var worktreeFileList = WorktreeFileList(files: [], scanned: 0, truncated: false)
     var worktreeFilesCalls = 0
+    /// How long each `worktreeFiles` call takes, for racing two searches against one walk.
+    var worktreeFilesDelay: TimeInterval = 0
+    var failNextWorktreeFiles = false
     /// Holds the next `worktreeStatus` call, then clears itself.
     var statusGate: CallGate?
     var listing = RefListing(refs: [])
@@ -340,10 +343,16 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func worktreeFiles(tree: Oid, maxScan: Int) throws -> WorktreeFileList {
-        lock.withLock {
+        let (list, fail, delay) = lock.withLock {
+            () -> (WorktreeFileList, Bool, TimeInterval) in
             worktreeFilesCalls += 1
-            return worktreeFileList
+            let fail = failNextWorktreeFiles
+            failNextWorktreeFiles = false
+            return (worktreeFileList, fail, worktreeFilesDelay)
         }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        if fail { throw RepositoryError("walk working tree: transient failure") }
+        return list
     }
 
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
