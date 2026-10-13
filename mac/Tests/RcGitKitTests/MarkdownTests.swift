@@ -66,6 +66,20 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(plain(blocks[1].runs) == "two")
     }
 
+    @Test func anUnmarkedLineContinuesTheQuotedParagraph() {
+        let blocks = MarkdownDocument.parse("> quote\ncontinued\n").blocks
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.quoteDepth == 1)
+        #expect(blocks.first.map { plain($0.runs) } == "quote continued")
+    }
+
+    @Test func anUnmarkedBlockStartLeavesTheQuote() {
+        let blocks = MarkdownDocument.parse("> quote\n# Title\n").blocks
+        #expect(blocks.count == 2)
+        #expect(blocks.last?.quoteDepth == 0)
+        #expect(blocks.last?.kind == .heading(level: 1))
+    }
+
     @Test func htmlBlocksStayRaw() {
         let blocks = MarkdownDocument.parse("<div class=\"x\">\ntext\n</div>\n").blocks
         #expect(blocks.count == 1)

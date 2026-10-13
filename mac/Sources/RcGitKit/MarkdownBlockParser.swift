@@ -183,6 +183,12 @@ struct MarkdownBlockParser {
             index += 1
             return
         }
+        if depth < quoteDepth, continuesQuotedParagraphLazily(body) {
+            let line = text(body)
+            pending?.lines.append(line)
+            index += 1
+            return
+        }
         if depth != quoteDepth {
             flushPending()
             listIndents.removeAll()
@@ -214,6 +220,13 @@ struct MarkdownBlockParser {
         pending?.lines.append(line)
         index += 1
         return true
+    }
+
+    /// True when a line with fewer `>` markers than the open quote is a lazy continuation of the
+    /// quoted paragraph, as CommonMark and GitHub read a wrapped quote line written without `>`.
+    private func continuesQuotedParagraphLazily(_ body: Range<Int>) -> Bool {
+        guard pending?.kind == .paragraph else { return false }
+        return !startsBlock(body) && setextLevel(body) == nil && !isTableDelimiter(body)
     }
 
     private mutating func dispatch(body: Range<Int>, indent: Int) {
