@@ -489,6 +489,42 @@ import Testing
         #expect(refs.map(\.shortName) == ["main"], "the main branch points at this commit")
     }
 
+    @Test func failedCommitLoadPublishesTheFailedDetail() async throws {
+        await model.attach(repo)
+        repo.lock.withLock { repo.treeDiffs[mainCommit] = nil }
+        var seen: [CommitDetailState] = []
+        var reported: String?
+        model.onDiffChanged = { seen.append(self.model.commitDetail) }
+        model.onError = { reported = $0 }
+        let commit = commitSummary(mainCommit, parents: [parentCommit])
+        await model.loadCommitChanges(commit)
+        guard case let .failed(summary, message) = model.commitDetail else {
+            Issue.record("expected a failed detail, got \(model.commitDetail)")
+            return
+        }
+        #expect(summary == commit)
+        #expect(message.contains("missing"))
+        let last = try #require(seen.last)
+        #expect(last == model.commitDetail, "the last render sees the failure, not .loading")
+        #expect(reported == message)
+    }
+
+    @Test func onlyALoadedCommitWithNoChangesSaysNoFilesChanged() {
+        let commit = commitSummary(mainCommit, parents: [parentCommit])
+        let detail = CommitDetail(
+            summary: commit, body: "", committerName: "Test Committer",
+            committerEmail: "committer@example.com", committerTime: 1_704_326_400,
+            committerOffset: 0, tree: mainTree)
+        let loading = CommitDetailState.loading(commit)
+        #expect(loading.emptyDiffPlaceholder(changeCount: 0) == "Loading…")
+        let failed = CommitDetailState.failed(commit, "boom")
+        #expect(failed.emptyDiffPlaceholder(changeCount: 0) == "")
+        #expect(CommitDetailState.empty.emptyDiffPlaceholder(changeCount: 0) == "")
+        let loaded = CommitDetailState.loaded(detail, refs: [])
+        #expect(loaded.emptyDiffPlaceholder(changeCount: 0) == "No files changed")
+        #expect(loaded.emptyDiffPlaceholder(changeCount: 2) == "Select a file")
+    }
+
     @Test func jumpingToAParentShowsItsDetail() async {
         await model.attach(repo)
         repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }

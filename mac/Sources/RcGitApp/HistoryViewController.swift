@@ -763,8 +763,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         requestMoreIfNearEnd()
     }
 
-    /// Renders the commit detail: the changed-file list and the picked file's diff.
-    func renderDetail(changes: [TreeChange], state: FileDiffState) {
+    /// Renders the commit detail: the changed-file list and the picked file's diff. `detail`
+    /// words the placeholder while no file diff is shown.
+    func renderDetail(changes: [TreeChange], state: FileDiffState, detail: CommitDetailState) {
         isReloading = true
         if changes != self.changes {
             self.changes = changes
@@ -775,7 +776,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             shownChange = nil
             changesOutline.deselectAll(nil)
             showDiffPath(nil)
-            showDiffPlaceholder(changes.isEmpty ? "No files changed" : "Select a file")
+            showDiffPlaceholder(detail.emptyDiffPlaceholder(changeCount: changes.count))
         case let .loading(change):
             showChange(change)
             showDiffPlaceholder("Loading…")

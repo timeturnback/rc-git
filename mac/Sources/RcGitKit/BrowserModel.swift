@@ -29,6 +29,16 @@ public enum CommitDetailState: Equatable, Sendable {
     case loading(CommitSummary)
     case loaded(CommitDetail, refs: [RefEntry])
     case failed(CommitSummary, String)
+
+    /// The diff pane's line while no file diff is shown. Only a loaded commit with no
+    /// changed files says "No files changed"; a load in flight or a failed one never does.
+    public func emptyDiffPlaceholder(changeCount: Int) -> String {
+        switch self {
+        case .empty, .failed: ""
+        case .loading: "Loading…"
+        case .loaded: changeCount == 0 ? "No files changed" : "Select a file"
+        }
+    }
 }
 
 /// How `openPath` ended: the file is open, nothing openable lives at the path, or reading
@@ -1034,6 +1044,7 @@ public final class BrowserModel {
             }
         case let .failure(error):
             commitDetail = .failed(commit, error.message)
+            onDiffChanged?()
             fail(error.message)
         }
     }

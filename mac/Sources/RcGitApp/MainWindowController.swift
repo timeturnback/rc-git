@@ -680,7 +680,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         model.onDiffChanged = { [weak self] in
             guard let self else { return }
-            historyController.renderDetail(changes: model.commitChanges, state: model.fileDiff)
+            historyController.renderDetail(
+                changes: model.commitChanges, state: model.fileDiff, detail: model.commitDetail)
             historyController.renderCommitDetail(model.commitDetail, canGoBack: detailCanGoBack)
             if let commit = model.diffCommit {
                 historyController.selectCommitRow(commit.oid)
