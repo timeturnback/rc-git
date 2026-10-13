@@ -29,7 +29,7 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
     {
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if trimmed.hasPrefix("#") { return .fragment(String(trimmed.dropFirst())) }
+        if trimmed.hasPrefix("#") { return .fragment(decoded(trimmed.dropFirst())) }
         if trimmed.hasPrefix("//") { return URL(string: "https:\(trimmed)").map(Self.web) }
         if let scheme = Self.scheme(of: trimmed) {
             guard scheme != "file", let url = URL(string: trimmed) else { return nil }
@@ -43,7 +43,7 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
     {
         let hash = destination.firstIndex(of: "#")
         let fragmentText = hash.map { destination[destination.index(after: $0)...] }
-        let fragment = fragmentText.flatMap { $0.isEmpty ? nil : String($0) }
+        let fragment = fragmentText.flatMap { $0.isEmpty ? nil : decoded($0) }
         let beforeFragment = hash.map { destination[..<$0] } ?? destination[...]
         let pathText = String(beforeFragment.prefix { $0 != "?" })
         let rawPath = pathText.removingPercentEncoding ?? pathText
@@ -53,6 +53,14 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
         let base = rawPath.hasPrefix("/") ? [] : Self.directory(of: sourcePath)
         guard let path = Self.normalize(base: base, relative: rawPath) else { return nil }
         return .repositoryPath(path, fragment: fragment)
+    }
+
+    /// A fragment as a browser matches it: percent-decoded, so a copied GitHub heading link
+    /// (`#ti%E1%BA%BFng`) finds its heading. Text that does not decode (`#100%`) stays as
+    /// written.
+    private static func decoded(_ fragment: Substring) -> String {
+        let raw = String(fragment)
+        return raw.removingPercentEncoding ?? raw
     }
 
     /// The scheme of an absolute URL, or `nil` when the destination is a path. A bare

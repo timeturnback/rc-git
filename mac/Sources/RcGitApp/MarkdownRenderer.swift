@@ -83,8 +83,11 @@ enum MarkdownRenderer {
 private struct MarkdownBuilder {
     private let result = NSMutableAttributedString()
     private var anchors: [String: Int] = [:]
+    /// One anchor per heading, in document order, from `MarkdownDocument.headingAnchors`.
+    private var headingAnchors: IndexingIterator<[String]> = [].makeIterator()
 
     mutating func append(_ document: MarkdownDocument) {
+        headingAnchors = MarkdownDocument.headingAnchors(for: document.blocks).makeIterator()
         for block in document.blocks { append(block) }
     }
 
@@ -123,8 +126,9 @@ private struct MarkdownBuilder {
         }
     }
 
-    /// Remembers where a heading starts so a `#fragment` link can scroll to it. The first
-    /// heading with a given anchor wins, which is what a browser does too.
+    /// Remembers where a heading or footnote starts so a `#fragment` link can scroll to it.
+    /// Heading anchors arrive de-duplicated (`fixed`, `fixed-1`, ...); only a footnote label
+    /// defined twice can repeat, and its first definition keeps the anchor.
     private mutating func record(anchor: String) {
         guard !anchor.isEmpty, anchors[anchor] == nil else { return }
         anchors[anchor] = result.length
@@ -140,7 +144,7 @@ private struct MarkdownBuilder {
     }
 
     private mutating func appendHeading(_ block: MarkdownBlock, level: Int) {
-        record(anchor: MarkdownDocument.anchor(for: block.runs.map(\.text).joined()))
+        record(anchor: headingAnchors.next() ?? "")
         let style = paragraphStyle(for: block, hanging: block.marker != nil)
         style.paragraphSpacingBefore = level <= 2 ? 14 : 8
         style.paragraphSpacing = 6

@@ -39,6 +39,22 @@ import Testing
         #expect(resolve("#invariants") == .fragment("invariants"))
     }
 
+    @Test func anEncodedFragmentIsDecoded() {
+        #expect(resolve("#ti%E1%BA%BFng-vi%E1%BB%87t") == .fragment("tiếng-việt"))
+        #expect(resolve("#c%C3%A0i-%C4%91%E1%BA%B7t") == .fragment("cài-đặt"))
+        #expect(
+            resolve("other.md#ti%E1%BA%BFng")
+                == .repositoryPath("docs/guide/other.md", fragment: "tiếng"))
+        #expect(resolve("../ffi.md#a%20b") == .repositoryPath("docs/ffi.md", fragment: "a b"))
+        #expect(resolve("?x#a%20b") == .fragment("a b"))
+    }
+
+    @Test func aFragmentThatDoesNotDecodeStaysAsWritten() {
+        #expect(resolve("#100%") == .fragment("100%"))
+        #expect(
+            resolve("other.md#100%") == .repositoryPath("docs/guide/other.md", fragment: "100%"))
+    }
+
     @Test func relativePathsResolveAgainstTheOpenFilesDirectory() {
         #expect(resolve("other.md") == .repositoryPath("docs/guide/other.md", fragment: nil))
         #expect(resolve("./other.md") == .repositoryPath("docs/guide/other.md", fragment: nil))

@@ -145,4 +145,34 @@ public struct MarkdownDocument: Sendable, Hashable {
         }
         return slug
     }
+
+    /// The fragment each heading in `blocks` answers to, one per `.heading` block in document
+    /// order. A repeated slug takes the first free `-1`, `-2`, ... suffix, the way GitHub
+    /// de-duplicates heading ids, so the second "Fixed" is `fixed-1`. Footnote anchors
+    /// (`fn-<label>`) count as taken, so a heading never claims a footnote's id. A heading
+    /// with no slug gets an empty string and claims nothing.
+    public static func headingAnchors(for blocks: [MarkdownBlock]) -> [String] {
+        var occurrences: [String: Int] = [:]
+        for block in blocks {
+            if case let .footnote(label) = block.kind { occurrences["fn-\(label)"] = 0 }
+        }
+        var anchors: [String] = []
+        for block in blocks {
+            guard case .heading = block.kind else { continue }
+            let original = anchor(for: block.runs.map(\.text).joined())
+            guard !original.isEmpty else {
+                anchors.append("")
+                continue
+            }
+            var slug = original
+            while occurrences[slug] != nil {
+                let count = (occurrences[original] ?? 0) + 1
+                occurrences[original] = count
+                slug = "\(original)-\(count)"
+            }
+            occurrences[slug] = 0
+            anchors.append(slug)
+        }
+        return anchors
+    }
 }

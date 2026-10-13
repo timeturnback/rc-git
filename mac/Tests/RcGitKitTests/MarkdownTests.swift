@@ -104,6 +104,30 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
             MarkdownDocument.anchor(for: "Invariants") == MarkdownDocument.anchor(for: "invariants")
         )
     }
+
+    private func headingAnchors(_ source: String) -> [String] {
+        MarkdownDocument.headingAnchors(for: MarkdownDocument.parse(source).blocks)
+    }
+
+    @Test func repeatedHeadingsTakeNumberedSuffixes() {
+        #expect(
+            headingAnchors("## Fixed\n\n## Fixed\n\n## Fixed\n") == ["fixed", "fixed-1", "fixed-2"])
+    }
+
+    @Test func aSuffixAlreadyTakenIsSkipped() {
+        #expect(headingAnchors("# Foo\n\n# Foo-1\n\n# Foo\n") == ["foo", "foo-1", "foo-2"])
+        #expect(
+            headingAnchors("# Usage\n\n# Usage\n\n# Usage\n\n# Usage 1\n")
+                == ["usage", "usage-1", "usage-2", "usage-1-1"])
+    }
+
+    @Test func aHeadingNeverTakesAFootnotesAnchor() {
+        #expect(headingAnchors("# fn-a\n\nSee[^a].\n\n[^a]: Note.\n") == ["fn-a-1"])
+    }
+
+    @Test func aHeadingWithNoSlugClaimsNothing() {
+        #expect(headingAnchors("# !!!\n\n# Foo\n\n# !!!\n") == ["", "foo", ""])
+    }
 }
 
 @Suite struct MarkdownListTests {
