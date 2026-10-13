@@ -1834,3 +1834,375 @@ fn interrupting_a_stalled_fetch_exits_130() {
     let out = wait_with_deadline(&mut child, std::time::Duration::from_secs(5));
     assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
 }
+
+#[test]
+fn branch_create_and_tag_create_make_refs_and_never_move_one() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["branch-create", path, "topic"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "created\trefs/heads/topic\n");
+    assert_eq!(fx.rev_parse("refs/heads/topic"), fx.rev_parse("HEAD"));
+
+    let out = rc_git(&["tag-create", path, "v0.9-again", "v0.9"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "created\trefs/tags/v0.9-again\n");
+    assert_eq!(
+        fx.rev_parse("refs/tags/v0.9-again"),
+        fx.rev_parse("v0.9^{commit}")
+    );
+
+    let feature = fx.rev_parse("feature");
+    let out = rc_git(&["branch-create", path, "feature", "main"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(
+        fx.rev_parse("feature"),
+        feature,
+        "an existing ref stays put"
+    );
+
+    let out = rc_git(&["tag-create", path, "v1.0", "v0.9"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+
+    let out = rc_git(&["branch-create", path]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let out = rc_git(&["tag-create", path, "a", "HEAD", "surplus"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+#[test]
+fn branch_delete_of_a_merged_branch_needs_no_phrase_and_writes_no_backup() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.git(&["branch", "merged", "main~1"]);
+
+    let out = rc_git(&["branch-delete", path, "merged"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "deleted\trefs/heads/merged\n");
+    assert_eq!(fx.git_output(&["branch", "--list", "merged"]), "");
+    assert_eq!(
+        fx.git_output(&["for-each-ref", "refs/rc-git/backup/"]),
+        "",
+        "a merged branch loses nothing, so nothing is backed up"
+    );
+}
+
+#[test]
+fn branch_delete_of_an_unmerged_branch_needs_its_name_and_backs_it_up() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let tip = fx.rev_parse("feature");
+
+    let out = rc_git(&["branch-delete", path, "feature"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs --confirm feature"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        fx.rev_parse("feature"),
+        tip,
+        "nothing deleted without the phrase"
+    );
+
+    let out = rc_git(&["branch-delete", path, "feature", "--confirm", "nope"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("rerun with --confirm feature"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fx.rev_parse("feature"), tip);
+
+    let out = rc_git(&["branch-delete", path, "feature", "--confirm", "feature"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "deleted\trefs/heads/feature\nbackup\trefs/rc-git/backup/branch/feature\n"
+    );
+    assert_eq!(fx.git_output(&["branch", "--list", "feature"]), "");
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature"), tip);
+}
+
+#[test]
+fn branch_delete_refuses_a_protected_or_checked_out_branch() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.git(&["branch", "release/1", "feature"]);
+    let tip = fx.rev_parse("release/1");
+
+    let out = rc_git(&["branch-delete", path, "release/1", "--confirm", "release/1"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("protected branch 'release/1'"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fx.rev_parse("release/1"), tip);
+
+    fx.git(&["checkout", "-q", "-b", "current"]);
+    let out = rc_git(&["branch-delete", path, "current"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("checked-out branch"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fx.rev_parse("current"), fx.rev_parse("HEAD"));
+    assert_eq!(fx.git_output(&["for-each-ref", "refs/rc-git/backup/"]), "");
+}
+
+#[test]
+fn tag_delete_needs_the_tag_name_and_backs_the_tag_up() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let tag = fx.rev_parse("refs/tags/v1.0");
+
+    let out = rc_git(&["tag-delete", path, "v1.0"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs --confirm v1.0"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fx.rev_parse("refs/tags/v1.0"), tag);
+
+    let out = rc_git(&["tag-delete", path, "v1.0", "--confirm", "v1.0"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "deleted\trefs/tags/v1.0\nbackup\trefs/rc-git/backup/tag/v1.0\n"
+    );
+    assert_eq!(fx.git_output(&["tag", "--list", "v1.0"]), "");
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/tag/v1.0"), tag);
+
+    let out = rc_git(&["tag-delete", path, "missing", "--confirm", "missing"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+}
+
+#[test]
+fn plan_delete_previews_what_a_deletion_asks_for() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.git(&["branch", "merged", "main~1"]);
+    fx.git(&["branch", "release/1", "main"]);
+
+    let plan = |kind: &str, name: &str| {
+        let out = rc_git(&["plan-delete", path, kind, name]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        stdout(&out)
+    };
+    assert_eq!(
+        plan("branch", "feature"),
+        "confirm\tdestructive\tfeature\tyes\tDelete branch 'feature' and its unmerged commits.\n"
+    );
+    assert_eq!(
+        plan("branch", "merged"),
+        "confirm\trecoverable\t-\tno\t\
+         Delete branch 'merged'. Its commits stay reachable elsewhere.\n"
+    );
+    assert!(
+        plan("branch", "release/1").starts_with("deny\t-\t-\tno\t"),
+        "a protected branch is denied"
+    );
+    assert_eq!(
+        plan("tag", "v1.0"),
+        "confirm\tdestructive\tv1.0\tyes\tDelete tag 'v1.0'.\n"
+    );
+    assert_eq!(fx.git_output(&["for-each-ref", "refs/rc-git/backup/"]), "");
+    assert!(
+        fx.git_output(&["branch", "--list", "merged"])
+            .contains("merged")
+    );
+
+    let out = rc_git(&["plan-delete", path, "remote", "x"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+#[test]
+fn upstream_reports_the_tracking_branch_or_its_absence() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["upstream", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "main\tnone\n");
+
+    fx.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+    fx.git(&["config", "branch.main.remote", "origin"]);
+    fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    fx.git(&["update-ref", "refs/remotes/origin/main", "main~1"]);
+    let out = rc_git(&["upstream", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "main\torigin\thttps://example.com/repo.git\t1\t0\n"
+    );
+
+    let out = rc_git(&["upstream", path, "surplus"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+/// Twenty numbered lines, so an edit near each end makes two hunks three lines of context
+/// cannot join.
+fn numbered_lines(edits: &[(usize, &str)]) -> Vec<u8> {
+    let mut text = String::new();
+    for line in 1..=20 {
+        let default = format!("line {line}");
+        let replacement = edits.iter().find(|(at, _)| *at == line);
+        text.push_str(replacement.map_or(default.as_str(), |(_, edit)| edit));
+        text.push('\n');
+    }
+    text.into_bytes()
+}
+
+/// The `<path>:a,b,c,d` selector for each hunk header `diff --worktree` prints for `file`.
+fn hunk_selectors(path: &str, file: &str) -> Vec<String> {
+    let diff = stdout(&rc_git(&["diff", path, "--worktree", file]));
+    let mut selectors = Vec::new();
+    for line in diff.lines() {
+        let Some(ranges) = line
+            .strip_prefix("@@ -")
+            .and_then(|rest| rest.strip_suffix(" @@"))
+        else {
+            continue;
+        };
+        let (old, new) = ranges.split_once(" +").unwrap();
+        selectors.push(format!("{file}:{old},{new}"));
+    }
+    selectors
+}
+
+#[test]
+fn commit_and_discard_take_single_hunks() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("numbers.txt", &numbered_lines(&[]));
+    fx.commit("numbers", "2024-01-04T00:00:00+0000");
+    fx.write(
+        "numbers.txt",
+        &numbered_lines(&[(2, "two"), (19, "nineteen")]),
+    );
+    let hunks = hunk_selectors(path, "numbers.txt");
+    assert_eq!(hunks.len(), 2, "{hunks:?}");
+
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "first hunk",
+        "--author",
+        "CLI User <cli@example.com>",
+        "--hunk",
+        &hunks[0],
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let committed = String::from_utf8(numbered_lines(&[(2, "two")])).unwrap();
+    assert_eq!(
+        fx.git_output(&["show", "HEAD:numbers.txt"]),
+        committed.trim_end(),
+        "only the first hunk is committed"
+    );
+
+    let rest = hunk_selectors(path, "numbers.txt");
+    assert_eq!(rest.len(), 1, "{rest:?}");
+    let out = rc_git(&["discard", path, "--hunk", &rest[0]]);
+    assert_eq!(out.status.code(), Some(2), "discard still needs --yes");
+
+    let stale = "numbers.txt:1,1,1,1";
+    let out = rc_git(&["discard", path, "--yes", "--hunk", stale]);
+    assert_eq!(out.status.code(), Some(8), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("'numbers.txt' changed"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = rc_git(&["discard", path, "--yes", "--hunk", &rest[0]]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "hunks\t1\tnumbers.txt\n");
+    assert_eq!(
+        std::fs::read(fx.path().join("numbers.txt")).unwrap(),
+        numbered_lines(&[(2, "two")])
+    );
+    assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn malformed_or_mixed_hunk_selectors_are_usage_errors() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let head = fx.rev_parse("HEAD");
+    for selector in [
+        "alpha.txt",
+        "alpha.txt:1,2,3",
+        "alpha.txt:1,2,3,x",
+        ":1,1,1,1",
+    ] {
+        let out = rc_git(&["commit", path, "-m", "m", "--hunk", selector]);
+        assert_eq!(out.status.code(), Some(2), "{selector}: {}", stderr(&out));
+    }
+    let out = rc_git(&[
+        "commit",
+        path,
+        "-m",
+        "m",
+        "--hunk",
+        "alpha.txt:1,1,1,1",
+        "alpha.txt",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let out = rc_git(&["commit", path, "-m", "m"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let out = rc_git(&[
+        "discard",
+        path,
+        "--yes",
+        "--hunk",
+        "alpha.txt:1,1,1,1",
+        "README.md",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(fx.rev_parse("HEAD"), head);
+}
+
+#[test]
+fn highlight_and_links_print_spans_and_honor_the_app_limit() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.write("web/app.js", b"import x from \"./util\";\nx();\n");
+    fx.write("big.rs", &vec![b'a'; 2 * 1024 * 1024 + 1]);
+    fx.commit("web", "2024-01-04T00:00:00+0000");
+
+    let out = rc_git(&["--time", "highlight", path, "HEAD", "src/main.rs"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("0\t2\tkeyword\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).contains(", highlight "), "{}", stderr(&out));
+
+    let out = rc_git(&["links", path, "HEAD", "web/app.js"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let links = stdout(&out);
+    assert!(
+        links.contains("\t15\t21\n"),
+        "the ./util specifier: {links}"
+    );
+
+    let out = rc_git(&["links", path, "HEAD", "src/main.rs"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "", "rust has no import links");
+
+    let out = rc_git(&["highlight", path, "HEAD", "big.rs"]);
+    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    let out = rc_git(&["highlight", path, "HEAD", "bin.dat"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("no language"), "{}", stderr(&out));
+    let out = rc_git(&["highlight", path, "HEAD", "src/missing.rs"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+}

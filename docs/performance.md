@@ -75,6 +75,8 @@ target/release/rc-git --time cat  <repo> HEAD path/to/file
 target/release/rc-git --time log  <repo> -n 100
 target/release/rc-git --time changes <repo>         # the full working-tree status walk
 target/release/rc-git --time files <repo>           # the working-tree walk path search uses
+target/release/rc-git --time highlight <repo> HEAD path/to/file   # one highlight pass
+target/release/rc-git --time links <repo> HEAD path/to/file.ts    # one import-link pass
 ```
 
 `--time` reports the open and the command separately on stderr, so the two can be tracked

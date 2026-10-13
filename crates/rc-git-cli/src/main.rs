@@ -44,15 +44,23 @@ usage: rc-git [--time] <command> <repo> [args]
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
+  upstream <repo>                         the current branch's upstream:
+                                          branch<TAB>remote<TAB>url<TAB>ahead<TAB>behind,
+                                          or branch<TAB>none when it has none
+  highlight <repo> <rev> <path>           syntax spans: start<TAB>end<TAB>class, byte offsets;
+                                          a binary file exits 3, one over 2 MiB exits 4
+  links   <repo> <rev> <path>             import links of a JS/TS file: start<TAB>end<TAB>
+                                          specifier_start<TAB>specifier_end; limits as highlight
 
   --max-scan N stops after examining N commits (filelog, search; default: all history) or N
   working-tree entries (changes, files; default 200000) and warns that the output is
   truncated. filelog and search reject N = 0.
 
   commit      <repo> -m <msg> [--author \"Name <email>\"] [--confirm <phrase>]
-              [--expect-head <oid>] <path>...
+              [--expect-head <oid>] [--hunk <hunk>]... [<path>...]
                                           commit files to the branch; with --expect-head,
-                                          refuse if HEAD is no longer that full commit id
+                                          refuse if HEAD is no longer that full commit id;
+                                          --hunk commits only that hunk of a tracked file
   stash-push  <repo> --yes [-m <msg>] [--author \"Name <email>\"] [--confirm <phrase>] <path>...
                                           stash files, restore them to HEAD
   stash-apply <repo> [n] [--confirm <phrase>]  write stash@{n} back to the working tree
@@ -61,7 +69,22 @@ usage: rc-git [--time] <command> <repo> [args]
   discard     <repo> --yes <path>...      restore files to HEAD, delete untracked; no undo
                                           (--confirm discard works in place of --yes);
                                           prints restored|deleted<TAB>path per path
+  discard     <repo> --yes --hunk <hunk>...  restore only those hunks of one file to HEAD;
+                                          prints hunks<TAB>count<TAB>path
   checkout    <repo> <branch>             switch the working tree and HEAD to a local branch
+  branch-create <repo> <name> [rev]       create a branch at rev (default HEAD); never moves
+                                          an existing one; prints created<TAB>full name
+  tag-create  <repo> <name> [rev]         create a lightweight tag the same way
+  branch-delete <repo> <name> [--confirm <name>]  delete a branch; an unmerged one needs its
+                                          name typed and is backed up first
+  tag-delete  <repo> <name> --confirm <name>  delete a tag, backed up first; both print
+                                          deleted<TAB>full name, then backup<TAB>ref if written
+  plan-delete <repo> branch|tag <name>    what deleting would need, one record:
+                                          allow|confirm|deny<TAB>risk<TAB>phrase<TAB>backup
+                                          yes|no<TAB>summary or reason ('-' when none)
+
+  <hunk> is <path>:<old_start>,<old_lines>,<new_start>,<new_lines>, the numbers of a
+  '@@ -a,b +c,d @@' header that `diff --worktree` prints for the file.
 
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
   pull  <repo> [remote options]           fetch, then fast-forward the current branch
@@ -86,6 +109,7 @@ usage: rc-git [--time] <command> <repo> [args]
 exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey),
   7 diverged or push rejected (reconcile with git, e.g. git pull --rebase),
+  8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push or sync between steps
   (a second one exits at once, even mid-step)
 ";
@@ -97,6 +121,7 @@ const EXIT_TOO_LARGE: u8 = 4;
 const EXIT_AUTH: u8 = 5;
 const EXIT_HOSTKEY: u8 = 6;
 const EXIT_DIVERGED: u8 = 7;
+const EXIT_STALE_HUNK: u8 = 8;
 const EXIT_INTERRUPTED: u8 = 130;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
@@ -190,6 +215,17 @@ impl<'a> VerbArgs<'a> {
         found
     }
 
+    /// Every value given for `flag`, in command-line order.
+    fn values_of(&self, flag: &str) -> Vec<&'a str> {
+        let mut found = Vec::new();
+        for (name, value) in &self.values {
+            if *name == flag {
+                found.push(*value);
+            }
+        }
+        found
+    }
+
     fn number(&self, flag: &str) -> Result<Option<usize>> {
         let Some(raw) = self.value(&[flag]) else {
             return Ok(None);
@@ -263,6 +299,14 @@ enum Verb {
     StashDrop,
     Discard,
     Checkout,
+    BranchCreate,
+    TagCreate,
+    BranchDelete,
+    TagDelete,
+    PlanDelete,
+    Upstream,
+    Highlight,
+    Links,
     Fetch,
     Pull,
     Push,
@@ -295,6 +339,14 @@ impl Verb {
             "stash-drop" => Some(Self::StashDrop),
             "discard" => Some(Self::Discard),
             "checkout" => Some(Self::Checkout),
+            "branch-create" => Some(Self::BranchCreate),
+            "tag-create" => Some(Self::TagCreate),
+            "branch-delete" => Some(Self::BranchDelete),
+            "tag-delete" => Some(Self::TagDelete),
+            "plan-delete" => Some(Self::PlanDelete),
+            "upstream" => Some(Self::Upstream),
+            "highlight" => Some(Self::Highlight),
+            "links" => Some(Self::Links),
             "fetch" => Some(Self::Fetch),
             "pull" => Some(Self::Pull),
             "push" => Some(Self::Push),
@@ -328,6 +380,14 @@ impl Verb {
             Self::StashDrop => "stash-drop",
             Self::Discard => "discard",
             Self::Checkout => "checkout",
+            Self::BranchCreate => "branch-create",
+            Self::TagCreate => "tag-create",
+            Self::BranchDelete => "branch-delete",
+            Self::TagDelete => "tag-delete",
+            Self::PlanDelete => "plan-delete",
+            Self::Upstream => "upstream",
+            Self::Highlight => "highlight",
+            Self::Links => "links",
             Self::Fetch => "fetch",
             Self::Pull => "pull",
             Self::Push => "push",
@@ -391,6 +451,7 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
         ) => EXIT_AUTH,
         Some(ActionError::UnknownHostKey { .. }) => EXIT_HOSTKEY,
         Some(ActionError::Diverged { .. } | ActionError::PushRejected { .. }) => EXIT_DIVERGED,
+        Some(ActionError::HunkMismatch { .. }) => EXIT_STALE_HUNK,
         Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
         Some(_) | None => EXIT_ERROR,
     }
@@ -572,6 +633,18 @@ fn dispatch(repo: &Repository, invocation: &Invocation, out: &mut Vec<u8>) -> Re
         }
         Verb::Discard => discard_verb(&invocation.repo, &invocation.args, out),
         Verb::Checkout => checkout_verb(&invocation.repo, &invocation.args, out),
+        Verb::BranchCreate => {
+            ref_create_verb(&invocation.repo, &invocation.args, RefSort::Branch, out)
+        }
+        Verb::TagCreate => ref_create_verb(&invocation.repo, &invocation.args, RefSort::Tag, out),
+        Verb::BranchDelete => {
+            ref_delete_verb(&invocation.repo, &invocation.args, RefSort::Branch, out)
+        }
+        Verb::TagDelete => ref_delete_verb(&invocation.repo, &invocation.args, RefSort::Tag, out),
+        Verb::PlanDelete => plan_delete_verb(&invocation.repo, &invocation.args, out),
+        Verb::Upstream => upstream_verb(&invocation.repo, &invocation.args, out),
+        Verb::Highlight => highlight_verb(repo, &invocation.args, out),
+        Verb::Links => links_verb(repo, &invocation.args, out),
         Verb::Fetch | Verb::Pull | Verb::Push | Verb::Sync => remote_verb(invocation, out),
     }
 }
@@ -1259,7 +1332,94 @@ fn author(args: &VerbArgs<'_>) -> Result<rc_git_guard::actions::Author> {
 }
 
 const MESSAGE_FLAGS: [&str; 4] = ["-m", "--message", "--author", "--confirm"];
-const COMMIT_FLAGS: [&str; 5] = ["-m", "--message", "--author", "--confirm", "--expect-head"];
+const COMMIT_FLAGS: [&str; 6] = [
+    "-m",
+    "--message",
+    "--author",
+    "--confirm",
+    "--expect-head",
+    "--hunk",
+];
+
+/// One `--hunk <path>:<old_start>,<old_lines>,<new_start>,<new_lines>` value: the path and the
+/// numbers of the `@@ -a,b +c,d @@` header `diff --worktree` printed for the hunk.
+fn parse_hunk(raw: &str) -> Result<(String, rc_git_guard::actions::HunkStamp)> {
+    let malformed = || {
+        usage_error(format!(
+            "--hunk needs <path>:<old_start>,<old_lines>,<new_start>,<new_lines>, got '{raw}'"
+        ))
+    };
+    let Some((path, numbers)) = raw.rsplit_once(':') else {
+        return Err(malformed());
+    };
+    let mut parsed = [0_u32; 4];
+    let mut parts = numbers.split(',');
+    for slot in &mut parsed {
+        *slot = parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .ok_or_else(malformed)?;
+    }
+    if path.is_empty() || parts.next().is_some() {
+        return Err(malformed());
+    }
+    let [old_start, old_lines, new_start, new_lines] = parsed;
+    let stamp = rc_git_guard::actions::HunkStamp {
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+    };
+    Ok((canonical_path(path)?, stamp))
+}
+
+/// Every `--hunk` value grouped by path, in the order each path first appears, with each
+/// path's hunks in file order.
+fn hunk_selections(
+    args: &VerbArgs<'_>,
+) -> Result<Vec<(String, Vec<rc_git_guard::actions::HunkStamp>)>> {
+    let mut grouped: Vec<(String, Vec<rc_git_guard::actions::HunkStamp>)> = Vec::new();
+    for raw in args.values_of("--hunk") {
+        let (path, stamp) = parse_hunk(raw)?;
+        match grouped.iter_mut().find(|(known, _)| *known == path) {
+            Some((_, stamps)) => stamps.push(stamp),
+            None => grouped.push((path, vec![stamp])),
+        }
+    }
+    for (_, stamps) in &mut grouped {
+        stamps.sort_by_key(|stamp| (stamp.old_start, stamp.new_start));
+        stamps.dedup();
+    }
+    Ok(grouped)
+}
+
+/// The whole files named as positionals plus the files `--hunk` picks hunks of. A path named
+/// both ways is a usage error: the request would be ambiguous.
+fn commit_selections(args: &VerbArgs<'_>) -> Result<Vec<rc_git_guard::actions::FileSelection>> {
+    let whole = canonical_paths(&args.positionals)?;
+    let hunks = hunk_selections(args)?;
+    if whole.is_empty() && hunks.is_empty() {
+        return Err(usage_error(format!(
+            "commit needs at least one <path> or --hunk\n\n{USAGE}"
+        )));
+    }
+    let mut selections = Vec::with_capacity(whole.len() + hunks.len());
+    for (path, stamps) in hunks {
+        if whole.contains(&path) {
+            return Err(usage_error(format!(
+                "commit names '{path}' both whole and with --hunk; pick one"
+            )));
+        }
+        selections.push(rc_git_guard::actions::FileSelection::Hunks {
+            path,
+            hunks: stamps,
+        });
+    }
+    for path in whole {
+        selections.push(rc_git_guard::actions::FileSelection::Whole { path });
+    }
+    Ok(selections)
+}
 
 /// The HEAD commit the guard checks the commit against: the caller's `--expect-head`, so a
 /// commit made elsewhere since they looked is refused, or else HEAD as read now (`None` when
@@ -1284,15 +1444,11 @@ fn commit_verb(
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
     let args = split_args("commit", args, &COMMIT_FLAGS, &[])?;
-    args.expect(1, usize::MAX, "at least one <path>")?;
+    let selections = commit_selections(&args)?;
     let message = args
         .value(&["-m", "--message"])
         .ok_or_else(|| usage_error(format!("commit needs -m <msg>\n\n{USAGE}")))?;
     let expected = expected_head(repo, args.value(&["--expect-head"]))?;
-    let selections: Vec<rc_git_guard::actions::FileSelection> = canonical_paths(&args.positionals)?
-        .into_iter()
-        .map(|path| rc_git_guard::actions::FileSelection::Whole { path })
-        .collect();
     let done = rc_git_guard::actions::commit(
         repo_path,
         &rc_git_guard::Policy::default(),
@@ -1433,8 +1589,15 @@ fn discard_verb(
     args: &[String],
     out: &mut Vec<u8>,
 ) -> Result<ExitCode> {
-    let args = split_args("discard", args, &["--confirm"], &["--yes"])?;
-    args.expect(1, usize::MAX, "at least one <path>")?;
+    let args = split_args("discard", args, &["--confirm", "--hunk"], &["--yes"])?;
+    let hunks = hunk_selections(&args)?;
+    if hunks.is_empty() {
+        args.expect(1, usize::MAX, "at least one <path>, or --hunk")?;
+    } else if hunks.len() > 1 || !args.positionals.is_empty() {
+        return Err(usage_error(format!(
+            "discard --hunk takes the hunks of one file and no other path\n\n{USAGE}"
+        )));
+    }
     let confirm = args.value(&["--confirm"]);
     let confirmed = match confirm {
         Some(phrase) => phrase.trim() == "discard",
@@ -1445,6 +1608,19 @@ fn discard_verb(
             "discard cannot be undone; pass --yes (or --confirm discard) to restore the files\n\n\
              {USAGE}"
         )));
+    }
+    if let [(path, stamps)] = &hunks[..] {
+        rc_git_guard::actions::discard_hunks(
+            repo_path,
+            &rc_git_guard::Policy::default(),
+            path,
+            stamps,
+            confirm,
+        )?;
+        write!(out, "hunks\t{}\t", stamps.len())?;
+        write_path(out, path.as_bytes());
+        out.push(b'\n');
+        return Ok(ExitCode::SUCCESS);
     }
     let outcomes = rc_git_guard::actions::discard_files(
         repo_path,
@@ -1753,6 +1929,296 @@ fn sync_verb(
         writeln!(out, "push\t{}\tup to date", pull.branch)?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Which kind of ref a create or delete verb manages.
+#[derive(Clone, Copy)]
+enum RefSort {
+    Branch,
+    Tag,
+}
+
+impl RefSort {
+    fn full_name(self, name: &str) -> String {
+        match self {
+            Self::Branch => format!("refs/heads/{name}"),
+            Self::Tag => format!("refs/tags/{name}"),
+        }
+    }
+}
+
+/// `branch-create` and `tag-create`: the guard allows creation outright and refuses to move a
+/// ref that already exists.
+fn ref_create_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    sort: RefSort,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let label = match sort {
+        RefSort::Branch => "branch-create",
+        RefSort::Tag => "tag-create",
+    };
+    let args = split_args(label, args, &[], &[])?;
+    args.expect(1, 2, "<name> [rev]")?;
+    let Some(name) = args.positional(0) else {
+        bail!("{label} needs <name>\n\n{USAGE}");
+    };
+    let rev = args.positional(1).unwrap_or("HEAD");
+    let policy = rc_git_guard::Policy::default();
+    match sort {
+        RefSort::Branch => rc_git_guard::actions::create_branch(repo_path, &policy, name, rev)?,
+        RefSort::Tag => rc_git_guard::actions::create_tag(repo_path, &policy, name, rev)?,
+    }
+    writeln!(out, "created\t{}", sort.full_name(name))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What deleting the `sort` ref `name` would need, as the guard plans it.
+fn plan_delete(
+    repo_path: &std::path::Path,
+    policy: &rc_git_guard::Policy,
+    sort: RefSort,
+    name: &str,
+) -> Result<rc_git_guard::Decision> {
+    Ok(match sort {
+        RefSort::Branch => {
+            rc_git_guard::actions::plan_branch_delete(repo_path, policy, name)?.decision
+        }
+        RefSort::Tag => rc_git_guard::actions::plan_tag_delete(policy, name),
+    })
+}
+
+/// `branch-delete` and `tag-delete`. The guard's plan runs first, so a deletion that needs the
+/// name typed and got no `--confirm` is a usage error naming the phrase before anything is
+/// read for the write; a denial, a checked-out branch or a wrong phrase is the guard's refusal.
+fn ref_delete_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    sort: RefSort,
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let label = match sort {
+        RefSort::Branch => "branch-delete",
+        RefSort::Tag => "tag-delete",
+    };
+    let args = split_args(label, args, &["--confirm"], &[])?;
+    args.expect(1, 1, "<name>")?;
+    let Some(name) = args.positional(0) else {
+        bail!("{label} needs <name>\n\n{USAGE}");
+    };
+    let policy = rc_git_guard::Policy::default();
+    let input = args.value(&["--confirm"]);
+    if let rc_git_guard::Decision::Confirm(challenge) = plan_delete(repo_path, &policy, sort, name)?
+        && let Some(phrase) = challenge.typed_phrase()
+        && input.is_none()
+    {
+        return Err(usage_error(format!(
+            "{label} '{name}' needs --confirm {}: {}\n\n{USAGE}",
+            shell_word(phrase),
+            challenge.summary()
+        )));
+    }
+    let deleted = match sort {
+        RefSort::Branch => rc_git_guard::actions::delete_branch(repo_path, &policy, name, input)?,
+        RefSort::Tag => rc_git_guard::actions::delete_tag(repo_path, &policy, name, input)?,
+    };
+    writeln!(out, "deleted\t{}", deleted.full_name)?;
+    if let Some(backup) = deleted.backup_ref {
+        writeln!(out, "backup\t{backup}")?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `plan-delete branch|tag <name>`: the guard's decision as one record, so a caller can see
+/// what a deletion will ask for before running it.
+fn plan_delete_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    let args = split_args("plan-delete", args, &[], &[])?;
+    args.expect(2, 2, "branch|tag <name>")?;
+    let [kind, name] = args.positionals[..] else {
+        bail!("plan-delete needs branch|tag <name>\n\n{USAGE}");
+    };
+    let sort = match kind {
+        "branch" => RefSort::Branch,
+        "tag" => RefSort::Tag,
+        other => {
+            return Err(usage_error(format!(
+                "plan-delete takes branch or tag, not '{other}'\n\n{USAGE}"
+            )));
+        }
+    };
+    let decision = plan_delete(repo_path, &rc_git_guard::Policy::default(), sort, name)?;
+    match decision {
+        rc_git_guard::Decision::Allow => writeln!(out, "allow\t-\t-\tno\t-")?,
+        rc_git_guard::Decision::Confirm(challenge) => writeln!(
+            out,
+            "confirm\t{}\t{}\t{}\t{}",
+            risk_name(challenge.risk()),
+            challenge.typed_phrase().map_or("-".into(), field),
+            if challenge.backup_ref() { "yes" } else { "no" },
+            field(challenge.summary())
+        )?,
+        rc_git_guard::Decision::Deny { reason } => {
+            writeln!(out, "deny\t-\t-\tno\t{}", field(&reason))?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn risk_name(risk: rc_git_guard::Risk) -> &'static str {
+    match risk {
+        rc_git_guard::Risk::Safe => "safe",
+        rc_git_guard::Risk::Recoverable => "recoverable",
+        rc_git_guard::Risk::Destructive => "destructive",
+    }
+}
+
+/// `upstream`: the checked-out branch's upstream and how far apart the two are, read from the
+/// repository alone, with no network I/O.
+fn upstream_verb(
+    repo_path: &std::path::Path,
+    args: &[String],
+    out: &mut Vec<u8>,
+) -> Result<ExitCode> {
+    split_args("upstream", args, &[], &[])?.expect(0, 0, "no arguments")?;
+    let status = rc_git_guard::actions::upstream_status(repo_path)?;
+    if status.has_upstream {
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{}\t{}",
+            status.branch,
+            field(&status.remote),
+            field(&status.url),
+            status.ahead,
+            status.behind
+        )?;
+    } else {
+        writeln!(out, "{}\tnone", status.branch)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The most the app highlights or scans for import links: `Highlighter.byteLimit` in
+/// `RcGitKit`. A larger file stays plain there, so it exits 4 here.
+const HIGHLIGHT_LIMIT: u64 = 2 * 1024 * 1024;
+
+/// What `highlight` and `links` work on: a text blob's bytes and the language its name implies,
+/// or the exit code for a blob they decline.
+enum HighlightInput {
+    Text {
+        data: Vec<u8>,
+        language: rc_git_highlight::Language,
+    },
+    Declined(ExitCode),
+}
+
+/// Reads `<rev> <path>` for `label`, picking the language from the file name with
+/// `language_of`, and declines a binary blob or one over [`HIGHLIGHT_LIMIT`] as `cat` does.
+fn highlight_input(
+    repo: &Repository,
+    label: &'static str,
+    args: &[String],
+    language_of: fn(&str) -> Option<rc_git_highlight::Language>,
+) -> Result<HighlightInput> {
+    let args = split_args(label, args, &[], &[])?;
+    args.expect(2, 2, "<rev> <path>")?;
+    let [rev, path] = args.positionals[..] else {
+        bail!("{label} needs <rev> <path>\n\n{USAGE}");
+    };
+    let path = &canonical_path(path)?;
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    let language = language_of(file_name)
+        .with_context(|| format!("{label}: no language is known for '{path}'"))?;
+    let root = repo.resolve_tree(rev)?;
+    let entry = repo
+        .entry_at_path(root, path)?
+        .with_context(|| format!("'{path}' does not exist at {rev}"))?;
+    if entry.kind == EntryKind::Tree {
+        bail!("'{path}' is a directory");
+    }
+    match repo.read_blob(entry.oid, HIGHLIGHT_LIMIT)? {
+        BlobContent::Text { data, .. } => Ok(HighlightInput::Text { data, language }),
+        BlobContent::Binary { size } => {
+            writeln!(io::stderr().lock(), "'{path}' is binary ({size} bytes)")?;
+            Ok(HighlightInput::Declined(ExitCode::from(EXIT_BINARY)))
+        }
+        BlobContent::TooLarge { size, limit } => {
+            writeln!(
+                io::stderr().lock(),
+                "'{path}' is {size} bytes, over the {limit} byte limit"
+            )?;
+            Ok(HighlightInput::Declined(ExitCode::from(EXIT_TOO_LARGE)))
+        }
+    }
+}
+
+/// The language the app highlights a file as: by extension or file name, else by the name as
+/// a fence label, the way `rcgit_highlight` picks it.
+fn highlight_language(name: &str) -> Option<rc_git_highlight::Language> {
+    rc_git_highlight::Language::from_file_name(name)
+        .or_else(|| rc_git_highlight::Language::from_fence(name))
+}
+
+fn highlight_verb(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let (data, language) = match highlight_input(repo, "highlight", args, highlight_language)? {
+        HighlightInput::Text { data, language } => (data, language),
+        HighlightInput::Declined(code) => return Ok(code),
+    };
+    for span in rc_git_highlight::highlight(&data, language, None)? {
+        writeln!(
+            out,
+            "{}\t{}\t{}",
+            span.start,
+            span.end,
+            class_name(span.class)
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn links_verb(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let (data, language) = match highlight_input(
+        repo,
+        "links",
+        args,
+        rc_git_highlight::Language::from_file_name,
+    )? {
+        HighlightInput::Text { data, language } => (data, language),
+        HighlightInput::Declined(code) => return Ok(code),
+    };
+    for link in rc_git_highlight::import_links(&data, language)? {
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{}",
+            link.start, link.end, link.specifier_start, link.specifier_end
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn class_name(class: rc_git_highlight::Class) -> &'static str {
+    match class {
+        rc_git_highlight::Class::Attribute => "attribute",
+        rc_git_highlight::Class::Comment => "comment",
+        rc_git_highlight::Class::Constant => "constant",
+        rc_git_highlight::Class::Emphasis => "emphasis",
+        rc_git_highlight::Class::Function => "function",
+        rc_git_highlight::Class::Heading => "heading",
+        rc_git_highlight::Class::Keyword => "keyword",
+        rc_git_highlight::Class::Link => "link",
+        rc_git_highlight::Class::Number => "number",
+        rc_git_highlight::Class::Operator => "operator",
+        rc_git_highlight::Class::Property => "property",
+        rc_git_highlight::Class::Punctuation => "punctuation",
+        rc_git_highlight::Class::String => "string",
+        rc_git_highlight::Class::Strong => "strong",
+        rc_git_highlight::Class::Type => "type",
+        rc_git_highlight::Class::Variable => "variable",
+    }
 }
 
 #[cfg(test)]
