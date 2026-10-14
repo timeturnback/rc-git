@@ -65,10 +65,10 @@ pub struct StashRequest<'a> {
 
 /// Records the changes at `request.paths` as a git-compatible stash entry, then restores
 /// those files to their `HEAD` state on disk and in `.git/index`, as `git stash push` does.
-/// `request.author` decides who is recorded, as [`Author`] describes.
+/// `request.author` decides who is recorded, as [`Author`] describes. The policy asks for a
+/// plain confirm with no typed phrase, so any `input` passes; the front end owns that step.
 ///
 /// # Errors
-/// [`ActionError::NotConfirmed`] when the plain confirm is missing,
 /// [`ActionError::MissingIdentity`] without an identity, [`ActionError::Git`] when there is
 /// no commit yet, nothing changed at `paths`, an object cannot be written, another git process
 /// holds `index.lock`, or a merge, cherry-pick, revert or rebase is in progress.

@@ -13,7 +13,9 @@ here; so does everything that comes later.
   evaluates the `Action` itself and returns a `Confirmation` for an `Allow`, through
   `Challenge::verify` for a `Confirm`, or the refusal. Every write is a method on
   `actions/write.rs`'s `Writer`, built only by `Writer::new(repo, &confirmation)`, so the type
-  system forces the typed-phrase step. `Challenge` and `Confirmation` have fields private to
+  system forces a verified challenge, and the typed phrase only where the policy names one. A
+  confirm with no phrase verifies for any input: its button lives in the front end (the GUI's
+  confirm step, the CLI's `--yes`). `Challenge` and `Confirmation` have fields private to
   `policy.rs`; nothing else in the crate can build either one.
 - The front end renders decisions; it never classifies an action itself and never offers a
   one-click path around a challenge. The FFI passes the user's typed input through; the
