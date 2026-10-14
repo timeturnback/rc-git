@@ -58,7 +58,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var onStashDrop: ((StashEntry) -> Void)?
     var onDiscard: (([String]) -> Void)?
     var onDiscardHunk: ((String, HunkStamp) -> Void)?
-    var onRefresh: (() -> Void)?
     var onFetch: (() -> Void)?
     var onPull: (() -> Void)?
     var onPush: (() -> Void)?
