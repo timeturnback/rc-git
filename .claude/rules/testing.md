@@ -18,8 +18,11 @@ paths: crates/**/tests/**, crates/rc-git-testkit/**, mac/Tests/**
   `#![expect(clippy::unwrap_used, ...)]` only when a helper *outside* `#[test]` fns unwraps —
   `allow-unwrap-in-tests` in `clippy.toml` already covers `#[test]` bodies, so the expect is
   otherwise unfulfilled and fails `-D warnings`.
-- Timing-raced tests (slow-load vs fast-load) need wide margins: suites run in parallel and
-  a 20 ms hop can overrun a 0.2 s delay under load. Use ≥1 s for the "slow" side.
+- Order async races in Swift tests with `FakeRepository`'s `CallGate`s (await arrival, then
+  open the gate), never with sleeps or delays: under `scripts/check.sh` load (avg 30+) any
+  fixed margin overruns, and sleep-raced tests failed the gate on most backlog items.
+- `scripts/check.sh` runs `cargo deny`, which fetches the advisory DB from GitHub; a 502 or
+  no network fails the gate before the Swift half. That is not a code failure: rerun online.
 - Network tests use `HttpGitServer` or `SshGitServer` (testkit): serve a
   `git clone --bare` copy placed in a
   **sibling** temp dir — a bare clone inside the origin's working tree gets swept into the
