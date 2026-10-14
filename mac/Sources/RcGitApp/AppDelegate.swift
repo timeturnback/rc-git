@@ -415,7 +415,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let clear = NSMenuItem(
             title: "Clear Menu", action: #selector(clearRecents(_:)), keyEquivalent: "")
         clear.target = self
-        clear.isEnabled = !recents.paths.isEmpty
         recentMenu.addItem(clear)
     }
 }
