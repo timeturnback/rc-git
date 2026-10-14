@@ -128,6 +128,39 @@ fn path_history_follows_a_file_through_merges() {
 }
 
 #[test]
+fn path_history_reads_trees_through_a_commit_graph() {
+    let fx = merge_fixture();
+    let paths = ["file.txt", "dir/a.txt", "other.txt", "dir", ""];
+    let history = |fx: &Fixture| -> Vec<Vec<String>> {
+        let repo = Repository::open(fx.path()).unwrap();
+        let tip = repo.resolve("main").unwrap();
+        paths
+            .iter()
+            .map(|path| titles(&repo.path_history(tip, path, WIDE).unwrap()))
+            .collect()
+    };
+    let without = history(&fx);
+
+    fx.git(&["commit-graph", "write", "--reachable"]);
+    assert!(fx.git_dir().join("objects/info/commit-graph").exists());
+    assert_eq!(history(&fx), without, "the graph changes no answer");
+
+    fx.write("file.txt", b"after the graph\n");
+    fx.commit("after graph", "2024-01-07T00:00:00+0000");
+    let newer = history(&fx);
+    assert_eq!(
+        newer[0],
+        ["after graph", "evil merge", "topic change", "root"],
+        "a commit newer than the graph is read from the object database"
+    );
+    assert_eq!(
+        newer[1..4],
+        without[1..4],
+        "paths the new commit left alone"
+    );
+}
+
+#[test]
 fn path_history_shows_a_mode_only_change() {
     let fx = merge_fixture();
     fx.git(&["update-index", "--chmod=+x", "file.txt"]);

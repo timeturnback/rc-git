@@ -140,7 +140,7 @@ impl FilteredWalk {
     ) -> Result<CommitPage> {
         if let Some(test) = self.path_test.as_mut() {
             // The memo serves one page; a fresh one costs a single extra tree read.
-            test.lookup = Lookup::default();
+            test.lookup = Lookup::open(repo);
         }
         let mut commits = Vec::new();
         let mut scanned = 0;
@@ -173,28 +173,43 @@ impl FilteredWalk {
         {
             return Ok(None);
         }
-        let oid = Oid::from_gix(info.id);
-        let commit = repo
-            .find_commit(info.id)
-            .map_err(object("read commit", oid))?;
-        let mut summary = None;
         if self.filter.message.is_some() || self.filter.author.is_some() {
-            let decoded = summarize(&commit)?;
-            if !matches(&self.filter, &commit, &decoded).map_err(object("decode commit", oid))? {
-                return Ok(None);
-            }
-            summary = Some(decoded);
+            return self.examine_decoded(repo, info);
         }
+        // A path alone needs only tree ids, so a commit is read once it is known to match.
         if let Some(test) = self.path_test.as_mut()
-            && !test.touches(repo, info, &commit)?
+            && !test.touches(repo, info)?
         {
             return Ok(None);
         }
-        match summary {
-            Some(summary) => Ok(Some(summary)),
-            None => summarize(&commit).map(Some),
-        }
+        summarize(&read_commit(repo, info.id)?).map(Some)
     }
+
+    /// [`examine`](Self::examine) for a filter that needs the decoded commit anyway.
+    fn examine_decoded(
+        &mut self,
+        repo: &gix::Repository,
+        info: &Info,
+    ) -> Result<Option<CommitSummary>> {
+        let oid = Oid::from_gix(info.id);
+        let commit = read_commit(repo, info.id)?;
+        let summary = summarize(&commit)?;
+        if !matches(&self.filter, &commit, &summary).map_err(object("decode commit", oid))? {
+            return Ok(None);
+        }
+        if let Some(test) = self.path_test.as_mut() {
+            test.lookup.remember(info.id, &commit)?;
+            if !test.touches(repo, info)? {
+                return Ok(None);
+            }
+        }
+        Ok(Some(summary))
+    }
+}
+
+fn read_commit(repo: &gix::Repository, id: ObjectId) -> Result<gix::Commit<'_>> {
+    repo.find_commit(id)
+        .map_err(object("read commit", Oid::from_gix(id)))
 }
 
 /// Whether one decoded commit matches the message and author fields of `filter`. Time fields
@@ -256,19 +271,9 @@ impl PathTest {
         })
     }
 
-    /// Whether `commit`, walked as `info`, changed the entry at the path.
-    fn touches(
-        &mut self,
-        repo: &gix::Repository,
-        info: &Info,
-        commit: &gix::Commit<'_>,
-    ) -> Result<bool> {
-        let oid = Oid::from_gix(info.id);
-        let tree = commit
-            .tree_id()
-            .map_err(object("decode commit", oid))?
-            .detach();
-        self.lookup.trees.insert(info.id, tree);
+    /// Whether the commit walked as `info` changed the entry at the path.
+    fn touches(&mut self, repo: &gix::Repository, info: &Info) -> Result<bool> {
+        let tree = self.lookup.tree_of(repo, info.id)?;
         // A shallow boundary lists parents the clone does not have; git judges it as a root.
         // A parent missing anywhere else is corruption and still errors.
         let is_boundary = self
@@ -284,6 +289,9 @@ impl PathTest {
 /// persistent index.
 #[derive(Default)]
 struct Lookup {
+    /// The repository's commit-graph, which stores each commit's root tree, so most commits
+    /// are never read from the object database. Only a cache: every miss reads the commit.
+    graph: Option<gix::commitgraph::Graph>,
     /// Root tree per commit, so a parent decoded while judging its child is not decoded again.
     trees: HashMap<ObjectId, ObjectId>,
     /// Entry at the searched path per root tree. Commit N's parent tree is commit N+1's own
@@ -314,20 +322,39 @@ impl Lookup {
         Ok(true)
     }
 
+    /// An empty memo over the repository's commit-graph. An unreadable or disabled graph only
+    /// costs speed, as it does in the walk itself: every commit is then read instead.
+    fn open(repo: &gix::Repository) -> Self {
+        Self {
+            graph: repo.commit_graph_if_enabled().ok().flatten(),
+            ..Self::default()
+        }
+    }
+
+    /// The root tree of `commit`: from the memo, else the commit-graph, else the commit
+    /// itself, which covers commits newer than the last graph write.
     fn tree_of(&mut self, repo: &gix::Repository, commit: ObjectId) -> Result<ObjectId> {
         if let Some(tree) = self.trees.get(&commit) {
             return Ok(*tree);
         }
-        let oid = Oid::from_gix(commit);
-        let found = repo
-            .find_commit(commit)
-            .map_err(object("read commit", oid))?;
-        let tree = found
-            .tree_id()
-            .map_err(object("decode commit", oid))?
-            .detach();
+        let cached = self.graph.as_ref().and_then(|graph| {
+            graph
+                .commit_by_id(commit)
+                .map(|entry| entry.root_tree_id().to_owned())
+        });
+        let tree = match cached {
+            Some(tree) => tree,
+            None => commit_tree(&read_commit(repo, commit)?, commit)?,
+        };
         self.trees.insert(commit, tree);
         Ok(tree)
+    }
+
+    /// Memoizes the root tree of `commit`, already read as `id`.
+    fn remember(&mut self, id: ObjectId, commit: &gix::Commit<'_>) -> Result<()> {
+        let tree = commit_tree(commit, id)?;
+        self.trees.insert(id, tree);
+        Ok(())
     }
 
     fn entry(
@@ -351,4 +378,11 @@ impl Lookup {
         self.entries.insert(tree, found);
         Ok(found)
     }
+}
+
+fn commit_tree(commit: &gix::Commit<'_>, id: ObjectId) -> Result<ObjectId> {
+    Ok(commit
+        .tree_id()
+        .map_err(object("decode commit", Oid::from_gix(id)))?
+        .detach())
 }
