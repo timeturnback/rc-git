@@ -544,7 +544,10 @@ fn peel_ref(repo: &gix::Repository, name: &str) -> Option<gix::ObjectId> {
     reference.into_fully_peeled_id().ok().map(gix::Id::detach)
 }
 
-/// Commits reachable from `local` but not `upstream`, and the reverse.
+/// Commits reachable from `local` but not `upstream`, and the reverse. The pair of ids
+/// fully determines the answer, so it is served from [`AHEAD_BEHIND`] when the same pair
+/// was counted before; a shallow repository always walks, since deepening it changes the
+/// counts without moving either id.
 fn count_ahead_behind(
     repo: &gix::Repository,
     local: gix::ObjectId,
@@ -554,15 +557,75 @@ fn count_ahead_behind(
     if local == upstream {
         return Ok((0, 0));
     }
-    let count = |tip: gix::ObjectId, hide: gix::ObjectId| -> ActionResult<usize> {
-        let walk = repo
-            .rev_walk([tip])
-            .with_hidden([hide])
-            .all()
-            .map_err(|source| ActionError::git(op, tip.to_string(), source))?;
-        Ok(walk.flatten().count())
+    let walk_both = || -> ActionResult<(usize, usize)> {
+        let count = |tip: gix::ObjectId, hide: gix::ObjectId| -> ActionResult<usize> {
+            let walk = repo
+                .rev_walk([tip])
+                .with_hidden([hide])
+                .all()
+                .map_err(|source| ActionError::git(op, tip.to_string(), source))?;
+            Ok(walk.flatten().count())
+        };
+        Ok((count(local, upstream)?, count(upstream, local)?))
     };
-    Ok((count(local, upstream)?, count(upstream, local)?))
+    if repo.is_shallow() {
+        return walk_both();
+    }
+    AHEAD_BEHIND.get_or_count(local, upstream, walk_both)
+}
+
+/// Process-wide memo for [`count_ahead_behind`]. The preflight runs on every ref event and
+/// tab switch while the two tips rarely move, so a handful of entries covers every open
+/// window.
+static AHEAD_BEHIND: AheadBehindMemo = AheadBehindMemo::new();
+
+/// How many (local, upstream) pairs [`AheadBehindMemo`] keeps.
+const AHEAD_BEHIND_ENTRIES: usize = 8;
+
+/// A bounded most-recently-used cache from a (local, upstream) commit pair to its
+/// (ahead, behind) counts.
+struct AheadBehindMemo {
+    entries: std::sync::Mutex<Vec<AheadBehindEntry>>,
+}
+
+/// One remembered (local, upstream) pair and its (ahead, behind) counts.
+type AheadBehindEntry = ((gix::ObjectId, gix::ObjectId), (usize, usize));
+
+impl AheadBehindMemo {
+    const fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The counts for the pair, from the memo or from `count`, which runs without the lock
+    /// held so a slow walk never blocks another repository's lookup. A failed count is
+    /// not remembered.
+    fn get_or_count(
+        &self,
+        local: gix::ObjectId,
+        upstream: gix::ObjectId,
+        count: impl FnOnce() -> ActionResult<(usize, usize)>,
+    ) -> ActionResult<(usize, usize)> {
+        let key = (local, upstream);
+        if let Some(&(_, counts)) = self.lock().iter().find(|(entry, _)| *entry == key) {
+            return Ok(counts);
+        }
+        let counts = count()?;
+        let mut entries = self.lock();
+        entries.retain(|(entry, _)| *entry != key);
+        entries.insert(0, (key, counts));
+        entries.truncate(AHEAD_BEHIND_ENTRIES);
+        Ok(counts)
+    }
+
+    /// The entries, recovered from a poisoned lock: they are plain values written in one
+    /// step each, so a panic elsewhere cannot leave one half-written.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<AheadBehindEntry>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// The transport family a vetted remote URL belongs to.
@@ -865,6 +928,58 @@ fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn oid(byte: u8) -> gix::ObjectId {
+        gix::ObjectId::from_bytes_or_panic(&[byte; 20])
+    }
+
+    #[test]
+    fn ahead_behind_memo_walks_once_per_pair() {
+        let memo = AheadBehindMemo::new();
+        let walks = std::cell::Cell::new(0);
+        let count = |counts: (usize, usize)| {
+            walks.set(walks.get() + 1);
+            Ok(counts)
+        };
+        let first = memo.get_or_count(oid(1), oid(2), || count((3, 20_000)));
+        let again = memo.get_or_count(oid(1), oid(2), || count((0, 0)));
+        assert_eq!(first.ok(), Some((3, 20_000)));
+        assert_eq!(again.ok(), Some((3, 20_000)));
+        assert_eq!(walks.get(), 1);
+
+        let swapped = memo.get_or_count(oid(2), oid(1), || count((20_000, 3)));
+        assert_eq!(swapped.ok(), Some((20_000, 3)));
+        assert_eq!(walks.get(), 2);
+    }
+
+    #[test]
+    fn ahead_behind_memo_forgets_a_failed_count_and_stays_bounded() {
+        let memo = AheadBehindMemo::new();
+        let walks = std::cell::Cell::new(0);
+        let failed = memo.get_or_count(oid(1), oid(2), || {
+            walks.set(walks.get() + 1);
+            Err(ActionError::Cancelled { op: "count" })
+        });
+        assert!(failed.is_err());
+        let retried = memo.get_or_count(oid(1), oid(2), || {
+            walks.set(walks.get() + 1);
+            Ok((1, 1))
+        });
+        assert_eq!(retried.ok(), Some((1, 1)));
+        assert_eq!(walks.get(), 2);
+
+        for byte in 10..10 + u8::try_from(AHEAD_BEHIND_ENTRIES).unwrap() {
+            let filled = memo.get_or_count(oid(byte), oid(2), || Ok((0, 1)));
+            assert_eq!(filled.ok(), Some((0, 1)));
+        }
+        assert_eq!(memo.lock().len(), AHEAD_BEHIND_ENTRIES);
+        let evicted = memo.get_or_count(oid(1), oid(2), || {
+            walks.set(walks.get() + 1);
+            Ok((1, 1))
+        });
+        assert_eq!(evicted.ok(), Some((1, 1)));
+        assert_eq!(walks.get(), 3);
+    }
 
     #[test]
     fn credentials_debug_redacts_the_token_alone_and_inside_remote_auth() {
