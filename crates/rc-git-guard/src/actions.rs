@@ -327,8 +327,8 @@ pub enum ActionError {
     /// a dismissed approval prompt, an untouched hardware key. The connection cannot go on to
     /// the next key, so authentication stops here.
     #[error(
-        "{op}: the ssh agent refused to sign with {key} for '{host}'; approve the request in \
-         the agent, or remove the key from it"
+        "{op}: the ssh agent at '{agent}' refused to sign with {key} for '{host}'; approve \
+         the request in the agent, or remove the key from it"
     )]
     AgentSignRefused {
         /// What was being done.
@@ -337,6 +337,8 @@ pub enum ActionError {
         host: String,
         /// The agent key, as its comment and `SHA256:...` fingerprint.
         key: String,
+        /// The agent's socket path.
+        agent: String,
     },
     /// No remote resolves for the branch: `branch.<name>.remote` is unset and there is no
     /// `origin`, or the remote has no URL.
@@ -1327,16 +1329,18 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_agent_signature_names_the_key_and_the_host() {
+    fn a_refused_agent_signature_names_the_agent_the_key_and_the_host() {
         let err = ActionError::AgentSignRefused {
             op: "fetch",
             host: "git.example.com".to_owned(),
             key: "'work@laptop' (SHA256:abc)".to_owned(),
+            agent: "/tmp/agent.sock".to_owned(),
         };
         assert_eq!(
             err.to_string(),
-            "fetch: the ssh agent refused to sign with 'work@laptop' (SHA256:abc) for \
-             'git.example.com'; approve the request in the agent, or remove the key from it"
+            "fetch: the ssh agent at '/tmp/agent.sock' refused to sign with 'work@laptop' \
+             (SHA256:abc) for 'git.example.com'; approve the request in the agent, or remove \
+             the key from it"
         );
     }
 

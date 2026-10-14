@@ -8,7 +8,7 @@
 //! Credentials never leave the process — the agent signs in its own process, key files
 //! are read directly, and gix's helper cascade is never involved.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh::AgentAuthError;
@@ -263,7 +263,7 @@ struct Ladder<'a> {
 impl Ladder<'_> {
     async fn offer_agent_key(
         &mut self,
-        agent: &mut Agent,
+        agent: &mut ConnectedAgent,
         agent_key: &AgentKey,
     ) -> ActionResult<Outcome> {
         let hash_alg = rsa_hash_for(&agent_key.key.algorithm(), self.rsa_hash);
@@ -273,10 +273,12 @@ impl Ladder<'_> {
                 self.target.user.clone(),
                 agent_key.key.clone(),
                 hash_alg,
-                agent,
+                &mut agent.client,
             )
             .await
-            .map_err(|source| agent_auth_err(self.op, &self.target.host, agent_key, source))?;
+            .map_err(|source| {
+                agent_auth_err(self.op, &self.target.host, &agent.socket, agent_key, source)
+            })?;
         Ok(accepted_or_rejected(result.success()))
     }
 
@@ -441,12 +443,14 @@ fn classify_load_error(
 }
 
 /// Maps a failed agent-key offer. A refused signature becomes
-/// [`ActionError::AgentSignRefused`] naming the key: russh discards every server message
-/// until the signature arrives, so the connection cannot try the next key. Anything else
-/// is a transport failure.
+/// [`ActionError::AgentSignRefused`] naming the agent and the key: russh discards every
+/// server message until the signature arrives, so the connection cannot try the next key.
+/// Any other agent failure (IO, a malformed reply) names the agent socket and the key; a
+/// failed send to the server is a transport failure.
 fn agent_auth_err(
     op: &'static str,
     host: &str,
+    socket: &Path,
     agent_key: &AgentKey,
     source: AgentAuthError,
 ) -> ActionError {
@@ -455,8 +459,18 @@ fn agent_auth_err(
             op,
             host: host.to_owned(),
             key: agent_key.describe(),
+            agent: socket.display().to_string(),
         },
-        other => git_err(op, host)(other),
+        AgentAuthError::Key(other) => ActionError::git(
+            op,
+            host,
+            format!(
+                "the ssh agent at '{}' failed to sign with {}: {other}",
+                socket.display(),
+                agent_key.describe()
+            ),
+        ),
+        AgentAuthError::Send(other) => git_err(op, host)(other),
     }
 }
 
@@ -487,19 +501,28 @@ impl AgentKey {
     }
 }
 
+/// A connected ssh-agent and the socket it was reached at, which its errors name.
+struct ConnectedAgent {
+    client: Agent,
+    socket: PathBuf,
+}
+
 /// The ssh-agent the target's `IdentityAgent` names and the plain public keys it holds.
 /// A missing or broken agent is not an error — the ladder offers identity files only —
 /// and [`AgentSocket::None`] connects to none, so no agent key reaches the server.
-async fn connect_agent(socket: &AgentSocket) -> (Option<Agent>, Vec<AgentKey>) {
-    let connected = match socket {
-        AgentSocket::Env => Agent::connect_env().await,
-        AgentSocket::Path(path) => Agent::connect_uds(path).await,
+async fn connect_agent(socket: &AgentSocket) -> (Option<ConnectedAgent>, Vec<AgentKey>) {
+    let socket = match socket {
+        AgentSocket::Env => match std::env::var_os("SSH_AUTH_SOCK") {
+            Some(path) => PathBuf::from(path),
+            None => return (None, Vec::new()),
+        },
+        AgentSocket::Path(path) => path.clone(),
         AgentSocket::None => return (None, Vec::new()),
     };
-    let Ok(mut agent) = connected else {
+    let Ok(mut client) = Agent::connect_uds(&socket).await else {
         return (None, Vec::new());
     };
-    let Ok(identities) = agent.request_identities().await else {
+    let Ok(identities) = client.request_identities().await else {
         return (None, Vec::new());
     };
     let mut keys = Vec::new();
@@ -509,7 +532,7 @@ async fn connect_agent(socket: &AgentSocket) -> (Option<Agent>, Vec<AgentKey>) {
         };
         keys.push(AgentKey { key, comment });
     }
-    (Some(agent), keys)
+    (Some(ConnectedAgent { client, socket }), keys)
 }
 
 /// The public half of an identity file, and whether the file is only that half.
@@ -625,14 +648,51 @@ mod tests {
         let err = agent_auth_err(
             "fetch",
             "github.com",
+            Path::new("/run/agent.sock"),
             &key,
             AgentAuthError::Key(russh::keys::Error::AgentFailure),
         );
-        let ActionError::AgentSignRefused { op, host, key } = err else {
+        let ActionError::AgentSignRefused {
+            op,
+            host,
+            key,
+            agent,
+        } = err
+        else {
             panic!("expected AgentSignRefused, got {err:?}");
         };
         assert_eq!((op, host.as_str()), ("fetch", "github.com"));
         assert_eq!(key, format!("'work@laptop' ({fingerprint})"));
+        assert_eq!(agent, "/run/agent.sock");
+    }
+
+    /// An agent that drops the connection or answers garbage mid-signature is named by
+    /// its socket, so the error says which agent broke, not only which host was dialed.
+    #[test]
+    fn an_agent_io_error_names_the_agent_socket_and_the_key() {
+        let key = agent_key("work@laptop");
+        let fingerprint = key.key.fingerprint(HashAlg::Sha256).to_string();
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe");
+        let err = agent_auth_err(
+            "fetch",
+            "github.com",
+            Path::new("/run/agent.sock"),
+            &key,
+            AgentAuthError::Key(russh::keys::Error::IO(io)),
+        );
+        let ActionError::Git { op, ref name, .. } = err else {
+            panic!("expected a git error, got {err:?}");
+        };
+        assert_eq!((op, name.as_str()), ("fetch", "github.com"));
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!(
+                "the ssh agent at '/run/agent.sock' failed to sign with 'work@laptop' \
+                 ({fingerprint}): "
+            )),
+            "{message}"
+        );
+        assert!(message.contains("broken pipe"), "{message}");
     }
 
     #[test]
@@ -648,6 +708,7 @@ mod tests {
         let err = agent_auth_err(
             "fetch",
             "github.com",
+            Path::new("/run/agent.sock"),
             &agent_key("work@laptop"),
             AgentAuthError::Send(russh::SendError {}),
         );

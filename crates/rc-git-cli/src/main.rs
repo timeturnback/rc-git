@@ -2253,6 +2253,7 @@ mod tests {
             op: "fetch",
             host: "github.com".to_owned(),
             key: "'work@laptop' (SHA256:abc)".to_owned(),
+            agent: "/tmp/agent.sock".to_owned(),
         });
         assert_eq!(crate::exit_code_for(&err), crate::EXIT_AUTH);
     }

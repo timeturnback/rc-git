@@ -4567,6 +4567,7 @@ mod tests {
             op: "fetch",
             host: "github.com".to_owned(),
             key: "'work@laptop' (SHA256:abc)".to_owned(),
+            agent: "/tmp/agent.sock".to_owned(),
         };
         let mut message = ptr::null_mut();
         let mut hostkey = ptr::null_mut();
