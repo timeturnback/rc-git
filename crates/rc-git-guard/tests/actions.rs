@@ -347,6 +347,80 @@ fn a_backup_takes_the_slot_after_the_highest_existing_one() {
     assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature-7"), main);
 }
 
+/// Creates `branch` from `main` with one commit of its own, so deleting it needs a backup, and
+/// returns its tip.
+fn unmerged_branch(fx: &Fixture, branch: &str, date: &str) -> String {
+    fx.git(&["checkout", "-q", "-b", branch, "main"]);
+    fx.write(&format!("{branch}.txt"), format!("{date}\n").as_bytes());
+    fx.commit(&format!("Work on {branch}"), date);
+    fx.git(&["checkout", "-q", "main"]);
+    fx.rev_parse(branch)
+}
+
+#[test]
+fn a_dashed_name_never_shares_a_slot_with_another_names_backup() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let first_tip = fx.rev_parse("feature");
+    delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap();
+    let second_tip = unmerged_branch(&fx, "feature", "2024-01-05T00:00:00+0000");
+    let second = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap();
+    let dashed_tip = unmerged_branch(&fx, "feature-2", "2024-01-06T00:00:00+0000");
+
+    let dashed = delete_branch(fx.path(), &policy, "feature-2", Some("feature-2")).unwrap();
+    assert_eq!(
+        second.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/feature-2")
+    );
+    assert_eq!(
+        dashed.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/feature%2D2"),
+        "the dash is escaped, so `feature-2` cannot land in `feature`'s second slot"
+    );
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/feature"), first_tip);
+    assert_eq!(
+        fx.rev_parse("refs/rc-git/backup/branch/feature-2"),
+        second_tip
+    );
+    assert_eq!(
+        fx.rev_parse("refs/rc-git/backup/branch/feature%2D2"),
+        dashed_tip
+    );
+}
+
+#[test]
+fn a_backup_that_already_holds_the_tip_is_reused_under_either_name() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let legacy_tip = unmerged_branch(&fx, "my-work", "2024-01-05T00:00:00+0000");
+    let other_tip = unmerged_branch(&fx, "other", "2024-01-06T00:00:00+0000");
+    fx.git(&[
+        "update-ref",
+        "refs/rc-git/backup/branch/my-work",
+        &legacy_tip,
+    ]);
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/other", &other_tip]);
+    let before = refs(&fx);
+
+    let legacy = delete_branch(fx.path(), &policy, "my-work", Some("my-work")).unwrap();
+    let current = delete_branch(fx.path(), &policy, "other", Some("other")).unwrap();
+    assert_eq!(
+        legacy.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/my-work"),
+        "the unescaped name an older version wrote is still found"
+    );
+    assert_eq!(
+        current.backup_ref.as_deref(),
+        Some("refs/rc-git/backup/branch/other")
+    );
+    let after = refs(&fx);
+    assert_eq!(
+        after.matches("refs/rc-git/backup").count(),
+        before.matches("refs/rc-git/backup").count(),
+        "no second slot for the same object: {after}"
+    );
+}
+
 #[test]
 fn an_unreadable_head_refuses_a_branch_delete() {
     let fx = Fixture::standard();
@@ -2547,6 +2621,36 @@ mod stash {
         assert_eq!(stash_list(&fx), "On main: two\nOn main: one");
 
         stash_drop(fx.path(), &policy, 0, shown, Some("drop")).unwrap();
+        assert_eq!(stash_list(&fx), "On main: one");
+    }
+
+    #[test]
+    fn a_drop_retried_after_a_failure_keeps_one_backup() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let shown = stash_oid(&fx, 0);
+        let top = fx.rev_parse("stash@{0}");
+        let lock = fx.path().join(".git/refs/stash.lock");
+        std::fs::write(&lock, b"").unwrap();
+        stash_drop(fx.path(), &policy, 0, shown, Some("drop")).unwrap_err();
+        std::fs::remove_file(&lock).unwrap();
+
+        let deleted = stash_drop(fx.path(), &policy, 0, shown, Some("drop")).unwrap();
+        assert_eq!(
+            deleted.backup_ref.as_deref(),
+            Some("refs/rc-git/backup/stash/0")
+        );
+        assert_eq!(fx.rev_parse("refs/rc-git/backup/stash/0"), top);
+        let listing = refs(&fx);
+        assert_eq!(
+            listing.matches("refs/rc-git/backup").count(),
+            1,
+            "{listing}"
+        );
         assert_eq!(stash_list(&fx), "On main: one");
     }
 

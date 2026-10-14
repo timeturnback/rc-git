@@ -23,9 +23,10 @@ here; so does everything that comes later.
 - `Deny` is final. Force-pushing, deleting, or rewriting published history on a protected
   branch is not confirmable inside rc-git; the message tells the user to use git directly.
 - A challenge with `backup_ref` writes a ref under `refs/rc-git/backup/<kind>/<name>` before
-  the action runs. `<name>` escapes `%` as `%25` and `/` as `%2F`, so no backup nests under
-  another; a repeat takes one past the highest existing slot (`-2`, `-3`, …, read once, not
-  probed), so nothing is overwritten. `Writer::write_backup_ref`
+  the action runs. `<name>` escapes `%` as `%25`, `/` as `%2F` and `-` as `%2D`, so no backup
+  nests under another or reads as another name's slot; a repeat takes one past the highest
+  existing slot (`-2`, `-3`, …, read once, not probed), so nothing is overwritten, and a slot
+  of the same name already holding the object is reused. `Writer::write_backup_ref`
   is that one implementation, gated on `Writer::backup_required`; new destructive actions
   reuse it.
 - Ref edits go through `Writer::apply_edit` (synthetic `rc-git` committer for the reflog).

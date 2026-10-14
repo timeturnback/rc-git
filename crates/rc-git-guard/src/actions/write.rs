@@ -121,10 +121,13 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes `refs/rc-git/backup/<kind>/<leaf>` pointing at `target`, where `<leaf>` is `name`
-    /// escaped by [`backup_leaf`] so no backup nests under another. Earlier backups of the same
-    /// name are read once and the next numbered slot (`-2`, `-3`, …) is written, so nothing is
-    /// ever overwritten. A slot another writer takes between the read and the write is retried
-    /// once with a fresh read.
+    /// escaped by [`backup_leaf`] so no backup nests under another and no name reads as another
+    /// name's numbered slot. Earlier backups of the same name are read once and the next
+    /// numbered slot (`-2`, `-3`, …) is written, so nothing is ever overwritten. A backup of
+    /// `name` that already holds `target`, under this leaf or the one older versions wrote
+    /// ([`legacy_backup_leaf`]), is returned instead, so a retried action adds no second slot.
+    /// A slot another writer takes between the read and the write is retried once with a fresh
+    /// read.
     ///
     /// # Errors
     /// [`ActionError::Git`] naming the slot when the existing backups cannot be read, the slot
@@ -136,20 +139,32 @@ impl<'a> Writer<'a> {
         target: ObjectId,
     ) -> ActionResult<String> {
         let base = format!("refs/rc-git/backup/{kind}/{}", backup_leaf(name));
+        let legacy = format!("refs/rc-git/backup/{kind}/{}", legacy_backup_leaf(name));
+        if legacy != base
+            && let Some(existing) = scan_backups(self.repo, &legacy, target)?.holding_target
+        {
+            return Ok(existing);
+        }
         match self.write_next_backup(&base, target) {
             Err(error) if slot_taken(&error) => self.write_next_backup(&base, target),
             result => result,
         }
     }
 
-    /// Writes the slot after the highest existing backup under `base` with `MustNotExist`.
+    /// Returns the slot under `base` that already holds `target`, or writes the slot after the
+    /// highest existing backup with `MustNotExist`.
     ///
     /// # Errors
     /// [`ActionError::Git`] naming `base` or the slot when the backups cannot be read or the
     /// slot cannot be written.
     fn write_next_backup(&self, base: &str, target: ObjectId) -> ActionResult<String> {
         const OP: &str = "write backup ref";
-        let slot = highest_backup_slot(self.repo, base)?
+        let backups = scan_backups(self.repo, base, target)?;
+        if let Some(existing) = backups.holding_target {
+            return Ok(existing);
+        }
+        let slot = backups
+            .highest
             .checked_add(1)
             .ok_or_else(|| ActionError::git(OP, base, "every numbered backup slot is taken"))?;
         let candidate = if slot == 1 {
@@ -610,23 +625,41 @@ fn prune_empty_parents(work_dir: &Path, relative: &str) {
     }
 }
 
-/// `name` as one ref path component: `%` becomes `%25` and `/` becomes `%2F`, which is
-/// injective, so `feature` and `feature/x` back up to sibling refs instead of a file and a
-/// directory of the same name.
+/// `name` as one ref path component: `%` becomes `%25`, `/` becomes `%2F` and `-` becomes
+/// `%2D`, which is injective, so `feature` and `feature/x` back up to sibling refs instead of a
+/// file and a directory of the same name, and `feature-2`'s backup never reads as the second
+/// slot of `feature`'s.
 fn backup_leaf(name: &str) -> String {
+    legacy_backup_leaf(name).replace('-', "%2D")
+}
+
+/// The leaf older versions wrote for `name`, escaping only `%` and `/`: still read so a backup
+/// they left is found again, though `feature-2` there may be `feature`'s second slot.
+fn legacy_backup_leaf(name: &str) -> String {
     name.replace('%', "%25").replace('/', "%2F")
 }
 
-/// The highest backup slot already used under `base`: 1 for `base` itself, `n` for `base-n`, 0
-/// when there is none. A ref nested below a slot (`base/…`, left by older versions that did not
-/// escape names) occupies it too, since that slot can no longer be created as a file.
+/// What [`scan_backups`] found under one base.
+struct BackupScan {
+    /// The highest slot already used: 1 for the base itself, `n` for `base-n`, 0 for none.
+    highest: u64,
+    /// The full name of a slot (not a ref nested below one) that points at the target.
+    holding_target: Option<String>,
+}
+
+/// Reads every backup under `base` once. A ref nested below a slot (`base/…`, left by older
+/// versions that did not escape names) occupies that slot, since it can no longer be created
+/// as a file, but belongs to another name, so it never counts as holding `target`.
 ///
 /// # Errors
 /// [`ActionError::Git`] naming `base` when the references cannot be listed or read.
-fn highest_backup_slot(repo: &gix::Repository, base: &str) -> ActionResult<u64> {
+fn scan_backups(repo: &gix::Repository, base: &str, target: ObjectId) -> ActionResult<BackupScan> {
     const OP: &str = "read backup refs";
     let platform = repo.references().map_err(git_err(OP, base))?;
-    let mut highest = 0;
+    let mut scan = BackupScan {
+        highest: 0,
+        holding_target: None,
+    };
     for reference in platform.prefixed(base).map_err(git_err(OP, base))? {
         let reference = reference.map_err(|source| ActionError::git(OP, base, source))?;
         let full_name = reference.name().as_bstr();
@@ -634,9 +667,14 @@ fn highest_backup_slot(repo: &gix::Repository, base: &str) -> ActionResult<u64> 
             continue;
         };
         let slot = backup_slot(rest);
-        highest = highest.max(slot);
+        scan.highest = scan.highest.max(slot);
+        let own_slot = slot > 0 && !rest.contains(&b'/');
+        if own_slot && scan.holding_target.is_none() && reference.target().try_id() == Some(&target)
+        {
+            scan.holding_target = Some(full_name.to_string());
+        }
     }
-    Ok(highest)
+    Ok(scan)
 }
 
 /// The slot a ref name occupies given what follows its base: 1 for nothing or `/…`, `n` for

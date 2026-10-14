@@ -139,10 +139,13 @@ be built from a `Confirmation`, and nothing outside the policy can build one: th
 holds one before it edits anything, so the compiler enforces the flow.
 `backup_ref` means a ref under `refs/rc-git/backup/` is written before the deletion — the
 branch tip, the tag object, or the dropped stash commit — at
-`refs/rc-git/backup/<kind>/<name>`, where `<name>` escapes `%` as `%25` and `/` as `%2F` so
-`feature/x` backs up to `feature%2Fx` beside `feature`'s backup rather than under it. A repeat
-takes the slot one past the highest existing one (`-2`, `-3`, …), so no backup ever overwrites
-an earlier one. Two more rules live in the write path itself:
+`refs/rc-git/backup/<kind>/<name>`, where `<name>` escapes `%` as `%25`, `/` as `%2F` and `-`
+as `%2D` so `feature/x` backs up to `feature%2Fx` beside `feature`'s backup rather than under
+it, and `feature-2` to `feature%2D2` rather than into `feature`'s second slot. A repeat takes
+the slot one past the highest existing one (`-2`, `-3`, …), so no backup ever overwrites an
+earlier one; a backup of the same name that already holds the object (under this name or the
+unescaped-dash name older versions wrote) is reused, so a retried action adds no second slot.
+Two more rules live in the write path itself:
 a branch checked out in any worktree — the opened one, the main worktree, or any linked one —
 cannot be deleted (compared ignoring case, at every hop of a `HEAD -> alias -> branch` chain;
 its delete plan is a `Deny` naming the checkout and
