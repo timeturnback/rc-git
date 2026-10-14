@@ -51,6 +51,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var changeRows: [ChangeRow] = []
     /// The file whose diff the right pane shows, re-selected after a regrouping.
     private var shownChange: TreeChange?
+    /// Bumped by every diff-pane change, so an off-main diff build that lost the race is dropped.
+    private var diffGeneration = 0
     private var graphRows: [GraphRow] = []
     private var isReloading = false
 
@@ -299,6 +301,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         diffText.isRichText = false
         diffText.usesFindBar = true
         diffText.font = DiffRendering.monoFont
+        diffText.layoutManager?.allowsNonContiguousLayout = true
         diffText.isHorizontallyResizable = true
         diffText.isVerticallyResizable = true
         diffText.maxSize = NSSize(
@@ -883,6 +886,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func showDiffPlaceholder(_ message: String) {
+        diffGeneration += 1
         diffPlaceholder.stringValue = message
         diffPlaceholder.toolTip = message
         diffPlaceholder.isHidden = false
@@ -910,13 +914,25 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    /// Shows a loaded diff. The attributed string is built off the main actor, since a
+    /// regenerated lockfile runs to hundreds of thousands of lines; a stale build is dropped by
+    /// generation.
     private func renderDiff(change: TreeChange, diff: BlobDiff) {
-        diffPlaceholder.isHidden = true
         if let placeholder = diff.placeholder(path: change.path) {
             showDiffPlaceholder(placeholder)
-        } else if case let .text(hunks) = diff {
-            diffText.textStorage?.setAttributedString(DiffRendering.attributed(hunks: hunks))
-            diffText.scroll(.zero)
+            return
+        }
+        guard case let .text(hunks) = diff else { return }
+        diffGeneration += 1
+        let generation = diffGeneration
+        Task { [weak self] in
+            let built = await Task.detached(priority: .userInitiated) {
+                DiffRendering.attributed(hunks: hunks)
+            }.value
+            guard let self, generation == self.diffGeneration else { return }
+            self.diffPlaceholder.isHidden = true
+            self.diffText.textStorage?.setAttributedString(built.text)
+            self.diffText.scroll(.zero)
         }
     }
 
