@@ -924,3 +924,49 @@ fn worktree_diff_reports_binary_size_limits_and_missing_files() {
         .unwrap_err();
     assert!(matches!(err, Error::Worktree { .. }), "{err}");
 }
+
+#[test]
+fn tree_diff_reports_both_kinds_when_a_file_becomes_a_submodule_and_back() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("lib", b"a file\n");
+    fx.commit("file", "2024-01-01T00:00:00+0000");
+    fx.git(&["rm", "-q", "--cached", "lib"]);
+    let gitlink = "160000,1111111111111111111111111111111111111111,lib";
+    fx.git(&["update-index", "--add", "--cacheinfo", gitlink]);
+    let date = "2024-01-02T00:00:00+0000";
+    fx.git_with_env(
+        &["commit", "-q", "-m", "submodule"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let file = repo.resolve("main~1").unwrap();
+    let submodule = repo.resolve("main").unwrap();
+    let blob = oid(fx.git_output(&["rev-parse", "main~1:lib"]).trim());
+    let commit = oid(fx.git_output(&["rev-parse", "main:lib"]).trim());
+
+    let changes = repo.diff_trees(Some(file), submodule).unwrap();
+    let [change] = &changes[..] else {
+        panic!("one change expected, got {changes:?}")
+    };
+    assert_eq!(change.kind, ChangeKind::Modified);
+    assert_eq!((change.old, change.new), (Some(blob), Some(commit)));
+    assert_eq!(change.old_entry, Some(EntryKind::Blob));
+    assert_eq!(change.entry, EntryKind::Submodule);
+
+    let changes = repo.diff_trees(Some(submodule), file).unwrap();
+    let [change] = &changes[..] else {
+        panic!("one change expected, got {changes:?}")
+    };
+    assert_eq!((change.old, change.new), (Some(commit), Some(blob)));
+    assert_eq!(change.old_entry, Some(EntryKind::Submodule));
+    assert_eq!(change.entry, EntryKind::Blob);
+    assert!(
+        repo.diff_blobs(None, change.new, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT)
+            .is_ok(),
+        "the blob side diffs alone once the gitlink side is left out"
+    );
+
+    let added = repo.diff_trees(None, file).unwrap();
+    assert_eq!(added[0].old_entry, None);
+}

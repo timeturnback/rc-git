@@ -525,7 +525,8 @@ extension TreeChange {
             sourcePath: c.source_path.map { String(cString: $0) },
             old: c.has_old ? Oid(c: c.old_id) : nil,
             new: c.has_new ? Oid(c: c.new_id) : nil,
-            entry: EntryKind(c: c.entry)
+            entry: EntryKind(c: c.entry),
+            oldEntry: c.has_old ? EntryKind(c: c.old_entry) : nil
         )
     }
 }

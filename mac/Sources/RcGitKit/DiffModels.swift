@@ -40,10 +40,14 @@ public struct TreeChange: Sendable, Hashable {
     public let new: Oid?
     /// What the entry is after the change, or was before it for deletions.
     public let entry: EntryKind
+    /// What the entry was before the change; `nil` for additions. It differs from `entry` when
+    /// the path changed kind, such as a file replaced by a submodule.
+    public let oldEntry: EntryKind?
 
+    /// `oldEntry` defaults to `entry` whenever there is an old side.
     public init(
         kind: ChangeKind, path: String, sourcePath: String?, old: Oid?, new: Oid?,
-        entry: EntryKind
+        entry: EntryKind, oldEntry: EntryKind? = nil
     ) {
         self.kind = kind
         self.path = path
@@ -51,7 +55,15 @@ public struct TreeChange: Sendable, Hashable {
         self.old = old
         self.new = new
         self.entry = entry
+        self.oldEntry = old == nil ? nil : oldEntry ?? entry
     }
+
+    /// The blob before the change: `nil` for an addition, and for a gitlink, whose id names a
+    /// commit in another repository.
+    public var oldBlob: Oid? { oldEntry == .submodule ? nil : old }
+
+    /// The blob after the change: `nil` for a deletion, and for a gitlink.
+    public var newBlob: Oid? { entry == .submodule ? nil : new }
 }
 
 /// The role of one line in a diff hunk.
@@ -186,7 +198,8 @@ public enum FileDiffState: Sendable {
     case empty
     case loading(TreeChange)
     case loaded(TreeChange, BlobDiff)
-    /// A gitlink change: its ids name commits in another repository, so there is no line diff.
+    /// A change with a gitlink on every side: its ids name commits in another repository, so
+    /// there is no line diff.
     case submodule(TreeChange)
     case failed(TreeChange, String)
 

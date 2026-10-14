@@ -42,6 +42,9 @@ pub struct TreeChange {
     pub new: Option<Oid>,
     /// What the entry is after the change, or was before it for deletions.
     pub entry: EntryKind,
+    /// What the entry was before the change. `None` for additions. It differs from `entry`
+    /// when the path changed kind, such as a file replaced by a submodule.
+    pub old_entry: Option<EntryKind>,
 }
 
 /// A line of a diff hunk, without its line terminator.
@@ -195,9 +198,9 @@ impl Repository {
     /// either side is decoded, and a binary old side settles the result without decoding the
     /// new one.
     ///
-    /// A [`TreeChange`] whose `entry` is [`EntryKind::Submodule`] carries gitlink ids: commits
-    /// in the submodule's repository, not objects in this one. Callers branch on it instead
-    /// of passing those ids here.
+    /// A side of a [`TreeChange`] whose kind (`old_entry` for `old`, `entry` for `new`) is
+    /// [`EntryKind::Submodule`] carries a gitlink id: a commit in the submodule's repository,
+    /// not an object in this one. Callers pass `None` for that side instead of its id.
     ///
     /// # Errors
     /// [`Error::Object`](crate::Error::Object) when a given id is missing (a gitlink id
@@ -414,6 +417,7 @@ fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {
             old: None,
             new: Some(Oid::from_gix(id.detach())),
             entry: EntryKind::from_gix(entry_mode.kind()),
+            old_entry: None,
         }),
         Change::Deletion {
             location,
@@ -427,9 +431,11 @@ fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {
             old: Some(Oid::from_gix(id.detach())),
             new: None,
             entry: EntryKind::from_gix(entry_mode.kind()),
+            old_entry: Some(EntryKind::from_gix(entry_mode.kind())),
         }),
         Change::Modification {
             location,
+            previous_entry_mode,
             previous_id,
             entry_mode,
             id,
@@ -441,9 +447,11 @@ fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {
             old: Some(Oid::from_gix(previous_id.detach())),
             new: Some(Oid::from_gix(id.detach())),
             entry: EntryKind::from_gix(entry_mode.kind()),
+            old_entry: Some(EntryKind::from_gix(previous_entry_mode.kind())),
         }),
         Change::Rewrite {
             source_location,
+            source_entry_mode,
             source_id,
             entry_mode,
             location,
@@ -456,6 +464,7 @@ fn map_change(change: &Change<'_, '_, '_>) -> Option<TreeChange> {
             old: Some(Oid::from_gix(source_id.detach())),
             new: Some(Oid::from_gix(id.detach())),
             entry: EntryKind::from_gix(entry_mode.kind()),
+            old_entry: Some(EntryKind::from_gix(source_entry_mode.kind())),
         }),
     }
 }

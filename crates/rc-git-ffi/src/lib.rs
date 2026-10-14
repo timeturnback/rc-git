@@ -529,6 +529,9 @@ pub struct RcGitTreeChange {
     pub new_id: RcGitOid,
     /// What the entry is after the change, or was before it for deletions.
     pub entry: RcGitEntryKind,
+    /// What the entry was before the change; meaningless when `has_old` is false. A side whose
+    /// kind is a submodule carries a gitlink id, a commit in another repository.
+    pub old_entry: RcGitEntryKind,
 }
 
 impl RcGitTreeChange {
@@ -544,6 +547,7 @@ impl RcGitTreeChange {
             has_new: change.new.is_some(),
             new_id: change.new.map_or_else(RcGitOid::empty, RcGitOid::from),
             entry: change.entry.into(),
+            old_entry: change.old_entry.unwrap_or(change.entry).into(),
         }
     }
 }
@@ -5445,6 +5449,40 @@ mod tests {
         for (_, free) in frees {
             free();
         }
+    }
+
+    #[test]
+    fn tree_diff_exports_the_old_kind_of_a_file_replaced_by_a_submodule() {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("lib", b"a file\n");
+        fx.commit("file", "2024-01-01T00:00:00+0000");
+        fx.git(&["rm", "-q", "--cached", "lib"]);
+        let gitlink = "160000,1111111111111111111111111111111111111111,lib";
+        fx.git(&["update-index", "--add", "--cacheinfo", gitlink]);
+        let date = "2024-01-02T00:00:00+0000";
+        fx.git_with_env(
+            &["commit", "-q", "-m", "submodule"],
+            &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+        );
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let old = resolve(repo, "main~1");
+        let new = resolve(repo, "main");
+
+        let list =
+            unsafe { rcgit_diff_trees(repo, &raw const old, &raw const new, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let changes = unsafe { std::slice::from_raw_parts(list_ref.changes, list_ref.len) };
+        let [change] = changes else {
+            panic!("one change expected, got {}", changes.len())
+        };
+        assert!(change.has_old && change.has_new);
+        assert_eq!(change.old_entry, RcGitEntryKind::Blob);
+        assert_eq!(change.entry, RcGitEntryKind::Submodule);
+        unsafe { rcgit_tree_change_list_free(list) };
+        unsafe { rcgit_repo_free(repo) };
     }
 
     #[test]

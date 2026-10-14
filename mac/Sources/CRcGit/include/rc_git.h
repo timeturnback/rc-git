@@ -406,6 +406,9 @@ typedef struct RcGitTreeChange {
   struct RcGitOid new_id;
   /// What the entry is after the change, or was before it for deletions.
   enum RcGitEntryKind entry;
+  /// What the entry was before the change; meaningless when `has_old` is false. A side whose
+  /// kind is a submodule carries a gitlink id, a commit in another repository.
+  enum RcGitEntryKind old_entry;
 } RcGitTreeChange;
 
 /// Every changed file between two trees, sorted by path.

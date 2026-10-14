@@ -1209,13 +1209,16 @@ public final class BrowserModel {
         }
     }
 
-    /// Loads the line diff of one changed file from `commitChanges`. A submodule change has
-    /// no blobs in this repository and settles without a read.
+    /// Loads the line diff of one changed file from `commitChanges`. A gitlink side has no
+    /// blob in this repository: a submodule change settles without a read, and a file that
+    /// became a submodule, or the reverse, diffs its file side as a deletion or an addition.
     public func loadFileDiff(_ change: TreeChange) async {
         guard let repository else { return }
         diffGeneration += 1
         let generation = diffGeneration
-        if change.entry == .submodule {
+        let old = change.oldBlob
+        let new = change.newBlob
+        if old == nil && new == nil {
             fileDiff = .submodule(change)
             onDiffChanged?()
             return
@@ -1224,8 +1227,7 @@ public final class BrowserModel {
         onDiffChanged?()
         let result = await RepositoryError.run {
             try repository.diffBlobs(
-                old: change.old, new: change.new,
-                limit: Repository.defaultBlobLimit, context: 3)
+                old: old, new: new, limit: Repository.defaultBlobLimit, context: 3)
         }
         guard isCurrent(generation, diffGeneration, load: "diff") else { return }
         switch result {

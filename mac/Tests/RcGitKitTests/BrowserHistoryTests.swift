@@ -860,6 +860,39 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
                 == "Subproject commit \(oldCommit.hex) → \(newCommit.hex)")
     }
 
+    @Test func aFileSwappedWithASubmoduleDiffsOnlyItsFileSide() async throws {
+        await model.attach(repo)
+        let blob = oid(0x53)
+        let commit = try #require(Oid(hex: String(repeating: "3", count: 40)))
+        let hunk = DiffHunk(oldStart: 1, oldLines: 1, newStart: 0, newLines: 0, lines: [])
+        repo.lock.withLock {
+            repo.blobDiffs[FakeRepository.diffKey(old: blob, new: nil)] = .text(hunks: [hunk])
+            repo.blobDiffs[FakeRepository.diffKey(old: nil, new: blob)] = .text(hunks: [])
+        }
+        let toSubmodule = TreeChange(
+            kind: .modified, path: "lib", sourcePath: nil, old: blob, new: commit,
+            entry: .submodule, oldEntry: .blob)
+        let toFile = TreeChange(
+            kind: .modified, path: "lib", sourcePath: nil, old: commit, new: blob,
+            entry: .blob, oldEntry: .submodule)
+
+        await model.loadFileDiff(toSubmodule)
+        guard case let .loaded(change, diff) = model.fileDiff else {
+            Issue.record("expected the file side as a deletion, got \(model.fileDiff)")
+            return
+        }
+        #expect(change == toSubmodule)
+        #expect(diff == .text(hunks: [hunk]))
+
+        await model.loadFileDiff(toFile)
+        guard case let .loaded(_, added) = model.fileDiff else {
+            Issue.record("expected the file side as an addition, got \(model.fileDiff)")
+            return
+        }
+        #expect(added == .text(hunks: []))
+        #expect(repo.lock.withLock { repo.diffBlobsCalls } == 2)
+    }
+
     @Test func closingTheCommitDetailEmptiesIt() async {
         await model.attach(repo)
         repo.lock.withLock { repo.treeDiffs[parentCommit] = [] }

@@ -525,6 +525,38 @@ fn diff_of_a_submodule_bump_prints_subproject_lines() {
 }
 
 #[test]
+fn diff_of_a_file_replaced_by_a_submodule_diffs_the_file_and_prints_the_gitlink() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("lib", b"a file\n");
+    fx.commit("file", "2024-01-01T00:00:00+0000");
+    fx.git(&["rm", "-q", "--cached", "lib"]);
+    let commit = "1111111111111111111111111111111111111111";
+    let gitlink = format!("160000,{commit},lib");
+    fx.git(&["update-index", "--add", "--cacheinfo", &gitlink]);
+    let date = "2024-01-02T00:00:00+0000";
+    fx.git_with_env(
+        &["commit", "-q", "-m", "submodule"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["diff", path, "HEAD~1", "HEAD", "lib"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("@@ -1,1 +0,0 @@\n-a file\n+Subproject commit {commit}\n")
+    );
+
+    let out = rc_git(&["diff", path, "HEAD", "HEAD~1", "lib"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("-Subproject commit {commit}\n@@ -0,0 +1,1 @@\n+a file\n")
+    );
+}
+
+#[test]
 fn diff_marks_a_line_without_a_final_newline_as_git_does() {
     let fx = Fixture::empty_dir();
     fx.git(&["init", "-q", "-b", "main"]);
