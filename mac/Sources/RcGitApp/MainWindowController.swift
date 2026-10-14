@@ -104,6 +104,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         buildToolbar()
         buildVersionBadge()
         wireModel()
+        wireRefs()
+        wireHistory()
+        wireTree()
+        wireFile()
         renderBanner()
         model.setShowsHiddenFiles(HiddenFilesPreference().shows)
         window.center()
@@ -323,10 +327,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     override func scrollWheel(with event: NSEvent) {
         let canGoBack = backForward.canGo(.back)
         let canGoForward = backForward.canGo(.forward)
-        guard !event.phase.isEmpty, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
-            NSEvent.isSwipeTrackingFromScrollEventsEnabled, !trackingSwipe,
-            canGoBack || canGoForward
-        else {
+        guard canGoBack || canGoForward, beginsSwipe(event) else {
             super.scrollWheel(with: event)
             return
         }
@@ -335,13 +336,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             options: .lockDirection, dampenAmountThresholdMin: canGoForward ? -1 : 0,
             max: canGoBack ? 1 : 0
         ) { [weak self] amount, phase, isComplete, _ in
-            if phase == .ended, let direction = BackForwardList.Direction(swipeAmount: amount) {
-                self?.onNavigate?(direction)
-            }
-            if isComplete {
-                self?.trackingSwipe = false
-            }
+            self?.swipeTracked(amount: amount, phase: phase, isComplete: isComplete)
         }
+    }
+
+    private func swipeTracked(amount: CGFloat, phase: NSEvent.Phase, isComplete: Bool) {
+        if phase == .ended, let direction = BackForwardList.Direction(swipeAmount: amount) {
+            onNavigate?(direction)
+        }
+        if isComplete {
+            trackingSwipe = false
+        }
+    }
+
+    /// A horizontal scroll gesture the system routes to swipe tracking, while none is tracked.
+    private func beginsSwipe(_ event: NSEvent) -> Bool {
+        guard !event.phase.isEmpty, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else {
+            return false
+        }
+        return NSEvent.isSwipeTrackingFromScrollEventsEnabled && !trackingSwipe
     }
 
     /// A three-finger swipe, for the system setting that sends page swipes as their own event.
@@ -357,7 +370,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// list in the sidebar already, so its filter takes the keyboard instead. Changes has none:
     /// its banner names the checked-out branch, which picking a ref would not change.
     @objc func chooseRef(_ sender: Any?) {
-        guard !isEmpty, mode != .changes, refPicker == nil else { return }
+        guard canOpenRefPicker else { return }
         if mode == .history {
             refsController.focusFilter()
             return
@@ -365,6 +378,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if let event = NSApp.currentEvent, event.timestamp == refPickerCloseTimestamp {
             return
         }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = makeRefPicker()
+        popover.delegate = self
+        refPopover = popover
+        showRefPopover(popover)
+    }
+
+    /// A picker whose every choice closes it first; it becomes `refPicker` and is loaded.
+    private func makeRefPicker() -> RefPickerController {
         let picker = RefPickerController()
         picker.onClose = { [weak self] in self?.closeRefPicker() }
         picker.refs.onSelect = { [weak self] ref in
@@ -380,13 +403,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             self?.closeRefPicker()
             self?.performRefAction(action, on: ref)
         }
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = picker
-        popover.delegate = self
         refPicker = picker
-        refPopover = popover
         reloadRefs(in: picker.refs)
+        return picker
+    }
+
+    private func showRefPopover(_ popover: NSPopover) {
         let banner = sidebarController.banner
         if banner.window != nil, !banner.isHiddenOrHasHiddenAncestor, !banner.visibleRect.isEmpty {
             popover.show(relativeTo: banner.bounds, of: banner, preferredEdge: .minY)
@@ -492,25 +514,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(showBlame(_:)) {
-            return model.canBlameOpenedFile
-        }
-        if menuItem.action == #selector(showFileHistory(_:)) {
-            return model.openedFilePath != nil
-        }
-        if menuItem.action == #selector(searchCommits(_:)) {
-            return !isEmpty
-        }
-        if menuItem.action == #selector(goToFile(_:)) {
-            return !isEmpty
-        }
-        if menuItem.action == #selector(editCommitIdentity(_:)) {
-            return authorModel != nil
-        }
-        if menuItem.action == #selector(chooseRef(_:)) {
-            return !isEmpty && mode != .changes && refPicker == nil
+        if let action = menuItem.action, let enabled = menuEnablement[action] {
+            return enabled
         }
         return validateSyncItem(menuItem) ?? true
+    }
+
+    /// Whether each window menu item outside sync can run now, keyed by its action.
+    private var menuEnablement: [Selector: Bool] {
+        [
+            #selector(showBlame(_:)): model.canBlameOpenedFile,
+            #selector(showFileHistory(_:)): model.openedFilePath != nil,
+            #selector(searchCommits(_:)): !isEmpty,
+            #selector(goToFile(_:)): !isEmpty,
+            #selector(editCommitIdentity(_:)): authorModel != nil,
+            #selector(chooseRef(_:)): canOpenRefPicker,
+        ]
+    }
+
+    /// The picker opens outside Changes, on a repository, when it is not already open.
+    private var canOpenRefPicker: Bool {
+        !isEmpty && mode != .changes && refPicker == nil
     }
 
     /// Titles and enables the sync menu items from `syncAvailability`; `nil` for any other item.
@@ -696,13 +720,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.addTitlebarAccessoryViewController(accessory)
     }
 
+    /// Model-wide callbacks: navigation stops, errors and the blame panel.
     private func wireModel() {
+        model.onLocationChanged = { [weak self] in
+            self?.recordStop()
+        }
+        model.onError = { [weak self] message in
+            self?.presentError(message)
+        }
+        model.onInputError = { [weak self] title, message in
+            self?.presentError(message, title: title)
+        }
+        model.onBlameChanged = { [weak self] in
+            self?.renderBlame()
+        }
+    }
+
+    private func renderBlame() {
+        switch model.blame {
+        case .empty:
+            blamePanel.close()
+        case let .loading(_, title):
+            blamePanel.show([], title: title, over: window)
+        case let .loaded(_, spans, title):
+            blamePanel.show(spans, title: title, over: window)
+        case let .failed(message):
+            blamePanel.close()
+            presentError(message)
+        }
+    }
+
+    /// The ref list, the banner over the sidebar and the picker it opens.
+    private func wireRefs() {
         model.onRefsChanged = { [weak self] in
             guard let self else { return }
             reloadRefs(in: refsController)
             if let refPicker { reloadRefs(in: refPicker.refs) }
             renderBanner()
             window?.subtitle = browsingBanner().summary
+        }
+        refsController.onSelect = { [weak self] ref in
+            self?.browse(ref)
         }
         refsController.onSelectWorkingTree = { [weak self] in
             self?.browseWorkingTree()
@@ -713,30 +771,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         refsController.onRefAction = { [weak self] action, ref in
             self?.performRefAction(action, on: ref)
         }
+    }
+
+    /// The History pane: the commit list, its search, and the commit detail with its diff.
+    private func wireHistory() {
         model.onHistoryChanged = { [weak self] in
-            guard let self else { return }
-            if case let .path(path) = model.historyScope {
-                historyController.setScope(path: path)
-            } else {
-                historyController.setScope(path: nil)
-            }
-            historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
-            historyController.reload(
-                model.history, complete: model.historyComplete, error: model.historyError)
+            self?.renderHistory()
         }
         model.onDiffChanged = { [weak self] in
-            guard let self else { return }
-            historyController.renderDetail(
-                changes: model.commitChanges, state: model.fileDiff, detail: model.commitDetail)
-            historyController.renderCommitDetail(model.commitDetail, canGoBack: detailCanGoBack)
-            if let commit = model.diffCommit {
-                historyController.selectCommitRow(commit.oid)
-            } else {
-                historyController.deselectCommitRow()
-            }
+            self?.renderCommitDiff()
         }
-        model.onLocationChanged = { [weak self] in
-            self?.recordStop()
+        model.onSearchChanged = { [weak self] in
+            self?.renderSearch()
         }
         historyController.onJumpToCommit = { [weak self] oid in
             guard let self else { return }
@@ -750,27 +796,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         historyController.onClearScope = { [weak self] in
             self?.model.clearHistoryScope()
-        }
-        treeController.onShowHistory = { [weak self] path, pathIsExact in
-            self?.showHistory(ofPath: path, pathIsExact: pathIsExact)
-        }
-        treeController.onCopyPath = { [weak self] path, pathIsExact in
-            guard let text = self?.model.copyablePath(path, pathIsExact: pathIsExact) else {
-                return
-            }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        }
-        model.onSearchChanged = { [weak self] in
-            guard let self else { return }
-            historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
-            historyController.renderSearch(
-                active: model.searchFilter != nil, results: model.searchResults,
-                scanned: model.searchScanned, complete: model.searchComplete,
-                searching: model.isSearching, error: model.searchError)
-            if let commit = model.diffCommit {
-                historyController.selectCommitRow(commit.oid)
-            }
         }
         historyController.onSearchFilterChanged = { [weak self] filter in
             guard let self else { return }
@@ -812,51 +837,46 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 self.recordStop()
             }
         }
-        goToFileController.provider = { [weak self] query in
-            guard let self else { return PathSearchResult(entries: [], truncated: false) }
-            return try await model.searchPaths(query)
+    }
+
+    private func renderHistory() {
+        if case let .path(path) = model.historyScope {
+            historyController.setScope(path: path)
+        } else {
+            historyController.setScope(path: nil)
         }
-        goToFileController.onOpen = { [weak self] entry in
-            guard let self else { return }
-            setMode(.files)
-            Task {
-                await self.model.openSearchResult(entry)
-                self.recordStop()
-            }
+        historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
+        historyController.reload(
+            model.history, complete: model.historyComplete, error: model.historyError)
+    }
+
+    private func renderCommitDiff() {
+        historyController.renderDetail(
+            changes: model.commitChanges, state: model.fileDiff, detail: model.commitDetail)
+        historyController.renderCommitDetail(model.commitDetail, canGoBack: detailCanGoBack)
+        if let commit = model.diffCommit {
+            historyController.selectCommitRow(commit.oid)
+        } else {
+            historyController.deselectCommitRow()
         }
+    }
+
+    private func renderSearch() {
+        historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
+        historyController.renderSearch(
+            active: model.searchFilter != nil, results: model.searchResults,
+            scanned: model.searchScanned, complete: model.searchComplete,
+            searching: model.isSearching, error: model.searchError)
+        if let commit = model.diffCommit {
+            historyController.selectCommitRow(commit.oid)
+        }
+    }
+
+    /// The Files sidebar tree and the Go to File panel that opens into it.
+    private func wireTree() {
         model.onRootChanged = { [weak self] in
             guard let self else { return }
             treeController.reload(root: model.rootTree, placeholder: model.treePlaceholder)
-        }
-        model.onFileChanged = { [weak self] in
-            guard let self else { return }
-            fileController.repositoryPath = model.openedFilePath
-            fileController.render(model.fileState)
-            treeController.showOpenFile(
-                model.openedFilePath, pathIsExact: model.openedPathIsExact)
-        }
-        model.onError = { [weak self] message in
-            self?.presentError(message)
-        }
-        model.onBlameChanged = { [weak self] in
-            guard let self else { return }
-            switch model.blame {
-            case .empty:
-                blamePanel.close()
-            case let .loading(_, title):
-                blamePanel.show([], title: title, over: window)
-            case let .loaded(_, spans, title):
-                blamePanel.show(spans, title: title, over: window)
-            case let .failed(message):
-                blamePanel.close()
-                presentError(message)
-            }
-        }
-        model.onInputError = { [weak self] title, message in
-            self?.presentError(message, title: title)
-        }
-        refsController.onSelect = { [weak self] ref in
-            self?.browse(ref)
         }
         treeController.childrenProvider = { [weak self] tree, path in
             guard let self else { return [] }
@@ -877,6 +897,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         treeController.onContentWidthChanged = { [weak self] width in
             self?.fitSidebarWidth(to: width)
+        }
+        treeController.onShowHistory = { [weak self] path, pathIsExact in
+            self?.showHistory(ofPath: path, pathIsExact: pathIsExact)
+        }
+        treeController.onCopyPath = { [weak self] path, pathIsExact in
+            guard let text = self?.model.copyablePath(path, pathIsExact: pathIsExact) else {
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        goToFileController.provider = { [weak self] query in
+            guard let self else { return PathSearchResult(entries: [], truncated: false) }
+            return try await model.searchPaths(query)
+        }
+        goToFileController.onOpen = { [weak self] entry in
+            guard let self else { return }
+            setMode(.files)
+            Task {
+                await self.model.openSearchResult(entry)
+                self.recordStop()
+            }
+        }
+    }
+
+    /// The file pane: its content, highlights, import links and repository links.
+    private func wireFile() {
+        model.onFileChanged = { [weak self] in
+            guard let self else { return }
+            fileController.repositoryPath = model.openedFilePath
+            fileController.render(model.fileState)
+            treeController.showOpenFile(
+                model.openedFilePath, pathIsExact: model.openedPathIsExact)
         }
         fileController.takePendingFragment = { [weak self] in
             self?.model.takePendingFragment()
@@ -904,18 +957,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
         }
         fileController.onOpenRepositoryPath = { [weak self] path, fragment in
-            guard let self else { return }
-            setMode(.files)
-            Task {
-                switch await self.model.openPath(path, fragment: fragment) {
-                case .opened:
-                    self.recordStop()
-                case .missing:
-                    self.presentError(
-                        "\(path) is not in this tree.", title: "rc-git could not open the link")
-                case let .failed(message):
-                    self.presentError(message)
-                }
+            self?.openRepositoryLink(path, fragment: fragment)
+        }
+    }
+
+    private func openRepositoryLink(_ path: String, fragment: String?) {
+        setMode(.files)
+        Task {
+            switch await model.openPath(path, fragment: fragment) {
+            case .opened:
+                recordStop()
+            case .missing:
+                presentError(
+                    "\(path) is not in this tree.", title: "rc-git could not open the link")
+            case let .failed(message):
+                presentError(message)
             }
         }
     }
@@ -1254,6 +1310,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changesController.renderSync(status: sync.remoteStatus, availability: availability)
         backToDefaultButton?.isEnabled = availability.canBackToDefault
         backToDefaultToolbarItem?.toolTip = backToDefaultTooltip()
+        renderSyncStep(sync)
+        // A switch that landed is followed however the workflow ended: a fetch that fails
+        // after it still leaves HEAD and the working tree on the new branch.
+        if let branch = sync.takeSwitchedBranch() {
+            follow(branch: branch)
+        }
+    }
+
+    /// The spinner and tooltip for the sync state; a finished run is reported and reset.
+    private func renderSyncStep(_ sync: SyncModel) {
         switch sync.state {
         case .idle:
             showSyncSpinner(false)
@@ -1267,12 +1333,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case let .done(summary):
             showSyncSpinner(false)
             syncToolbarItem?.toolTip = idleSyncTooltip()
-            if summary.pulledFiles > 0 {
-                changeListIsStale()
-            }
-            if let notice = summary.notice {
-                presentError(notice, title: "rc-git synced, with a problem")
-            }
+            handleSyncCompletion(summary)
             sync.reset()
         case let .diverged(message):
             showSyncSpinner(false)
@@ -1283,10 +1344,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             presentError(message, title: "rc-git could not sync")
             sync.reset()
         }
-        // A switch that landed is followed however the workflow ended: a fetch that fails
-        // after it still leaves HEAD and the working tree on the new branch.
-        if let branch = sync.takeSwitchedBranch() {
-            follow(branch: branch)
+    }
+
+    /// Rescans after a pull that changed files and reports a problem the sync survived.
+    private func handleSyncCompletion(_ summary: SyncSummary) {
+        if summary.pulledFiles > 0 {
+            changeListIsStale()
+        }
+        if let notice = summary.notice {
+            presentError(notice, title: "rc-git synced, with a problem")
         }
     }
 
@@ -1448,24 +1514,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 }
             }
         case .deleteBranch:
-            let name = ref.shortName
-            Task { [weak self] in
-                let plan = await Task.detached {
-                    Result { try RepositoryGuard.planBranchDelete(repoPath: path, name: name) }
-                }.value
-                guard let self else { return }
-                switch plan {
-                case let .success(decision):
-                    followDecision(decision, verb: "Delete Branch") { input in
-                        try RepositoryGuard.deleteBranch(
-                            repoPath: path, name: name, input: input)
-                    }
-                case let .failure(error):
-                    presentError(
-                        String(describing: error),
-                        title: RepositoryGuard.failureTitle(verb: "Delete Branch"))
-                }
-            }
+            deleteBranch(ref.shortName, repoPath: path)
         case .deleteTag:
             guard let decision = RepositoryGuard.planTagDelete(name: ref.shortName) else {
                 return
@@ -1473,6 +1522,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let name = ref.shortName
             followDecision(decision, verb: "Delete Tag") { input in
                 try RepositoryGuard.deleteTag(repoPath: path, name: name, input: input)
+            }
+        }
+    }
+
+    /// Plans the deletion off the main actor, then follows the decision it returns.
+    private func deleteBranch(_ name: String, repoPath path: String) {
+        Task { [weak self] in
+            let plan = await Task.detached {
+                Result { try RepositoryGuard.planBranchDelete(repoPath: path, name: name) }
+            }.value
+            guard let self else { return }
+            switch plan {
+            case let .success(decision):
+                followDecision(decision, verb: "Delete Branch") { input in
+                    try RepositoryGuard.deleteBranch(repoPath: path, name: name, input: input)
+                }
+            case let .failure(error):
+                presentError(
+                    String(describing: error),
+                    title: RepositoryGuard.failureTitle(verb: "Delete Branch"))
             }
         }
     }

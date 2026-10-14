@@ -62,6 +62,14 @@ enum Style {
         control.selectedSegment = ChangeGrouping.allCases.firstIndex(of: grouping) ?? 0
     }
 
+    /// Makes `label` a heading over a list in a pane, such as "Changes" or "Stashes".
+    @discardableResult
+    static func sectionHeading(_ label: NSTextField) -> NSTextField {
+        label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
     /// The grouping a control built by `groupingControl(_:showing:)` has picked.
     static func grouping(of control: NSSegmentedControl) -> ChangeGrouping {
         let all = ChangeGrouping.allCases

@@ -103,6 +103,19 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }()
 
     override func loadView() {
+        buildCommitTable()
+        let commits = buildCommitsPane()
+        let detail = buildDetailPane()
+        detail.isHidden = true
+        detailPane = detail
+        let diff = buildDiffPane()
+        diff.isHidden = true
+        diffPane = diff
+        view = buildSplits(commits: commits, detail: detail, diff: diff)
+    }
+
+    /// The commit table, a hidden graph column first, in its scroll view.
+    private func buildCommitTable() {
         let graphColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("graph"))
         graphColumn.title = ""
         graphColumn.width = GraphCellView.width(lanes: 1)
@@ -139,7 +152,10 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         NotificationCenter.default.addObserver(
             self, selector: #selector(boundsChanged(_:)),
             name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+    }
 
+    /// The search area, scope bar and error bar over the commit table, with its placeholder.
+    private func buildCommitsPane() -> NSView {
         placeholder.textColor = .secondaryLabelColor
         placeholder.translatesAutoresizingMaskIntoConstraints = false
 
@@ -177,20 +193,21 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             placeholder.centerXAnchor.constraint(equalTo: commitsPane.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: commitsPane.centerYAnchor),
         ])
+        return commitsPane
+    }
 
+    /// The left column of the commit list over the commit's detail, beside the diff.
+    private func buildSplits(commits: NSView, detail: NSView, diff: NSView) -> NSSplitView {
         // The commit list fills the tab until a commit opens. Then the left column holds the
         // list over the commit's detail, and the diff of the picked file takes the right.
         // Hidden arranged subviews collapse with their divider, so a closed commit costs no
         // room in either split.
-        let detail = buildDetailPane()
-        detail.isHidden = true
-        detailPane = detail
         let column = NSSplitView()
         column.isVertical = false
         column.dividerStyle = .thin
         column.autosaveName = "rc-git.history-column.v1"
         column.delegate = self
-        column.addArrangedSubview(commitsPane)
+        column.addArrangedSubview(commits)
         column.addArrangedSubview(detail)
         columnSplit = column
         NSLayoutConstraint.activate([
@@ -202,9 +219,6 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                     + column.dividerThickness)
         ])
 
-        let diff = buildDiffPane()
-        diff.isHidden = true
-        diffPane = diff
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
@@ -217,7 +231,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         split.addArrangedSubview(column)
         split.addArrangedSubview(diff)
         outerSplit = split
-        view = split
+        return split
     }
 
     /// The open commit's header over the files it changed, for the bottom of the left column.
@@ -243,8 +257,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
         buildDetailHeader()
 
-        changesCount.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        changesCount.textColor = .secondaryLabelColor
+        Style.sectionHeading(changesCount)
         Style.groupingControl(groupingControl, showing: groupingStore.grouping)
         groupingControl.target = self
         groupingControl.action = #selector(groupingChanged(_:))

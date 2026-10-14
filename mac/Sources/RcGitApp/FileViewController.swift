@@ -72,80 +72,9 @@ final class FileViewController: NSViewController {
     private var markedBreaks: Set<Int> = []
 
     override func loadView() {
-        pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
-        pathLabel.lineBreakMode = .byTruncatingHead
-        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        // The name takes the bar's spare width, so the size and the mode picker sit at the
-        // trailing edge.
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        detailLabel.font = NSFont.monospacedDigitSystemFont(
-            ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.alignment = .right
-        detailLabel.setContentHuggingPriority(.required, for: .horizontal)
-        modePicker.segmentStyle = .roundRect
-        modePicker.controlSize = .small
-        modePicker.target = self
-        modePicker.action = #selector(modeChanged(_:))
-        modePicker.isHidden = true
-        modePicker.setContentHuggingPriority(.required, for: .horizontal)
-
-        for view in [pathLabel, detailLabel, modePicker] {
-            header.addArrangedSubview(view)
-        }
-        header.orientation = .horizontal
-        header.distribution = .fill
-        header.alignment = .centerY
-        header.spacing = 8
-        header.edgeInsets = NSEdgeInsets(top: 6, left: Style.margin, bottom: 6, right: Style.margin)
-        header.setHuggingPriority(.required, for: .vertical)
-
-        let layoutManager = NSLayoutManager()
-        layoutManager.allowsNonContiguousLayout = true
-        layoutManager.delegate = self
-        let container = NSTextContainer(
-            size: NSSize(
-                width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-        container.widthTracksTextView = false
-        container.lineFragmentPadding = 8
-        layoutManager.addTextContainer(container)
-        textStorage.addLayoutManager(layoutManager)
-        textView = LinkTextView(frame: .zero, textContainer: container)
-        textView.linkRange = { [weak self] index in self?.importLink(at: index)?.range }
-        textView.onFollowLink = { [weak self] index in self?.followImport(at: index) }
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
-        textView.isHorizontallyResizable = true
-        textView.isVerticallyResizable = true
-        textView.maxSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.autoresizingMask = []
-        textView.textContainerInset = NSSize(width: 0, height: 6)
-        textView.font = MarkdownRenderer.Theme.code
-        textView.backgroundColor = .textBackgroundColor
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticLinkDetectionEnabled = false
-        textView.delegate = self
-        // The string already carries the link color and underline; leaving these empty stops
-        // NSTextView painting its own over them, and keeps the pointing-hand cursor.
-        textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
-
-        scroll.documentView = textView
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        ruler = LineNumberRulerView(scrollView: scroll, textView: textView)
-        scroll.verticalRulerView = ruler
-        scroll.hasVerticalRuler = true
-        scroll.rulersVisible = true
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(visibleRegionChanged(_:)),
-            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-
+        buildHeader()
+        buildTextView()
+        buildScroll()
         placeholder.alignment = .center
         placeholder.textColor = .secondaryLabelColor
         placeholder.translatesAutoresizingMaskIntoConstraints = false
@@ -184,6 +113,89 @@ final class FileViewController: NSViewController {
         ])
         view = root
         render(.empty)
+    }
+
+    /// The bar over the text: the path, the size, and the source/preview picker.
+    private func buildHeader() {
+        pathLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        pathLabel.lineBreakMode = .byTruncatingHead
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The name takes the bar's spare width, so the size and the mode picker sit at the
+        // trailing edge.
+        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        detailLabel.font = NSFont.monospacedDigitSystemFont(
+            ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .right
+        detailLabel.setContentHuggingPriority(.required, for: .horizontal)
+        modePicker.segmentStyle = .roundRect
+        modePicker.controlSize = .small
+        modePicker.target = self
+        modePicker.action = #selector(modeChanged(_:))
+        modePicker.isHidden = true
+        modePicker.setContentHuggingPriority(.required, for: .horizontal)
+
+        for view in [pathLabel, detailLabel, modePicker] {
+            header.addArrangedSubview(view)
+        }
+        header.orientation = .horizontal
+        header.distribution = .fill
+        header.alignment = .centerY
+        header.spacing = 8
+        header.edgeInsets = NSEdgeInsets(top: 6, left: Style.margin, bottom: 6, right: Style.margin)
+        header.setHuggingPriority(.required, for: .vertical)
+    }
+
+    /// A TextKit 1 stack that lays out lazily and never wraps.
+    private func buildTextView() {
+        let layoutManager = NSLayoutManager()
+        layoutManager.allowsNonContiguousLayout = true
+        layoutManager.delegate = self
+        let container = NSTextContainer(
+            size: NSSize(
+                width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = false
+        container.lineFragmentPadding = 8
+        layoutManager.addTextContainer(container)
+        textStorage.addLayoutManager(layoutManager)
+        textView = LinkTextView(frame: .zero, textContainer: container)
+        textView.linkRange = { [weak self] index in self?.importLink(at: index)?.range }
+        textView.onFollowLink = { [weak self] index in self?.followImport(at: index) }
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.autoresizingMask = []
+        textView.textContainerInset = NSSize(width: 0, height: 6)
+        textView.font = MarkdownRenderer.Theme.code
+        textView.backgroundColor = .textBackgroundColor
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.delegate = self
+        // The string already carries the link color and underline; leaving these empty stops
+        // NSTextView painting its own over them, and keeps the pointing-hand cursor.
+        textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
+    }
+
+    /// The scroll view around the text, with the line-number ruler.
+    private func buildScroll() {
+        scroll.documentView = textView
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        ruler = LineNumberRulerView(scrollView: scroll, textView: textView)
+        scroll.verticalRulerView = ruler
+        scroll.hasVerticalRuler = true
+        scroll.rulersVisible = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(visibleRegionChanged(_:)),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
     }
 
     func render(_ state: FileState) {

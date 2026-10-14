@@ -171,14 +171,6 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         filesScroll.autohidesScrollers = true
     }
 
-    /// The change list's heading, matching the stash list's.
-    private func changesLabel() -> NSTextField {
-        let label = NSTextField(labelWithString: "Changes")
-        label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        return label
-    }
-
     /// Flat list or folder tree, remembered between launches.
     private func buildGroupingControl() {
         Style.groupingControl(groupingControl, showing: groupingStore.grouping)
@@ -199,18 +191,11 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func buildSection() -> NSView {
-        for (button, action): (NSButton, Selector) in [
+        configureSmallButtons([
             (fetchButton, #selector(fetchClicked(_:))),
             (pullButton, #selector(pullClicked(_:))),
             (pushButton, #selector(pushClicked(_:))),
-        ] {
-            button.target = self
-            button.action = action
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            // Disabled until the window controller renders the first remote status.
-            button.isEnabled = false
-        }
+        ])
         let syncRow = NSStackView(views: [fetchButton, pullButton, pushButton, NSView()])
         syncRow.orientation = .horizontal
         syncRow.spacing = 6
@@ -218,7 +203,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         // Its own row rather than the sync row's tail: pull and push carry commit counts in
         // their titles, and the sidebar is only 260 points wide.
         buildGroupingControl()
-        let listRow = NSStackView(views: [changesLabel(), NSView(), groupingControl])
+        let changesHeading = Style.sectionHeading(NSTextField(labelWithString: "Changes"))
+        let listRow = NSStackView(views: [changesHeading, NSView(), groupingControl])
         listRow.orientation = .horizontal
         listRow.spacing = 6
 
@@ -226,9 +212,84 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         truncationLabel.textColor = .secondaryLabelColor
         truncationLabel.isHidden = true
 
-        let stashLabel = NSTextField(labelWithString: "Stashes")
-        stashLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        stashLabel.textColor = .secondaryLabelColor
+        buildStashGroup()
+        let actionRow = buildCommitBox()
+
+        let stack = NSStackView(views: [
+            syncRow, listRow, filesScroll, truncationLabel, stashGroup, messageScroll, authorLabel,
+            actionRow,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.distribution = .fill
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(
+            top: 6, left: Self.sectionInset, bottom: Self.sectionInset, right: Self.sectionInset)
+        stack.detachesHiddenViews = true
+        sectionStack = stack
+        filesScroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
+        stashScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        messageScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
+
+        let pane = NSView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        pane.addSubview(stack)
+        pane.addSubview(filesPlaceholder)
+        pane.addSubview(messagePlaceholder)
+        filesPlaceholder.textColor = .secondaryLabelColor
+        filesPlaceholder.alignment = .center
+        filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
+        // The list keeps a usable height, but yields before the layout breaks: it shares
+        // the sidebar with the ref list now.
+        let filesFloor = filesScroll.heightAnchor.constraint(
+            greaterThanOrEqualToConstant: LayoutPolicy.changesFilesFloor)
+        filesFloor.priority = NSLayoutConstraint.Priority(rawValue: 700)
+        let rows = [syncRow, listRow, filesScroll, messageScroll, authorLabel, actionRow]
+        NSLayoutConstraint.activate(rows.map { fullWidth($0, in: stack) })
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: pane.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
+            filesFloor,
+            stashScroll.heightAnchor.constraint(
+                equalToConstant: LayoutPolicy.changesStashHeight),
+            messageScroll.heightAnchor.constraint(
+                equalToConstant: LayoutPolicy.changesMessageHeight),
+            filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),
+            filesPlaceholder.centerYAnchor.constraint(equalTo: filesScroll.centerYAnchor),
+            filesPlaceholder.widthAnchor.constraint(
+                lessThanOrEqualTo: filesScroll.widthAnchor, constant: -2 * Self.sectionInset),
+            // The text container's own inset, so the placeholder sits on the caret.
+            messagePlaceholder.leadingAnchor.constraint(
+                equalTo: messageScroll.leadingAnchor, constant: 5),
+            messagePlaceholder.topAnchor.constraint(
+                equalTo: messageScroll.topAnchor, constant: 2),
+        ])
+        show(stashGroup, visible: true, width: &stashWidth)
+        return pane
+    }
+
+    /// A row of the sidebar section as wide as the stack inside its insets. Not activated.
+    private func fullWidth(_ row: NSView, in stack: NSStackView) -> NSLayoutConstraint {
+        row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * Self.sectionInset)
+    }
+
+    /// Small rounded buttons sending `action` here, disabled until the first render enables
+    /// them.
+    private func configureSmallButtons(_ buttons: [(NSButton, Selector)]) {
+        for (button, action) in buttons {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.isEnabled = false
+        }
+    }
+
+    /// The stash list with its heading, empty-list note and buttons, as one group.
+    private func buildStashGroup() {
+        let stashLabel = Style.sectionHeading(NSTextField(labelWithString: "Stashes"))
         stashScroll.documentView = stashTable
         stashScroll.hasVerticalScroller = true
         stashScroll.autohidesScrollers = true
@@ -249,17 +310,11 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
                 lessThanOrEqualTo: stashScroll.trailingAnchor, constant: -Style.margin),
         ])
 
-        for (button, action): (NSButton, Selector) in [
+        configureSmallButtons([
             (applyButton, #selector(applyClicked(_:))),
             (popButton, #selector(popClicked(_:))),
             (dropButton, #selector(dropClicked(_:))),
-        ] {
-            button.target = self
-            button.action = action
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.isEnabled = false
-        }
+        ])
         let stashButtons = NSStackView(views: [applyButton, popButton, dropButton])
         stashButtons.orientation = .horizontal
         stashButtons.spacing = 6
@@ -271,7 +326,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         for row in [stashLabel, stashScroll, stashButtons] as [NSView] {
             stashGroup.addArrangedSubview(row)
         }
+    }
 
+    /// The commit message box and its labels; returns the row of summary and buttons.
+    private func buildCommitBox() -> NSStackView {
         messageText.isRichText = false
         messageText.isAutomaticQuoteSubstitutionEnabled = false
         messageText.isAutomaticDashSubstitutionEnabled = false
@@ -310,67 +368,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let actionRow = NSStackView(views: [summaryLabel, NSView(), stashButton, commitButton])
         actionRow.orientation = .horizontal
         actionRow.spacing = 6
-
-        let stack = NSStackView(views: [
-            syncRow, listRow, filesScroll, truncationLabel, stashGroup, messageScroll, authorLabel,
-            actionRow,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.distribution = .fill
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(
-            top: 6, left: Self.sectionInset, bottom: Self.sectionInset, right: Self.sectionInset)
-        stack.detachesHiddenViews = true
-        sectionStack = stack
-        filesScroll.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
-        stashScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        messageScroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
-
-        let pane = NSView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        pane.addSubview(stack)
-        pane.addSubview(filesPlaceholder)
-        pane.addSubview(messagePlaceholder)
-        filesPlaceholder.textColor = .secondaryLabelColor
-        filesPlaceholder.alignment = .center
-        filesPlaceholder.translatesAutoresizingMaskIntoConstraints = false
-        let inset = Self.sectionInset
-        // The list keeps a usable height, but yields before the layout breaks: it shares
-        // the sidebar with the ref list now.
-        let filesFloor = filesScroll.heightAnchor.constraint(
-            greaterThanOrEqualToConstant: LayoutPolicy.changesFilesFloor)
-        filesFloor.priority = NSLayoutConstraint.Priority(rawValue: 700)
-        NSLayoutConstraint.activate([
-            syncRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
-            listRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
-            stack.topAnchor.constraint(equalTo: pane.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
-            filesScroll.widthAnchor.constraint(
-                equalTo: stack.widthAnchor, constant: -2 * inset),
-            messageScroll.widthAnchor.constraint(
-                equalTo: stack.widthAnchor, constant: -2 * inset),
-            authorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
-            actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset),
-            filesFloor,
-            stashScroll.heightAnchor.constraint(
-                equalToConstant: LayoutPolicy.changesStashHeight),
-            messageScroll.heightAnchor.constraint(
-                equalToConstant: LayoutPolicy.changesMessageHeight),
-            filesPlaceholder.centerXAnchor.constraint(equalTo: filesScroll.centerXAnchor),
-            filesPlaceholder.centerYAnchor.constraint(equalTo: filesScroll.centerYAnchor),
-            filesPlaceholder.widthAnchor.constraint(
-                lessThanOrEqualTo: filesScroll.widthAnchor, constant: -2 * inset),
-            // The text container's own inset, so the placeholder sits on the caret.
-            messagePlaceholder.leadingAnchor.constraint(
-                equalTo: messageScroll.leadingAnchor, constant: 5),
-            messagePlaceholder.topAnchor.constraint(
-                equalTo: messageScroll.topAnchor, constant: 2),
-        ])
-        show(stashGroup, visible: true, width: &stashWidth)
-        return pane
+        return actionRow
     }
 
     private func buildDiffPane() -> NSView {
@@ -466,39 +464,38 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func renderDiff(_ state: WorktreeDiffState) {
         diffHunks = []
+        diffRows = []
         switch state {
         case .idle:
             diffPath = nil
-            diffRows = []
             showDiffPlaceholder("Select a file")
         case let .loading(path):
             diffPath = path
-            diffRows = []
             showDiffPlaceholder("Loading \(path)…")
         case let .failed(path, message):
             diffPath = path
-            diffRows = []
             showDiffPlaceholder(message)
         case let .loaded(path, diff):
             diffPath = path
-            diffRows = []
             if let placeholder = diff.placeholder(path: path) {
                 showDiffPlaceholder(placeholder)
             } else if case let .text(hunks) = diff {
                 diffHunks = hunks
-                let all = hunks.map(\.stamp)
-                for hunk in hunks {
-                    diffRows.append(.header(stamp: hunk.stamp, all: all))
-                    for line in hunk.lines {
-                        diffRows.append(.line(line))
-                    }
-                }
+                diffRows = Self.diffRows(for: hunks)
                 diffPlaceholder.isHidden = true
                 diffScroll.isHidden = false
             }
         }
         fitDiffColumn(to: diffHunks)
         diffTable.reloadData()
+    }
+
+    /// Each hunk's header row, carrying every hunk's stamp, followed by its lines.
+    private static func diffRows(for hunks: [DiffHunk]) -> [DiffRow] {
+        let all = hunks.map(\.stamp)
+        return hunks.flatMap { hunk in
+            [DiffRow.header(stamp: hunk.stamp, all: all)] + hunk.lines.map { DiffRow.line($0) }
+        }
     }
 
     /// Widens the diff column to the longest line, so a line past the pane scrolls into view
@@ -654,8 +651,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         width = nil
         row.isHidden = !visible
         guard visible, let stack = sectionStack else { return }
-        let constraint = row.widthAnchor.constraint(
-            equalTo: stack.widthAnchor, constant: -2 * Self.sectionInset)
+        let constraint = fullWidth(row, in: stack)
         constraint.isActive = true
         width = constraint
     }

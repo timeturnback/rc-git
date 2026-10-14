@@ -240,21 +240,42 @@ private struct MarkdownBuilder {
     private static func attributes(
         for run: MarkdownRun, font: NSFont, color: NSColor, style: NSParagraphStyle
     ) -> [NSAttributedString.Key: Any] {
-        var font = run.style.contains(.code) ? monospaced(like: font) : font
-        var attributes: [NSAttributedString.Key: Any] = [.paragraphStyle: style]
+        let font = Self.font(for: run, base: font)
+        var attributes: [NSAttributedString.Key: Any] = [
+            .paragraphStyle: style, .font: font, .foregroundColor: color,
+        ]
         if run.style.contains(.footnoteMarker) {
-            font = .systemFont(ofSize: max(font.pointSize - 4, 8))
             attributes[.baselineOffset] = font.pointSize * 0.45
         }
-        var traits: NSFontDescriptor.SymbolicTraits = []
-        if run.style.contains(.emphasis) { traits.insert(.italic) }
-        if run.style.contains(.strong) { traits.insert(.bold) }
-        if !traits.isEmpty {
-            let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
-            font = NSFont(descriptor: descriptor, size: font.pointSize) ?? font
+        attributes.merge(decorations(for: run)) { _, decoration in decoration }
+        return attributes
+    }
+
+    /// The run's font: monospaced for code, small for a footnote marker, then its traits.
+    private static func font(for run: MarkdownRun, base: NSFont) -> NSFont {
+        var font = run.style.contains(.code) ? monospaced(like: base) : base
+        if run.style.contains(.footnoteMarker) {
+            font = .systemFont(ofSize: max(font.pointSize - 4, 8))
         }
-        attributes[.font] = font
-        attributes[.foregroundColor] = color
+        let traits = symbolicTraits(for: run.style)
+        guard !traits.isEmpty else { return font }
+        let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
+        return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
+    }
+
+    private static func symbolicTraits(
+        for style: MarkdownStyle
+    ) -> NSFontDescriptor.SymbolicTraits {
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if style.contains(.emphasis) { traits.insert(.italic) }
+        if style.contains(.strong) { traits.insert(.bold) }
+        return traits
+    }
+
+    /// Strikethrough, the code background, and a link's color, underline and tooltip. These
+    /// replace the run's base attributes.
+    private static func decorations(for run: MarkdownRun) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [:]
         if run.style.contains(.strikethrough) {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
@@ -370,13 +391,11 @@ extension MarkdownBuilder {
         textTable.layoutAlgorithm = .automaticLayoutAlgorithm
         textTable.collapsesBorders = true
         textTable.hidesEmptyCells = false
-        var row = 0
         let context = TableContext(
             table: table, textTable: textTable, block: block,
             listItem: Self.listItemBlock(for: block))
-        appendRow(table.header, in: context, row: &row, header: true)
-        for cells in table.rows {
-            appendRow(cells, in: context, row: &row, header: false)
+        for (row, cells) in ([table.header] + table.rows).enumerated() {
+            appendRow(cells, row: row, in: context)
         }
         // The paragraph that closes the table is invisible: it only exists to end the table's
         // block context, so it carries a 1-point font and the spacing the next block needs.
@@ -393,10 +412,10 @@ extension MarkdownBuilder {
         let listItem: NSTextBlock?
     }
 
-    private mutating func appendRow(
-        _ cells: [[MarkdownRun]], in context: TableContext, row: inout Int, header: Bool
-    ) {
+    /// Appends one table row; row 0 is the header.
+    private mutating func appendRow(_ cells: [[MarkdownRun]], row: Int, in context: TableContext) {
         let table = context.table
+        let header = row == 0
         for column in 0..<table.columnCount {
             let cell = NSTextTableBlock(
                 table: context.textTable, startingRow: row, rowSpan: 1, startingColumn: column,
@@ -416,7 +435,6 @@ extension MarkdownBuilder {
             appendRuns(cells[column], font: font, color: .textColor, style: style)
             terminate(style: style, font: font)
         }
-        row += 1
     }
 
     private static func alignment(of alignment: MarkdownTable.Alignment) -> NSTextAlignment {
