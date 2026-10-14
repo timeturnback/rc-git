@@ -69,7 +69,6 @@ struct GitFixture {
         _ = try gitOutput(args, extraEnvironment: extraEnvironment)
     }
 
-    @discardableResult
     func gitOutput(_ args: [String], extraEnvironment: [String: String] = [:]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
