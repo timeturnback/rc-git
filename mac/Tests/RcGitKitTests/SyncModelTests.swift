@@ -8,8 +8,6 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     struct Script {
         /// One answer per preflight, the last one repeating; `nil` makes that preflight throw.
         var preflights: [RemoteStatus?]
-        /// Seconds each preflight sleeps before answering, in call order.
-        var preflightDelays: [TimeInterval] = []
         var defaultBranch: String? = "main"
         var defaultBranchFails = false
         var fetches: [Result<FetchOutcome, SyncError>] = []
@@ -29,6 +27,8 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     private(set) var pushCalls = 0
     private(set) var preflightCalls = 0
     private(set) var defaultBranchCalls = 0
+    /// Holds the next preflight at the gate until the test opens it; consumed by that call.
+    var preflightGate: CallGate?
     /// Called on the step's own thread, with that step's token, before the step
     /// answers. A test uses it to cancel exactly while the transfer is in flight.
     var duringStep: (@Sendable (CancelToken) -> Void)?
@@ -61,11 +61,10 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         let next: RemoteStatus?? =
             script.preflights.count > 1
             ? script.preflights.removeFirst() : script.preflights.first
-        let delay = script.preflightDelays.isEmpty ? 0 : script.preflightDelays.removeFirst()
+        let gate = preflightGate
+        preflightGate = nil
         lock.unlock()
-        if delay > 0 {
-            Thread.sleep(forTimeInterval: delay)
-        }
+        gate?.pass()
         guard let next else {
             throw SyncError.failure(message: "no preflight scripted")
         }
@@ -1614,19 +1613,21 @@ private let alreadyOnMain = CheckoutOutcome(
     }
 
     @Test func aSlowRefreshDoesNotOverwriteTheFreshReadAWorkflowMade() async {
-        let (model, _, _) = model(
+        let (model, performer, _) = model(
             .init(
                 preflights: [
                     StubSyncPerformer.upstream(ahead: 1), StubSyncPerformer.upstream(ahead: 2),
                 ],
-                preflightDelays: [1],
                 fetches: [.success(cleanFetch)]
             ))
+        let gate = CallGate()
+        performer.preflightGate = gate
         var seen: [Int?] = []
         model.onStateChanged = { seen.append(model.remoteStatus?.ahead) }
         let slow = Task { await model.refreshStatus() }
-        try? await Task.sleep(for: .milliseconds(50))
+        await gate.waitUntilArrived()
         await model.fetch()
+        gate.open()
         await slow.value
 
         #expect(model.remoteStatus?.ahead == 2)
@@ -1636,13 +1637,15 @@ private let alreadyOnMain = CheckoutOutcome(
     @Test func aBurstOfRefreshesCostsTwoPreflightsAndOneMainlineRead() async {
         let (model, performer, _) = model(
             .init(
-                preflights: [StubSyncPerformer.upstream()], preflightDelays: [1],
-                defaultBranch: nil))
+                preflights: [StubSyncPerformer.upstream()], defaultBranch: nil))
+        let gate = CallGate()
+        performer.preflightGate = gate
         let slow = Task { await model.refreshStatus() }
-        try? await Task.sleep(for: .milliseconds(50))
+        await gate.waitUntilArrived()
         let burst = (0..<20).map { _ in Task { await model.refreshStatus() } }
-        await slow.value
         for refresh in burst { await refresh.value }
+        gate.open()
+        await slow.value
         #expect(performer.preflightCalls == 2, "the burst joins one more read")
 
         await model.refreshStatus()
