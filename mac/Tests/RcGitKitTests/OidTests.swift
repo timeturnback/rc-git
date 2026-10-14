@@ -16,6 +16,7 @@ import Testing
     @Test func rejectsMalformedHex() {
         #expect(Oid(hex: "abc") == nil)
         #expect(Oid(hex: String(repeating: "g", count: 40)) == nil)
+        #expect(Oid(hex: String(repeating: "a", count: 64)) == nil)
         #expect(Oid(hex: "") == nil)
         #expect(Oid(hex: String(repeating: "+f", count: 20)) == nil)
         #expect(Oid(hex: String(repeating: "-0", count: 20)) == nil)

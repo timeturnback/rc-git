@@ -15,7 +15,7 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
         withUnsafeMutableBytes(of: &storage) { $0.copyBytes(from: bytes) }
     }
 
-    /// Parses a full 40-digit lowercase or uppercase hex id. `nil` for anything else.
+    /// Parses a full 40-digit SHA-1 hex id, lowercase or uppercase. `nil` for anything else.
     public init?(hex: String) {
         let units = Array(hex.utf8)
         guard units.count == 40 else { return nil }
