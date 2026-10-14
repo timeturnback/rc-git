@@ -223,6 +223,20 @@ pub enum ActionError {
          ~/.gitconfig); set user.name/user.email there, or pass an identity"
     )]
     MissingIdentity,
+    /// The identity to record has an empty name or email, or one holding `<`, `>` or a line
+    /// break, which would corrupt the commit's `author` line. Refused before any object is
+    /// written.
+    #[error("{op}: author {field} {value:?} {reason}; fix the identity and retry")]
+    InvalidIdentity {
+        /// What was being done.
+        op: &'static str,
+        /// `name` or `email`.
+        field: &'static str,
+        /// The value that was refused.
+        value: String,
+        /// What is wrong with it, e.g. `is empty`.
+        reason: &'static str,
+    },
     /// The remote wants credentials rc-git does not have, or rejected the ones given.
     #[error("{op}: '{host}' requires authentication or rejected the credentials")]
     AuthRequired {
@@ -1199,6 +1213,21 @@ mod tests {
             "fetch: the ssh-ed25519 host key for 'git.example.com' does not match the key \
              approved earlier (SHA256:approved) (offered SHA256:offered); this may be a \
              man-in-the-middle — investigate with ssh directly"
+        );
+    }
+
+    #[test]
+    fn an_invalid_identity_names_the_op_the_field_and_the_value() {
+        let err = ActionError::InvalidIdentity {
+            op: "commit",
+            field: "email",
+            value: "b> <c".to_owned(),
+            reason: "must not contain '<', '>' or a line break",
+        };
+        assert_eq!(
+            err.to_string(),
+            "commit: author email \"b> <c\" must not contain '<', '>' or a line break; fix the \
+             identity and retry"
         );
     }
 

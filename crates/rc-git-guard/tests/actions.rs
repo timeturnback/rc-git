@@ -1293,6 +1293,63 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn an_invalid_identity_is_refused_before_any_object_is_written() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"changed\n");
+        let head = fx.rev_parse("HEAD");
+        let objects = fx.git_output(&["count-objects", "-v"]);
+        let bad = |name: &str, email: &str| Identity {
+            name: name.to_owned(),
+            email: email.to_owned(),
+        };
+
+        for (author, field, value) in [
+            (Some(bad("A", "b> <c")), "email", "b> <c"),
+            (Some(bad("  ", "a@b")), "name", "  "),
+            (Some(bad("A\nB", "a@b")), "name", "A\nB"),
+            (None, "email", ""),
+        ] {
+            let author = match author {
+                Some(identity) => Author {
+                    explicit: Some(identity),
+                    fallback: None,
+                },
+                None => Author {
+                    explicit: None,
+                    fallback: Some(bad("A", "")),
+                },
+            };
+            let err = commit(
+                fx.path(),
+                &policy,
+                CommitRequest {
+                    message: "msg",
+                    author,
+                    expected_head: Some(commit_id(&head)),
+                    selections: &[whole("alpha.txt")],
+                },
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ActionError::InvalidIdentity { op: "commit", field: f, value: v, .. }
+                        if *f == field && v == value
+                ),
+                "{err}"
+            );
+        }
+        assert_eq!(fx.rev_parse("HEAD"), head);
+        assert_eq!(
+            fx.git_output(&["count-objects", "-v"]),
+            objects,
+            "a refused identity writes no object"
+        );
+    }
+
+    #[test]
     fn stale_head_detached_head_and_missing_identity_are_refused() {
         let fx = Fixture::standard();
         let policy = Policy::default();

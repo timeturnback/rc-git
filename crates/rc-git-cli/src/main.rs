@@ -1312,7 +1312,8 @@ fn print_unreadable(unreadable: &[UnreadableEntry]) -> Result<()> {
     Ok(())
 }
 
-/// `"Name <email>"`, as `git --author` takes it.
+/// `"Name <email>"`, as `git --author` takes it: one `<`, one `>` at the end, a non-empty
+/// name and email, and no line break.
 fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
     let malformed = || usage_error(format!("--author needs \"Name <email>\", got '{raw}'"));
     let Some((name, rest)) = raw.split_once('<') else {
@@ -1321,9 +1322,14 @@ fn parse_author(raw: &str) -> Result<rc_git_guard::actions::Identity> {
     let Some(email) = rest.strip_suffix('>') else {
         return Err(malformed());
     };
+    let (name, email) = (name.trim(), email.trim());
+    let stray = |part: &str| part.contains(['<', '>', '\n', '\r']);
+    if name.is_empty() || email.is_empty() || stray(name) || stray(email) {
+        return Err(malformed());
+    }
     Ok(rc_git_guard::actions::Identity {
-        name: name.trim().to_owned(),
-        email: email.trim().to_owned(),
+        name: name.to_owned(),
+        email: email.to_owned(),
     })
 }
 

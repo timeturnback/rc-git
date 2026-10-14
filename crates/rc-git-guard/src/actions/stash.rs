@@ -69,9 +69,10 @@ pub struct StashRequest<'a> {
 /// plain confirm with no typed phrase, so any `input` passes; the front end owns that step.
 ///
 /// # Errors
-/// [`ActionError::MissingIdentity`] without an identity, [`ActionError::Git`] when there is
-/// no commit yet, nothing changed at `paths`, an object cannot be written, another git process
-/// holds `index.lock`, or a merge, cherry-pick, revert or rebase is in progress.
+/// [`ActionError::MissingIdentity`] without an identity, [`ActionError::InvalidIdentity`] for
+/// an empty name or email or one holding `<`, `>` or a line break, [`ActionError::Git`] when
+/// there is no commit yet, nothing changed at `paths`, an object cannot be written, another git
+/// process holds `index.lock`, or a merge, cherry-pick, revert or rebase is in progress.
 pub fn stash_push(
     repo_path: &Path,
     policy: &Policy,
@@ -96,7 +97,7 @@ pub fn stash_push(
     let head = head_commit.ok_or_else(|| stash_refused("cannot stash before the first commit"))?;
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
-    let identity = workfile::resolve_identity(&repo, author)?;
+    let identity = workfile::resolve_identity(&repo, author, OP)?;
     let base_tree = tree_of(&repo, OP, head)?;
     for path in paths {
         refuse_case_variant_path(&repo, &work_dir, Some(base_tree), path, OP)?;

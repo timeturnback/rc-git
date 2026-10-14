@@ -14,12 +14,42 @@ use super::{ActionError, ActionResult, Author, HunkStamp, Identity, git_err};
 /// The identity to record: [`Author::explicit`], else the repository's own
 /// `user.name`/`user.email` (the isolated open reads exactly that file), else
 /// [`Author::fallback`].
-pub(super) fn resolve_identity(repo: &gix::Repository, author: Author) -> ActionResult<Identity> {
-    author
+/// The identity is checked before it is returned, so a caller resolves it ahead of its first
+/// object write.
+///
+/// # Errors
+/// [`ActionError::MissingIdentity`] when no source has one, and
+/// [`ActionError::InvalidIdentity`] naming `op` when the chosen name or email is empty or
+/// holds `<`, `>` or a line break, which would corrupt the `author` line.
+pub(super) fn resolve_identity(
+    repo: &gix::Repository,
+    author: Author,
+    op: &'static str,
+) -> ActionResult<Identity> {
+    let identity = author
         .explicit
         .or_else(|| repository_identity(repo))
         .or(author.fallback)
-        .ok_or(ActionError::MissingIdentity)
+        .ok_or(ActionError::MissingIdentity)?;
+    check_identity_field(op, "name", &identity.name)?;
+    check_identity_field(op, "email", &identity.email)?;
+    Ok(identity)
+}
+
+fn check_identity_field(op: &'static str, field: &'static str, value: &str) -> ActionResult<()> {
+    let reason = if value.trim().is_empty() {
+        "is empty"
+    } else if value.contains(['<', '>', '\n', '\r']) {
+        "must not contain '<', '>' or a line break"
+    } else {
+        return Ok(());
+    };
+    Err(ActionError::InvalidIdentity {
+        op,
+        field,
+        value: value.to_owned(),
+        reason,
+    })
 }
 
 /// The repository's own `user.name`/`user.email`, when both are set and non-empty.

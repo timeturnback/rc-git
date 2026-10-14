@@ -72,6 +72,8 @@ pub struct CommitRequest<'a> {
 /// # Errors
 /// [`ActionError::DetachedHead`], [`ActionError::StaleRepository`],
 /// [`ActionError::MissingIdentity`], [`ActionError::HunkMismatch`] as described,
+/// [`ActionError::InvalidIdentity`] for an empty name or email or one holding `<`, `>` or a
+/// line break, before anything is written,
 /// [`ActionError::NoHunksSelected`] for a hunk selection with no hunks, and
 /// [`ActionError::Git`] when an object cannot be read or written, or a selected path is one
 /// git refuses (`.git`, `.`, `..`, an empty segment, a symlinked parent) — checked for every
@@ -107,6 +109,7 @@ pub fn commit(
     if selections.is_empty() {
         return Err(ActionError::git(OP, "HEAD", "nothing selected to commit"));
     }
+    let identity = workfile::resolve_identity(&repo, author, OP)?;
     let index = writer.lock_index(OP)?;
     let reflog = writer.open_head_reflog(OP)?;
     let work_dir = work_dir(&repo, OP)?;
@@ -114,7 +117,6 @@ pub fn commit(
         FileSelection::Whole { path } | FileSelection::Hunks { path, .. } => path.as_str(),
     });
     workfile::check_paths(&work_dir, selected.clone(), OP)?;
-    let identity = workfile::resolve_identity(&repo, author)?;
     let base_tree = head_commit.map(|id| tree_of(&repo, OP, id)).transpose()?;
     for path in selected {
         refuse_case_variant_path(&repo, &work_dir, base_tree, path, OP)?;

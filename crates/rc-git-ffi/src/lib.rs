@@ -3744,6 +3744,7 @@ fn action_status(err: &ActionError) -> i32 {
         | ActionError::HostKeyMismatch { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::UpstreamGone { .. }
+        | ActionError::InvalidIdentity { .. }
         | ActionError::Cancelled { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
     }
@@ -4189,6 +4190,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::PushRejected { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::UpstreamGone { .. }
+        | ActionError::InvalidIdentity { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
         ActionError::Cancelled { .. } => RCGIT_CANCELLED,
         ActionError::MissingIdentity => RCGIT_IDENTITY_REQUIRED,

@@ -1277,6 +1277,23 @@ fn commit_rejects_a_malformed_author_and_missing_message() {
             "--author needs \"Name <email>\", got 'A <a@b'",
         ),
         (
+            [
+                "commit",
+                path,
+                "-m",
+                "x",
+                "--author",
+                "A <b> <c>",
+                "alpha.txt",
+            ]
+            .as_slice(),
+            "--author needs \"Name <email>\", got 'A <b> <c>'",
+        ),
+        (
+            ["commit", path, "-m", "x", "--author", " <a@b>", "alpha.txt"].as_slice(),
+            "--author needs \"Name <email>\", got ' <a@b>'",
+        ),
+        (
             ["commit", path, "alpha.txt"].as_slice(),
             "commit needs -m <msg>",
         ),
