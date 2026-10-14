@@ -3,7 +3,8 @@
 //! (trust-on-first-use); the approval lives app-side and returns as
 //! `RemoteAuth::accepted_hostkey`. A key that is `@revoked`, that contradicts every
 //! `known_hosts` entry for the host, or that contradicts the fingerprint approved
-//! earlier, is refused with no in-app override.
+//! earlier, is refused with no in-app override. A host trusted only through
+//! `@cert-authority` is refused by name: host certificates are not verified here.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -106,14 +107,14 @@ impl HostKeyHandler {
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         // known_hosts first: a revoked key or a contradicting entry is fatal whatever the
         // app approved, and an approval only stands in for a missing entry.
-        if self.is_revoked(&key)? {
-            self.record(HostKeyReport::Revoked {
-                key_type,
-                fingerprint,
-            });
-            return Ok(false);
-        }
         match self.recorded_verdict(&key)? {
+            Verdict::Revoked => {
+                self.record(HostKeyReport::Revoked {
+                    key_type,
+                    fingerprint,
+                });
+                return Ok(false);
+            }
             Verdict::Known => return Ok(true),
             Verdict::Changed => {
                 self.record(HostKeyReport::Mismatch {
@@ -148,6 +149,8 @@ impl HostKeyHandler {
 
 /// What the `known_hosts` files say about the offered key.
 enum Verdict {
+    /// Some file has a `@revoked` line for the host naming exactly this key.
+    Revoked,
     /// Some file records exactly this key for the host.
     Known,
     /// No file records it, but one records another key of the same algorithm.
@@ -156,71 +159,150 @@ enum Verdict {
     Absent,
 }
 
+/// What a `known_hosts` line's leading marker makes of its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    /// No marker: the host's own key.
+    Plain,
+    /// `@revoked`: the key is refused for the hosts it covers.
+    Revoked,
+    /// `@cert-authority`: the key signs host certificates, which this check does not verify.
+    CertAuthority,
+}
+
+/// One `known_hosts` line whose host field covers the looked-up host.
+struct Entry {
+    marker: Marker,
+    key: russh::keys::PublicKey,
+    path: PathBuf,
+    line: usize,
+}
+
 impl HostKeyHandler {
-    /// Matches OpenSSH across every file: any exact entry wins, even beside a stale line
-    /// of the same algorithm (russh's own check fails on the first stale line). Hashed
-    /// `|1|` entries are matched by russh, which also skips `@` marker lines.
+    /// Matches OpenSSH across every file: a `@revoked` line for the key refuses it, any
+    /// exact entry wins even beside a stale line of the same algorithm, and a host trusted
+    /// only through `@cert-authority` is refused by name rather than offered for approval,
+    /// since host certificates are not verified here.
     fn recorded_verdict(&self, key: &russh::keys::PublicKey) -> Result<Verdict, russh::Error> {
-        let mut same_algorithm = false;
-        for path in &self.known_hosts {
-            let recorded =
-                russh::keys::known_hosts::known_host_keys_path(&self.host_name, self.port, path)
-                    .map_err(|source| unreadable(path, &source))?;
-            for (_, recorded) in recorded {
-                if recorded.key_data() == key.key_data() {
-                    return Ok(Verdict::Known);
-                }
-                same_algorithm |= recorded.algorithm() == key.algorithm();
-            }
+        let entries = self.matching_entries()?;
+        let same_key = |entry: &&Entry| entry.key.key_data() == key.key_data();
+        let plain = || entries.iter().filter(|entry| entry.marker == Marker::Plain);
+        if entries
+            .iter()
+            .filter(|entry| entry.marker == Marker::Revoked)
+            .any(|entry| same_key(&entry))
+        {
+            return Ok(Verdict::Revoked);
         }
-        Ok(if same_algorithm {
-            Verdict::Changed
-        } else {
-            Verdict::Absent
-        })
+        if plain().any(|entry| same_key(&entry)) {
+            return Ok(Verdict::Known);
+        }
+        if plain().any(|entry| entry.key.algorithm() == key.algorithm()) {
+            return Ok(Verdict::Changed);
+        }
+        match entries
+            .iter()
+            .find(|entry| entry.marker == Marker::CertAuthority)
+        {
+            Some(authority) => Err(cert_authority_refused(authority, &self.lookup_host())),
+            None => Ok(Verdict::Absent),
+        }
     }
 
-    /// Whether any file has a `@revoked` line for this host (plain patterns only:
-    /// wildcards, `?`, negation, case-insensitive) naming exactly this key. A file that
-    /// does not exist is skipped; one that exists but cannot be read is an error, since
-    /// its revocations cannot be ruled out.
-    fn is_revoked(&self, key: &russh::keys::PublicKey) -> Result<bool, russh::Error> {
-        let host = if self.port == 22 {
+    /// The host as `known_hosts` records it: bare on port 22, else `[host]:port`.
+    fn lookup_host(&self) -> String {
+        if self.port == 22 {
             self.host_name.clone()
         } else {
             format!("[{}]:{}", self.host_name, self.port)
-        };
+        }
+    }
+
+    /// Every line in every file that covers the host, read the way OpenSSH reads them: a
+    /// line that does not parse (unknown marker, missing field, bad key, not UTF-8) is
+    /// skipped, never fatal to the rest of its file. A file that does not exist is skipped;
+    /// one that exists but cannot be read is an error, since its revocations cannot be
+    /// ruled out.
+    fn matching_entries(&self) -> Result<Vec<Entry>, russh::Error> {
+        let host = self.lookup_host();
+        let mut entries = Vec::new();
         for path in &self.known_hosts {
             let file = match std::fs::File::open(path) {
                 Ok(file) => file,
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(source) => return Err(unreadable(path, &source)),
             };
-            for line in std::io::BufReader::new(file).lines() {
-                let line = line.map_err(|source| unreadable(path, &source))?;
-                if revokes(&line, &host, key) {
-                    return Ok(true);
+            for (index, bytes) in std::io::BufReader::new(file).split(b'\n').enumerate() {
+                let bytes = bytes.map_err(|source| unreadable(path, &source))?;
+                // OpenSSH skips a line it cannot parse; a non-UTF-8 line is one of those.
+                let Ok(text) = std::str::from_utf8(&bytes) else {
+                    continue;
+                };
+                if let Some((marker, key)) = parse_line(text, &host) {
+                    entries.push(Entry {
+                        marker,
+                        key,
+                        path: path.clone(),
+                        line: index + 1,
+                    });
                 }
             }
         }
-        Ok(false)
+        Ok(entries)
     }
 }
 
-/// Whether one `known_hosts` line is `@revoked <patterns> <type> <base64>` covering `host`
-/// and naming `key`. A revoked key that does not parse cannot equal the offered one.
-fn revokes(line: &str, host: &str, key: &russh::keys::PublicKey) -> bool {
+/// One `known_hosts` line, `[@marker] <hosts> <type> <base64> [comment]`, when its host
+/// field covers `host`. `None` for a comment, a blank or malformed line, an unknown marker,
+/// a key that does not parse, or a line for other hosts.
+fn parse_line(line: &str, host: &str) -> Option<(Marker, russh::keys::PublicKey)> {
     let mut fields = line.split_whitespace();
-    if fields.next() != Some("@revoked") {
-        return false;
+    let mut hosts = fields.next()?;
+    let marker = match hosts {
+        "@revoked" => Marker::Revoked,
+        "@cert-authority" => Marker::CertAuthority,
+        _ if hosts.starts_with('@') || hosts.starts_with('#') => return None,
+        _ => Marker::Plain,
+    };
+    if marker != Marker::Plain {
+        hosts = fields.next()?;
     }
-    let (Some(patterns), Some(_), Some(base64)) = (fields.next(), fields.next(), fields.next())
-    else {
+    let (Some(_), Some(base64)) = (fields.next(), fields.next()) else {
+        return None;
+    };
+    if !host_field_matches(hosts, host) {
+        return None;
+    }
+    let key = russh::keys::parse_public_key_base64(base64).ok()?;
+    Some((marker, key))
+}
+
+/// A host field is either one hashed `|1|<salt>|<hash>` entry or a pattern list.
+fn host_field_matches(field: &str, host: &str) -> bool {
+    match field.strip_prefix("|1|") {
+        Some(hashed) => hashed_host_matches(hashed, host),
+        None => hosts_match(field, host),
+    }
+}
+
+/// `<salt>|<hash>` (both base64) matches when `hash` is HMAC-SHA1 of `host` keyed by `salt`,
+/// as `ssh-keygen -H` writes it. A field that does not decode matches nothing.
+fn hashed_host_matches(hashed: &str, host: &str) -> bool {
+    use hmac::{KeyInit, Mac};
+    use russh::keys::ssh_encoding::base64::{Base64, Encoding};
+
+    let Some((salt, hash)) = hashed.split_once('|') else {
         return false;
     };
-    hosts_match(patterns, host)
-        && russh::keys::parse_public_key_base64(base64)
-            .is_ok_and(|revoked| revoked.key_data() == key.key_data())
+    let (Ok(salt), Ok(hash)) = (Base64::decode_vec(salt), Base64::decode_vec(hash)) else {
+        return false;
+    };
+    let Ok(mac) = hmac::Hmac::<sha1::Sha1>::new_from_slice(&salt) else {
+        return false;
+    };
+    mac.chain_update(host.as_bytes())
+        .verify_slice(&hash)
+        .is_ok()
 }
 
 /// OpenSSH's host-pattern list: comma-separated globs, any `!pattern` match vetoes the
@@ -255,6 +337,17 @@ fn unreadable(path: &Path, source: &dyn std::fmt::Display) -> russh::Error {
     russh::Error::IO(std::io::Error::other(format!(
         "cannot read known_hosts file '{}': {source}",
         path.display()
+    )))
+}
+
+/// The refusal for a host whose only `known_hosts` trust is a `@cert-authority` line,
+/// naming the line and the way out.
+fn cert_authority_refused(authority: &Entry, host: &str) -> russh::Error {
+    russh::Error::IO(std::io::Error::other(format!(
+        "known_hosts file '{}' line {} trusts host '{host}' through @cert-authority, which \
+         rc-git does not verify; add the host's own key to known_hosts, or use git directly",
+        authority.path.display(),
+        authority.line
     )))
 }
 
@@ -384,6 +477,108 @@ mod tests {
         let (mut handler, report) = handler(vec![dir.path().join("known")], None);
         assert!(check(&mut handler, &offered));
         assert_eq!(reported(&report), None);
+    }
+
+    /// `ssh-keygen -H` output for `example.com` and `[example.com]:2222`.
+    const HASHED_EXAMPLE: &str = "|1|huNll4RARPBWz3kndxxsHNky/uE=|vcmrXZlSRiGG9f/g4z+6bYpY49k=";
+    const HASHED_EXAMPLE_2222: &str =
+        "|1|ONiHezoYvwBY0kOgDzQ1DiaIMgg=|V9VmIP0ljQFTtnE9i4okawH/qac=";
+
+    /// A plain entry is a pattern list: a glob covers the host, a negation vetoes it.
+    #[test]
+    fn a_wildcard_entry_is_known_and_a_negated_one_is_not() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write(
+            "glob",
+            line("", "*.example.org,exam?le.COM", &key(1)).as_bytes(),
+        );
+        dir.write("negated", line("", "*,!example.com", &key(1)).as_bytes());
+        let (mut glob, report) = handler(vec![dir.path().join("glob")], None);
+        assert!(check(&mut glob, &key(1)));
+        assert_eq!(reported(&report), None);
+        let (mut negated, report) = handler(vec![dir.path().join("negated")], None);
+        assert!(!check(&mut negated, &key(1)));
+        assert!(matches!(
+            reported(&report),
+            Some(HostKeyReport::Unknown { .. })
+        ));
+    }
+
+    /// A hashed `@revoked` line refuses the key a plain entry records.
+    #[test]
+    fn a_hashed_revoked_line_refuses_the_key() {
+        let offered = key(1);
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let contents = [
+            line("", "example.com", &offered),
+            line("@revoked ", HASHED_EXAMPLE, &offered),
+        ]
+        .concat();
+        dir.write("known", contents.as_bytes());
+        let (mut handler, report) = handler(vec![dir.path().join("known")], None);
+        assert!(!check(&mut handler, &offered));
+        assert!(matches!(
+            reported(&report),
+            Some(HostKeyReport::Revoked { .. })
+        ));
+    }
+
+    /// One bad line costs only itself: garbage, a bad key, an unknown marker and a
+    /// non-UTF-8 line all sit before the real entry, which still counts.
+    #[test]
+    fn a_garbage_line_does_not_hide_the_entry_after_it() {
+        let offered = key(1);
+        let mut contents =
+            b"garbage\nexample.com ssh-ed25519 !!!\n@bogus example.com x y\n\xff\xfe\n# c\n\n"
+                .to_vec();
+        contents.extend_from_slice(line("", "example.com", &offered).as_bytes());
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("known", &contents);
+        let (mut handler, report) = handler(vec![dir.path().join("known")], None);
+        assert!(check(&mut handler, &offered));
+        assert_eq!(reported(&report), None);
+    }
+
+    /// A host trusted only through `@cert-authority` is refused by name, approval or not;
+    /// beside a plain entry for the offered key, the plain entry decides.
+    #[test]
+    fn a_cert_authority_line_is_refused_unless_a_plain_entry_knows_the_key() {
+        let offered = key(1);
+        let fingerprint = offered.fingerprint(HashAlg::Sha256).to_string();
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let authority = line("@cert-authority ", "*.com", &key(2));
+        dir.write("ca", format!("# trust\n{authority}").as_bytes());
+        dir.write("plain", line("", "example.com", &offered).as_bytes());
+        let ca = dir.path().join("ca");
+        let (mut only_ca, report) = handler(vec![ca.clone()], Some(&fingerprint));
+        let error = only_ca
+            .check(&PublicKeyOrCertificate::PublicKey {
+                key: offered.clone(),
+                hash_alg: None,
+            })
+            .expect_err("a cert-authority host is refused")
+            .to_string();
+        assert!(error.contains("@cert-authority"), "{error}");
+        assert!(
+            error.contains(&format!("'{}' line 2", ca.display())),
+            "{error}"
+        );
+        assert_eq!(reported(&report), None);
+        let (mut with_plain, _) = handler(vec![ca, dir.path().join("plain")], None);
+        assert!(check(&mut with_plain, &offered));
+    }
+
+    #[test]
+    fn hashed_hosts_match_ssh_keygen_output() {
+        assert!(host_field_matches(HASHED_EXAMPLE, "example.com"));
+        assert!(!host_field_matches(HASHED_EXAMPLE, "example.org"));
+        assert!(host_field_matches(
+            HASHED_EXAMPLE_2222,
+            "[example.com]:2222"
+        ));
+        assert!(!host_field_matches(HASHED_EXAMPLE_2222, "example.com"));
+        assert!(!host_field_matches("|1|not base64|x", "example.com"));
+        assert!(!host_field_matches("|1|", "example.com"));
     }
 
     #[test]

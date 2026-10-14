@@ -2237,22 +2237,24 @@ fn ssh_host_key_mismatch_is_fatal() {
     assert!(matches!(&err, ActionError::HostKeyMismatch { .. }), "{err}");
 }
 
-/// A `known_hosts` line for the host whose key does not decode fails the call with an
-/// error that names the file, not russh's bare base64 message.
+/// A `known_hosts` line for the host whose key does not decode is skipped, as OpenSSH
+/// skips it: the valid entry after it still pins the host.
 #[test]
-fn ssh_malformed_known_hosts_names_the_file() {
+fn ssh_malformed_known_hosts_line_is_skipped() {
     let remoted = ssh_remoted();
     let line = format!("[127.0.0.1]:{} ssh-ed25519 %%%%\n", remoted.server.port());
     remoted.ssh_home.write("known_hosts", line.as_bytes());
+    remoted.server.write_known_hosts(remoted.ssh_home.path());
+    advance_origin(&remoted.origin, &remoted.bare_path);
 
-    let err = fetch_upstream(
+    let outcome = fetch_upstream(
         remoted.clone.path(),
         &Policy::default(),
         remoted.auth(),
         &Cancel::new(),
     )
-    .expect_err("an undecodable known_hosts key is refused");
-    assert!(err.to_string().contains("known_hosts"), "{err}");
+    .expect("the valid line after the malformed one pins the host");
+    assert_eq!(outcome.updated_refs.len(), 1);
 }
 
 /// A host pinned only in the file the ssh config names is known, as it is to OpenSSH:

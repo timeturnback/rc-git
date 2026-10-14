@@ -2543,10 +2543,12 @@ dependencies = [
  "gix",
  "gix-pack",
  "gix-transport",
+ "hmac",
  "rc-git-core",
  "rc-git-testkit",
  "russh",
  "russh-config",
+ "sha1 0.11.0",
  "thiserror",
  "tokio",
 ]
