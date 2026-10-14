@@ -514,30 +514,30 @@ public final class BrowserModel {
     }
 
     /// Merges a listing into display order: directories first, then names, deleted files in
-    /// their sorted place. Pure, so the ordering is testable.
+    /// their sorted place. Pure, so the ordering is testable. Each name is lowercased once,
+    /// not once per comparison, so a 10 000-entry folder sorts without 2 n log n allocations.
     nonisolated public static func rows(for listing: WorktreeListing) -> [BrowseRow] {
-        var rows: [BrowseRow] = []
-        rows.reserveCapacity(listing.entries.count + listing.missing.count)
+        var keyed: [(isDir: Bool, key: String, row: BrowseRow)] = []
+        keyed.reserveCapacity(listing.entries.count + listing.missing.count)
         for entry in listing.entries {
-            rows.append(
-                BrowseRow(
-                    entry: TreeEntry(
-                        name: entry.name, oid: entry.oid ?? .unhashed, kind: entry.kind,
-                        hasExactName: entry.hasExactName),
-                    status: entry.status,
-                    missing: false
-                ))
+            let row = BrowseRow(
+                entry: TreeEntry(
+                    name: entry.name, oid: entry.oid ?? .unhashed, kind: entry.kind,
+                    hasExactName: entry.hasExactName),
+                status: entry.status,
+                missing: false
+            )
+            keyed.append((row.entry.kind.isDirectory, row.entry.name.lowercased(), row))
         }
         for entry in listing.missing {
-            rows.append(BrowseRow(entry: entry, status: nil, missing: true))
+            let row = BrowseRow(entry: entry, status: nil, missing: true)
+            keyed.append((entry.kind.isDirectory, entry.name.lowercased(), row))
         }
-        rows.sort {
-            let leftIsDir = $0.entry.kind.isDirectory
-            let rightIsDir = $1.entry.kind.isDirectory
-            if leftIsDir != rightIsDir { return leftIsDir }
-            return $0.entry.name.lowercased() < $1.entry.name.lowercased()
+        keyed.sort {
+            if $0.isDir != $1.isDir { return $0.isDir }
+            return $0.key < $1.key
         }
-        return rows
+        return keyed.map(\.row)
     }
 
     /// Opens a file straight from the working directory into the file pane. `pathIsExact` is

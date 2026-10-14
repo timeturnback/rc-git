@@ -141,6 +141,24 @@ import Testing
         #expect(rows[3].entry.oid == readme, "a tracked file keeps its HEAD blob id")
     }
 
+    @Test func rowsSortDirectoriesFirstThenNamesIgnoringCase() {
+        let listing = WorktreeListing(
+            entries: [
+                WorktreeEntry(name: "b.txt", kind: .blob, status: .unchanged, oid: nil, size: 1),
+                WorktreeEntry(name: "Zeta", kind: .tree, status: .unchanged, oid: nil, size: 0),
+                WorktreeEntry(name: "A.txt", kind: .blob, status: .unchanged, oid: nil, size: 1),
+                WorktreeEntry(name: "alpha", kind: .tree, status: .unchanged, oid: nil, size: 0),
+            ],
+            missing: [
+                TreeEntry(name: "Lib", oid: oid(0x60), kind: .tree),
+                TreeEntry(name: "c.txt", oid: oid(0x61), kind: .blob),
+            ]
+        )
+        let rows = BrowserModel.rows(for: listing)
+        #expect(rows.map(\.entry.name) == ["alpha", "Lib", "Zeta", "A.txt", "b.txt", "c.txt"])
+        #expect(rows.map(\.missing) == [false, true, false, false, false, true])
+    }
+
     @Test func worktreeFilesOpenFromDisk() async {
         await model.attach(repo)
         await model.selectWorkingTree()
