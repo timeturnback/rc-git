@@ -140,7 +140,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// selection moves call it far more often than the refs change.
     func reload(
         _ listing: RefListing, selected: RefEntry?, head: Head?,
-        showsWorkingTree: Bool = false, workingTreeSelected: Bool = false
+        showsWorkingTree: Bool, workingTreeSelected: Bool
     ) {
         guard
             listing != self.listing || selected != self.selected || head != self.head
