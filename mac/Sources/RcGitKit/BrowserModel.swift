@@ -208,25 +208,34 @@ public final class BrowserModel {
         var graph: GraphBuilder
         var pager: LogPager?
     }
-    /// Pages already walked, per tip. A tip is immutable, so entries never go stale.
-    private var historyCache: [Oid: HistoryPages] = [:]
+    /// Pages already walked, per tip. A tip is immutable, so entries never go stale; every
+    /// commit, fetch or rebase on the browsed branch is a new tip, so only the
+    /// `historyCacheLimit` most recently used are kept.
+    private var historyCache = RecentCache<Oid, HistoryPages>(limit: historyCacheLimit)
+    nonisolated static let historyCacheLimit = 4
     /// The lane graph of the unfiltered history, extended as pages arrive.
     private var graph = GraphBuilder()
-    /// Filtered pages already walked, per tip and path. Immutable keys, so never stale.
+    /// Filtered pages already walked, per tip and path. Immutable keys, so never stale;
+    /// bounded like `historyCache`.
     private struct PathHistoryKey: Hashable {
         let tip: Oid
         let path: String
     }
-    private var pathHistoryCache:
-        [PathHistoryKey: (commits: [CommitSummary], scanned: Int, complete: Bool)] = [:]
+    private var pathHistoryCache =
+        RecentCache<PathHistoryKey, (commits: [CommitSummary], scanned: Int, complete: Bool)>(
+            limit: historyCacheLimit)
     /// The path walk of the current scope, for one key and history generation. A scope change
     /// drops it, so at most one path walk is open; a later visit to a cached scope opens a new
     /// one at its first page.
     private var pathPager: (key: PathHistoryKey, generation: Int, pager: HistoryPager)?
     /// The walk of the active search; a new filter or `clearSearch` drops it.
     private var searchPager: HistoryPager?
-    /// Flattened file lists, per root tree. Content-addressed like every other cache.
-    private var pathIndices: [Oid: PathIndex] = [:]
+    /// Flattened file lists, per root tree. Content-addressed like every other cache, but one
+    /// index runs to tens of megabytes, so only the `pathIndexCacheLimit` most recently used
+    /// roots are kept. Rebuilding an evicted one reads no objects: its directory listings are
+    /// still in `trees`.
+    private var pathIndices = RecentCache<Oid, PathIndex>(limit: pathIndexCacheLimit)
+    nonisolated static let pathIndexCacheLimit = 2
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
     /// Files on disk for path search in the working tree. Disk is not content-addressed, so
     /// this is dropped every time the search opens rather than cached by id.
@@ -245,6 +254,11 @@ public final class BrowserModel {
     private var importLinkCache: [HighlightKey: [ImportLink]] = [:]
     let highlightCacheLimit: Int
     let highlightCacheSpanLimit: Int
+
+    /// Entry counts of the bounded per-tip and per-root caches, for tests.
+    var historyCacheCount: Int { historyCache.count }
+    var pathHistoryCacheCount: Int { pathHistoryCache.count }
+    var pathIndexCacheCount: Int { pathIndices.count }
 
     public convenience init() {
         self.init(highlightCacheLimit: 16, highlightCacheSpanLimit: 1_500_000)
@@ -830,7 +844,7 @@ public final class BrowserModel {
         let generation = historyGeneration
         let start = history.count
         let pageSize = Self.historyPageSize
-        let pager = historyCache[tip]?.pager
+        let pager = historyCache.value(for: tip)?.pager
         let result = await RepositoryError.run {
             try LogPager.page(
                 pager, repository: repository, tip: tip, from: start, limit: pageSize)
@@ -841,12 +855,14 @@ public final class BrowserModel {
         case let .success((pager, page)):
             // Released first, so the appends extend the loaded pages in place rather than
             // copying everything the cache shares with them.
-            historyCache[tip] = nil
+            historyCache.removeValue(for: tip)
             history += page
             historyComplete = page.count < pageSize
             graph.append(page[...])
-            historyCache[tip] = HistoryPages(
-                commits: history, complete: historyComplete, graph: graph, pager: pager)
+            historyCache.insert(
+                HistoryPages(
+                    commits: history, complete: historyComplete, graph: graph, pager: pager),
+                for: tip)
             onHistoryChanged?()
         case let .failure(error):
             historyError = error.message
@@ -879,7 +895,7 @@ public final class BrowserModel {
         let target = history.count + Self.historyPageSize
         let chunk = Self.pathHistoryScanChunk
         while history.count < target, !historyComplete {
-            let start = pathHistoryCache[key]?.scanned ?? 0
+            let start = pathHistoryCache.value(for: key)?.scanned ?? 0
             let remaining = target - history.count
             let pager = pathPager.flatMap { open in
                 open.key == key && open.generation == generation ? open.pager : nil
@@ -894,10 +910,10 @@ public final class BrowserModel {
             case let .success((pager, page)):
                 pathPager = (key, generation, pager)
                 // Released first, so the append extends the loaded pages in place.
-                pathHistoryCache[key] = nil
+                pathHistoryCache.removeValue(for: key)
                 history += page.commits
                 historyComplete = page.complete
-                pathHistoryCache[key] = (history, start + page.scanned, page.complete)
+                pathHistoryCache.insert((history, start + page.scanned, page.complete), for: key)
                 onHistoryChanged?()
             case let .failure(error):
                 // Keep the commits already shown; the error stops paging. Not cached:
@@ -936,7 +952,7 @@ public final class BrowserModel {
         historyScope = .path(path)
         clearSearch()
         clearCommitDetail()
-        if let cached = pathHistoryCache[PathHistoryKey(tip: tip, path: path)] {
+        if let cached = pathHistoryCache.value(for: PathHistoryKey(tip: tip, path: path)) {
             history = cached.commits
             historyComplete = cached.complete
         } else {
@@ -1086,7 +1102,7 @@ public final class BrowserModel {
         historyScope = .all
         clearSearch()
         clearCommitDetail()
-        if let anchor, let cached = historyCache[anchor] {
+        if let anchor, let cached = historyCache.value(for: anchor) {
             history = cached.commits
             historyComplete = cached.complete
             graph = cached.graph
@@ -1668,7 +1684,7 @@ public final class BrowserModel {
     /// This is the one call that walks a whole tree; it checks for cancellation between
     /// directory reads and every directory it reads lands in the shared tree cache.
     public func pathIndex(for root: Oid) async throws -> PathIndex {
-        if let cached = pathIndices[root] { return cached }
+        if let cached = pathIndices.value(for: root) { return cached }
         if let build = indexBuild, build.root == root { return try await build.task.value }
         guard let repository else { throw RepositoryError("no repository is open") }
         indexBuild?.task.cancel()
@@ -1683,7 +1699,7 @@ public final class BrowserModel {
             if indexBuild?.root == root { indexBuild = nil }
         }
         let index = try await task.value
-        pathIndices[root] = index
+        pathIndices.insert(index, for: root)
         return index
     }
 
@@ -1803,5 +1819,54 @@ private struct HighlightKey: Hashable {
         } else {
             ext = ""
         }
+    }
+}
+
+/// A dictionary that keeps only its `limit` most recently used entries: a read or an insert
+/// marks the key used, and an insert past the limit evicts the least recently used.
+struct RecentCache<Key: Hashable, Value> {
+    let limit: Int
+    private var values: [Key: Value] = [:]
+    /// Least recently used first.
+    private var order: [Key] = []
+
+    init(limit: Int) {
+        precondition(limit > 0, "a RecentCache needs room for at least one entry")
+        self.limit = limit
+    }
+
+    var count: Int { values.count }
+
+    mutating func value(for key: Key) -> Value? {
+        guard let value = values[key] else { return nil }
+        touch(key)
+        return value
+    }
+
+    mutating func insert(_ value: Value, for key: Key) {
+        if values.updateValue(value, forKey: key) == nil {
+            order.append(key)
+        } else {
+            touch(key)
+        }
+        while order.count > limit {
+            values.removeValue(forKey: order.removeFirst())
+        }
+    }
+
+    mutating func removeValue(for key: Key) {
+        guard values.removeValue(forKey: key) != nil else { return }
+        order.removeAll { $0 == key }
+    }
+
+    mutating func removeAll() {
+        values.removeAll()
+        order.removeAll()
+    }
+
+    private mutating func touch(_ key: Key) {
+        guard let index = order.firstIndex(of: key) else { return }
+        order.remove(at: index)
+        order.append(key)
     }
 }

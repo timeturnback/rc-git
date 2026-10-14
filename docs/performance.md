@@ -60,7 +60,9 @@ refs. Everything else is on demand.
   index. A repository missing `objects/info/commit-graph` walks history slower; suggest
   `git commit-graph write --reachable` to the user rather than writing it. The one sanctioned
   exception is path search: it flattens the selected root once, in the background, keyed by
-  the root tree id, cancellable, and capped at 200 000 entries. In the working tree it walks
+  the root tree id, cancellable, and capped at 200 000 entries. Only the two most recently
+  searched roots keep their index; rebuilding an evicted one reads no objects, since its
+  listings are still in `TreeStore`. In the working tree it walks
   disk instead, once per opening of the panel, capped the same way, with ignored folders the
   tree does not track pruned unopened.
 - **Decorate after painting.** Syntax highlighting and blame load after the content is on

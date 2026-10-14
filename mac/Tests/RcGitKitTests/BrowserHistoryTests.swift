@@ -97,6 +97,65 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
             "a complete scope comes back without a walk")
     }
 
+    @Test func historyCacheKeepsOnlyTheMostRecentTips() async {
+        let limit = BrowserModel.historyCacheLimit
+        let tips = (0...limit).map { oid(UInt8(0x50 + $0)) }
+        for (index, tip) in tips.enumerated() {
+            repo.treeOfMap[tip] = mainTree
+            repo.commits[tip] = [commitSummary(tip, title: "tip \(index)")]
+        }
+        await model.attach(repo)
+        for (index, tip) in tips.enumerated() {
+            await model.select(branch("tip-\(index)", at: tip))
+            await model.loadMoreHistory()
+            #expect(model.historyCacheCount <= limit)
+        }
+        #expect(model.historyCacheCount == limit)
+
+        let calls = repo.lock.withLock { repo.logCalls }
+        await model.select(branch("tip-1", at: tips[1]))
+        await model.loadMoreHistory()
+        #expect(model.history.map(\.title) == ["tip 1"])
+        #expect(repo.lock.withLock { repo.logCalls } == calls, "a recent tip comes from the cache")
+        await model.select(branch("tip-0", at: tips[0]))
+        await model.loadMoreHistory()
+        #expect(model.history.map(\.title) == ["tip 0"])
+        #expect(
+            repo.lock.withLock { repo.logCalls } == calls + 1, "the oldest tip was evicted")
+        #expect(model.historyCacheCount == limit)
+    }
+
+    @Test func pathHistoryCacheKeepsOnlyTheMostRecentScopes() async {
+        let limit = BrowserModel.historyCacheLimit
+        let paths = (0...limit).map { "file\($0)" }
+        repo.lock.withLock {
+            for path in paths {
+                repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: path)] = [
+                    commitSummary(oid(0xA1), title: "touch \(path)")
+                ]
+            }
+        }
+        await model.attach(repo)
+        for path in paths {
+            await model.showPathHistory(path)
+            #expect(model.pathHistoryCacheCount <= limit)
+        }
+        #expect(model.pathHistoryCacheCount == limit)
+
+        let calls = repo.lock.withLock { repo.pathHistoryCalls }
+        await model.showPathHistory(paths[1])
+        #expect(model.history.map(\.title) == ["touch file1"])
+        #expect(
+            repo.lock.withLock { repo.pathHistoryCalls } == calls,
+            "a recent scope comes from the cache")
+        await model.showPathHistory(paths[0])
+        #expect(model.history.map(\.title) == ["touch file0"])
+        #expect(
+            repo.lock.withLock { repo.pathHistoryCalls } == calls + 1,
+            "the oldest scope was evicted")
+        #expect(model.pathHistoryCacheCount == limit)
+    }
+
     @Test func pathScopePagesAndCompletes() async {
         await model.attach(repo)
         let touching = (0..<150).map { index in

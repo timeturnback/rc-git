@@ -103,6 +103,9 @@ next step and goes on to it. What a tab reports during a restore is not recorded
 | decoded objects | object id | gix, per pooled handle | never (LRU eviction only) |
 | pack delta bases | object id | gix, per pooled handle | never |
 | directory listings | tree id | `TreeStore` in RcGitKit | on `attach` |
+| history pages | tip id | `BrowserModel` | on `attach`; 4 most recent tips kept |
+| path-scoped history pages | tip id and path | `BrowserModel` | on `attach`; 4 most recent kept |
+| flattened file lists (path search) | root tree id | `BrowserModel` | on `attach`; 2 most recent roots kept |
 | row symbols | symbol name | `Icons` in RcGitApp | never |
 
 Refs are not cached across calls; `refs()` re-reads `packed-refs` and loose refs each time and

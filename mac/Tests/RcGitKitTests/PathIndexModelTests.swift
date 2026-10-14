@@ -51,6 +51,30 @@ import Testing
         #expect(repo.lock.withLock { repo.treeEntryCalls } == 2, "one read per directory")
     }
 
+    @Test func pathIndexCacheKeepsOnlyTheMostRecentRoots() async throws {
+        let limit = BrowserModel.pathIndexCacheLimit
+        let roots = (0...limit).map { oid(UInt8(0x50 + $0)) }
+        for (index, root) in roots.enumerated() {
+            repo.trees[root] = [TreeEntry(name: "file\(index)", oid: readme, kind: .blob)]
+        }
+        await model.attach(repo)
+        for root in roots {
+            _ = try await model.pathIndex(for: root)
+            #expect(model.pathIndexCacheCount <= limit)
+        }
+        #expect(model.pathIndexCacheCount == limit)
+
+        let calls = repo.lock.withLock { repo.treeEntryCalls }
+        let recent = try await model.pathIndex(for: roots[limit])
+        #expect(recent.entries.map(\.path) == ["file\(limit)"])
+        let evicted = try await model.pathIndex(for: roots[0])
+        #expect(evicted.entries.map(\.path) == ["file0"], "an evicted root is rebuilt")
+        #expect(
+            repo.lock.withLock { repo.treeEntryCalls } == calls,
+            "the rebuild reads its listings from the tree cache")
+        #expect(model.pathIndexCacheCount == limit)
+    }
+
     @Test func aBuildForAnotherRootCancelsTheRunningBuild() async throws {
         await model.attach(repo)
         repo.delays[mainTree] = 1
