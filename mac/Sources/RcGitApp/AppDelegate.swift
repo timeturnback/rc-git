@@ -355,8 +355,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. Runs on
-    /// every open and close, once more at quit, and once before a self-update relaunches,
-    /// which also captures drag reordering.
+    /// every open and close and once more at quit, which also captures drag reordering, until
+    /// the tabs are handed off: a self-update relaunch goes through `handOffTabs`, and every
+    /// call after it returns without writing.
     ///
     /// `dropping` names the repository of a tab closed with ⌘W, the one close that removes it
     /// from the list. A whole window closed with ⇧⌘W and quitting with ⌘Q leave the saved

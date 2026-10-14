@@ -1,7 +1,7 @@
 import AppKit
 import RcGitKit
 
-/// A floating panel listing which commit introduced each run of lines in the open file.
+/// A utility panel listing which commit introduced each run of lines in the open file.
 @MainActor
 final class BlamePanelController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private let panel: NSPanel

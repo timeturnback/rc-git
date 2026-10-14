@@ -32,9 +32,9 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// Runs on the main actor when the launch failed and this process keeps running.
     let reclaimState: @MainActor @Sendable () -> Void
 
-    /// Runs `script` through a login `zsh`, so the toolchain on `PATH` is the one the
-    /// user's terminal has — rustup and Homebrew both install themselves into a shell
-    /// profile, and an app launched from the Dock inherits none of it.
+    /// Runs `script` through a login, non-interactive `zsh`, because an app launched from the
+    /// Dock inherits no shell `PATH`. That shell reads `.zshenv`, `.zprofile` and `.zlogin`
+    /// but not `.zshrc`, so a toolchain added to `PATH` only in `.zshrc` is not found.
     private static func login(
         _ script: String, in directory: String, timeout: Duration? = nil,
         idleTimeout: Duration? = nil, onOutput: (@Sendable ([String]) -> Void)? = nil

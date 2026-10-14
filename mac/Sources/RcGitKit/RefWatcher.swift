@@ -61,9 +61,10 @@ public struct WatcherStartError: Error, CustomStringConvertible {
 
 /// Watches a repository's git directories with FSEvents and reports when its refs may have
 /// changed. One stream rooted at the common dir covers both: a linked worktree's own git
-/// directory is always `<commonDir>/worktrees/<name>`. Events are coalesced by FSEvents' own
-/// latency window and filtered through `RefWatchFilter`, so one `git commit` or `git fetch`
-/// produces one callback, not a storm.
+/// directory is always `<commonDir>/worktrees/<name>`. Events are filtered through
+/// `RefWatchFilter`. FSEvents delivers a burst such as one `git fetch` as several callbacks:
+/// one at once (`NoDefer`), then the rest after the latency window, possibly in more than one
+/// chunk. Consumers must coalesce, as `BrowserModel.refreshRefs` does.
 ///
 /// FSEvents reports canonical realpaths (`/private/tmp/...`, symlinks resolved), so both
 /// directories are resolved with `realpath(3)` once at init and that spelling is both watched

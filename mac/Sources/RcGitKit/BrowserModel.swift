@@ -277,7 +277,8 @@ public final class BrowserModel {
         self.highlightCacheSpanLimit = highlightCacheSpanLimit
     }
 
-    /// Attaches a repository and loads refs and HEAD, then selects the branch HEAD is on.
+    /// Attaches a repository and loads refs and HEAD, then shows the working tree when there
+    /// is one and HEAD is born, else selects the ref `initialRef` picks.
     public func attach(_ repository: any RepositoryReading) async {
         beginMove()
         defer { endMove() }
@@ -331,8 +332,8 @@ public final class BrowserModel {
 
     /// Reloads refs and HEAD after the repository changed on disk, keeping every object
     /// cache: only refs can move. The selection survives by name; when its target moved the
-    /// root tree and history reload, and when it disappeared the selection falls back the
-    /// same way `attach` chooses one. A failed refresh keeps the last good listing, marks it
+    /// root tree and history reload, and when it disappeared the selection falls back to
+    /// `initialRef`. A failed refresh keeps the last good listing, marks it
     /// stale through `refsStale` and `onRefsChanged`, and does not alert: the watcher fires
     /// during ref updates, when transient lock errors are normal.
     ///
@@ -392,7 +393,7 @@ public final class BrowserModel {
     }
 
     /// Keeps the selected ref by name in a fresh listing: reloads it when its target moved,
-    /// and falls back the way `attach` chooses one when it disappeared.
+    /// and falls back to `initialRef` when it disappeared.
     private func followSelection(in listing: RefListing, head: Head) async {
         guard let current = selectedRef else {
             onRefsChanged?()

@@ -111,7 +111,8 @@ public protocol UpdateEnvironment: Sendable {
     /// Fetches and fast-forwards the checkout. `nil` on success. Stops early when the
     /// calling Task is cancelled.
     func sync() async -> String?
-    /// Builds and installs the release bundle, streaming the script's output. `nil` on
+    /// Builds the bundle this mode produces and puts it in place (`install-app.sh` for
+    /// `.update`, `build-app.sh --dev` for `.rebuild`), streaming the script's output. `nil` on
     /// success. Bounded by the implementation, and stops — killing the build — when the
     /// calling Task is cancelled. `onOutput` takes lines in batches: one call per read of the
     /// script's output, not one per line.
@@ -153,9 +154,9 @@ public enum LogChange: Sendable, Hashable {
 /// bundle's `UpdateMode` decides whether the fetch happens at all. Stops at the first
 /// failure and keeps the log, so the window can show what happened.
 ///
-/// Open tabs live in `UserDefaults` under the bundle identifier, which an update does not
-/// change, so the relaunched app reopens them. The model only decides when they are handed
-/// over and when a failed relaunch takes them back.
+/// Open tabs are not this model's concern: the environment's relaunch hands them over
+/// (`OpenTabs.handOff`) before launching the new bundle. The model only decides when they
+/// are handed over and when a failed relaunch takes them back.
 @MainActor
 public final class UpdateModel {
     /// Kept bounded like every other buffer in the app: a build log is not a reason to
@@ -341,7 +342,7 @@ public final class UpdateModel {
             fail(
                 .preflight,
                 "your login shell cannot find \(tools.joined(separator: ", ")); "
-                    + "add the toolchain to your shell profile and try again")
+                    + "add the toolchain to ~/.zshenv or ~/.zprofile and try again")
             return nil
         case let .failure(message):
             fail(.preflight, message)

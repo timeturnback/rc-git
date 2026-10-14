@@ -1,5 +1,6 @@
 /// The repositories whose tabs were closed this run, most recent last, for ⇧⌘T. In memory
-/// only: the saved tab list already brings closed tabs back at the next launch.
+/// only: tabs closed by ⇧⌘W or ⌘Q stay in the saved tab list for the next launch, and a tab
+/// closed with ⌘W was dropped from it on purpose, so ⇧⌘T cannot bring it back after a relaunch.
 public struct ClosedTabs {
     public static let capacity = 20
 

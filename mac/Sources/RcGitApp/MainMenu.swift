@@ -1,9 +1,9 @@
 import AppKit
 import RcGitKit
 
-/// The main menu, built in code so the app needs no nib. Actions use the standard AppKit
-/// selectors and travel the responder chain; only the open and recent items point at the
-/// app delegate.
+/// The main menu, built in code so the app needs no nib. Items carry nil targets and travel
+/// the responder chain: per-window actions land on `MainWindowController`, app-wide ones
+/// (tabs, back and forward, hidden files, update) on `AppDelegate`.
 @MainActor
 enum MainMenu {
     /// `updateMode` adds the item that rebuilds the app: the release bundle updates from

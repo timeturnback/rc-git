@@ -41,8 +41,10 @@ public enum WorktreeWatchFilter {
 }
 
 /// Watches a repository's working directory with FSEvents and reports when the change list
-/// may be stale. Events are coalesced by FSEvents' latency window and filtered through
-/// `WorktreeWatchFilter`, so one `git checkout` or editor save produces one callback.
+/// may be stale. Events are filtered through `WorktreeWatchFilter`. FSEvents delivers a burst
+/// such as one `git checkout` as several callbacks: one at once (`NoDefer`, so a single editor
+/// save refreshes immediately), then the rest after the latency window, possibly in more than
+/// one chunk. Consumers must coalesce, as `ChangesModel.loadStatus` does.
 ///
 /// FSEvents reports canonical realpaths, so both directories are resolved with `realpath(3)`
 /// once at init; resolving only the working directory would let every `.git` write past the
