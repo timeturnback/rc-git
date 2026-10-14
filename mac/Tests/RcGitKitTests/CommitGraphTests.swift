@@ -17,6 +17,12 @@ import Testing
         return builder
     }
 
+    /// Lanes a row touches: its dot and both ends of every edge.
+    private func lanesTouched(_ row: GraphRow) -> Int {
+        let edgeLanes = row.edges.flatMap { [$0.from, $0.to] }
+        return max(row.commitLane, edgeLanes.max() ?? 0) + 1
+    }
+
     @Test func linearChainStaysInOneLane() {
         let rows = build([
             commitSummary(a, parents: [b]),
@@ -25,7 +31,7 @@ import Testing
         ]).rows
         #expect(rows.map(\.commitLane) == [0, 0, 0])
         #expect(rows.map(\.colorIndex) == [0, 0, 0])
-        #expect(rows.map(\.laneCount) == [1, 1, 1])
+        #expect(rows.map(lanesTouched) == [1, 1, 1])
         #expect(rows.allSatisfy { !$0.isMerge })
         #expect(rows[2].edges == [GraphEdge(from: 0, to: 0, colorIndex: 0, phase: .into)])
     }
@@ -40,7 +46,7 @@ import Testing
         #expect(rows.map(\.commitLane) == [0, 0, 1, 0])
         #expect(rows.map(\.colorIndex) == [0, 0, 1, 0])
         #expect(rows.map(\.isMerge) == [true, false, false, false])
-        #expect(rows.map(\.laneCount) == [2, 2, 2, 2])
+        #expect(rows.map(lanesTouched) == [2, 2, 2, 2])
         #expect(
             rows[1].edges.contains(GraphEdge(from: 1, to: 1, colorIndex: 1, phase: .through)),
             "b's lane stays right of a's continuing lane")
@@ -60,7 +66,7 @@ import Testing
             commitSummary(c),
         ]).rows
         #expect(rows[0].isMerge)
-        #expect(rows[0].laneCount == 3)
+        #expect(lanesTouched(rows[0]) == 3)
         #expect(rows[0].edges.filter { $0.phase == .out }.count == 3)
         #expect(
             rows.map(\.commitLane) == [0, 0, 0, 0],
@@ -109,7 +115,7 @@ import Testing
             commitSummary(q, parents: [y]),
             commitSummary(y),
         ]).rows
-        #expect(rows[4].laneCount == 1, "C2's edge to the emitted P ends at its dot")
+        #expect(lanesTouched(rows[4]) == 1, "C2's edge to the emitted P ends at its dot")
         #expect(rows[4].edges.allSatisfy { $0.phase != .through })
         let last = try #require(rows.last)
         #expect(last.edges.allSatisfy { $0.phase != .through }, "no lane leaks to the end")
@@ -125,7 +131,7 @@ import Testing
             commitSummary(unrelated),
         ]).rows
         let last = try #require(rows.last)
-        #expect(last.laneCount == 1)
+        #expect(lanesTouched(last) == 1)
         #expect(last.edges.allSatisfy { $0.phase != .through })
     }
 
@@ -143,7 +149,7 @@ import Testing
                 GraphEdge(from: 1, to: 1, colorIndex: 1, phase: .out),
                 GraphEdge(from: 1, to: 0, colorIndex: 0, phase: .out),
             ], "m's edge to b joins x's lane instead of opening a third")
-        #expect(builder.rows[1].laneCount == 2)
+        #expect(lanesTouched(builder.rows[1]) == 2)
         #expect(builder.maxLaneCount == 2)
 
         let (e, d) = (oid(0x28), oid(0x29))
@@ -155,13 +161,13 @@ import Testing
             commitSummary(a),
         ]).rows
         #expect(nested[1].edges.contains(GraphEdge(from: 1, to: 0, colorIndex: 0, phase: .out)))
-        #expect(nested.map(\.laneCount).max() == 2, "no third lane opens for b")
+        #expect(nested.map(lanesTouched).max() == 2, "no third lane opens for b")
     }
 
     @Test func drawnEdgesStrokeOverflowLanesOnceInTheLastColumn() throws {
         let edges = (0..<30).map { GraphEdge(from: $0, to: $0, colorIndex: $0, phase: .through) }
         let row = GraphRow(
-            commitLane: 0, colorIndex: 0, edges: edges, laneCount: 30, isMerge: false)
+            commitLane: 0, colorIndex: 0, edges: edges, isMerge: false)
         let cap = GraphRow.maxDrawnLanes
         let drawn = row.drawnEdges(laneCap: cap)
         #expect(drawn.count == cap, "one stroke per drawn column")
@@ -180,7 +186,7 @@ import Testing
             GraphEdge(from: 2, to: 30, colorIndex: 4, phase: .out),
         ]
         let row = GraphRow(
-            commitLane: 2, colorIndex: 0, edges: edges, laneCount: 31, isMerge: false)
+            commitLane: 2, colorIndex: 0, edges: edges, isMerge: false)
         #expect(
             row.drawnEdges(laneCap: 12) == [
                 GraphEdge(from: 11, to: 11, colorIndex: 2, phase: .out),
@@ -191,7 +197,7 @@ import Testing
 
     @Test func truncationLeavesLanesOpen() {
         let builder = build([commitSummary(m, parents: [a, b])])
-        #expect(builder.rows[0].laneCount == 2, "both parent lanes stay open past the last row")
+        #expect(lanesTouched(builder.rows[0]) == 2, "both parent lanes stay open past the last row")
         #expect(builder.maxLaneCount == 2)
     }
 }

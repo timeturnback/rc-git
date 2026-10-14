@@ -43,16 +43,12 @@ public struct GraphRow: Hashable, Sendable {
     public let colorIndex: Int
     /// Every segment drawn across this row.
     public let edges: [GraphEdge]
-    /// Lanes alive at this row, for sizing the graph column.
-    public let laneCount: Int
     public let isMerge: Bool
 
-    public init(commitLane: Int, colorIndex: Int, edges: [GraphEdge], laneCount: Int, isMerge: Bool)
-    {
+    public init(commitLane: Int, colorIndex: Int, edges: [GraphEdge], isMerge: Bool) {
         self.commitLane = commitLane
         self.colorIndex = colorIndex
         self.edges = edges
-        self.laneCount = laneCount
         self.isMerge = isMerge
     }
 
@@ -161,11 +157,10 @@ public struct GraphBuilder: Sendable {
             commit.parents.dropFirst(), commitLane: commitLane, bottom: &bottom, edges: &edges)
 
         lanes = bottom
-        let laneCount = max(max(topCount, lanes.count), commitLane + 1)
-        maxLaneCount = max(maxLaneCount, laneCount)
+        maxLaneCount = max(maxLaneCount, topCount, lanes.count, commitLane + 1)
         rows.append(
             GraphRow(
-                commitLane: commitLane, colorIndex: color, edges: edges, laneCount: laneCount,
+                commitLane: commitLane, colorIndex: color, edges: edges,
                 isMerge: commit.parents.count > 1))
     }
 
