@@ -422,6 +422,13 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(parsed?.alignments == [.leading, .trailing, .center, .natural])
     }
 
+    @Test func theShortestDelimiterMakesAOneColumnTable() {
+        let parsed = table("a\n|-\n")
+        #expect(parsed?.columnCount == 1)
+        #expect(parsed?.header.map(plain) == ["a"])
+        #expect(parsed?.alignments == [.natural])
+    }
+
     @Test func shortRowsArePaddedToTheColumnCount() {
         let parsed = table("a | b | c\n--- | --- | ---\n1\n")
         #expect(parsed?.rows.first?.count == 3)

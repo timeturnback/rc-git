@@ -728,10 +728,6 @@ extension MarkdownBlockParser {
     /// `delimiter`, then eats the body rows that follow.
     private mutating func consumeTable(header: String, delimiter: Range<Int>) {
         let alignments = Self.splitCells(text(delimiter)).map(Self.alignment(of:))
-        guard !alignments.isEmpty else {
-            beginPending(kind: .paragraph, first: header)
-            return
-        }
         let headerCells = cells(of: header, columns: alignments.count)
         var rows: [[[MarkdownRun]]] = []
         while index < lines.count {
