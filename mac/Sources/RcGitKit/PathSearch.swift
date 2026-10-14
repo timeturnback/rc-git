@@ -125,8 +125,9 @@ public struct PathIndex: Sendable {
             truncated: list.truncated)
     }
 
-    /// The best `limit` matches for `query`, highest score first, ties by shorter then
-    /// lexicographic path so the order is stable. An empty query returns the first entries.
+    /// The best `limit` matches for `query`, highest score first, ties by shorter (in UTF-8
+    /// bytes, which is O(1); `String.count` walks graphemes) then lexicographic path so the
+    /// order is stable. An empty query returns the first entries.
     /// Entries under `HiddenFiles` are left out unless `includeHidden`. The query is matched in
     /// precomposed (NFC) form against each entry's `searchKey`. A scan over a large index
     /// checks for task cancellation every `cancellationStride` entries, so a superseded query
@@ -151,9 +152,9 @@ public struct PathIndex: Sendable {
         }
         scored.sort {
             if $0.score != $1.score { return $0.score > $1.score }
-            if $0.entry.path.count != $1.entry.path.count {
-                return $0.entry.path.count < $1.entry.path.count
-            }
+            let left = $0.entry.path.utf8.count
+            let right = $1.entry.path.utf8.count
+            if left != right { return left < right }
             return $0.entry.path < $1.entry.path
         }
         return scored.prefix(limit).map(\.entry)

@@ -131,6 +131,16 @@ import Testing
         #expect(try index.search("   ").count == 3, "a blank query lists every entry")
     }
 
+    @Test func tiesCompareLengthInUTF8Bytes() throws {
+        let entries = ["\u{E9}/main.rs", "ab/main.rs"].map {
+            PathIndexEntry(path: $0, oid: oid(0x11), kind: .blob, hidden: false)
+        }
+        let index = PathIndex(root: root, entries: entries, truncated: false)
+        #expect(
+            try index.search("main").map(\.path) == ["ab/main.rs", "\u{E9}/main.rs"],
+            "both paths are 10 bytes, so the tie falls through to path order")
+    }
+
     @Test func searchPutsTheFileNamedLikeItsFolderFirst() throws {
         let paths = [
             "components/button/index.ts", "components/button/Button.tsx",
