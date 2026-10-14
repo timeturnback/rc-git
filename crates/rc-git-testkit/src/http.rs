@@ -18,6 +18,7 @@ pub struct HttpGitServer {
     mount: String,
     shutdown: Arc<AtomicBool>,
     requests: Arc<AtomicUsize>,
+    chunked: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -84,6 +85,13 @@ impl HttpGitServer {
         self.requests.load(Ordering::SeqCst)
     }
 
+    /// Requests so far whose body arrived with `Transfer-Encoding: chunked`: a client
+    /// streaming a body of unknown length rather than buffering it for `Content-Length`.
+    #[must_use]
+    pub fn chunked_requests(&self) -> usize {
+        self.chunked.load(Ordering::SeqCst)
+    }
+
     fn start(git_dir: &std::path::Path, mode: Mode) -> Self {
         let git_dir = git_dir.canonicalize().expect("canonicalize git dir");
         let project_root = git_dir
@@ -102,6 +110,8 @@ impl HttpGitServer {
         let stop = Arc::clone(&shutdown);
         let requests = Arc::new(AtomicUsize::new(0));
         let accepted = Arc::clone(&requests);
+        let chunked = Arc::new(AtomicUsize::new(0));
+        let streamed = Arc::clone(&chunked);
         let handle = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if stop.load(Ordering::SeqCst) {
@@ -113,8 +123,11 @@ impl HttpGitServer {
                 let backend = backend.clone();
                 let mode = mode.clone();
                 let stop = Arc::clone(&stop);
+                let streamed = Arc::clone(&streamed);
                 std::thread::spawn(move || match mode {
-                    Mode::Backend(auth) => handle_connection(stream, &root, &backend, auth),
+                    Mode::Backend(auth) => {
+                        handle_connection(stream, (&root, &backend), auth, &streamed);
+                    }
                     Mode::Stall => stall(stream, &stop),
                 });
             }
@@ -124,6 +137,7 @@ impl HttpGitServer {
             mount,
             shutdown,
             requests,
+            chunked,
             handle: Some(handle),
         }
     }
@@ -209,9 +223,9 @@ struct CgiRequest<'a> {
 
 fn handle_connection(
     stream: TcpStream,
-    project_root: &std::path::Path,
-    backend: &std::path::Path,
+    (project_root, backend): (&std::path::Path, &std::path::Path),
     auth: Option<BasicAuth>,
+    chunked: &AtomicUsize,
 ) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
     let mut writer = stream;
@@ -226,6 +240,9 @@ fn handle_connection(
     }
     if head.expects_continue {
         drop(writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n"));
+    }
+    if head.chunked {
+        chunked.fetch_add(1, Ordering::SeqCst);
     }
     let Some(body) = read_body(&mut reader, &head) else {
         let reason = b"malformed or truncated request body\n";

@@ -1333,6 +1333,11 @@ fn push_to_an_empty_remote_uploads_the_whole_history() {
     assert_eq!(outcome.old, None);
     assert_eq!(bare_rev(&bare, "main"), local.rev_parse("HEAD"));
     bare.git(&["--git-dir", "remote.git", "fsck", "--strict"]);
+    assert_eq!(
+        server.chunked_requests(),
+        1,
+        "the pack must stream as a chunked POST, not be buffered for Content-Length"
+    );
 }
 
 #[test]

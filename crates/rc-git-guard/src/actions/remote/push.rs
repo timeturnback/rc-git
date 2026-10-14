@@ -141,18 +141,18 @@ pub fn push_upstream(
     }
     bail_if_cancelled(cancel, OP)?;
 
-    let pack = pack::build_pack(&repo, tip, &haves, cancel)?;
+    let counted = pack::count_pack(&repo, tip, &haves, cancel)?;
     bail_if_cancelled(cancel, OP)?;
-    let pushed_commits = pack.commits;
+    let pushed_commits = counted.commits;
     {
-        let (link, bytes) = (link.clone(), pack.bytes);
+        let link = link.clone();
         run_detached(cancel, OP, move || {
             let update = Update {
                 old: remote_old,
                 new: tip,
                 side_band: advertised.side_band,
             };
-            send(transport, &link, update, &bytes)
+            send(transport, &link, update, counted)
         })?;
     }
     Ok(PushOutcome {
@@ -216,8 +216,8 @@ impl Link {
     }
 }
 
-/// Bytes handed to the transport per write, so a cancel lands between chunks of a large
-/// pack instead of after the whole upload.
+/// Pack bytes buffered before each write to the transport, so the pack writer's many small
+/// writes reach it in pieces of this size.
 const PACK_CHUNK: usize = 64 * 1024;
 
 /// What `git-receive-pack` advertised before the push.
@@ -306,13 +306,14 @@ struct Update {
 
 /// Sends the command line and the pack over one `git-receive-pack` request (on HTTPS, the
 /// `POST`; on SSH, the same channel), on the transport the handshake prepared, and reads the
-/// server's `report-status`. The pack goes out in [`PACK_CHUNK`] pieces and the report comes in
-/// one read at a time, with the cancel flag looked at before each.
+/// server's `report-status`. The request is binary, so HTTPS streams a chunked body rather
+/// than buffering it whole; the pack is written straight into it, entry by entry, and the
+/// report comes in one read at a time, with the cancel flag looked at before each.
 fn send(
     mut transport: BoxedTransport,
     link: &Link,
     update: Update,
-    pack: &[u8],
+    counted: pack::Counted,
 ) -> ActionResult<()> {
     use gix::protocol::transport::client::blocking_io::ExtendedBufRead;
 
@@ -321,26 +322,33 @@ fn send(
     let mut side_band = SideBand::default();
     let mut writer = transport
         .request(
-            gix::protocol::transport::client::WriteMode::OneLfTerminatedLinePerWriteCall,
+            gix::protocol::transport::client::WriteMode::Binary,
             gix::protocol::transport::client::MessageKind::Flush,
             false,
         )
         .map_err(|source| link.failed(Box::new(source)))?;
-    writer
-        .write_all(&report::command_line(
-            update.old,
-            update.new,
-            full_ref,
-            update.side_band,
-        ))
-        .map_err(net)?;
+    // Binary mode writes each call as one pkt-line and, unlike text mode, adds no LF.
+    let mut command = report::command_line(update.old, update.new, full_ref, update.side_band);
+    command.push(b'\n');
+    writer.write_all(&command).map_err(net)?;
     writer
         .write_message(gix::protocol::transport::client::MessageKind::Flush)
         .map_err(net)?;
     let (mut raw, mut reader) = writer.into_parts();
-    for chunk in pack.chunks(PACK_CHUNK) {
-        link.bail_if_cancelled()?;
-        raw.write_all(chunk).map_err(net)?;
+    let mut wire = Wire {
+        inner: &mut raw,
+        error: None,
+    };
+    let written = {
+        let mut buffered = std::io::BufWriter::with_capacity(PACK_CHUNK, &mut wire);
+        pack::write_pack(counted, &mut buffered, &link.cancel)
+            .and_then(|()| buffered.flush().map_err(net))
+    };
+    if let Err(err) = written {
+        return Err(wire
+            .error
+            .take()
+            .map_or(err, |source| link.failed(Box::new(source))));
     }
     raw.flush().map_err(net)?;
     drop(raw);
@@ -357,6 +365,31 @@ fn send(
     };
     drop(reader);
     side_band.judge(reply, full_ref)
+}
+
+/// The transport's side of the pack stream. Keeps the first write error so it is reported
+/// as the network failure it is, not as a pack-writer error that only quotes it.
+struct Wire<'a> {
+    inner: &'a mut dyn Write,
+    error: Option<std::io::Error>,
+}
+
+impl Write for Wire<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf).map_err(|err| self.keep(err))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush().map_err(|err| self.keep(err))
+    }
+}
+
+impl Wire<'_> {
+    fn keep(&mut self, err: std::io::Error) -> std::io::Error {
+        let echo = std::io::Error::new(err.kind(), err.to_string());
+        self.error.get_or_insert(err);
+        echo
+    }
 }
 
 /// The server's `report-status`, as it arrived.
