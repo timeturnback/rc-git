@@ -172,7 +172,7 @@ fn a_branch_is_created_at_the_commit_a_tag_names_and_never_on_a_tree() {
 }
 
 #[test]
-fn an_invalid_branch_name_is_refused_before_any_write() {
+fn an_invalid_branch_or_tag_name_is_refused_before_any_write() {
     let fx = Fixture::standard();
     let policy = Policy::default();
     let before = refs(&fx);
@@ -184,8 +184,18 @@ fn an_invalid_branch_name_is_refused_before_any_write() {
         assert!(message.contains("create branch"), "names the op: {message}");
         assert!(message.contains(name), "names the branch: {message}");
     }
-    let err = create_tag(fx.path(), &policy, "-dash", "HEAD").unwrap_err();
-    assert!(err.to_string().contains("create tag '-dash'"), "{err}");
+    for name in ["HEAD", "-dash"] {
+        let err = create_tag(fx.path(), &policy, name, "HEAD").unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{name}: {err}");
+        assert!(
+            err.to_string().contains(&format!("create tag '{name}'")),
+            "{err}"
+        );
+    }
+    assert!(
+        !fx.path().join(".git/refs/tags/HEAD").exists(),
+        "no refs/tags/HEAD"
+    );
 
     assert_eq!(refs(&fx), before, "no ref was written");
     fx.git(&["checkout", "-q", "-b", "x"]);

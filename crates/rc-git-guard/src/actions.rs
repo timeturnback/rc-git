@@ -512,14 +512,7 @@ pub fn create_branch(
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
-    if name == "HEAD" {
-        return Err(ActionError::git(
-            "create branch",
-            name,
-            "'HEAD' is not a valid branch name; git reserves it",
-        ));
-    }
-    refuse_leading_dash("create branch", name)?;
+    refuse_reserved_name("create branch", name)?;
     let action = Action::CreateLocalBranch {
         name: name.to_owned(),
     };
@@ -536,15 +529,15 @@ pub fn create_branch(
 /// Creates a lightweight tag at `revspec`, refusing to overwrite an existing one.
 ///
 /// # Errors
-/// [`ActionError::Git`] when `name` starts with `-`, the revision does not resolve, or the
-/// tag exists.
+/// [`ActionError::Git`] when `name` is `HEAD` or starts with `-` (names git refuses), the
+/// revision does not resolve, or the tag exists.
 pub fn create_tag(
     repo_path: &Path,
     policy: &Policy,
     name: &str,
     revspec: &str,
 ) -> ActionResult<()> {
-    refuse_leading_dash("create tag", name)?;
+    refuse_reserved_name("create tag", name)?;
     let action = Action::CreateTag {
         name: name.to_owned(),
     };
@@ -558,8 +551,16 @@ pub fn create_tag(
     )
 }
 
-/// Refuses a ref name git refuses: a leading `-` would read as an option on its command line.
-fn refuse_leading_dash(op: &'static str, name: &str) -> ActionResult<()> {
+/// Refuses a ref name git refuses: `HEAD` would make every `HEAD` lookup ambiguous, and a
+/// leading `-` would read as an option on its command line.
+fn refuse_reserved_name(op: &'static str, name: &str) -> ActionResult<()> {
+    if name == "HEAD" {
+        return Err(ActionError::git(
+            op,
+            name,
+            "'HEAD' is not a valid name; git reserves it",
+        ));
+    }
     if name.starts_with('-') {
         return Err(ActionError::git(
             op,
