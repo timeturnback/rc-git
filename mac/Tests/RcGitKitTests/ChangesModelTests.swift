@@ -64,6 +64,27 @@ import Testing
         #expect(statusCallbacks == 2, "one for loading, one for loaded")
     }
 
+    @Test func aTickChangeReportsTicksAndLeavesTheListAlone() async throws {
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        let path = try #require(report.entries.first).path
+        var statusCallbacks = 0
+        var tickCallbacks = 0
+        model.onStatusChanged = { statusCallbacks += 1 }
+        model.onTicksChanged = { tickCallbacks += 1 }
+        model.setTicked([path], false)
+        #expect(tickCallbacks == 1)
+        #expect(statusCallbacks == 0, "a tick click must not rebuild the list")
+        let first = HunkStamp(oldStart: 1, oldLines: 1, newStart: 1, newLines: 1)
+        let second = HunkStamp(oldStart: 5, oldLines: 1, newStart: 5, newLines: 1)
+        model.toggleHunk(path, first, all: [first, second])
+        #expect(tickCallbacks == 2)
+        #expect(statusCallbacks == 0, "a hunk click must not rebuild the list")
+    }
+
     @Test func anUnbornBranchListsEveryFileAsUntracked() async {
         repo.headValue = Head(refName: "refs/heads/main", target: nil)
         repo.statusReport = StatusReport(

@@ -167,7 +167,11 @@ public final class ChangesModel {
     public private(set) var isVisible = false
     public private(set) var isStale = false
 
+    /// Fires when a scan moves `statusState`: the list itself may have changed.
     public var onStatusChanged: (() -> Void)?
+    /// Fires when only the tick state moved: the list is the same, so the view redraws its
+    /// tick boxes and summary without rebuilding the rows.
+    public var onTicksChanged: (() -> Void)?
     public var onDiffChanged: (() -> Void)?
     public var onStashChanged: (() -> Void)?
     public var onError: ((String) -> Void)?
@@ -481,7 +485,7 @@ public final class ChangesModel {
             }
             tickedHunks[path] = nil
         }
-        onStatusChanged?()
+        onTicksChanged?()
     }
 
     /// Whether one hunk of `path` is in the selection. With no partial state, every hunk of
@@ -512,7 +516,7 @@ public final class ChangesModel {
         } else {
             tickedHunks[path] = stamps
         }
-        onStatusChanged?()
+        onTicksChanged?()
     }
 
     /// The tick box of one change list row: a file's own state, or the sum of every file

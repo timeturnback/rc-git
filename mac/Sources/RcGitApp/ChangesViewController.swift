@@ -545,11 +545,21 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         show(stashGroup, visible: !self.stashes.isEmpty || state != .loaded, width: &stashWidth)
     }
 
-    /// Re-renders tick checkboxes after the model's tick state moved.
+    /// Re-renders tick checkboxes after the model's tick state moved. The rows are unchanged,
+    /// so only the visible ones redraw: a row scrolled into view later reads its tick state
+    /// when its view is made, which keeps a click O(visible rows) rather than O(entries).
     func refreshTicks() {
-        reloadFiles()
-        diffTable.reloadData()
+        reloadVisibleRows(of: filesOutline)
+        reloadVisibleRows(of: diffTable)
         refreshSummary()
+    }
+
+    private func reloadVisibleRows(of table: NSTableView) {
+        let rows = table.rows(in: table.visibleRect)
+        guard rows.length > 0 else { return }
+        table.reloadData(
+            forRowIndexes: IndexSet(integersIn: rows.location..<NSMaxRange(rows)),
+            columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
     }
 
     /// Rebuilds the rows for the current grouping and puts back what the reload drops:

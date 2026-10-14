@@ -1016,7 +1016,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changes.onStatusChanged = { [weak self] in
             guard let self, let changesModel else { return }
             changesController.renderStatus(changesModel.statusState)
-            changesController.refreshTicks()
+        }
+        changes.onTicksChanged = { [weak self] in
+            self?.changesController.refreshTicks()
         }
         changes.onDiffChanged = { [weak self] in
             guard let self, let changesModel else { return }
