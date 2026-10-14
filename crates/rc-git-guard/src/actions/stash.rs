@@ -288,8 +288,9 @@ pub fn stash_apply(
 /// [`stash_apply`] checks it, and again against the reflog line the drop removes.
 ///
 /// # Errors
-/// As [`stash_apply`], untracked files included; a failed apply leaves the stash entry
-/// untouched. When the apply
+/// As [`stash_apply`], untracked files included, and as [`stash_drop`] when the stash log is
+/// locked elsewhere: the drop's lock is taken before the apply, so nothing is written then. A
+/// failed apply leaves the stash entry untouched. When the apply
 /// succeeds but the drop fails, [`ActionError::Git`] with op `"stash pop: drop"` says the
 /// changes are already in the working tree, so the entry should be dropped, not popped again.
 pub fn stash_pop(
@@ -308,8 +309,9 @@ pub fn stash_pop(
     };
     let proof = authorize(policy, &action, OP, "refs/stash", input)?;
     let writer = Writer::new(&repo, &proof);
+    let held = lock_drop(&writer, index, target.oid, OP)?;
     apply_inner(&writer, repo_path, target.oid, OP)?;
-    drop_inner(&writer, index, target.oid, OP).map_err(|error| {
+    finish_drop(&writer, held, index, OP).map_err(|error| {
         ActionError::git(
             "stash pop: drop",
             stash_name(index),
@@ -342,7 +344,9 @@ pub fn stash_drop(
         name: stash_label(index, &target.message),
     };
     let proof = authorize(policy, &action, OP, "refs/stash", input)?;
-    drop_inner(&Writer::new(&repo, &proof), index, target.oid, OP)
+    let writer = Writer::new(&repo, &proof);
+    let held = lock_drop(&writer, index, target.oid, OP)?;
+    finish_drop(&writer, held, index, OP)
 }
 
 /// How many untracked paths a refusal names before it says "and more".
@@ -682,32 +686,60 @@ struct DropPlan {
     kept: Vec<u8>,
 }
 
-/// Drops `stash@{index}`: backup ref when the answered challenge asked for one, reflog line
-/// removal with re-chaining, and the `refs/stash` update or deletion. `index` counts the
-/// reflog lines git can read, newest first (see [`rc_git_core::stash_reflog_lines`]);
-/// unreadable lines stay as they are. The line removed must still record `expected`, or
-/// nothing is written.
+/// A drop of `stash@{index}` that holds `logs/refs/stash.lock` and has planned its reflog
+/// edit from one read made under that lock.
+struct HeldDrop {
+    lock: gix::lock::File,
+    log_path: std::path::PathBuf,
+    raw: Vec<u8>,
+    plan: DropPlan,
+}
+
+/// The first half of a drop of `stash@{index}`: takes `logs/refs/stash.lock`, then reads the
+/// log and plans the edit. `index` counts the reflog lines git can read, newest first (see
+/// [`rc_git_core::stash_reflog_lines`]); the line it names must still record `expected`.
+/// Nothing is written, so a lock held elsewhere or a changed entry refuses with nothing
+/// changed; a pop takes this before its apply for the same reason.
 ///
-/// `logs/refs/stash.lock` is taken before the log is read and before anything is written, so
-/// a lock held elsewhere fails the drop with nothing changed, and `git reflog expire` or
-/// `git stash drop` (which take that lock) cannot interleave. `git stash push` appends while
-/// holding `refs/stash.lock` instead, which a gix transaction cannot share across the read
-/// and the rewrite, so it is not excluded: the log is re-read before the rewrite and a drop
-/// that would erase a line it did not plan from refuses with
-/// [`ActionError::StaleRepository`]. The rewrite also erases the spurious reflog line the
-/// ref update appends.
-fn drop_inner(
+/// Holding the lock until [`finish_drop`] keeps `git reflog expire` and `git stash drop`
+/// (which take it) from interleaving. `git stash push` appends while holding
+/// `refs/stash.lock` instead, which a gix transaction cannot share across the read and the
+/// rewrite, so it is not excluded: [`finish_drop`] re-reads the log before the rewrite.
+fn lock_drop(
     writer: &Writer<'_>,
     index: usize,
     expected: ObjectId,
     op: &'static str,
-) -> ActionResult<Deleted> {
-    let repo = writer.repo();
-    let log_path = repo.common_dir().join("logs/refs/stash");
+) -> ActionResult<HeldDrop> {
+    let log_path = writer.repo().common_dir().join("logs/refs/stash");
     let lock = writer.lock_stash_log(&log_path, op)?;
     let raw = std::fs::read(&log_path).map_err(git_err(op, "refs/stash"))?;
     let plan = plan_drop(&raw, index, expected, op)?;
+    Ok(HeldDrop {
+        lock,
+        log_path,
+        raw,
+        plan,
+    })
+}
 
+/// The second half of a drop: backup ref when the answered challenge asked for one, the
+/// `refs/stash` update or deletion, and the reflog rewrite with the removed line's newer
+/// neighbor re-chained; unreadable lines stay as they are. A drop that would erase a line it
+/// did not plan from refuses with [`ActionError::StaleRepository`]. The rewrite also erases
+/// the spurious reflog line the ref update appends.
+fn finish_drop(
+    writer: &Writer<'_>,
+    held: HeldDrop,
+    index: usize,
+    op: &'static str,
+) -> ActionResult<Deleted> {
+    let HeldDrop {
+        lock,
+        log_path,
+        raw,
+        plan,
+    } = held;
     let backup = if writer.backup_required() {
         Some(writer.write_backup_ref("stash", &index.to_string(), plan.removed)?)
     } else {
@@ -734,7 +766,7 @@ fn drop_inner(
         )?;
         writer.apply_edit(edit, op, "refs/stash")?;
     }
-    require_log_unchanged(repo, &log_path, &raw, &plan, op)?;
+    require_log_unchanged(writer.repo(), &log_path, &raw, &plan, op)?;
     writer.commit_stash_log(lock, &plan.kept, op)?;
     Ok(deleted)
 }

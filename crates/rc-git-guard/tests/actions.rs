@@ -2479,7 +2479,7 @@ mod stash {
     }
 
     #[test]
-    fn a_pop_whose_drop_fails_says_the_changes_were_applied() {
+    fn a_pop_while_the_stash_log_is_locked_writes_nothing() {
         let fx = Fixture::standard();
         let policy = Policy::default();
         for label in ["one", "two"] {
@@ -2487,6 +2487,8 @@ mod stash {
             fx.git(&["stash", "push", "-q", "-m", label]);
         }
         let shown = stash_oid(&fx, 1);
+        let log_before = std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap();
+        let refs_before = refs(&fx);
         let lock = fx.path().join(".git/logs/refs/stash.lock");
         std::fs::write(&lock, b"").unwrap();
 
@@ -2494,7 +2496,43 @@ mod stash {
         std::fs::remove_file(&lock).unwrap();
 
         assert!(
-            matches!(&err, ActionError::Git { op: "stash pop: drop", name, .. } if name == "stash@{1}"),
+            matches!(&err, ActionError::Git { op: "stash pop", name, .. } if name == "refs/stash"),
+            "{err}"
+        );
+        assert_eq!(porcelain(&fx), "", "nothing was applied");
+        assert_eq!(
+            std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap(),
+            log_before,
+            "no reflog line was appended or removed"
+        );
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+        assert_eq!(stash_list(&fx), "On main: two\nOn main: one");
+
+        stash_pop(fx.path(), &policy, 1, shown, None).unwrap();
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"one\n"
+        );
+        assert_eq!(stash_list(&fx), "On main: two");
+    }
+
+    #[test]
+    fn a_pop_whose_drop_fails_says_the_changes_were_applied() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["one", "two"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let shown = stash_oid(&fx, 0);
+        let lock = fx.path().join(".git/refs/stash.lock");
+        std::fs::write(&lock, b"").unwrap();
+
+        let err = stash_pop(fx.path(), &policy, 0, shown, None).unwrap_err();
+        std::fs::remove_file(&lock).unwrap();
+
+        assert!(
+            matches!(&err, ActionError::Git { op: "stash pop: drop", name, .. } if name == "stash@{0}"),
             "{err}"
         );
         assert!(
@@ -2504,12 +2542,12 @@ mod stash {
         );
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
-            b"one\n"
+            b"two\n"
         );
         assert_eq!(stash_list(&fx), "On main: two\nOn main: one");
 
-        stash_drop(fx.path(), &policy, 1, shown, Some("drop")).unwrap();
-        assert_eq!(stash_list(&fx), "On main: two");
+        stash_drop(fx.path(), &policy, 0, shown, Some("drop")).unwrap();
+        assert_eq!(stash_list(&fx), "On main: one");
     }
 
     #[test]
