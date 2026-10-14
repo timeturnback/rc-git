@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use imports::{ImportLink, import_links};
 
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
+use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
 
 /// The languages the highlighter knows. Each pairs a grammar with its highlight query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -419,21 +419,23 @@ fn check_cancel(cancel: Option<&AtomicUsize>, language: Language) -> Result<(), 
 /// every `inline` node and table cell, and the named language for every fenced code block and
 /// metadata section. Inner spans win over the block layer's, so emphasis inside a heading and
 /// keywords inside a fence keep their own class.
+///
+/// The document is parsed once: the block spans and the injected regions both read that tree.
 fn highlight_markdown(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> {
     let config = Language::Markdown.configuration()?;
-    let base = single_layer(config, data, Language::Markdown, nesting.cancel)?;
-    let overlays = markdown_overlays(data, nesting)?;
+    let tree = parse_markdown(data, nesting.cancel)?;
+    let base = block_spans(config, &tree, data, nesting.cancel)?;
+    let overlays = markdown_overlays(&tree, data, nesting)?;
     Ok(merge_overlays(base, overlays))
 }
 
-/// Collects spans from every injected region of a markdown document. A region that fails to
-/// parse simply contributes nothing; the file still shows its block-level color.
+/// Parses `data` with the markdown block grammar, polling `cancel` while it runs.
 ///
 /// # Errors
-/// [`Error::Grammar`] when the block grammar or a region's grammar fails to load, so a
-/// packaging problem reaches the caller instead of quietly dropping the prose color.
-/// [`Error::Parse`] wrapping `Cancelled` when the caller's flag is raised.
-fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> {
+/// [`Error::Grammar`] when the grammar is rejected, and [`Error::Parse`] wrapping
+/// `Cancelled` when the caller's flag is raised or the parser returns no tree, as
+/// `tree_sitter_highlight` reports it.
+fn parse_markdown(data: &[u8], cancel: Option<&AtomicUsize>) -> Result<tree_sitter::Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_md::LANGUAGE.into())
@@ -441,9 +443,9 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
             language: Language::Markdown,
             detail: error.to_string(),
         })?;
-    check_cancel(nesting.cancel, Language::Markdown)?;
+    check_cancel(cancel, Language::Markdown)?;
     let mut progress = |_: &tree_sitter::ParseState| {
-        if is_raised(nesting.cancel) {
+        if is_raised(cancel) {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -451,10 +453,149 @@ fn markdown_overlays(data: &[u8], nesting: Nesting) -> Result<Vec<Span>, Error> 
     };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
     let mut read = |offset: usize, _| data.get(offset..).unwrap_or_default();
-    let Some(tree) = parser.parse_with_options(&mut read, None, Some(options)) else {
-        check_cancel(nesting.cancel, Language::Markdown)?;
-        return Ok(Vec::new());
-    };
+    parser
+        .parse_with_options(&mut read, None, Some(options))
+        .ok_or(Error::Parse {
+            language: Language::Markdown,
+            source: tree_sitter_highlight::Error::Cancelled,
+        })
+}
+
+/// The block grammar's spans from an already parsed `tree`, flattened innermost-wins exactly
+/// as [`single_layer`] flattens `tree_sitter_highlight`'s events: when several patterns
+/// capture one node the last one wins, and a capture with no configured name leaves the node
+/// uncolored without hiding its children. The block query has no predicates and no locals,
+/// so nothing else of the highlighter's walk applies.
+///
+/// # Errors
+/// [`Error::Parse`] wrapping `Cancelled` when the caller's flag is raised.
+fn block_spans(
+    config: &HighlightConfiguration,
+    tree: &tree_sitter::Tree,
+    data: &[u8],
+    cancel: Option<&AtomicUsize>,
+) -> Result<Vec<Span>, Error> {
+    use tree_sitter::StreamingIterator;
+
+    check_cancel(cancel, Language::Markdown)?;
+    let highlights = capture_highlights(config.query.capture_names());
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut captures = cursor.captures(&config.query, tree.root_node(), data);
+    let mut flattener = Flattener::default();
+    let mut pending: Option<(tree_sitter::Node, usize)> = None;
+    while let Some((found, index)) = captures.next() {
+        check_cancel(cancel, Language::Markdown)?;
+        let Some(capture) = found.captures().get(*index) else {
+            continue;
+        };
+        let current = (capture.node, capture.index as usize);
+        match pending.replace(current) {
+            Some((node, _)) if node == capture.node => {}
+            Some((node, capture_index)) => {
+                flattener.open(
+                    node.byte_range(),
+                    highlights.get(capture_index).copied().flatten(),
+                );
+            }
+            None => {}
+        }
+    }
+    if let Some((node, capture_index)) = pending {
+        flattener.open(
+            node.byte_range(),
+            highlights.get(capture_index).copied().flatten(),
+        );
+    }
+    Ok(flattener.finish())
+}
+
+/// Each query capture name's position in [`CAPTURES`], by `HighlightConfiguration::configure`'s
+/// rule, whose result the configuration keeps private: every dot-part of the entry appears in
+/// the capture name, the entry with the most parts wins, and the earlier entry breaks a tie.
+/// `None` is a name no entry resolves; such a capture opens no highlight at all, unlike an
+/// entry whose class is `None`.
+fn capture_highlights(names: &[&str]) -> Vec<Option<Highlight>> {
+    let mut highlights = Vec::with_capacity(names.len());
+    for name in names {
+        let parts: Vec<&str> = name.split('.').collect();
+        let mut best = None;
+        let mut best_len = 0;
+        for (index, configured) in CAPTURE_NAMES.iter().enumerate() {
+            let len = configured.split('.').count();
+            if len > best_len && configured.split('.').all(|part| parts.contains(&part)) {
+                best = Some(Highlight(index));
+                best_len = len;
+            }
+        }
+        highlights.push(best);
+    }
+    highlights
+}
+
+/// Turns nested highlight ranges, opened in document order, into innermost-wins spans, the
+/// way [`single_layer`] turns `HighlightStart`/`HighlightEnd`/`Source` events into them.
+#[derive(Default)]
+struct Flattener {
+    spans: Vec<Span>,
+    open: Vec<(usize, Option<Class>)>,
+    at: usize,
+}
+
+impl Flattener {
+    /// Closes every open range that ends at or before `range.start`, then opens `range` when
+    /// its capture resolved to a [`CAPTURES`] entry.
+    fn open(&mut self, range: Range<usize>, highlight: Option<Highlight>) {
+        while let Some(&(end, _)) = self.open.last()
+            && end <= range.start
+        {
+            self.advance(end);
+            self.open.pop();
+        }
+        if let Some(highlight) = highlight {
+            self.advance(range.start);
+            self.open.push((
+                range.end,
+                CAPTURES.get(highlight.0).and_then(|entry| entry.1),
+            ));
+        }
+    }
+
+    /// Colors the text up to `to` in the innermost open range's class.
+    fn advance(&mut self, to: usize) {
+        if self.at >= to {
+            return;
+        }
+        if let Some(&(_, Some(class))) = self.open.last() {
+            self.spans.push(Span {
+                start: offset(self.at),
+                end: offset(to),
+                class,
+            });
+        }
+        self.at = to;
+    }
+
+    fn finish(mut self) -> Vec<Span> {
+        while let Some(&(end, _)) = self.open.last() {
+            self.advance(end);
+            self.open.pop();
+        }
+        self.spans
+    }
+}
+
+/// Collects spans from every injected region of a parsed markdown document. A region that
+/// fails to parse simply contributes nothing; the file still shows its block-level color.
+///
+/// # Errors
+/// [`Error::Grammar`] when a region's grammar fails to load, so a packaging problem reaches
+/// the caller instead of quietly dropping the prose color. [`Error::Parse`] wrapping
+/// `Cancelled` when the caller's flag is raised.
+fn markdown_overlays(
+    tree: &tree_sitter::Tree,
+    data: &[u8],
+    nesting: Nesting,
+) -> Result<Vec<Span>, Error> {
     let mut overlays = Vec::new();
     let mut cursor = tree.walk();
     'walk: loop {
@@ -1163,6 +1304,64 @@ mod tests {
     }
 
     #[test]
+    fn markdown_block_spans_match_the_highlighters() {
+        let data = b"---\nkey: value\n---\n\n# Title *em*\n\nSetext\n======\n\n\
+            - item\n- [x] done\n  1. nested\n  2) paren\n\n* star\n+ plus\n\n***\n\n\
+            > quoted \\* escape\n> - in quote\n>\n> ```rust\n> fn f() {}\n> ```\n\n\
+            ```md\n# inner\n```\n\n~~~\nplain\n~~~\n\n    indented code\n\n\
+            [ref]: https://example.com \"Title\"\n[other]: <dest> 'single'\n\n\
+            | a | b |\n|---|:-:|\n| \\| | x |\n\n<div>html</div>\n";
+        let config = Language::Markdown.configuration().unwrap();
+        let tree = parse_markdown(data, None).unwrap();
+        let expected = single_layer(config, data, Language::Markdown, None).unwrap();
+        assert!(
+            expected.len() > 20,
+            "the sample exercises the block query: {expected:?}"
+        );
+        assert_eq!(block_spans(config, &tree, data, None).unwrap(), expected);
+    }
+
+    #[test]
+    fn block_spans_let_the_later_pattern_win_on_a_shared_node() {
+        let query = "(atx_heading) @text.title\n(atx_heading) @keyword\n(inline) @spell\n\
+            (atx_h1_marker) @none\n(paragraph) @string\n(paragraph) @spell\n\
+            (list_item) @string\n(list_marker_minus) @punctuation\n";
+        let config = load(tree_sitter_md::LANGUAGE.into(), "markdown", query).unwrap();
+        let data = b"# Heading\n\nProse.\n\n- one\n- two\n";
+        let tree = parse_markdown(data, None).unwrap();
+        let expected = single_layer(&config, data, Language::Markdown, None).unwrap();
+        assert_eq!(classes_at(&expected, data, "Heading"), vec![Class::Keyword]);
+        assert_eq!(classes_at(&expected, data, "Prose"), Vec::new());
+        assert_eq!(block_spans(&config, &tree, data, None).unwrap(), expected);
+    }
+
+    #[test]
+    fn capture_highlights_follow_configures_rule() {
+        let names: Vec<Option<&str>> = capture_highlights(&[
+            "string.escape",
+            "keyword.function",
+            "punctuation.special",
+            "text.title",
+            "none",
+            "spell",
+        ])
+        .into_iter()
+        .map(|highlight| highlight.map(|highlight| CAPTURE_NAMES[highlight.0]))
+        .collect();
+        assert_eq!(
+            names,
+            vec![
+                Some("escape"),
+                Some("keyword.function"),
+                Some("punctuation"),
+                Some("text.title"),
+                Some("none"),
+                None,
+            ]
+        );
+    }
+
+    #[test]
     fn merge_overlays_clips_base_around_overlays_without_empty_pieces() {
         let span = |start, end, class| Span { start, end, class };
         let base = vec![
@@ -1321,8 +1520,14 @@ mod tests {
             cancel: Some(&raised),
         };
         let data = b"some *prose* here\n";
+        let tree = parse_markdown(data, None).unwrap();
         assert_cancelled(
-            markdown_overlays(data, nesting),
+            markdown_overlays(&tree, data, nesting),
+            "highlighting markdown: Cancelled",
+        );
+        let config = Language::Markdown.configuration().unwrap();
+        assert_cancelled(
+            block_spans(config, &tree, data, Some(&raised)),
             "highlighting markdown: Cancelled",
         );
         assert_cancelled(
