@@ -18,30 +18,42 @@ import Testing
         #expect(document.isLossy)
     }
 
-    @Test func onlyTextBlobsBecomeDocuments() {
-        #expect(TextDocument(content: .binary(size: 3)) == nil)
-        #expect(TextDocument(content: .tooLarge(size: 9, limit: 3)) == nil)
-        #expect(TextDocument(content: textBlob("x"))?.lineCount == 1)
+    @Test func onlyTextBlobsBecomeTextStates() {
+        let entry = TreeEntry(name: "a.txt", oid: oid(0x61), kind: .blob)
+        #expect(
+            BrowserModel.state(for: entry, content: .binary(size: 3)) == .binary(entry, size: 3))
+        #expect(
+            BrowserModel.state(for: entry, content: .tooLarge(size: 9, limit: 3))
+                == .tooLarge(entry, size: 9, limit: 3))
+        guard
+            case let .text(textEntry, document) = BrowserModel.state(
+                for: entry, content: textBlob("x"))
+        else {
+            Issue.record("a text blob did not become a text state")
+            return
+        }
+        #expect(textEntry == entry)
+        #expect(document.lineCount == 1)
     }
 
     @Test func utf16LineStartsFollowTheCoreRule() {
-        #expect(TextDocument(content: textBlob(""))?.utf16LineStarts == [])
-        #expect(TextDocument(content: textBlob("a"))?.utf16LineStarts == [0])
-        #expect(TextDocument(content: textBlob("a\n"))?.utf16LineStarts == [0])
-        #expect(TextDocument(content: textBlob("a\nb"))?.utf16LineStarts == [0, 2])
-        #expect(TextDocument(content: textBlob("a\nb\n"))?.utf16LineStarts == [0, 2])
-        #expect(TextDocument(content: textBlob("\n\n"))?.utf16LineStarts == [0, 1])
+        #expect(textDocument("").utf16LineStarts == [])
+        #expect(textDocument("a").utf16LineStarts == [0])
+        #expect(textDocument("a\n").utf16LineStarts == [0])
+        #expect(textDocument("a\nb").utf16LineStarts == [0, 2])
+        #expect(textDocument("a\nb\n").utf16LineStarts == [0, 2])
+        #expect(textDocument("\n\n").utf16LineStarts == [0, 1])
     }
 
     @Test func utf16LineStartsCountUnitsNotBytes() {
         // "é" is 2 UTF-8 bytes but 1 UTF-16 unit; "😀" is 4 UTF-8 bytes and 2 UTF-16 units.
-        let document = TextDocument(content: textBlob("é\n😀\nx"))
-        #expect(document?.utf16LineStarts == [0, 2, 5])
+        let document = textDocument("é\n😀\nx")
+        #expect(document.utf16LineStarts == [0, 2, 5])
     }
 
     @Test func nonLFBreaksRecordEverySeparatorTextKitBreaksOn() {
-        func breaks(_ text: String) -> [Int]? {
-            TextDocument(content: textBlob(text))?.utf16NonLFBreaks
+        func breaks(_ text: String) -> [Int] {
+            textDocument(text).utf16NonLFBreaks
         }
         #expect(breaks("a\nb") == [])
         #expect(breaks("a\rb") == [1])
@@ -54,9 +66,9 @@ import Testing
     }
 
     @Test func nonLFBreaksLeaveLineStartsOnLF() {
-        let document = TextDocument(content: textBlob("😀\r\u{2028}x\ny"))
-        #expect(document?.utf16LineStarts == [0, 6])
-        #expect(document?.utf16NonLFBreaks == [2, 3])
+        let document = textDocument("😀\r\u{2028}x\ny")
+        #expect(document.utf16LineStarts == [0, 6])
+        #expect(document.utf16NonLFBreaks == [2, 3])
     }
 
     @Test(arguments: [
@@ -68,7 +80,7 @@ import Testing
         let walked = TextDocument.utf16Breaks(of: text)
         #expect(fromBytes.lineStarts == walked.lineStarts)
         #expect(fromBytes.nonLF == walked.nonLF)
-        #expect(TextDocument(content: textBlob(text))?.utf16LineStarts == walked.lineStarts)
+        #expect(textDocument(text).utf16LineStarts == walked.lineStarts)
     }
 
     @Test func lossyTextWalksTheDecodedText() {
@@ -122,18 +134,27 @@ import Testing
         #expect(LineNumbering.label(at: 0, lineStarts: []) == nil)
     }
 
-    @Test func followsTheDocumentsLineStarts() throws {
-        func labels(_ text: String, at offsets: [Int]) throws -> [Int?] {
-            let starts = try #require(TextDocument(content: textBlob(text))).utf16LineStarts
+    @Test func followsTheDocumentsLineStarts() {
+        func labels(_ text: String, at offsets: [Int]) -> [Int?] {
+            let starts = textDocument(text).utf16LineStarts
             return offsets.map { LineNumbering.label(at: $0, lineStarts: starts) }
         }
         // CRLF: the second row starts after the LF, at 3.
-        #expect(try labels("a\r\nb", at: [0, 3]) == [1, 2])
+        #expect(labels("a\r\nb", at: [0, 3]) == [1, 2])
         // CR only: TextKit would start rows at 2 and 4; neither is a line start.
-        #expect(try labels("a\rb\rc", at: [0, 2, 4]) == [1, nil, nil])
+        #expect(labels("a\rb\rc", at: [0, 2, 4]) == [1, nil, nil])
         // U+2028 mid-line: the row after it is a continuation.
-        #expect(try labels("a\u{2028}b", at: [0, 2]) == [1, nil])
+        #expect(labels("a\u{2028}b", at: [0, 2]) == [1, nil])
         // FF before LF: the empty row at 2 is a continuation, the LF line starts at 3.
-        #expect(try labels("a\u{0C}\nb", at: [0, 2, 3]) == [1, nil, 2])
+        #expect(labels("a\u{0C}\nb", at: [0, 2, 3]) == [1, nil, 2])
     }
+}
+
+/// Builds a document the way `BrowserModel.state(for:content:)` does, from `textBlob`'s bytes
+/// and line starts.
+private func textDocument(_ text: String) -> TextDocument {
+    guard case let .text(bytes, lineStarts, validUTF8) = textBlob(text) else {
+        preconditionFailure("textBlob always returns a text blob")
+    }
+    return TextDocument(bytes: bytes, lineStarts: lineStarts, validUTF8: validUTF8)
 }

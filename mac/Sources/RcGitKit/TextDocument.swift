@@ -31,12 +31,6 @@ public struct TextDocument: Sendable, Hashable {
             validUTF8 ? Self.utf8Breaks(of: bytes) : Self.utf16Breaks(of: text)
     }
 
-    /// Builds a document from a blob when it is text; `nil` for binary or oversize blobs.
-    public init?(content: BlobContent) {
-        guard case let .text(data, lineStarts, validUTF8) = content else { return nil }
-        self.init(bytes: data, lineStarts: lineStarts, validUTF8: validUTF8)
-    }
-
     /// The UTF-16 breaks of valid UTF-8, read from the bytes: every byte that is not a
     /// continuation byte starts one UTF-16 unit, and a 4-byte leader starts two. Same result as
     /// `utf16Breaks(of:)` on the decoded text, without transcoding it.
