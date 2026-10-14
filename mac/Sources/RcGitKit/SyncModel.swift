@@ -406,7 +406,7 @@ public final class SyncModel {
     }
 
     public func fetch() async {
-        await workflow(start: .fetch) { model -> SyncSummary? in
+        await workflow(start: .fetch) { model async throws(StepFailure) -> SyncSummary in
             let fetched = try await model.runFetch()
             return SyncSummary(
                 fetchedRefs: fetched.updatedRefs, pulledFiles: 0, pushedCommits: 0)
@@ -415,7 +415,7 @@ public final class SyncModel {
 
     /// Fetch, then fast-forward: what the Pull menu item means.
     public func pull() async {
-        await workflow(start: .fetch) { model -> SyncSummary? in
+        await workflow(start: .fetch) { model async throws(StepFailure) -> SyncSummary in
             let fetched = try await model.runFetch()
             let pulled = try await model.runPull()
             return SyncSummary(
@@ -430,7 +430,8 @@ public final class SyncModel {
     /// control for "give me the latest master to work on". The upstream is checked after the
     /// switch, because it is the branch being switched to whose upstream matters.
     public func backToDefaultBranch() async {
-        await workflow(start: .checkout, checkUpstream: false) { model -> SyncSummary? in
+        await workflow(start: .checkout, checkUpstream: false) {
+            model async throws(StepFailure) -> SyncSummary in
             let branch = try await model.resolveDefaultBranch()
             let switched = try await model.runCheckout(branch)
             if !switched.alreadyOnBranch {
@@ -453,7 +454,7 @@ public final class SyncModel {
     }
 
     public func push() async {
-        await workflow(start: .push) { model -> SyncSummary? in
+        await workflow(start: .push) { model async throws(StepFailure) -> SyncSummary in
             let pushed = try await model.runPush()
             return SyncSummary(
                 fetchedRefs: 0, pulledFiles: 0, pushedCommits: pushed.pushedCommits)
@@ -462,7 +463,7 @@ public final class SyncModel {
 
     /// Fetch, fast-forward, then push. Stops at the first failure or divergence.
     public func sync() async {
-        await workflow(start: .fetch) { model -> SyncSummary? in
+        await workflow(start: .fetch) { model async throws(StepFailure) -> SyncSummary in
             let fetched = try await model.runFetch()
             let pulled = try await model.runPull()
             if model.cancel.isSignalled {
@@ -501,7 +502,7 @@ public final class SyncModel {
     /// steps key credentials and host keys on the URL the guard will dial.
     private func workflow(
         start: SyncStep, checkUpstream: Bool = true,
-        _ body: (SyncModel) async throws -> SyncSummary?
+        _ body: (SyncModel) async throws(StepFailure) -> SyncSummary
     ) async {
         guard !isBusy else { return }
         generation += 1
@@ -514,13 +515,13 @@ public final class SyncModel {
             if generation == self.generation { workflowCredentials = nil }
         }
         enter(start)
-        do {
+        do throws(StepFailure) {
             if checkUpstream {
                 try await adoptFreshUpstream(start)
             }
             let summary = try await body(self)
             guard generation == self.generation else { return }
-            state = doneState(summary)
+            state = .done(summary.with(notice: credentialNotice))
         } catch {
             guard generation == self.generation else { return }
             state = terminalState(for: error)
@@ -530,24 +531,12 @@ public final class SyncModel {
         await refreshStatus()
     }
 
-    /// The state a workflow ends in when it returns; a workflow with nothing to count
-    /// reports zeros.
-    private func doneState(_ summary: SyncSummary?) -> SyncState {
-        .done(
-            (summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
-                .with(notice: credentialNotice))
-    }
-
     /// The state a workflow ends in when it throws. A cancel unwinds through whatever the
     /// step reported — usually the guard's own cancelled error, or a transport error the step
     /// hit as the flag was set. What the user asked for decides the state, not which of those
     /// arrived.
-    private func terminalState(for error: any Error) -> SyncState {
-        guard let failure = error as? StepFailure else {
-            return cancel.isSignalled
-                ? .idle : .failed(step: .fetch, message: withNotice("\(error)"))
-        }
-        return switch (cancel.isSignalled, failure.diverged) {
+    private func terminalState(for failure: StepFailure) -> SyncState {
+        switch (cancel.isSignalled, failure.diverged) {
         case (true, _): .idle
         case (false, true): .diverged(message: failure.message)
         case (false, false): .failed(step: failure.step, message: withNotice(failure.message))
@@ -606,7 +595,7 @@ public final class SyncModel {
     /// The branch the Back-to-default workflow targets. Fails the workflow when nothing names
     /// one, because there is then no sensible branch to switch to, and with the cause when the
     /// repository could not be read.
-    private func resolveDefaultBranch() async throws -> String {
+    private func resolveDefaultBranch() async throws(StepFailure) -> String {
         try bailIfCancelled(.checkout)
         enter(.checkout)
         if let branch = defaultBranch {
@@ -638,7 +627,7 @@ public final class SyncModel {
     /// follow authenticate against the remote the guard will dial. A failed read or a branch
     /// with no upstream stops the workflow here rather than opening a connection it cannot
     /// name. An in-flight refresh started before this read drops its older answer.
-    private func adoptFreshUpstream(_ step: SyncStep) async throws {
+    private func adoptFreshUpstream(_ step: SyncStep) async throws(StepFailure) {
         statusGeneration += 1
         let status = await readStatus()
         apply(status)
@@ -659,7 +648,7 @@ public final class SyncModel {
         }
     }
 
-    private func runCheckout(_ branch: String) async throws -> CheckoutOutcome {
+    private func runCheckout(_ branch: String) async throws(StepFailure) -> CheckoutOutcome {
         try bailIfCancelled(.checkout)
         enter(.checkout)
         let performer = performer
@@ -685,7 +674,7 @@ public final class SyncModel {
         }.value
     }
 
-    private func runFetch() async throws -> FetchOutcome {
+    private func runFetch() async throws(StepFailure) -> FetchOutcome {
         let repoPath = repoPath
         return try await networkStep(.fetch) {
             (performer, host, credentials, hostKey, cancel) throws(SyncError) -> FetchOutcome in
@@ -695,7 +684,7 @@ public final class SyncModel {
         }
     }
 
-    private func runPull() async throws -> PullOutcome {
+    private func runPull() async throws(StepFailure) -> PullOutcome {
         try bailIfCancelled(.pull)
         enter(.pull)
         let performer = performer
@@ -715,7 +704,7 @@ public final class SyncModel {
         }
     }
 
-    private func runPush() async throws -> PushOutcome {
+    private func runPush() async throws(StepFailure) -> PushOutcome {
         let repoPath = repoPath
         return try await networkStep(.push) {
             (performer, host, credentials, hostKey, cancel) throws(SyncError) -> PushOutcome in
@@ -734,7 +723,7 @@ public final class SyncModel {
     private func networkStep<Outcome: Sendable>(
         _ step: SyncStep,
         _ operation: @escaping NetworkOperation<Outcome>
-    ) async throws -> Outcome {
+    ) async throws(StepFailure) -> Outcome {
         enter(step)
         guard let status = remoteStatus, !status.host.isEmpty else {
             return try await hostlessStep(step, operation)
@@ -784,7 +773,7 @@ public final class SyncModel {
     private func trustHostKey(
         _ step: SyncStep, host: String, offered hostKey: String, approved: String?,
         alreadyPrompted: Bool, message: String
-    ) async throws -> String {
+    ) async throws(StepFailure) -> String {
         try bailIfCancelled(step)
         let fingerprint = String(hostKey.split(separator: " ").last ?? Substring(hostKey))
         // A key that differs from an earlier approval is a changed key, never a first
@@ -819,7 +808,7 @@ public final class SyncModel {
     private func nextCredentials(
         _ step: SyncStep, host: String, kind: CredentialKind, after error: SyncError,
         attempts: Int, hadCredentials: Bool
-    ) async throws -> Credentials {
+    ) async throws(StepFailure) -> Credentials {
         guard case let .prompt(key) = Self.credentialRetry(after: error, kind: kind) else {
             throw StepFailure(step: step, message: error.message, diverged: isDiverged(error))
         }
@@ -901,7 +890,7 @@ public final class SyncModel {
     /// be handed to every other upstream that names none, in any repository.
     private func hostlessStep<Outcome: Sendable>(
         _ step: SyncStep, _ operation: @escaping NetworkOperation<Outcome>
-    ) async throws -> Outcome {
+    ) async throws(StepFailure) -> Outcome {
         try bailIfCancelled(step)
         let performer = performer
         let cancel = cancel
