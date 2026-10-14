@@ -26,11 +26,14 @@ paths: mac/**
   the ref list on a window that opens on Files, the truncation note) sizes to its content, so
   `show` re-makes the width of every view showing by hand
   (`docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md`).
-- Outside History the ref list lives in `RefPickerController`, a transient popover under the
+- In Files the ref list lives in `RefPickerController`, a transient popover under the
   banner over the same `RefsViewController` in its `.picker` behavior: selection only
   highlights, a click or Return picks. Actions that ask with a sheet close the popover first.
   The banner opens it on mouse-down, and a transient popover closes on that same mouse-down
   when it is already open, so `chooseRef` ignores the event whose timestamp closed it.
+  In Changes the banner is read-only: it names the checked-out branch through
+  `BranchBanner.checkedOut`, because Changes always compares the working tree with HEAD, and
+  ⌘B is disabled there (`canOpenRefPicker`).
 - The sidebar collapses with `.preferResizingSiblingsWithFixedSplitView`, so the window keeps
   its size; `.preferResizingSplitViewWithFixedSiblings` shrinks the window instead. The
   toolbar carries no `.sidebarTrackingSeparator`: `outerSplit` sits inside
@@ -145,8 +148,9 @@ paths: mac/**
 - `BrowserModel.restore` coalesces like `ChangesModel`: a restore asked for while one runs
   sets `pendingRestore` and returns. Do not let two run at once — the second would resolve
   its file against a root the first is still loading.
-- Tests use `FakeRepository` for behavior and `GitFixture` for the real bridge; both build the
-  same standard repository as `rc-git-testkit`, keep them in step.
+- Tests use `FakeRepository` (in-memory, configured per test) for behavior and `GitFixture`
+  for the real bridge; `GitFixture` builds the same standard repository as `rc-git-testkit` —
+  keep those two in step.
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
 - Never collapse a view with a height-0 constraint while it has visible subviews — hide it
   inside an `NSStackView` with `detachesHiddenViews`.
