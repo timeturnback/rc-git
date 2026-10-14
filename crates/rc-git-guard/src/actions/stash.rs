@@ -509,35 +509,45 @@ fn check_changes(
 
 /// Pass 2: write. Every check passed, so this only replays recorded state. Removals run
 /// first, so a file the stash turns into a directory (`x` to `x/y`), or a directory it turns
-/// into a file, is out of the way before the new entry is written.
+/// into a file, is out of the way before the new entry is written. A failed write stops the
+/// run, naming how many paths were already written and that the stash entry is kept.
 fn write_changes(
     writer: &Writer<'_>,
     work_dir: &Path,
     changes: &[rc_git_core::TreeChange],
     op: &'static str,
 ) -> ActionResult<()> {
+    let mut deletions: Vec<String> = Vec::new();
+    let mut restores: Vec<&rc_git_core::TreeChange> = Vec::new();
     for change in changes {
         match change.kind {
-            rc_git_core::ChangeKind::Deleted => {
-                writer.delete_file(op, work_dir, &change.path.to_string())?;
-            }
+            rc_git_core::ChangeKind::Deleted => deletions.push(change.path.to_string()),
             rc_git_core::ChangeKind::Renamed => {
                 if let Some(source) = &change.source_path {
-                    writer.delete_file(op, work_dir, &source.to_string())?;
+                    deletions.push(source.to_string());
                 }
+                restores.push(change);
             }
-            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {}
+            rc_git_core::ChangeKind::Added | rc_git_core::ChangeKind::Modified => {
+                restores.push(change);
+            }
         }
     }
-    for change in changes {
-        match change.kind {
-            rc_git_core::ChangeKind::Added
-            | rc_git_core::ChangeKind::Modified
-            | rc_git_core::ChangeKind::Renamed => {
-                restore_change(writer, work_dir, &change.path.to_string(), change, op)?;
-            }
-            rc_git_core::ChangeKind::Deleted => {}
-        }
+    let total = deletions.len() + restores.len();
+    let stopped = |error, written| {
+        workfile::stopped_part_way(error, written, total, "the stash entry is kept")
+    };
+    let mut written = 0;
+    for path in &deletions {
+        writer
+            .delete_file(op, work_dir, path)
+            .map_err(|error| stopped(error, written))?;
+        written += 1;
+    }
+    for change in restores {
+        restore_change(writer, work_dir, &change.path.to_string(), change, op)
+            .map_err(|error| stopped(error, written))?;
+        written += 1;
     }
     Ok(())
 }

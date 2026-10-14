@@ -4584,7 +4584,7 @@ mod partial_writes {
 
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, StashRequest, checkout_branch, discard_files, stash_push,
+        ActionError, StashRequest, checkout_branch, discard_files, stash_apply, stash_push,
     };
     use rc_git_testkit::Fixture;
 
@@ -4675,6 +4675,32 @@ mod partial_writes {
             fx.git_output(&["show", "stash@{0}:src/lib.rs"]),
             "dirty",
             "the stash was recorded before the restore"
+        );
+    }
+
+    #[test]
+    fn a_stash_apply_that_fails_part_way_says_the_entry_is_kept() {
+        let fx = Fixture::standard();
+        dirty_both(&fx);
+        fx.git(&["stash", "push", "-q"]);
+        let stash = rc_git_core::Oid::from_hex(&fx.rev_parse("stash@{0}")).unwrap();
+        if !make_src_read_only(&fx) {
+            return;
+        }
+
+        let err = stash_apply(fx.path(), &Policy::default(), 0, stash, None).unwrap_err();
+        fx.set_mode("src", 0o755);
+
+        assert_stopped(&err, "stash apply", "the stash entry is kept");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"dirty\n",
+            "the first path was already written"
+        );
+        assert_eq!(
+            fx.rev_parse("stash@{0}"),
+            stash.to_string(),
+            "the entry is kept"
         );
     }
 
