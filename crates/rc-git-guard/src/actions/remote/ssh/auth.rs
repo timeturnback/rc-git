@@ -15,6 +15,10 @@ use russh::AgentAuthError;
 use russh::client::Handle;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
+use russh::keys::ssh_key::sec1::der::{
+    self, Decode, Document, Reader, Tag, Tagged,
+    asn1::{AnyRef, ObjectIdentifier},
+};
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 
 use crate::actions::{ActionError, ActionResult, git_err};
@@ -287,6 +291,9 @@ fn load_identity(
     };
     let has_header = |header: &str| contents.lines().any(|line| line == header);
     let encrypted_pkcs8 = has_header("-----BEGIN ENCRYPTED PRIVATE KEY-----");
+    if encrypted_pkcs8 && pbkdf2_prf(&contents) == Some(HMAC_WITH_SHA1) {
+        return Err(Outcome::Unusable(SHA1_PKCS8.to_owned()));
+    }
     // russh fails a plain PKCS#8 key handed any passphrase, so a stored passphrase meant
     // for another identity must not reach it.
     let passphrase = if has_header("-----BEGIN PRIVATE KEY-----") {
@@ -300,6 +307,55 @@ fn load_identity(
 
 const NOT_A_KEY: &str = "not a private key";
 const NOT_HELD: &str = "names a key the agent does not hold";
+const SHA1_PKCS8: &str = "encrypted with PBKDF2-SHA1, which rc-git cannot decrypt; \
+                          re-encrypt it with ssh-keygen -p";
+
+const PBES2: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.5.13");
+const PBKDF2: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.5.12");
+/// PBKDF2's default PRF, which russh's PKCS#5 build leaves out: it fails such a key with
+/// the same error a wrong passphrase gives, so no passphrase would ever open it.
+const HMAC_WITH_SHA1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.2.7");
+
+/// The PBKDF2 PRF of an encrypted PKCS#8 PEM key (RFC 8018 `PBES2-params`), or `None`
+/// when the key uses another scheme or does not parse — russh then reports the error.
+fn pbkdf2_prf(pem: &str) -> Option<ObjectIdentifier> {
+    let (_, doc) = Document::from_pem(pem).ok()?;
+    let info = sequence(AnyRef::from_der(doc.as_bytes()).ok()?)?;
+    let algorithm = sequence(*info.first()?)?;
+    if oid(algorithm.first()?)? != PBES2 {
+        return None;
+    }
+    let kdf = sequence(*sequence(*algorithm.get(1)?)?.first()?)?;
+    if oid(kdf.first()?)? != PBKDF2 {
+        return None;
+    }
+    // salt, iterationCount, then an optional keyLength INTEGER and an optional prf.
+    let params = sequence(*kdf.get(1)?)?;
+    match params
+        .iter()
+        .skip(2)
+        .find(|field| field.tag() == Tag::Sequence)
+    {
+        Some(prf) => oid(sequence(*prf)?.first()?),
+        None => Some(HMAC_WITH_SHA1),
+    }
+}
+
+/// The elements of a DER `SEQUENCE`, undecoded.
+fn sequence(any: AnyRef<'_>) -> Option<Vec<AnyRef<'_>>> {
+    any.sequence(|reader| {
+        let mut elements = Vec::new();
+        while !reader.is_finished() {
+            elements.push(AnyRef::decode(reader)?);
+        }
+        Ok::<_, der::Error>(elements)
+    })
+    .ok()
+}
+
+fn oid(any: &AnyRef<'_>) -> Option<ObjectIdentifier> {
+    any.decode_as().ok()
+}
 
 /// What a failed key decode means for the ladder. russh reports a wrong passphrase as a
 /// decrypt failure that differs by format — `SshKey(Crypto)` for OpenSSH, `Unpad` for
@@ -673,6 +729,58 @@ mod tests {
         assert_eq!(
             loaded.map(|loaded| loaded.public_key().clone()),
             Ok(key.public_key().clone())
+        );
+    }
+
+    /// An encrypted PKCS#8 key with its PBKDF2 PRF OID ending in `prf_last_byte`: russh
+    /// writes hmacWithSHA256 (`0x09`), which differs from hmacWithSHA1 (`0x07`) only there.
+    fn encrypted_pkcs8_pem(prf_last_byte: u8) -> String {
+        let sha256_prf = [0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09];
+        let mut der =
+            russh::keys::pkcs8::encode_pkcs8_encrypted(b"right", 1, &keypair(3)).expect("encode");
+        let at = der
+            .windows(sha256_prf.len())
+            .position(|window| window == sha256_prf)
+            .expect("an explicit hmacWithSHA256 PRF");
+        der[at + sha256_prf.len() - 1] = prf_last_byte;
+        Document::try_from(der.as_slice())
+            .expect("der")
+            .to_pem("ENCRYPTED PRIVATE KEY", der::pem::LineEnding::LF)
+            .expect("pem")
+    }
+
+    /// russh cannot derive a PBKDF2-SHA1 key and fails it like a wrong passphrase, which
+    /// used to prompt again until the attempt limit.
+    #[test]
+    fn a_pbkdf2_sha1_pkcs8_key_is_unusable_with_or_without_a_passphrase() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("id_sha1", encrypted_pkcs8_pem(0x07).as_bytes());
+        let path = dir.path().join("id_sha1");
+        for passphrase in [Some("right"), Some("wrong"), None] {
+            assert_eq!(
+                load_identity(&path, passphrase, true, false).err(),
+                Some(Outcome::Unusable(SHA1_PKCS8.to_owned())),
+                "{passphrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pbkdf2_sha256_pkcs8_key_is_locked_until_the_right_passphrase() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        dir.write("id_sha256", encrypted_pkcs8_pem(0x09).as_bytes());
+        let path = dir.path().join("id_sha256");
+        assert_eq!(
+            load_identity(&path, Some("wrong"), true, false).err(),
+            Some(Outcome::Locked)
+        );
+        assert_eq!(
+            load_identity(&path, None, true, false).err(),
+            Some(Outcome::Locked)
+        );
+        assert_eq!(
+            load_identity(&path, Some("right"), true, false).map(|key| key.public_key().clone()),
+            Ok(keypair(3).public_key().clone())
         );
     }
 
