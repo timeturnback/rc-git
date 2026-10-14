@@ -2,10 +2,11 @@
 
 A fast git browser for macOS. Open a repository, pick a branch, tag, or commit, walk the
 tree, read files, page through history, diff, blame, and see the working tree's status. It
-never runs `git`: a Rust core built on [gitoxide](https://github.com/GitoxideLabs/gitoxide)
-reads the object database directly and a native AppKit window shows the result. Reading
-never writes a byte; the only mutations are branch and tag management, and each one passes
-through a policy that backs up what it deletes.
+runs no `git` process for repository operations: a Rust core built on
+[gitoxide](https://github.com/GitoxideLabs/gitoxide) reads the object database directly and a
+native AppKit window shows the result. Reading never writes a byte; every mutation — refs,
+the index, the working tree, or a remote — passes through a policy that decides what you must
+confirm first.
 
 ## Build
 
@@ -31,7 +32,7 @@ by passing a path on the command line, or with `open -a RCGit <path>`. The ref l
 working tree, branches, remote branches, and tags; selecting one shows its tree, and the app
 follows along when refs change on disk. History shows the list in the sidebar. Files puts a
 banner there instead, naming what you browse: click it or press ⌘B to pick from the list in a
-sheet. In Changes the banner names the checked-out branch. Folders load when expanded, files
+popover. In Changes the banner names the checked-out branch. Folders load when expanded, files
 open with syntax highlighting when selected, ⌘F searches the file, ⇧⌘O jumps to a file by
 fuzzy name. In JavaScript and TypeScript, click an import or a component to open its file.
 ⌘[ and ⌘] step back and forward through the files, commits, panes, and tabs you went
@@ -42,8 +43,9 @@ The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as yo
 selecting a commit shows the files it changed with a line diff; double-click to browse the
 tree at that commit. ⌥⌘B blames the open file. The Working Tree row overlays each file's
 status against `HEAD` — modified, untracked, ignored, deleted. Right-click a ref to create
-or delete branches and tags: deletions demand the ref's typed name and write a backup under
-`refs/rc-git/backup/` first.
+or delete branches and tags: deleting an unmerged branch, a remote branch, or a tag takes the
+typed name and writes a backup under `refs/rc-git/backup/` first; a merged branch takes a
+plain confirm.
 
 The window adapts to its size: below 760 points wide the sidebar folds away. The file always
 sits right of the tree, and the tree widens only as far as its rows need, so the file pane
@@ -66,10 +68,12 @@ cargo run --release -p rc-git-cli -- status ~/code/some-repo
 The core cannot write. The workspace's `clippy.toml` rejects the gix and std write, spawn and
 network entry points it lists at lint time, a test compares `.git` byte for byte before and after every
 operation, and repositories open in isolated mode so an untrusted checkout cannot pull in
-configuration from anywhere else. Actions that change a repository — today, branch and tag
-management — pass through `rc-git-guard`, a policy that denies deletions on protected
-branches outright, requires the ref's name to be typed for anything that loses work, and
-writes a backup ref before deleting. `docs/safety.md` has the full table.
+configuration from anywhere else. Every mutation — refs, the index, the working tree, or a
+remote — passes through `rc-git-guard`, a policy that denies deletions on protected branches
+outright and decides, per action, whether it runs, needs a confirm, or needs a typed phrase
+and a backup ref. Deleting a merged branch takes a plain confirm and writes no backup;
+discarding working changes takes a plain confirm and cannot be undone; dropping a stash takes
+the word `drop` and writes a backup ref. `docs/safety.md` has the full table.
 
 ## Layout
 

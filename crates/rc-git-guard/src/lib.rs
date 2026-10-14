@@ -1,5 +1,6 @@
-//! Decides what a user must do before rc-git runs a git action that can lose work, and runs
-//! the actions that pass.
+//! Policy for every mutating action, and rc-git's only write and network path: decides what a
+//! user must do before rc-git runs a git action that changes a repository or a remote, and
+//! runs the actions that pass.
 //!
 //! The rules live here, in one place, as data a test can enumerate. A front end asks
 //! [`Policy::evaluate`] and obeys the [`Decision`]; it never decides on its own. [`actions`] is

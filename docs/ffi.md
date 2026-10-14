@@ -1,8 +1,8 @@
 # FFI
 
-`crates/rc-git-ffi` exposes `rc-git-core` as a C ABI. `cbindgen` turns it into
-`mac/Sources/CRcGit/include/rc_git.h`, and `mac/Sources/RcGitKit/Repository.swift` wraps it
-in Swift value types.
+`crates/rc-git-ffi` exposes `rc-git-core`, `rc-git-guard`, and `rc-git-highlight` as a C ABI.
+`cbindgen` turns it into `mac/Sources/CRcGit/include/rc_git.h`, and
+`mac/Sources/RcGitKit/Repository.swift` wraps it in Swift value types.
 
 ## Contract
 

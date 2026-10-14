@@ -92,7 +92,8 @@ Opening a repository someone else produced must be harmless.
   can run a local server end to end), and sends credentials only when the caller passed
   them. SSH host keys are verified against a read-only `known_hosts`: an unknown key is
   refused until the user approves its fingerprint, and a contradicting key is always
-  fatal. Nothing else rc-git does can leave the machine.
+  fatal. Nothing else in a repository operation leaves the machine; the updater below is
+  the one exception.
 
 ## Guarding mutations
 
@@ -252,6 +253,18 @@ The remote operations add their own guarantees:
   half-applied. A transfer already past its last check can still land after the cancel
   returns — a fetch moving its tracking refs, a push the server accepts — exactly as if it
   had finished just before; the next fetch shows it.
+
+## Updater
+
+**Update rc-git** in the app menu rebuilds rc-git from its own checkout, and it sits outside
+the guarantees above. Clippy's `Command::new` ban covers Rust only; the app launches Swift
+`Process`es itself. A release update fetches and fast-forwards the checkout through the
+guard's sync path, then runs `scripts/install-app.sh`; a dev rebuild skips the fetch and runs
+`scripts/build-app.sh --dev`. Both run through a login `/bin/zsh -lc`, so the user's shell
+profile runs too. Those scripts
+call `git` on rc-git's own checkout — never on a browsed repository — and `cargo build`, which
+may fetch crates when the lockfile moved. A release update therefore executes whatever the
+upstream commit it just pulled contains: trust in the update is trust in that remote.
 
 ## Supply chain
 

@@ -1,4 +1,4 @@
-//! `rc-git`: the command-line face of `rc-git-core`.
+//! `rc-git`: the command-line face of `rc-git-core` reads and `rc-git-guard` actions.
 //!
 //! Output is tab-separated so scripts and agents can parse it. `--time` prints how long the
 //! repository open and the command took, which is how the budgets in `docs/performance.md`

@@ -1,6 +1,6 @@
 [package]
 name = "rc-git-cli"
-description = "Command-line front end over rc-git-core, -guard and -highlight, for scripts and agents"
+description = "Command-line front end over rc-git-core reads, rc-git-guard actions, and rc-git-highlight, for scripts, agents, and benchmarks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

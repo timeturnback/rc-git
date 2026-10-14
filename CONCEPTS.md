@@ -7,7 +7,8 @@ implements them, not the other way around.
 
 The single decision-and-write path for every mutation rc-git performs. Nothing else in
 the project may change a repository or talk to the network; a feature that needs either
-asks the guard's policy first and runs the action inside it.
+asks the guard's policy first and runs the action inside it. rc-git runs no `git` process
+for repository operations; only the in-app updater runs `git`, on rc-git's own checkout.
 
 The policy's answer is allow, confirm (with a challenge), or deny — and a deny is final
 inside rc-git: the message points the user at git itself rather than offering a way

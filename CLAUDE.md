@@ -2,8 +2,11 @@
 
 Native macOS git browser built for speed: open a repository, pick a branch or tag, walk the
 tree, read files, page history, diff, blame, browse the working tree. A Rust core on
-`gitoxide` reads the object database directly; a thin AppKit app renders it. No `git`
-process is ever spawned; nothing is written except guard-approved ref edits.
+`gitoxide` reads the object database directly; a thin AppKit app renders it. The core spawns
+no process (no `git` process for repository operations) and never writes; every write — refs,
+objects, the index, working-tree files, stash, fetch/pull/push — goes through `rc-git-guard`.
+The in-app updater runs `scripts/install-app.sh` or `build-app.sh`, which call `git` on
+rc-git's own checkout, never on a browsed repository.
 
 Two rules define the project. A change that breaks either is wrong even when it works:
 
@@ -38,7 +41,7 @@ Needs `rustup` (Rust is pinned in `rust-toolchain.toml`),
 | Path | Contains | Tested |
 |---|---|---|
 | `crates/rc-git-core` | gix wrapper: open, refs, trees, blobs, log, diff, blame, worktree. Keyed by `Oid`. No gix types in the public API. | yes |
-| `crates/rc-git-guard` | policy for every mutating action, and the one write path (branch/tag management, backup refs). | yes |
+| `crates/rc-git-guard` | policy for every mutating action, and the one write and network path (`docs/safety.md`, "Guarding mutations"). | yes |
 | `crates/rc-git-highlight` | tree-sitter highlighting and import links: bytes in, spans out. Pure. | yes |
 | `crates/rc-git-ffi` | C ABI over core, guard, and highlight. The only crate allowed `unsafe`. | yes |
 | `crates/rc-git-cli` | `rc-git` binary: scriptable access plus `--time`. | yes |

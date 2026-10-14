@@ -480,8 +480,8 @@ public final class BrowserModel {
         await loadRoot(of: commit.oid, rollingBackTo: previous)
     }
 
-    /// Shows the files on disk with a status overlay against `HEAD`. Reads only; nothing in
-    /// rc-git ever writes to the working tree.
+    /// Shows the files on disk with a status overlay against `HEAD`. Reads only: every
+    /// mutation goes through rc-git-guard, and the core never writes.
     public func selectWorkingTree() async {
         guard repository != nil, let target = head?.target else { return }
         beginMove()

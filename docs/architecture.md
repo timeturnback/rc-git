@@ -13,10 +13,10 @@ rc-git-core   gix wrapper. Repository pool, refs, trees, blobs, log, revision pa
 `rc-git-cli` sits beside the Swift package on top of the core, the guard and the highlighter,
 and gives scripts and agents the app's reads, its guarded mutations and its highlight and
 import-link passes. `rc-git-guard` holds the mutation policy and, in its `actions` module, the one
-write path: branch and tag management, commits built from working-tree selections, the stash
-lifecycle, and discards; `safety.md` has the rules. `rc-git-highlight` is a pure tree-sitter
-wrapper the FFI exposes for the file pane: highlight spans, and the import links of a
-JavaScript or TypeScript file.
+write and network path: every mutation — refs, objects, the index, working-tree files, the
+stash, checkout, and fetch, pull and push — goes through it; `safety.md` has the rules.
+`rc-git-highlight` is a pure tree-sitter wrapper the FFI exposes for the file pane: highlight
+spans, and the import links of a JavaScript or TypeScript file.
 
 ## Opening a repository
 

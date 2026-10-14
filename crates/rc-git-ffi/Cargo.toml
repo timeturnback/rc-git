@@ -1,6 +1,6 @@
 [package]
 name = "rc-git-ffi"
-description = "C ABI over rc-git-core for the Swift app"
+description = "C ABI over rc-git-core, rc-git-guard, and rc-git-highlight for the Swift app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

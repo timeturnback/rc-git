@@ -94,8 +94,9 @@ public struct CommitOutcome: Sendable, Hashable {
     public let branch: String
 }
 
-/// The one write path: branch and tag management, gated by the guard crate's policy. Every
-/// call opens the repository fresh by path, so nothing here can touch the read-only handles.
+/// The one write path: every mutation goes through the guard crate's policy, and the core
+/// never writes. Every call opens the repository fresh by path, so nothing here can touch the
+/// read-only handles.
 public enum RepositoryGuard {
     /// Title for an alert about a failed read of the repository.
     public static let readFailureTitle = "rc-git could not read the repository"

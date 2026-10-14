@@ -1,4 +1,5 @@
-//! C ABI over `rc-git-core` for the Swift app. `docs/ffi.md` explains how to extend it.
+//! C ABI over `rc-git-core`, `rc-git-guard`, and `rc-git-highlight` for the Swift app.
+//! `docs/ffi.md` explains how to extend it.
 //!
 //! Rules every function follows:
 //!
@@ -2820,7 +2821,7 @@ pub unsafe extern "C" fn rcgit_import_link_list_free(list: *mut RcGitImportLinkL
 }
 
 // ---------------------------------------------------------------------------------------------
-// Guarded mutations. The only functions that write to a repository. Each consults the default
+// Guarded mutations (remote operations below also write). Each consults the default
 // policy inside rc-git-guard; the typed confirmation crosses as `input` and is verified there.
 // ---------------------------------------------------------------------------------------------
 
