@@ -1797,6 +1797,25 @@ fn checkout_switches_branches_and_reports_a_dirty_path() {
     );
 }
 
+#[test]
+fn checkout_during_a_merge_names_the_requested_branch() {
+    let fx = Fixture::standard();
+    fx.conflicted_merge("README.md");
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["checkout", path, "feature"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("checkout 'feature': a merge is in progress"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main"
+    );
+}
+
 /// Sends `signal` (a `kill` name such as `INT`) to the process `pid`.
 #[expect(clippy::disallowed_methods, reason = "tests signal the built binary")]
 fn send_signal(pid: u32, signal: &str) {

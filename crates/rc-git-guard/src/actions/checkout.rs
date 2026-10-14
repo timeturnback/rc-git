@@ -46,7 +46,7 @@ pub fn checkout_branch(
     branch: &str,
 ) -> ActionResult<CheckoutOutcome> {
     let repo = open(repo_path, OP, branch)?;
-    super::refuse_any_operation_in_progress(&repo, OP)?;
+    super::refuse_any_operation_in_progress(&repo, OP, branch)?;
     let action = Action::Checkout {
         target: branch.to_owned(),
     };

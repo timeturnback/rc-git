@@ -86,7 +86,7 @@ pub fn stash_push(
         author,
     } = request;
     let repo = open(repo_path, OP, "refs/stash")?;
-    super::refuse_unfinished_operation(&repo, OP)?;
+    super::refuse_unfinished_operation(&repo, OP, "refs/stash")?;
     let action = Action::StashPush { files: paths.len() };
     let proof = authorize(policy, &action, OP, "refs/stash", input)?;
     let writer = Writer::new(&repo, &proof);

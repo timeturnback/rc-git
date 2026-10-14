@@ -92,7 +92,7 @@ pub fn commit(
         selections,
     } = request;
     let repo = open(repo_path, OP, "HEAD")?;
-    super::refuse_unfinished_operation(&repo, OP)?;
+    super::refuse_unfinished_operation(&repo, OP, "HEAD")?;
     let action = Action::Commit {
         files: selections.len(),
     };

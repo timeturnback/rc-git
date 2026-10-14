@@ -52,7 +52,7 @@ pub struct PullOutcome {
 /// rebase, cherry-pick, revert, bisect) and an unresolved conflict in the index.
 pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<PullOutcome> {
     let repo = open(repo_path, OP, "repository")?;
-    crate::actions::refuse_any_operation_in_progress(&repo, OP)?;
+    crate::actions::refuse_any_operation_in_progress(&repo, OP, "repository")?;
     let (branch, tip) = current_branch(&repo, OP)?;
     let action = Action::PullFastForward {
         branch: branch.clone(),

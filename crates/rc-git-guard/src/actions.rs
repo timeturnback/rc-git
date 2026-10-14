@@ -841,26 +841,35 @@ enum Bisect {
 
 /// Refuses `op` while a merge, cherry-pick, revert, rebase or mailbox apply is in progress:
 /// its pending state (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, …) would survive the action and be
-/// finished on top of it. A bisect in progress is allowed. Errors name `op`.
+/// finished on top of it. A bisect in progress is allowed. Errors name `op` and `target`.
 ///
 /// # Errors
 /// [`ActionError::Git`] naming the operation in progress.
-fn refuse_unfinished_operation(repo: &gix::Repository, op: &'static str) -> ActionResult<()> {
-    refuse_in_progress(repo, op, Bisect::Allowed)
+fn refuse_unfinished_operation(
+    repo: &gix::Repository,
+    op: &'static str,
+    target: &str,
+) -> ActionResult<()> {
+    refuse_in_progress(repo, op, target, Bisect::Allowed)
 }
 
 /// Refuses `op`, which moves `HEAD` to another commit, while any git operation is in progress,
-/// a bisect included.
+/// a bisect included. Errors name `op` and `target`.
 ///
 /// # Errors
 /// [`ActionError::Git`] naming the operation in progress.
-fn refuse_any_operation_in_progress(repo: &gix::Repository, op: &'static str) -> ActionResult<()> {
-    refuse_in_progress(repo, op, Bisect::Refused)
+fn refuse_any_operation_in_progress(
+    repo: &gix::Repository,
+    op: &'static str,
+    target: &str,
+) -> ActionResult<()> {
+    refuse_in_progress(repo, op, target, Bisect::Refused)
 }
 
 fn refuse_in_progress(
     repo: &gix::Repository,
     op: &'static str,
+    target: &str,
     bisect: Bisect,
 ) -> ActionResult<()> {
     use gix::state::InProgress;
@@ -878,7 +887,7 @@ fn refuse_in_progress(
     };
     Err(ActionError::git(
         op,
-        "HEAD",
+        target,
         format!("a {name} is in progress; finish or abort it in git first"),
     ))
 }
