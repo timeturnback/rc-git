@@ -1324,12 +1324,12 @@ unsafe fn bytes_arg<'a>(ptr: *const c_char) -> Option<&'a [u8]> {
     Some(unsafe { CStr::from_ptr(ptr) }.to_bytes())
 }
 
-/// The `len` bytes at `ptr`: empty when `len` is 0, whatever `ptr` is, and `None` when `ptr`
-/// is NULL with a nonzero `len`.
+/// The `len` items at `ptr`: empty when `len` is 0, whatever `ptr` is, and `None` when `ptr`
+/// is NULL with a nonzero `len`. The one place a caller's array is read.
 ///
 /// # Safety
-/// `ptr` is NULL or points to `len` readable bytes that outlive the returned slice.
-unsafe fn slice_arg<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+/// `ptr` is NULL or points to `len` readable, initialized `T`s that outlive the returned slice.
+unsafe fn slice_arg<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
     if len == 0 {
         return Some(&[]);
     }
@@ -3316,20 +3316,14 @@ pub extern "C" fn rcgit_guard_plan_discard(files: usize) -> *mut RcGitGuardDecis
 /// the array in the error: `paths` NULL with a nonzero `len`, or `paths[2]` NULL.
 ///
 /// # Safety
-/// `ptr` is NULL (with `len` 0) or points to `len` readable, non-NULL `char *`s.
+/// `ptr` is NULL or points to `len` readable `char *`s, each NULL or a NUL-terminated string.
 unsafe fn read_string_array(
     arg: &str,
     ptr: *const *const c_char,
     len: usize,
 ) -> Result<Vec<String>, BadArg> {
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    if ptr.is_null() {
-        return Err(BadArg::new(arg, Fault::Null));
-    }
     // SAFETY: forwarded from this function's contract.
-    let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let raw = unsafe { slice_arg(ptr, len) }.ok_or_else(|| BadArg::new(arg, Fault::Null))?;
     let mut strings = Vec::with_capacity(len);
     for (index, item) in raw.iter().enumerate() {
         // SAFETY: forwarded from this function's contract.
@@ -3346,21 +3340,15 @@ unsafe fn read_string_array(
 /// the array in the error, as in `request.files[2].path`.
 ///
 /// # Safety
-/// `ptr` points to `len` readable `RcGitCommitFile`s whose inner pointers honor that
+/// `ptr` is NULL or points to `len` readable `RcGitCommitFile`s whose inner pointers honor that
 /// struct's contract.
 unsafe fn read_selections(
     arg: &str,
     ptr: *const RcGitCommitFile,
     len: usize,
 ) -> Result<Vec<FileSelection>, BadArg> {
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    if ptr.is_null() {
-        return Err(BadArg::new(arg, Fault::Null));
-    }
     // SAFETY: forwarded from this function's contract.
-    let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let raw = unsafe { slice_arg(ptr, len) }.ok_or_else(|| BadArg::new(arg, Fault::Null))?;
     let mut selections = Vec::with_capacity(len);
     for (index, file) in raw.iter().enumerate() {
         // SAFETY: forwarded from this function's contract.
@@ -3368,15 +3356,13 @@ unsafe fn read_selections(
             return Err(BadArg::new(format!("{arg}[{index}].path"), Fault::Null));
         };
         let path = String::from_utf8_lossy(path_bytes).into_owned();
-        let stamps: &[RcGitHunkStamp] = match (file.hunks.is_null(), file.hunk_count) {
-            (true, 0) => {
-                selections.push(FileSelection::Whole { path });
-                continue;
-            }
-            (true, _) => return Err(BadArg::new(format!("{arg}[{index}].hunks"), Fault::Null)),
-            (false, 0) => &[],
-            // SAFETY: forwarded from this function's contract.
-            (false, count) => unsafe { std::slice::from_raw_parts(file.hunks, count) },
+        if file.hunks.is_null() && file.hunk_count == 0 {
+            selections.push(FileSelection::Whole { path });
+            continue;
+        }
+        // SAFETY: forwarded from this function's contract.
+        let Some(stamps) = (unsafe { slice_arg(file.hunks, file.hunk_count) }) else {
+            return Err(BadArg::new(format!("{arg}[{index}].hunks"), Fault::Null));
         };
         selections.push(FileSelection::Hunks {
             path,
@@ -3949,10 +3935,10 @@ pub unsafe extern "C" fn rcgit_guard_discard_hunks(
         (
             bytes_arg(repo_path),
             bytes_arg(path),
-            match (stamps.is_null(), len) {
-                (_, 0) => Err(Fault::Empty),
-                (true, _) => Err(Fault::Null),
-                (false, len) => Ok(std::slice::from_raw_parts(stamps, len).to_vec()),
+            match slice_arg(stamps, len) {
+                None => Err(Fault::Null),
+                Some([]) => Err(Fault::Empty),
+                Some(stamps) => Ok(stamps.to_vec()),
             },
             bytes_arg(input),
             Out::new(error),
@@ -7084,6 +7070,15 @@ mod tests {
         assert_eq!(
             ffi_commit_refused(&fx, ptr::null(), &raw const whole, 1),
             "rcgit_guard_commit: request.message is NULL"
+        );
+        let null_hunks = RcGitCommitFile {
+            path: path.as_ptr(),
+            hunks: ptr::null(),
+            hunk_count: 2,
+        };
+        assert_eq!(
+            ffi_commit_refused(&fx, message.as_ptr(), &raw const null_hunks, 1),
+            "rcgit_guard_commit: request.files[0].hunks is NULL"
         );
     }
 

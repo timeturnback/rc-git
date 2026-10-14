@@ -1,8 +1,10 @@
 # FFI
 
 `crates/rc-git-ffi` exposes `rc-git-core`, `rc-git-guard`, and `rc-git-highlight` as a C ABI.
-`cbindgen` turns it into `mac/Sources/CRcGit/include/rc_git.h`, and
-`mac/Sources/RcGitKit/Repository.swift` wraps it in Swift value types.
+`cbindgen` turns it into `mac/Sources/CRcGit/include/rc_git.h`, and four files in
+`mac/Sources/RcGitKit` wrap it in Swift value types: `Repository.swift` (core reads),
+`RepositoryGuard.swift` (guarded actions and the cancel handle), and `Highlighting.swift` and
+`ImportLinks.swift` (highlight).
 
 ## Contract
 
@@ -50,15 +52,27 @@ releases everything inside it. Arrays are `Box<[T]>` turned into a pointer and a
 
 ## Adding a function
 
-1. Add the operation to `rc-git-core` with tests (see `.claude/rules/core.md`).
+1. Add the operation to the crate that owns it, with tests: `rc-git-core` for reads
+   (`.claude/rules/core.md`), `rc-git-guard` for anything that writes
+   (`.claude/rules/guard.md`; an `actions/` function plus policy tests in
+   `crates/rc-git-guard/tests/actions.rs`), `rc-git-highlight` for highlighting
+   (`.claude/rules/highlight.md`).
 2. In `crates/rc-git-ffi/src/lib.rs`, add the `#[repr(C)]` type if needed with a `Drop` impl,
-   then the `pub unsafe extern "C" fn` with a `# Safety` section and one `// SAFETY:` block
-   that reads every pointer argument through `repo_arg`, `oid_arg`, `bytes_arg`, `Out::new`.
+   then the `pub unsafe extern "C" fn` with a `# Safety` section and one `// SAFETY:` block.
+   That block reads every pointer argument only through an `unsafe fn` reader with a
+   `# Safety` contract: the generic ones in the "Pointer helpers" section (the `*_arg`
+   functions, `slice_arg` for arrays and byte buffers among them) or a struct reader beside
+   its type (`read_*`, `Owned*::read`, `fallback_author`, `credentials_from`,
+   `cancel_flags`). It writes only through `Out`. A new pointer shape gets a new reader,
+   never an inline dereference.
 3. Add a test in the same file that calls it, checks the error path with `NULL` input, and
    frees what it received.
 4. Run `scripts/gen-header.sh` and commit the regenerated header.
-5. Add the Swift method to `Repository.swift`, free in `defer`, convert to value types.
-6. Add a case to `RepositoryIntegrationTests.swift`.
+5. Add the Swift method to the owning crate's wrapper file (`Repository.swift`,
+   `RepositoryGuard.swift`, `Highlighting.swift` or `ImportLinks.swift`), free in `defer`,
+   convert to value types.
+6. Add a case to the matching test file: `RepositoryIntegrationTests.swift`,
+   `RepositoryGuardTests.swift`, `HighlightingTests.swift` or `ImportLinksTests.swift`.
 
 `scripts/gen-header.sh --verify` in the pre-commit hook and CI fails when step 4 is skipped.
 

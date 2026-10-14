@@ -1,13 +1,17 @@
 # Architecture
 
-rc-git is four layers, each with one job. Data moves up as immutable values keyed by object
+rc-git is layered, each layer with one job. Data moves up as immutable values keyed by object
 id; nothing moves down except requests.
 
 ```
-RcGitApp      AppKit views. Forward clicks to the model, render its callbacks.
-RcGitKit      BrowserModel (state, generations, cache), LayoutPolicy, value types.
-rc-git-ffi    C ABI. Marshals values across; owns nothing after the call returns.
-rc-git-core   gix wrapper. Repository pool, refs, trees, blobs, log, revision parsing.
+RcGitApp          AppKit views. Forward clicks to the model, render its callbacks.
+RcGitKit          BrowserModel (state, generations, cache), LayoutPolicy, value types.
+rc-git-ffi        C ABI. Marshals values across; owns nothing after the call returns.
+  rc-git-guard      Mutation policy and the one write and network path. Reads through core.
+  rc-git-highlight  tree-sitter highlight spans and import links. Pure.
+  rc-git-core       gix wrapper. Repository pool, refs, trees, blobs, log, revision parsing,
+                    diff, blame, worktree status, stash listing.
+rc-git-cli        Beside the Swift package, on core, guard and highlight.
 ```
 
 `rc-git-cli` sits beside the Swift package on top of the core, the guard and the highlighter,
@@ -15,8 +19,28 @@ and gives scripts and agents the app's reads, its guarded mutations and its high
 import-link passes. `rc-git-guard` holds the mutation policy and, in its `actions` module, the one
 write and network path: every mutation — refs, objects, the index, working-tree files, the
 stash, checkout, and fetch, pull and push — goes through it; `safety.md` has the rules.
+Its actions are branch and tag create and delete, commit, the stash lifecycle (push, apply,
+pop, drop), discard of files or hunks, the branch switch, fetch, fast-forward pull, and push;
+sync is those last three run in sequence by the app, not an action of its own. Network I/O
+exists only in the `actions::remote` module; `safety.md`, "Guarding mutations", says what each action
+checks before it writes.
 `rc-git-highlight` is a pure tree-sitter wrapper the FFI exposes for the file pane: highlight
 spans, and the import links of a JavaScript or TypeScript file.
+
+## The change list and sync
+
+`ChangesModel` (RcGitKit) holds the Changes tab: the flat change list, one file's worktree
+diff, the stash list and the tick state that becomes a commit or stash selection. It only
+reads. `WorktreeWatcher` decides which filesystem events can change the list and drops the
+rest; what remains marks the list stale. Scans coalesce: a request made while one runs marks
+it pending and returns, and the running scan re-reads once when it lands, so a burst of
+events costs one scan in flight plus one queued.
+
+Writes go the other way. `SyncModel` (RcGitKit) runs the sync workflow — preflight, fetch,
+fast-forward pull, push — through `RepositoryGuard`, which calls the `rcgit_guard_*`
+functions; each network step carries a `CancelToken` around an `RcGitCancel` handle, the
+only way to stop a thread blocked inside a transfer. The window controller runs the other
+guarded actions the same way and refreshes the change list afterwards.
 
 ## Opening a repository
 
