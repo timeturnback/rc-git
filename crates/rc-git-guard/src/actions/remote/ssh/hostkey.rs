@@ -34,6 +34,13 @@ pub(super) enum HostKeyReport {
         /// The approved fingerprint it contradicts; `None` when `known_hosts` refused it.
         approved: Option<String>,
     },
+    /// A `known_hosts` file has an `@revoked` line for the host naming the offered key.
+    Revoked {
+        /// The offered key's algorithm.
+        key_type: String,
+        /// The offered key's fingerprint.
+        fingerprint: String,
+    },
 }
 
 /// Shared slot the handler writes its refusal into; the sync caller reads it after
@@ -99,12 +106,14 @@ impl HostKeyHandler {
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         // known_hosts first: a revoked key or a contradicting entry is fatal whatever the
         // app approved, and an approval only stands in for a missing entry.
-        let verdict = if self.is_revoked(&key)? {
-            Verdict::Changed
-        } else {
-            self.recorded_verdict(&key)?
-        };
-        match verdict {
+        if self.is_revoked(&key)? {
+            self.record(HostKeyReport::Revoked {
+                key_type,
+                fingerprint,
+            });
+            return Ok(false);
+        }
+        match self.recorded_verdict(&key)? {
             Verdict::Known => return Ok(true),
             Verdict::Changed => {
                 self.record(HostKeyReport::Mismatch {
@@ -141,8 +150,7 @@ impl HostKeyHandler {
 enum Verdict {
     /// Some file records exactly this key for the host.
     Known,
-    /// No file records it, but one records another key of the same algorithm — or a file
-    /// revokes it.
+    /// No file records it, but one records another key of the same algorithm.
     Changed,
     /// Nothing recorded for the host in the offered key's algorithm.
     Absent,
@@ -350,10 +358,13 @@ mod tests {
         let files = vec![dir.path().join("known"), dir.path().join("revoked")];
         let (mut handler, report) = handler(files, Some(&fingerprint));
         assert!(!check(&mut handler, &offered));
-        assert!(matches!(
+        assert_eq!(
             reported(&report),
-            Some(HostKeyReport::Mismatch { approved: None, .. })
-        ));
+            Some(HostKeyReport::Revoked {
+                key_type: offered.algorithm().to_string(),
+                fingerprint,
+            })
+        );
     }
 
     /// A revocation of another key, or one whose patterns exclude the host, leaves the

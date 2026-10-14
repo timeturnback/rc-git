@@ -3754,6 +3754,7 @@ fn action_status(err: &ActionError) -> i32 {
         | ActionError::UnknownHostKey { .. }
         | ActionError::UnsupportedRemote { .. }
         | ActionError::HostKeyMismatch { .. }
+        | ActionError::HostKeyRevoked { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::UpstreamGone { .. }
         | ActionError::InvalidIdentity { .. }
@@ -4198,6 +4199,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::DirtyPath { .. }
         | ActionError::UnsupportedRemote { .. }
         | ActionError::HostKeyMismatch { .. }
+        | ActionError::HostKeyRevoked { .. }
         | ActionError::AgentSignRefused { .. }
         | ActionError::PushRejected { .. }
         | ActionError::NoUpstream { .. }

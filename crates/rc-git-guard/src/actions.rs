@@ -295,6 +295,21 @@ pub enum ActionError {
         /// `known_hosts`.
         approved: Option<String>,
     },
+    /// A `known_hosts` file revokes the SSH server's key with an `@revoked` line. Never
+    /// overridable inside rc-git.
+    #[error(
+        "{op}: the {key_type} host key for '{host}' ({fingerprint}) is revoked in known_hosts; this may be a man-in-the-middle — investigate with ssh directly"
+    )]
+    HostKeyRevoked {
+        /// What was being done.
+        op: &'static str,
+        /// The host whose key is revoked.
+        host: String,
+        /// The offered key's algorithm.
+        key_type: String,
+        /// The offered key's fingerprint, `SHA256:...`.
+        fingerprint: String,
+    },
     /// An SSH private key is encrypted and no (or the wrong) passphrase was supplied.
     #[error(
         "{op}: the key '{key}' for '{host}' is encrypted or the passphrase is wrong; enter \
@@ -1278,6 +1293,21 @@ mod tests {
             "fetch: the ssh-ed25519 host key for 'git.example.com' does not match the key \
              approved earlier (SHA256:approved) (offered SHA256:offered); this may be a \
              man-in-the-middle — investigate with ssh directly"
+        );
+    }
+
+    #[test]
+    fn a_revoked_host_key_says_revoked_not_changed() {
+        let err = ActionError::HostKeyRevoked {
+            op: "fetch",
+            host: "git.example.com".to_owned(),
+            key_type: "ssh-ed25519".to_owned(),
+            fingerprint: "SHA256:offered".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "fetch: the ssh-ed25519 host key for 'git.example.com' (SHA256:offered) is revoked \
+             in known_hosts; this may be a man-in-the-middle — investigate with ssh directly"
         );
     }
 

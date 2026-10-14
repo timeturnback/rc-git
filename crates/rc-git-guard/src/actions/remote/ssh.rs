@@ -47,11 +47,11 @@ pub(super) struct Exec {
 /// of `cancel`, so setting the flag after this returns still stops the transfer.
 ///
 /// # Errors
-/// [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] from host-key
-/// verification, [`ActionError::PassphraseRequired`] and [`ActionError::AuthRequired`]
-/// from authentication, [`ActionError::Cancelled`] when `cancel` is set before the
-/// channel is ready, [`ActionError::Git`] when the connect budget runs out and for every
-/// other failure.
+/// [`ActionError::UnknownHostKey`], [`ActionError::HostKeyMismatch`] and
+/// [`ActionError::HostKeyRevoked`] from host-key verification,
+/// [`ActionError::PassphraseRequired`] and [`ActionError::AuthRequired`] from
+/// authentication, [`ActionError::Cancelled`] when `cancel` is set before the channel is
+/// ready, [`ActionError::Git`] when the connect budget runs out and for every other failure.
 pub(super) fn transport(
     url: &gix::Url,
     auth: RemoteAuth<'_>,
@@ -292,6 +292,15 @@ fn typed_refusal(report: &ReportSlot, target: &SshTarget, op: &'static str) -> O
             key_type,
             fingerprint,
             approved,
+        },
+        HostKeyReport::Revoked {
+            key_type,
+            fingerprint,
+        } => ActionError::HostKeyRevoked {
+            op,
+            host: target.host.clone(),
+            key_type,
+            fingerprint,
         },
     })
 }
