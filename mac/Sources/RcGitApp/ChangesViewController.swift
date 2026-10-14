@@ -602,6 +602,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// Folders open by default: a change list is short, and a closed tree hides the files
     /// the tick boxes are for. Only what the user closed stays closed.
     private func expandFolders(_ nodes: [StatusNode]) {
+        filesOutline.beginUpdates()
+        defer { filesOutline.endUpdates() }
         var pending = nodes
         while let node = pending.popLast() {
             guard node.isFolder, !collapsedFolders.contains(node.key) else { continue }
