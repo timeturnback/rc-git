@@ -70,23 +70,29 @@ stack does not backfill one when the view returns.
 
 ## Solution
 
-Give the section its width on every show, from `SidebarViewController.show(section:)`:
+Give every view showing its width on every show, from `SidebarViewController.show(section:)`.
+The section is not the only view at risk: a window that opens on Files hides the ref list
+before the stack's first layout too. Since this fix the layout has moved the sections under
+`RefBannerView`, which stands in for the ref list beside a section, so the ref list toggles as
+well:
 
 ```swift
-sectionWidth?.isActive = false
-sectionWidth = nil
-for candidate in sections { candidate.isHidden = candidate !== section }
-separator.isHidden = section == nil
-refsHeight?.isActive = section != nil
-guard let section else { return }
-let width = section.widthAnchor.constraint(equalTo: stack.widthAnchor)
-width.isActive = true
-sectionWidth = width
+NSLayoutConstraint.deactivate(widths)
+for candidate in sections {
+    candidate.isHidden = candidate !== section
+}
+let besideASection = section != nil
+refs.view.isHidden = besideASection
+bannerRow.isHidden = !besideASection
+widths = stack.arrangedSubviews.filter { !$0.isHidden }.map {
+    $0.widthAnchor.constraint(equalTo: stack.widthAnchor)
+}
+NSLayoutConstraint.activate(widths)
 ```
 
-The constraint is re-made rather than kept because AppKit drops an ancestor's constraints for
-a view it detaches, and hiding the section detaches it. Unhiding re-attaches the view
-synchronously, so the constraint can be activated in the same pass.
+The constraints are re-made rather than kept because AppKit drops an ancestor's constraints for
+a view it detaches, and hiding a view detaches it. Unhiding re-attaches the view
+synchronously, so the constraints can be activated in the same pass.
 
 Inside the section, `ChangesViewController.show(_:visible:width:)` does the same for every row
 that toggles — the scan-truncation note, which is hidden before its stack is built, and the
@@ -95,9 +101,11 @@ that helper; a row that is always there takes its width from the stack.
 
 ## Prevention
 
-- Never hide a view before adding it to an `NSStackView` with `detachesHiddenViews`, and do
-  not assume a later unhide restores the stack's alignment constraints.
-- A view that must start hidden carries its own width, re-applied on every show.
+- Hiding a view before the stack's first layout is allowed, but a view hidden, or added
+  hidden, before an `NSStackView` with `detachesHiddenViews` first lays it out gets no `.width`
+  alignment constraint. The code that shows it must re-make its width on every show; never
+  assume an unhide restores the stack's alignment constraints (`.claude/rules/swift.md`, the
+  bullet "A view the stack has never laid out while attached").
 - Sizing that depends on content when it should depend on the container is the tell: measure
   the frame in a probe before reaching for hugging and compression priorities, which cannot
   fix a constraint that does not exist.

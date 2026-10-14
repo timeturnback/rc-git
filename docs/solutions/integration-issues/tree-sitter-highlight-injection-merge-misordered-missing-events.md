@@ -79,7 +79,7 @@ layer merge entirely and resolves injections by hand.
 - `markdown_overlays()` parses the document *again* with `tree_sitter::Parser` and the block
   grammar, then walks the tree with a `TreeCursor` looking for injection sites by node kind:
   `"inline"` → the inline grammar; `"fenced_code_block"` → read the `info_string > language`
-  child, map it via `Language::from_injection`, take the `code_fence_content` range
+  child, map it via `Language::from_fence`, take the `code_fence_content` range
   (`append_fence`); `"minus_metadata"` → YAML; `"plus_metadata"` → TOML. Continuation
   markers are excluded before an injected region is highlighted: `included_ranges` drops the
   node's direct `block_continuation` children (a list indent, a `> ` quote marker), as

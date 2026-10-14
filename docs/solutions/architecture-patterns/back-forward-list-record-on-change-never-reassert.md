@@ -29,11 +29,12 @@ tags:
 
 ## Context
 
-The back/forward feature keeps one `BackForwardList` for the whole app, owned by `AppDelegate`
-(`mac/Sources/RcGitApp/AppDelegate.swift:14-16`). A stop is a tab's repository path, its pane,
-and a `BrowserLocation`. The location names a tree, a file path, a history scope and a detail
-commit, and holds none of them (`mac/Sources/RcGitKit/BackForwardList.swift:21-53`).
-`BrowserModel.restore` reads what the stop names from the repository as it is at that moment
+The back/forward feature keeps one `BackForwardList` for the whole app, held by the one
+`Navigator` (`mac/Sources/RcGitKit/Navigator.swift`) that `AppDelegate` owns. A stop is a tab's
+repository path, its pane, and a `BrowserLocation`. The location names a tree, a file path, a
+history scope and a detail commit, and holds none of them
+(`mac/Sources/RcGitKit/BackForwardList.swift:21-53`). `BrowserModel.restore` reads what the
+stop names from the repository as it is at that moment
 (`mac/Sources/RcGitKit/BrowserModel.swift:920-946`).
 
 So a restore can end somewhere other than its stop. A deleted ref reports an error and leaves
@@ -65,13 +66,14 @@ is. The tree has three sources of a record:
   (`MainWindowController.swift:391-397`, `447-453`, `729-736`, `741-748`, `811-821`). When the
   model already reported the move, that last record equals the current stop and `visit` drops
   it. It covers the case where the pane changed and the location did not.
-- **Another tab came to the front.** `cameToFront` returns when the controller is already
-  `frontController`, which is what the same window becoming main on app reactivation looks
-  like (`AppDelegate.swift:219-227`). `go` sets `frontController` before it shows the stop's
-  window, so the tab switch a step makes is not recorded either (`AppDelegate.swift:199-200`).
+- **Another tab came to the front.** `Navigator.tabCameToFront` returns when the tab is
+  already `front`, which is what the same window becoming main on app reactivation looks like.
+  `AppDelegate.go` calls `Navigator.beginRestore(in:)`, which sets `front`, before it shows the
+  stop's window, so the tab switch a step makes is not recorded either.
 
-`AppDelegate.record` then filters what arrives: nothing while `restoresInFlight` is non-zero,
-and nothing from a tab that is not in front (`AppDelegate.swift:208-217`). A restore that moved
+`Navigator.report` then filters what arrives: nothing while `pendingRestores` is non-zero,
+and nothing from a tab that is not in front. `AppDelegate` only forwards tab events to it
+(`onStop`, `onBecomeMain`, `onClose` in `AppDelegate.newWindow`). A restore that moved
 the browser still ends with a model report, because `endMove` runs in `restore`'s `defer`
 (`BrowserModel.swift:938-941`). The app drops that report, and `reportedLocation` now matches
 the screen, so a later ref refresh that moves nothing has no difference to report.
@@ -116,8 +118,8 @@ stays on the tab the user left. Back pressed in the empty tab goes to the stop b
   with the screen: the window became main, refs refreshed, a restore finished, a repository
   attached. The rule excludes those calls.
 - Reviewing a change to `AppDelegate` or `MainWindowController` near the list. `RcGitApp` has
-  no tests, so `record`, `cameToFront` and `restoresInFlight` are checked by reading them
-  against the three sources above.
+  no tests; the recording rules live in `Navigator` so `NavigatorTests` can pin them, and the
+  app side is checked by reading its forwarding against the three sources above.
 - Building any history whose entries name things and re-read them on return.
 
 ## Examples
@@ -134,19 +136,20 @@ private func noteLocation() {
 }
 ```
 
-The same window becoming main again is not a move (`AppDelegate.swift:221-227`):
+The same window becoming main again is not a move (`Navigator.tabCameToFront`):
 
 ```swift
-private func cameToFront(_ controller: MainWindowController?) {
-    guard let controller, controller !== frontController else { return }
-    frontController = controller
-    if let stop = controller.currentStop {
-        record(stop, from: controller)
-    }
+public mutating func tabCameToFront(_ tab: ObjectIdentifier, at stop: NavigationStop?)
+    -> Bool
+{
+    guard tab != front else { return false }
+    front = tab
+    guard let stop else { return false }
+    return report(stop, from: tab)
 }
 ```
 
-What the `frontController` guard prevents: the list is `[A, B, C]` with the mark on `B` after
+What the `front` guard prevents: the list is `[A, B, C]` with the mark on `B` after
 one step back, and `B`'s file is gone, so the screen shows `B`'s ref with no file. The user
 switches to another app and back. A `windowDidBecomeMain` that recorded `currentStop` would
 visit a stop that differs from `B`, and `visit` would drop `C`.
@@ -164,6 +167,9 @@ Tests that pin the behavior, in `mac/Tests/RcGitKitTests/`:
 - `restoreOfAFileGoneFromTheSameTreeClosesTheOneOpen` (`BrowserLocationTests.swift:227`): a
   restore that falls short leaves an empty pane, which is the state the list then disagrees
   with.
+- `theSameTabBecomingMainAgainRecordsNothing`, `aBackgroundTabsReportIsIgnored` and
+  `aReportDuringARestoreIsIgnoredAndForwardSurvives` (`NavigatorTests.swift`): the three
+  filters `Navigator` applies before a report reaches the list.
 - `visitingTheCurrentStopRecordsNothing` (`BackForwardListTests.swift:39`) and
   `aVisitAfterSteppingBackDropsTheStopsAhead` (`BackForwardListTests.swift:61`): the two halves
   of `visit` that make a record without a change cost the stops ahead.
@@ -174,5 +180,5 @@ Tests that pin the behavior, in `mac/Tests/RcGitKitTests/`:
   in-flight flag plus one pending slot comes from. There it bounds work a watcher asks for; here
   it orders two restores, and the pending slot carries the newest location.
 - `.claude/rules/swift.md` states the rules for `noteLocation`, `setMode` then `recordStop`, and
-  the one list in `AppDelegate`. `docs/architecture.md` ("Going back") has the flow.
+  the one list in `Navigator`. `docs/architecture.md` ("Going back") has the flow.
 - `CONCEPTS.md` defines a stop.

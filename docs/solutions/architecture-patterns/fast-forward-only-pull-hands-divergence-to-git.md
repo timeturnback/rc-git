@@ -70,10 +70,11 @@ Three options were weighed:
    - **Identity.** Each replayed commit needs a committer. The guard takes an explicit author,
      else the repository's own `user.name`/`user.email`
      (`crates/rc-git-guard/src/actions/workfile.rs:15-31`). When neither is set, the app asks
-     once (`mac/Sources/RcGitApp/MainWindowController.swift:855`), saves the answer, and from
-     then on passes it as the explicit author for every commit and stash in every repository
-     (`:768`, `:797`) — overriding even a repository's own identity. It cannot reproduce a
-     per-directory identity set through `includeIf`.
+     (`MainWindowController.askForIdentity(completion:)`, called from
+     `performCommit(_:prompted:)` and `performStashPush(prompted:)`) and saves the answer for
+     that repository only, once the commit or stash succeeds; the repository's own config wins
+     whenever it sets one. It cannot reproduce a per-directory identity set through
+     `includeIf`.
    - **Signing.** This checkout's commits are signed (`commit.gpgsign = true`,
      `gpg.format = ssh`; recent commits show `G` under `git log --format=%G?`), but the settings
      come from a file the user's global config pulls in with `includeIf`, not from `.git/config`,
@@ -109,13 +110,14 @@ What the diverged sheet does now:
   it with each embedded quote written as `'\''`. `=` is quoted because both consumers run the
   word in zsh (the updater's `/bin/zsh -lc`, Terminal's default shell), whose EQUALS option
   turns `=ls` into `/bin/ls`. It replaced the updater's untested `Shell.quote`.
-- `presentDiverged` (`mac/Sources/RcGitApp/MainWindowController.swift:1024`) shows the guard's
+- `MainWindowController.presentDiverged(_:)` shows the guard's
   message and the command with Copy Command, Open in Terminal (copies, then opens
   `com.apple.Terminal` in the checkout through `NSWorkspace.open(_:withApplicationAt:configuration:)`),
   and Close on Escape. A bare repository has no checkout to pull into and keeps the plain
-  message. The FFI maps a rejected push (`ActionError::PushRejected`) to the same status as a
-  divergence (`crates/rc-git-ffi/src/lib.rs:3425`), so a push the remote refuses for missing
-  commits shows this sheet too — and `git pull --rebase` is the right next step there as well.
+  message. Only a diverged pull reaches this sheet: `finish_remote` in `crates/rc-git-ffi`
+  maps `ActionError::Diverged` to `RCGIT_DIVERGED` and a rejected push
+  (`ActionError::PushRejected`) to `RCGIT_ERROR`, so a push the remote refuses shows the
+  remote's own message as a plain error.
 - The updater's `sync()` names the same command when the rc-git checkout diverges
   (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift:282`).
 

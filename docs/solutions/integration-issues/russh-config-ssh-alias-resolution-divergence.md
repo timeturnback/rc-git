@@ -69,7 +69,7 @@ russh-config is a lightweight reimplementation of a well-specified format, and i
 
 It is not OpenSSH parity. Handled: `Key=Value` and tab separators, `Include` (with globs, depth 16), `Match` (neutralized, or refused when it may apply), first-value-wins, the tokens above, `IdentityAgent`. Refused by name: `ProxyJump`, `ProxyCommand`, a `Match` that may apply, an unknown `%` token. Still unsupported: `Host` matching is the case-folded superset described in 2; `Match` criteria other than `all`, `exec`, `host` and `originalhost` are not evaluated; `${VAR}` expansion; `CanonicalizeHostname`; and every directive rc-git does not read.
 
-One consequence reaches beyond `target.rs`: `known_hosts` must be looked up by the **dialed** name. OpenSSH records entries under the `HostName` it connects to, not the alias, so `HostKeyHandler` keys `check_known_hosts_path` on `target.host_name` (`hostkey.rs:41-51`, `hostkey.rs:90-95`). Looking up by the alias would raise a spurious trust-on-first-use prompt for a host whose key is already known.
+One consequence reaches beyond `target.rs`: `known_hosts` must be looked up by the **dialed** name. OpenSSH records entries under the `HostName` it connects to, not the alias, so `HostKeyHandler::new` keys the lookup on `target.host_name` (or on `HostKeyAlias` when the config sets one), and `HostKeyHandler::check` reads `known_hosts` through `recorded_verdict` with that name (`hostkey.rs`). Looking up by the alias would raise a spurious trust-on-first-use prompt for a host whose key is already known.
 
 ## Prevention
 
@@ -80,3 +80,4 @@ One consequence reaches beyond `target.rs`: `known_hosts` must be looked up by t
 ## Related Issues
 
 - [Push over HTTPS with gix that has no push: hand-rolled send-pack](../architecture-patterns/hand-rolled-git-push-over-gix-https.md) — the same remote subsystem; the ssh transport plugs into the transport seam that doc describes.
+- [ssh fetch logs in as the wrong GitHub account: agent key order and a dropped IdentitiesOnly](ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md) — one more divergence: russh-config drops `IdentitiesOnly`, so rc-git reads it from the same normalized config and applies it when it offers keys.

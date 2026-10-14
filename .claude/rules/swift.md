@@ -83,7 +83,7 @@ paths: mac/**
   touches. Links load on the first pointer move (`FileViewController.importLink(at:)`), and a
   click resolves through `BrowserModel.openImport` and `ImportResolver` — never resolve a
   specifier in a view, and never keep a resolved path: the tree on screen decides.
-- In `MainWindowController.init`, views are built before `setFrameAutosaveName`: the frame
+- In `MainWindowController.init`, views are built before `setFrameUsingName`: the frame
   restore resizes the window and fires `windowDidResize` -> `applyLayout()` synchronously, and an
   exception there is swallowed by launch Apple Event handling, leaving the app windowless
   (`docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md`). Keep
@@ -154,13 +154,16 @@ paths: mac/**
 - `xcrun swift-format lint --strict` must pass; `.swift-format` at the root is the config.
 - Never collapse a view with a height-0 constraint while it has visible subviews — hide it
   inside an `NSStackView` with `detachesHiddenViews`.
-- A bare `NSSplitView` sizes its panes by frame, so an Auto Layout floor on a pane only fights
-  the frame it is handed and loses silently. Own `splitView(_:resizeSubviewsWithOldSize:)` and
-  place both panes through `LayoutPolicy.splitPane`, put the minimum on the split itself (both
-  floors plus the divider), and re-clamp in `viewDidLayout` — that is where a restored divider
-  position first reaches the screen, and a clamp that keeps a legal position converges in one
-  pass. `constrainMinCoordinate`/`constrainMaxCoordinate` bound a *drag* only: not
-  `adjustSubviews`, not the autosave restore, which is why `.v4` was poisoned like `.v3`.
+- An `NSSplitView` runs in one of two modes; pick one per split and never mix them. With no
+  sizing delegate methods it sizes its panes with Auto Layout, and pane floors plus
+  `setHoldingPriority` hold. Implementing any of `constrainMinCoordinate`,
+  `constrainMaxCoordinate`, `resizeSubviewsWithOldSize` or `shouldAdjustSizeOfSubview` switches
+  it to frame mode, where a pane floor only fights the frame it is handed and loses silently —
+  adding a clamp to an Auto Layout split is what broke History's drawer the third time. In
+  frame mode, own `splitView(_:resizeSubviewsWithOldSize:)` and place both panes through
+  `LayoutPolicy.splitPane`, put the minimum on the split itself (both floors plus the divider),
+  and re-clamp in `viewDidLayout` — that is where a restored divider position first reaches the
+  screen. The clamps bound a *drag* only: not `adjustSubviews`, not the autosave restore.
 - Version `autosaveName` to discard poison already stored, never as the fix — a bump alone just
   resets the clock. `NSSplitViewController` items are exempt: their `minimumThickness` already
   does this (`MainWindowController` sets it on both items of `outerSplit`).

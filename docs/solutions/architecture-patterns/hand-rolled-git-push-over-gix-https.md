@@ -25,8 +25,10 @@ tags:
 
 ## Context
 
-rc-git promises to never spawn a process, which rules every git transport out except
-HTTPS. gix `=0.87.1` implements fetch but **no push at all**: `gix-0.87.1/src/remote/connection/`
+rc-git promises to never spawn a process. When push was built that left HTTPS as the only
+git transport; ssh has since joined it, run in-process on russh
+(`crates/rc-git-guard/src/actions/remote/ssh.rs`), so HTTPS is no longer the only one. gix
+`=0.87.1` implements fetch but **no push at all**: `gix-0.87.1/src/remote/connection/`
 contains only `fetch/`, and `gix-protocol` 0.65.1 has no send-pack and no `report-status`
 parsing. Push had to be assembled from the lower gitoxide crates. This doc records the
 recipe and the traps, because none of it is discoverable from gix's docs.
@@ -112,7 +114,7 @@ Traps that each cost a debug cycle:
   `deny.toml` fails on a second copy) — dev-dep feature unification covers test builds,
   while release builds keep the refusal. Production code additionally rejects non-HTTPS
   URLs before connecting, loopback hosts excepted for the test server
-  (`vet_remote_url`, `actions/remote.rs:317`, which also routes the ssh scheme).
+  (`vet_remote_url` in `actions/remote.rs`, which also routes the ssh scheme).
 
 - **Zero-dependency test server.** `HttpGitServer` (`crates/rc-git-testkit/src/http.rs:17`)
   is a `std::net::TcpListener` CGI shim exec-ing `git http-backend` from

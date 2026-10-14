@@ -54,7 +54,10 @@ wireModel()
 applyLayout()
 ```
 
-After (`MainWindowController.swift:48-61`) — views exist before anything can resize the window:
+After (`MainWindowController.init()`, as it reads today) — views exist before anything can resize
+the window. The restore has since moved from `setFrameAutosaveName` to
+`setFrameUsingName(Self.frameName)`, because AppKit grants an autosave name to one live window
+only and every tab is its own window; it resizes the window the same way:
 
 ```swift
 super.init(window: window)
@@ -63,9 +66,11 @@ window.delegate = self
 // which fires windowDidResize and runs applyLayout.
 buildSplitViews()
 buildToolbar()
+buildVersionBadge()
 wireModel()
+// ...wireRefs(), wireHistory(), wireTree(), wireFile(), renderBanner()
 window.center()
-window.setFrameAutosaveName("rc-git.window")
+_ = window.setFrameUsingName(Self.frameName)
 // A frame saved on a display that is now detached restores fully off-screen.
 if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
     window.center()
@@ -73,7 +78,7 @@ if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) 
 applyLayout()
 ```
 
-And `applyLayout()` no longer indexes a possibly-empty array (`MainWindowController.swift:155-157`):
+And `applyLayout()` no longer indexes a possibly-empty array (`MainWindowController.applyLayout()`):
 
 ```swift
 // before:  let sidebar = outerSplit.splitViewItems[0]   (after the size guard)
@@ -114,4 +119,9 @@ Reordering `init` makes the split view items exist before any resize can fire `a
 
 ## Related Issues
 
-- None — first documented learning in this repository.
+- `.claude/rules/swift.md` states the construction-order rule for `MainWindowController.init`
+  and links here.
+- [Zero-height panes from a split view's autosave](../ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md)
+  — another restored-state bug where `defaults read` separates stored state from live layout.
+- [Tabs lost across a self-update](userdefaults-handover-race-self-update-relaunch.md) — the
+  same launch path, from the side of the state the new process reads.

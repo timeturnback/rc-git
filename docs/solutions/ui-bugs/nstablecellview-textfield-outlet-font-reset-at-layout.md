@@ -70,9 +70,9 @@ font it was given.
 ## Solution
 
 Take the label off the outlet and own its font. `SidebarCellView`
-(`mac/Sources/RcGitApp/Style.swift:48`) keeps the symbol as `imageView`
-(`Style.swift:76`) and never assigns `label` (`Style.swift:52`) to `textField`. It sets the
-label's font itself, from the two places its inputs change (`Style.swift:58`, `Style.swift:97`):
+(in `mac/Sources/RcGitApp/Style.swift`) keeps the symbol as `imageView` and never assigns
+`SidebarCellView.label` to `textField`. It sets the label's font itself, from the two places
+its inputs change (`SidebarCellView.isEmphasized` and `.rowSizeStyle`):
 
 ```swift
 var isEmphasized = false {
@@ -84,9 +84,8 @@ override var rowSizeStyle: NSTableView.RowSizeStyle {
 }
 ```
 
-`applyRowSize()` (`Style.swift:132`) picks 11, 13, or 15 pt from `Style.fontSize(for:)`
-(`Style.swift:25`), semibold when emphasized, and sizes the badge, symbol, and symbol column
-to match. The ref list now writes to the cell's own properties
+`SidebarCellView.applyRowSize()` picks 11, 13, or 15 pt from `Style.fontSize(for:)`, semibold
+when emphasized, and sizes the badge, symbol, and symbol column to match. The ref list now writes to the cell's own properties
 (`mac/Sources/RcGitApp/RefsViewController.swift:366`):
 
 ```swift
@@ -103,8 +102,8 @@ offscreen `cacheDisplay` render could not show tint either way.
 With the label off the outlet, `textField` is nil. The SDK headers document only the cell-based
 type-select default, so the view-based default is not something to lean on for these rows. Both
 tables that show these cells answer it through the delegate instead:
-`outlineView(_:typeSelectStringFor:item:)` at `RefsViewController.swift:378` and
-`mac/Sources/RcGitApp/TreeViewController.swift:296`. The tree needs it now because its old
+`outlineView(_:typeSelectStringFor:item:)` at `RefsViewController.swift:378` and in
+`mac/Sources/RcGitApp/TreeViewController.swift`. The tree needs it now because its old
 cells put an attributed string on the outlet, which kept both the styling and the free
 type-select; moving it to `SidebarCellView` gave up the second.
 
@@ -138,22 +137,21 @@ The probe, rerun against the committed code at medium row size:
 
 ### Related measurements from the same probes
 
-These feed the tree's width fit, `reportContentWidth` (`TreeViewController.swift:112`):
+These feed the tree's width fit, `TreeViewController.reportContentWidth()`:
 
 - An `NSTextField` label's alignment rect is its text width. The padding its cell draws
   (`alignmentRectInsets` 2 pt left and right) falls outside it. So
-  `SidebarCellView.contentWidth` (`Style.swift:110`) — symbol column + 6 + rounded-up text +
+  `SidebarCellView.contentWidth(...)` — symbol column + 6 + rounded-up text +
   6 + badge + 2 — equals the cell's `fittingSize.width`: 77/77 for `feature`, 126/126 for
   `rc-git-highlight` at medium. It measures the regular weight; an emphasized `master` fits at
   78.5 against 76. Only the ref list emphasizes, and only the tree sizes itself by
   `contentWidth`.
 - A `.sourceList` outline starts a level-0 cell at x = 25 (the 10 pt row inset plus the
-  disclosure triangle), 14 pt further per level with `indentationPerLevel` 14
-  (`TreeViewController.swift:54`). Once the column fills the list, it keeps 16 pt between the
-  cell's trailing edge and the list's. AppKit publishes neither.
-  `cellTrailingInset` (`TreeViewController.swift:105`) records the 16; `reportContentWidth`
-  reads each cell's start from `frameOfCell(atColumn:row:)` (`TreeViewController.swift:121`)
-  rather than hard-coding 25.
+  disclosure triangle), one `indentationPerLevel` further per level (14 pt when measured; the
+  tree now sets `Style.folderIndent`, 12). Once the column fills the list, it keeps 16 pt
+  between the cell's trailing edge and the list's. AppKit publishes neither.
+  `TreeViewController.cellTrailingInset` records the 16; `reportContentWidth`
+  reads each cell's start from `frameOfCell(atColumn:row:)` rather than hard-coding 25.
 - Source-list row heights offscreen on macOS 26.6.2, built against the macOS 27.0 SDK: 24, 32,
   and 40 pt for small, medium, and large (this session's probe).
 
@@ -195,8 +193,8 @@ is wanted.
 - When a label leaves the outlet, implement `outlineView(_:typeSelectStringFor:item:)` (or the
   table view's equivalent) in the same change. The default reads the outlet, and with the
   outlet nil it has no string for those rows.
-- Every icon-and-label sidebar row is a `SidebarCellView` (`.claude/rules/swift.md:76`). Add a
-  new per-row style as a cell property whose `didSet` calls `applyRowSize()`, not as a font
+- Every icon-and-label sidebar row is a `SidebarCellView` (`.claude/rules/swift.md`, the
+  bullet "Every sidebar list goes through `Style.sidebarList`"). Add a new per-row style as a cell property whose `didSet` calls `applyRowSize()`, not as a font
   the controller writes.
 - A value read back right after setting it proves nothing about a table cell. Read it after
   `window.displayIfNeeded()` and `layoutSubtreeIfNeeded()` in an offscreen window, with the
@@ -216,4 +214,5 @@ is wanted.
   rather than a launch.
 - `docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md` — the
   same headless `xcrun swiftc` probe approach, applied to key equivalents.
-- `.claude/rules/swift.md:76` — the standing rule for sidebar lists and `SidebarCellView`.
+- `.claude/rules/swift.md`, "Every sidebar list goes through `Style.sidebarList`" — the
+  standing rule for sidebar lists and `SidebarCellView`.

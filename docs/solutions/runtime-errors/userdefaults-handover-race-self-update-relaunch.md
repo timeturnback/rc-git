@@ -7,7 +7,7 @@ problem_type: runtime_error
 component: frontend
 symptoms:
   - "Rebuild and Relaunch brings the app back with one empty window; the repository tabs that were open are gone"
-  - "`defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none"
+  - "Before ea73c00: `defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none (current code: the key holds an empty or older list instead)"
   - "A manual quit and launch restores the same tabs correctly; only the self-update path drops them"
   - "No error is logged and the update window reports success"
 root_cause: async_timing
@@ -30,8 +30,10 @@ write reached disk.
 ## Symptoms
 
 - The relaunched app shows a single empty window; the repository tabs are gone.
-- `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still holding the
-  repository path. The value is intact; the new process simply did not see it.
+- Before ea73c00: `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still
+  holding the repository path. The value is intact; the new process simply did not see it.
+  Under the current code the same race leaves the key holding an empty or older list instead
+  (see "Why This Works").
 - Quitting and launching by hand restores tabs correctly. Only the self-update path loses them.
 - Nothing is logged. The update window reports success.
 
@@ -52,44 +54,53 @@ The failure was on the read side, not the write side.
 Flush the write before the replacement process launches, and stop writing once the state has
 been handed over.
 
-`mac/Sources/RcGitKit/OpenTabs.swift:34`:
+`OpenTabs.handOff(live:selectedIndex:)` (`mac/Sources/RcGitKit/OpenTabs.swift`), as it reads
+today (it also logs whether the flush succeeded):
 
 ```swift
-public func handOff(paths: [String], selectedIndex: Int) {
-    save(paths: paths, selectedIndex: selectedIndex)
+public func handOff(live: [String], selectedIndex: Int) {
+    record(live: live, selectedIndex: selectedIndex)
     defaults.synchronize()
 }
 ```
 
-`mac/Sources/RcGitApp/AppDelegate.swift:150`:
+`AppDelegate.saveTabs(dropping:)` and `AppDelegate.handOffTabs()`
+(`mac/Sources/RcGitApp/AppDelegate.swift`):
 
 ```swift
-func saveTabs() {
+func saveTabs(dropping: String? = nil) {
     guard !tabsHandedOff else { return }
     let state = tabState()
-    openTabs.save(paths: state.paths, selectedIndex: state.selectedIndex)
+    openTabs.record(
+        live: state.paths, selectedIndex: state.selectedIndex, dropping: dropping)
 }
 
 func handOffTabs() {
     let state = tabState()
-    openTabs.handOff(paths: state.paths, selectedIndex: state.selectedIndex)
+    openTabs.handOff(live: state.paths, selectedIndex: state.selectedIndex)
     tabsHandedOff = true
 }
 ```
 
-`UpdateWindowController`'s `willRelaunch` closure now calls `handOffTabs()` instead of
-`saveTabs()`. Fixed in commit `ea73c00` on `master`; at the time of writing the round trip has
-not been confirmed by a user-run rebuild, and the first rebuild after the fix still runs the
-old binary's handover.
+Both go through `OpenTabs.record`, which merges the live tabs into the saved list, so a tab
+closed with ⇧⌘W or at ⌘Q stays in it; `OpenTabs.save` replaces the list and only
+`restoreTabs` calls it (`.claude/rules/swift.md`). Do not swap `record` back to `save` here.
+
+Fixed in commit `ea73c00` on `master`, where the update window's `willRelaunch` closure called
+`handOffTabs()` instead of `saveTabs()`. Today `UpdateModel` calls
+`UpdateEnvironment.handOff()`, which `AppDelegate` wires to `handOffTabs()`; when the launch
+fails it calls `UpdateEnvironment.reclaim()`, which runs `AppDelegate.reclaimTabs()` to lift
+the latch and record the tabs again.
 
 ## Why This Works
 
-`UpdateEnvironmentLive.relaunch()` (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift:218`)
-runs in this order:
+`UpdateModel` relaunches in this order (`UpdateEnvironmentLive` in
+`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift` implements each step):
 
-1. `willRelaunch()` — save the tabs.
-2. `NSWorkspace.shared.openApplication` with `createsNewApplicationInstance = true`.
-3. `NSApp.terminate(nil)`.
+1. `handOff()` — save the tabs.
+2. `relaunch()` — `NSWorkspace.shared.openApplication` with
+   `createsNewApplicationInstance = true`.
+3. `quit()` — `NSApp.terminate(nil)`.
 
 Between 2 and 3 **two processes of the same bundle identifier are alive at once**, and the new
 one reads `rc-git.openTabs` during `applicationDidFinishLaunching`, milliseconds after step 1.
@@ -99,16 +110,19 @@ therefore read a pre-save snapshot of the domain, found no tabs, and opened an e
 `synchronize()` forces the commit before the launch, which is exactly the cross-process
 handover case the method still exists for.
 
-Why the value was nonetheless on disk afterwards: at the time, `restoreTabs()` returned
-without saving when it restored nothing, so the new process never clobbered the list; the old
-process then wrote it again from `applicationWillTerminate`. The symptom was a lost session,
-never a lost list — which is why the next manual launch looked fine and hid the bug.
+Why the value was nonetheless on disk afterwards, at the time of ea73c00: `restoreTabs()`
+returned without saving when it restored nothing, so the new process never clobbered the list;
+the old process then wrote it again from `applicationWillTerminate`. The symptom was a lost
+session, never a lost list — which is why the next manual launch looked fine and hid the bug.
 
-`restoreTabs()` (`mac/Sources/RcGitApp/AppDelegate.swift`) now always saves the list that
-`OpenTabs.restoredPaths` decides: the tabs that opened, then each repository that failed to
-open while its parent folder was unreachable (a volume not mounted yet). It drops only a
-repository gone from a folder that exists, logs every failure under the `tabs` category, and
-never clears the list because nothing opened.
+That no longer holds. `restoreTabs()` (`mac/Sources/RcGitApp/AppDelegate.swift`) now always
+saves the list that `OpenTabs.restoredPaths` decides, also when nothing opened: the tabs that
+opened, then each repository that failed to open while its parent folder was unreachable (a
+volume not mounted yet). It drops a repository gone from a folder that exists and logs every
+failure under the `tabs` category. And the old process's `saveTabs` returns at
+`guard !tabsHandedOff` after the handover. So if the new process ever reads a stale list again,
+it writes that stale list (often empty) back and nothing rewrites the real one: the list is
+lost, not just the session.
 
 `tabsHandedOff` closes the mirror image of the same window: the old process outlives the new
 one's launch, and its termination write would otherwise land on top of whatever the new process
@@ -125,6 +139,11 @@ had already recorded.
 - **Read the domain before reading the code.** `defaults read <bundle-id>` separates a write
   bug from a read bug in one command. A value present on disk while the UI disagrees means the
   reader raced, not that persistence broke.
+- **Under the current code a reader race does not leave the value behind.** Right after a
+  self-update, an empty or older `rc-git.openTabs` is also consistent with the new process
+  reading a stale domain: `restoreTabs` saves what it restored even when nothing opened, and
+  the old process stops writing after the handover. Check the `tabs` log category for the
+  `hand-off: flushed` line and the `restore tabs:` counts before blaming the write side.
 - Related: the bundle identifier is what scopes this state, which is why it must never depend
   on a version or build number (`CLAUDE.md`, and
   `docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md` for the

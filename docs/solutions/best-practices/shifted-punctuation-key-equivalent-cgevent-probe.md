@@ -107,18 +107,22 @@ answers for the layout the machine has.
 
 ## Examples
 
-In the tree, Show Hidden Files is defined as `"."` with `[.command, .shift]`
-(`mac/Sources/RcGitApp/MainMenu.swift:115-119`). The `item(_:_:_:_:)` helper passes the string
-to `NSMenuItem(title:action:keyEquivalent:)` and sets `keyEquivalentModifierMask`, defaulting
-to `.command` (`MainMenu.swift:29-36`). Cancel Sync owns ⌘. on the same key with `[.command]`
-(`MainMenu.swift:170-173`). The Window menu already uses the same punctuation pattern: Show
-Previous Tab and Show Next Tab are `"["` and `"]"` with `[.command, .shift]`
-(`MainMenu.swift:182-189`). Letters in the file use both forms: Find Previous is uppercase
-`"G"` (`MainMenu.swift:96`), and Go to File is lowercase `"o"` with `[.command, .shift]`
-(`MainMenu.swift:76-79`). The action, `AppDelegate.toggleHiddenFiles(_:)`, flips the
-`HiddenFiles.preferenceKey` default and pushes it to every window controller
-(`mac/Sources/RcGitApp/AppDelegate.swift:82-88`); `validateMenuItem(_:)` sets the checkmark
-from the same default (`AppDelegate.swift:90-94`).
+In the tree, every key equivalent is a `MenuShortcut` row in `MenuShortcuts`
+(`mac/Sources/RcGitKit/MenuShortcuts.swift`), and `MenuShortcutsTests` checks that no two rows
+share a chord. Show Hidden Files is `MenuShortcuts.showHiddenFiles`, `"."` with
+`[.command, .shift]`, added to the View menu in `MainMenu.viewMenu()`. The
+`MainMenu.item(_:_:title:)` helper passes the row's key to
+`NSMenuItem(title:action:keyEquivalent:)` and sets `keyEquivalentModifierMask` from its
+modifiers, which default to `.command`. Cancel Sync owns ⌘. on the same key with `[.command]`
+(`MenuShortcuts.cancelSync`, in `MainMenu.repositoryMenu()`). The Window menu already uses the
+same punctuation pattern: Show Previous Tab and Show Next Tab are `"["` and `"]"` with
+`[.command, .shift]` (`MenuShortcuts.previousTab` and `.nextTab`, in `MainMenu.windowMenu()`).
+Letters use both forms: Find Previous is uppercase `"G"` (`MenuShortcuts.findPrevious`, in
+`MainMenu.editMenu()`), and Go to File is lowercase `"o"` with `[.command, .shift]`
+(`MenuShortcuts.goToFile`, in `MainMenu.fileMenu(recentMenu:)`). The action,
+`AppDelegate.toggleHiddenFiles(_:)`, flips the `HiddenFilesPreference` default and pushes it to
+every window controller; `AppDelegate.validateMenuItem(_:)` sets the checkmark from the same
+preference.
 
 Before — a hand-built event that only echoes the author's guess:
 
