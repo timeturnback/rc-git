@@ -29,31 +29,29 @@ final class UpdateWindowController: NSWindowController {
     /// `handOffState` runs just before the new bundle is launched, so the tabs the
     /// relaunched app reopens are the ones on screen now. It flushes them: this process is
     /// still alive when the new one reads them. `reclaimState` undoes it when the launch
-    /// fails and this process keeps running.
-    init(
+    /// fails and this process keeps running. Nil for a build `scripts/build-app.sh` did not
+    /// stamp: it has no checkout to rebuild from.
+    init?(
         build: AppBuild, handOffState: @escaping @MainActor @Sendable () -> Void,
         reclaimState: @escaping @MainActor @Sendable () -> Void
     ) {
+        guard let sourceRoot = build.sourceRoot, let mode = build.updateMode,
+            let relaunchPath = build.relaunchPath
+        else { return nil }
         self.build = build
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 440),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.tabbingMode = .disallowed
-        var environment: AppUpdateEnvironment?
-        if let sourceRoot = build.sourceRoot, let mode = build.updateMode,
-            let relaunchPath = build.relaunchPath
-        {
-            environment = AppUpdateEnvironment(
-                sourceRoot: sourceRoot,
-                mode: mode,
-                relaunchPath: relaunchPath,
-                window: { [weak window] in window },
-                handOffState: handOffState,
-                reclaimState: reclaimState)
-        }
-        model = UpdateModel(
-            build: build, environment: environment ?? UnavailableUpdateEnvironment())
+        let environment = AppUpdateEnvironment(
+            sourceRoot: sourceRoot,
+            mode: mode,
+            relaunchPath: relaunchPath,
+            window: { [weak window] in window },
+            handOffState: handOffState,
+            reclaimState: reclaimState)
+        model = UpdateModel(build: build, environment: environment)
         super.init(window: window)
         let copy = UpdateCopy(build: build, state: model.state)
         window.title = copy.title
@@ -239,19 +237,4 @@ final class UpdateWindowController: NSWindowController {
         formatter.timeStyle = .short
         return " · built \(formatter.string(from: date))"
     }
-}
-
-/// Stands in when the bundle carries no source checkout: every call reports why, and the
-/// model stops at preflight before reaching any of them.
-private struct UnavailableUpdateEnvironment: UpdateEnvironment {
-    private static let reason = "this bundle carries no source checkout"
-
-    func toolchain() async -> ToolchainCheck { .failure(Self.reason) }
-    func sourceState() async -> SourceStateResult { .failure(Self.reason) }
-    func sync() async -> String? { Self.reason }
-    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? { Self.reason }
-    func handOff() async {}
-    func reclaim() async {}
-    func relaunch() async -> String? { Self.reason }
-    func quit() async {}
 }

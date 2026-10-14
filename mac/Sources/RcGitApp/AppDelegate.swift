@@ -99,21 +99,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// from and relaunches into it: from upstream for the release app, from the working
     /// tree as it stands for the dev bundle. An unstamped build has no menu item.
     @objc func showUpdate(_ sender: Any?) {
-        _ = updateWindow()
+        updateWindow()
     }
 
     /// Opens the update window and starts the rebuild without waiting for its button: the
     /// dev bundle's edit-run loop. The window still shows the log, and a failure stops there.
     @objc func rebuildNow(_ sender: Any?) {
-        updateWindow().start()
+        updateWindow()?.start()
     }
 
-    private func updateWindow() -> UpdateWindowController {
-        let controller =
-            updateController
-            ?? UpdateWindowController(
-                build: build, handOffState: { [weak self] in self?.handOffTabs() },
-                reclaimState: { [weak self] in self?.reclaimTabs() })
+    /// Nil for an unstamped build, which has no menu item to reach this.
+    @discardableResult private func updateWindow() -> UpdateWindowController? {
+        guard
+            let controller = updateController
+                ?? UpdateWindowController(
+                    build: build, handOffState: { [weak self] in self?.handOffTabs() },
+                    reclaimState: { [weak self] in self?.reclaimTabs() })
+        else { return nil }
         updateController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
