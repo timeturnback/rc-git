@@ -11,6 +11,8 @@ use crate::oid::Oid;
 
 /// Per-handle object cache. Trees and commits decode into it; blob reads bypass it.
 const OBJECT_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// Per-handle pack delta-base cache: intermediate results of resolving delta chains.
+const PACK_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Upper bound on pooled handles. Each holds its own object cache.
 const MAX_POOL_SLOTS: usize = 4;
 
@@ -265,7 +267,14 @@ impl Repository {
 
     fn handle(shared: &gix::ThreadSafeRepository) -> gix::Repository {
         let mut repo = shared.to_thread_local();
-        repo.object_cache_size_if_unset(OBJECT_CACHE_BYTES);
+        // Set unconditionally: the repository's own config (`gitoxide.objects.cacheLimit`,
+        // `core.deltaBaseCacheLimit`) would otherwise size both caches, up to unbounded.
+        repo.object_cache_size(OBJECT_CACHE_BYTES);
+        repo.objects.set_pack_cache(|| {
+            Box::new(gix::odb::pack::cache::lru::MemoryCappedHashmap::new(
+                PACK_CACHE_BYTES,
+            ))
+        });
         repo
     }
 
@@ -339,6 +348,25 @@ mod tests {
                 "resolve with every pool slot held must not wait: {result:?}"
             );
         });
+    }
+
+    #[test]
+    fn the_repository_config_cannot_turn_off_the_handle_caches() {
+        let fx = rc_git_testkit::Fixture::standard();
+        fx.git(&["config", "core.deltaBaseCacheLimit", "0"]);
+        fx.git(&["config", "gitoxide.objects.cacheLimit", "0"]);
+        let repo = Repository::open(fx.path()).expect("open fixture");
+        let caches = repo.with(|r| (r.objects.has_object_cache(), r.objects.has_pack_cache()));
+        assert_eq!(
+            caches,
+            (true, true),
+            "pooled handle (object cache, delta-base cache)"
+        );
+        let temporary = Repository::handle(&repo.shared);
+        assert!(
+            temporary.objects.has_pack_cache(),
+            "temporary handle delta-base cache"
+        );
     }
 
     #[test]

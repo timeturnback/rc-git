@@ -46,7 +46,10 @@ guarded actions the same way and refreshes the change list afterwards.
 
 `Repository::open` calls `gix::ThreadSafeRepository::open_opts` with
 `Options::isolated()`, which reads only the repository's own `config`. It then builds a small
-pool of `gix::Repository` handles, one per core up to four, each with a 32 MiB object cache.
+pool of `gix::Repository` handles, one per core up to four, each with a 32 MiB object cache
+and a 32 MiB pack delta-base cache, so an open repository holds at most 4 × (32 + 32) = 256 MiB
+in them. Both are set on every handle after the open, so the repository's own
+`gitoxide.objects.cacheLimit` and `core.deltaBaseCacheLimit` cannot raise or remove them.
 Every operation borrows a free handle through `Repository::with`; when all are busy a temporary
 handle is built so no call waits on another. A handle is single-threaded; the pool is what
 makes `Repository` `Send + Sync`.
@@ -124,13 +127,18 @@ next step and goes on to it. What a tab reports during a restore is not recorded
 
 | Cache | Key | Where | Invalidated |
 |---|---|---|---|
-| decoded objects | object id | gix, per pooled handle | never (LRU eviction only) |
-| pack delta bases | object id | gix, per pooled handle | never |
+| decoded objects | object id | gix, per pooled handle | never; LRU past 32 MiB per handle, whatever the repository's config says |
+| pack delta bases | object id | gix, per pooled handle | never; LRU past 32 MiB per handle, whatever the repository's config says |
 | directory listings | tree id | `TreeStore` in RcGitKit | on `attach`; least recently used evicted past 100,000 children |
 | history pages | tip id | `BrowserModel` | on `attach`; 4 most recent tips kept |
 | path-scoped history pages | tip id and path | `BrowserModel` | on `attach`; 4 most recent kept |
 | flattened file lists (path search) | root tree id | `BrowserModel` | on `attach`; 2 most recent roots kept |
+| syntax spans | blob id | `BrowserModel.highlightCache` | on `attach`; least recently used evicted past 16 files or 1,500,000 spans |
+| import links | blob id | `BrowserModel.importLinkCache` | on `attach`, and with the blob's spans |
 | row symbols | symbol name | `Icons` in RcGitApp | never |
 
 Refs are not cached across calls; `refs()` re-reads `packed-refs` and loose refs each time and
-is cheap enough to call on every change. Watching `.git` for ref changes is on the roadmap.
+is cheap enough to call on every change. `RefWatcher` (RcGitKit) watches the `.git` directory
+with FSEvents. `RefWatchFilter` keeps only events on `HEAD`, `packed-refs`, `config` and
+`refs/`, and each burst calls `BrowserModel.refreshRefs()`, which re-reads refs and keeps every
+object cache.
