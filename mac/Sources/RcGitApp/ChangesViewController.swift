@@ -7,9 +7,9 @@ private final class PassthroughLabel: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// One Changes row: a tick box and the path label on one baseline. Both are centred on the
-/// row by constraint — a checkbox and a label left to size themselves sit at different
-/// heights.
+/// One Changes row, or one hunk header in the diff: a tick box and its label on one baseline.
+/// Both are centred on the row by constraint — a checkbox and a label left to size themselves
+/// sit at different heights.
 private final class ChangeCellView: NSTableCellView {
     let tick = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let label = NSTextField(labelWithString: "")
@@ -554,8 +554,22 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     /// when its view is made, which keeps a click O(visible rows) rather than O(entries).
     func refreshTicks() {
         reloadVisibleRows(of: filesOutline)
-        reloadVisibleRows(of: diffTable)
+        reloadVisibleHunkHeaders()
         refreshSummary()
+    }
+
+    /// Only a hunk's header row carries a tick, so its line rows are left as they are.
+    private func reloadVisibleHunkHeaders() {
+        let rows = diffTable.rows(in: diffTable.visibleRect)
+        let headers = IndexSet(
+            (rows.location..<NSMaxRange(rows)).filter { row in
+                guard diffRows.indices.contains(row), case .header = diffRows[row] else {
+                    return false
+                }
+                return true
+            })
+        guard !headers.isEmpty else { return }
+        diffTable.reloadData(forRowIndexes: headers, columnIndexes: [0])
     }
 
     private func reloadVisibleRows(of table: NSTableView) {
@@ -893,25 +907,38 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             name: node.name)
     }
 
+    /// Reuses row views through `makeView`: a worktree diff can run to 100k rows, and a view
+    /// built per row made scrolling one about six times slower.
     private func diffCell(row: Int) -> NSView? {
         guard diffRows.indices.contains(row) else { return nil }
         switch diffRows[row] {
         case let .header(stamp, _):
-            let box = NSButton(
-                checkboxWithTitle: "", target: self, action: #selector(hunkTickToggled(_:)))
-            box.controlSize = .small
-            box.state = (diffPath.flatMap { isHunkTicked?($0, stamp) } ?? true) ? .on : .off
-            let header = NSTextField(
-                labelWithAttributedString: DiffRendering.header(
-                    oldStart: stamp.oldStart, oldLines: stamp.oldLines,
-                    newStart: stamp.newStart, newLines: stamp.newLines))
-            let stack = NSStackView(views: [box, header])
-            stack.orientation = .horizontal
-            stack.spacing = 4
-            return stack
+            let id = NSUserInterfaceItemIdentifier("hunkHeader")
+            let cell =
+                diffTable.makeView(withIdentifier: id, owner: self) as? ChangeCellView
+                ?? {
+                    let made = ChangeCellView(
+                        target: self, action: #selector(hunkTickToggled(_:)))
+                    made.identifier = id
+                    return made
+                }()
+            cell.tick.state =
+                (diffPath.flatMap { isHunkTicked?($0, stamp) } ?? true) ? .on : .off
+            cell.label.attributedStringValue = DiffRendering.header(
+                oldStart: stamp.oldStart, oldLines: stamp.oldLines,
+                newStart: stamp.newStart, newLines: stamp.newLines)
+            return cell
         case let .line(line):
-            let field = NSTextField(labelWithAttributedString: DiffRendering.line(line))
-            field.lineBreakMode = .byClipping
+            let id = NSUserInterfaceItemIdentifier("diffLine")
+            let field =
+                diffTable.makeView(withIdentifier: id, owner: self) as? NSTextField
+                ?? {
+                    let made = NSTextField(labelWithString: "")
+                    made.lineBreakMode = .byClipping
+                    made.identifier = id
+                    return made
+                }()
+            field.attributedStringValue = DiffRendering.line(line)
             return field
         }
     }
