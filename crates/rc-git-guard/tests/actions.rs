@@ -381,6 +381,52 @@ fn head_through_an_alias_of_the_branch_is_not_evidence_either() {
 }
 
 #[test]
+fn a_branch_checked_out_through_an_alias_cannot_be_deleted() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    fx.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/feature"]);
+    fx.git(&["symbolic-ref", "HEAD", "refs/heads/alias"]);
+
+    let err = delete_branch(fx.path(), &policy, "feature", Some("feature")).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "cannot delete 'feature': it is the checked-out branch"
+    );
+    assert!(
+        refs(&fx).contains("refs/heads/feature"),
+        "nothing was deleted"
+    );
+}
+
+#[test]
+fn a_branch_checked_out_through_an_alias_in_a_linked_worktree_cannot_be_deleted() {
+    let fx = Fixture::standard();
+    let holder = Fixture::empty_dir();
+    let wt = holder.path().join("wt");
+    fx.git(&["branch", "topic", "main"]);
+    fx.git(&["worktree", "add", "-q", wt.to_str().unwrap(), "topic"]);
+    let wt = wt.canonicalize().unwrap();
+    fx.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/feature"]);
+    fx.git(&[
+        "-C",
+        wt.to_str().unwrap(),
+        "symbolic-ref",
+        "HEAD",
+        "refs/heads/alias",
+    ]);
+
+    let err = delete_branch(fx.path(), &Policy::default(), "feature", Some("feature")).unwrap_err();
+    let ActionError::CheckedOut { worktree, .. } = &err else {
+        panic!("expected CheckedOut, got {err}");
+    };
+    assert_eq!(worktree.as_deref(), Some(wt.to_str().unwrap()));
+    assert!(
+        refs(&fx).contains("refs/heads/feature"),
+        "nothing was deleted"
+    );
+}
+
+#[test]
 fn the_only_branch_has_nowhere_else_its_commits_live() {
     let fx = Fixture::standard();
     fx.git(&["checkout", "-q", "feature"]);

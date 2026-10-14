@@ -144,7 +144,8 @@ branch tip, the tag object, or the dropped stash commit — at
 takes the slot one past the highest existing one (`-2`, `-3`, …), so no backup ever overwrites
 an earlier one. Two more rules live in the write path itself:
 a branch checked out in any worktree — the opened one, the main worktree, or any linked one —
-cannot be deleted (compared ignoring case; its delete plan is a `Deny` naming the checkout and
+cannot be deleted (compared ignoring case, at every hop of a `HEAD -> alias -> branch` chain;
+its delete plan is a `Deny` naming the checkout and
 the worktree's path unless the policy already denies it, a worktree whose `HEAD` cannot be read
 refuses rather than counts as elsewhere, and the merged check never counts `HEAD` on the branch
 itself, directly or through a symbolic alias, nor any symbolic branch, as another home for its

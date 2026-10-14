@@ -677,14 +677,31 @@ fn checked_out_where(worktree: Option<&str>) -> String {
     }
 }
 
-/// Whether `HEAD` is a symbolic ref to `full_name`, compared ignoring case so a case variant
-/// cannot strand `HEAD` on a case-folding volume.
+/// Whether `HEAD`'s symbolic chain (`HEAD -> alias -> branch`) passes through `full_name`,
+/// compared ignoring case so a case variant cannot strand `HEAD` on a case-folding volume. A
+/// detached `HEAD`, or a chain ending at a missing ref, reaches nothing. A chain longer than
+/// git's own symref depth limit (a cycle included) counts as reaching it, so every caller
+/// fails closed: it refuses the delete, or stops counting `HEAD` as other evidence.
 ///
 /// # Errors
-/// [`ActionError::Git`] naming `op` when `HEAD` cannot be read.
+/// [`ActionError::Git`] naming `op` when `HEAD` or a ref on its chain cannot be read.
 fn head_is_on(repo: &gix::Repository, op: &'static str, full_name: &str) -> ActionResult<bool> {
-    let head_name = repo.head_name().map_err(git_err(op, "HEAD"))?;
-    Ok(head_name.is_some_and(|head| head.as_bstr().eq_ignore_ascii_case(full_name.as_bytes())))
+    const MAX_SYMREF_DEPTH: usize = 5;
+    let mut reference = repo.find_reference("HEAD").map_err(git_err(op, "HEAD"))?;
+    for _ in 0..MAX_SYMREF_DEPTH {
+        let Some(target) = reference.target().try_name().map(ToOwned::to_owned) else {
+            return Ok(false);
+        };
+        if target.as_bstr().eq_ignore_ascii_case(full_name.as_bytes()) {
+            return Ok(true);
+        }
+        match repo.try_find_reference(target.as_ref()) {
+            Ok(Some(next)) => reference = next,
+            Ok(None) => return Ok(false),
+            Err(err) => return Err(git_err(op, "HEAD")(err)),
+        }
+    }
+    Ok(true)
 }
 
 /// Deletes a local branch. `input` answers the challenge when the policy demands one; pass
@@ -995,33 +1012,6 @@ fn ref_moved(repo: &gix::Repository, full_name: &str, expected: &Target) -> bool
     }
 }
 
-/// Whether `HEAD`'s symbolic chain (`HEAD -> alias -> branch`) passes through `full_name`,
-/// compared ignoring case as [`head_is_on`] does. A detached or unborn `HEAD` reaches nothing;
-/// a chain longer than git's own symref depth limit (a cycle included) counts as reaching it,
-/// so the caller stops counting `HEAD` rather than trusting it.
-fn head_chain_reaches(
-    repo: &gix::Repository,
-    op: &'static str,
-    full_name: &str,
-) -> ActionResult<bool> {
-    const MAX_SYMREF_DEPTH: usize = 5;
-    let mut reference = repo.find_reference("HEAD").map_err(git_err(op, "HEAD"))?;
-    for _ in 0..MAX_SYMREF_DEPTH {
-        let Some(target) = reference.target().try_name().map(ToOwned::to_owned) else {
-            return Ok(false);
-        };
-        if target.as_bstr().eq_ignore_ascii_case(full_name.as_bytes()) {
-            return Ok(true);
-        }
-        match repo.try_find_reference(target.as_ref()) {
-            Ok(Some(next)) => reference = next,
-            Ok(None) => return Ok(false),
-            Err(err) => return Err(git_err(op, "HEAD")(err)),
-        }
-    }
-    Ok(true)
-}
-
 /// Whether every commit of `name` is reachable from another direct local branch or from
 /// `HEAD` when `HEAD`'s symbolic chain does not reach `name`, and the tip that answer was
 /// judged on. A symbolic branch is skipped: an alias of `name` (or of another branch) is no
@@ -1049,7 +1039,7 @@ fn other_branch_tips(
     full_name: &str,
 ) -> ActionResult<Vec<gix::ObjectId>> {
     let mut others: Vec<gix::ObjectId> = Vec::new();
-    if !head_chain_reaches(repo, op, full_name)?
+    if !head_is_on(repo, op, full_name)?
         && let Ok(head) = repo.head_id()
     {
         others.push(head.detach());
