@@ -195,7 +195,8 @@ fn fetch_https(
 
 /// Runs the prepared connection through negotiation and pack receive, mapping errors
 /// the same way for both transports. The receive writes the pack and the tracking refs, so it
-/// takes the action's `_writer` as proof the policy allowed it.
+/// takes the action's `_writer` as proof the policy allowed it; `clippy.toml` bans `receive`
+/// everywhere else.
 fn run_fetch<T>(
     _writer: &Writer<'_>,
     connection: gix::remote::Connection<'_, '_, '_, T>,
@@ -219,6 +220,10 @@ where
     // gix moves the tracking refs inside `receive` with no seam before them, and checks the
     // flag only while writing the pack, so this is the last point to stop before any write.
     bail_if_cancelled(cancel, OP)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "receive writes the pack and tracking refs; `_writer` proves the policy allowed it"
+    )]
     prepared
         .receive(gix::progress::Discard, cancel.flag())
         .map_err(|source| {
