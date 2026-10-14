@@ -36,7 +36,8 @@ pub(super) type ChannelWriter = Pin<Box<dyn AsyncWrite + Send>>;
 /// Builds the runtime every ssh transport runs on.
 ///
 /// # Errors
-/// [`ActionError::Git`] when tokio cannot start its worker thread.
+/// [`ActionError::Git`](crate::actions::ActionError::Git) when tokio cannot start its worker
+/// thread.
 pub(super) fn build_runtime(op: &'static str) -> ActionResult<Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)

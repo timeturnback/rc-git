@@ -134,7 +134,7 @@ cargo check --locked -p rc-git-core --all-targets
 step "cargo test"
 cargo test --locked --workspace
 step "cargo doc"
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --quiet
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items --quiet
 step "cargo deny"
 cargo deny --locked check
 step "dev-only features"

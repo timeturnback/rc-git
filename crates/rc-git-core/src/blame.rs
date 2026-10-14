@@ -71,11 +71,11 @@ impl Repository {
     /// walk reaches in history are decoded whole, however large.
     ///
     /// # Errors
-    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob,
+    /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob,
     /// or when `path` is a directory or a submodule in it.
-    /// [`Error::PathNotFound`](crate::Error::PathNotFound) when `path` does not exist in `tip`.
-    /// [`Error::Git`](crate::Error::Git) when the shallow file, diff settings or commit-graph
-    /// cannot be read. [`Error::Object`](crate::Error::Object) when `tip` is missing or the
+    /// [`Error::PathNotFound`] when `path` does not exist in `tip`.
+    /// [`Error::Git`] when the shallow file, diff settings or commit-graph
+    /// cannot be read. [`Error::Object`] when `tip` is missing or the
     /// walk fails; it names the object the walk could not find when there was one, `tip`
     /// otherwise, or the commit whose time could not be read to mark a boundary range.
     pub fn blame(&self, tip: Oid, path: &str, limit: u64, since: Option<i64>) -> Result<Blame> {
