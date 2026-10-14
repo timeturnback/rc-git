@@ -50,6 +50,9 @@ paths: mac/**
   `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
   Syntax colors are temporary attributes applied per visible chunk; never add a layout-
   affecting attribute (font, paragraph style) through that path.
+- Text positions are UTF-16 offsets into the decoded `String`. `TextDocument` maps them from the
+  bytes when the core says the blob is valid UTF-8, and walks `text.utf16` only for lossy
+  input: a U+FFFD replacement shifts every later offset, so bytes no longer map to it.
 - The markdown preview is two halves: `MarkdownDocument.parse` (RcGitKit, pure, byte-level,
   tested) turns source into flat blocks and styled runs, and `MarkdownRenderer` (RcGitApp)
   decides how each block looks. A new syntax goes in the parser with a test; the renderer

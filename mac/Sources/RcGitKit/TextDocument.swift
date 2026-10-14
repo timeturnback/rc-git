@@ -1,5 +1,6 @@
-/// A text blob prepared for display. Building one costs a single pass over the content, so
-/// construct it off the main actor and hand the finished value to the view.
+/// A text blob prepared for display. Building one costs the UTF-8 decode plus one pass over the
+/// bytes for the line offsets, so construct it off the main actor and hand the finished value to
+/// the view.
 public struct TextDocument: Sendable, Hashable {
     /// The content, decoded as UTF-8 with invalid sequences replaced by U+FFFD.
     public let text: String
@@ -24,7 +25,10 @@ public struct TextDocument: Sendable, Hashable {
         self.lineCount = lineStarts.count
         self.byteCount = bytes.count
         self.isLossy = !validUTF8
-        (self.utf16LineStarts, self.utf16NonLFBreaks) = Self.utf16Breaks(of: text)
+        // A replacement character shifts every later UTF-16 offset, so lossy text is walked
+        // as decoded; valid UTF-8 maps byte for byte.
+        (self.utf16LineStarts, self.utf16NonLFBreaks) =
+            validUTF8 ? Self.utf8Breaks(of: bytes) : Self.utf16Breaks(of: text)
     }
 
     /// Builds a document from a blob when it is text; `nil` for binary or oversize blobs.
@@ -33,8 +37,53 @@ public struct TextDocument: Sendable, Hashable {
         self.init(bytes: data, lineStarts: lineStarts, validUTF8: validUTF8)
     }
 
-    /// One walk over the UTF-16 view, so the ruler never scans the string itself.
-    private static func utf16Breaks(of text: String) -> (lineStarts: [Int], nonLF: [Int]) {
+    /// The UTF-16 breaks of valid UTF-8, read from the bytes: every byte that is not a
+    /// continuation byte starts one UTF-16 unit, and a 4-byte leader starts two. Same result as
+    /// `utf16Breaks(of:)` on the decoded text, without transcoding it.
+    static func utf8Breaks(of bytes: [UInt8]) -> (lineStarts: [Int], nonLF: [Int]) {
+        bytes.withUnsafeBufferPointer { buffer in
+            var starts = [0]
+            var nonLF: [Int] = []
+            var units = 0
+            var previousWasCR = false
+            for index in buffer.indices {
+                let byte = buffer[index]
+                if byte & 0xC0 == 0x80 { continue }
+                if previousWasCR, byte != UInt8(ascii: "\n") { nonLF.append(units - 1) }
+                previousWasCR = byte == UInt8(ascii: "\r")
+                if byte == UInt8(ascii: "\n") {
+                    starts.append(units + 1)
+                } else if isOtherSeparator(buffer, at: index) {
+                    nonLF.append(units)
+                }
+                units += byte >= 0xF0 ? 2 : 1
+            }
+            if previousWasCR { nonLF.append(units - 1) }
+            return trimmed(&starts, nonLF: nonLF, length: units)
+        }
+    }
+
+    /// Whether the character starting at `index` is VT, FF, NEL (C2 85), U+2028 (E2 80 A8) or
+    /// U+2029 (E2 80 A9).
+    private static func isOtherSeparator(_ buffer: UnsafeBufferPointer<UInt8>, at index: Int)
+        -> Bool
+    {
+        switch buffer[index] {
+        case 0x0B, 0x0C:
+            return true
+        case 0xC2:
+            return index + 1 < buffer.count && buffer[index + 1] == 0x85
+        case 0xE2:
+            return index + 2 < buffer.count && buffer[index + 1] == 0x80
+                && (buffer[index + 2] == 0xA8 || buffer[index + 2] == 0xA9)
+        default:
+            return false
+        }
+    }
+
+    /// One walk over the UTF-16 view of decoded text. Used for lossy input, where the bytes do
+    /// not map to the decoded offsets.
+    static func utf16Breaks(of text: String) -> (lineStarts: [Int], nonLF: [Int]) {
         var starts = [0]
         var nonLF: [Int] = []
         var offset = 0
@@ -50,8 +99,16 @@ public struct TextDocument: Sendable, Hashable {
             }
         }
         if previousWasCR { nonLF.append(offset - 1) }
-        if offset == 0 { return ([], []) }
-        if starts.count > 1, starts[starts.count - 1] == offset { starts.removeLast() }
+        return trimmed(&starts, nonLF: nonLF, length: offset)
+    }
+
+    /// Applies the core's rule: empty text has no lines, a trailing newline starts none.
+    /// `starts` is `inout` so dropping the last entry never copies the array.
+    private static func trimmed(_ starts: inout [Int], nonLF: [Int], length: Int)
+        -> (lineStarts: [Int], nonLF: [Int])
+    {
+        if length == 0 { return ([], []) }
+        if starts.count > 1, starts[starts.count - 1] == length { starts.removeLast() }
         return (starts, nonLF)
     }
 

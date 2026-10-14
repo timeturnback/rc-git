@@ -59,6 +59,26 @@ import Testing
         #expect(document?.utf16NonLFBreaks == [2, 3])
     }
 
+    @Test(arguments: [
+        "plain ascii\nsecond line", "é\nñ ü", "日本\n語", "😀\n𝄞x", "", "a\n", "\n",
+        "😀\r\u{2028}x\ny", "a\r\nb\rc\u{0B}d\u{0C}e\u{85}f\u{2029}g\r",
+    ])
+    func validUtf8BreaksMatchTheUtf16Walk(_ text: String) {
+        let fromBytes = TextDocument.utf8Breaks(of: Array(text.utf8))
+        let walked = TextDocument.utf16Breaks(of: text)
+        #expect(fromBytes.lineStarts == walked.lineStarts)
+        #expect(fromBytes.nonLF == walked.nonLF)
+        #expect(TextDocument(content: textBlob(text))?.utf16LineStarts == walked.lineStarts)
+    }
+
+    @Test func lossyTextWalksTheDecodedText() {
+        // U+FFFD is one unit standing in for one invalid byte here; a leading continuation
+        // byte would count as zero units by the byte rule and put line 2 at 1.
+        let document = TextDocument(
+            bytes: [0x80, 0x0A, 0x61], lineStarts: [0, 2], validUTF8: false)
+        #expect(document.utf16LineStarts == [0, 2])
+    }
+
     @Test func byteFormatUsesShortUnits() {
         #expect(ByteFormat.string(0) == "0 B")
         #expect(ByteFormat.string(999) == "999 B")
