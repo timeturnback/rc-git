@@ -102,11 +102,11 @@ import Testing
     }
 }
 
-/// Answers `configuredIdentity` reads in order. The first read holds until `release()`, so a
-/// test decides exactly when the stale answer lands.
+/// Answers `configuredIdentity` reads in order. The first read holds at `gate` until the test
+/// opens it, so a test decides exactly when the stale answer lands.
 private final class GatedConfigReader: @unchecked Sendable {
+    let gate = CallGate()
     private let lock = NSLock()
-    private let gate = DispatchSemaphore(value: 0)
     private var answers: [CommitIdentity?]
     private var calls = 0
 
@@ -116,14 +116,12 @@ private final class GatedConfigReader: @unchecked Sendable {
 
     var callCount: Int { lock.withLock { calls } }
 
-    func release() { gate.signal() }
-
     func read(_ path: String) -> CommitIdentity? {
         let (call, answer) = lock.withLock {
             calls += 1
             return (calls, answers.removeFirst())
         }
-        if call == 1 { gate.wait() }
+        if call == 1 { gate.pass() }
         return answer
     }
 }
@@ -141,13 +139,9 @@ private final class GatedConfigReader: @unchecked Sendable {
             var seen: [CommitAuthor?] = []
             model.onChange = { seen.append(model.author) }
             let slow = Task { await model.refresh() }
-            let deadline = ContinuousClock.now + .seconds(10)
-            while reader.callCount == 0, ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            try #require(reader.callCount == 1, "the slow read never started")
+            await reader.gate.waitUntilArrived()
             await model.refresh()
-            reader.release()
+            reader.gate.open()
             await slow.value
             #expect(reader.callCount == 2)
             #expect(model.author == .configured(new))

@@ -485,7 +485,6 @@ import Testing
         repo.lock.withLock {
             repo.worktreeDiffs["a.txt"] = .text(hunks: [staleHunk])
             repo.worktreeDiffs["b.txt"] = .text(hunks: [laterHunk])
-            repo.worktreeDiffDelays["a.txt"] = 1
         }
         guard case let .loaded(report) = model.statusState else {
             Issue.record("expected loaded, got \(model.statusState)")
@@ -494,9 +493,12 @@ import Testing
         var shown: [WorktreeDiffState] = []
         model.onDiffChanged = { shown.append(self.model.diffState) }
         try #require(report.entries.count == 3)
+        let gate = CallGate()
+        repo.lock.withLock { repo.worktreeDiffGates["a.txt"] = gate }
         async let slowSelect: Void = model.select(report.entries[0])
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.select(report.entries[1])
+        gate.open()
         await slowSelect
 
         #expect(model.selectedPath == "b.txt")
@@ -642,12 +644,14 @@ import Testing
     }
 
     @Test func aBurstOfStashRequestsCostsOneReload() async {
-        repo.lock.withLock { repo.stashDelay = 1 }
+        let gate = CallGate()
+        repo.lock.withLock { repo.stashGate = gate }
         async let inFlight: Void = model.loadStashes()
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         for _ in 0..<20 {
             await model.loadStashes()
         }
+        gate.open()
         await inFlight
         #expect(
             repo.lock.withLock { repo.stashCalls } == 2,
@@ -657,13 +661,15 @@ import Testing
     @Test func aCancelledStashLoadNeverLands() async {
         repo.lock.withLock {
             repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
-            repo.stashDelay = 1
         }
+        let gate = CallGate()
+        repo.lock.withLock { repo.stashGate = gate }
         var stashCallbacks = 0
         model.onStashChanged = { stashCallbacks += 1 }
         async let inFlight: Void = model.loadStashes()
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         model.cancelScans()
+        gate.open()
         await inFlight
         #expect(model.stashes.isEmpty, "the cancelled read's result never lands")
         #expect(stashCallbacks == 0)
@@ -671,16 +677,20 @@ import Testing
     }
 
     @Test func aRefreshBurstCostsTwoOfEach() async {
-        let gate = CallGate()
-        repo.statusGate = gate
-        repo.lock.withLock { repo.stashDelay = 1 }
+        let statusGate = CallGate()
+        let stashGate = CallGate()
+        repo.lock.withLock {
+            repo.statusGate = statusGate
+            repo.stashGate = stashGate
+        }
         async let inFlight: Void = model.refresh()
-        await gate.waitUntilArrived()
-        try? await Task.sleep(for: .milliseconds(100))
+        await statusGate.waitUntilArrived()
+        await stashGate.waitUntilArrived()
         for _ in 0..<20 {
             await model.refresh()
         }
-        gate.open()
+        statusGate.open()
+        stashGate.open()
         await inFlight
         #expect(
             repo.lock.withLock { repo.statusCalls } == 2,
@@ -711,18 +721,17 @@ import Testing
         let aTxt = try #require(report.entries.first)
         repo.lock.withLock {
             repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk])
-            repo.worktreeDiffDelays["a.txt"] = 1
         }
+        let gate = CallGate()
+        repo.lock.withLock { repo.worktreeDiffGates["a.txt"] = gate }
         var shown: [WorktreeDiffState] = []
         model.onDiffChanged = { shown.append(self.model.diffState) }
         async let slowSelect: Void = model.select(aTxt)
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         // Same path, newer content: only the generation tells the two reads apart.
-        repo.lock.withLock {
-            repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.secondHunk])
-            repo.worktreeDiffDelays["a.txt"] = nil
-        }
+        repo.lock.withLock { repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.secondHunk]) }
         await model.select(aTxt)
+        gate.open()
         await slowSelect
 
         #expect(model.diffState == .loaded("a.txt", .text(hunks: [Self.secondHunk])))
@@ -739,13 +748,15 @@ import Testing
         }
         repo.lock.withLock {
             repo.worktreeDiffs["a.txt"] = .text(hunks: [Self.firstHunk])
-            repo.worktreeDiffDelays["a.txt"] = 1
         }
+        let gate = CallGate()
+        repo.lock.withLock { repo.worktreeDiffGates["a.txt"] = gate }
         let aTxt = try #require(report.entries.first)
         async let slowSelect: Void = model.select(aTxt)
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         repo.lock.withLock { repo.statusReport = reportWith(aTxt: false) }
         await model.loadStatus()
+        gate.open()
         await slowSelect
 
         #expect(model.selectedPath == nil)

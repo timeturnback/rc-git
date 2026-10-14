@@ -261,10 +261,12 @@ import Testing
         await model.openPath("README.md")
         let onMain = model.location
         await model.select(featureRef)
-        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        let gate = CallGate()
+        repo.lock.withLock { repo.gates[mainCommit] = gate }
         async let slowRestore: Void = model.restore(onMain)
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.select(featureRef)
+        gate.open()
         await slowRestore
         #expect(model.selectedRef?.fullName == feature)
         #expect(model.openedFilePath == nil, "README.md also exists on feature; it stays shut")
@@ -273,11 +275,13 @@ import Testing
     @Test func aRestoreAskedForDuringAnotherIsTheOneThatStands() async {
         await model.attach(repo)
         let plain = model.location
-        repo.lock.withLock { repo.delays[readme] = 1 }
+        let gate = CallGate()
+        repo.lock.withLock { repo.gates[readme] = gate }
         async let slowRestore: Void = model.restore(
             BrowserLocation(tree: .ref(main), filePath: "README.md", detailCommit: olderCommit))
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.restore(plain)
+        gate.open()
         await slowRestore
         #expect(model.location == plain)
     }
@@ -289,12 +293,14 @@ import Testing
         await model.openPath("src/main.rs")
         let atSource = model.location
         await model.select(featureRef)
-        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        let gate = CallGate()
+        repo.lock.withLock { repo.gates[mainCommit] = gate }
         var reported: [BrowserLocation] = []
         model.onLocationChanged = { reported.append(self.model.location) }
         async let slowRestore: Void = model.restore(atSource)
-        try? await Task.sleep(for: .milliseconds(20))
+        await gate.waitUntilArrived()
         await model.restore(atReadme)
+        gate.open()
         await slowRestore
         #expect(model.location == atReadme, "opened against main's tree, once it had loaded")
         #expect(reported == [atReadme], "one report, where the pair ended")
@@ -303,16 +309,22 @@ import Testing
     @Test func aRestoreEndingDuringARefreshLeavesNoReportForLater() async {
         await model.attach(repo)
         await model.openPath("README.md")
-        repo.lock.withLock { repo.refsDelay = 1 }
+        let gate = CallGate()
+        repo.lock.withLock { repo.refsGate = gate }
         async let refresh: Void = model.refreshRefs()
-        try? await Task.sleep(for: .milliseconds(20))
-        var reports = 0
-        model.onLocationChanged = { reports += 1 }
-        await model.restore(BrowserLocation(tree: .ref(main), filePath: "gone.txt"))
-        let reportsAtReturn = reports
+        await gate.waitUntilArrived()
+        let restoring = Task {
+            await model.restore(BrowserLocation(tree: .ref(main), filePath: "gone.txt"))
+            model.onLocationChanged = {
+                Issue.record("a report after the restore returned is a new stop")
+            }
+        }
+        // The task runs up to the restore's wait for the held refresh before the gate opens.
+        await Task.yield()
+        gate.open()
+        await restoring.value
         await refresh
         #expect(model.openedFilePath == nil)
-        #expect(reports == reportsAtReturn, "a report after the restore returned is a new stop")
     }
 
     @Test func aRestoreDuringARefreshOfAMovedRefKeepsItsFile() async {
@@ -325,36 +337,49 @@ import Testing
                 branch("main", at: movedCommit),
             ])
             repo.treeOfMap[movedCommit] = mainTree
-            repo.delays[movedCommit] = 1
         }
+        let gate = CallGate()
+        repo.lock.withLock { repo.gates[movedCommit] = gate }
         async let refresh: Void = model.refreshRefs()
-        try? await Task.sleep(for: .milliseconds(20))
-        var reports = 0
-        model.onLocationChanged = { reports += 1 }
-        await model.restore(BrowserLocation(tree: .ref(main), filePath: "README.md"))
-        let reportsAtReturn = reports
+        await gate.waitUntilArrived()
+        let restoring = Task {
+            await model.restore(BrowserLocation(tree: .ref(main), filePath: "README.md"))
+            model.onLocationChanged = {
+                Issue.record("a report after the restore returned is a new stop")
+            }
+        }
+        // The task runs up to the restore's wait for the held refresh before the gate opens.
+        await Task.yield()
+        gate.open()
+        await restoring.value
         await refresh
         #expect(model.selectedRef?.target == movedCommit)
         #expect(model.openedFilePath == "README.md", "the moved ref's root load closes no file")
-        #expect(reports == reportsAtReturn, "a report after the restore returned is a new stop")
     }
 
-    @Test func aRefreshAskedForDuringARestoreRunsAfterIt() async throws {
+    @Test func aRefreshAskedForDuringARestoreRunsAfterIt() async {
         await model.attach(repo)
         await model.openPath("README.md")
         let onMain = model.location
         await model.select(featureRef)
-        repo.lock.withLock { repo.delays[mainCommit] = 1 }
+        let restoreGate = CallGate()
+        repo.lock.withLock { repo.gates[mainCommit] = restoreGate }
         async let slowRestore: Void = model.restore(onMain)
-        try? await Task.sleep(for: .milliseconds(20))
-        repo.lock.withLock { repo.listing.refs.append(branch("topic", at: featureCommit)) }
+        await restoreGate.waitUntilArrived()
+        let refreshGate = CallGate()
+        repo.lock.withLock {
+            repo.listing.refs.append(branch("topic", at: featureCommit))
+            repo.refsGate = refreshGate
+        }
         await model.refreshRefs()
         #expect(model.refs.refs.count == 2, "the restore is still opening main's tree")
+        restoreGate.open()
         await slowRestore
         #expect(model.location == onMain)
-        for _ in 0..<100 where model.refs.refs.count == 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await refreshGate.waitUntilArrived()
+        refreshGate.open()
+        // Joins the refresh the restore started on its way out, and returns once it lands.
+        await model.refreshRefs()
         #expect(model.refs.refs.count == 3, "the refresh ran once the restore was done")
     }
 }

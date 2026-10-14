@@ -331,10 +331,12 @@ private final class ReadCounter {
 
     @Test func aResolutionTheUserMovedPastOpensNothing() async {
         await model.attach(repo)
-        repo.delays[srcTree] = 1.0
+        let gate = CallGate()
+        repo.lock.withLock { repo.gates[srcTree] = gate }
         async let stale = model.openImport("./Button", from: "src/App.tsx")
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.waitUntilArrived()
         await model.openFile(TreeEntry(name: "tsconfig.json", oid: config, kind: .blob))
+        gate.open()
         #expect(await stale, "a stale resolution is not a dead link")
         guard case let .text(entry, _) = model.fileState else {
             Issue.record("expected text, got \(model.fileState)")

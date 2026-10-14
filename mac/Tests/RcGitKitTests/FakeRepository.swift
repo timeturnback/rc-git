@@ -79,12 +79,12 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var failNextStatus = false
     /// Per path, the worktree-vs-blob diff.
     var worktreeDiffs: [String: BlobDiff] = [:]
-    /// Per path, how long each `diffWorktreeFile` call takes, for racing two selections.
-    var worktreeDiffDelays: [String: TimeInterval] = [:]
+    /// Per path, holds the next `diffWorktreeFile` call for it, then clears itself.
+    var worktreeDiffGates: [String: CallGate] = [:]
     var stashes: [StashEntry] = []
     var stashCalls = 0
-    /// How long each `stashList` call takes, for racing a stash reload against a burst or cancel.
-    var stashDelay: TimeInterval = 0
+    /// Holds the next `stashList` call, then clears itself.
+    var stashGate: CallGate?
     var failNextStash = false
     /// Set to make the fake a checkout rather than a bare repository.
     var workDir: String?
@@ -100,13 +100,16 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var headValue = Head(refName: nil, target: nil)
     var treeOfMap: [Oid: Oid] = [:]
     var delays: [Oid: TimeInterval] = [:]
-    /// Per oid, holds the next `treeOf` or `readBlob` call for it, then clears itself.
+    /// Per oid, holds the next `treeOf`, `treeEntries` or `readBlob` call for it, then clears
+    /// itself.
     var gates: [Oid: CallGate] = [:]
     var treeEntryCalls = 0
     var failNextTree = false
     var failNextRefs = false
     /// How long each `refs` call takes, for racing a ref refresh against another move.
     var refsDelay: TimeInterval = 0
+    /// Holds the next `refs` call, then clears itself.
+    var refsGate: CallGate?
     var refsCalls = 0
 
     var workingDirectory: String? { lock.withLock { workDir } }
@@ -114,12 +117,16 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func head() throws -> Head { lock.withLock { headValue } }
 
     func refs() throws -> RefListing {
-        let (result, fail, delay) = lock.withLock { () -> (RefListing, Bool, TimeInterval) in
+        let (result, fail, delay, gate) = lock.withLock {
+            () -> (RefListing, Bool, TimeInterval, CallGate?) in
             refsCalls += 1
             let fail = failNextRefs
             failNextRefs = false
-            return (listing, fail, refsDelay)
+            let gate = refsGate
+            refsGate = nil
+            return (listing, fail, refsDelay, gate)
         }
+        gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if fail { throw RepositoryError("cannot list refs: transient lock") }
         return result
@@ -155,12 +162,14 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func treeEntries(_ tree: Oid) throws -> [TreeEntry] {
-        let (entries, fail, delay) = lock.withLock { () -> ([TreeEntry]?, Bool, TimeInterval) in
+        let (entries, fail, delay, gate) = lock.withLock {
+            () -> ([TreeEntry]?, Bool, TimeInterval, CallGate?) in
             treeEntryCalls += 1
             let fail = failNextTree
             failNextTree = false
-            return (trees[tree], fail, delays[tree] ?? 0)
+            return (trees[tree], fail, delays[tree] ?? 0, gates.removeValue(forKey: tree))
         }
+        gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if fail { throw RepositoryError("read tree: object \(tree) is missing or unreadable") }
         guard let entries else {
@@ -387,10 +396,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff
     {
-        let (found, delay) = lock.withLock {
-            (worktreeDiffs[path], worktreeDiffDelays[path] ?? 0)
+        let (found, gate) = lock.withLock {
+            (worktreeDiffs[path], worktreeDiffGates.removeValue(forKey: path))
         }
-        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        gate?.pass()
         guard let found else {
             throw RepositoryError("read working tree file: '\(path)': missing")
         }
@@ -398,13 +407,15 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func stashList() throws -> [StashEntry] {
-        let (entries, fail, delay) = lock.withLock { () -> ([StashEntry], Bool, TimeInterval) in
+        let (entries, fail, gate) = lock.withLock { () -> ([StashEntry], Bool, CallGate?) in
             stashCalls += 1
             let fail = failNextStash
             failNextStash = false
-            return (stashes, fail, stashDelay)
+            let gate = stashGate
+            stashGate = nil
+            return (stashes, fail, gate)
         }
-        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        gate?.pass()
         if fail { throw RepositoryError("list stashes: transient failure") }
         return entries
     }
