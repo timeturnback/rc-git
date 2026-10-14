@@ -410,11 +410,18 @@ pub(super) fn whole_file_edit(
     let (data, kind) = match workfile::disk_entry(work_dir, path, op)? {
         workfile::DiskEntry::Present { data, kind } => (data, kind),
         workfile::DiskEntry::Directory => {
-            return Err(ActionError::git(
-                op,
-                path,
-                "is a directory; select files instead",
-            ));
+            let was_file = tree_entry_at(repo, op, base_tree, path)?.is_some_and(|entry| {
+                matches!(
+                    entry.mode.kind(),
+                    EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link
+                )
+            });
+            let reason = if was_file {
+                "was a file in HEAD and is now a directory; select the files under it instead"
+            } else {
+                "is a directory; select files instead"
+            };
+            return Err(ActionError::git(op, path, reason));
         }
         workfile::DiskEntry::Absent => {
             if tree_entry_at(repo, op, base_tree, path)?.is_none() {

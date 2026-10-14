@@ -979,6 +979,38 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn committing_a_file_that_became_a_directory_names_the_type_change() {
+        let fx = Fixture::standard();
+        fx.remove("alpha.txt");
+        fx.write("alpha.txt/b.txt", b"inside\n");
+        let head = fx.rev_parse("HEAD");
+
+        let err = commit(
+            fx.path(),
+            &Policy::default(),
+            CommitRequest {
+                message: "file to folder",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "commit", name, .. } if name == "alpha.txt"),
+            "{err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("was a file in HEAD and is now a directory")
+                && message.contains("select the files under it"),
+            "{message}"
+        );
+        assert_eq!(fx.rev_parse("HEAD"), head, "nothing moved");
+    }
+
+    #[test]
     fn a_path_under_a_submodule_reads_as_absent_from_head() {
         let fx = Fixture::standard();
         let gitlink = "160000,1111111111111111111111111111111111111111,sub";
