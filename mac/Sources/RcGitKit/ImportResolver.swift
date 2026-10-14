@@ -109,6 +109,12 @@ public struct ImportResolver {
         var paths: (patterns: [String: [String]], directory: [String])?
         /// Where a solution-style config points: the configs it hands its files to.
         var references: [[String]] = []
+
+        /// Takes `baseURL` and `paths` from an extended config wherever this one has none.
+        mutating func fillUnset(from inherited: ModulePaths) {
+            baseURL = baseURL ?? inherited.baseURL
+            paths = paths ?? inherited.paths
+        }
     }
 
     /// The config reads one resolution has left, shared by everything it reads.
@@ -227,14 +233,17 @@ public struct ImportResolver {
         if let patterns = options["paths"] as? [String: [String]] {
             result.paths = (patterns, directory)
         }
-        for reference in root["references"] as? [[String: Any]] ?? [] {
-            guard let path = reference["path"] as? String,
-                let target = RepoPath.flatten(directory, path)
-            else { continue }
-            result.references.append(target)
-        }
+        result.references = Self.references(in: root, directory: directory)
         inherit(into: &result, from: root, at: path, visited: visited, budget: budget)
         return result
+    }
+
+    /// The configs a solution-style config hands its files to, as repository paths.
+    private static func references(in root: [String: Any], directory: [String]) -> [[String]] {
+        let entries = root["references"] as? [[String: Any]] ?? []
+        return entries.compactMap { reference in
+            (reference["path"] as? String).flatMap { RepoPath.flatten(directory, $0) }
+        }
     }
 
     /// Fills what `result` leaves unset from the configs the one at `path` extends, the last
@@ -246,20 +255,33 @@ public struct ImportResolver {
         let chain = visited.union([path])
         guard chain.count <= Self.extendsDepth, result.baseURL == nil || result.paths == nil
         else { return }
-        let extended = (root["extends"] as? [String]) ?? (root["extends"] as? String).map { [$0] }
         let directory = Array(path.dropLast())
         var seen = chain
-        for parent in (extended ?? []).reversed() where parent.hasPrefix(".") {
+        for parent in Self.extended(by: root).reversed() where parent.hasPrefix(".") {
             guard !budget.isSpent else { return }
-            guard let target = RepoPath.flatten(directory, parent), seen.insert(target).inserted
-            else { continue }
-            let file = configFile(at: target)
-            guard file == target || seen.insert(file).inserted,
+            guard let file = unseenConfig(parent, directory: directory, seen: &seen),
                 let inherited = modulePaths(at: file, visited: chain, budget: budget)
             else { continue }
-            result.baseURL = result.baseURL ?? inherited.baseURL
-            result.paths = result.paths ?? inherited.paths
+            result.fillUnset(from: inherited)
         }
+    }
+
+    /// The `extends` entries of a config: one string or a list of them.
+    private static func extended(by root: [String: Any]) -> [String] {
+        if let list = root["extends"] as? [String] { return list }
+        return (root["extends"] as? String).map { [$0] } ?? []
+    }
+
+    /// The config file an `extends` entry names, or `nil` when it leaves the repository or
+    /// names a config already in `seen`, which then holds it.
+    private func unseenConfig(_ parent: String, directory: [String], seen: inout Set<[String]>)
+        -> [String]?
+    {
+        guard let target = RepoPath.flatten(directory, parent), seen.insert(target).inserted
+        else { return nil }
+        let file = configFile(at: target)
+        guard file == target || seen.insert(file).inserted else { return nil }
+        return file
     }
 
     /// The config file a reference or an `extends` names: the path itself, the path with

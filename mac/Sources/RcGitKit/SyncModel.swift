@@ -520,31 +520,38 @@ public final class SyncModel {
             }
             let summary = try await body(self)
             guard generation == self.generation else { return }
-            state = .done(
-                (summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
-                    .with(notice: credentialNotice))
-        } catch let failure as StepFailure {
-            guard generation == self.generation else { return }
-            // A cancel unwinds through whatever the step reported — usually the guard's
-            // own cancelled error, or a transport error the step hit as the flag was
-            // set. What the user asked for decides the state, not which of those
-            // arrived.
-            state =
-                switch (cancel.isSignalled, failure.diverged) {
-                case (true, _): .idle
-                case (false, true): .diverged(message: failure.message)
-                case (false, false):
-                    .failed(step: failure.step, message: withNotice(failure.message))
-                }
+            state = doneState(summary)
         } catch {
             guard generation == self.generation else { return }
-            state =
-                cancel.isSignalled
-                ? .idle : .failed(step: .fetch, message: withNotice("\(error)"))
+            state = terminalState(for: error)
         }
         Self.logger.notice("finished: \(String(describing: self.state), privacy: .public)")
         onStateChanged?()
         await refreshStatus()
+    }
+
+    /// The state a workflow ends in when it returns; a workflow with nothing to count
+    /// reports zeros.
+    private func doneState(_ summary: SyncSummary?) -> SyncState {
+        .done(
+            (summary ?? SyncSummary(fetchedRefs: 0, pulledFiles: 0, pushedCommits: 0))
+                .with(notice: credentialNotice))
+    }
+
+    /// The state a workflow ends in when it throws. A cancel unwinds through whatever the
+    /// step reported — usually the guard's own cancelled error, or a transport error the step
+    /// hit as the flag was set. What the user asked for decides the state, not which of those
+    /// arrived.
+    private func terminalState(for error: any Error) -> SyncState {
+        guard let failure = error as? StepFailure else {
+            return cancel.isSignalled
+                ? .idle : .failed(step: .fetch, message: withNotice("\(error)"))
+        }
+        return switch (cancel.isSignalled, failure.diverged) {
+        case (true, _): .idle
+        case (false, true): .diverged(message: failure.message)
+        case (false, false): .failed(step: failure.step, message: withNotice(failure.message))
+        }
     }
 
     /// A failure message with the workflow's credential-store failure, when there was one.
@@ -757,65 +764,84 @@ public final class SyncModel {
                 }
                 return outcome
             case let .failure(.hostKeyUnknown(message, hostKey)):
-                try bailIfCancelled(step)
-                let fingerprint = String(
-                    hostKey.split(separator: " ").last ?? Substring(hostKey))
-                // A key that differs from an earlier approval is a changed key, never a
-                // first contact: refuse it without offering the trust sheet.
-                if let approved = acceptedHostKey, approved != fingerprint {
-                    throw StepFailure(
-                        step: step,
-                        message: Self.changedHostKeyMessage(
-                            host: host, approved: approved, offered: fingerprint),
-                        diverged: false)
-                }
-                guard !hostKeyPrompted else {
-                    throw StepFailure(step: step, message: message, diverged: false)
-                }
+                acceptedHostKey = try await trustHostKey(
+                    step, host: host, offered: hostKey, approved: acceptedHostKey,
+                    alreadyPrompted: hostKeyPrompted, message: message)
                 hostKeyPrompted = true
-                switch await promptForHostKey(host: host, hostKey: hostKey) {
-                case .trusted:
-                    break
-                case .refused:
-                    throw StepFailure(
-                        step: step, message: "host not trusted", diverged: false)
-                case .unavailable:
-                    throw StepFailure(
-                        step: step, message: "\(message); no prompt is available to approve it",
-                        diverged: false)
-                }
-                hostKeys.store(fingerprint: fingerprint, host: host)
-                acceptedHostKey = fingerprint
             case let .failure(error):
-                guard case let .prompt(key) = Self.credentialRetry(after: error, kind: kind)
-                else {
-                    throw StepFailure(
-                        step: step, message: error.message, diverged: isDiverged(error))
-                }
-                try bailIfCancelled(step)
                 authAttempts += 1
-                guard authAttempts < Self.attemptLimit else {
-                    throw StepFailure(
-                        step: step,
-                        message: "\(error.message) (gave up after \(authAttempts) attempts)",
-                        diverged: false
-                    )
-                }
-                switch await promptForCredentials(host: host, kind: kind, key: key) {
-                case let .provided(prompted):
-                    credentials = prompted
-                    fromPrompt = true
-                case .cancelled:
-                    throw StepFailure(
-                        step: step, message: "authentication canceled", diverged: false)
-                case .unavailable:
-                    throw StepFailure(
-                        step: step,
-                        message: Self.noPromptMessage(
-                            host: host, hadCredentials: credentials != nil, reason: error.message),
-                        diverged: false)
-                }
+                credentials = try await nextCredentials(
+                    step, host: host, kind: kind, after: error, attempts: authAttempts,
+                    hadCredentials: credentials != nil)
+                fromPrompt = true
             }
+        }
+    }
+
+    /// Answers an unknown ssh host key: refuses a key that differs from an earlier approval
+    /// and a second prompt in one step, otherwise asks once and stores the fingerprint the
+    /// user trusted. Returns that fingerprint for the next attempt.
+    private func trustHostKey(
+        _ step: SyncStep, host: String, offered hostKey: String, approved: String?,
+        alreadyPrompted: Bool, message: String
+    ) async throws -> String {
+        try bailIfCancelled(step)
+        let fingerprint = String(hostKey.split(separator: " ").last ?? Substring(hostKey))
+        // A key that differs from an earlier approval is a changed key, never a first
+        // contact: refuse it without offering the trust sheet.
+        if let approved, approved != fingerprint {
+            throw StepFailure(
+                step: step,
+                message: Self.changedHostKeyMessage(
+                    host: host, approved: approved, offered: fingerprint),
+                diverged: false)
+        }
+        guard !alreadyPrompted else {
+            throw StepFailure(step: step, message: message, diverged: false)
+        }
+        switch await promptForHostKey(host: host, hostKey: hostKey) {
+        case .trusted:
+            break
+        case .refused:
+            throw StepFailure(step: step, message: "host not trusted", diverged: false)
+        case .unavailable:
+            throw StepFailure(
+                step: step, message: "\(message); no prompt is available to approve it",
+                diverged: false)
+        }
+        hostKeys.store(fingerprint: fingerprint, host: host)
+        return fingerprint
+    }
+
+    /// The credentials to retry with after `error`, asked of the user. Throws the step's
+    /// failure when a secret cannot fix the error, after `attemptLimit` attempts, or when the
+    /// prompt is cancelled or unavailable.
+    private func nextCredentials(
+        _ step: SyncStep, host: String, kind: CredentialKind, after error: SyncError,
+        attempts: Int, hadCredentials: Bool
+    ) async throws -> Credentials {
+        guard case let .prompt(key) = Self.credentialRetry(after: error, kind: kind) else {
+            throw StepFailure(step: step, message: error.message, diverged: isDiverged(error))
+        }
+        try bailIfCancelled(step)
+        guard attempts < Self.attemptLimit else {
+            throw StepFailure(
+                step: step,
+                message: "\(error.message) (gave up after \(attempts) attempts)",
+                diverged: false
+            )
+        }
+        switch await promptForCredentials(host: host, kind: kind, key: key) {
+        case let .provided(prompted):
+            return prompted
+        case .cancelled:
+            throw StepFailure(step: step, message: "authentication canceled", diverged: false)
+        case .unavailable:
+            throw StepFailure(
+                step: step,
+                message: Self.noPromptMessage(
+                    host: host, hadCredentials: hadCredentials, reason: error.message),
+                diverged: false)
         }
     }
 

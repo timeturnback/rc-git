@@ -228,13 +228,7 @@ public enum FuzzyMatch {
         var previousMatch = -2
         var firstMatch = -1
         for index in from..<path.count where lower(path[index]) == lower(needle[needleIndex]) {
-            score += 1
-            if index == previousMatch + 1 {
-                score += consecutiveBonus
-            } else {
-                if previousMatch >= 0 { score -= gapPenalty }
-                if index == 0 || isBoundary(path[index - 1]) { score += boundaryBonus }
-            }
+            score += points(at: index, after: previousMatch, in: path)
             if firstMatch < 0 { firstMatch = index }
             previousMatch = index
             needleIndex += 1
@@ -242,6 +236,18 @@ public enum FuzzyMatch {
         }
         guard needleIndex == needle.count else { return nil }
         return (score, firstMatch)
+    }
+
+    /// What a match at `index` earns given the previous match: the run bonus when it follows
+    /// directly, else the gap penalty after an earlier match and the word-start bonus.
+    private static func points<Unit: FixedWidthInteger>(
+        at index: Int, after previousMatch: Int, in path: [Unit]
+    ) -> Int {
+        if index == previousMatch + 1 { return 1 + consecutiveBonus }
+        var points = 1
+        if previousMatch >= 0 { points -= gapPenalty }
+        if index == 0 || isBoundary(path[index - 1]) { points += boundaryBonus }
+        return points
     }
 
     private static func lower<Unit: FixedWidthInteger>(_ unit: Unit) -> Unit {

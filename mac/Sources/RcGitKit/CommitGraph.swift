@@ -99,54 +99,30 @@ public struct GraphBuilder: Sendable {
         if let first = matching.first {
             color = lanes[first].colorIndex
         } else {
-            color = nextColor
-            nextColor += 1
+            color = takeColor()
         }
 
-        var edges: [GraphEdge] = []
-        for index in matching {
-            edges.append(
-                GraphEdge(
-                    from: index, to: commitLane, colorIndex: lanes[index].colorIndex,
-                    phase: .into))
+        var edges = matching.map { index in
+            GraphEdge(
+                from: index, to: commitLane, colorIndex: lanes[index].colorIndex, phase: .into)
         }
-
-        // Close every matching lane; survivors keep their order and shift left past them.
-        var bottom: [Lane] = []
-        var passThroughs: [(top: Int, pre: Int, colorIndex: Int)] = []
-        for (index, lane) in lanes.enumerated() where !matching.contains(index) {
-            passThroughs.append((index, bottom.count, lane.colorIndex))
-            bottom.append(lane)
-        }
+        let closed = closeMatching(matching)
+        var bottom = closed.bottom
         // The commit's own lane continues to its first parent at the commit's position;
         // survivors at or past that slot shift right by one.
         let slot = min(commitLane, bottom.count)
-        let continues = firstParent != nil
         if let firstParent {
             bottom.insert(Lane(expected: firstParent, colorIndex: color), at: slot)
             edges.append(GraphEdge(from: commitLane, to: slot, colorIndex: color, phase: .out))
         }
-        for (top, pre, colorIndex) in passThroughs {
+        let continues = firstParent != nil
+        for (top, pre, colorIndex) in closed.passThroughs {
             let target = continues && pre >= slot ? pre + 1 : pre
             edges.append(
                 GraphEdge(from: top, to: target, colorIndex: colorIndex, phase: .through))
         }
-        for parent in commit.parents.dropFirst() where !emitted.contains(parent) {
-            if let existing = bottom.firstIndex(where: { $0.expected == parent }) {
-                edges.append(
-                    GraphEdge(
-                        from: commitLane, to: existing,
-                        colorIndex: bottom[existing].colorIndex, phase: .out))
-            } else {
-                let lane = Lane(expected: parent, colorIndex: nextColor)
-                nextColor += 1
-                bottom.append(lane)
-                edges.append(
-                    GraphEdge(
-                        from: commitLane, to: bottom.count - 1, colorIndex: lane.colorIndex,
-                        phase: .out))
-            }
-        }
+        attachParents(
+            commit.parents.dropFirst(), commitLane: commitLane, bottom: &bottom, edges: &edges)
 
         lanes = bottom
         let laneCount = max(max(topCount, lanes.count), commitLane + 1)
@@ -155,5 +131,48 @@ public struct GraphBuilder: Sendable {
             GraphRow(
                 commitLane: commitLane, colorIndex: color, edges: edges, laneCount: laneCount,
                 isMerge: commit.parents.count > 1))
+    }
+
+    /// The next color in the append-only sequence.
+    private mutating func takeColor() -> Int {
+        defer { nextColor += 1 }
+        return nextColor
+    }
+
+    /// Closes every matching lane; survivors keep their order and shift left past them. Each
+    /// pass-through names its lane above the row, its position below before the commit's own
+    /// lane is inserted, and its color.
+    private func closeMatching(_ matching: [Int])
+        -> (bottom: [Lane], passThroughs: [(top: Int, pre: Int, colorIndex: Int)])
+    {
+        var bottom: [Lane] = []
+        var passThroughs: [(top: Int, pre: Int, colorIndex: Int)] = []
+        for (index, lane) in lanes.enumerated() where !matching.contains(index) {
+            passThroughs.append((index, bottom.count, lane.colorIndex))
+            bottom.append(lane)
+        }
+        return (bottom, passThroughs)
+    }
+
+    /// Connects the commit to its other parents: a lane already expecting one is reused, and
+    /// each remaining parent not yet emitted opens a new rightmost lane.
+    private mutating func attachParents(
+        _ parents: ArraySlice<Oid>, commitLane: Int, bottom: inout [Lane], edges: inout [GraphEdge]
+    ) {
+        for parent in parents where !emitted.contains(parent) {
+            if let existing = bottom.firstIndex(where: { $0.expected == parent }) {
+                edges.append(
+                    GraphEdge(
+                        from: commitLane, to: existing,
+                        colorIndex: bottom[existing].colorIndex, phase: .out))
+            } else {
+                let lane = Lane(expected: parent, colorIndex: takeColor())
+                bottom.append(lane)
+                edges.append(
+                    GraphEdge(
+                        from: commitLane, to: bottom.count - 1, colorIndex: lane.colorIndex,
+                        phase: .out))
+            }
+        }
     }
 }

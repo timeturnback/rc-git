@@ -354,31 +354,37 @@ public final class BrowserModel {
                 await refreshWorkingTree(listing: listing, head: head, previousHead: previousHead)
                 return
             }
-            guard let current = selectedRef else {
-                onRefsChanged?()
-                return
-            }
-            if let updated = listing.refs.first(where: { $0.fullName == current.fullName }) {
-                if updated.target == current.target {
-                    selectedRef = updated
-                    onRefsChanged?()
-                } else {
-                    await select(updated)
-                }
-            } else if let fallback = initialRef(listing: listing, head: head) {
-                await select(fallback)
-            } else {
-                selectedRef = nil
-                rootTree = nil
-                resetHistory(anchor: nil)
-                onRefsChanged?()
-                onRootChanged?()
-            }
+            await followSelection(in: listing, head: head)
         case .failure:
             // The message is dropped on purpose: a lock during a ref update is the usual cause
             // and heals on the next event, so the views show the quiet stale state instead.
             refsStale = true
             onRefsChanged?()
+        }
+    }
+
+    /// Keeps the selected ref by name in a fresh listing: reloads it when its target moved,
+    /// and falls back the way `attach` chooses one when it disappeared.
+    private func followSelection(in listing: RefListing, head: Head) async {
+        guard let current = selectedRef else {
+            onRefsChanged?()
+            return
+        }
+        if let updated = listing.refs.first(where: { $0.fullName == current.fullName }) {
+            if updated.target == current.target {
+                selectedRef = updated
+                onRefsChanged?()
+            } else {
+                await select(updated)
+            }
+        } else if let fallback = initialRef(listing: listing, head: head) {
+            await select(fallback)
+        } else {
+            selectedRef = nil
+            rootTree = nil
+            resetHistory(anchor: nil)
+            onRefsChanged?()
+            onRootChanged?()
         }
     }
 
@@ -1386,32 +1392,43 @@ public final class BrowserModel {
             await restoreTree(target.tree)
             guard pendingRestore == nil, location.tree == target.tree else { return }
         }
-        if openedFilePath != target.filePath {
-            var opened = false
-            if let path = target.filePath {
-                opened = await openPath(path) == .opened
-            }
-            // A file that is gone empties the pane: the file of the stop left behind, still
-            // open, would read as the one this stop named.
-            if !opened {
-                closeFile()
-            }
-            guard pendingRestore == nil else { return }
+        guard await restoreFile(target.filePath) else { return }
+        restoreScope(target.historyScope)
+        await restoreDetail(target.detailCommit)
+    }
+
+    /// Opens the file a stop names, or empties the pane for a stop without one. Returns false
+    /// when another restore was asked for during the open, so the move stops there.
+    private func restoreFile(_ path: String?) async -> Bool {
+        guard openedFilePath != path else { return true }
+        var opened = false
+        if let path {
+            opened = await openPath(path) == .opened
         }
-        if historyScope != target.historyScope {
-            switch target.historyScope {
-            case .all:
-                clearHistoryScope()
-            case let .path(path):
-                _ = scopeHistory(to: path)
-            }
+        // A file that is gone empties the pane: the file of the stop left behind, still
+        // open, would read as the one this stop named.
+        if !opened {
+            closeFile()
         }
-        if diffCommit?.oid != target.detailCommit {
-            if let commit = target.detailCommit {
-                await jumpToCommit(commit)
-            } else {
-                closeCommitDetail()
-            }
+        return pendingRestore == nil
+    }
+
+    private func restoreScope(_ scope: HistoryScope) {
+        guard historyScope != scope else { return }
+        switch scope {
+        case .all:
+            clearHistoryScope()
+        case let .path(path):
+            _ = scopeHistory(to: path)
+        }
+    }
+
+    private func restoreDetail(_ commit: Oid?) async {
+        guard diffCommit?.oid != commit else { return }
+        if let commit {
+            await jumpToCommit(commit)
+        } else {
+            closeCommitDetail()
         }
     }
 
