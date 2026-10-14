@@ -66,11 +66,13 @@ public enum Shell {
 
     /// Runs `executable` with `arguments` in `directory`. A command still running at
     /// `timeout`, silent for `idleTimeout`, or running when the calling Task is cancelled is
-    /// killed with its process group, and the outcome says which.
+    /// killed with its process group, and the outcome says which. `onOutput` gets the
+    /// complete lines of each pipe read as one batch, so a burst costs one call, not one
+    /// per line.
     public static func run(
         _ executable: String, _ arguments: [String], in directory: String,
         timeout: Duration? = nil, idleTimeout: Duration? = nil,
-        onOutput: (@Sendable (String) -> Void)? = nil
+        onOutput: (@Sendable ([String]) -> Void)? = nil
     ) async -> Outcome {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -239,9 +241,9 @@ final class LineCollector: @unchecked Sendable {
     private var buffer = Data()
     private var lines: [String] = []
     private var lastRead = ContinuousClock.now
-    private let onOutput: (@Sendable (String) -> Void)?
+    private let onOutput: (@Sendable ([String]) -> Void)?
 
-    init(onOutput: (@Sendable (String) -> Void)?) {
+    init(onOutput: (@Sendable ([String]) -> Void)?) {
         self.onOutput = onOutput
     }
 
@@ -257,7 +259,7 @@ final class LineCollector: @unchecked Sendable {
         }
         lines.append(contentsOf: complete)
         lock.unlock()
-        for line in complete { onOutput?(line) }
+        if !complete.isEmpty { onOutput?(complete) }
     }
 
     /// When the last bytes arrived, or when the collector was made if none have.
@@ -278,7 +280,7 @@ final class LineCollector: @unchecked Sendable {
         }
         let collected = lines
         lock.unlock()
-        if let trailing { onOutput?(trailing) }
+        if let trailing { onOutput?([trailing]) }
         return collected
     }
 }

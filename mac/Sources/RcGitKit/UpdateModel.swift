@@ -113,8 +113,9 @@ public protocol UpdateEnvironment: Sendable {
     func sync() async -> String?
     /// Builds and installs the release bundle, streaming the script's output. `nil` on
     /// success. Bounded by the implementation, and stops — killing the build — when the
-    /// calling Task is cancelled.
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String?
+    /// calling Task is cancelled. `onOutput` takes lines in batches: one call per read of the
+    /// script's output, not one per line.
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String?
     /// Hands the state the relaunched build reads — the open tabs — to it, and stops this
     /// process recording that state. Runs just before `relaunch()`, so the new process
     /// finds the state already written when it starts.
@@ -128,6 +129,24 @@ public protocol UpdateEnvironment: Sendable {
     /// Quits this instance on a later run-loop turn, so the window draws `.installed`
     /// first. Runs only after `relaunch()` succeeded.
     func quit() async
+}
+
+/// How far a view's copy of the log reaches: the run it shows, and how many of that run's
+/// lines it has dropped from its head and taken in all, dropped ones included.
+public struct LogMark: Sendable, Hashable {
+    public let run: Int
+    public let dropped: Int
+    public let through: Int
+}
+
+/// What a view showing the log at a `LogMark` does to catch up with the model.
+public enum LogChange: Sendable, Hashable {
+    /// Nothing new.
+    case none
+    /// A new run, or a view too far behind to patch: show these lines instead.
+    case replace([String])
+    /// Delete `dropHead` lines from the head of what is shown, then add `lines` at the end.
+    case append(dropHead: Int, lines: [String])
 }
 
 /// Drives one update: preflight, fetch and fast-forward, build, install, relaunch. The
@@ -151,6 +170,9 @@ public final class UpdateModel {
 
     public private(set) var state: UpdateState = .idle
     public private(set) var log: [String] = []
+    /// Head lines trimmed from this run's log at `maxLogLines`. With `logRun` it lets a view
+    /// append rather than redraw: a full log keeps its count while its lines move.
+    public private(set) var logDropped = 0
     public var onChanged: (() -> Void)?
 
     private let build: AppBuild
@@ -166,6 +188,28 @@ public final class UpdateModel {
         self.environment = environment
     }
 
+    /// Which run the log belongs to: bumped by `start()`, which clears the log.
+    public var logRun: Int { attempt }
+
+    /// Where the log stands now, for a view to keep and pass back to `logChange(since:)`.
+    public var logMark: LogMark {
+        LogMark(run: logRun, dropped: logDropped, through: logDropped + log.count)
+    }
+
+    /// What a view showing the log at `mark` changes to show the log as it is now. `nil`
+    /// means the view shows nothing yet.
+    public func logChange(since mark: LogMark?) -> LogChange {
+        let now = logMark
+        guard let mark, mark.run == now.run, mark.through <= now.through else {
+            return .replace(log)
+        }
+        let fresh = now.through - mark.through
+        guard fresh <= log.count else { return .replace(log) }
+        let dropHead = now.dropped - mark.dropped
+        guard fresh > 0 || dropHead > 0 else { return .none }
+        return .append(dropHead: dropHead, lines: Array(log.suffix(fresh)))
+    }
+
     public var isBusy: Bool {
         if case .running = state { return true }
         return false
@@ -178,6 +222,7 @@ public final class UpdateModel {
         guard !isBusy, running == nil else { return }
         attempt += 1
         log = []
+        logDropped = 0
         // Cleared inside the task, in the same turn that settles the state, so the model is
         // never idle while still holding a finished attempt.
         let task = Task {
@@ -341,10 +386,10 @@ public final class UpdateModel {
         enter(.install)
         note(mode == .update ? "building" : "rebuilding the working tree")
         let current = attempt
-        let message = await environment.install(onOutput: { [weak self] line in
+        let message = await environment.install(onOutput: { [weak self] lines in
             Task { @MainActor in
                 guard let self, self.attempt == current else { return }
-                self.output(line)
+                self.output(lines)
             }
         })
         guard !stoppedByCancel(.install) else { return }
@@ -417,7 +462,7 @@ public final class UpdateModel {
         }
         let stepName = String(describing: step)
         Self.logger.error("\(stepName, privacy: .public) failed: \(message, privacy: .public)")
-        append("error: \(message)")
+        note(contentsOf: ["error: \(message)"])
         state = .failed(step: step, message: message)
         onChanged?()
     }
@@ -425,20 +470,26 @@ public final class UpdateModel {
     /// A step line: kept in the window's log and in the unified log.
     private func note(_ line: String) {
         Self.logger.notice("\(line, privacy: .public)")
-        append(line)
+        note(contentsOf: [line])
     }
 
-    /// One line of build output: kept in the window's log, and only at `.info` in the
+    /// One read of build output: kept in the window's log, and only at `.info` in the
     /// unified log, so a build does not push thousands of lines into it.
-    private func output(_ line: String) {
-        Self.logger.info("\(line, privacy: .public)")
-        append(line)
+    private func output(_ lines: [String]) {
+        let text = lines.joined(separator: "\n")
+        Self.logger.info("\(text, privacy: .public)")
+        note(contentsOf: lines)
     }
 
-    private func append(_ line: String) {
-        log.append(line)
-        if log.count > Self.maxLogLines {
-            log.removeFirst(log.count - Self.maxLogLines)
+    /// Adds a batch to the window's log: one trim at the cap and one `onChanged`, however
+    /// many lines it holds.
+    private func note(contentsOf lines: [String]) {
+        guard !lines.isEmpty else { return }
+        log.append(contentsOf: lines)
+        let excess = log.count - Self.maxLogLines
+        if excess > 0 {
+            log.removeFirst(excess)
+            logDropped += excess
         }
         onChanged?()
     }

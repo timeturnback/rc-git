@@ -19,6 +19,12 @@ final class UpdateWindowController: NSWindowController {
     private let spinner = NSProgressIndicator()
     private let actionButton = NSButton(title: "", target: nil, action: nil)
     private let logView = NSTextView()
+    /// How far the log view reaches, so a change appends to it instead of redrawing it.
+    private var logMark: LogMark?
+    /// The UTF-16 length of each line the view shows, from `lineHead` on: what a trim at the
+    /// model's cap deletes from the head of the text.
+    private var lineLengths: [Int] = []
+    private var lineHead = 0
 
     /// `handOffState` runs just before the new bundle is launched, so the tabs the
     /// relaunched app reopens are the ones on screen now. It flushes them: this process is
@@ -49,9 +55,14 @@ final class UpdateWindowController: NSWindowController {
         model = UpdateModel(
             build: build, environment: environment ?? UnavailableUpdateEnvironment())
         super.init(window: window)
-        window.title = UpdateCopy(build: build, state: model.state).title
+        let copy = UpdateCopy(build: build, state: model.state)
+        window.title = copy.title
         window.contentMinSize = NSSize(width: 460, height: 320)
         window.contentView = buildContentView()
+        // Neither depends on the state, so they are set once, with one date formatter.
+        installedLabel.stringValue =
+            "\(copy.heading): \(build.versionLine)\(Self.builtSuffix(build))"
+        sourceLabel.stringValue = copy.source
         window.center()
         window.setFrameAutosaveName("rc-git.update.v1")
         model.onChanged = { [weak self] in self?.render() }
@@ -151,10 +162,7 @@ final class UpdateWindowController: NSWindowController {
     // MARK: Rendering
 
     private func render() {
-        let copy = UpdateCopy(build: build, state: model.state)
-        installedLabel.stringValue = "\(copy.heading): \(build.versionLine)\(builtSuffix())"
-        sourceLabel.stringValue = copy.source
-        renderState(copy)
+        renderState(UpdateCopy(build: build, state: model.state))
         renderLog()
     }
 
@@ -171,16 +179,60 @@ final class UpdateWindowController: NSWindowController {
         actionButton.keyEquivalent = copy.actionCancels ? "\u{1b}" : "\r"
     }
 
-    /// Replaces the whole log and pins the view to the bottom: the log only ever grows,
-    /// and a few thousand lines of build output cost less to set than to splice.
+    /// Brings the log view up to the model and pins it to the bottom. Within a run it only
+    /// deletes the head lines the model trimmed and appends the new tail, so a line costs
+    /// the same at the end of a long build as at the start; a new run replaces the text.
     private func renderLog() {
-        let text = model.log.joined(separator: "\n")
-        guard logView.string != text else { return }
-        logView.string = text
+        let change = model.logChange(since: logMark)
+        logMark = model.logMark
+        guard let storage = logView.textStorage else { return }
+        switch change {
+        case .none:
+            return
+        case let .replace(lines):
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: NSRange(location: 0, length: storage.length), with: logText(lines))
+            storage.endEditing()
+            lineLengths = lines.map { $0.utf16.count }
+            lineHead = 0
+        case let .append(dropHead, lines):
+            storage.beginEditing()
+            dropLogHead(dropHead, from: storage)
+            let shown = lineLengths.count - lineHead
+            storage.append(logText(lines, after: shown > 0))
+            storage.endEditing()
+            lineLengths.append(contentsOf: lines.map { $0.utf16.count })
+        }
         logView.scrollToEndOfDocument(nil)
     }
 
-    private func builtSuffix() -> String {
+    /// Deletes the first `count` shown lines and the newline after each, or the whole text
+    /// when no line is left.
+    private func dropLogHead(_ count: Int, from storage: NSTextStorage) {
+        guard count > 0 else { return }
+        let shown = lineLengths.count - lineHead
+        let length =
+            count >= shown
+            ? storage.length
+            : lineLengths[lineHead..<(lineHead + count)].reduce(count, +)
+        storage.deleteCharacters(in: NSRange(location: 0, length: length))
+        lineHead += min(count, shown)
+        if lineHead > 1024, lineHead * 2 > lineLengths.count {
+            lineLengths.removeFirst(lineHead)
+            lineHead = 0
+        }
+    }
+
+    /// `lines` as the log view draws them, led by a newline when it follows a shown line.
+    private func logText(_ lines: [String], after: Bool = false) -> NSAttributedString {
+        let text = (after ? "\n" : "") + lines.joined(separator: "\n")
+        let font = logView.font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
+        return NSAttributedString(
+            string: text, attributes: [.font: font, .foregroundColor: NSColor.textColor])
+    }
+
+    private static func builtSuffix(_ build: AppBuild) -> String {
         guard let date = build.buildDate else { return "" }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -197,7 +249,7 @@ private struct UnavailableUpdateEnvironment: UpdateEnvironment {
     func toolchain() async -> ToolchainCheck { .failure(Self.reason) }
     func sourceState() async -> SourceStateResult { .failure(Self.reason) }
     func sync() async -> String? { Self.reason }
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { Self.reason }
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? { Self.reason }
     func handOff() async {}
     func reclaim() async {}
     func relaunch() async -> String? { Self.reason }

@@ -13,7 +13,10 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         var sourceStates: [SourceStateResult] = []
         var syncFailure: String?
         var installFailure: String?
+        /// Printed by the build in one read.
         var installOutput: [String] = []
+        /// Printed by the build after `installOutput`, one read per batch.
+        var installBatches: [[String]] = []
         var relaunchFailure: String?
     }
 
@@ -57,10 +60,11 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         return script.syncFailure
     }
 
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? {
         await probe()
         calls.append("install")
-        for line in script.installOutput { onOutput(line) }
+        if !script.installOutput.isEmpty { onOutput(script.installOutput) }
+        for batch in script.installBatches { onOutput(batch) }
         return script.installFailure
     }
 
@@ -116,7 +120,7 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
 
     func sourceState() async -> SourceStateResult { .failure("unused") }
     func sync() async -> String? { "unused" }
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? { "unused" }
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? { "unused" }
     func handOff() async {}
     func reclaim() async {}
     func relaunch() async -> String? { "unused" }
@@ -132,7 +136,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
     let entered = Signal()
     private(set) var calls: [String] = []
     /// The first build's output callback, kept so a test can print a line late.
-    private(set) var firstOutput: (@Sendable (String) -> Void)?
+    private(set) var firstOutput: (@Sendable ([String]) -> Void)?
 
     init(hanging: UpdateStep) {
         self.hanging = hanging
@@ -154,7 +158,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         return await hangOnce(.sync) ? "the pull was cancelled" : nil
     }
 
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? {
         calls.append("install")
         if firstOutput == nil { firstOutput = onOutput }
         // Reports success even when cancelled, like a build that finished at the moment of
@@ -631,6 +635,87 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
             ])
     }
 
+    private static func syncedScript(
+        output: [String] = [], batches: [[String]] = []
+    ) -> StubUpdateEnvironment.Script {
+        .init(
+            sourceStates: [
+                .state(SourceState(commit: head, branch: "master", dirtyPaths: [])),
+                .state(SourceState(commit: upstream, branch: "master", dirtyPaths: [])),
+            ],
+            installOutput: output, installBatches: batches)
+    }
+
+    /// How many times the window redraws while the build runs.
+    private static func redrawsDuringInstall(_ model: UpdateModel) async -> Int {
+        var redraws = 0
+        model.onChanged = { [weak model] in
+            if model?.state == .running(.install) { redraws += 1 }
+        }
+        await model.start()
+        return redraws
+    }
+
+    /// Ten reads of a hundred lines redraw the window about ten times, not a thousand.
+    @Test func buildOutputRedrawsOncePerRead() async {
+        let batches = (0..<10).map { read in (0..<100).map { "line \(read * 100 + $0)" } }
+        let (model, _) = Self.model(Self.syncedScript(batches: batches))
+        let redraws = await Self.redrawsDuringInstall(model)
+        #expect(model.log.filter { $0.hasPrefix("line ") } == batches.flatMap { $0 })
+        #expect(redraws <= 20)
+    }
+
+    /// A burst the build prints in one read costs one redraw, however many lines it holds.
+    @Test func aBurstOfOutputInOneReadRedrawsOnce() async {
+        let burst = (0..<500).map { "line \($0)" }
+        let (model, _) = Self.model(Self.syncedScript(output: burst))
+        let redraws = await Self.redrawsDuringInstall(model)
+        #expect(model.log.filter { $0.hasPrefix("line ") } == burst)
+        #expect(redraws < 10)
+    }
+
+    private static func apply(_ change: LogChange, to shown: inout [String]) {
+        switch change {
+        case .none:
+            break
+        case let .replace(lines):
+            shown = lines
+        case let .append(dropHead, lines):
+            shown.removeFirst(min(dropHead, shown.count))
+            shown.append(contentsOf: lines)
+        }
+    }
+
+    /// A view that only applies `logChange(since:)` shows the model's log at every redraw:
+    /// through the trim at the cap, and into a second run, which replaces the text.
+    @Test func aViewPatchedByLogChangesMatchesTheLog() async {
+        let batches = (0..<6).map { read in (0..<1000).map { "line \(read * 1000 + $0)" } }
+        let (model, _) = Self.model(Self.syncedScript(batches: batches))
+        var shown: [String] = []
+        var mark: LogMark?
+        var changes: [LogChange] = []
+        var mismatches = 0
+        model.onChanged = { [weak model] in
+            guard let model else { return }
+            let change = model.logChange(since: mark)
+            mark = model.logMark
+            changes.append(change)
+            Self.apply(change, to: &shown)
+            if shown != model.log { mismatches += 1 }
+        }
+        await model.start()
+        let firstRun = model.logRun
+        await model.start()
+        #expect(model.logRun == firstRun + 1)
+        #expect(mismatches == 0)
+        let replaces = changes.filter { if case .replace = $0 { true } else { false } }
+        #expect(replaces.count == 2)
+        #expect(
+            changes.contains { change in
+                if case let .append(dropHead, _) = change { dropHead > 0 } else { false }
+            })
+    }
+
     // MARK: proceed()
 
     @Test func proceedFromIdleStartsTheUpdate() async {
@@ -752,7 +837,7 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         await first.value
         await model.start()
         let stale = try #require(environment.firstOutput)
-        stale("late line from the cancelled build")
+        stale(["late line from the cancelled build"])
         for _ in 0..<10 { await Task.yield() }
         #expect(!model.log.contains("late line from the cancelled build"))
     }

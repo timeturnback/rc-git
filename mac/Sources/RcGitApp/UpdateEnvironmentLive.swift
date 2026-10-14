@@ -37,7 +37,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
     /// profile, and an app launched from the Dock inherits none of it.
     private static func login(
         _ script: String, in directory: String, timeout: Duration? = nil,
-        idleTimeout: Duration? = nil, onOutput: (@Sendable (String) -> Void)? = nil
+        idleTimeout: Duration? = nil, onOutput: (@Sendable ([String]) -> Void)? = nil
     ) async -> Shell.Outcome {
         await Shell.run(
             "/bin/zsh", ["-lc", script], in: directory, timeout: timeout,
@@ -146,7 +146,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }
     }
 
-    func install(onOutput: @escaping @Sendable (String) -> Void) async -> String? {
+    func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? {
         let script = buildScript
         let command = "exec \(ShellWord.quote("\(sourceRoot)/\(script.path)"))\(script.arguments)"
         let outcome = await Self.login(
