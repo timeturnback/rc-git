@@ -633,13 +633,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// the window. A divider the user dragged is theirs from then on, so the fit stops, and
     /// only the tree measures its rows, so the fit runs only while the tree is showing.
     private func fitSidebarWidth(to contentWidth: CGFloat) {
-        guard !sidebarWidthPin.isPinned,
-            contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue,
-            // A width for a collapsed sidebar would re-open it behind the user.
-            outerSplit.splitViewItems.first?.isCollapsed == false
-        else { return }
+        guard sidebarFitsContent else { return }
         outerSplit.splitView.setPosition(
             LayoutPolicy.sidebarWidth(forContent: contentWidth), ofDividerAt: 0)
+    }
+
+    /// Whether `fitSidebarWidth` would apply a width now; the tree measures nothing otherwise.
+    private var sidebarFitsContent: Bool {
+        !sidebarWidthPin.isPinned
+            && contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue
+            // A width for a collapsed sidebar would re-open it behind the user.
+            && outerSplit.splitViewItems.first?.isCollapsed == false
     }
 
     @objc private func sidebarDidResize(_ notification: Notification) {
@@ -901,6 +905,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         treeController.onContentWidthChanged = { [weak self] width in
             self?.fitSidebarWidth(to: width)
+        }
+        treeController.shouldReportContentWidth = { [weak self] in
+            self?.sidebarFitsContent ?? false
         }
         treeController.onShowHistory = { [weak self] path, pathIsExact in
             self?.showHistory(ofPath: path, pathIsExact: pathIsExact)

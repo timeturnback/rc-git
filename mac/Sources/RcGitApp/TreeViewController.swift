@@ -15,6 +15,8 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     var onError: ((String) -> Void)?
     /// Fires with `contentWidth` whenever the visible rows change, so the pane can hug them.
     var onContentWidthChanged: ((CGFloat) -> Void)?
+    /// Whether the pane would use a width now; when it says no, no row is measured.
+    var shouldReportContentWidth: (() -> Bool)?
     /// Whether a row is on screen; the model decides, from the hidden-files setting.
     var isRowVisible: ((BrowseRow) -> Bool)?
 
@@ -28,6 +30,8 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         /// The children on screen, kept beside `children` so showing hidden files needs no read.
         var visibleChildren: [Node]?
         var isLoading = false
+        /// What the cell draws, typeset once per row size: `row` never changes.
+        var measuredWidth: (rowSize: NSTableView.RowSizeStyle, width: CGFloat)?
 
         var entry: TreeEntry { row.entry }
 
@@ -53,6 +57,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// The path `showOpenFile` last matched the selection to, and whether it is exact.
     private var shownFilePath: String?
     private var shownPathIsExact = true
+    /// The widest cell content plus its x offset over the rows on the outline, kept up as
+    /// rows arrive, and the row size it was measured at; `nil` when it has to be recomputed
+    /// from every row.
+    private var widestRow: (rowSize: NSTableView.RowSizeStyle, width: CGFloat)?
+    /// Set while `refilter` re-expands folders, which re-measures every row once at the end.
+    private var restoringExpansion = false
 
     override func loadView() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
@@ -121,23 +131,67 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// The width that shows every row currently on the outline in full: where each row's cell
     /// starts — past the source list's inset, the indentation, and the disclosure triangle —
     /// plus what the cell draws, the list's trailing inset, and a scroller that takes space.
-    /// Only expanded rows are measured, so the cost follows what is on screen, not repository
-    /// size.
-    private func reportContentWidth() {
+    /// Every row in an expanded folder counts, on screen or scrolled off, so each row's text
+    /// is typeset once and cached; `below` limits the pass to the rows a folder just showed,
+    /// and nothing is measured while the pane would not use the width.
+    private func reportContentWidth(below folder: Node? = nil) {
         guard let onContentWidthChanged else { return }
-        let rowSize = outline.effectiveRowSizeStyle
-        var widest: CGFloat = 0
-        for row in 0..<outline.numberOfRows {
-            guard let node = outline.item(atRow: row) as? Node else { continue }
-            let content = SidebarCellView.contentWidth(
-                label: node.entry.name, badge: Self.badge(for: node.row)?.letter,
-                rowSize: rowSize)
-            widest = max(widest, outline.frameOfCell(atColumn: 0, row: row).minX + content)
+        guard shouldReportContentWidth?() ?? true else {
+            widestRow = nil
+            return
         }
+        let rowSize = outline.effectiveRowSizeStyle
+        let widest: CGFloat
+        if let folder, let known = widestRow, known.rowSize == rowSize {
+            widest = max(known.width, widestCell(in: rowsShown(below: folder), rowSize: rowSize))
+        } else {
+            widest = widestCell(in: 0..<outline.numberOfRows, rowSize: rowSize)
+        }
+        widestRow = (rowSize, widest)
         let scroller =
             scroll.scrollerStyle == .legacy
             ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
         onContentWidthChanged(widest + Self.cellTrailingInset + scroller)
+    }
+
+    /// The rows of `folder`'s subtree on the outline: everything after its row that sits
+    /// deeper than it. Empty when the folder is off the outline or collapsed.
+    private func rowsShown(below folder: Node) -> Range<Int> {
+        let row = outline.row(forItem: folder)
+        guard row >= 0, outline.isItemExpanded(folder) else { return 0..<0 }
+        let level = outline.level(forRow: row)
+        var end = row + 1
+        while end < outline.numberOfRows, outline.level(forRow: end) > level {
+            end += 1
+        }
+        return (row + 1)..<end
+    }
+
+    /// The widest cell start plus content over `rows`. A cell starts one indentation step
+    /// further in per level, so one row's frame gives every row's start.
+    private func widestCell(in rows: Range<Int>, rowSize: NSTableView.RowSizeStyle) -> CGFloat {
+        guard let first = rows.first else { return 0 }
+        let indent = outline.indentationPerLevel
+        let base =
+            outline.frameOfCell(atColumn: 0, row: first).minX
+            - CGFloat(outline.level(forRow: first)) * indent
+        var widest: CGFloat = 0
+        for row in rows {
+            guard let node = outline.item(atRow: row) as? Node else { continue }
+            let start = base + CGFloat(outline.level(forRow: row)) * indent
+            widest = max(widest, start + contentWidth(of: node, rowSize: rowSize))
+        }
+        return widest
+    }
+
+    private func contentWidth(of node: Node, rowSize: NSTableView.RowSizeStyle) -> CGFloat {
+        if let measured = node.measuredWidth, measured.rowSize == rowSize {
+            return measured.width
+        }
+        let width = SidebarCellView.contentWidth(
+            label: node.entry.name, badge: Self.badge(for: node.row)?.letter, rowSize: rowSize)
+        node.measuredWidth = (rowSize, width)
+        return width
     }
 
     private func load(_ tree: Oid, path: String, into parent: Node?) {
@@ -163,7 +217,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
                 if outline.selectedRow < 0 {
                     matchSelectionToShownFile()
                 }
-                reportContentWidth()
+                reportContentWidth(below: parent)
             } catch {
                 guard generation == self.generation else { return }
                 showLoadFailure(in: parent)
@@ -210,9 +264,11 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
             pending += children
         }
         outline.reloadData()
+        restoringExpansion = true
         for node in expanded where outline.row(forItem: node) >= 0 {
             outline.expandItem(node)
         }
+        restoringExpansion = false
         let selectedRow = selected.map { outline.row(forItem: $0) } ?? -1
         restoringSelection = true
         if selectedRow >= 0 {
@@ -324,7 +380,11 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        reportContentWidth()
+        // A folder still loading measures its rows once they land, in `load`.
+        guard !restoringExpansion, let node = notification.userInfo?["NSObject"] as? Node,
+            node.children != nil
+        else { return }
+        reportContentWidth(below: node)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
