@@ -548,13 +548,17 @@ extension TreeChange {
 
 extension DiffHunk {
     init(c: RcGitDiffHunk) {
+        let data = UnsafeBufferPointer(start: c.data, count: c.data_len)
         var lines: [DiffLine] = []
         lines.reserveCapacity(c.line_count)
         for index in 0..<c.line_count {
             let line = c.lines[index]
+            let next = index + 1 < c.line_count ? Int(c.lines[index + 1].start) : data.count
+            let end = min(next, data.count)
+            let bytes = UnsafeBufferPointer(rebasing: data[min(Int(line.start), end)..<end])
             lines.append(
                 DiffLine(
-                    kind: DiffLineKind(c: line.kind), text: String(cString: line.text),
+                    kind: DiffLineKind(c: line.kind), text: String(decoding: bytes, as: UTF8.self),
                     eol: LineEnd(c: line.eol)))
         }
         self.init(

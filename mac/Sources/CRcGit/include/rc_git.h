@@ -416,14 +416,15 @@ typedef struct RcGitTreeChangeList {
   size_t len;
 } RcGitTreeChangeList;
 
-/// A line of a diff hunk, without its line terminator.
+/// A line of a diff hunk: where its bytes start in the hunk's `data`, without the terminator.
 typedef struct RcGitDiffLine {
   /// Context, added, or removed.
   enum RcGitDiffLineKind kind;
-  /// The bytes of the line.
-  char *text;
   /// How the line ended in its blob.
   enum RcGitLineEnd eol;
+  /// Byte offset in the hunk's `data` where the line begins; it ends where the next line
+  /// begins, or at `data_len` for the last line. Clamped to `u32::MAX`.
+  uint32_t start;
 } RcGitDiffLine;
 
 /// A run of changed lines with its surrounding context.
@@ -436,6 +437,11 @@ typedef struct RcGitDiffHunk {
   uint32_t new_start;
   /// Number of new-blob lines the hunk covers.
   uint32_t new_lines;
+  /// `data_len` bytes: the text of every line, terminators stripped, back to back. Not
+  /// NUL-terminated, and interior NULs are kept.
+  uint8_t *data;
+  /// Length of `data`.
+  size_t data_len;
   /// `line_count` lines, old and new interleaved.
   struct RcGitDiffLine *lines;
   /// Number of lines.

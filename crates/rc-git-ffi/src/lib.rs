@@ -617,22 +617,17 @@ impl From<LineEnd> for RcGitLineEnd {
     }
 }
 
-/// A line of a diff hunk, without its line terminator.
+/// A line of a diff hunk: where its bytes start in the hunk's `data`, without the terminator.
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RcGitDiffLine {
     /// Context, added, or removed.
     pub kind: RcGitDiffLineKind,
-    /// The bytes of the line.
-    pub text: *mut c_char,
     /// How the line ended in its blob.
     pub eol: RcGitLineEnd,
-}
-
-impl Drop for RcGitDiffLine {
-    fn drop(&mut self) {
-        // SAFETY: `text` was produced by `export_string` and is released once here.
-        unsafe { release_string(self.text) };
-    }
+    /// Byte offset in the hunk's `data` where the line begins; it ends where the next line
+    /// begins, or at `data_len` for the last line. Clamped to `u32::MAX`.
+    pub start: u32,
 }
 
 /// A run of changed lines with its surrounding context.
@@ -646,6 +641,11 @@ pub struct RcGitDiffHunk {
     pub new_start: u32,
     /// Number of new-blob lines the hunk covers.
     pub new_lines: u32,
+    /// `data_len` bytes: the text of every line, terminators stripped, back to back. Not
+    /// NUL-terminated, and interior NULs are kept.
+    pub data: *mut u8,
+    /// Length of `data`.
+    pub data_len: usize,
     /// `line_count` lines, old and new interleaved.
     pub lines: *mut RcGitDiffLine,
     /// Number of lines.
@@ -654,20 +654,29 @@ pub struct RcGitDiffHunk {
 
 impl RcGitDiffHunk {
     fn export(hunk: DiffHunk) -> Self {
+        let mut size = 0;
+        for line in &hunk.lines {
+            size += line.text.len();
+        }
+        let mut data = Vec::with_capacity(size);
         let mut lines = Vec::with_capacity(hunk.lines.len());
         for line in hunk.lines {
             lines.push(RcGitDiffLine {
                 kind: line.kind.into(),
-                text: export_string(Vec::from(line.text)),
                 eol: line.eol.into(),
+                start: u32::try_from(data.len()).unwrap_or(u32::MAX),
             });
+            data.extend_from_slice(&line.text);
         }
+        let (data, data_len) = export_vec(data);
         let (lines, line_count) = export_vec(lines);
         Self {
             old_start: hunk.old_start,
             old_lines: hunk.old_lines,
             new_start: hunk.new_start,
             new_lines: hunk.new_lines,
+            data,
+            data_len,
             lines,
             line_count,
         }
@@ -676,8 +685,11 @@ impl RcGitDiffHunk {
 
 impl Drop for RcGitDiffHunk {
     fn drop(&mut self) {
-        // SAFETY: the array was produced by `export_vec` with this length.
-        unsafe { release_vec(self.lines, self.line_count) };
+        // SAFETY: both arrays were produced by `export_vec` with these lengths.
+        unsafe {
+            release_vec(self.data, self.data_len);
+            release_vec(self.lines, self.line_count);
+        }
     }
 }
 
@@ -4667,6 +4679,20 @@ mod tests {
         unsafe { &*ptr }
     }
 
+    /// Each line's bytes, cut from the hunk's buffer by consecutive starts.
+    fn hunk_line_texts(hunk: &RcGitDiffHunk) -> Vec<&[u8]> {
+        let data = unsafe { std::slice::from_raw_parts(hunk.data, hunk.data_len) };
+        let lines = unsafe { std::slice::from_raw_parts(hunk.lines, hunk.line_count) };
+        let mut texts = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let end = lines
+                .get(index + 1)
+                .map_or(data.len(), |next| next.start as usize);
+            texts.push(&data[line.start as usize..end]);
+        }
+        texts
+    }
+
     fn text(ptr: *const c_char) -> String {
         assert!(!ptr.is_null());
         unsafe { CStr::from_ptr(ptr) }
@@ -5582,7 +5608,7 @@ mod tests {
         assert_eq!((hunk.old_lines, hunk.new_start, hunk.new_lines), (0, 1, 1));
         let lines = unsafe { std::slice::from_raw_parts(hunk.lines, hunk.line_count) };
         assert_eq!(lines[0].kind, RcGitDiffLineKind::Added);
-        assert_eq!(text(lines[0].text), "guide");
+        assert_eq!(hunk_line_texts(hunk), [b"guide".as_slice()]);
         assert_eq!(lines[0].eol, RcGitLineEnd::Lf);
         unsafe { rcgit_blob_diff_free(diff) };
 
@@ -5619,6 +5645,45 @@ mod tests {
             "rcgit_diff_blobs: old is malformed (len 33)"
         );
         unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn diff_hunk_ships_line_bytes_in_one_buffer_unchanged() {
+        let line = |kind, text: &[u8], eol| rc_git_core::DiffLine {
+            kind,
+            text: text.to_vec().into(),
+            eol,
+        };
+        let hunk = RcGitDiffHunk::export(DiffHunk {
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                line(DiffLineKind::Context, b"same", LineEnd::Lf),
+                line(DiffLineKind::Removed, b"", LineEnd::CrLf),
+                line(DiffLineKind::Added, b"nul\0inside", LineEnd::None),
+            ],
+        });
+        assert_eq!(
+            hunk_line_texts(&hunk),
+            [b"same".as_slice(), b"", b"nul\0inside"],
+            "an interior NUL is kept, and an empty line is an empty slice"
+        );
+        assert_eq!(
+            hunk.data_len, 14,
+            "one buffer holds every line, no terminators"
+        );
+        let lines = unsafe { std::slice::from_raw_parts(hunk.lines, hunk.line_count) };
+        let shape: Vec<_> = lines.iter().map(|l| (l.kind, l.eol, l.start)).collect();
+        assert_eq!(
+            shape,
+            [
+                (RcGitDiffLineKind::Context, RcGitLineEnd::Lf, 0),
+                (RcGitDiffLineKind::Removed, RcGitLineEnd::CrLf, 4),
+                (RcGitDiffLineKind::Added, RcGitLineEnd::None, 4),
+            ]
+        );
     }
 
     #[test]
