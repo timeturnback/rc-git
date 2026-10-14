@@ -51,6 +51,23 @@ import Testing
         #expect(try fixture.revParse(try #require(tagBackup)) == oldTag)
     }
 
+    @Test func aCommitWithHousekeepingLeftUndoneWarnsForEachPart() throws {
+        let commit = { (index: Bool, reflog: Bool) in
+            CommitOutcome(
+                oid: try commitID(String(repeating: "a", count: 40)), branch: "main",
+                indexRefreshed: index, reflogWritten: reflog)
+        }
+        #expect(try commit(true, true).warning == nil)
+        let stale = try #require(try commit(false, true).warning)
+        #expect(stale.contains("git reset -q -- <paths>"))
+        #expect(!stale.contains("HEAD@{1}"))
+        let unlogged = try #require(try commit(true, false).warning)
+        #expect(unlogged.contains("HEAD@{1}"))
+        #expect(!unlogged.contains("git reset"))
+        let both = try #require(try commit(false, false).warning)
+        #expect(both.contains("git reset -q -- <paths>") && both.contains("HEAD@{1}"))
+    }
+
     @Test func plansCarryTheChangesTabPolicy() {
         #expect(RepositoryGuard.planCommit(files: 2)?.kind == .allow)
         #expect(RepositoryGuard.planStashApply()?.kind == .allow)
@@ -83,6 +100,9 @@ import Testing
             expectedHead: try commitID(head), selections: [.whole(path: "alpha.txt")], input: nil)
         #expect(outcome.branch == "main")
         #expect(try outcome.oid.hex == fixture.revParse("HEAD"))
+        #expect(outcome.indexRefreshed)
+        #expect(outcome.reflogWritten)
+        #expect(outcome.warning == nil)
         #expect(
             try fixture.gitOutput(["log", "-1", "--format=%an|%ae|%s"])
                 == "Bridge User|bridge@example.com|Bridge commit")
@@ -285,6 +305,7 @@ import Testing
         let outcome = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
         #expect(outcome.branch == "feature")
         #expect(!outcome.alreadyOnBranch)
+        #expect(outcome.reflogWritten)
         #expect(outcome.filesChanged == expected)
         #expect(try outcome.newHead.hex == fixture.revParse("feature"))
         #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")

@@ -92,6 +92,29 @@ public struct CommitOutcome: Sendable, Hashable {
     public let oid: Oid
     /// Short name of the branch that advanced.
     public let branch: String
+    /// Whether `.git/index` was updated to the new commit. `false` when that write failed after
+    /// the branch moved: the commit stands.
+    public let indexRefreshed: Bool
+    /// Whether `logs/HEAD` recorded the commit, or none was due. `false` when the append failed
+    /// after the branch moved: the commit stands.
+    public let reflogWritten: Bool
+
+    /// What the user should read beside a commit that landed with its housekeeping incomplete,
+    /// `nil` when everything was written.
+    public var warning: String? {
+        var lines: [String] = []
+        if !indexRefreshed {
+            lines.append(
+                "The commit was made, but .git/index was not updated; run "
+                    + "`git reset -q -- <paths>` so git status agrees with it.")
+        }
+        if !reflogWritten {
+            lines.append(
+                "The commit was made, but .git/logs/HEAD did not record it, so HEAD@{1} "
+                    + "skips it.")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
 }
 
 /// The one write path: every mutation goes through the guard crate's policy, and the core
@@ -279,7 +302,9 @@ public enum RepositoryGuard {
         defer { rcgit_commit_result_free(result) }
         return CommitOutcome(
             oid: Oid(c: result.pointee.oid),
-            branch: String(cString: result.pointee.branch))
+            branch: String(cString: result.pointee.branch),
+            indexRefreshed: result.pointee.index_refreshed,
+            reflogWritten: result.pointee.reflog_written)
     }
 
     /// Stashes the changes at `paths` and restores those files to `HEAD` state. `fallback` is
@@ -570,6 +595,17 @@ public struct CheckoutOutcome: Sendable, Hashable {
     public let filesChanged: Int
     /// Whether `HEAD` was already on this branch, so nothing was written.
     public let alreadyOnBranch: Bool
+    /// Whether `logs/HEAD` recorded the switch, or none was due. `false` when the append failed
+    /// after `HEAD` moved: the switch stands.
+    public let reflogWritten: Bool
+
+    /// What the user should read beside a switch that landed without its `logs/HEAD` line,
+    /// `nil` when it was written or none was due.
+    public var warning: String? {
+        guard !reflogWritten else { return nil }
+        return "Switched to '\(branch)', but .git/logs/HEAD did not record it, so "
+            + "`git checkout -` and HEAD@{1} skip the switch."
+    }
 }
 
 extension RepositoryGuard {
@@ -638,7 +674,8 @@ extension RepositoryGuard {
     {
         var error: UnsafeMutablePointer<CChar>? = nil
         var out = RcGitCheckoutOutcome(
-            new_head: RcGitOid(), files_changed: 0, already_on_branch: false)
+            new_head: RcGitOid(), files_changed: 0, already_on_branch: false,
+            reflog_written: false)
         let status = rcgit_guard_checkout(repoPath, branch, &out, &error)
         guard status == RCGIT_OK else {
             throw syncError(status, error, fallback: "cannot switch to '\(branch)'")
@@ -647,7 +684,8 @@ extension RepositoryGuard {
             branch: branch,
             newHead: Oid(c: out.new_head),
             filesChanged: out.files_changed,
-            alreadyOnBranch: out.already_on_branch
+            alreadyOnBranch: out.already_on_branch,
+            reflogWritten: out.reflog_written
         )
     }
 

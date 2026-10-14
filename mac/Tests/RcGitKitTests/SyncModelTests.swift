@@ -269,10 +269,13 @@ private let cleanPull = PullOutcome(filesChanged: 2)
 private let cleanPush = PushOutcome(pushedCommits: 1)
 private let switchedToMain = CheckoutOutcome(
     branch: "main", newHead: oid(0), filesChanged: 4,
-    alreadyOnBranch: false)
+    alreadyOnBranch: false, reflogWritten: true)
 private let alreadyOnMain = CheckoutOutcome(
     branch: "main", newHead: oid(0), filesChanged: 0,
-    alreadyOnBranch: true)
+    alreadyOnBranch: true, reflogWritten: true)
+private let switchedWithoutReflog = CheckoutOutcome(
+    branch: "main", newHead: oid(0), filesChanged: 4,
+    alreadyOnBranch: false, reflogWritten: false)
 
 @MainActor
 @Suite(.timeLimit(.minutes(1))) struct SyncModelTests {
@@ -1453,6 +1456,33 @@ private let alreadyOnMain = CheckoutOutcome(
         )
         #expect(model.takeSwitchedBranch() == "main")
         #expect(model.takeSwitchedBranch() == nil, "a switch is followed once")
+    }
+
+    @Test func aSwitchThatMissedItsReflogLineFinishesWithItsWarning() async throws {
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                checkouts: [.success(switchedWithoutReflog)]
+            ))
+        await model.refreshStatus()
+        await model.backToDefaultBranch()
+
+        let warning = try #require(switchedWithoutReflog.warning)
+        #expect(warning.contains("git checkout -"))
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 1, pulledFiles: 6, pushedCommits: 0, notice: warning)),
+            "the switch landed, so the workflow finishes and carries the warning")
+        #expect(model.takeSwitchedBranch() == "main")
+    }
+
+    @Test func aSwitchWithItsReflogLineHasNoWarning() {
+        #expect(switchedToMain.warning == nil)
+        #expect(alreadyOnMain.warning == nil)
     }
 
     @Test func backToDefaultOnTheBranchAlreadyStillFetchesButReportsNoSwitch() async {

@@ -30,6 +30,10 @@ pub struct CheckoutOutcome {
     pub files_changed: usize,
     /// Whether `HEAD` was already on this branch, so nothing was written.
     pub already_on_branch: bool,
+    /// Whether the switch's line was appended to `logs/HEAD`, or none was due (nothing moved,
+    /// or the log does not exist). `false` when the append failed after `HEAD` moved: the
+    /// switch stands, but `git checkout -` and `HEAD@{1}` do not see it.
+    pub reflog_written: bool,
 }
 
 /// Checks out the local branch `branch`, updating the working tree, the index, and — last —
@@ -66,6 +70,7 @@ pub fn checkout_branch(
             new_head,
             files_changed: 0,
             already_on_branch: true,
+            reflog_written: true,
         });
     }
     if let Some(path) = super::branch_checked_out_at(&repo, OP, &full_name)? {
@@ -89,15 +94,20 @@ pub fn checkout_branch(
     let reflog = writer.open_head_reflog(OP)?;
     treeapply::apply(&writer, &work_dir, index, &changes, OP)?;
     point_head_at(&writer, &full_name, head.map(Target::Symbolic), current)?;
-    if let Some(file) = reflog {
+    // `HEAD` has moved, so the switch stands whatever happens to `logs/HEAD`: an error here
+    // would read as a failed switch the tree already shows. The flag reports it instead.
+    let reflog_written = reflog.is_none_or(|file| {
         let message = format!("checkout: moving from {from} to {branch}");
-        writer.append_head_reflog(file, (current, target), &message, OP)?;
-    }
+        writer
+            .append_head_reflog(file, (current, target), &message, OP)
+            .is_ok()
+    });
     Ok(CheckoutOutcome {
         branch: branch.to_owned(),
         new_head,
         files_changed: changes.len(),
         already_on_branch: false,
+        reflog_written,
     })
 }
 
@@ -141,4 +151,42 @@ fn point_head_at(
 /// A `HEAD` that names no branch and resolves to no commit: nothing to plan the switch from.
 fn neither_branch_nor_commit() -> ActionError {
     ActionError::git(OP, "HEAD", "names neither a branch nor a commit")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::write::{Housekeeping, inject_failure};
+
+    #[test]
+    fn a_switch_with_its_reflog_appended_raises_the_flag() {
+        let fx = rc_git_testkit::Fixture::standard();
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert!(outcome.reflog_written);
+        assert_eq!(fx.rev_parse("HEAD@{1}"), fx.rev_parse("main"));
+    }
+
+    #[test]
+    fn a_head_reflog_append_failing_after_head_moved_is_a_flag_not_an_error() {
+        let fx = rc_git_testkit::Fixture::standard();
+        assert!(
+            fx.git_dir().join("logs/HEAD").exists(),
+            "the fixture keeps a HEAD reflog"
+        );
+        let before = fx.git_output(&["reflog", "HEAD"]);
+
+        inject_failure(Housekeeping::HeadReflog);
+        let outcome = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+        assert!(!outcome.reflog_written);
+        assert!(!outcome.already_on_branch);
+        assert_eq!(
+            fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            "feature"
+        );
+        assert_eq!(
+            fx.git_output(&["reflog", "HEAD"]),
+            before,
+            "no line was appended"
+        );
+    }
 }

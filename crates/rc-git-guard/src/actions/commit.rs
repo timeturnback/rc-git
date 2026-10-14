@@ -32,6 +32,11 @@ pub struct Committed {
     /// index write failed afterwards: the commit stands, and terminal `git status` shows the
     /// committed paths as staged reverse changes until `git reset -q -- <paths>` runs.
     pub index_refreshed: bool,
+    /// Whether the commit's line was appended to `logs/HEAD`, or the log does not exist and
+    /// none was due. `false` when the append failed after the branch moved: the commit stands
+    /// and the branch's own reflog has it, but `HEAD@{1}` names the commit before the previous
+    /// move.
+    pub reflog_written: bool,
 }
 
 const OP: &str = "commit";
@@ -139,12 +144,15 @@ pub fn commit(
     let commit_oid = write_commit(&writer, identity, (new_tree, head_commit), message)?;
     let oid = treeapply::core_oid(commit_oid, OP)?;
     advance_branch(&writer, &branch_ref, head_commit, commit_oid)?;
-    // The branch has moved, so the commit stands whatever happens to the index: an error here
-    // would read as a failed commit and a retry would be refused as stale. The flag reports it.
+    // The branch has moved, so the commit stands whatever happens to the index or `logs/HEAD`:
+    // an error here would read as a failed commit and a retry would be refused as stale. The
+    // flags report each one instead.
     let index_refreshed = writer.update_index(index, OP, &index_changes).is_ok();
-    if let Some(file) = reflog {
-        writer.append_head_reflog(file, (head_commit, commit_oid), REFLOG_MESSAGE, OP)?;
-    }
+    let reflog_written = reflog.is_none_or(|file| {
+        writer
+            .append_head_reflog(file, (head_commit, commit_oid), REFLOG_MESSAGE, OP)
+            .is_ok()
+    });
 
     Ok(Committed {
         oid,
@@ -153,6 +161,7 @@ pub fn commit(
             .unwrap_or(&branch_ref)
             .to_owned(),
         index_refreshed,
+        reflog_written,
     })
 }
 
@@ -668,4 +677,84 @@ fn normalized_message(message: &str) -> ActionResult<String> {
         return Err(ActionError::git(OP, "HEAD", "the commit message is empty"));
     }
     Ok(format!("{trimmed}\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::write::{Housekeeping, inject_failure};
+
+    /// Commits the edited `alpha.txt` of a fresh standard fixture, after `fault` (if any) is
+    /// armed for the commit's housekeeping.
+    fn commit_alpha(fault: Option<Housekeeping>) -> (rc_git_testkit::Fixture, Committed) {
+        let fx = rc_git_testkit::Fixture::standard();
+        assert!(
+            fx.git_dir().join("logs/HEAD").exists(),
+            "the fixture keeps a HEAD reflog"
+        );
+        fx.write("alpha.txt", b"edited\n");
+        let head = rc_git_core::Oid::from_hex(&fx.rev_parse("HEAD")).unwrap();
+        let selections = [FileSelection::Whole {
+            path: "alpha.txt".to_owned(),
+        }];
+        if let Some(fault) = fault {
+            inject_failure(fault);
+        }
+        let committed = commit(
+            fx.path(),
+            &Policy::default(),
+            CommitRequest {
+                message: "edit alpha",
+                author: Author {
+                    explicit: Some(Identity {
+                        name: "Test User".to_owned(),
+                        email: "test@example.com".to_owned(),
+                    }),
+                    fallback: None,
+                },
+                expected_head: Some(head),
+                selections: &selections,
+            },
+            None,
+        )
+        .unwrap();
+        (fx, committed)
+    }
+
+    /// The commit the newest `logs/HEAD` line moved to.
+    fn head_log_tip(fx: &rc_git_testkit::Fixture) -> String {
+        fx.git_output(&["log", "-g", "-1", "--format=%H", "HEAD"])
+    }
+
+    #[test]
+    fn a_commit_with_its_housekeeping_done_raises_both_flags() {
+        let (fx, committed) = commit_alpha(None);
+        assert!(committed.index_refreshed);
+        assert!(committed.reflog_written);
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+        assert_eq!(head_log_tip(&fx), committed.oid.to_string());
+    }
+
+    #[test]
+    fn an_index_write_failing_after_the_branch_moved_is_a_flag_not_an_error() {
+        let (fx, committed) = commit_alpha(Some(Housekeeping::Index));
+        assert!(!committed.index_refreshed);
+        assert!(committed.reflog_written, "the reflog append still runs");
+        assert_eq!(fx.rev_parse("HEAD"), committed.oid.to_string());
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "MM alpha.txt");
+    }
+
+    #[test]
+    fn a_head_reflog_append_failing_after_the_branch_moved_is_a_flag_not_an_error() {
+        let (fx, committed) = commit_alpha(Some(Housekeeping::HeadReflog));
+        assert!(committed.index_refreshed, "the index was refreshed first");
+        assert!(!committed.reflog_written);
+        assert_eq!(fx.rev_parse("HEAD"), committed.oid.to_string());
+        assert_eq!(fx.git_output(&["status", "--porcelain"]), "");
+        assert_ne!(
+            head_log_tip(&fx),
+            committed.oid.to_string(),
+            "logs/HEAD did not get the commit's line"
+        );
+    }
 }

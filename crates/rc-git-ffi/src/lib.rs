@@ -2930,6 +2930,9 @@ pub struct RcGitCheckoutOutcome {
     pub files_changed: usize,
     /// Whether `HEAD` was already on this branch, so nothing was written.
     pub already_on_branch: bool,
+    /// Whether `logs/HEAD` recorded the switch, or none was due. `false` when the append
+    /// failed after `HEAD` moved: the switch stands, and the caller warns.
+    pub reflog_written: bool,
 }
 
 /// Checks out the existing local branch `branch`: the working tree, the index, and then
@@ -2972,6 +2975,7 @@ pub unsafe extern "C" fn rcgit_guard_checkout(
                 new_head: outcome.new_head.into(),
                 files_changed: outcome.files_changed,
                 already_on_branch: outcome.already_on_branch,
+                reflog_written: outcome.reflog_written,
             });
             RCGIT_OK
         }
@@ -3233,6 +3237,12 @@ pub struct RcGitCommitResult {
     pub oid: RcGitOid,
     /// Short name of the branch that advanced.
     pub branch: *mut c_char,
+    /// Whether `.git/index` was updated to the new commit. `false` when the write failed after
+    /// the branch moved: the commit stands, and the caller warns.
+    pub index_refreshed: bool,
+    /// Whether `logs/HEAD` recorded the commit, or none was due. `false` when the append failed
+    /// after the branch moved: the commit stands, and the caller warns.
+    pub reflog_written: bool,
 }
 
 impl Drop for RcGitCommitResult {
@@ -3654,6 +3664,8 @@ pub unsafe extern "C" fn rcgit_guard_commit(
             out.set(export(RcGitCommitResult {
                 oid: committed.oid.into(),
                 branch: export_string(committed.branch.into_bytes()),
+                index_refreshed: committed.index_refreshed,
+                reflog_written: committed.reflog_written,
             }));
             RCGIT_OK
         }
@@ -6498,6 +6510,8 @@ mod tests {
         let result_ref = unsafe { &*result };
         assert_eq!(text(result_ref.branch), "main");
         assert_eq!(hex(&result_ref.oid), fx.rev_parse("HEAD"));
+        assert!(result_ref.index_refreshed);
+        assert!(result_ref.reflog_written);
         unsafe { rcgit_commit_result_free(result) };
         assert_eq!(fx.git_output(&["log", "-1", "--format=%s"]), "FFI commit");
 
@@ -7725,6 +7739,7 @@ mod tests {
             new_head: RcGitOid::empty(),
             files_changed: 0,
             already_on_branch: false,
+            reflog_written: false,
         };
         let mut error = ptr::null_mut();
         let status = unsafe {
@@ -7734,6 +7749,7 @@ mod tests {
         assert!(error.is_null(), "success must leave error untouched");
         assert!(!out.already_on_branch);
         assert!(out.files_changed > 0);
+        assert!(out.reflog_written);
         assert_eq!(hex(&out.new_head), fx.rev_parse("feature"));
         assert_eq!(
             fx.git_output(&["rev-parse", "--abbrev-ref", "HEAD"]),

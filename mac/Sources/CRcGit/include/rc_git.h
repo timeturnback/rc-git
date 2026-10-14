@@ -666,6 +666,9 @@ typedef struct RcGitCheckoutOutcome {
   size_t files_changed;
   /// Whether `HEAD` was already on this branch, so nothing was written.
   bool already_on_branch;
+  /// Whether `logs/HEAD` recorded the switch, or none was due. `false` when the append
+  /// failed after `HEAD` moved: the switch stands, and the caller warns.
+  bool reflog_written;
 } RcGitCheckoutOutcome;
 
 /// A commit identity: `user.name` and `user.email`.
@@ -728,6 +731,12 @@ typedef struct RcGitCommitResult {
   struct RcGitOid oid;
   /// Short name of the branch that advanced.
   char *branch;
+  /// Whether `.git/index` was updated to the new commit. `false` when the write failed after
+  /// the branch moved: the commit stands, and the caller warns.
+  bool index_refreshed;
+  /// Whether `logs/HEAD` recorded the commit, or none was due. `false` when the append failed
+  /// after the branch moved: the commit stands, and the caller warns.
+  bool reflog_written;
 } RcGitCommitResult;
 
 /// What `rcgit_guard_stash_push` stashes. Caller-owned input: nothing here is freed by

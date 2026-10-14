@@ -27,6 +27,38 @@ const LOG_LOCK_WAIT: Duration = Duration::from_millis(100);
 /// How many temporary names [`write_temp`] tries before it gives up.
 const TEMP_ATTEMPTS: u32 = 16;
 
+/// A write that runs after an action's ref has moved, which a unit test can make fail once to
+/// prove the action still reports success with the matching flag down.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Housekeeping {
+    /// [`Writer::update_index`].
+    Index,
+    /// [`Writer::append_head_reflog`].
+    HeadReflog,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED: std::cell::Cell<Option<Housekeeping>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes the next `write` on this thread fail, as a full disk would.
+#[cfg(test)]
+pub(super) fn inject_failure(write: Housekeeping) {
+    INJECTED.set(Some(write));
+}
+
+/// Fails once when a test injected a failure for `write`, consuming it.
+#[cfg(test)]
+fn injected(write: Housekeeping, op: &'static str, object: &str) -> ActionResult<()> {
+    if INJECTED.get() == Some(write) {
+        INJECTED.set(None);
+        return Err(ActionError::git(op, object, "injected failure"));
+    }
+    Ok(())
+}
+
 /// The write half of one action on `repo`, held only while the action's [`Confirmation`] is.
 pub(super) struct Writer<'a> {
     repo: &'a gix::Repository,
@@ -281,6 +313,8 @@ impl<'a> Writer<'a> {
         op: &'static str,
         changes: &[IndexChange],
     ) -> ActionResult<()> {
+        #[cfg(test)]
+        injected(Housekeeping::Index, op, "index")?;
         let LockedIndex { lock, mut file } = index;
         // One pass over the index for every changed path: a removal per path rescans the whole
         // index, which costs seconds when a switch touches thousands of paths in a large one.
@@ -365,6 +399,8 @@ impl<'a> Writer<'a> {
         op: &'static str,
     ) -> ActionResult<()> {
         use std::io::Write;
+        #[cfg(test)]
+        injected(Housekeeping::HeadReflog, op, "logs/HEAD")?;
         let line = gix::refs::log::Line {
             previous_oid: old.unwrap_or_else(|| ObjectId::null(self.repo.object_hash())),
             new_oid: new,

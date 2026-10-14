@@ -168,7 +168,8 @@ public struct SyncSummary: Sendable, Hashable {
     /// finished, and what it did is still reported.
     public let cancelledAfter: SyncStep?
     /// What went wrong beside the transfer, for the user to read: the saved credentials could
-    /// not be read, or the ones that just worked could not be saved. `nil` when nothing did.
+    /// not be read, the ones that just worked could not be saved, or a branch switch landed
+    /// without its reflog line. `nil` when nothing did.
     public let notice: String?
 
     public init(
@@ -182,10 +183,12 @@ public struct SyncSummary: Sendable, Hashable {
         self.notice = notice
     }
 
-    func with(notice: String?) -> SyncSummary {
-        SyncSummary(
+    /// This summary with `extra` added after any notice it already carries.
+    func adding(notice extra: String?) -> SyncSummary {
+        let joined = [notice, extra].compactMap { $0 }.joined(separator: "\n")
+        return SyncSummary(
             fetchedRefs: fetchedRefs, pulledFiles: pulledFiles, pushedCommits: pushedCommits,
-            cancelledAfter: cancelledAfter, notice: notice)
+            cancelledAfter: cancelledAfter, notice: joined.isEmpty ? nil : joined)
     }
 }
 
@@ -440,7 +443,7 @@ public final class SyncModel {
             if model.cancel.isSignalled {
                 return SyncSummary(
                     fetchedRefs: 0, pulledFiles: switched.filesChanged, pushedCommits: 0,
-                    cancelledAfter: .checkout)
+                    cancelledAfter: .checkout, notice: switched.warning)
             }
             try await model.adoptFreshUpstream(.fetch)
             let fetched = try await model.runFetch()
@@ -448,7 +451,8 @@ public final class SyncModel {
             return SyncSummary(
                 fetchedRefs: fetched.updatedRefs,
                 pulledFiles: pulled.filesChanged + switched.filesChanged,
-                pushedCommits: 0
+                pushedCommits: 0,
+                notice: switched.warning
             )
         }
     }
@@ -521,7 +525,7 @@ public final class SyncModel {
             }
             let summary = try await body(self)
             guard generation == self.generation else { return }
-            state = .done(summary.with(notice: credentialNotice))
+            state = .done(summary.adding(notice: credentialNotice))
         } catch {
             guard generation == self.generation else { return }
             state = terminalState(for: error)
