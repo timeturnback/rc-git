@@ -769,10 +769,15 @@ fn confirmation_problem(given: bool) -> &'static str {
     }
 }
 
+/// The object cache every guard handle gets: a merged check, tree plan or diff re-reads the
+/// same commits and trees, and an uncached handle decodes each one again per read.
+const OBJECT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {
-    let repo = gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
+    let mut repo = gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
         .map(|shared| shared.to_thread_local())
         .map_err(git_err(op, name))?;
+    repo.object_cache_size_if_unset(OBJECT_CACHE_BYTES);
     rc_git_core::require_files_ref_storage(
         repo_path,
         repo.config_snapshot()
@@ -1195,5 +1200,12 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(fx.rev_parse("feature"), tip, "the moved branch is kept");
+    }
+
+    #[test]
+    fn a_guard_handle_caches_objects() {
+        let fx = rc_git_testkit::Fixture::standard();
+        let repo = open(fx.path(), "delete branch", "feature").unwrap();
+        assert!(repo.objects.has_object_cache());
     }
 }
