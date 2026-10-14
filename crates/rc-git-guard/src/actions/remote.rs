@@ -662,10 +662,7 @@ fn vet_remote_url(
 }
 
 fn is_loopback(url: &gix::Url) -> bool {
-    matches!(
-        url.host(),
-        Some("127.0.0.1" | "::1" | "[::1]" | "localhost")
-    )
+    matches!(url.host(), Some("127.0.0.1" | "[::1]" | "localhost"))
 }
 
 /// `host` or `host:port`, the key credentials are stored under.
@@ -1171,5 +1168,40 @@ mod tests {
             matches!(mapped, ActionError::AuthRequired { .. }),
             "{mapped}"
         );
+    }
+
+    fn parse_url(raw: &str) -> gix::Url {
+        gix::url::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn is_loopback_sees_a_bracketed_ipv6_host_over_http() {
+        let url = parse_url("http://[::1]:4010/x.git");
+        assert_eq!(url.host(), Some("[::1]"));
+        assert!(is_loopback(&url));
+        assert!(matches!(
+            vet_remote_url(&url, "fetch", "origin"),
+            Ok(RemoteScheme::Https)
+        ));
+    }
+
+    #[test]
+    fn is_loopback_is_never_asked_about_an_ssh_ipv6_host() {
+        let url = parse_url("ssh://[::1]/x.git");
+        assert_eq!(url.host(), Some("::1"));
+        assert!(matches!(
+            vet_remote_url(&url, "fetch", "origin"),
+            Ok(RemoteScheme::Ssh)
+        ));
+    }
+
+    #[test]
+    fn is_loopback_refuses_plain_http_to_another_host() {
+        let url = parse_url("http://example.com/x.git");
+        assert!(!is_loopback(&url));
+        assert!(matches!(
+            vet_remote_url(&url, "fetch", "origin"),
+            Err(ActionError::UnsupportedRemote { .. })
+        ));
     }
 }
