@@ -193,12 +193,6 @@ private final class InMemoryCredentialStore: CredentialStoring, @unchecked Senda
         return writes
     }
 
-    func delete(host: String, kind: CredentialKind) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        items[key(host, kind)] = nil
-    }
-
     var stored: [String: Credentials] {
         lock.lock()
         defer { lock.unlock() }

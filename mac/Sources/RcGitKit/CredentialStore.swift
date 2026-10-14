@@ -14,7 +14,6 @@ public enum CredentialKind: Sendable, Hashable {
 public protocol CredentialStoring: Sendable {
     func credentials(host: String, kind: CredentialKind) throws -> Credentials?
     func store(_ credentials: Credentials, host: String, kind: CredentialKind) throws
-    func delete(host: String, kind: CredentialKind) throws
 }
 
 /// The login keychain, one rc-git `kSecClassInternetPassword` item per host and kind: the
@@ -67,20 +66,16 @@ public struct KeychainCredentialStore: CredentialStoring {
             kSecValueData as String: Data(credentials.token.utf8),
             kSecAttrLabel as String: label,
         ]
-        try delete(host: host, kind: kind)
+        let removed = SecItemDelete(Self.query(host: host, kind: kind) as CFDictionary)
+        guard removed == errSecSuccess || removed == errSecItemNotFound else {
+            throw RepositoryError("keychain write failed for '\(host)' (status \(removed))")
+        }
         let add = SecItemAdd(
             Self.query(host: host, kind: kind).merging(attributes) { _, new in new }
                 as CFDictionary,
             nil)
         guard add == errSecSuccess else {
             throw RepositoryError("keychain write failed for '\(host)' (status \(add))")
-        }
-    }
-
-    public func delete(host: String, kind: CredentialKind) throws {
-        let status = SecItemDelete(Self.query(host: host, kind: kind) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw RepositoryError("keychain delete failed for '\(host)' (status \(status))")
         }
     }
 
@@ -103,7 +98,7 @@ public struct KeychainCredentialStore: CredentialStoring {
 /// Remembers what another store answered, so one launch asks the keychain for each secret
 /// once: under an ad-hoc signature every keychain read can raise an access dialog, and
 /// "Allow" covers a single read. Only a found secret is kept; a miss and a failure are asked
-/// again next time. Writes and deletes go through to the wrapped store first.
+/// again next time. Writes go through to the wrapped store first.
 ///
 /// `@unchecked Sendable` because an `NSLock` guards `cache`, and the wrapped store is called
 /// only while holding it, so concurrent misses for one secret share a single read.
@@ -135,13 +130,6 @@ public final class CachingCredentialStore: CredentialStoring, @unchecked Sendabl
         try lock.withLock {
             try inner.store(credentials, host: host, kind: kind)
             cache[Key(host: host, kind: kind)] = credentials
-        }
-    }
-
-    public func delete(host: String, kind: CredentialKind) throws {
-        try lock.withLock {
-            try inner.delete(host: host, kind: kind)
-            cache[Key(host: host, kind: kind)] = nil
         }
     }
 }

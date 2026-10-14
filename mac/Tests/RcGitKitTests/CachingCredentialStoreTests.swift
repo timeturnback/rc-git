@@ -40,10 +40,6 @@ private final class CountingCredentialStore: CredentialStoring, @unchecked Senda
             items[host] = credentials
         }
     }
-
-    func delete(host: String, kind: CredentialKind) throws {
-        lock.withLock { items[host] = nil }
-    }
 }
 
 @Suite struct CachingCredentialStoreTests {
@@ -103,17 +99,6 @@ private final class CountingCredentialStore: CredentialStoring, @unchecked Senda
         _ = try cache.credentials(host: "example.com", kind: .httpsToken)
         _ = try cache.credentials(host: "example.com", kind: .sshPassphrase)
 
-        #expect(inner.readCount == 2)
-    }
-
-    @Test func aDeleteDropsTheCachedSecret() throws {
-        let inner = CountingCredentialStore(["example.com": saved])
-        let cache = CachingCredentialStore(wrapping: inner)
-
-        _ = try cache.credentials(host: "example.com", kind: .httpsToken)
-        try cache.delete(host: "example.com", kind: .httpsToken)
-
-        #expect(try cache.credentials(host: "example.com", kind: .httpsToken) == nil)
         #expect(inner.readCount == 2)
     }
 }
