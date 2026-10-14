@@ -371,16 +371,11 @@ import Testing
         #expect(try RepositoryGuard.remotePreflight(repoPath: fixture.path).behind == 1)
 
         let outcome = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
-        let newHead = try #require(outcome.newHead)
-        #expect(try newHead.hex == fixture.revParse("refs/remotes/origin/main"))
+        #expect(try fixture.revParse("HEAD") == fixture.revParse("refs/remotes/origin/main"))
         #expect(outcome.filesChanged == 1)
-        #expect(outcome.commitsAdvanced)
-        #expect(!outcome.alreadyUpToDate)
 
         let again = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
-        #expect(again.newHead == nil)
-        #expect(!again.commitsAdvanced)
-        #expect(again.alreadyUpToDate)
+        #expect(again.filesChanged == 0)
     }
 
     @Test func aDivergedPullThrowsDiverged() throws {

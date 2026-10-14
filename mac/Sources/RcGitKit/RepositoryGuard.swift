@@ -549,17 +549,14 @@ public struct FetchOutcome: Sendable, Hashable {
 
 /// What a fast-forward pull did.
 public struct PullOutcome: Sendable, Hashable {
-    /// The commit the branch now points at; `nil` when nothing changed.
-    public let newHead: Oid?
-    public let commitsAdvanced: Bool
+    /// Files the working tree changed; 0 when the branch was already up to date.
     public let filesChanged: Int
-    public let alreadyUpToDate: Bool
 }
 
 /// What a push did.
 public struct PushOutcome: Sendable, Hashable {
+    /// Commits uploaded; 0 when the remote branch was already up to date.
     public let pushedCommits: Int
-    public let alreadyUpToDate: Bool
 }
 
 /// What a branch switch did.
@@ -630,12 +627,7 @@ extension RepositoryGuard {
         guard status == RCGIT_OK else {
             throw syncError(status, error, fallback: "cannot pull")
         }
-        return PullOutcome(
-            newHead: out.already_up_to_date ? nil : Oid(c: out.new_head),
-            commitsAdvanced: !out.already_up_to_date,
-            filesChanged: out.files_changed,
-            alreadyUpToDate: out.already_up_to_date
-        )
+        return PullOutcome(filesChanged: out.files_changed)
     }
 
     /// Checks out an existing local branch: working tree, index, then `HEAD`. Refuses the
@@ -678,8 +670,7 @@ extension RepositoryGuard {
         guard status == RCGIT_OK else {
             throw syncError(status, error, hostkey, fallback: "cannot push")
         }
-        return PushOutcome(
-            pushedCommits: out.pushed_commits, alreadyUpToDate: out.already_up_to_date)
+        return PushOutcome(pushedCommits: out.pushed_commits)
     }
 
     /// The typed error for a failed commit or stash push: `IdentityRequiredError` for

@@ -266,9 +266,8 @@ private final class CancelObservation: @unchecked Sendable {
 }
 
 private let cleanFetch = FetchOutcome(updatedRefs: 1)
-private let cleanPull = PullOutcome(
-    newHead: nil, commitsAdvanced: false, filesChanged: 2, alreadyUpToDate: false)
-private let cleanPush = PushOutcome(pushedCommits: 1, alreadyUpToDate: false)
+private let cleanPull = PullOutcome(filesChanged: 2)
+private let cleanPush = PushOutcome(pushedCommits: 1)
 private let switchedToMain = CheckoutOutcome(
     branch: "main", newHead: oid(0), filesChanged: 4,
     alreadyOnBranch: false)
@@ -875,13 +874,8 @@ private let alreadyOnMain = CheckoutOutcome(
             .init(
                 preflights: [StubSyncPerformer.upstream()],
                 fetches: [.success(FetchOutcome(updatedRefs: 0))],
-                pulls: [
-                    .success(
-                        PullOutcome(
-                            newHead: nil, commitsAdvanced: false, filesChanged: 0,
-                            alreadyUpToDate: true))
-                ],
-                pushes: [.success(PushOutcome(pushedCommits: 0, alreadyUpToDate: true))]
+                pulls: [.success(PullOutcome(filesChanged: 0))],
+                pushes: [.success(PushOutcome(pushedCommits: 0))]
             ))
         await model.refreshStatus()
         await model.sync()
