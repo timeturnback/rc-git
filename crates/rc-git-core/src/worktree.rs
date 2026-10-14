@@ -138,17 +138,18 @@ pub struct StatusReport {
 }
 
 impl Repository {
-    /// Lists one directory of the working tree, comparing each entry with the tree at the
-    /// same path below `tree`; with no tree (an unborn branch) every entry is untracked or
-    /// ignored. `dir` is repository-relative with `/` separators; empty, `/`
-    /// or `.` for the root, and `./` or doubled slashes name the same directory. Reads one directory and one tree object, plus one content read per file
-    /// whose size matches its blob, so the cost stays proportional to the listing.
-    /// A directory at or below a submodule lists every entry as unchanged with no tree
-    /// entry: its files belong to another repository. `.git` is never listed.
+    /// Lists one directory of the working tree, comparing each entry with the tree at the same path
+    /// below `tree`; with no tree (an unborn branch) every entry is untracked or ignored. `dir` is
+    /// repository-relative with `/` separators; empty, `/` or `.` for the root, and `./` or doubled
+    /// slashes name the same directory. Reads one directory and one tree object, plus one content
+    /// read per file whose size matches its blob, so the cost stays proportional to the listing. A
+    /// directory at or below a submodule lists every entry as unchanged with no tree entry: its
+    /// files belong to another repository. `.git` is never listed.
     ///
     /// # Errors
-    /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, a symlink at `dir`
-    /// or on the way to it, or an unreadable directory, [`Error::Object`] when the compared tree cannot be read.
+    /// [`Error::Worktree`] for a bare repository, a `..` segment in `dir`, a symlink at `dir` or on
+    /// the way to it, or an unreadable directory, [`Error::Object`] when the compared tree cannot
+    /// be read.
     pub fn worktree_entries(&self, tree: Option<Oid>, dir: &str) -> Result<WorktreeListing> {
         let work_dir = self.require_work_dir("list working tree", dir)?;
         let dir = &normalize_dir(dir)

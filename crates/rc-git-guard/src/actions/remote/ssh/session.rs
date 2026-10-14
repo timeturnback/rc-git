@@ -92,11 +92,11 @@ impl Watch {
     /// [`CANCEL_POLL`] to look at the cancel flag.
     ///
     /// Returns an [`io::ErrorKind::Other`] error once the flag is set, and
-    /// [`io::ErrorKind::TimedOut`] once the peer has been silent for the idle
-    /// budget. Never [`io::ErrorKind::Interrupted`]: std's `read_exact`, `write_all`
-    /// and `read_to_end` retry that kind, so a cancel would spin forever. The clock starts at each call, so it measures the gap between
-    /// bytes rather than the length of the transfer: a slow link is never punished,
-    /// only a dead one.
+    /// [`io::ErrorKind::TimedOut`] once the peer has been silent for the idle budget. Never
+    /// [`io::ErrorKind::Interrupted`]: std's `read_exact`, `write_all` and `read_to_end` retry that
+    /// kind, so a cancel would spin forever. The clock starts at each call, so it measures the gap
+    /// between bytes rather than the length of the transfer: a slow link is never punished, only a
+    /// dead one.
     ///
     /// The future is pinned once and re-polled; the elapsed timeout drops only the
     /// wrapper, so nothing the peer already sent is lost.

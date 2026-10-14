@@ -115,6 +115,16 @@ if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
   echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
   exit 1
 fi
+step "rust doc comment width"
+# rustfmt never wraps comments, so a doc line over max_width passes cargo fmt --check.
+# shellcheck disable=SC2016 # the single-quoted $0 is awk's, run through xargs
+long_docs="$(git ls-files -z 'crates/*.rs' | LC_ALL=C.UTF-8 xargs -0 awk \
+  'length($0) > 100 && /^[[:space:]]*\/\/[\/!]/ { print FILENAME ":" FNR ": " $0 }')"
+if [[ -n $long_docs ]]; then
+  printf '%s\n' "$long_docs"
+  echo 'error: Rust doc comment lines over 100 columns; rewrap them' >&2
+  exit 1
+fi
 step "cargo clippy"
 # clippy reports a clippy.toml path that resolves to nothing as a config warning -D misses.
 clippy_out="$(cargo clippy --locked --workspace --all-targets --all-features \

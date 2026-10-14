@@ -37,10 +37,9 @@ pub struct CheckoutOutcome {
 ///
 /// # Errors
 /// [`ActionError::DirtyPath`] when a path the switch touches has uncommitted work (nothing is
-/// written), [`ActionError::Git`] when the branch does not exist, has no commit, is checked out in another worktree, the
-/// repository cannot be read or written,
-/// a git operation (merge, rebase, cherry-pick, revert, bisect) is in progress, or the index
-/// holds an unresolved conflict.
+/// written), [`ActionError::Git`] when the branch does not exist, has no commit, is checked out in
+/// another worktree, the repository cannot be read or written, a git operation (merge, rebase,
+/// cherry-pick, revert, bisect) is in progress, or the index holds an unresolved conflict.
 pub fn checkout_branch(
     repo_path: &Path,
     policy: &Policy,

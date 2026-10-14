@@ -55,13 +55,13 @@ pub struct PushOutcome {
 ///
 /// # Errors
 /// [`ActionError::PushRejected`] when the remote has commits the local branch lacks,
-/// [`ActionError::AuthRequired`], [`ActionError::UnsupportedRemote`],
-/// [`ActionError::NoUpstream`], [`ActionError::Cancelled`], [`ActionError::DetachedHead`],
-/// [`ActionError::UnknownHostKey`] and [`ActionError::HostKeyMismatch`] when an SSH host is
-/// unknown or its key changed, [`ActionError::PassphraseRequired`] when an encrypted SSH key
-/// needs `creds.token`, and [`ActionError::Git`] for every other failure, including a local upstream
-/// (`branch.<name>.remote = .`), which rc-git does not push into, and a
-/// `branch.<name>.merge` that names another branch, which rc-git does not push to.
+/// [`ActionError::AuthRequired`], [`ActionError::UnsupportedRemote`], [`ActionError::NoUpstream`],
+/// [`ActionError::Cancelled`], [`ActionError::DetachedHead`], [`ActionError::UnknownHostKey`] and
+/// [`ActionError::HostKeyMismatch`] when an SSH host is unknown or its key changed,
+/// [`ActionError::PassphraseRequired`] when an encrypted SSH key needs `creds.token`, and
+/// [`ActionError::Git`] for every other failure, including a local upstream
+/// (`branch.<name>.remote = .`), which rc-git does not push into, and a `branch.<name>.merge` that
+/// names another branch, which rc-git does not push to.
 pub fn push_upstream(
     repo_path: &Path,
     policy: &Policy,

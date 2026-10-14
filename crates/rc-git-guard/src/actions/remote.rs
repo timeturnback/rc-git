@@ -144,7 +144,8 @@ pub struct RemoteAuth<'a> {
     pub ssh_dir: Option<&'a std::path::Path>,
 }
 
-/// An HTTPS username and token, or (token only) an SSH key passphrase. Never stored and never logged by this crate.
+/// An HTTPS username and token, or (token only) an SSH key passphrase. Never stored and never
+/// logged by this crate.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     /// The username, e.g. `git` for GitHub token auth.

@@ -41,11 +41,11 @@ pub struct DiscardOutcome {
     pub kind: DiscardKind,
 }
 
-/// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written
-/// back to disk, an untracked path is deleted, and `.git/index` gets the `HEAD` entry for
-/// each of them (or loses it), so a staged change is discarded too. Every path is checked
-/// before the first write, so a refused path leaves every other one untouched. The policy asks for a plain confirm,
-/// so `input` may be `None`. Returns one outcome per path, in order.
+/// Discards every change at `paths`: a path tracked in `HEAD` gets its blob bytes written back to
+/// disk, an untracked path is deleted, and `.git/index` gets the `HEAD` entry for each of them (or
+/// loses it), so a staged change is discarded too. Every path is checked before the first write, so
+/// a refused path leaves every other one untouched. The policy asks for a plain confirm, so `input`
+/// may be `None`. Returns one outcome per path, in order.
 ///
 /// # Errors
 /// [`ActionError::Git`] when a path is one git refuses (`.git`, `.`, `..`, an empty segment,

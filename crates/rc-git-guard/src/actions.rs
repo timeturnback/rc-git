@@ -678,8 +678,9 @@ fn head_is_on(repo: &gix::Repository, op: &'static str, full_name: &str) -> Acti
 /// deletion writes `refs/rc-git/backup/branch/<name>` first and reports it.
 ///
 /// # Errors
-/// [`ActionError::Denied`] for protected branches, [`ActionError::CheckedOut`] for a branch
-/// the `HEAD` of this or another worktree is on, [`ActionError::NotConfirmed`] when the typed input does not match.
+/// [`ActionError::Denied`] for protected branches, [`ActionError::CheckedOut`] for a branch the
+/// `HEAD` of this or another worktree is on, [`ActionError::NotConfirmed`] when the typed input
+/// does not match.
 pub fn delete_branch(
     repo_path: &Path,
     policy: &Policy,

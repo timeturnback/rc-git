@@ -31,7 +31,8 @@ pub struct RefUpdate {
 pub struct FetchOutcome {
     /// The remote fetched from.
     pub remote: String,
-    /// Refs (remote-tracking branches and tags) created or moved, empty when everything was up to date.
+    /// Refs (remote-tracking branches and tags) created or moved, empty when everything was up to
+    /// date.
     pub updated_refs: Vec<RefUpdate>,
 }
 
