@@ -4,10 +4,11 @@
 //! is ever spawned. Credentials always come from the caller; gix's helper cascade
 //! (which spawns `git credential-*`) is never consulted.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use gix::remote::Direction;
 
@@ -51,6 +52,8 @@ pub(super) const CANCEL_POLL: Duration = Duration::from_millis(200);
 /// [`Cancel::with_connect_timeout`] changes it. A read that blocks in
 /// curl never sees the flag, so after a cancel the abandoned HTTPS thread lingers until
 /// its next object, chunk or this budget (the connect budget while still connecting) ends it.
+/// A fetch keeps its repository claimed until that thread ends, so the next
+/// fetch of the same repository waits for it instead of racing its ref updates.
 #[derive(Debug, Clone)]
 pub struct Cancel {
     flag: Arc<AtomicBool>,
@@ -868,6 +871,73 @@ where
             }
         }
     }
+}
+
+/// Common git directories of the repositories with a transfer in flight, abandoned
+/// HTTPS threads included.
+static IN_FLIGHT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Signalled whenever a [`TransferClaim`] is released.
+static RELEASED: Condvar = Condvar::new();
+
+/// The in-flight set. A panic cannot leave a set insert or remove half-done, so a
+/// poisoned lock still holds a consistent set and is used as is.
+fn in_flight() -> MutexGuard<'static, BTreeSet<PathBuf>> {
+    IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One repository's right to run a transfer that writes its pack and refs. It moves onto
+/// the thread doing the transfer and is released when that thread drops it, so a thread
+/// [`run_detached`] abandoned keeps the repository claimed until it really ends.
+#[derive(Debug)]
+pub(super) struct TransferClaim {
+    dir: PathBuf,
+}
+
+impl Drop for TransferClaim {
+    fn drop(&mut self) {
+        in_flight().remove(&self.dir);
+        RELEASED.notify_all();
+    }
+}
+
+/// Claims `repo` for one transfer. While another transfer of the same repository still
+/// runs — typically a cancelled HTTPS fetch whose thread waits on curl — this waits for it,
+/// looking at `cancel` every [`CANCEL_POLL`], for at most the connect budget.
+///
+/// # Errors
+/// [`ActionError::Cancelled`] when `cancel` is set while waiting, [`ActionError::Git`]
+/// when the repository directory cannot be resolved or the other transfer is still running
+/// once the connect budget is spent.
+pub(super) fn claim_transfer(
+    repo: &gix::Repository,
+    cancel: &Cancel,
+    op: &'static str,
+) -> ActionResult<TransferClaim> {
+    let common = repo.common_dir();
+    let dir = common
+        .canonicalize()
+        .map_err(git_err(op, &common.display().to_string()))?;
+    let deadline = Instant::now() + cancel.connect();
+    let mut held = in_flight();
+    while held.contains(&dir) {
+        bail_if_cancelled(cancel, op)?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ActionError::git(
+                op,
+                dir.display().to_string(),
+                "another transfer of this repository is still running (a cancelled one ends at \
+                 its next object or its idle timeout); retry in a moment",
+            ));
+        }
+        held = RELEASED
+            .wait_timeout(held, left.min(CANCEL_POLL))
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+    held.insert(dir.clone());
+    Ok(TransferClaim { dir })
 }
 
 /// The HTTP transport options every fetch and push uses, built from code-owned defaults.

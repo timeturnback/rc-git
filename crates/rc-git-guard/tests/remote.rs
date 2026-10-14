@@ -668,6 +668,80 @@ fn an_https_push_to_a_silent_peer_ends_within_the_idle_budget() {
     assert_idle_budget_ends_a_silent_peer(Transfer::Push, "push");
 }
 
+/// Cancels a fetch stalled on a silent peer under `first`, then points `origin` back at the
+/// live server and moves the served `main` one commit past the clone, so a second fetch has
+/// something to write. Keep the returned stalling server alive while the abandoned thread
+/// should keep waiting on it.
+fn cancel_a_stalled_fetch_then_advance(first: Cancel) -> (Remoted, rc_git_testkit::HttpGitServer) {
+    let signal = first.clone();
+    let (remoted, stalling, finished) = transfer_against_a_silent_peer(Transfer::Fetch, first);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    signal.signal();
+    let err = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the cancel lands within 5 s")
+        .expect_err("cancelled");
+    assert!(
+        matches!(err, ActionError::Cancelled { op: "fetch" }),
+        "{err}"
+    );
+    remoted
+        .clone
+        .git(&["remote", "set-url", "origin", &remoted.server.url()]);
+    advance_origin(&remoted.origin, &remoted.bare_path);
+    (remoted, stalling)
+}
+
+#[test]
+fn a_fetch_started_right_after_a_cancelled_one_waits_for_it_and_succeeds() {
+    let first = Cancel::new().with_idle_timeout(std::time::Duration::from_secs(2));
+    let (remoted, _stalling) = cancel_a_stalled_fetch_then_advance(first);
+
+    let outcome = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("the second fetch succeeds once the abandoned one has ended");
+    let served_tip = bare_rev(&remoted.bare, "main");
+    assert!(
+        outcome
+            .updated_refs
+            .iter()
+            .any(|update| update.name == "refs/remotes/origin/main"),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        remoted.clone.rev_parse("refs/remotes/origin/main"),
+        served_tip
+    );
+}
+
+#[test]
+fn a_fetch_refuses_while_a_cancelled_one_of_the_same_repository_still_runs() {
+    let (remoted, stalling) = cancel_a_stalled_fetch_then_advance(Cancel::new());
+    let before = remoted.server.requests();
+
+    let err = fetch_upstream(
+        remoted.clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new().with_connect_timeout(std::time::Duration::from_secs(1)),
+    )
+    .expect_err("the abandoned fetch still holds the repository");
+    assert!(
+        matches!(&err, ActionError::Git { op: "fetch", .. } if err.to_string().contains("still running")),
+        "{err}"
+    );
+    assert_eq!(
+        remoted.server.requests(),
+        before,
+        "a refused fetch must not reach the server"
+    );
+    drop(stalling);
+}
+
 // --- fast-forward pull ---
 
 use rc_git_guard::actions::pull_fast_forward;

@@ -253,7 +253,11 @@ The remote operations add their own guarantees:
   share. A cancelled operation stops between steps: nothing is left
   half-applied. A transfer already past its last check can still land after the cancel
   returns — a fetch moving its tracking refs, a push the server accepts — exactly as if it
-  had finished just before; the next fetch shows it.
+  had finished just before; the next fetch shows it. A fetch claims its repository until its
+  thread really ends, so a fetch started right after a cancelled one waits for it (up to the
+  connect budget) instead of racing its ref updates, and otherwise refuses with a retry
+  message. The last cancel check before gix moves the tracking refs is just before the pack
+  receive; past it, only the pack writer's per-object check can still stop the fetch.
 
 ## Updater
 

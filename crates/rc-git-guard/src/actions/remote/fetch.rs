@@ -11,8 +11,8 @@ use crate::{Action, Confirmation, Policy};
 
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    detached_upstream, host_of, http_options, map_network_error, redacted, resolve_upstream,
-    run_detached, vet_remote_url,
+    claim_transfer, detached_upstream, host_of, http_options, map_network_error, redacted,
+    resolve_upstream, run_detached, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -82,6 +82,7 @@ pub fn fetch_upstream(
     let remote = find_remote(&repo, &remote_name)?;
     let scheme = vet_remote_url(&url, OP, &remote_name)?;
     let host = host_of(&url);
+    let claim = claim_transfer(&repo, cancel, OP)?;
 
     let updated_refs = match scheme {
         RemoteScheme::Https => {
@@ -89,6 +90,9 @@ pub fn fetch_upstream(
             let worker_cancel = cancel.clone();
             let (remote_name, host) = (remote_name.clone(), host.clone());
             run_detached(cancel, OP, move || {
+                // Held by the worker, so an abandoned fetch keeps the repository claimed
+                // until it really ends.
+                let _claim = claim;
                 fetch_https(
                     &repo,
                     &proof,
@@ -212,6 +216,9 @@ where
             }
             map_network_error(Box::new(source), OP, remote_name, host)
         })?;
+    // gix moves the tracking refs inside `receive` with no seam before them, and checks the
+    // flag only while writing the pack, so this is the last point to stop before any write.
+    bail_if_cancelled(cancel, OP)?;
     prepared
         .receive(gix::progress::Discard, cancel.flag())
         .map_err(|source| {
