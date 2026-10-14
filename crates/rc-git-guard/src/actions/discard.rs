@@ -10,7 +10,7 @@ use gix::objs::tree::EntryKind;
 use super::commit::{IndexChange, blob_data, disk_stat, tree_entry_at, verified_hunks, work_dir};
 use super::workfile::{self, DiskEntry};
 use super::write::{LockedIndex, Writer};
-use super::{ActionError, ActionResult, HunkStamp, authorize, open};
+use super::{ActionError, ActionResult, HunkStamp, authorize, git_err, open};
 use crate::{Action, Policy};
 
 const OP: &str = "discard";
@@ -49,8 +49,9 @@ pub struct DiscardOutcome {
 ///
 /// # Errors
 /// [`ActionError::Git`] when a path is one git refuses (`.git`, `.`, `..`, an empty segment,
-/// a symlinked parent), names a directory in `HEAD` or on disk, is untracked without a file
-/// of exactly that name on disk, or can be neither restored nor deleted, and when another git
+/// a symlinked parent), names a directory in `HEAD` or on disk, names a submodule or a blob
+/// missing from the object database, is untracked without a file of exactly that name on
+/// disk, or can be neither restored nor deleted, and when another git
 /// process holds `index.lock`. Only a failed write can stop the run part-way, after the paths
 /// before it were handled; the index is then left as it was.
 pub fn discard_files(
@@ -68,50 +69,88 @@ pub fn discard_files(
     let head_tree = head_tree(&repo)?;
     let mut plan = Vec::with_capacity(paths.len());
     for path in paths {
-        let entry = match tree_entry_at(&repo, OP, head_tree, path)? {
-            Some(entry) if entry.mode.is_tree() => {
-                return Err(ActionError::git(
-                    OP,
-                    path.clone(),
-                    "is a directory; select files instead",
-                ));
-            }
-            Some(entry) => Plan::Restore(entry),
-            None => {
-                workfile::require_exact_file_name(&work_dir, path, OP)?;
-                Plan::Delete
-            }
+        let step = if let Some(entry) = tree_entry_at(&repo, OP, head_tree, path)? {
+            Plan::Restore(restorable(&repo, OP, path, entry)?)
+        } else {
+            workfile::require_exact_file_name(&work_dir, path, OP)?;
+            Plan::Delete
         };
-        plan.push((path, entry));
+        plan.push((path, step));
     }
     let index = writer.lock_index(OP)?;
-    let total = plan.len();
-    let mut outcomes = Vec::with_capacity(total);
-    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(total);
-    for (path, entry) in plan {
-        let (kind, change) = match entry {
-            Plan::Restore(entry) => (
-                DiscardKind::Restored,
-                restore_entry(&writer, &work_dir, path, &entry, OP),
-            ),
-            Plan::Delete => (
-                DiscardKind::Deleted,
-                writer
-                    .delete_file(OP, &work_dir, path)
-                    .map(|()| (path.clone(), None)),
-            ),
+    let index_changes = write_plan(&writer, &work_dir, &plan, "the index was not updated", OP)?;
+    writer.update_index(index, OP, &index_changes)?;
+    let outcomes = plan
+        .into_iter()
+        .map(|(path, step)| DiscardOutcome {
+            path: path.clone(),
+            kind: match step {
+                Plan::Restore(_) => DiscardKind::Restored,
+                Plan::Delete => DiscardKind::Deleted,
+            },
+        })
+        .collect();
+    Ok(outcomes)
+}
+
+/// `entry` at `path`, checked for restoring before anything is written: a directory or a
+/// submodule is refused, and the object's header is read, so a missing or mistyped blob fails
+/// here rather than after earlier paths were written.
+fn restorable(
+    repo: &gix::Repository,
+    op: &'static str,
+    path: &str,
+    entry: gix::objs::tree::Entry,
+) -> ActionResult<gix::objs::tree::Entry> {
+    if entry.mode.is_tree() {
+        return Err(ActionError::git(
+            op,
+            path,
+            "is a directory; select files instead",
+        ));
+    }
+    if entry.mode.is_commit() {
+        return Err(ActionError::git(
+            op,
+            path,
+            "is a submodule; discard its changes in the submodule",
+        ));
+    }
+    let header = repo.find_header(entry.oid).map_err(git_err(op, path))?;
+    if header.kind() != gix::object::Kind::Blob {
+        return Err(ActionError::git(
+            op,
+            path,
+            format!("names {} {}, not a blob", header.kind(), entry.oid),
+        ));
+    }
+    Ok(entry)
+}
+
+/// Carries out `plan` in order and returns the index change for each path. A failed write
+/// stops the run, naming how many paths were already written and, as `unchanged`, what was
+/// left as it was.
+fn write_plan(
+    writer: &Writer<'_>,
+    work_dir: &Path,
+    plan: &[(&String, Plan)],
+    unchanged: &str,
+    op: &'static str,
+) -> ActionResult<Vec<IndexChange>> {
+    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(plan.len());
+    for (path, step) in plan {
+        let change = match step {
+            Plan::Restore(entry) => restore_entry(writer, work_dir, path, entry, op),
+            Plan::Delete => writer
+                .delete_file(op, work_dir, path)
+                .map(|()| ((*path).clone(), None)),
         };
         let change = change.map_err(|error| {
-            workfile::stopped_part_way(error, outcomes.len(), total, "the index was not updated")
+            workfile::stopped_part_way(error, index_changes.len(), plan.len(), unchanged)
         })?;
         index_changes.push(change);
-        outcomes.push(DiscardOutcome {
-            path: path.clone(),
-            kind,
-        });
     }
-    writer.update_index(index, OP, &index_changes)?;
-    Ok(outcomes)
+    Ok(index_changes)
 }
 
 /// Writes `entry`'s bytes and mode back to `path` and returns the index change that records
@@ -133,12 +172,13 @@ fn restore_entry(
 /// Puts each of `paths` back to its state in `tree`, on disk and in `index`: a tracked file
 /// gets its blob bytes and mode written back and its index entry set to that blob, an
 /// untracked one is deleted and its index entry removed. Entries for other paths are kept.
-/// Callers refuse directory entries first. `stash push` is the one caller, so a write that fails
-/// part way says the stash already holds every change.
+/// Every entry is looked up and checked before the first write. `stash push` is the one
+/// caller, so a failure says the stash already holds every change.
 ///
 /// # Errors
-/// [`ActionError::Git`] when an entry cannot be read, a file can be neither restored nor
-/// deleted (naming how many paths were already written), or the index cannot be written.
+/// [`ActionError::Git`] when an entry cannot be read or is a directory, a submodule or a
+/// missing blob (before any write), a file can be neither restored nor deleted (naming how
+/// many paths were already written), or the index cannot be written.
 pub(super) fn restore_paths(
     writer: &Writer<'_>,
     work_dir: &Path,
@@ -146,24 +186,19 @@ pub(super) fn restore_paths(
     (tree, paths): (Option<gix::ObjectId>, &[String]),
     op: &'static str,
 ) -> ActionResult<()> {
-    let mut index_changes: Vec<IndexChange> = Vec::with_capacity(paths.len());
+    const UNCHANGED: &str = "the stash holds every change, but the index was not updated";
+    let repo = writer.repo();
+    let mut plan = Vec::with_capacity(paths.len());
     for path in paths {
-        let change = match tree_entry_at(writer.repo(), op, tree, path)? {
-            Some(entry) => restore_entry(writer, work_dir, path, &entry, op),
-            None => writer
-                .delete_file(op, work_dir, path)
-                .map(|()| (path.clone(), None)),
-        };
-        let change = change.map_err(|error| {
-            workfile::stopped_part_way(
-                error,
-                index_changes.len(),
-                paths.len(),
-                "the stash holds every change, but the index was not updated",
-            )
-        })?;
-        index_changes.push(change);
+        let step = tree_entry_at(repo, op, tree, path)
+            .and_then(|entry| match entry {
+                Some(entry) => restorable(repo, op, path, entry).map(Plan::Restore),
+                None => Ok(Plan::Delete),
+            })
+            .map_err(|error| workfile::stopped_part_way(error, 0, paths.len(), UNCHANGED))?;
+        plan.push((path, step));
     }
+    let index_changes = write_plan(writer, work_dir, &plan, UNCHANGED, op)?;
     writer.update_index(index, op, &index_changes)
 }
 
@@ -225,4 +260,55 @@ fn head_tree(repo: &gix::Repository) -> ActionResult<Option<gix::ObjectId>> {
         return Ok(None);
     };
     super::commit::tree_of(repo, OP, head).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Action;
+
+    #[test]
+    fn restore_paths_checks_every_entry_before_writing_any() {
+        let fx = rc_git_testkit::Fixture::standard();
+        fx.write("alpha.txt", b"stashed edit\n");
+        let alpha = fx.rev_parse("HEAD:alpha.txt");
+        let ghost = fx.hash_blob(b"ghost\n");
+        let tree = fx.mktree(
+            format!("100644 blob {alpha}\talpha.txt\n100644 blob {ghost}\tghost.txt\n").as_bytes(),
+        );
+        fx.remove(&format!(".git/objects/{}/{}", &ghost[..2], &ghost[2..]));
+
+        let repo = gix::open_opts(fx.path(), gix::open::Options::isolated()).unwrap();
+        let proof = Policy::default()
+            .authorize(&Action::StashPush { files: 2 }, None)
+            .unwrap();
+        let writer = Writer::new(&repo, &proof);
+        let work_dir = work_dir(&repo, "stash push").unwrap();
+        let index = writer.lock_index("stash push").unwrap();
+        let tree = gix::ObjectId::from_hex(tree.as_bytes()).unwrap();
+        let paths = ["alpha.txt".to_owned(), "ghost.txt".to_owned()];
+
+        let err = restore_paths(
+            &writer,
+            &work_dir,
+            index,
+            (Some(tree), &paths),
+            "stash push",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "stash push", name, .. } if name == "ghost.txt"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("stopped after writing 0 of 2 paths"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"stashed edit\n",
+            "the path listed before the missing blob was not written"
+        );
+    }
 }

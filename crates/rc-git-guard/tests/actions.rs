@@ -1885,6 +1885,33 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn discard_refuses_a_submodule_before_restoring_earlier_files() {
+        let fx = Fixture::standard();
+        let gitlink = "160000,1111111111111111111111111111111111111111,sub";
+        fx.git(&["update-index", "--add", "--cacheinfo", gitlink]);
+        fx.git(&["commit", "-q", "-m", "add submodule"]);
+        fx.write("alpha.txt", b"precious\n");
+
+        let err = discard_files(
+            fx.path(),
+            &Policy::default(),
+            &["alpha.txt".to_owned(), "sub".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ActionError::Git { op: "discard", name, .. } if name == "sub"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("is a submodule"), "{err}");
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"precious\n",
+            "the edit survives a refused discard"
+        );
+    }
+
+    #[test]
     fn discard_refuses_an_untracked_directory_listed_last_before_any_write() {
         let fx = Fixture::standard();
         fx.write("alpha.txt", b"precious\n");
