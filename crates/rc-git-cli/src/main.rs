@@ -1,8 +1,9 @@
-//! `rc-git`: the command-line face of `rc-git-core` reads and `rc-git-guard` actions.
+//! `rc-git`: the command-line face of `rc-git-core` reads, `rc-git-guard` actions, and
+//! `rc-git-highlight` spans and import links.
 //!
 //! Output is tab-separated so scripts and agents can parse it. `--time` prints how long the
-//! repository open and the command took, which is how the budgets in `docs/performance.md`
-//! are checked without the GUI.
+//! repository open and the command took, which is how the CLI rows of the budget table in
+//! `docs/performance.md` are checked without the GUI; the rows that run in Swift are not.
 
 use std::ffi::OsString;
 use std::io::{self, Write};

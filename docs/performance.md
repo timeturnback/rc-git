@@ -5,7 +5,12 @@ what appears on screen. These are the rules the code follows and the numbers it 
 
 ## Budgets
 
-Measured with `rc-git --time` on a warm page cache, release build, Apple silicon.
+Release build, warm page cache, Apple silicon. Every row except markdown preview and follow an
+import is a CLI row, measured with `rc-git --time` (`highlight` and `links` time the highlight
+and import-link rows). Those two run in RcGitKit and the app, out of reach of the CLI: the
+markdown preview figures come from `swift -O` runs of `MarkdownDocument.parse` and
+`MarkdownRenderer.render` with the highlighter stubbed out (measured 2026-10-14), and follow an
+import is an estimate from its design, with no timing test.
 
 | Operation | Budget | Why it fits |
 |---|---|---|
@@ -22,7 +27,7 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | working-tree status | under 150 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, one `lstat` per tracked file through the index's stat cache and a hash only for what it cannot settle; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
 | working-tree file list | under 60 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` and one `lstat` per entry, one tree object per tracked directory, ignored directories the tree does not track pruned unopened, nothing hashed; runs once per opening of path search in the working tree |
 | blame | grows with the history between tip and the commit that introduced the oldest surviving line, down to a `since` floor: the app stops two years before the tip's commit and shows older lines as "older than" the floor; the CLI walks the whole ancestry unless given `--since` | on demand for the open file, never in bulk; a file over the limit at tip costs one header read. The walk cannot be cancelled once started — gix-blame takes no interrupt flag — so the floor is its only bound. Renames are followed: only a commit that adds or deletes the path pays for a rename-tracking tree diff, which measured 6 ms against 5 ms untracked for a renamed file in a 500-commit repository |
-| markdown preview | about 20 ms per MiB, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; capped at 8 MiB, above which the file opens in source mode |
+| markdown preview | parse about 20-30 ms per MiB, build 70-250 ms per MiB depending on run density, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; the wait is parse plus build (`MarkdownRenderer.render`), and building the attributed string dominates: 2 MiB of this repository's docs took 44-56 ms to parse and 186-230 ms in all, a 1 MiB bullet list 30 ms and 260-290 ms. Capped at 8 MiB, above which the file opens in source mode; at the cap the previous file stays on screen about 0.6 s (prose) to 1.0 s (a bullet list) |
 | highlight | after first paint, cached by blob id | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
 | import links | about 100 ms per MiB, on the first pointer move over a file, off the main actor | one parse of its own, skipped when the bytes hold no `import`, `require` or `from`; 16 bytes a link, cached with the blob's highlight spans; hover is a binary search and one temporary attribute |
 | follow an import | one tree object per directory on the way, plus the config files above the importing file when the specifier is not relative | resolved on click, through the shared tree cache; nothing is indexed and nothing is kept |
