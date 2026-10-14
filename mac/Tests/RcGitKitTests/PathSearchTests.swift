@@ -91,7 +91,7 @@ import Testing
             second: [TreeEntry(name: "y", oid: oid(0x24), kind: .blob)],
         ]
         let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
-        #expect(index.search("").map(\.path) == ["a/x", "b/y", "z.txt"])
+        #expect(try index.search("").map(\.path) == ["a/x", "b/y", "z.txt"])
         let capped = try PathIndex.build(root: root, limit: 1) { try #require(fixed[$0]) }
         #expect(capped.entries.map(\.path) == ["a/x"], "the cut keeps the first folder")
     }
@@ -113,25 +113,25 @@ import Testing
     @Test func searchRanksAndLimits() throws {
         let fixed = trees()
         let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
-        let matches = index.search("mainrs")
+        let matches = try index.search("mainrs")
         #expect(matches.first?.path == "src/main.rs")
-        #expect(index.search("zzz").isEmpty)
-        #expect(index.search("").count == index.entries.count)
-        #expect(index.search("", limit: 2).count == 2)
+        #expect(try index.search("zzz").isEmpty)
+        #expect(try index.search("").count == index.entries.count)
+        #expect(try index.search("", limit: 2).count == 2)
     }
 
-    @Test func tiesOrderByLengthThenPath() {
+    @Test func tiesOrderByLengthThenPath() throws {
         let entries = ["src/main.rs", "b/main.rs", "a/main.rs"].map {
             PathIndexEntry(path: $0, oid: oid(0x11), kind: .blob, hidden: false)
         }
         let index = PathIndex(root: root, entries: entries, truncated: false)
         let ranked = ["a/main.rs", "b/main.rs", "src/main.rs"]
-        #expect(index.search("main").map(\.path) == ranked)
-        #expect(index.search(" main ").map(\.path) == ranked, "the query is trimmed")
-        #expect(index.search("   ").count == 3, "a blank query lists every entry")
+        #expect(try index.search("main").map(\.path) == ranked)
+        #expect(try index.search(" main ").map(\.path) == ranked, "the query is trimmed")
+        #expect(try index.search("   ").count == 3, "a blank query lists every entry")
     }
 
-    @Test func searchPutsTheFileNamedLikeItsFolderFirst() {
+    @Test func searchPutsTheFileNamedLikeItsFolderFirst() throws {
         let paths = [
             "components/button/index.ts", "components/button/Button.tsx",
             "components/button/styles.css",
@@ -140,7 +140,7 @@ import Testing
             PathIndexEntry(path: $0, oid: .unhashed, kind: .blob, hidden: false)
         }
         let index = PathIndex(root: root, entries: entries, truncated: false)
-        #expect(index.search("button").first?.path == "components/button/Button.tsx")
+        #expect(try index.search("button").first?.path == "components/button/Button.tsx")
     }
 
     @Test func hiddenFilesAreMarkedAndLeftOutOnRequest() throws {
@@ -156,15 +156,15 @@ import Testing
         let hidden = index.entries.filter(\.hidden).map(\.path).sorted()
         #expect(hidden == [".DS_Store", ".git/HEAD"], "a hidden folder hides what is inside it")
 
-        let all = index.search("", limit: 100).map(\.path)
+        let all = try index.search("", limit: 100).map(\.path)
         #expect(all.contains(".DS_Store"))
-        let visible = index.search("", limit: 100, includeHidden: false).map(\.path)
+        let visible = try index.search("", limit: 100, includeHidden: false).map(\.path)
         #expect(
             visible.sorted() == [
                 ".env", "README.md", "src/main.rs", "src/nested/link", "src/run.sh",
             ])
-        #expect(index.search("head", includeHidden: false).isEmpty)
-        #expect(index.search("head").map(\.path) == [".git/HEAD"])
+        #expect(try index.search("head", includeHidden: false).isEmpty)
+        #expect(try index.search("head").map(\.path) == [".git/HEAD"])
     }
 
     @Test func buildStopsAtTheLimitAndSaysSo() throws {
@@ -208,6 +208,18 @@ import Testing
         await #expect(throws: CancellationError.self) { try await task.value }
     }
 
+    @Test func searchStopsOnceCancelled() async {
+        let entries = (0..<(PathIndex.cancellationStride * 2)).map {
+            PathIndexEntry(path: "dir/file\($0).txt", oid: oid(0x11), kind: .blob, hidden: false)
+        }
+        let index = PathIndex(root: root, entries: entries, truncated: false)
+        let task = Task.detached { () throws -> [PathIndexEntry] in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try index.search("file")
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
     @Test func aWorktreeListingBecomesAnIndexWithoutBlobIds() throws {
         let list = WorktreeFileList(
             files: [
@@ -225,18 +237,18 @@ import Testing
         #expect(index.entries[2].kind == .executableBlob)
     }
 
-    @Test func searchMatchesDecomposedNamesByWholeCharacters() {
+    @Test func searchMatchesDecomposedNamesByWholeCharacters() throws {
         let list = WorktreeFileList(
             files: ["cafe\u{301}.txt", "\u{e8}\u{a9}.txt"].map {
                 WorktreeFile(path: $0, kind: .blob)
             },
             scanned: 2, truncated: false)
         let index = PathIndex(root: root, worktreeFiles: list)
-        let found = index.search("caf\u{e9}")
+        let found = try index.search("caf\u{e9}")
         #expect(found.count == 1, "a precomposed query finds the decomposed name")
         #expect(found.first?.path == "cafe\u{301}.txt", "the stored path stays as it was on disk")
         #expect(
-            index.search("\u{e9}").map(\.path) == ["cafe\u{301}.txt"],
+            try index.search("\u{e9}").map(\.path) == ["cafe\u{301}.txt"],
             "the letter matches only the name that has it, never bytes of other letters")
     }
 

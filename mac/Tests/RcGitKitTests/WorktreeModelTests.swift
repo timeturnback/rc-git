@@ -80,6 +80,25 @@ import Testing
         #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 2)
     }
 
+    @Test func aBurstOfQueriesDuringOneIndexBuildRunsOneScanForTheLast() async throws {
+        await model.attach(repo)
+        repo.delays[mainTree] = 1
+        let queries = ["r", "re", "rea", "read", "readm", "readme", "readme.", "x", "xy", "rd"]
+        var calls: [Task<PathSearchResult, any Error>] = []
+        for query in queries {
+            calls.append(Task { try await model.searchPaths(query) })
+            await Task.yield()
+        }
+        let last = try #require(calls.last)
+        let result = try await last.value
+        #expect(result.entries.map(\.path) == ["README.md"])
+        for call in calls.dropLast() {
+            await #expect(throws: CancellationError.self) { _ = try await call.value }
+        }
+        #expect(model.pathSearchScans == 1, "only the last query scans the index")
+        #expect(repo.lock.withLock { repo.treeEntryCalls } == 1, "the queries share one build")
+    }
+
     @Test func pathSearchOnABranchSearchesItsTree() async throws {
         repo.workDir = "/checkout"
         await model.attach(repo)

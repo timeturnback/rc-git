@@ -242,6 +242,12 @@ public final class BrowserModel {
     private var worktreeIndex: PathIndex?
     private var worktreeIndexBuild: (generation: Int, task: Task<PathIndex, any Error>)?
     private var worktreeIndexGeneration = 0
+    /// Bumped by every `searchPaths` call, so only the newest query scores the index.
+    private var pathSearchGeneration = 0
+    /// The scan of the newest query; a newer query cancels it.
+    private var pathSearchTask: Task<[PathIndexEntry], any Error>?
+    /// Index scans `searchPaths` started, for tests.
+    private(set) var pathSearchScans = 0
     /// Syntax spans, per blob and file extension. Content-addressed like every other cache,
     /// but bounded: span arrays for large files run to megabytes, so the least recently used
     /// entries are evicted past `highlightCacheLimit` files or `highlightCacheSpanLimit` spans.
@@ -1710,15 +1716,36 @@ public final class BrowserModel {
     /// index on first use; a query while a build for another root is running cancels it.
     /// Hidden files match only while `showsHiddenFiles` is on. The result carries the index's
     /// `truncated` flag, so the panel can say matches may be missing.
+    ///
+    /// Only the newest query scans: a newer call cancels the running scan, and a caller whose
+    /// query was superseded, before or during its scan, throws `CancellationError`. So a burst
+    /// of keystrokes during an index build runs one scan, for the last query.
+    ///
+    /// - Throws: `CancellationError` when a newer query superseded this one or the caller was
+    ///   cancelled; the index build's error when listing a directory fails.
     public func searchPaths(_ query: String, limit: Int = 100) async throws -> PathSearchResult {
+        pathSearchGeneration += 1
+        let generation = pathSearchGeneration
+        pathSearchTask?.cancel()
+        pathSearchTask = nil
         guard let root = rootTree else { return PathSearchResult(entries: [], truncated: false) }
         let index =
             browsingWorkingTree
             ? try await worktreePathIndex(comparedTo: root) : try await pathIndex(for: root)
+        guard generation == pathSearchGeneration else { throw CancellationError() }
         let includeHidden = showsHiddenFiles
-        let entries = await Task.detached(priority: .userInitiated) {
-            index.search(query, limit: limit, includeHidden: includeHidden)
-        }.value
+        let task = Task.detached(priority: .userInitiated) {
+            try index.search(query, limit: limit, includeHidden: includeHidden)
+        }
+        pathSearchTask = task
+        pathSearchScans += 1
+        let entries = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard generation == pathSearchGeneration else { throw CancellationError() }
+        pathSearchTask = nil
         return PathSearchResult(entries: entries, truncated: index.truncated)
     }
 

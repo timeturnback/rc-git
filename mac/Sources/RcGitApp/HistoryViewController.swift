@@ -24,6 +24,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// How close to the bottom, in points, the scroll may get before the next page loads.
     private static let prefetchMargin: CGFloat = 600
+    /// How long typing in the search field must pause before the query is searched, so a
+    /// burst of keystrokes starts one commit scan rather than one per key.
+    private static let typingPause: Duration = .milliseconds(250)
 
     /// The height neither pane of the left column may drop below, from `LayoutPolicy`.
     private static let commitsPaneFloor = LayoutPolicy.historyCommitsFloor
@@ -55,6 +58,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var diffGeneration = 0
     private var graphRows: [GraphRow] = []
     private var isReloading = false
+    /// The query typing scheduled, sent once typing pauses; any immediate emit replaces it.
+    private var pendingTypedFilter: Task<Void, Never>?
 
     private let scopeBar = NSStackView()
     private let scopeLabel = NSTextField(labelWithString: "")
@@ -531,6 +536,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// controls still hold one: clear them, so the field never shows a query over the
     /// unfiltered list.
     private func clearDroppedSearchControls() {
+        cancelPendingTypedFilter()
         guard !controlsFilter().isEmpty else { return }
         searchField.stringValue = ""
         datesToggle.state = .off
@@ -538,6 +544,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func emitFilter() {
+        cancelPendingTypedFilter()
         let filter = controlsFilter()
         onSearchFilterChanged?(filter.isEmpty ? nil : filter)
     }
@@ -563,9 +570,28 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         return filter
     }
 
+    /// Emits the filter once typing pauses for `typingPause`; another keystroke restarts it.
+    private func emitFilterAfterTypingPause() {
+        cancelPendingTypedFilter()
+        pendingTypedFilter = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.typingPause)
+            } catch {
+                // Sleep throws only on cancellation: a newer keystroke or emit replaced this one.
+                return
+            }
+            self?.emitFilter()
+        }
+    }
+
+    private func cancelPendingTypedFilter() {
+        pendingTypedFilter?.cancel()
+        pendingTypedFilter = nil
+    }
+
     func controlTextDidChange(_ notification: Notification) {
         guard (notification.object as? NSSearchField) === searchField else { return }
-        emitFilter()
+        emitFilterAfterTypingPause()
     }
 
     @objc private func searchOptionsChanged(_ sender: Any?) {

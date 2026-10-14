@@ -43,11 +43,13 @@ import Testing
     @Test func concurrentSearchesShareOneTreeWalk() async throws {
         await model.attach(repo)
         repo.delays[mainTree] = 1
-        async let first = model.searchPaths("")
-        async let second = model.searchPaths("")
-        let (a, b) = try await (first, second)
-        #expect(a.entries.map(\.path) == ["src/main.rs", "README.md"])
-        #expect(b.entries.map(\.path) == a.entries.map(\.path))
+        let first = Task { try await model.searchPaths("") }
+        try await waitForCalls(1) { $0.treeEntryCalls }
+        let second = try await model.searchPaths("")
+        #expect(second.entries.map(\.path) == ["src/main.rs", "README.md"])
+        await #expect(throws: CancellationError.self, "the newer query supersedes it") {
+            _ = try await first.value
+        }
         #expect(repo.lock.withLock { repo.treeEntryCalls } == 2, "one read per directory")
     }
 
@@ -103,11 +105,13 @@ import Testing
         repo.workDir = "/checkout"
         await model.attach(repo)
         repo.worktreeFilesDelay = 1
-        async let first = model.searchPaths("")
-        async let second = model.searchPaths("")
-        let (a, b) = try await (first, second)
-        #expect(a.entries.map(\.path) == ["README.md"])
-        #expect(b.entries.map(\.path) == ["README.md"])
+        let first = Task { try await model.searchPaths("") }
+        try await waitForCalls(1) { $0.worktreeFilesCalls }
+        let second = try await model.searchPaths("")
+        #expect(second.entries.map(\.path) == ["README.md"])
+        await #expect(throws: CancellationError.self, "the newer query supersedes it") {
+            _ = try await first.value
+        }
         #expect(repo.lock.withLock { repo.worktreeFilesCalls } == 1)
     }
 

@@ -42,6 +42,8 @@ public struct PathIndex: Sendable {
 
     /// Upper bound on indexed files, so one pathological repository cannot exhaust memory.
     public static let maxEntries = 200_000
+    /// Entries `search` scores between two cancellation checks.
+    static let cancellationStride = 4_096
 
     public init(root: Oid, entries: [PathIndexEntry], truncated: Bool) {
         self.root = root
@@ -126,8 +128,12 @@ public struct PathIndex: Sendable {
     /// The best `limit` matches for `query`, highest score first, ties by shorter then
     /// lexicographic path so the order is stable. An empty query returns the first entries.
     /// Entries under `HiddenFiles` are left out unless `includeHidden`. The query is matched in
-    /// precomposed (NFC) form against each entry's `searchKey`.
-    public func search(_ query: String, limit: Int = 100, includeHidden: Bool = true)
+    /// precomposed (NFC) form against each entry's `searchKey`. A scan over a large index
+    /// checks for task cancellation every `cancellationStride` entries, so a superseded query
+    /// stops within milliseconds.
+    ///
+    /// - Throws: `CancellationError` when the calling task is cancelled during the scan.
+    public func search(_ query: String, limit: Int = 100, includeHidden: Bool = true) throws
         -> [PathIndexEntry]
     {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
@@ -136,7 +142,9 @@ public struct PathIndex: Sendable {
             return Array(entries.lazy.filter { includeHidden || !$0.hidden }.prefix(limit))
         }
         var scored: [(score: Int, entry: PathIndexEntry)] = []
-        for entry in entries where includeHidden || !entry.hidden {
+        for (position, entry) in entries.enumerated() {
+            if position % Self.cancellationStride == 0 { try Task.checkCancellation() }
+            guard includeHidden || !entry.hidden else { continue }
             if let score = FuzzyMatch.score(entry.searchKey, query: trimmed) {
                 scored.append((score, entry))
             }
