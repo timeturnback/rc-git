@@ -399,6 +399,22 @@ enum Reply {
     Lines(Vec<Vec<u8>>),
 }
 
+/// Most bytes of `report-status` kept from the server. A one-ref push gets two short lines
+/// back; anything near this is a broken or hostile server, refused before it grows memory.
+const REPLY_BYTES_LIMIT: usize = 1024 * 1024;
+
+/// Most pkt-lines of `report-status` read without a side band: `unpack` plus one per ref.
+const REPLY_LINES_LIMIT: usize = 1024;
+
+/// The error for a reply past [`REPLY_BYTES_LIMIT`] or [`REPLY_LINES_LIMIT`].
+fn reply_too_large(link: &Link, what: &str, limit: usize) -> ActionError {
+    ActionError::git(
+        OP,
+        link.full_ref.as_str(),
+        format!("the server's push report exceeded {limit} {what}; the remote is misbehaving"),
+    )
+}
+
 /// Reads the band-1 data of a side-band reply to its end; the progress handler takes
 /// bands 2 and 3 on the way.
 fn read_band1(reader: &mut impl Read, link: &Link) -> ActionResult<Vec<u8>> {
@@ -408,7 +424,12 @@ fn read_band1(reader: &mut impl Read, link: &Link) -> ActionResult<Vec<u8>> {
         link.bail_if_cancelled()?;
         match reader.read(&mut buf) {
             Ok(0) => return Ok(payload),
-            Ok(read) => payload.extend_from_slice(buf.get(..read).unwrap_or_default()),
+            Ok(read) => {
+                if payload.len() + read > REPLY_BYTES_LIMIT {
+                    return Err(reply_too_large(link, "bytes", REPLY_BYTES_LIMIT));
+                }
+                payload.extend_from_slice(buf.get(..read).unwrap_or_default());
+            }
             Err(source) => return Err(link.failed(Box::new(source))),
         }
     }
@@ -421,6 +442,7 @@ where
     R: gix::protocol::transport::client::blocking_io::ReadlineBufRead + ?Sized,
 {
     let mut lines = Vec::new();
+    let mut bytes = 0_usize;
     loop {
         link.bail_if_cancelled()?;
         let Some(line) = reader.readline() else {
@@ -429,9 +451,17 @@ where
         let line = line
             .map_err(|source| link.failed(Box::new(source)))?
             .map_err(|source| link.failed(Box::new(source)))?;
-        if let Some(payload) = line.as_slice() {
-            lines.push(payload.to_vec());
+        let Some(payload) = line.as_slice() else {
+            continue;
+        };
+        if lines.len() == REPLY_LINES_LIMIT {
+            return Err(reply_too_large(link, "lines", REPLY_LINES_LIMIT));
         }
+        bytes += payload.len();
+        if bytes > REPLY_BYTES_LIMIT {
+            return Err(reply_too_large(link, "bytes", REPLY_BYTES_LIMIT));
+        }
+        lines.push(payload.to_vec());
     }
 }
 
@@ -615,6 +645,85 @@ mod tests {
             report::parse_report(lines.iter().map(Vec::as_slice), "refs/heads/main"),
             Ok(Report::Ok)
         );
+    }
+
+    /// A reader that yields `total` bytes of `x` and then ends, counting what it handed out.
+    struct Flood {
+        total: usize,
+        served: usize,
+    }
+
+    impl Read for Flood {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.total - self.served);
+            buf.get_mut(..n).unwrap_or_default().fill(b'x');
+            self.served += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_side_band_reply_at_the_byte_limit_is_read_whole() {
+        let mut flood = Flood {
+            total: REPLY_BYTES_LIMIT,
+            served: 0,
+        };
+        let payload = read_band1(&mut flood, &link()).expect("read");
+        assert_eq!(payload.len(), REPLY_BYTES_LIMIT);
+    }
+
+    #[test]
+    fn a_side_band_reply_past_the_byte_limit_is_refused() {
+        let mut flood = Flood {
+            total: 2 * REPLY_BYTES_LIMIT,
+            served: 0,
+        };
+        let err = read_band1(&mut flood, &link()).expect_err("too large");
+        assert!(err.to_string().contains("exceeded"), "{err}");
+        assert!(
+            flood.served <= REPLY_BYTES_LIMIT + 8 * 1024,
+            "{}",
+            flood.served
+        );
+    }
+
+    fn pkt_lines(count: usize, payload: &[u8]) -> Vec<u8> {
+        let mut wire = Vec::new();
+        for _ in 0..count {
+            wire.extend_from_slice(format!("{:04x}", payload.len() + 4).as_bytes());
+            wire.extend_from_slice(payload);
+        }
+        wire.extend_from_slice(b"0000");
+        wire
+    }
+
+    fn read_pkt_lines(wire: &[u8]) -> ActionResult<Vec<Vec<u8>>> {
+        let mut packets = gix_transport::packetline::blocking_io::StreamingPeekableIter::new(
+            wire,
+            &[gix_transport::packetline::PacketLineRef::Flush],
+            false,
+        );
+        read_lines(&mut packets.as_read(), &link())
+    }
+
+    #[test]
+    fn a_reply_at_the_line_limit_is_read_whole() {
+        let lines = read_pkt_lines(&pkt_lines(REPLY_LINES_LIMIT, b"ok x")).expect("read");
+        assert_eq!(lines.len(), REPLY_LINES_LIMIT);
+    }
+
+    #[test]
+    fn a_reply_past_the_line_limit_is_refused() {
+        let err = read_pkt_lines(&pkt_lines(REPLY_LINES_LIMIT + 1, b"ok x")).expect_err("lines");
+        assert!(err.to_string().contains("1024 lines"), "{err}");
+    }
+
+    #[test]
+    fn a_reply_past_the_byte_limit_is_refused() {
+        let line = vec![b'x'; 65_000];
+        let count = REPLY_BYTES_LIMIT / line.len() + 1;
+        let err = read_pkt_lines(&pkt_lines(count, &line)).expect_err("bytes");
+        assert!(err.to_string().contains("bytes"), "{err}");
     }
 
     #[test]
