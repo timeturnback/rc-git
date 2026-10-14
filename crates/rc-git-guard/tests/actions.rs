@@ -113,6 +113,34 @@ fn branches_and_tags_are_created_at_the_named_revision_and_never_overwritten() {
 }
 
 #[test]
+fn a_branch_is_created_at_the_commit_a_tag_names_and_never_on_a_tree() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+
+    create_branch(fx.path(), &policy, "fromtag", "v1.0").unwrap();
+    assert_eq!(
+        fx.git_output(&["cat-file", "-t", "refs/heads/fromtag"])
+            .trim(),
+        "commit"
+    );
+    assert_eq!(
+        fx.rev_parse("refs/heads/fromtag"),
+        fx.rev_parse("v1.0^{commit}")
+    );
+
+    let before = refs(&fx);
+    let err = create_branch(fx.path(), &policy, "fromtree", "HEAD^{tree}").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("create branch"), "names the op: {message}");
+    assert!(
+        message.contains("HEAD^{tree}"),
+        "names the revision: {message}"
+    );
+    assert_eq!(refs(&fx), before, "no ref was written");
+}
+
+#[test]
 fn an_invalid_branch_name_is_refused_before_any_write() {
     let fx = Fixture::standard();
     let policy = Policy::default();

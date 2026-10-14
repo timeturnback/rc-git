@@ -491,7 +491,7 @@ pub fn plan_discard(policy: &Policy, files: usize) -> Decision {
 ///
 /// # Errors
 /// [`ActionError::Git`] when `name` is `HEAD` or starts with `-` (names git refuses), the
-/// revision does not resolve, or the branch exists.
+/// revision does not resolve or does not peel to a commit, or the branch exists.
 pub fn create_branch(
     repo_path: &Path,
     policy: &Policy,
@@ -861,10 +861,7 @@ fn create_ref(
 ) -> ActionResult<()> {
     let repo = open(repo_path, op, full_name)?;
     refuse_case_variant(&repo, op, full_name)?;
-    let target = repo
-        .rev_parse_single(revspec)
-        .map_err(git_err(op, revspec))?
-        .detach();
+    let target = resolve_ref_target(&repo, op, full_name, revspec)?;
     let edit = update_edit(
         full_name,
         PreviousValue::MustNotExist,
@@ -873,6 +870,35 @@ fn create_ref(
         op,
     )?;
     Writer::new(&repo, proof).apply_edit(edit, op, full_name)
+}
+
+/// The object `revspec` names, for a new ref `full_name`. A branch is peeled to a commit and
+/// refused when it does not peel, as `git branch` does; a tag keeps the object as named, as
+/// `git tag` does, so a tag of an annotated tag points at the tag object.
+fn resolve_ref_target(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+    revspec: &str,
+) -> ActionResult<gix::ObjectId> {
+    let id = repo
+        .rev_parse_single(revspec)
+        .map_err(git_err(op, revspec))?;
+    if !full_name.starts_with("refs/heads/") {
+        return Ok(id.detach());
+    }
+    let object = id.object().map_err(git_err(op, revspec))?;
+    let kind = object.kind;
+    let commit = object
+        .peel_to_kind(gix::object::Kind::Commit)
+        .map_err(|_| {
+            ActionError::git(
+                op,
+                revspec,
+                format!("a {kind} is not a valid branch point; name a commit"),
+            )
+        })?;
+    Ok(commit.id)
 }
 
 /// Deletes `full_name`, first writing a backup ref under `refs/rc-git/backup/<kind>/<name>`
