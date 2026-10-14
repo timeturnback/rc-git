@@ -167,7 +167,8 @@ fn refuse_missing_objects(
 
 /// A valid pack containing zero objects: header plus trailing hash.
 fn write_empty_pack(hash: gix::hash::Kind, out: &mut dyn Write) -> ActionResult<()> {
-    let empty = std::iter::empty::<Result<Vec<gix_pack::data::output::Entry>, EmptyError>>();
+    let empty =
+        std::iter::empty::<Result<Vec<gix_pack::data::output::Entry>, std::convert::Infallible>>();
     let writer = gix_pack::data::output::bytes::FromEntriesIter::new(
         empty,
         out,
@@ -180,11 +181,6 @@ fn write_empty_pack(hash: gix::hash::Kind, out: &mut dyn Write) -> ActionResult<
     }
     Ok(())
 }
-
-/// The impossible error of an empty entry stream.
-#[derive(Debug, thiserror::Error)]
-#[error("unreachable")]
-struct EmptyError;
 
 #[cfg(test)]
 mod tests {
