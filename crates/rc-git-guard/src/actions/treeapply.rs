@@ -188,10 +188,16 @@ pub(super) fn verify_clean(
             }
         } else {
             // The other side adds this path; anything already there is in the way, except a
-            // file the plan deletes first or a directory the deletions empty.
-            refuse_blocked_ancestors(work_dir, &change.path, &deleted_files, op)?;
-            let full = workfile::join_under(work_dir, &change.path, op)?;
-            if let Ok(meta) = std::fs::symlink_metadata(&full)
+            // file the plan deletes first or a directory the deletions empty. Below an
+            // ancestor the plan deletes, nothing exists yet, so there is nothing to inspect.
+            let below_deleted = under_deleted_ancestor(work_dir, &change.path, &deleted_files, op)?;
+            let full = if below_deleted {
+                None
+            } else {
+                Some(workfile::join_under(work_dir, &change.path, op)?)
+            };
+            if let Some(full) = full
+                && let Ok(meta) = std::fs::symlink_metadata(&full)
                 && !deleted_files.contains(&file_id(&meta))
                 && !(meta.is_dir() && emptied_by_plan(&full, &change.path, &deleted_paths, op)?)
             {
@@ -225,32 +231,34 @@ fn refuse_unmerged_entries(index: &gix::index::File, op: &'static str) -> Action
     ))
 }
 
-/// Refuses an added `path` when one of its parent directories is something else on disk: an
-/// untracked file or symlink standing where the plan needs a directory. A lstat of the leaf
-/// alone reads that case as absent, and the write would then fail halfway through the plan.
-/// An ancestor the plan deletes first is not in the way; nothing below it exists yet.
+/// Whether an added `path` sits below a file or symlink the plan deletes first, as in the
+/// switches `a` -> `a/b/c` or link `a` -> `a/b`: [`apply`] removes that ancestor before it
+/// writes, so nothing below it exists yet. Refuses `path` when one of its parent directories
+/// is something else on disk that stays: an untracked file or symlink standing where the plan
+/// needs a directory. A lstat of the leaf alone reads that case as absent, and the write
+/// would then fail halfway through the plan.
 ///
 /// # Errors
 /// [`ActionError::DirtyPath`] naming a blocking file, [`ActionError::Git`] for a blocking
 /// symlink (the write would cross it) or an ancestor that cannot be inspected.
-fn refuse_blocked_ancestors(
+fn under_deleted_ancestor(
     work_dir: &Path,
     path: &str,
     deleted_files: &HashSet<(u64, u64)>,
     op: &'static str,
-) -> ActionResult<()> {
+) -> ActionResult<bool> {
     for (end, _) in path.match_indices('/') {
         let ancestor = &path[..end];
         let meta = match std::fs::symlink_metadata(work_dir.join(ancestor)) {
             Ok(meta) => meta,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(ActionError::git(op, ancestor, error)),
         };
         if meta.is_dir() {
             continue;
         }
         if deleted_files.contains(&file_id(&meta)) {
-            return Ok(());
+            return Ok(true);
         }
         if meta.file_type().is_symlink() {
             return Err(workfile::crosses_link(op, path, ancestor));
@@ -260,7 +268,7 @@ fn refuse_blocked_ancestors(
             path: ancestor.to_owned(),
         });
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The device and inode of a file on disk: two spellings that a case-insensitive or

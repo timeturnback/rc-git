@@ -3708,6 +3708,80 @@ mod checkout {
         assert_eq!(porcelain(&fx), "?? a");
     }
 
+    /// `main` tracks `a` as a file or (`link`) a symlink to `elsewhere`, and `nested` (from
+    /// `main`) replaces it with the file `nested_path` below `a`. Checked out on `main`.
+    fn replaced_by_nested_fixture(link: bool, nested_path: &str) -> Fixture {
+        let fx = Fixture::empty_dir();
+        fx.git(&["init", "-q", "-b", "main"]);
+        fx.write("0.txt", b"main\n");
+        fx.write("elsewhere/keep", b"k\n");
+        if link {
+            fx.symlink("elsewhere", "a");
+        } else {
+            fx.write("a", b"file\n");
+        }
+        fx.commit("base", "2024-01-01T00:00:00+0000");
+        fx.git(&["switch", "-q", "-c", "nested"]);
+        fx.remove("a");
+        fx.write(nested_path, b"nested\n");
+        fx.commit("nested", "2024-01-02T00:00:00+0000");
+        fx.git(&["switch", "-q", "main"]);
+        fx
+    }
+
+    /// The tracked entries and the working-tree files below `a`, as one comparable listing.
+    #[expect(clippy::unwrap_used, reason = "test helper panics on fixture failure")]
+    fn tree_and_disk(fx: &Fixture) -> (String, Vec<String>) {
+        let index = fx.git_output(&["ls-files", "-s"]);
+        let mut disk = Vec::new();
+        let mut pending = vec![fx.path().join("a")];
+        while let Some(path) = pending.pop() {
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let relative = path.strip_prefix(fx.path()).unwrap().display().to_string();
+            if meta.is_dir() {
+                pending.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            } else if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(&path).unwrap();
+                disk.push(format!("{relative} -> {}", target.display()));
+            } else {
+                let data = std::fs::read(&path).unwrap();
+                disk.push(format!("{relative}: {}", String::from_utf8_lossy(&data)));
+            }
+        }
+        disk.sort();
+        (index, disk)
+    }
+
+    #[test]
+    fn a_switch_writes_below_a_file_or_symlink_it_deletes_like_git() {
+        for (link, nested_path) in [(false, "a/b/c"), (true, "a/b")] {
+            let fx = replaced_by_nested_fixture(link, nested_path);
+            let by_git = replaced_by_nested_fixture(link, nested_path);
+            by_git.git(&["switch", "-q", "nested"]);
+
+            checkout_branch(fx.path(), &Policy::default(), "nested")
+                .unwrap_or_else(|err| panic!("{nested_path}: {err}"));
+
+            assert_eq!(head_branch(&fx), "nested", "{nested_path}");
+            assert_eq!(porcelain(&fx), "", "{nested_path}");
+            assert_eq!(tree_and_disk(&fx), tree_and_disk(&by_git), "{nested_path}");
+            assert_eq!(
+                std::fs::read(fx.path().join("elsewhere/keep")).unwrap(),
+                b"k\n",
+                "{nested_path}: the old link's target is left alone"
+            );
+            assert!(
+                !fx.path().join("elsewhere/b").exists(),
+                "{nested_path}: nothing was written through the old link"
+            );
+
+            checkout_branch(fx.path(), &Policy::default(), "main").unwrap();
+            by_git.git(&["switch", "-q", "main"]);
+            assert_eq!(porcelain(&fx), "", "{nested_path}: and back");
+            assert_eq!(tree_and_disk(&fx), tree_and_disk(&by_git), "{nested_path}");
+        }
+    }
+
     /// `main` has `docs/guide.md`, `nodocs` (from `main`) deletes it, and `docsfile` (from
     /// `nodocs`) adds a file named `docs`. Checked out on `main`.
     fn docs_fixture() -> Fixture {
