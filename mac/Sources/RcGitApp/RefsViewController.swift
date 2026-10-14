@@ -17,7 +17,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     /// How a row gets picked. The sidebar picks as the selection moves. The picker only
-    /// highlights as it moves — arrowing down from the filter must not close the sheet — and
+    /// highlights as it moves — arrowing down from the filter must not close the popover — and
     /// picks on a click or Return.
     enum Behavior {
         case sidebar

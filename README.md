@@ -17,7 +17,8 @@ scripts/install-app.sh    # builds and installs /Applications/RCGit.app
 open -a RCGit ~/code/some-repo
 ```
 
-Requires `rustup` (the Rust version is pinned in `rust-toolchain.toml`) and Xcode 27 or newer.
+Requires macOS 15 or newer, `rustup` (the Rust version is pinned in `rust-toolchain.toml`),
+and Xcode 27 or newer.
 
 Afterwards the app updates itself: **Update rc-git** in the app menu fetches and
 fast-forwards the checkout it was built from, rebuilds, reinstalls, and relaunches into the
@@ -39,15 +40,15 @@ fuzzy name. In JavaScript and TypeScript, click an import or a component to open
 through, across repositories; the toolbar arrows, a two-finger swipe, and a mouse's side
 buttons do the same.
 
-The Files/History toggle (⌘1/⌘2) switches to the commit list: it pages as you scroll, and
-selecting a commit shows the files it changed with a line diff; double-click to browse the
-tree at that commit. ⌥⌘B blames the open file. The Working Tree row overlays each file's
-status against `HEAD` — modified, untracked, ignored, deleted. Right-click a ref to create
-or delete branches and tags: deleting an unmerged branch, a remote branch, or a tag takes the
-typed name and writes a backup under `refs/rc-git/backup/` first; a merged branch takes a
-plain confirm.
+The Files/History/Changes toggle (⌘1/⌘2/⌘3) switches panes. History pages the commit list
+as you scroll, and selecting a commit shows the files it changed with a line diff;
+double-click to browse the tree at that commit. ⌥⌘B blames the open file. The Working Tree
+row overlays each file's status against `HEAD` — modified, untracked, ignored, deleted.
+Right-click a ref to create or delete branches and tags: deleting an unmerged branch, a
+remote branch, or a tag takes the typed name and writes a backup under `refs/rc-git/backup/`
+first; a merged branch takes a plain confirm.
 
-The window adapts to its size: below 760 points wide the sidebar folds away. The file always
+The window adapts to its size: narrow windows fold the sidebar away. The file always
 sits right of the tree, and the tree widens only as far as its rows need, so the file pane
 takes the rest of the window. Drag the divider and that width is yours from then on. Toggle
 the sidebar with ⌃⌘S.
