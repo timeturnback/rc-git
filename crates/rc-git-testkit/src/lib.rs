@@ -420,6 +420,21 @@ impl Fixture {
             .unwrap_or_else(|e| panic!("chmod {mode:o} {}: {e}", path.display()));
     }
 
+    /// Sets the modification time of a file below the working directory.
+    ///
+    /// # Panics
+    /// On I/O failure.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixtures set their own file times"
+    )]
+    pub fn set_mtime(&self, relative: &str, modified: std::time::SystemTime) {
+        let path = self.dir.path().join(relative);
+        std::fs::File::open(&path)
+            .and_then(|file| file.set_modified(modified))
+            .unwrap_or_else(|e| panic!("set mtime of {}: {e}", path.display()));
+    }
+
     /// Stages everything and commits with `date` as both author and committer date.
     pub fn commit(&self, title: &str, date: &str) {
         self.run(&["add", "-A"], &[]);

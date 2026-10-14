@@ -13,7 +13,6 @@ use gix::ObjectId;
 use gix::objs::tree::EntryKind;
 
 use super::commit::{IndexChange, blob_data, disk_stat, index_mode, tree_entry_at, tree_of};
-use super::workfile::DiskEntry;
 use super::write::{LockedIndex, Writer};
 use super::{ActionError, ActionResult, git_err, workfile};
 
@@ -166,6 +165,8 @@ pub(super) fn verify_clean(
         .config_snapshot()
         .boolean("core.fileMode")
         .unwrap_or(true);
+    // Without the stat options the index proves nothing, and every path is compared by content.
+    let stat_options = repo.stat_options().ok();
     let deleted_files = deleted_files_on_disk(work_dir, changes, op)?;
     let deleted_paths: HashSet<&str> = changes
         .iter()
@@ -177,9 +178,12 @@ pub(super) fn verify_clean(
             op,
             path: change.path.clone(),
         };
-        if let Some((old_blob, kind)) = change.old {
-            let expected = blob_data(repo, op, &change.path, old_blob)?;
-            if !disk_matches(work_dir, &change.path, (&expected, kind), file_mode, op)? {
+        if let Some(old) = change.old {
+            let proof = StatProof {
+                index,
+                options: stat_options,
+            };
+            if !disk_matches(repo, work_dir, (&change.path, old), (file_mode, proof), op)? {
                 return Err(dirty());
             }
         } else {
@@ -442,35 +446,192 @@ pub(super) fn entry_kind(
     }
 }
 
-/// Whether the path on disk holds exactly `expected`: the same bytes and the same kind. The
-/// executable bit counts only under `file_mode` (`core.fileMode`), as in git. A missing path,
-/// a directory, or a symlink where a file was is a mismatch; any other read failure is an
-/// error, so its cause is not reported as an uncommitted change.
+/// The index and the stat options it is read with, for [`disk_matches`] to settle a path from
+/// its recorded stat instead of its content. `options` is `None` when the repository's config
+/// could not provide them, and then nothing is settled that way.
+#[derive(Clone, Copy)]
+struct StatProof<'a> {
+    index: &'a gix::index::File,
+    options: Option<gix::index::entry::stat::Options>,
+}
+
+impl StatProof<'_> {
+    /// Whether the index proves the file at `path`, with lstat `disk`, is still blob `oid`.
+    /// It may only decline, as the core's status walk does: a staged, conflicted,
+    /// assume-valid, skip-worktree, intent-to-add or racy entry, or any stat field that
+    /// differs, leaves the answer to the content compare.
+    fn proves_unchanged(&self, path: &str, oid: ObjectId, disk: &gix::index::fs::Metadata) -> bool {
+        use gix::index::entry::{Flags, Stat};
+        let Some(options) = self.options else {
+            return false;
+        };
+        let Some(entry) = self.index.entry_by_path(path.as_bytes().into()) else {
+            return false;
+        };
+        if entry.stage_raw() != 0 || entry.id != oid {
+            return false;
+        }
+        if entry
+            .flags
+            .intersects(Flags::ASSUME_VALID | Flags::SKIP_WORKTREE | Flags::INTENT_TO_ADD)
+        {
+            return false;
+        }
+        // A file written in the same second the index was is indistinguishable from one
+        // written just after it, so its stat proves nothing.
+        if entry.stat.is_racy(self.index.timestamp(), options) {
+            return false;
+        }
+        // A stat that does not convert is no evidence; the content compare settles the path.
+        let Ok(disk) = Stat::from_fs(disk) else {
+            return false;
+        };
+        entry.stat.matches(&disk, options)
+    }
+}
+
+/// The bytes read per step when a file is compared with a blob, so the file is never held
+/// whole beside it.
+const COMPARE_CHUNK: usize = 64 * 1024;
+
+/// Whether the path on disk holds exactly the old blob `oid`: the same bytes and the same
+/// kind. The executable bit counts only under `file_mode` (`core.fileMode`), as in git. A
+/// missing path, a directory, a special file, or a symlink where a file was is a mismatch;
+/// any other read failure is an error, so its cause is not reported as an uncommitted change.
+///
+/// The cheap checks run first: a file whose size differs from the blob header is a mismatch
+/// without a read, and one whose lstat matches its index entry exactly is a match without a
+/// read. Anything else is compared by content, the file streamed against the blob.
 ///
 /// # Errors
-/// [`ActionError::Git`] naming `op` and the path when it cannot be inspected or read.
+/// [`ActionError::Git`] naming `op` and the path when it cannot be inspected or read, or the
+/// blob cannot be read.
 fn disk_matches(
+    repo: &gix::Repository,
     work_dir: &Path,
-    path: &str,
-    expected: (&[u8], EntryKind),
-    file_mode: bool,
+    (path, (oid, kind)): (&str, (ObjectId, EntryKind)),
+    (file_mode, proof): (bool, StatProof<'_>),
     op: &'static str,
 ) -> ActionResult<bool> {
-    let (data, kind) = expected;
-    let DiskEntry::Present {
-        data: disk,
-        kind: disk_kind,
-    } = workfile::disk_entry(work_dir, path, op)?
-    else {
+    let full = workfile::join_under(work_dir, path, op)?;
+    let meta = match gix::index::fs::Metadata::from_path_no_follow(&full) {
+        Ok(meta) => meta,
+        Err(error) if is_absent(&error) => return Ok(false),
+        Err(error) => return Err(ActionError::git(op, path, error)),
+    };
+    if meta.is_symlink() {
+        return link_matches(repo, &full, (path, oid, kind), op);
+    }
+    if !meta.is_file() || kind == EntryKind::Link {
         return Ok(false);
+    }
+    let disk_kind = if meta.is_executable() {
+        EntryKind::BlobExecutable
+    } else {
+        EntryKind::Blob
     };
-    let kinds_match = match (disk_kind, kind) {
-        (EntryKind::Link, EntryKind::Link) => true,
-        (
-            EntryKind::Blob | EntryKind::BlobExecutable,
-            EntryKind::Blob | EntryKind::BlobExecutable,
-        ) => !file_mode || disk_kind == kind,
-        _ => false,
+    if file_mode && disk_kind != kind {
+        return Ok(false);
+    }
+    let header = repo.find_header(oid).map_err(git_err(op, path))?;
+    if meta.len() != header.size() {
+        return Ok(false);
+    }
+    if proof.proves_unchanged(path, oid, &meta) {
+        return Ok(true);
+    }
+    let expected = blob_data(repo, op, path, oid)?;
+    let file = match std::fs::File::open(&full) {
+        Ok(file) => file,
+        Err(error) if is_absent(&error) => return Ok(false),
+        Err(error) => return Err(ActionError::git(op, path, error)),
     };
-    Ok(kinds_match && disk == data)
+    reader_equals(file, &expected).map_err(git_err(op, path))
+}
+
+/// Whether the symlink at `full` points at exactly the old blob's bytes, when that side is a
+/// symlink too. A link target is short, so it is read whole.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and the path when the link or the blob cannot be read.
+fn link_matches(
+    repo: &gix::Repository,
+    full: &Path,
+    (path, oid, kind): (&str, ObjectId, EntryKind),
+    op: &'static str,
+) -> ActionResult<bool> {
+    if kind != EntryKind::Link {
+        return Ok(false);
+    }
+    let target = match std::fs::read_link(full) {
+        Ok(target) => target.into_os_string().into_encoded_bytes(),
+        Err(error) if is_absent(&error) => return Ok(false),
+        Err(error) => return Err(ActionError::git(op, path, error)),
+    };
+    Ok(target == blob_data(repo, op, path, oid)?)
+}
+
+/// Whether an I/O error means the path is not there: missing, or a file stands where a parent
+/// directory was (`a` for `a/b`), which means `a/b` is gone too.
+fn is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Whether `reader` yields exactly `expected`, read [`COMPARE_CHUNK`] bytes at a time and
+/// stopping at the first difference.
+///
+/// # Errors
+/// The first read error other than an interruption.
+fn reader_equals(mut reader: impl std::io::Read, expected: &[u8]) -> std::io::Result<bool> {
+    let mut chunk = vec![0; COMPARE_CHUNK];
+    let mut remaining = expected;
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok(remaining.is_empty());
+        }
+        let Some((head, rest)) = remaining.split_at_checked(read) else {
+            return Ok(false);
+        };
+        if chunk.get(..read) != Some(head) {
+            return Ok(false);
+        }
+        remaining = rest;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMPARE_CHUNK, reader_equals};
+
+    #[test]
+    fn a_reader_equals_only_the_exact_bytes_across_chunks() {
+        let data: Vec<u8> = (0..=u8::MAX).cycle().take(COMPARE_CHUNK * 2 + 7).collect();
+        assert!(reader_equals(data.as_slice(), &data).unwrap());
+        assert!(reader_equals(&b""[..], b"").unwrap());
+
+        let mut changed = data.clone();
+        changed[COMPARE_CHUNK + 3] ^= 1;
+        assert!(
+            !reader_equals(changed.as_slice(), &data).unwrap(),
+            "a byte differs"
+        );
+        assert!(
+            !reader_equals(&data[..data.len() - 1], &data).unwrap(),
+            "the file is shorter"
+        );
+        let mut longer = data.clone();
+        longer.push(0);
+        assert!(
+            !reader_equals(longer.as_slice(), &data).unwrap(),
+            "the file is longer"
+        );
+    }
 }

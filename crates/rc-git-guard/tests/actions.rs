@@ -3447,6 +3447,59 @@ mod checkout {
         );
     }
 
+    /// Stages `alpha.txt` with `mtime`, ignores ctime, then makes the file unreadable: only a
+    /// check that never reads the content can settle it.
+    fn unreadable_alpha(fx: &Fixture, mtime: std::time::SystemTime) {
+        fx.set_mtime("alpha.txt", mtime);
+        fx.git(&["add", "alpha.txt"]);
+        fx.git(&["config", "core.trustctime", "false"]);
+        fx.set_mode("alpha.txt", 0o000);
+    }
+
+    #[test]
+    fn a_file_whose_size_differs_is_dirty_without_reading_it() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"a longer work in progress\n");
+        fx.set_mode("alpha.txt", 0o000);
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+
+        fx.set_mode("alpha.txt", 0o644);
+        assert!(
+            matches!(&err, ActionError::DirtyPath { op: "checkout", path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(head_branch(&fx), "main", "HEAD stayed put");
+    }
+
+    #[test]
+    fn a_file_whose_stat_matches_the_index_is_clean_without_reading_it() {
+        let fx = Fixture::standard();
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
+        unreadable_alpha(&fx, an_hour_ago);
+
+        checkout_branch(fx.path(), &Policy::default(), "feature").unwrap();
+
+        assert_eq!(head_branch(&fx), "feature");
+        assert!(!fx.path().join("alpha.txt").exists());
+    }
+
+    #[test]
+    fn a_racy_index_entry_is_not_evidence_and_the_file_is_read() {
+        let fx = Fixture::standard();
+        let tomorrow = std::time::SystemTime::now() + std::time::Duration::from_hours(24);
+        unreadable_alpha(&fx, tomorrow);
+
+        let err = checkout_branch(fx.path(), &Policy::default(), "feature").unwrap_err();
+
+        fx.set_mode("alpha.txt", 0o644);
+        assert!(
+            matches!(&err, ActionError::Git { .. }) && err.to_string().contains("alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(head_branch(&fx), "main", "HEAD stayed put");
+    }
+
     #[test]
     fn an_untracked_file_the_target_branch_adds_refuses_the_switch() {
         let fx = Fixture::standard();
