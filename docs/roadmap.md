@@ -166,8 +166,8 @@ constraints are clear.
   `UpdateMode`. The release app's "Update rc-git" runs `UpdateModel` in `.update`:
   preflight the toolchain and a clean checkout, fetch and fast-forward through the guard's
   pull, run `scripts/install-app.sh`, relaunch. The dev bundle's "Rebuild and Relaunch"
-  (⌘R) runs it in `.rebuild`: preflight, `scripts/build-app.sh --dev` on the working tree
-  as it stands, relaunch — no fetch and no dirty check, so the edit-run loop never leaves
+  (⌥⌘R; ⌘R opens the window first) runs it in `.rebuild`: preflight,
+  `scripts/build-app.sh --dev` on the working tree as it stands, relaunch — no fetch and no dirty check, so the edit-run loop never leaves
   the app. The steps reach the outside through `UpdateEnvironment`, so the state machine is
   tested without building anything. Tabs survive because the identifier does not change.
   Icons are drawn by `scripts/make-icon.swift` and cached in `build/icons/`.

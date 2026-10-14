@@ -46,8 +46,8 @@ open RCGit-dev.app                 # or: open -a RCGit ~/code/repo for the relea
 mac/.build/debug/RcGitApp ~/code/repo      # without a bundle
 ```
 
-Build the dev bundle from the terminal once; after that ⌘R inside it rebuilds and relaunches
-without losing tabs (see below).
+Build the dev bundle from the terminal once; after that ⌥⌘R inside it rebuilds and relaunches
+without losing tabs (⌘R opens the Rebuild window first; see below).
 
 | | release | dev |
 |---|---|---|
@@ -89,13 +89,13 @@ an app-menu item that rebuilds themselves from there. They differ in what they b
 When the checkout is already at the commit the running bundle was built from, the window
 says so and the button becomes "Rebuild Anyway" rather than spending minutes on a rebuild.
 
-**Dev — "Rebuild and Relaunch" (⌘R):** preflight, then `scripts/build-app.sh --dev`, then
-relaunch. No fetch, no network, no credentials, and no dirty check — it builds the working
+**Dev — "Rebuild and Relaunch…" (⌘R opens the window; ⌥⌘R, "Rebuild and Relaunch Now",
+starts it without the button):** preflight, then `scripts/build-app.sh --dev`, then relaunch. No fetch, no network, no credentials, and no dirty check — it builds the working
 tree exactly as it stands, because putting work in progress into the running app is the
 point. It never reports "up to date": the tree moves without the commit. The log names the
-uncommitted files going in.
+tracked files with uncommitted changes; new untracked files are built too but not listed.
 
-That is the edit-run loop: edit, ⌘R, look. Tabs come back on the other side because they
+That is the edit-run loop: edit, ⌥⌘R, look. Tabs come back on the other side because they
 live in `UserDefaults` under a bundle identifier the rebuild does not change — though only
 the open repositories and the selected tab are restored, not what each tab was showing.
 
