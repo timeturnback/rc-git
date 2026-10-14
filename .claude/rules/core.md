@@ -16,7 +16,8 @@ paths: crates/rc-git-core/**
   plus path/oid). A new variant needs a test of its full message in `error.rs`.
 - Read a header before decoding a blob, and honor the caller's limit. A huge blob must cost one
   header read, never a decode.
-- Adding a read operation: core fn with `# Errors` docs, test in `tests/repository.rs`, call in
+- Adding a read operation: core fn with `# Errors` docs, a case in the matching
+  `crates/rc-git-core/tests/<area>.rs` (repository, diff_blame, history, worktree, stash), call in
   `tests/read_only.rs`, FFI function and header, Swift wrapper and test, CLI subcommand when
   scriptable. `docs/ffi.md` has the FFI half.
 - Fixtures come from `rc-git-testkit`. Write `.git` internals by hand only to simulate

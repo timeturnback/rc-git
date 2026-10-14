@@ -1,4 +1,5 @@
-//! Every public operation, exercised against the standard fixture.
+//! Open, refs, resolve, trees, blobs, log, commit details and an unreadable index, against the
+//! standard fixture.
 #![expect(clippy::unwrap_used, reason = "test helpers panic on fixture failure")]
 
 use std::sync::Arc;
