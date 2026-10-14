@@ -70,8 +70,8 @@ import Testing
         let evicted = try await model.pathIndex(for: roots[0])
         #expect(evicted.entries.map(\.path) == ["file0"], "an evicted root is rebuilt")
         #expect(
-            repo.lock.withLock { repo.treeEntryCalls } == calls,
-            "the rebuild reads its listings from the tree cache")
+            repo.lock.withLock { repo.treeEntryCalls } == calls + 1,
+            "the rebuild reads its one directory again: the walk stores no listing")
         #expect(model.pathIndexCacheCount == limit)
     }
 

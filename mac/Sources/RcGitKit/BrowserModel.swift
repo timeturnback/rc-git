@@ -232,8 +232,8 @@ public final class BrowserModel {
     private var searchPager: HistoryPager?
     /// Flattened file lists, per root tree. Content-addressed like every other cache, but one
     /// index runs to tens of megabytes, so only the `pathIndexCacheLimit` most recently used
-    /// roots are kept. Rebuilding an evicted one reads no objects: its directory listings are
-    /// still in `trees`.
+    /// roots are kept. Rebuilding an evicted one reads its directories again, since the walk
+    /// does not store them in `trees`.
     private var pathIndices = RecentCache<Oid, PathIndex>(limit: pathIndexCacheLimit)
     nonisolated static let pathIndexCacheLimit = 2
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
@@ -1682,7 +1682,9 @@ public final class BrowserModel {
 
     /// The flattened file list below `root`, building it in the background on first use.
     /// This is the one call that walks a whole tree; it checks for cancellation between
-    /// directory reads and every directory it reads lands in the shared tree cache.
+    /// directory reads. It reads through the shared tree cache without storing in it: the
+    /// index already holds the flattened result, and a whole repository's listings would push
+    /// out the folders the user expanded.
     public func pathIndex(for root: Oid) async throws -> PathIndex {
         if let cached = pathIndices.value(for: root) { return cached }
         if let build = indexBuild, build.root == root { return try await build.task.value }
@@ -1691,7 +1693,7 @@ public final class BrowserModel {
         let store = trees
         let task = Task.detached(priority: .utility) {
             try PathIndex.build(root: root) { tree in
-                try store.entries(of: tree, read: repository.treeEntries)
+                try store.cached(tree) ?? repository.treeEntries(tree)
             }
         }
         indexBuild = (root, task)

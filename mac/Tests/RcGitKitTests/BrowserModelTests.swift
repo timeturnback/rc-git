@@ -107,6 +107,38 @@ import Testing
         #expect(model.trees.cached(srcTree) == nil, "a failed load is not cached")
     }
 
+    @Test func pathSearchReadsThroughTheTreeCacheWithoutFillingIt() async throws {
+        await model.attach(repo)
+        _ = try await model.children(of: mainTree)
+        let cachedTrees = model.trees.count
+        let result = try await model.searchPaths("")
+        #expect(result.entries.map(\.path).contains("src/main.rs"))
+        #expect(model.trees.count == cachedTrees, "the walk stores no listing")
+        #expect(model.trees.cached(srcTree) == nil)
+    }
+
+    @Test func treeCacheEvictsTheOldestListingsPastItsChildLimit() async throws {
+        let half = model.trees.childLimit / 2 + 1
+        let directories = (0..<3).map { oid(UInt8(0x60 + $0)) }
+        for directory in directories {
+            repo.trees[directory] = (0..<half).map {
+                TreeEntry(name: "f\($0)", oid: readme, kind: .blob)
+            }
+        }
+        await model.attach(repo)
+        for directory in directories {
+            _ = try await model.children(of: directory)
+            #expect(model.trees.childCount <= model.trees.childLimit)
+        }
+        #expect(model.trees.count == 1, "two listings of over half the limit cannot share it")
+        #expect(model.trees.cached(directories[2]) != nil, "the newest listing stays")
+
+        let calls = repo.treeEntryCalls
+        _ = try await model.children(of: directories[0])
+        #expect(repo.treeEntryCalls == calls + 1, "an evicted listing is read again")
+        #expect(model.trees.childCount <= model.trees.childLimit)
+    }
+
     @Test func openPathWalksTheTreeAndReportsDeadLinks() async {
         await model.attach(repo)
         #expect(await model.openPath("src/main.rs") == .opened)

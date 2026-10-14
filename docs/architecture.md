@@ -102,7 +102,7 @@ next step and goes on to it. What a tab reports during a restore is not recorded
 |---|---|---|---|
 | decoded objects | object id | gix, per pooled handle | never (LRU eviction only) |
 | pack delta bases | object id | gix, per pooled handle | never |
-| directory listings | tree id | `TreeStore` in RcGitKit | on `attach` |
+| directory listings | tree id | `TreeStore` in RcGitKit | on `attach`; least recently used evicted past 100,000 children |
 | history pages | tip id | `BrowserModel` | on `attach`; 4 most recent tips kept |
 | path-scoped history pages | tip id and path | `BrowserModel` | on `attach`; 4 most recent kept |
 | flattened file lists (path search) | root tree id | `BrowserModel` | on `attach`; 2 most recent roots kept |
