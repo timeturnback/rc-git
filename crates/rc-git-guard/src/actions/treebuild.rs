@@ -3,7 +3,7 @@
 //! never with repository size. Git never stores empty trees: a directory whose last entry
 //! is removed disappears from its parent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gix::ObjectId;
 use gix::bstr::BString;
@@ -121,40 +121,35 @@ fn rewrite_dir(
     dir: &str,
     edits: &BTreeMap<BString, Node>,
 ) -> ActionResult<Option<ObjectId>> {
-    let mut entries: Vec<Entry> = match base {
+    let mut entries: HashMap<BString, Entry> = match base {
         Some(id) => decode_entries(writer.repo(), id)?,
-        None => Vec::new(),
+        None => HashMap::new(),
     };
     for (name, node) in edits {
         match node {
             Node::Leaf(PathEdit::Remove) => {
-                entries.retain(|entry| entry.filename != *name);
+                entries.remove(name);
             }
             Node::Leaf(PathEdit::Put { oid, kind }) => {
-                entries.retain(|entry| entry.filename != *name);
-                entries.push(Entry {
-                    mode: (*kind).into(),
-                    filename: name.clone(),
-                    oid: *oid,
-                });
+                entries.insert(name.clone(), entry((*kind).into(), name.clone(), *oid));
             }
             Node::Dir(children) => {
                 let path = format!("{dir}{name}/");
-                let existing = entries.iter().find(|entry| entry.filename == *name);
-                if existing.is_some_and(|entry| entry.mode.is_commit()) {
+                let existing = entries.remove(name);
+                if existing
+                    .as_ref()
+                    .is_some_and(|entry| entry.mode.is_commit())
+                {
                     return Err(inside_submodule(&path, children));
                 }
                 let sub_base = existing
                     .filter(|entry| entry.mode.is_tree())
                     .map(|entry| entry.oid);
-                let rebuilt = rewrite_dir(writer, sub_base, &path, children)?;
-                entries.retain(|entry| entry.filename != *name);
-                if let Some(oid) = rebuilt {
-                    entries.push(Entry {
-                        mode: EntryKind::Tree.into(),
-                        filename: name.clone(),
-                        oid,
-                    });
+                if let Some(oid) = rewrite_dir(writer, sub_base, &path, children)? {
+                    entries.insert(
+                        name.clone(),
+                        entry(EntryKind::Tree.into(), name.clone(), oid),
+                    );
                 }
             }
         }
@@ -162,6 +157,7 @@ fn rewrite_dir(
     if entries.is_empty() {
         return Ok(None);
     }
+    let mut entries: Vec<Entry> = entries.into_values().collect();
     entries.sort();
     let tree = gix::objs::Tree { entries };
     writer.write_object(OP_BUILD, "tree", &tree).map(Some)
@@ -190,7 +186,18 @@ fn inside_submodule(dir: &str, children: &BTreeMap<BString, Node>) -> ActionErro
     )
 }
 
-fn decode_entries(repo: &gix::Repository, tree: ObjectId) -> ActionResult<Vec<Entry>> {
+/// The tree entry `filename` pointing at `oid` with `mode`.
+fn entry(mode: gix::objs::tree::EntryMode, filename: BString, oid: ObjectId) -> Entry {
+    Entry {
+        mode,
+        filename,
+        oid,
+    }
+}
+
+/// The entries of `tree`, keyed by name (unique within a valid tree), so each edit is one
+/// keyed lookup rather than a scan of the whole directory.
+fn decode_entries(repo: &gix::Repository, tree: ObjectId) -> ActionResult<HashMap<BString, Entry>> {
     const OP: &str = "read tree";
     let tree = repo
         .find_tree(tree)
@@ -201,10 +208,58 @@ fn decode_entries(repo: &gix::Repository, tree: ObjectId) -> ActionResult<Vec<En
     Ok(decoded
         .entries
         .iter()
-        .map(|entry| Entry {
-            mode: entry.mode,
-            filename: entry.filename.to_owned(),
-            oid: entry.oid.to_owned(),
+        .map(|decoded| {
+            let name = decoded.filename.to_owned();
+            (
+                name.clone(),
+                entry(decoded.mode, name, decoded.oid.to_owned()),
+            )
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Action, Policy};
+
+    fn oid(hex: &str) -> ObjectId {
+        ObjectId::from_hex(hex.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn rewriting_a_tree_beside_a_dotted_name_matches_git_mktree() {
+        let fx = rc_git_testkit::Fixture::standard();
+        let x = fx.hash_blob(b"x\n");
+        let y = fx.hash_blob(b"y\n");
+        let old = fx.hash_blob(b"old\n");
+        let new = fx.hash_blob(b"new\n");
+        let inner = fx.mktree(format!("100644 blob {x}\tx\n").as_bytes());
+        let base = fx.mktree(
+            format!("040000 tree {inner}\ta\n100644 blob {old}\ta.b\n100644 blob {old}\ta0\n")
+                .as_bytes(),
+        );
+
+        let mut edits = BTreeMap::new();
+        let put = |hex: &str| PathEdit::Put {
+            oid: oid(hex),
+            kind: EntryKind::Blob,
+        };
+        insert(&mut edits, "a/y", put(&y)).unwrap();
+        insert(&mut edits, "a.b", put(&new)).unwrap();
+        insert(&mut edits, "a0", PathEdit::Remove).unwrap();
+        insert(&mut edits, "a-c", put(&new)).unwrap();
+
+        let repo = gix::open_opts(fx.path(), gix::open::Options::isolated()).unwrap();
+        let proof = Policy::default().authorize(&Action::Fetch, None).unwrap();
+        let writer = Writer::new(&repo, &proof);
+        let rebuilt = rewrite(&writer, Some(oid(&base)), &edits).unwrap().unwrap();
+
+        let inner = fx.mktree(format!("100644 blob {x}\tx\n100644 blob {y}\ty\n").as_bytes());
+        let expected = fx.mktree(
+            format!("100644 blob {new}\ta-c\n040000 tree {inner}\ta\n100644 blob {new}\ta.b\n")
+                .as_bytes(),
+        );
+        assert_eq!(rebuilt, oid(&expected));
+    }
 }
