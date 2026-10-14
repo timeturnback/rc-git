@@ -861,6 +861,7 @@ fn create_ref(
 ) -> ActionResult<()> {
     let repo = open(repo_path, op, full_name)?;
     refuse_case_variant(&repo, op, full_name)?;
+    refuse_existing(&repo, op, full_name)?;
     let target = resolve_ref_target(&repo, op, full_name, revspec)?;
     let edit = update_edit(
         full_name,
@@ -870,6 +871,19 @@ fn create_ref(
         op,
     )?;
     Writer::new(&repo, proof).apply_edit(edit, op, full_name)
+}
+
+/// Refuses `full_name` when it already exists. `PreviousValue::MustNotExist` alone lets an edit
+/// through when the existing ref already holds the new target, and that edit appends a reflog
+/// line; the edit keeps it only as the backstop for a ref created after this read.
+fn refuse_existing(repo: &gix::Repository, op: &'static str, full_name: &str) -> ActionResult<()> {
+    let existing = repo
+        .try_find_reference(full_name)
+        .map_err(git_err(op, full_name))?;
+    if existing.is_some() {
+        return Err(ActionError::git(op, full_name, "it already exists"));
+    }
+    Ok(())
 }
 
 /// The object `revspec` names, for a new ref `full_name`. A branch is peeled to a commit and

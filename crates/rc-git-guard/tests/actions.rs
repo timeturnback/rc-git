@@ -113,6 +113,37 @@ fn branches_and_tags_are_created_at_the_named_revision_and_never_overwritten() {
 }
 
 #[test]
+fn creating_a_ref_again_at_its_own_target_is_refused_without_a_reflog_line() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    create_branch(fx.path(), &policy, "topic", "HEAD").unwrap();
+    create_tag(fx.path(), &policy, "v2.0", "HEAD").unwrap();
+    let before = refs(&fx);
+    let branch_log = fx.git_output(&["reflog", "show", "refs/heads/topic"]);
+
+    let err = create_branch(fx.path(), &policy, "topic", "HEAD").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("create branch 'refs/heads/topic': it already exists"),
+        "{err}"
+    );
+    let err = create_tag(fx.path(), &policy, "v2.0", "HEAD").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("create tag 'refs/tags/v2.0': it already exists"),
+        "{err}"
+    );
+
+    assert_eq!(refs(&fx), before, "no ref was written");
+    assert_eq!(
+        fx.git_output(&["reflog", "show", "refs/heads/topic"]),
+        branch_log,
+        "the branch reflog gained no line"
+    );
+}
+
+#[test]
 fn a_branch_is_created_at_the_commit_a_tag_names_and_never_on_a_tree() {
     let fx = Fixture::standard();
     let policy = Policy::default();
