@@ -92,18 +92,8 @@ pub(super) async fn authenticate(
         .iter()
         .map(|path| file_public_key(path))
         .collect();
-    let order = offer_order(
-        &agent_keys
-            .iter()
-            .map(|agent_key| agent_key.key.key_data())
-            .collect::<Vec<_>>(),
-        &file_keys
-            .iter()
-            .map(|file_key| file_key.as_ref().map(|file_key| file_key.key.key_data()))
-            .collect::<Vec<_>>(),
-        target.identities_only,
-    );
-    let agent_reached = agent.is_some();
+    let order = key_order(&agent_keys, &file_keys, target.identities_only);
+    let agent_reach = AgentReach::of(&target.identity_agent, agent.is_some());
     let mut tried = Vec::new();
     for offer in order {
         let (key, outcome) = match offer {
@@ -132,13 +122,33 @@ pub(super) async fn authenticate(
         }
         tried.push(Tried { key, outcome });
     }
-    Err(ladder_error(op, &target.host, &tried, agent_reached))
+    Err(ladder_error(op, &target.host, &tried, agent_reach))
+}
+
+/// Whether the ladder had an ssh-agent to offer keys from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentReach {
+    Reached,
+    /// The socket was named but did not answer with a key list.
+    Unreachable,
+    /// [`AgentSocket::None`]: the config turned the agent off, so none was asked.
+    Disabled,
+}
+
+impl AgentReach {
+    fn of(socket: &AgentSocket, connected: bool) -> Self {
+        match socket {
+            AgentSocket::None => Self::Disabled,
+            AgentSocket::Env | AgentSocket::Path(_) if connected => Self::Reached,
+            AgentSocket::Env | AgentSocket::Path(_) => Self::Unreachable,
+        }
+    }
 }
 
 /// The error for a ladder that ended with no key accepted. A locked key comes first: a
 /// passphrase can still open it. Then the files no passphrase can fix, by name and
 /// reason, so the user is not asked for one. Otherwise every key offered was rejected.
-fn ladder_error(op: &'static str, host: &str, tried: &[Tried], agent_reached: bool) -> ActionError {
+fn ladder_error(op: &'static str, host: &str, tried: &[Tried], agent: AgentReach) -> ActionError {
     let mut unusable = Vec::new();
     let mut rejected = 0usize;
     for attempt in tried {
@@ -168,10 +178,43 @@ fn ladder_error(op: &'static str, host: &str, tried: &[Tried], agent_reached: bo
     if rejected > 0 {
         parts.push(format!("the server rejected {rejected} other key(s)"));
     }
-    if !agent_reached {
-        parts.push("no ssh-agent was reachable".to_owned());
+    match agent {
+        AgentReach::Reached => {}
+        AgentReach::Unreachable => parts.push("no ssh-agent was reachable".to_owned()),
+        AgentReach::Disabled => parts.push(
+            "no ssh-agent was asked (IdentityAgent is none or names an unset variable)".to_owned(),
+        ),
     }
     ActionError::git(op, host, parts.join("; "))
+}
+
+/// [`offer_order`] over the agent's keys and the identity files' public halves, compared
+/// by [`key_identity`] so a key matches whatever comment each side carries.
+fn key_order(
+    agent_keys: &[AgentKey],
+    file_keys: &[Option<FileKey>],
+    identities_only: bool,
+) -> Vec<Offer> {
+    let mut agent = Vec::new();
+    for agent_key in agent_keys {
+        agent.push(key_identity(&agent_key.key));
+    }
+    let mut files = Vec::new();
+    for file_key in file_keys {
+        files.push(
+            file_key
+                .as_ref()
+                .map(|file_key| key_identity(&file_key.key)),
+        );
+    }
+    offer_order(&agent, &files, identities_only)
+}
+
+/// What makes two public keys the same key: the algorithm and key material, not the
+/// comment. The agent reports the comment `ssh-add` read, a `.pub` file carries its own,
+/// and the two rarely agree.
+fn key_identity(key: &PublicKey) -> &russh::keys::ssh_key::public::KeyData {
+    key.key_data()
 }
 
 /// The order keys are offered in. `agent` holds the agent's keys, `files` the public
@@ -893,7 +936,7 @@ mod tests {
                 tried("/k/id_bad", Outcome::Unusable(NOT_A_KEY.to_owned())),
                 tried("/k/id_locked", Outcome::Locked),
             ],
-            true,
+            AgentReach::Reached,
         );
         let ActionError::PassphraseRequired { key, .. } = &err else {
             panic!("expected PassphraseRequired, got {err:?}");
@@ -916,7 +959,7 @@ mod tests {
                 tried("/k/id_rsa", Outcome::Absent),
                 tried("/k/id_bad", Outcome::Unusable(NOT_A_KEY.to_owned())),
             ],
-            false,
+            AgentReach::Unreachable,
         );
         assert!(matches!(&err, ActionError::Git { .. }), "{err:?}");
         assert_eq!(
@@ -936,7 +979,7 @@ mod tests {
                 tried("/k/id_ed25519", Outcome::Rejected),
                 tried("/k/id_rsa", Outcome::Absent),
             ],
-            true,
+            AgentReach::Reached,
         );
         assert!(
             matches!(&err, ActionError::AuthRequired { op: "push", .. }),
@@ -949,5 +992,60 @@ mod tests {
         let dir = rc_git_testkit::Fixture::empty_dir();
         dir.write("id_work", b"not a key");
         assert!(file_public_key(&dir.path().join("id_work")).is_none());
+    }
+
+    /// `IdentityAgent none` asks no agent, so the error must not blame an unreachable one.
+    #[test]
+    fn a_disabled_agent_is_named_as_turned_off_not_unreachable() {
+        let err = ladder_error(
+            "fetch",
+            "example.com",
+            &[tried(
+                "/k/id_work",
+                Outcome::Unusable("no such file".to_owned()),
+            )],
+            AgentReach::of(&AgentSocket::None, false),
+        );
+        assert_eq!(
+            err.to_string(),
+            "fetch 'example.com': no ssh key was accepted; cannot use the identity file \
+             '/k/id_work' (no such file); no ssh-agent was asked (IdentityAgent is none or \
+             names an unset variable)"
+        );
+    }
+
+    #[test]
+    fn an_agent_socket_that_answered_is_reached_and_one_that_did_not_is_unreachable() {
+        let path = AgentSocket::Path("/tmp/agent.sock".into());
+        assert_eq!(AgentReach::of(&AgentSocket::Env, true), AgentReach::Reached);
+        assert_eq!(AgentReach::of(&path, false), AgentReach::Unreachable);
+        assert_eq!(
+            AgentReach::of(&AgentSocket::None, false),
+            AgentReach::Disabled
+        );
+    }
+
+    /// The agent reports the comment `ssh-add` read; the `.pub` beside the identity file
+    /// carries its own. The same key must still match, so the file is not offered twice
+    /// and `IdentitiesOnly` keeps the agent key.
+    #[test]
+    fn the_same_key_matches_across_different_comments() {
+        let mut agent_public = keypair(1).public_key().clone();
+        agent_public.set_comment("work@laptop");
+        let mut file_public = keypair(1).public_key().clone();
+        file_public.set_comment("long@desktop");
+        assert_ne!(
+            agent_public, file_public,
+            "the comments must differ for the test"
+        );
+        let agent_keys = [AgentKey {
+            key: agent_public,
+            comment: "work@laptop".to_owned(),
+        }];
+        let file_keys = [Some(FileKey {
+            key: file_public,
+            public_only: false,
+        })];
+        assert_eq!(key_order(&agent_keys, &file_keys, true), [Offer::Agent(0)]);
     }
 }
