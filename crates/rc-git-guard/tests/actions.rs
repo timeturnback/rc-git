@@ -213,6 +213,42 @@ fn deleting_a_merged_branch_needs_only_a_plain_confirm_and_no_backup() {
 }
 
 #[test]
+fn an_unreadable_head_fails_the_merge_check_instead_of_dropping_its_tip() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    create_branch(fx.path(), &policy, "old-work", "main~1").unwrap();
+    fx.write(".git/HEAD", b"1111111111111111111111111111111111111111\n");
+
+    let err = plan_branch_delete(fx.path(), &policy, "old-work").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(err.to_string().contains("HEAD"), "names HEAD: {err}");
+    let err = delete_branch(fx.path(), &policy, "old-work", None).unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        refs(&fx).contains("refs/heads/old-work"),
+        "nothing was deleted"
+    );
+}
+
+#[test]
+fn an_unreadable_branch_tip_fails_the_merge_check_instead_of_being_skipped() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    create_branch(fx.path(), &policy, "old-work", "main~1").unwrap();
+    fx.write(
+        ".git/refs/heads/ghost",
+        b"1111111111111111111111111111111111111111\n",
+    );
+
+    let err = plan_branch_delete(fx.path(), &policy, "old-work").unwrap_err();
+    assert!(matches!(err, ActionError::Git { .. }), "{err}");
+    assert!(
+        err.to_string().contains("refs/heads/ghost"),
+        "names the ref: {err}"
+    );
+}
+
+#[test]
 fn deleting_an_unmerged_branch_demands_the_name_and_writes_a_backup() {
     let fx = Fixture::standard();
     let policy = Policy::default();

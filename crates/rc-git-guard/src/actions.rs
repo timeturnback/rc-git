@@ -1032,7 +1032,9 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, g
 }
 
 /// The tips that count as other evidence for `full_name`'s commits: `HEAD` unless its
-/// symbolic chain reaches `full_name`, and every direct local branch except `full_name`.
+/// symbolic chain reaches `full_name` or it is unborn, and every direct local branch except
+/// `full_name`. A ref that cannot be read is an error, never a missing tip: a skipped tip
+/// would turn a merged branch into an unmerged one.
 fn other_branch_tips(
     repo: &gix::Repository,
     op: &'static str,
@@ -1040,21 +1042,27 @@ fn other_branch_tips(
 ) -> ActionResult<Vec<gix::ObjectId>> {
     let mut others: Vec<gix::ObjectId> = Vec::new();
     if !head_is_on(repo, op, full_name)?
-        && let Ok(head) = repo.head_id()
+        && let Some(head) = head_commit(repo, op)?
     {
-        others.push(head.detach());
+        others.push(head);
     }
     let references = repo.references().map_err(git_err(op, full_name))?;
-    if let Ok(branches) = references.local_branches() {
-        for branch in branches.flatten() {
-            let symbolic = branch.target().try_name().is_some();
-            if symbolic || branch.name().as_bstr() == full_name {
-                continue;
-            }
-            if let Ok(id) = branch.into_fully_peeled_id() {
-                others.push(id.detach());
-            }
+    let branches = references
+        .local_branches()
+        .map_err(git_err(op, "refs/heads"))?;
+    for branch in branches {
+        let branch = branch.map_err(|source| ActionError::Git {
+            op,
+            name: "refs/heads".into(),
+            source,
+        })?;
+        let symbolic = branch.target().try_name().is_some();
+        if symbolic || branch.name().as_bstr() == full_name {
+            continue;
         }
+        let name = branch.name().as_bstr().to_string();
+        let id = branch.into_fully_peeled_id().map_err(git_err(op, &name))?;
+        others.push(id.detach());
     }
     Ok(others)
 }
