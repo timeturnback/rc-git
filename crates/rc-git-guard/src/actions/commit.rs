@@ -49,12 +49,25 @@ pub fn configured_identity(repo_path: &Path) -> ActionResult<Option<Identity>> {
     Ok(workfile::repository_identity(&repo))
 }
 
-/// Commits `selections` to the checked-out branch with `message`. `expected_head` is the
-/// commit the change list was built against — `None` for an unborn branch — and the commit
-/// is refused when `HEAD` moved away from it. `author` decides who is recorded, as
-/// [`Author`] describes; without any identity the commit is refused. Whole-file selections
-/// commit the bytes on disk; hunk selections are re-validated against a fresh diff and
-/// spliced onto the tree side.
+/// What [`commit`] records, and the state it was built against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRequest<'a> {
+    /// The commit message.
+    pub message: &'a str,
+    /// Who is recorded, as [`Author`] describes.
+    pub author: Author,
+    /// The commit the change list was built against; `None` for an unborn branch.
+    pub expected_head: Option<rc_git_core::Oid>,
+    /// The files, whole or by hunk, to commit.
+    pub selections: &'a [FileSelection],
+}
+
+/// Commits `request.selections` to the checked-out branch with `request.message`. The commit
+/// is refused when `HEAD` moved away from `request.expected_head`, the commit the change list
+/// was built against. `request.author` decides who is recorded, as [`Author`] describes;
+/// without any identity the commit is refused. Whole-file selections commit the bytes on
+/// disk; hunk selections are re-validated against a fresh diff and spliced onto the tree
+/// side.
 ///
 /// # Errors
 /// [`ActionError::DetachedHead`], [`ActionError::StaleRepository`],
@@ -67,12 +80,15 @@ pub fn configured_identity(repo_path: &Path) -> ActionResult<Option<Identity>> {
 pub fn commit(
     repo_path: &Path,
     policy: &Policy,
-    message: &str,
-    author: Author,
-    expected_head: Option<rc_git_core::Oid>,
-    selections: &[FileSelection],
+    request: CommitRequest<'_>,
     input: Option<&str>,
 ) -> ActionResult<Committed> {
+    let CommitRequest {
+        message,
+        author,
+        expected_head,
+        selections,
+    } = request;
     let repo = open(repo_path, OP, "HEAD")?;
     super::refuse_unfinished_operation(&repo, OP)?;
     let action = Action::Commit {
@@ -118,36 +134,9 @@ pub fn commit(
             "the selection matches HEAD; nothing to commit",
         ));
     }
-
-    let signature = gix::actor::Signature {
-        name: identity.name.into(),
-        email: identity.email.into(),
-        time: gix::date::Time::now_local_or_utc(),
-    };
-    let commit_object = gix::objs::Commit {
-        tree: new_tree,
-        parents: head_commit.into_iter().collect(),
-        author: signature.clone(),
-        committer: signature,
-        encoding: None,
-        message: message.into(),
-        extra_headers: Vec::new(),
-    };
-    let commit_oid = writer.write_object(OP, "object", &commit_object)?;
+    let commit_oid = write_commit(&writer, identity, (new_tree, head_commit), message)?;
     let oid = treeapply::core_oid(commit_oid, OP)?;
-
-    let expected = match head_commit {
-        Some(id) => PreviousValue::MustExistAndMatch(Target::Object(id)),
-        None => PreviousValue::MustNotExist,
-    };
-    let edit = super::update_edit(
-        &branch_ref,
-        expected,
-        Target::Object(commit_oid),
-        REFLOG_MESSAGE,
-        OP,
-    )?;
-    writer.apply_edit(edit, OP, &branch_ref)?;
+    advance_branch(&writer, &branch_ref, head_commit, commit_oid)?;
     // The branch has moved, so the commit stands whatever happens to the index: an error here
     // would read as a failed commit and a retry would be refused as stale. The flag reports it.
     let index_refreshed = writer.update_index(index, OP, &index_changes).is_ok();
@@ -163,6 +152,53 @@ pub fn commit(
             .to_owned(),
         index_refreshed,
     })
+}
+
+/// Writes the commit object for `tree` on top of `parent` (none for a root commit), with
+/// `identity` as both author and committer, stamped now.
+fn write_commit(
+    writer: &Writer<'_>,
+    identity: Identity,
+    (tree, parent): (ObjectId, Option<ObjectId>),
+    message: String,
+) -> ActionResult<ObjectId> {
+    let signature = gix::actor::Signature {
+        name: identity.name.into(),
+        email: identity.email.into(),
+        time: gix::date::Time::now_local_or_utc(),
+    };
+    let commit_object = gix::objs::Commit {
+        tree,
+        parents: parent.into_iter().collect(),
+        author: signature.clone(),
+        committer: signature,
+        encoding: None,
+        message: message.into(),
+        extra_headers: Vec::new(),
+    };
+    writer.write_object(OP, "object", &commit_object)
+}
+
+/// Moves `branch_ref` from `head_commit` (absent for an unborn branch) to `commit_oid`,
+/// refused when the branch moved since it was read.
+fn advance_branch(
+    writer: &Writer<'_>,
+    branch_ref: &str,
+    head_commit: Option<ObjectId>,
+    commit_oid: ObjectId,
+) -> ActionResult<()> {
+    let expected = match head_commit {
+        Some(id) => PreviousValue::MustExistAndMatch(Target::Object(id)),
+        None => PreviousValue::MustNotExist,
+    };
+    let edit = super::update_edit(
+        branch_ref,
+        expected,
+        Target::Object(commit_oid),
+        REFLOG_MESSAGE,
+        OP,
+    )?;
+    writer.apply_edit(edit, OP, branch_ref)
 }
 
 /// A path and the blob, kind and stat the index records for it; `None` removes its entry.

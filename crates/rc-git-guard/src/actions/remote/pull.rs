@@ -12,10 +12,10 @@ use gix::refs::transaction::PreviousValue;
 
 use crate::actions::commit::work_dir;
 use crate::actions::write::Writer;
-use crate::actions::{ActionError, ActionResult, authorize, open, treeapply};
+use crate::actions::{ActionError, ActionResult, authorize, is_ancestor_of_any, open, treeapply};
 use crate::{Action, Policy};
 
-use super::{count_ahead_behind, current_branch, is_ancestor, peel_ref, tracking_ref_name};
+use super::{count_ahead_behind, current_branch, peel_ref, tracking_ref_name};
 
 const OP: &str = "pull";
 /// What the branch and `HEAD` reflogs record for a fast-forward pull.
@@ -78,10 +78,10 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
     let Some(new) = upstream_tip(&repo, &branch)? else {
         return Ok(up_to_date(true));
     };
-    if new == old || is_ancestor(&repo, new, old) {
+    if new == old || is_ancestor_of_any(&repo, new, &[old]) {
         return Ok(up_to_date(false));
     }
-    if !is_ancestor(&repo, old, new) {
+    if !is_ancestor_of_any(&repo, old, &[new]) {
         let (ahead, behind) = count_ahead_behind(&repo, old, new, OP)?;
         return Err(ActionError::Diverged {
             branch,

@@ -22,15 +22,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage,
     CommitSummary, DiffHunk, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository,
-    TreeChange, TreeEntry, WorktreeStatus,
+    ScanWindow, TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
-    ActionError, ActionResult, Author, Cancel, Credentials, Deleted, FileSelection, HunkStamp,
-    Identity, RemoteAuth, checkout_branch, commit, configured_identity, create_branch, create_tag,
-    delete_branch, delete_tag, discard_files, discard_hunks, fetch_upstream, plan_branch_delete,
-    plan_commit, plan_discard, plan_stash_apply, plan_stash_drop, plan_stash_pop, plan_stash_push,
-    plan_tag_delete, pull_fast_forward, push_upstream, stash_apply, stash_drop, stash_pop,
-    stash_push, upstream_status,
+    ActionError, ActionResult, Author, Cancel, CommitRequest, Credentials, Deleted, FileSelection,
+    HunkStamp, Identity, RemoteAuth, StashRequest, checkout_branch, commit, configured_identity,
+    create_branch, create_tag, delete_branch, delete_tag, discard_files, discard_hunks,
+    fetch_upstream, plan_branch_delete, plan_commit, plan_discard, plan_stash_apply,
+    plan_stash_drop, plan_stash_pop, plan_stash_push, plan_tag_delete, pull_fast_forward,
+    push_upstream, stash_apply, stash_drop, stash_pop, stash_push, upstream_status,
 };
 use rc_git_guard::{Decision, Policy, Risk};
 use rc_git_highlight::{Class, Language};
@@ -1978,6 +1978,17 @@ pub struct RcGitScanPage {
     pub max_scan: usize,
 }
 
+impl RcGitScanPage {
+    /// The core's form of this page.
+    fn window(self) -> ScanWindow {
+        ScanWindow {
+            scan_skip: self.scan_skip,
+            limit: self.limit,
+            max_scan: self.max_scan,
+        }
+    }
+}
+
 /// Commits reachable from `tip` that changed `path`, newest first. Examines at most
 /// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
 /// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
@@ -2012,13 +2023,7 @@ pub unsafe extern "C" fn rcgit_path_history(
     let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
-    match repo.path_history(
-        tip,
-        &String::from_utf8_lossy(path),
-        page.scan_skip,
-        page.limit,
-        page.max_scan,
-    ) {
+    match repo.path_history(tip, &String::from_utf8_lossy(path), page.window()) {
         Ok(page) => export(RcGitCommitPage::export(page)),
         Err(err) => {
             error.report(err);
@@ -2098,7 +2103,7 @@ pub unsafe extern "C" fn rcgit_search_commits(
         before: filter.has_before.then_some(filter.before),
         path: path.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
     };
-    match repo.search_commits(tip, &core_filter, page.scan_skip, page.limit, page.max_scan) {
+    match repo.search_commits(tip, &core_filter, page.window()) {
         Ok(page) => export(RcGitCommitPage::export(page)),
         Err(err) => {
             error.report(err);
@@ -3655,10 +3660,12 @@ pub unsafe extern "C" fn rcgit_guard_commit(
     match commit(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        &request.message,
-        request.author,
-        request.expected_head,
-        &request.selections,
+        CommitRequest {
+            message: &request.message,
+            author: request.author,
+            expected_head: request.expected_head,
+            selections: &request.selections,
+        },
         input.as_deref(),
     ) {
         Ok(committed) => {
@@ -3721,9 +3728,11 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
     let pushed = stash_push(
         Path::new(OsStr::from_bytes(repo_path)),
         &Policy::default(),
-        &request.paths,
-        request.message.as_deref(),
-        request.author,
+        StashRequest {
+            paths: &request.paths,
+            message: request.message.as_deref(),
+            author: request.author,
+        },
         input.as_deref(),
     );
     finish_action(pushed.map(|_| ()), &error)

@@ -33,6 +33,15 @@ use target::SshTarget;
 /// Boxed transport type shared with the HTTPS push path.
 type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>;
 
+/// The git service a connection runs on the server, and the protocol version it asks for.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Exec {
+    /// `git-upload-pack` for a fetch, `git-receive-pack` for a push.
+    pub(super) service: Service,
+    /// The protocol version the transport speaks; V2 is requested only for upload-pack.
+    pub(super) version: Protocol,
+}
+
 /// Opens an ssh connection to `url`'s host, authenticates, execs the git service, and
 /// wraps the channel as a blocking git-protocol transport. The transport keeps a share
 /// of `cancel`, so setting the flag after this returns still stops the transfer.
@@ -46,20 +55,18 @@ type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Tra
 pub(super) fn transport(
     url: &gix::Url,
     auth: RemoteAuth<'_>,
-    service: Service,
-    desired_version: Protocol,
+    exec: Exec,
     cancel: &Cancel,
     op: &'static str,
 ) -> ActionResult<BoxedTransport> {
     let target = target::resolve(url, auth.ssh_dir, op)?;
-    let command = target::quoted_command(service, url.path.as_ref(), op)?;
+    let command = target::quoted_command(exec.service, url.path.as_ref(), op)?;
     bail_if_cancelled(cancel, op)?;
     let request = Request {
         target: &target,
         auth,
         command: &command,
-        service,
-        desired_version,
+        exec,
         cancel,
         op,
     };
@@ -79,7 +86,7 @@ pub(super) fn transport(
             watch.clone(),
         ),
         SshWrite::new(writer, handle, &hold, watch),
-        desired_version,
+        exec.version,
         url.path.clone(),
         None::<(String, _)>,
         ConnectMode::Process,
@@ -94,8 +101,7 @@ struct Request<'a> {
     target: &'a SshTarget,
     auth: RemoteAuth<'a>,
     command: &'a str,
-    service: Service,
-    desired_version: Protocol,
+    exec: Exec,
     cancel: &'a Cancel,
     op: &'static str,
 }
@@ -224,8 +230,7 @@ async fn connect_and_exec(
     let Request {
         target,
         command,
-        service,
-        desired_version,
+        exec,
         op,
         ..
     } = *request;
@@ -246,7 +251,7 @@ async fn connect_and_exec(
         .channel_open_session()
         .await
         .map_err(git_err(op, &target.host))?;
-    if service == Service::UploadPack && desired_version == Protocol::V2 {
+    if exec.service == Service::UploadPack && exec.version == Protocol::V2 {
         // Best effort: a server that ignores the env just advertises V0/V1, which the
         // handshake accepts as a downgrade.
         channel

@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary,
     DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind,
-    Repository, TreeEntry, UnreadableEntry, WorktreeStatus,
+    Repository, ScanWindow, TreeEntry, UnreadableEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -921,7 +921,15 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     let limit = args.number("-n")?.unwrap_or(20);
     let max_scan = scan_budget(&args)?;
     let tip = repo.resolve(rev)?;
-    let page = repo.path_history(tip, path, 0, limit, max_scan)?;
+    let page = repo.path_history(
+        tip,
+        path,
+        ScanWindow {
+            scan_skip: 0,
+            limit,
+            max_scan,
+        },
+    )?;
     write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -952,7 +960,15 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         path: None,
     };
     let tip = repo.resolve(rev)?;
-    let page = repo.search_commits(tip, &filter, 0, limit, max_scan)?;
+    let page = repo.search_commits(
+        tip,
+        &filter,
+        ScanWindow {
+            scan_skip: 0,
+            limit,
+            max_scan,
+        },
+    )?;
     write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -1452,10 +1468,12 @@ fn commit_verb(
     let done = rc_git_guard::actions::commit(
         repo_path,
         &rc_git_guard::Policy::default(),
-        message,
-        author(&args)?,
-        expected,
-        &selections,
+        rc_git_guard::actions::CommitRequest {
+            message,
+            author: author(&args)?,
+            expected_head: expected,
+            selections: &selections,
+        },
         args.value(&["--confirm"]),
     )?;
     writeln!(out, "{}\t{}", done.oid, done.branch)?;
@@ -1483,9 +1501,11 @@ fn stash_push_verb(
     let saved = rc_git_guard::actions::stash_push(
         repo_path,
         &rc_git_guard::Policy::default(),
-        &canonical_paths(&args.positionals)?,
-        args.value(&["-m", "--message"]),
-        author(&args)?,
+        rc_git_guard::actions::StashRequest {
+            paths: &canonical_paths(&args.positionals)?,
+            message: args.value(&["-m", "--message"]),
+            author: author(&args)?,
+        },
         args.value(&["--confirm"]),
     )?;
     writeln!(out, "{}\t{}", saved.oid, field(&saved.message))?;

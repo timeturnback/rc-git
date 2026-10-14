@@ -2,8 +2,19 @@
 
 use std::sync::OnceLock;
 
-use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Repository};
+use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Repository, ScanWindow};
 use rc_git_testkit::Fixture;
+
+/// A page wide enough for every fixture here: no skip, 100 matches, 1000 commits examined.
+const WIDE: ScanWindow = window(0, 100, 1000);
+
+const fn window(scan_skip: usize, limit: usize, max_scan: usize) -> ScanWindow {
+    ScanWindow {
+        scan_skip,
+        limit,
+        max_scan,
+    }
+}
 
 /// Six commits, oldest first: `root` adds `file.txt` and `dir/a.txt`; `topic change` (branch
 /// `topic`) rewrites `file.txt`; `main change` rewrites `dir/a.txt`; `clean merge` merges
@@ -59,7 +70,7 @@ fn path_history_follows_a_file_through_merges() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let page = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let page = repo.path_history(tip, "file.txt", WIDE).unwrap();
     assert_eq!(
         titles(&page),
         ["evil merge", "topic change", "root"],
@@ -68,7 +79,7 @@ fn path_history_follows_a_file_through_merges() {
     assert_eq!(page.scanned, 6, "every commit was examined");
     assert!(page.complete);
 
-    let added = repo.path_history(tip, "other.txt", 0, 100, 1000).unwrap();
+    let added = repo.path_history(tip, "other.txt", WIDE).unwrap();
     assert_eq!(
         titles(&added),
         ["hack change"],
@@ -90,7 +101,7 @@ fn path_history_shows_a_mode_only_change() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let page = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let page = repo.path_history(tip, "file.txt", WIDE).unwrap();
     let expected = fx.git_output(&["log", "--format=%s", "--", "file.txt"]);
     assert_eq!(titles(&page), expected.lines().collect::<Vec<_>>());
     assert_eq!(
@@ -106,25 +117,25 @@ fn path_history_covers_folders_roots_and_missing_paths() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let folder = repo.path_history(tip, "dir", 0, 100, 1000).unwrap();
+    let folder = repo.path_history(tip, "dir", WIDE).unwrap();
     assert_eq!(titles(&folder), ["main change", "root"]);
 
-    let everything = repo.path_history(tip, "", 0, 100, 1000).unwrap();
+    let everything = repo.path_history(tip, "", WIDE).unwrap();
     assert_eq!(
         everything.commits.len(),
         6,
         "an empty path names the root tree, which a merge combining both sides always changes"
     );
 
-    let file = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let file = repo.path_history(tip, "file.txt", WIDE).unwrap();
     assert!(!file.commits.is_empty());
     assert_eq!(
-        repo.path_history(tip, "./file.txt", 0, 100, 1000).unwrap(),
+        repo.path_history(tip, "./file.txt", WIDE).unwrap(),
         file,
         "a './' prefix names the same path"
     );
 
-    let missing = repo.path_history(tip, "nope.txt", 0, 100, 1000).unwrap();
+    let missing = repo.path_history(tip, "nope.txt", WIDE).unwrap();
     assert_eq!(missing.commits.len(), 0);
     assert!(missing.complete);
     assert_eq!(missing.scanned, 6);
@@ -135,13 +146,21 @@ fn path_history_pages_with_a_scan_cursor() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    let whole = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let whole = repo.path_history(tip, "file.txt", WIDE).unwrap();
 
     let mut collected = Vec::new();
     let mut scan_skip = 0;
     loop {
         let page = repo
-            .path_history(tip, "file.txt", scan_skip, 100, 2)
+            .path_history(
+                tip,
+                "file.txt",
+                ScanWindow {
+                    scan_skip,
+                    limit: 100,
+                    max_scan: 2,
+                },
+            )
             .unwrap();
         assert!(page.scanned <= 2);
         assert!(
@@ -156,12 +175,16 @@ fn path_history_pages_with_a_scan_cursor() {
     }
     assert_eq!(collected, whole.commits, "chunked calls equal one big call");
 
-    let capped = repo.path_history(tip, "file.txt", 0, 100, 1).unwrap();
+    let capped = repo
+        .path_history(tip, "file.txt", window(0, 100, 1))
+        .unwrap();
     assert_eq!(titles(&capped), ["evil merge"]);
     assert_eq!(capped.scanned, 1);
     assert!(!capped.complete);
 
-    let limited = repo.path_history(tip, "file.txt", 0, 1, 1000).unwrap();
+    let limited = repo
+        .path_history(tip, "file.txt", window(0, 1, 1000))
+        .unwrap();
     assert_eq!(titles(&limited), ["evil merge"]);
     assert!(!limited.complete, "the limit stopped the walk early");
 }
@@ -172,13 +195,15 @@ fn a_zero_scan_cap_still_makes_progress() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let history = repo.path_history(tip, "file.txt", 0, 100, 0).unwrap();
+    let history = repo
+        .path_history(tip, "file.txt", window(0, 100, 0))
+        .unwrap();
     assert_eq!(history.scanned, 1, "a zero cap examines one commit");
     assert_eq!(titles(&history), ["evil merge"]);
     assert!(!history.complete);
 
     let search = repo
-        .search_commits(tip, &CommitFilter::default(), 0, 100, 0)
+        .search_commits(tip, &CommitFilter::default(), window(0, 100, 0))
         .unwrap();
     assert_eq!(search.scanned, 1, "a zero cap examines one commit");
     assert_eq!(titles(&search), ["evil merge"]);
@@ -200,7 +225,7 @@ fn search_matches_message_title_and_body_case_insensitively() {
         message: Some("MERGE".to_owned()),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &by_title, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &by_title, WIDE).unwrap();
     assert_eq!(titles(&page), ["evil merge", "clean merge"]);
     assert!(page.complete);
 
@@ -208,7 +233,7 @@ fn search_matches_message_title_and_body_case_insensitively() {
         message: Some("needle".to_owned()),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &by_body, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &by_body, WIDE).unwrap();
     assert_eq!(titles(&page), ["body probe"]);
 }
 
@@ -223,7 +248,7 @@ fn search_under_a_path_keeps_only_commits_that_changed_it() {
             path: Some(path.to_owned()),
             ..CommitFilter::default()
         };
-        repo.search_commits(tip, &filter, 0, 100, 1000).unwrap()
+        repo.search_commits(tip, &filter, WIDE).unwrap()
     };
 
     let page = search(Some("change"), "file.txt");
@@ -239,7 +264,7 @@ fn search_under_a_path_keeps_only_commits_that_changed_it() {
     assert_eq!(titles(&page), ["main change"]);
 
     let path_only = search(None, "file.txt");
-    let walked = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let walked = repo.path_history(tip, "file.txt", WIDE).unwrap();
     assert_eq!(
         titles(&path_only),
         titles(&walked),
@@ -258,7 +283,7 @@ fn search_matches_author_name_and_email() {
         author: Some("author@example.com".to_owned()),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &by_email, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &by_email, WIDE).unwrap();
     assert_eq!(
         page.commits.len(),
         6,
@@ -269,19 +294,19 @@ fn search_matches_author_name_and_email() {
         author: Some("nobody".to_owned()),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &nobody, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &nobody, WIDE).unwrap();
     assert_eq!(page.commits.len(), 0);
     assert!(page.complete);
 
     let empty = CommitFilter::default();
-    let page = repo.search_commits(tip, &empty, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &empty, WIDE).unwrap();
     assert_eq!(page.commits.len(), 6, "an empty filter matches everything");
 
     let by_name = CommitFilter {
         author: Some("test AUTHOR".to_owned()),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &by_name, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &by_name, WIDE).unwrap();
     assert_eq!(page.commits.len(), 6, "the name matches, ASCII case folded");
 
     for committer in ["Test Committer", "committer@example.com"] {
@@ -289,7 +314,7 @@ fn search_matches_author_name_and_email() {
             author: Some(committer.to_owned()),
             ..CommitFilter::default()
         };
-        let page = repo.search_commits(tip, &filter, 0, 100, 1000).unwrap();
+        let page = repo.search_commits(tip, &filter, WIDE).unwrap();
         assert_eq!(
             page.commits.len(),
             0,
@@ -304,7 +329,7 @@ fn search_requires_every_set_field_to_match() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    let search = |filter: CommitFilter| repo.search_commits(tip, &filter, 0, 100, 1000).unwrap();
+    let search = |filter: CommitFilter| repo.search_commits(tip, &filter, WIDE).unwrap();
 
     let page = search(CommitFilter {
         message: Some("merge".to_owned()),
@@ -366,7 +391,7 @@ fn search_time_floor_terminates_the_walk_and_ceiling_filters() {
         after: Some(1_704_326_400),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &floor, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &floor, WIDE).unwrap();
     assert_eq!(titles(&page), ["evil merge", "hack change", "clean merge"]);
     assert_eq!(
         page.scanned, 3,
@@ -378,7 +403,7 @@ fn search_time_floor_terminates_the_walk_and_ceiling_filters() {
         before: Some(1_704_153_600),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &ceiling, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &ceiling, WIDE).unwrap();
     assert_eq!(titles(&page), ["topic change", "root"]);
     assert_eq!(
         page.scanned, 6,
@@ -435,7 +460,7 @@ fn search_time_filter_reads_committer_time() {
         after: Some(1_704_564_900),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &floor, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &floor, WIDE).unwrap();
     assert_eq!(titles(&page), ["skewed"], "committed 2024-01-06T18:15:00Z");
     let skewed = page.commits.first().unwrap();
     assert_eq!(
@@ -447,7 +472,7 @@ fn search_time_filter_reads_committer_time() {
         before: Some(1_704_499_200),
         ..CommitFilter::default()
     };
-    let page = repo.search_commits(tip, &ceiling, 0, 100, 1000).unwrap();
+    let page = repo.search_commits(tip, &ceiling, WIDE).unwrap();
     assert_eq!(
         page.commits.len(),
         6,
@@ -466,7 +491,9 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
         ..CommitFilter::default()
     };
 
-    let page = repo.search_commits(tip, &nothing, 0, 100, 2).unwrap();
+    let page = repo
+        .search_commits(tip, &nothing, window(0, 100, 2))
+        .unwrap();
     assert_eq!(page.commits.len(), 0);
     assert_eq!(page.scanned, 2);
     assert!(
@@ -474,7 +501,9 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
         "the cap stopped the walk, not the end of history"
     );
 
-    let rest = repo.search_commits(tip, &nothing, 2, 100, 1000).unwrap();
+    let rest = repo
+        .search_commits(tip, &nothing, window(2, 100, 1000))
+        .unwrap();
     assert_eq!(rest.commits.len(), 0);
     assert_eq!(rest.scanned, 4);
     assert!(rest.complete);
@@ -485,9 +514,7 @@ fn path_history_rejects_a_non_commit_tip() {
     let fx = merge_fixture();
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("main").unwrap();
-    let err = repo
-        .path_history(tree, "file.txt", 0, 100, 1000)
-        .unwrap_err();
+    let err = repo.path_history(tree, "file.txt", WIDE).unwrap_err();
     assert!(
         matches!(
             err,
@@ -520,7 +547,7 @@ fn path_history_treats_the_shallow_boundary_as_a_root() {
     let repo = Repository::open(clone.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let page = repo.path_history(tip, "file.txt", 0, 100, 1000).unwrap();
+    let page = repo.path_history(tip, "file.txt", WIDE).unwrap();
     let oids: Vec<String> = page.commits.iter().map(|c| c.oid.to_string()).collect();
     let expected = clone.git_output(&["log", "--format=%H", "--", "file.txt"]);
     assert_eq!(oids, expected.lines().collect::<Vec<_>>());
@@ -540,9 +567,7 @@ fn path_history_still_fails_on_a_missing_parent_outside_a_shallow_clone() {
     fx.remove(&format!(".git/objects/{}/{}", &root[..2], &root[2..]));
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    let err = repo
-        .path_history(tip, "file.txt", 0, 100, 1000)
-        .unwrap_err();
+    let err = repo.path_history(tip, "file.txt", WIDE).unwrap_err();
     assert!(
         matches!(&err, Error::Object { op: "read commit", oid, .. } if oid.to_string() == root),
         "{err:?}"
@@ -560,9 +585,7 @@ fn path_history_reports_an_unreadable_tree() {
     ));
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
-    let err = repo
-        .path_history(tip, "file.txt", 0, 100, 1000)
-        .unwrap_err();
+    let err = repo.path_history(tip, "file.txt", WIDE).unwrap_err();
     assert!(
         matches!(&err, Error::Object { op: "read tree", oid, .. }
             if oid.to_string() == root_tree),
@@ -577,7 +600,7 @@ fn search_rejects_a_non_commit_tip() {
     let repo = Repository::open(fx.path()).unwrap();
     let tree = repo.resolve_tree("main").unwrap();
     let err = repo
-        .search_commits(tree, &CommitFilter::default(), 0, 100, 1000)
+        .search_commits(tree, &CommitFilter::default(), WIDE)
         .unwrap_err();
     assert!(
         matches!(
@@ -610,7 +633,7 @@ fn path_history_reads_a_path_under_a_submodule_as_absent() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let page = repo.path_history(tip, "lib/x.c", 0, 100, 1000).unwrap();
+    let page = repo.path_history(tip, "lib/x.c", WIDE).unwrap();
     let expected = fx.git_output(&["log", "--format=%s", "--", "lib/x.c"]);
     assert_eq!(titles(&page), expected.lines().collect::<Vec<_>>());
     assert_eq!(titles(&page), ["lib becomes a submodule", "add lib"]);

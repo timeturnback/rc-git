@@ -101,8 +101,10 @@ pub fn fetch_upstream(
             let transport = super::ssh::transport(
                 &url,
                 auth,
-                gix::protocol::transport::Service::UploadPack,
-                gix::protocol::transport::Protocol::V2,
+                super::ssh::Exec {
+                    service: gix::protocol::transport::Service::UploadPack,
+                    version: gix::protocol::transport::Protocol::V2,
+                },
                 cancel,
                 OP,
             )?;

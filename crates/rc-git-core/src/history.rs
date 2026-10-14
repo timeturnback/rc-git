@@ -25,6 +25,19 @@ pub struct CommitPage {
     pub complete: bool,
 }
 
+/// Which slice of a filtered history walk one call examines and returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanWindow {
+    /// Commits of the walk to pass over first: the previous pages' [`CommitPage::scanned`]
+    /// summed, never a match count.
+    pub scan_skip: usize,
+    /// Most matches the page returns.
+    pub limit: usize,
+    /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
+    /// page advances.
+    pub max_scan: usize,
+}
+
 /// What `search_commits` matches. Every set field must match; an empty filter matches every
 /// commit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,12 +67,13 @@ impl Repository {
     /// changed anything matches. Renames are not followed; blame covers deeper archaeology.
     /// In a shallow clone a boundary commit is judged like a root, since its parents are absent.
     ///
-    /// Like `log`, the walk restarts from `tip` and skips `scan_skip` commits, so keep pages
-    /// contiguous and cache them. At most `max_scan` commits are examined per call, whatever
-    /// they match: this walk reads two tree entries per commit, and the cap keeps one call
-    /// from holding a repository handle while it scans a long history. Loop on
-    /// [`CommitPage::scanned`] until [`CommitPage::complete`]. A `max_scan` of 0 counts as
-    /// 1, so every incomplete page advances the cursor.
+    /// Like `log`, the walk restarts from `tip` and skips `window.scan_skip` commits, so keep
+    /// pages contiguous and cache them. At most `window.limit` matches are returned, and at
+    /// most `window.max_scan` commits are examined per call, whatever they match: this walk
+    /// reads two tree entries per commit, and the cap keeps one call from holding a
+    /// repository handle while it scans a long history. Loop on [`CommitPage::scanned`] until
+    /// [`CommitPage::complete`]. A `max_scan` of 0 counts as 1, so every incomplete page
+    /// advances the cursor.
     ///
     /// # Errors
     /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
@@ -67,14 +81,12 @@ impl Repository {
     /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or the shallow
     /// file is unreadable, [`Error::Object`](crate::Error::Object) when a commit or tree on the
     /// way is unreadable.
-    pub fn path_history(
-        &self,
-        tip: Oid,
-        path: &str,
-        scan_skip: usize,
-        limit: usize,
-        max_scan: usize,
-    ) -> Result<CommitPage> {
+    pub fn path_history(&self, tip: Oid, path: &str, window: ScanWindow) -> Result<CommitPage> {
+        let ScanWindow {
+            scan_skip,
+            limit,
+            max_scan,
+        } = window;
         let max_scan = max_scan.max(1);
         self.with(|repo| {
             let tip = peel_to_commit(repo, tip)?.id;
@@ -113,8 +125,8 @@ impl Repository {
     /// searches never scan past their window. A `path` keeps only the commits
     /// [`path_history`](Self::path_history) would list for it.
     ///
-    /// Pages like [`path_history`](Self::path_history): at most `max_scan` commits are
-    /// examined past `scan_skip`, and the page reports how many, so the caller loops until
+    /// Pages like [`path_history`](Self::path_history): at most `window.max_scan` commits are
+    /// examined past `window.scan_skip`, and the page reports how many, so the caller loops until
     /// [`CommitPage::complete`]; a `max_scan` of 0 counts as 1, so every incomplete page
     /// advances. Message and author matching decode each examined commit —
     /// the same cost class as `log` — and a time ceiling (`before`) is checked before any
@@ -130,10 +142,13 @@ impl Repository {
         &self,
         tip: Oid,
         filter: &CommitFilter,
-        scan_skip: usize,
-        limit: usize,
-        max_scan: usize,
+        window: ScanWindow,
     ) -> Result<CommitPage> {
+        let ScanWindow {
+            scan_skip,
+            limit,
+            max_scan,
+        } = window;
         let max_scan = max_scan.max(1);
         self.with(|repo| {
             let sorting = match filter.after {

@@ -13,13 +13,13 @@ use gix::remote::Direction;
 
 use crate::actions::treeapply::core_oid;
 use crate::actions::write::Writer;
-use crate::actions::{ActionError, ActionResult, authorize, open};
+use crate::actions::{ActionError, ActionResult, authorize, is_ancestor_of_any, open};
 use crate::{Action, Confirmation, Policy};
 
 use super::report::Report;
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    current_branch, host_of, http_options, is_ancestor, map_network_error, pack, push_refs, report,
+    current_branch, host_of, http_options, map_network_error, pack, push_refs, report,
     resolve_upstream, run_detached, set_reflog_identity, vet_remote_url,
 };
 
@@ -99,8 +99,10 @@ pub fn push_upstream(
         RemoteScheme::Ssh => super::ssh::transport(
             &url,
             auth,
-            gix::protocol::transport::Service::ReceivePack,
-            gix::protocol::transport::Protocol::V1,
+            super::ssh::Exec {
+                service: gix::protocol::transport::Service::ReceivePack,
+                version: gix::protocol::transport::Protocol::V1,
+            },
             cancel,
             OP,
         )?,
@@ -133,7 +135,7 @@ pub fn push_upstream(
         });
     }
     if let Some(old) = remote_old
-        && (repo.find_header(old).is_err() || !is_ancestor(&repo, old, tip))
+        && (repo.find_header(old).is_err() || !is_ancestor_of_any(&repo, old, &[tip]))
     {
         return Err(ActionError::PushRejected { branch });
     }

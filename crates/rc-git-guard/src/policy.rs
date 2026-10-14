@@ -140,45 +140,30 @@ impl Policy {
             | Action::DiscardWorkingChanges { files: 0 }
             | Action::Commit { .. }
             | Action::StashApply => Decision::Allow,
-            Action::Push { branch, force: true } => {
-                if self.is_protected(branch) {
-                    return deny(&format!("force-pushing to protected branch '{branch}'"));
-                }
-                confirm(risk, format!("Overwrite '{branch}' on the remote with your local history."), Some(branch), false)
-            }
+            Action::Push {
+                branch,
+                force: true,
+            } => self.force_push(risk, branch),
             Action::DeleteLocalBranch { name, merged } => {
-                if self.is_protected(name) {
-                    return deny(&format!("deleting protected branch '{name}'"));
-                }
-                if *merged {
-                    return confirm(risk, format!("Delete branch '{name}'. Its commits stay reachable elsewhere."), None, false);
-                }
-                confirm(risk, format!("Delete branch '{name}' and its unmerged commits."), Some(name), true)
+                self.delete_local_branch(risk, name, *merged)
             }
-            Action::DeleteRemoteBranch { name } => {
-                if self.is_protected(name) {
-                    return deny(&format!("deleting protected remote branch '{name}'"));
-                }
-                confirm(risk, format!("Delete '{name}' on the remote for everyone."), Some(name), true)
-            }
+            Action::DeleteRemoteBranch { name } => self.delete_remote(risk, name),
             Action::DeleteTag { name } => {
                 confirm(risk, format!("Delete tag '{name}'."), Some(name), true)
             }
-            Action::ResetHard { branch, commits_dropped } => confirm(
+            Action::ResetHard {
+                branch,
+                commits_dropped,
+            } => confirm(
                 risk,
-                format!("Drop {commits_dropped} commit(s) from '{branch}' and every uncommitted change."),
+                format!(
+                    "Drop {commits_dropped} commit(s) from '{branch}' \
+                     and every uncommitted change."
+                ),
                 Some(branch),
                 true,
             ),
-            Action::RewriteHistory { branch, published } => {
-                if *published && self.is_protected(branch) {
-                    return deny(&format!("rewriting published history on protected branch '{branch}'"));
-                }
-                if *published {
-                    return confirm(risk, format!("Rewrite commits on '{branch}' that were already pushed."), Some(branch), true);
-                }
-                confirm(risk, format!("Rewrite local commits on '{branch}'. The reflog keeps the old ones."), None, true)
-            }
+            Action::RewriteHistory { branch, published } => self.rewrite(risk, branch, *published),
             Action::DiscardWorkingChanges { files } => confirm(
                 risk,
                 format!("Discard uncommitted changes in {files} file(s). This cannot be undone."),
@@ -187,7 +172,9 @@ impl Policy {
             ),
             Action::Prune => confirm(
                 risk,
-                "Delete unreachable objects. Nothing deleted before this can be recovered afterwards.".to_owned(),
+                "Delete unreachable objects. \
+                 Nothing deleted before this can be recovered afterwards."
+                    .to_owned(),
                 Some("prune"),
                 false,
             ),
@@ -212,6 +199,56 @@ impl Policy {
                 true,
             ),
         }
+    }
+
+    /// Force-pushing `branch`: denied when protected, otherwise confirmed by typing its name.
+    fn force_push(&self, risk: Risk, branch: &str) -> Decision {
+        if self.is_protected(branch) {
+            return deny(&format!("force-pushing to protected branch '{branch}'"));
+        }
+        let summary = format!("Overwrite '{branch}' on the remote with your local history.");
+        confirm(risk, summary, Some(branch), false)
+    }
+
+    /// Deleting local branch `name`: denied when protected; a merged branch needs a plain
+    /// confirm, an unmerged one its typed name and a backup ref.
+    fn delete_local_branch(&self, risk: Risk, name: &str, merged: bool) -> Decision {
+        if self.is_protected(name) {
+            return deny(&format!("deleting protected branch '{name}'"));
+        }
+        if merged {
+            let summary = format!("Delete branch '{name}'. Its commits stay reachable elsewhere.");
+            return confirm(risk, summary, None, false);
+        }
+        let summary = format!("Delete branch '{name}' and its unmerged commits.");
+        confirm(risk, summary, Some(name), true)
+    }
+
+    /// Deleting remote branch `name`: denied when protected, otherwise confirmed by typing its
+    /// name, with a backup ref.
+    fn delete_remote(&self, risk: Risk, name: &str) -> Decision {
+        if self.is_protected(name) {
+            return deny(&format!("deleting protected remote branch '{name}'"));
+        }
+        let summary = format!("Delete '{name}' on the remote for everyone.");
+        confirm(risk, summary, Some(name), true)
+    }
+
+    /// Rewriting commits on `branch`: published history is denied on a protected branch and
+    /// needs the typed name elsewhere; local-only history needs a plain confirm.
+    fn rewrite(&self, risk: Risk, branch: &str, published: bool) -> Decision {
+        if !published {
+            let summary =
+                format!("Rewrite local commits on '{branch}'. The reflog keeps the old ones.");
+            return confirm(risk, summary, None, true);
+        }
+        if self.is_protected(branch) {
+            return deny(&format!(
+                "rewriting published history on protected branch '{branch}'"
+            ));
+        }
+        let summary = format!("Rewrite commits on '{branch}' that were already pushed.");
+        confirm(risk, summary, Some(branch), true)
     }
 
     /// Evaluates `action` and turns the user's `input` into proof: an [`Decision::Allow`]

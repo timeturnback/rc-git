@@ -52,9 +52,20 @@ pub struct StashSaved {
     pub message: String,
 }
 
-/// Records the changes at `paths` as a git-compatible stash entry, then restores those
-/// files to their `HEAD` state on disk and in `.git/index`, as `git stash push` does. `author` decides who is recorded, as [`Author`]
-/// describes.
+/// What [`stash_push`] stashes, and how the entry is labelled and recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashRequest<'a> {
+    /// Repository-relative paths whose changes are stashed.
+    pub paths: &'a [String],
+    /// The entry's message; `None` or blank gives git's `WIP on <branch>: ...` default.
+    pub message: Option<&'a str>,
+    /// Who is recorded, as [`Author`] describes.
+    pub author: Author,
+}
+
+/// Records the changes at `request.paths` as a git-compatible stash entry, then restores
+/// those files to their `HEAD` state on disk and in `.git/index`, as `git stash push` does.
+/// `request.author` decides who is recorded, as [`Author`] describes.
 ///
 /// # Errors
 /// [`ActionError::NotConfirmed`] when the plain confirm is missing,
@@ -64,23 +75,25 @@ pub struct StashSaved {
 pub fn stash_push(
     repo_path: &Path,
     policy: &Policy,
-    paths: &[String],
-    message: Option<&str>,
-    author: Author,
+    request: StashRequest<'_>,
     input: Option<&str>,
 ) -> ActionResult<StashSaved> {
     const OP: &str = "stash push";
+    let StashRequest {
+        paths,
+        message,
+        author,
+    } = request;
     let repo = open(repo_path, OP, "refs/stash")?;
     super::refuse_unfinished_operation(&repo, OP)?;
     let action = Action::StashPush { files: paths.len() };
     let proof = authorize(policy, &action, OP, "refs/stash", input)?;
     let writer = Writer::new(&repo, &proof);
-    let refused = |reason: &'static str| ActionError::git(OP, "refs/stash", reason);
     if paths.is_empty() {
-        return Err(refused("nothing selected to stash"));
+        return Err(stash_refused("nothing selected to stash"));
     }
     let (branch_ref, head_commit) = checked_out_branch(&repo, OP)?;
-    let head = head_commit.ok_or_else(|| refused("cannot stash before the first commit"))?;
+    let head = head_commit.ok_or_else(|| stash_refused("cannot stash before the first commit"))?;
     let work_dir = work_dir(&repo, OP)?;
     workfile::check_paths(&work_dir, paths.iter().map(String::as_str), OP)?;
     let identity = workfile::resolve_identity(&repo, author)?;
@@ -95,30 +108,89 @@ pub fn stash_push(
             ));
         }
     }
-
-    let mut edits = std::collections::BTreeMap::new();
-    for path in paths {
-        let edit = whole_file_edit(&writer, OP, &work_dir, Some(base_tree), path)?;
-        treebuild::insert(&mut edits, path, edit)?;
-    }
-    let stash_tree = treebuild::rewrite(&writer, Some(base_tree), &edits)?
-        .ok_or_else(|| refused("stashing every file would empty the tree"))?;
-    if stash_tree == base_tree {
-        return Err(refused("no changes to stash at the selected paths"));
-    }
+    let stash_tree = stash_tree(&writer, &work_dir, base_tree, paths)?;
     let index = writer.lock_index(OP)?;
 
-    let branch = branch_ref
-        .strip_prefix("refs/heads/")
-        .unwrap_or(&branch_ref)
-        .to_owned();
+    let messages = stash_messages(&repo, &branch_ref, head, message)?;
+    let reflog_message = one_line(&messages.stash);
+    let stash_commit =
+        write_stash_commits(&writer, head, (base_tree, stash_tree), &identity, &messages)?;
+    write_stash_ref(&writer, stash_commit, &reflog_message, &identity)?;
+
+    // Only now that the stash records everything: put the files back to HEAD state.
+    restore_paths(&writer, &work_dir, index, (Some(base_tree), paths), OP)?;
+    Ok(StashSaved {
+        oid: stash_commit.to_string(),
+        message: reflog_message,
+    })
+}
+
+/// A `stash push` refusal about the stash as a whole.
+fn stash_refused(reason: &'static str) -> ActionError {
+    ActionError::git("stash push", "refs/stash", reason)
+}
+
+/// The worktree tree a stash records: `base_tree` with the disk state of every one of `paths`.
+/// Refused when it would be empty or equals `base_tree`.
+fn stash_tree(
+    writer: &Writer<'_>,
+    work_dir: &Path,
+    base_tree: ObjectId,
+    paths: &[String],
+) -> ActionResult<ObjectId> {
+    const OP: &str = "stash push";
+    let mut edits = std::collections::BTreeMap::new();
+    for path in paths {
+        let edit = whole_file_edit(writer, OP, work_dir, Some(base_tree), path)?;
+        treebuild::insert(&mut edits, path, edit)?;
+    }
+    let stash_tree = treebuild::rewrite(writer, Some(base_tree), &edits)?
+        .ok_or_else(|| stash_refused("stashing every file would empty the tree"))?;
+    if stash_tree == base_tree {
+        return Err(stash_refused("no changes to stash at the selected paths"));
+    }
+    Ok(stash_tree)
+}
+
+/// The full messages of a stash entry's two commits, as `git stash push` writes them.
+struct StashMessages {
+    /// The index commit's message.
+    index: String,
+    /// The stash commit's message, before reflog flattening.
+    stash: String,
+}
+
+/// Builds the messages for a stash of `head` on `branch_ref`: the user's `message` when it is
+/// not blank, else git's `WIP on <branch>: <short> <subject>`.
+fn stash_messages(
+    repo: &gix::Repository,
+    branch_ref: &str,
+    head: ObjectId,
+    message: Option<&str>,
+) -> ActionResult<StashMessages> {
+    let branch = branch_ref.strip_prefix("refs/heads/").unwrap_or(branch_ref);
     let short = &head.to_string()[..7];
-    let subject = commit_subject(&repo, head)?;
-    let stash_message = match message {
+    let subject = commit_subject(repo, head)?;
+    let stash = match message {
         Some(text) if !text.trim().is_empty() => format!("On {branch}: {}", text.trim()),
         Some(_) | None => format!("WIP on {branch}: {short} {subject}"),
     };
-    let reflog_message = one_line(&stash_message);
+    Ok(StashMessages {
+        index: format!("index on {branch}: {short} {subject}"),
+        stash,
+    })
+}
+
+/// Writes the index commit (`base_tree` on `head`) and the stash commit (`stash_tree` on
+/// `head` and the index commit) and returns the stash commit.
+fn write_stash_commits(
+    writer: &Writer<'_>,
+    head: ObjectId,
+    (base_tree, stash_tree): (ObjectId, ObjectId),
+    identity: &Identity,
+    messages: &StashMessages,
+) -> ActionResult<ObjectId> {
+    const OP: &str = "stash push";
     let signature = gix::actor::Signature {
         name: identity.name.clone().into(),
         email: identity.email.clone().into(),
@@ -133,11 +205,11 @@ pub fn stash_push(
             author: signature.clone(),
             committer: signature.clone(),
             encoding: None,
-            message: format!("index on {branch}: {short} {subject}\n").into(),
+            message: format!("{}\n", messages.index).into(),
             extra_headers: Vec::new(),
         },
     )?;
-    let stash_commit = writer.write_object(
+    writer.write_object(
         OP,
         "object",
         &gix::objs::Commit {
@@ -146,19 +218,10 @@ pub fn stash_push(
             author: signature.clone(),
             committer: signature,
             encoding: None,
-            message: format!("{stash_message}\n").into(),
+            message: format!("{}\n", messages.stash).into(),
             extra_headers: Vec::new(),
         },
-    )?;
-
-    write_stash_ref(&writer, stash_commit, &reflog_message, &identity)?;
-
-    // Only now that the stash records everything: put the files back to HEAD state.
-    restore_paths(&writer, &work_dir, index, Some(base_tree), paths, OP)?;
-    Ok(StashSaved {
-        oid: stash_commit.to_string(),
-        message: reflog_message,
-    })
+    )
 }
 
 /// `message` as one reflog line, the way git's `copy_reflog_msg` builds it: every whitespace

@@ -322,6 +322,19 @@ fn head_through_an_alias_of_the_branch_is_not_evidence_either() {
 }
 
 #[test]
+fn the_only_branch_has_nowhere_else_its_commits_live() {
+    let fx = Fixture::standard();
+    fx.git(&["checkout", "-q", "feature"]);
+    fx.git(&["branch", "-q", "-D", "main"]);
+
+    let plan = plan_branch_delete(fx.path(), &Policy::default(), "feature").unwrap();
+    assert!(
+        !plan.merged,
+        "with no other branch and HEAD on this one, nothing else holds its commits"
+    );
+}
+
+#[test]
 fn the_checked_out_branch_plans_a_deny_and_counts_head_as_itself() {
     let fx = Fixture::standard();
     let policy = Policy::default();
@@ -606,8 +619,8 @@ mod commit_and_discard {
     use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, Repository};
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, Author, DiscardKind, DiscardOutcome, FileSelection, HunkStamp, Identity,
-        commit, configured_identity, discard_files, discard_hunks,
+        ActionError, Author, CommitRequest, DiscardKind, DiscardOutcome, FileSelection, HunkStamp,
+        Identity, commit, configured_identity, discard_files, discard_hunks,
     };
     use rc_git_testkit::Fixture;
 
@@ -663,10 +676,12 @@ mod commit_and_discard {
         commit(
             fx.path(),
             &Policy::default(),
-            "modes",
-            explicit(),
-            Some(commit_id(&head)),
-            &selections,
+            CommitRequest {
+                message: "modes",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &selections,
+            },
             None,
         )
         .unwrap();
@@ -721,10 +736,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "a folder",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("fresh")],
+            CommitRequest {
+                message: "a folder",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("fresh")],
+            },
             None,
         )
         .unwrap_err();
@@ -747,10 +764,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "under a gitlink",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("sub/x.c")],
+            CommitRequest {
+                message: "under a gitlink",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("sub/x.c")],
+            },
             None,
         )
         .unwrap_err();
@@ -784,10 +803,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "into a submodule",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt"), whole("sub/alpha.txt")],
+            CommitRequest {
+                message: "into a submodule",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt"), whole("sub/alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -819,10 +840,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "case",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("ALPHA.TXT")],
+            CommitRequest {
+                message: "case",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("ALPHA.TXT")],
+            },
             None,
         )
         .unwrap_err();
@@ -842,10 +865,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "case",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("docs/guide.md")],
+            CommitRequest {
+                message: "case",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("docs/guide.md")],
+            },
             None,
         )
         .unwrap_err();
@@ -885,10 +910,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "refused",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "refused",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -910,14 +937,16 @@ mod commit_and_discard {
         let done = commit(
             fx.path(),
             &policy,
-            "  Commit from rc-git  ",
-            explicit(),
-            Some(commit_id(&head)),
-            &[
-                whole("alpha.txt"),
-                whole("brand-new.txt"),
-                whole("Zeta.txt"),
-            ],
+            CommitRequest {
+                message: "  Commit from rc-git  ",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[
+                    whole("alpha.txt"),
+                    whole("brand-new.txt"),
+                    whole("Zeta.txt"),
+                ],
+            },
             None,
         )
         .unwrap();
@@ -1040,10 +1069,12 @@ mod commit_and_discard {
             let err = commit(
                 fx.path(),
                 &Policy::default(),
-                "overlap",
-                explicit(),
-                Some(commit_id(&head)),
-                &selections,
+                CommitRequest {
+                    message: "overlap",
+                    author: explicit(),
+                    expected_head: Some(commit_id(&head)),
+                    selections: &selections,
+                },
                 None,
             )
             .unwrap_err();
@@ -1073,10 +1104,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "locked",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "locked",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -1101,10 +1134,12 @@ mod commit_and_discard {
         let done = commit(
             fx.path(),
             &Policy::default(),
-            "retried",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "retried",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap();
@@ -1141,13 +1176,15 @@ mod commit_and_discard {
         commit(
             fx.path(),
             &policy,
-            "Take the first hunk",
-            explicit(),
-            Some(commit_id(&head)),
-            &[FileSelection::Hunks {
-                path: "hunky.txt".to_owned(),
-                hunks: vec![found[0]],
-            }],
+            CommitRequest {
+                message: "Take the first hunk",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[FileSelection::Hunks {
+                    path: "hunky.txt".to_owned(),
+                    hunks: vec![found[0]],
+                }],
+            },
             None,
         )
         .unwrap();
@@ -1182,10 +1219,12 @@ mod commit_and_discard {
         let done = commit(
             fx.path(),
             &policy,
-            "First commit",
-            explicit(),
-            None,
-            &[whole("first.txt")],
+            CommitRequest {
+                message: "First commit",
+                author: explicit(),
+                expected_head: None,
+                selections: &[whole("first.txt")],
+            },
             None,
         )
         .unwrap();
@@ -1204,10 +1243,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "msg",
-            explicit(),
-            Some(commit_id(&fx.rev_parse("HEAD~1"))),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "msg",
+                author: explicit(),
+                expected_head: Some(commit_id(&fx.rev_parse("HEAD~1"))),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -1216,10 +1257,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "msg",
-            Author::default(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "msg",
+                author: Author::default(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -1233,10 +1276,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "   ",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "   ",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -1246,10 +1291,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "msg",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "msg",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -1288,10 +1335,12 @@ mod commit_and_discard {
             let err = commit(
                 fx.path(),
                 &policy,
-                "msg",
-                explicit(),
-                Some(commit_id(&head)),
-                selections,
+                CommitRequest {
+                    message: "msg",
+                    author: explicit(),
+                    expected_head: Some(commit_id(&head)),
+                    selections,
+                },
                 None,
             )
             .unwrap_err();
@@ -1342,10 +1391,12 @@ mod commit_and_discard {
         commit(
             fx.path(),
             &policy,
-            "Identity from config",
-            Author::default(),
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "Identity from config",
+                author: Author::default(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .unwrap();
@@ -1368,10 +1419,12 @@ mod commit_and_discard {
         commit(
             fx.path(),
             &Policy::default(),
-            "Who wrote this",
-            author,
-            Some(commit_id(&head)),
-            &[whole("alpha.txt")],
+            CommitRequest {
+                message: "Who wrote this",
+                author,
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("alpha.txt")],
+            },
             None,
         )
         .map(drop)
@@ -1457,18 +1510,20 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "msg",
-            explicit(),
-            Some(commit_id(&head)),
-            &[FileSelection::Hunks {
-                path: "alpha.txt".to_owned(),
-                hunks: vec![HunkStamp {
-                    old_start: 99,
-                    old_lines: 1,
-                    new_start: 99,
-                    new_lines: 1,
+            CommitRequest {
+                message: "msg",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[FileSelection::Hunks {
+                    path: "alpha.txt".to_owned(),
+                    hunks: vec![HunkStamp {
+                        old_start: 99,
+                        old_lines: 1,
+                        new_start: 99,
+                        new_lines: 1,
+                    }],
                 }],
-            }],
+            },
             None,
         )
         .unwrap_err();
@@ -1490,13 +1545,15 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &Policy::default(),
-            "first hunk",
-            explicit(),
-            Some(commit_id(&head)),
-            &[FileSelection::Hunks {
-                path: "alpha.txt".to_owned(),
-                hunks: found,
-            }],
+            CommitRequest {
+                message: "first hunk",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[FileSelection::Hunks {
+                    path: "alpha.txt".to_owned(),
+                    hunks: found,
+                }],
+            },
             None,
         )
         .unwrap_err();
@@ -1522,13 +1579,15 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "msg",
-            explicit(),
-            Some(commit_id(&head)),
-            &[FileSelection::Hunks {
-                path: "alpha.txt".to_owned(),
-                hunks: vec![],
-            }],
+            CommitRequest {
+                message: "msg",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[FileSelection::Hunks {
+                    path: "alpha.txt".to_owned(),
+                    hunks: vec![],
+                }],
+            },
             None,
         )
         .unwrap_err();
@@ -1895,10 +1954,12 @@ mod commit_and_discard {
             let err = commit(
                 fx.path(),
                 &policy,
-                "bad path",
-                explicit(),
-                Some(commit_id(&head)),
-                &[whole(path)],
+                CommitRequest {
+                    message: "bad path",
+                    author: explicit(),
+                    expected_head: Some(commit_id(&head)),
+                    selections: &[whole(path)],
+                },
                 None,
             )
             .unwrap_err();
@@ -2001,10 +2062,12 @@ mod commit_and_discard {
         let err = commit(
             fx.path(),
             &policy,
-            "outside",
-            explicit(),
-            Some(commit_id(&head)),
-            &[whole("up/secret.txt")],
+            CommitRequest {
+                message: "outside",
+                author: explicit(),
+                expected_head: Some(commit_id(&head)),
+                selections: &[whole("up/secret.txt")],
+            },
             None,
         )
         .unwrap_err();
@@ -2109,7 +2172,7 @@ mod stash {
 
     use rc_git_guard::Policy;
     use rc_git_guard::actions::{
-        ActionError, Author, Identity, stash_apply, stash_drop, stash_pop, stash_push,
+        ActionError, Author, Identity, StashRequest, stash_apply, stash_drop, stash_pop, stash_push,
     };
     use rc_git_testkit::Fixture;
 
@@ -2303,9 +2366,11 @@ mod stash {
         stash_push(
             fx.path(),
             &Policy::default(),
-            &["alpha.txt".to_owned(), "fresh.txt".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned(), "fresh.txt".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2336,9 +2401,11 @@ mod stash {
         let saved = stash_push(
             fx.path(),
             &policy,
-            &["alpha.txt".to_owned(), "brand-new.txt".to_owned()],
-            Some("half-done work"),
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned(), "brand-new.txt".to_owned()],
+                message: Some("half-done work"),
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2373,9 +2440,11 @@ mod stash {
         let saved = stash_push(
             fx.path(),
             &Policy::default(),
-            &["alpha.txt".to_owned()],
-            Some("subject\n\nbody"),
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned()],
+                message: Some("subject\n\nbody"),
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2403,9 +2472,11 @@ mod stash {
         stash_push(
             fx.path(),
             &policy,
-            &["alpha.txt".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2499,9 +2570,11 @@ mod stash {
         stash_push(
             fx.path(),
             &Policy::default(),
-            &["src/lib.rs".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["src/lib.rs".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2545,9 +2618,11 @@ mod stash {
         stash_push(
             fx.path(),
             &Policy::default(),
-            &["alpha.txt".to_owned()],
-            None,
-            author,
+            StashRequest {
+                paths: &["alpha.txt".to_owned()],
+                message: None,
+                author,
+            },
             None,
         )
         .unwrap();
@@ -2567,9 +2642,11 @@ mod stash {
         let err = stash_push(
             fx.path(),
             &policy,
-            &["alpha.txt".to_owned(), "src".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned(), "src".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap_err();
@@ -2947,9 +3024,11 @@ mod stash {
         stash_push(
             fx.path(),
             &policy,
-            &["Zeta.txt".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["Zeta.txt".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -2972,9 +3051,11 @@ mod stash {
         let err = stash_push(
             fx.path(),
             &Policy::default(),
-            &["alpha.txt".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap_err();
@@ -2988,7 +3069,17 @@ mod stash {
     #[expect(clippy::unwrap_used, reason = "test helper panics on a failed push")]
     fn refused_push(fx: &Fixture, paths: &[&str], author: Author) -> ActionError {
         let paths: Vec<String> = paths.iter().map(|path| (*path).to_owned()).collect();
-        stash_push(fx.path(), &Policy::default(), &paths, None, author, None).unwrap_err()
+        stash_push(
+            fx.path(),
+            &Policy::default(),
+            StashRequest {
+                paths: &paths,
+                message: None,
+                author,
+            },
+            None,
+        )
+        .unwrap_err()
     }
 
     fn assert_refused(err: &ActionError, name: &str, message: &str) {
@@ -3062,9 +3153,11 @@ mod stash {
             let err = stash_push(
                 fx.path(),
                 &policy,
-                &[(*path).to_owned()],
-                None,
-                explicit(),
+                StashRequest {
+                    paths: &[(*path).to_owned()],
+                    message: None,
+                    author: explicit(),
+                },
                 None,
             )
             .unwrap_err();
@@ -3091,9 +3184,11 @@ mod stash {
         stash_push(
             fx.path(),
             &policy,
-            &["docs/guide.md".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["docs/guide.md".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap();
@@ -3103,9 +3198,11 @@ mod stash {
         let err = stash_push(
             fx.path(),
             &policy,
-            &["docs/guide.md".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["docs/guide.md".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap_err();
@@ -3973,7 +4070,10 @@ mod tree_switch_disk_reads {
 /// build on it or move `HEAD`, and a conflicted index refuses a switch on its own.
 mod in_progress {
     use rc_git_guard::Policy;
-    use rc_git_guard::actions::{ActionError, FileSelection, checkout_branch, commit, stash_push};
+    use rc_git_guard::actions::{
+        ActionError, CommitRequest, FileSelection, StashRequest, checkout_branch, commit,
+        stash_push,
+    };
     use rc_git_testkit::Fixture;
 
     use super::explicit;
@@ -3990,12 +4090,14 @@ mod in_progress {
         commit(
             fx.path(),
             &Policy::default(),
-            "resolved",
-            explicit(),
-            Some(head_oid(fx)),
-            &[FileSelection::Whole {
-                path: "README.md".to_owned(),
-            }],
+            CommitRequest {
+                message: "resolved",
+                author: explicit(),
+                expected_head: Some(head_oid(fx)),
+                selections: &[FileSelection::Whole {
+                    path: "README.md".to_owned(),
+                }],
+            },
             None,
         )
     }
@@ -4061,9 +4163,11 @@ mod in_progress {
         let err = stash_push(
             fx.path(),
             &Policy::default(),
-            &["alpha.txt".to_owned()],
-            None,
-            explicit(),
+            StashRequest {
+                paths: &["alpha.txt".to_owned()],
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap_err();
@@ -4127,7 +4231,9 @@ mod partial_writes {
     //! user learns which earlier paths already changed and what was never updated.
 
     use rc_git_guard::Policy;
-    use rc_git_guard::actions::{ActionError, checkout_branch, discard_files, stash_push};
+    use rc_git_guard::actions::{
+        ActionError, StashRequest, checkout_branch, discard_files, stash_push,
+    };
     use rc_git_testkit::Fixture;
 
     use super::explicit;
@@ -4198,9 +4304,11 @@ mod partial_writes {
         let err = stash_push(
             fx.path(),
             &Policy::default(),
-            &paths(),
-            None,
-            explicit(),
+            StashRequest {
+                paths: &paths(),
+                message: None,
+                author: explicit(),
+            },
             None,
         )
         .unwrap_err();

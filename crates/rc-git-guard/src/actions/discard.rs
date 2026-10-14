@@ -143,8 +143,7 @@ pub(super) fn restore_paths(
     writer: &Writer<'_>,
     work_dir: &Path,
     index: LockedIndex,
-    tree: Option<gix::ObjectId>,
-    paths: &[String],
+    (tree, paths): (Option<gix::ObjectId>, &[String]),
     op: &'static str,
 ) -> ActionResult<()> {
     let mut index_changes: Vec<IndexChange> = Vec::with_capacity(paths.len());

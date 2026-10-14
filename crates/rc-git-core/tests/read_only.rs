@@ -7,7 +7,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use rc_git_core::{DEFAULT_BLOB_LIMIT, Repository, WorktreeStatus};
+use rc_git_core::{DEFAULT_BLOB_LIMIT, Repository, ScanWindow, WorktreeStatus};
 use rc_git_testkit::Fixture;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -121,14 +121,19 @@ fn every_operation_leaves_the_repository_untouched() {
         repo.commit(commit.oid).unwrap();
         repo.commit_details(commit.oid).unwrap();
     }
-    repo.path_history(tip, "README.md", 0, 100, 1000).unwrap();
+    let window = ScanWindow {
+        scan_skip: 0,
+        limit: 100,
+        max_scan: 1000,
+    };
+    repo.path_history(tip, "README.md", window).unwrap();
     let filter = rc_git_core::CommitFilter {
         message: Some("docs".to_owned()),
         ..rc_git_core::CommitFilter::default()
     };
     assert!(
         !repo
-            .search_commits(tip, &filter, 0, 100, 1000)
+            .search_commits(tip, &filter, window)
             .unwrap()
             .commits
             .is_empty()
@@ -137,7 +142,7 @@ fn every_operation_leaves_the_repository_untouched() {
         path: Some("README.md".to_owned()),
         ..filter
     };
-    repo.search_commits(tip, &scoped, 0, 100, 1000).unwrap();
+    repo.search_commits(tip, &scoped, window).unwrap();
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(

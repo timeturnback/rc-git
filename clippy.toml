@@ -85,3 +85,6 @@ disallowed-methods = [
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# Hard limit: at most 5 positional parameters per function.
+too-many-arguments-threshold = 5

@@ -846,15 +846,6 @@ fn http_timeouts(
     options.low_speed_time_seconds = idle.as_secs().max(1);
 }
 
-/// Whether `ancestor` is reachable from `tip`.
-fn is_ancestor(repo: &gix::Repository, ancestor: gix::ObjectId, tip: gix::ObjectId) -> bool {
-    if ancestor == tip {
-        return true;
-    }
-    repo.merge_base(ancestor, tip)
-        .is_ok_and(|base| base.detach() == ancestor)
-}
-
 /// Gives the repository an in-memory `user.name`/`user.email` so reflog lines can be
 /// written under the isolated open. The configuration file on disk is never touched.
 fn set_reflog_identity(repo: &mut gix::Repository, op: &'static str) -> ActionResult<()> {

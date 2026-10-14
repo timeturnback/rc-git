@@ -96,34 +96,11 @@ pub(super) fn parse_report<'a>(
     for line in lines {
         let line = line.strip_suffix(b"\n").unwrap_or(line);
         keep_excerpt(&mut seen, line);
-        let line = String::from_utf8_lossy(line);
-        let line = line.as_ref();
-        if let Some(message) = line.strip_prefix("ERR ") {
-            return Err(format!(
-                "the server reported an error: {}",
-                message.escape_debug()
-            ));
-        } else if let Some(status) = line.strip_prefix("unpack ") {
-            if status == "ok" {
-                unpack_ok = true;
-            } else {
-                return Ok(Report::Refused {
-                    reason: format!("unpack {status}"),
-                    remote_moved: false,
-                });
-            }
-        } else if let Some(rest) = line.strip_prefix("ok ") {
-            if rest == full_ref {
-                ref_status = Some(Report::Ok);
-            }
-        } else if let Some(rest) = line.strip_prefix("ng ") {
-            let (name, reason) = rest.split_once(' ').unwrap_or((rest, "rejected"));
-            if name == full_ref {
-                ref_status = Some(Report::Refused {
-                    reason: reason.to_owned(),
-                    remote_moved: names_a_moved_remote(reason),
-                });
-            }
+        match report_line(&String::from_utf8_lossy(line), full_ref)? {
+            ReportLine::UnpackOk => unpack_ok = true,
+            ReportLine::UnpackFailed(report) => return Ok(report),
+            ReportLine::RefStatus(report) => ref_status = Some(report),
+            ReportLine::Other => {}
         }
     }
     if !unpack_ok {
@@ -138,6 +115,50 @@ pub(super) fn parse_report<'a>(
             excerpt(&seen)
         )
     })
+}
+
+/// What one `report-status` line says about the push of `full_ref`.
+enum ReportLine {
+    /// `unpack ok`.
+    UnpackOk,
+    /// `unpack <error>`: the whole push is refused.
+    UnpackFailed(Report),
+    /// `ok` or `ng` for `full_ref`.
+    RefStatus(Report),
+    /// A status for another ref, or a line this client does not read.
+    Other,
+}
+
+/// Classifies one report line, LF already stripped. An `ERR` line is the error.
+fn report_line(line: &str, full_ref: &str) -> Result<ReportLine, String> {
+    if let Some(message) = line.strip_prefix("ERR ") {
+        return Err(format!(
+            "the server reported an error: {}",
+            message.escape_debug()
+        ));
+    }
+    if let Some(status) = line.strip_prefix("unpack ") {
+        if status == "ok" {
+            return Ok(ReportLine::UnpackOk);
+        }
+        return Ok(ReportLine::UnpackFailed(Report::Refused {
+            reason: format!("unpack {status}"),
+            remote_moved: false,
+        }));
+    }
+    if line.strip_prefix("ok ") == Some(full_ref) {
+        return Ok(ReportLine::RefStatus(Report::Ok));
+    }
+    if let Some(rest) = line.strip_prefix("ng ") {
+        let (name, reason) = rest.split_once(' ').unwrap_or((rest, "rejected"));
+        if name == full_ref {
+            return Ok(ReportLine::RefStatus(Report::Refused {
+                reason: reason.to_owned(),
+                remote_moved: names_a_moved_remote(reason),
+            }));
+        }
+    }
+    Ok(ReportLine::Other)
 }
 
 /// How much of a report-status reply an error quotes: enough to show what the server

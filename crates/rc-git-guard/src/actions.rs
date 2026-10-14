@@ -28,13 +28,13 @@ mod write;
 use write::Writer;
 
 pub use checkout::{CheckoutOutcome, checkout_branch};
-pub use commit::{Committed, commit, configured_identity};
+pub use commit::{CommitRequest, Committed, commit, configured_identity};
 pub use discard::{DiscardKind, DiscardOutcome, discard_files, discard_hunks};
 pub use remote::{
     Cancel, Credentials, FetchOutcome, PullOutcome, PushOutcome, RefUpdate, RemoteAuth,
     UpstreamStatus, fetch_upstream, pull_fast_forward, push_upstream, upstream_status,
 };
-pub use stash::{StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
+pub use stash::{StashRequest, StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
 
 /// Who a commit or stash is recorded as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -977,17 +977,28 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, g
         .into_fully_peeled_id()
         .map_err(git_err(OP, &full_name))?
         .detach();
+    let others = other_branch_tips(repo, OP, &full_name)?;
+    Ok((is_ancestor_of_any(repo, tip, &others), tip))
+}
+
+/// The tips that count as other evidence for `full_name`'s commits: `HEAD` unless its
+/// symbolic chain reaches `full_name`, and every direct local branch except `full_name`.
+fn other_branch_tips(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+) -> ActionResult<Vec<gix::ObjectId>> {
     let mut others: Vec<gix::ObjectId> = Vec::new();
-    if !head_chain_reaches(repo, OP, &full_name)?
+    if !head_chain_reaches(repo, op, full_name)?
         && let Ok(head) = repo.head_id()
     {
         others.push(head.detach());
     }
-    let references = repo.references().map_err(git_err(OP, &full_name))?;
+    let references = repo.references().map_err(git_err(op, full_name))?;
     if let Ok(branches) = references.local_branches() {
         for branch in branches.flatten() {
             let symbolic = branch.target().try_name().is_some();
-            if symbolic || branch.name().as_bstr() == full_name.as_str() {
+            if symbolic || branch.name().as_bstr() == full_name {
                 continue;
             }
             if let Ok(id) = branch.into_fully_peeled_id() {
@@ -995,17 +1006,22 @@ fn branch_is_merged(repo: &gix::Repository, name: &str) -> ActionResult<(bool, g
             }
         }
     }
-    for other in others {
-        if other == tip {
-            return Ok((true, tip));
-        }
-        if let Ok(base) = repo.merge_base(tip, other)
-            && base.detach() == tip
-        {
-            return Ok((true, tip));
-        }
+    Ok(others)
+}
+
+/// Whether `ancestor` is reachable from at least one of `tips`, answered with one merge-base
+/// walk however many tips there are. No tips means no: the walk would answer `ancestor`
+/// itself. A walk that fails reads as unreachable, the answer that asks for more care.
+fn is_ancestor_of_any(
+    repo: &gix::Repository,
+    ancestor: gix::ObjectId,
+    tips: &[gix::ObjectId],
+) -> bool {
+    if tips.is_empty() {
+        return false;
     }
-    Ok((false, tip))
+    repo.merge_bases_many(ancestor, tips)
+        .is_ok_and(|bases| bases.iter().any(|base| base.detach() == ancestor))
 }
 
 /// How `full_name` appears in the repository's own ref listing, loose and packed alike.
