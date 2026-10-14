@@ -28,7 +28,7 @@ public enum ChangeKind: Sendable, Hashable {
 }
 
 /// One changed file between two trees.
-public struct TreeChange: Sendable, Hashable, Identifiable {
+public struct TreeChange: Sendable, Hashable {
     public let kind: ChangeKind
     /// Path in the new tree, or in the old tree for a deletion.
     public let path: String
@@ -40,8 +40,6 @@ public struct TreeChange: Sendable, Hashable, Identifiable {
     public let new: Oid?
     /// What the entry is after the change, or was before it for deletions.
     public let entry: EntryKind
-
-    public var id: String { path }
 
     public init(
         kind: ChangeKind, path: String, sourcePath: String?, old: Oid?, new: Oid?,

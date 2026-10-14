@@ -19,7 +19,7 @@ public enum RefKind: Sendable, Hashable {
 }
 
 /// A reference and the object it finally points to.
-public struct RefEntry: Sendable, Hashable, Identifiable {
+public struct RefEntry: Sendable, Hashable {
     /// Full name, e.g. `refs/heads/main`.
     public let fullName: String
     /// Name without the namespace, e.g. `main`, `origin/main`, `v1.0`.
@@ -31,8 +31,6 @@ public struct RefEntry: Sendable, Hashable, Identifiable {
     /// replacements and sending one back would name a different ref, so the ref menu offers
     /// no delete or create.
     public let hasExactName: Bool
-
-    public var id: String { fullName }
 
     public init(
         fullName: String, shortName: String, kind: RefKind, target: Oid, hasExactName: Bool = true
@@ -125,7 +123,7 @@ public enum EntryKind: Sendable, Hashable {
 }
 
 /// One child of a tree.
-public struct TreeEntry: Sendable, Hashable, Identifiable {
+public struct TreeEntry: Sendable, Hashable {
     /// Name for display. Git allows non-UTF-8 names; those arrive with U+FFFD replacements.
     public let name: String
     public let oid: Oid
@@ -133,8 +131,6 @@ public struct TreeEntry: Sendable, Hashable, Identifiable {
     /// Whether `name` is the stored name byte for byte. A path built from an inexact name
     /// can name a different object, so nothing that reads by path accepts one.
     public let hasExactName: Bool
-
-    public var id: String { name }
 
     public init(name: String, oid: Oid, kind: EntryKind, hasExactName: Bool = true) {
         self.name = name
@@ -166,7 +162,7 @@ public enum BlobContent: Sendable, Hashable {
 }
 
 /// The parts of a commit a list shows.
-public struct CommitSummary: Sendable, Hashable, Identifiable {
+public struct CommitSummary: Sendable, Hashable {
     public let oid: Oid
     public let parents: [Oid]
     public let authorName: String
@@ -176,8 +172,6 @@ public struct CommitSummary: Sendable, Hashable, Identifiable {
     /// Seconds east of UTC.
     public let authorOffset: Int32
     public let title: String
-
-    public var id: Oid { oid }
 
     public init(
         oid: Oid, parents: [Oid], authorName: String, authorEmail: String,
