@@ -543,6 +543,28 @@ fn worktree_status_prunes_ignored_directories_unopened() {
 }
 
 #[test]
+fn worktree_status_reports_only_the_ignored_directories_it_pruned() {
+    let fx = Fixture::standard();
+    fx.write(".gitignore", b"junk/\nbuild/\ndocs/\n*.log\n");
+    fx.write("junk/a.tmp", b"x\n");
+    fx.write("src/build/out.o", b"x\n");
+    fx.write("docs/extra.md", b"x\n");
+    fx.write("note.log", b"x\n");
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let tree = repo.resolve_tree("HEAD").unwrap();
+    let report = repo.worktree_status(Some(tree), 10_000).unwrap();
+    let pruned: Vec<String> = report
+        .ignored_dirs
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    // `docs` is tracked, so the walk enters it despite the rule; an ignored file is no
+    // directory; nested ignored directories come back with their full path.
+    assert_eq!(pruned, ["junk".to_owned(), "src/build".to_owned()]);
+}
+
+#[test]
 fn worktree_status_truncates_at_the_scan_cap() {
     let fx = Fixture::standard();
     for i in 0..20 {

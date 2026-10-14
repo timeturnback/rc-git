@@ -888,12 +888,34 @@ pub struct RcGitStatusList {
     pub scanned: usize,
     /// True when the walk stopped at the cap before covering the whole tree.
     pub truncated: bool,
+    /// `ignored_len` untracked directories an ignore rule pruned unopened, sorted by path.
+    pub ignored_dirs: *mut RcGitIgnoredDir,
+    /// Number of ignored directories.
+    pub ignored_len: usize,
 }
 
 impl Drop for RcGitStatusList {
     fn drop(&mut self) {
-        // SAFETY: the array was produced by `export_vec` with this length.
-        unsafe { release_vec(self.entries, self.len) };
+        // SAFETY: both arrays were produced by `export_vec` with these lengths.
+        unsafe {
+            release_vec(self.entries, self.len);
+            release_vec(self.ignored_dirs, self.ignored_len);
+        };
+    }
+}
+
+/// An untracked directory the status walk pruned without opening it: no write below it can
+/// change the status until the ignore rules or the tree change.
+#[repr(C)]
+pub struct RcGitIgnoredDir {
+    /// Repository-relative path with `/` separators; may be non-UTF-8.
+    pub path: *mut c_char,
+}
+
+impl Drop for RcGitIgnoredDir {
+    fn drop(&mut self) {
+        // SAFETY: `path` was produced by `export_string` and is released once here.
+        unsafe { release_string(self.path) };
     }
 }
 
@@ -2524,9 +2546,10 @@ pub unsafe extern "C" fn rcgit_worktree_read(
 }
 
 /// Walks the whole working tree against `tree` and returns every changed path: modified,
-/// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
-/// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
-/// reports the truncation. Release with `rcgit_status_list_free`.
+/// untracked, and deleted files, sorted by path, plus the untracked directories an ignore
+/// rule pruned unopened. A NULL `tree` means no tree (an unborn branch): every file is
+/// untracked. The walk stops after visiting `max_scan` entries and reports the truncation.
+/// Release with `rcgit_status_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.
@@ -2561,11 +2584,21 @@ pub unsafe extern "C" fn rcgit_worktree_status(
                 });
             }
             let (entries, len) = export_vec(entries);
+            let ignored = report
+                .ignored_dirs
+                .into_iter()
+                .map(|path| RcGitIgnoredDir {
+                    path: export_string(Vec::from(path)),
+                })
+                .collect();
+            let (ignored_dirs, ignored_len) = export_vec(ignored);
             export(RcGitStatusList {
                 entries,
                 len,
                 scanned: report.scanned,
                 truncated: report.truncated,
+                ignored_dirs,
+                ignored_len,
             })
         }
         Err(err) => {
@@ -5911,6 +5944,18 @@ mod tests {
         );
         assert!(entries[0].has_oid);
         assert_eq!(hex(&entries[0].oid), fx.rev_parse("HEAD:Zeta.txt"));
+        assert_eq!(list_ref.ignored_len, 0);
+        unsafe { rcgit_status_list_free(list) };
+
+        fx.write(".git/info/exclude", b"target/\n");
+        fx.write("target/debug/x.o", b"object\n");
+        let list = unsafe { rcgit_worktree_status(repo, &raw const tree, 100_000, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let ignored =
+            unsafe { std::slice::from_raw_parts(list_ref.ignored_dirs, list_ref.ignored_len) };
+        let ignored: Vec<String> = ignored.iter().map(|dir| text(dir.path)).collect();
+        assert_eq!(ignored, ["target"]);
         unsafe { rcgit_status_list_free(list) };
 
         let path = CString::new("alpha.txt").unwrap();

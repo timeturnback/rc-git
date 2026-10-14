@@ -52,6 +52,29 @@ import Testing
         #expect(!WorktreeWatchFilter.isRelevant("/repo2/x", workDir: workDir, gitDir: gitDir))
     }
 
+    @Test func writesBelowAPrunedIgnoredFolderAreDropped() {
+        let ignored: Set<String> = ["target", "tools/build"]
+        func relevant(_ path: String) -> Bool {
+            WorktreeWatchFilter.isRelevant(
+                path, workDir: workDir, gitDir: gitDir, ignoredRoots: ignored)
+        }
+        #expect(!relevant("/repo/target/debug/x.o"))
+        #expect(!relevant("/repo/target/x"))
+        #expect(!relevant("/repo/tools/build/out/y.o"))
+        #expect(relevant("/repo/target"), "a file replacing the folder may not be ignored")
+        #expect(relevant("/repo/target2/x"), "a sibling sharing the prefix is not below it")
+        #expect(relevant("/repo/tools/x"))
+        #expect(relevant("/repo/src/target/x"), "only the pruned path, not every folder so named")
+        #expect(relevant("/repo/.gitignore"), "an ignore-rule edit can un-ignore the folder")
+        #expect(relevant("/repo"))
+    }
+
+    @Test func noIgnoredFoldersKeepsEveryWorktreeWrite() {
+        #expect(
+            WorktreeWatchFilter.isRelevant(
+                "/repo/target/debug/x.o", workDir: workDir, gitDir: gitDir))
+    }
+
     @Test func realpathEventsMatchACanonicalRoot() {
         let root = "/private/tmp/r"
         #expect(

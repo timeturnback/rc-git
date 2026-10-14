@@ -235,6 +235,21 @@ import Testing
         #expect(!model.isStale)
     }
 
+    @Test func aWorktreeChangeRescansTheListButNotTheStashes() async {
+        await model.setVisible(true)
+        let before = repo.lock.withLock { (repo.statusCalls, repo.stashCalls) }
+        await model.markWorktreeStale()
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0 + 1)
+        #expect(
+            repo.lock.withLock { repo.stashCalls } == before.1,
+            "the stash list lives under .git, which the ref watcher covers")
+
+        await model.setVisible(false)
+        await model.markWorktreeStale()
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0 + 1, "a hidden list waits")
+        #expect(model.isStale)
+    }
+
     @Test func showingANeverLoadedListLoadsIt() async {
         #expect(!model.isStale)
         await model.setVisible(true)

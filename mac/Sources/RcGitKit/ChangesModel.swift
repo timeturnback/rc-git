@@ -210,6 +210,16 @@ public final class ChangesModel {
         await refresh()
     }
 
+    /// Only the working tree changed. A visible list rescans the change list alone: the stash
+    /// list lives under `.git`, where the ref watcher reports its moves through `markStale`.
+    public func markWorktreeStale() async {
+        guard isVisible else {
+            isStale = true
+            return
+        }
+        await loadStatus()
+    }
+
     /// Shows or hides the list. Showing it rescans when it went stale while hidden or has
     /// never loaded; hiding it cancels the running scan, which is work for no one.
     public func setVisible(_ visible: Bool) async {
@@ -601,7 +611,9 @@ public final class ChangesModel {
         let entries = report.entries.filter {
             $0.status != .untracked || !HiddenFiles.isHidden(path: $0.path)
         }
-        return StatusReport(entries: entries, scanned: report.scanned, truncated: report.truncated)
+        return StatusReport(
+            entries: entries, scanned: report.scanned, truncated: report.truncated,
+            ignoredDirs: report.ignoredDirs)
     }
 }
 

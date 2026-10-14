@@ -537,6 +537,13 @@ typedef struct RcGitStatusEntry {
   uint64_t size;
 } RcGitStatusEntry;
 
+/// An untracked directory the status walk pruned without opening it: no write below it can
+/// change the status until the ignore rules or the tree change.
+typedef struct RcGitIgnoredDir {
+  /// Repository-relative path with `/` separators; may be non-UTF-8.
+  char *path;
+} RcGitIgnoredDir;
+
 /// Every changed path in the working tree, with the walk's own cost accounting.
 typedef struct RcGitStatusList {
   /// `len` changed paths, sorted by path.
@@ -547,6 +554,10 @@ typedef struct RcGitStatusList {
   size_t scanned;
   /// True when the walk stopped at the cap before covering the whole tree.
   bool truncated;
+  /// `ignored_len` untracked directories an ignore rule pruned unopened, sorted by path.
+  struct RcGitIgnoredDir *ignored_dirs;
+  /// Number of ignored directories.
+  size_t ignored_len;
 } RcGitStatusList;
 
 /// One file on disk from a full working-tree listing.
@@ -1142,9 +1153,10 @@ struct RcGitBlob *rcgit_worktree_read(const struct RcGitRepo *repo,
                                       char **error);
 
 /// Walks the whole working tree against `tree` and returns every changed path: modified,
-/// untracked, and deleted files, sorted by path. A NULL `tree` means no tree (an unborn
-/// branch): every file is untracked. The walk stops after visiting `max_scan` entries and
-/// reports the truncation. Release with `rcgit_status_list_free`.
+/// untracked, and deleted files, sorted by path, plus the untracked directories an ignore
+/// rule pruned unopened. A NULL `tree` means no tree (an unborn branch): every file is
+/// untracked. The walk stops after visiting `max_scan` entries and reports the truncation.
+/// Release with `rcgit_status_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tree` is NULL or points to a readable `RcGitOid`.

@@ -377,8 +377,9 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     }
 
     /// Every changed working-tree path against `tree`: modified, untracked, and deleted
-    /// files, sorted by path. A `nil` tree (an unborn branch) lists every file as untracked.
-    /// The walk stops at `maxScan` visited entries and reports the truncation.
+    /// files, sorted by path, plus the untracked folders an ignore rule pruned unopened. A
+    /// `nil` tree (an unborn branch) lists every file as untracked. The walk stops at
+    /// `maxScan` visited entries and reports the truncation.
     public func worktreeStatus(tree: Oid?, maxScan: Int = Repository.defaultStatusScanCap)
         throws -> StatusReport
     {
@@ -403,8 +404,18 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
                     hasExactPath: path.exact
                 ))
         }
+        var ignoredDirs: [String] = []
+        for index in 0..<list.pointee.ignored_len {
+            // A lossily decoded path names no directory on disk; leaving it out only costs
+            // rescans for writes below it.
+            let name = ExactName(list.pointee.ignored_dirs[index].path)
+            if name.exact {
+                ignoredDirs.append(name.text)
+            }
+        }
         return StatusReport(
-            entries: entries, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
+            entries: entries, scanned: list.pointee.scanned, truncated: list.pointee.truncated,
+            ignoredDirs: ignoredDirs)
     }
 
     /// Every file on disk, sorted by path: tracked, untracked, and ignored alike. An ignored

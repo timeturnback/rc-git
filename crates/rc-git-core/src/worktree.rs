@@ -131,6 +131,10 @@ pub struct StatusReport {
     /// Entries below the root that could not be read and were skipped, with their contents;
     /// none of them is listed as changed or deleted.
     pub unreadable: Vec<UnreadableEntry>,
+    /// Untracked directories an ignore rule pruned without opening them, sorted by path. No
+    /// write below one can change this report until the ignore rules or the tree change, so
+    /// a watcher may drop events under them.
+    pub ignored_dirs: Vec<BString>,
 }
 
 impl Repository {
@@ -256,6 +260,7 @@ impl Repository {
             report.scanned = walk.budget.scanned;
             report.truncated = walk.budget.truncated;
             report.entries.sort_by(|a, b| a.path.cmp(&b.path));
+            report.ignored_dirs.sort();
             report.warnings = walk.context.into_warnings();
             Ok(report)
         })
@@ -1281,7 +1286,11 @@ impl StatusWalk<'_> {
     /// A directory the tree does not track: its files are untracked unless an ignore rule
     /// prunes it or it holds a repository of its own.
     fn walk_untracked_dir(&mut self, path: &BString, disk_path: &Path) -> Result<()> {
-        if self.context.excludes.is_ignored(path, true) || holds_nested_repository(disk_path) {
+        if self.context.excludes.is_ignored(path, true) {
+            self.report.ignored_dirs.push(path.clone());
+            return Ok(());
+        }
+        if holds_nested_repository(disk_path) {
             return Ok(());
         }
         self.walk_dir(None, path, disk_path)

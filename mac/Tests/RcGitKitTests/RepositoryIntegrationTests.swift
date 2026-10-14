@@ -483,6 +483,19 @@ import Testing
         #expect(report.entries.map(\.status) == [.untracked])
     }
 
+    @Test func statusReportsTheIgnoredFoldersItPruned() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", "target/\n")
+        try fixture.write("target/debug/x.o", "object\n")
+        try fixture.write("tools/target/y.o", "object\n")
+        let repo = try Repository(path: fixture.path)
+
+        let report = try repo.worktreeStatus(tree: try repo.resolveTree("HEAD"))
+        #expect(report.ignoredDirs == ["target", "tools/target"])
+        #expect(!report.entries.contains { $0.path.hasPrefix("target/") })
+    }
+
     @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {
         let fixture = try GitFixture.standard()
         defer { fixture.remove() }

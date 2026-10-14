@@ -66,11 +66,17 @@ public struct StatusReport: Sendable, Hashable {
     public let scanned: Int
     /// Whether the walk stopped at the cap before covering the whole tree.
     public let truncated: Bool
+    /// Untracked directories an ignore rule pruned unopened, repository-relative and sorted.
+    /// No write below one can change the report, so the worktree watcher drops those events.
+    public let ignoredDirs: [String]
 
-    public init(entries: [StatusEntry], scanned: Int, truncated: Bool) {
+    public init(
+        entries: [StatusEntry], scanned: Int, truncated: Bool, ignoredDirs: [String] = []
+    ) {
         self.entries = entries
         self.scanned = scanned
         self.truncated = truncated
+        self.ignoredDirs = ignoredDirs
     }
 }
 

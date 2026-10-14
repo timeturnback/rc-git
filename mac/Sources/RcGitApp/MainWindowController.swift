@@ -175,7 +175,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 workDir: workDir, gitDir: repository.gitDirectory
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.changeListIsStale()
+                    guard let changes = self?.changesModel else { return }
+                    await changes.markWorktreeStale()
                 }
             }
             worktreeWatcher = treeWatcher
@@ -1026,6 +1027,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func wireChanges(_ changes: ChangesModel) {
         changes.onStatusChanged = { [weak self] in
             guard let self, let changesModel else { return }
+            if case let .loaded(report) = changesModel.statusState {
+                worktreeWatcher?.setIgnoredDirs(report.ignoredDirs)
+            }
             changesController.renderStatus(changesModel.statusState)
         }
         changes.onTicksChanged = { [weak self] in
