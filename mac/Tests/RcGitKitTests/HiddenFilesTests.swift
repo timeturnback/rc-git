@@ -29,6 +29,12 @@ import Testing
         #expect(!HiddenFiles.isHidden(path: ".claude/worktrees/feature/.env"))
         #expect(!HiddenFiles.isHidden(path: "docs/.github-notes.md"))
         #expect(!HiddenFiles.isHidden(path: ""))
+        #expect(!HiddenFiles.isHidden(path: "/"))
+        #expect(HiddenFiles.isHidden(path: "a//.git/"))
+        #expect(HiddenFiles.isHidden(path: "/.DS_Store"))
+        #expect(HiddenFiles.isHidden(path: "src/é/._x"))
+        #expect(HiddenFiles.isHidden(path: "x/CVS/y"))
+        #expect(!HiddenFiles.isHidden(path: "src/é/x"))
     }
 }
 

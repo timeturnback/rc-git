@@ -20,9 +20,10 @@ public enum HiddenFiles {
     }
 
     /// Whether any component of a `/`-separated path is hidden, so everything inside a hidden
-    /// folder is hidden with it.
+    /// folder is hidden with it. Splits on the `/` byte, as git does, which skips the grapheme
+    /// segmentation a `Character` split runs over every path.
     public static func isHidden(path: String) -> Bool {
-        path.split(separator: "/").contains { isHidden(name: $0) }
+        path.utf8.split(separator: UInt8(ascii: "/")).contains { isHidden(name: Substring($0)) }
     }
 }
 
