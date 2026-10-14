@@ -87,7 +87,7 @@ Traps that each cost a debug cycle:
 - **Reflog needs a committer under `isolated()` opens — and a committer is not what makes a
   ref write log.** Any ref write gix performs itself (fetch's tracking-ref updates included)
   fails with `MissingCommitter` unless an in-memory `user.name`/`user.email` is set first via
-  `config_snapshot_mut()` + `commit()` (`set_reflog_identity` in `actions/remote.rs:454`). The
+  `config_snapshot_mut()` + `commit()` (`set_reflog_identity` in `actions/remote.rs`). The
   on-disk config is never touched. Identity is only the precondition: a **symbolic** update
   (`HEAD` -> `refs/heads/<branch>`) carries no object id, so gix skips its reflog by design
   whatever identity is configured, and the line has to be appended by hand

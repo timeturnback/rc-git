@@ -20,7 +20,7 @@ use super::report::Report;
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
     current_branch, host_of, http_options, map_network_error, pack, push_refs, report,
-    resolve_upstream, run_detached, set_reflog_identity, vet_remote_url,
+    resolve_upstream, run_detached, vet_remote_url,
 };
 
 const OP: &str = "push";
@@ -68,9 +68,7 @@ pub fn push_upstream(
     auth: RemoteAuth<'_>,
     cancel: &Cancel,
 ) -> ActionResult<PushOutcome> {
-    let mut repo = open(repo_path, OP, "repository")?;
-    set_reflog_identity(&mut repo, OP)?;
-    let repo = repo;
+    let repo = open(repo_path, OP, "repository")?;
     let (branch, tip) = current_branch(&repo, OP)?;
     let action = Action::Push {
         branch: branch.clone(),
