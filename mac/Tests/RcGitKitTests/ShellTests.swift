@@ -111,12 +111,15 @@ import Testing
     }
 
     /// A grandchild that inherited the pipe keeps it open after the shell exits; the wait
-    /// for the last bytes gives up after the drain grace instead of the grandchild's 30 s.
-    @Test func aGrandchildHoldingThePipeDoesNotHoldTheRun() async {
-        let (outcome, elapsed) = await Self.run("(sleep 30 &); echo hi")
-        #expect(outcome.lines == ["hi"])
+    /// for the last bytes gives up after the drain grace instead of the grandchild's 45 s.
+    /// The bound sits far from both ends so a loaded machine cannot flip it.
+    @Test func aGrandchildHoldingThePipeDoesNotHoldTheRun() async throws {
+        let (outcome, elapsed) = await Self.run("(sleep 45 & echo $!); echo hi")
+        let grandchild = try #require(outcome.lines.first.flatMap { Int32($0) })
+        defer { Darwin.kill(grandchild, SIGKILL) }
+        #expect(outcome.lines.dropFirst() == ["hi"])
         #expect(outcome.stopped == nil)
-        #expect(elapsed < Shell.drainGrace + .seconds(1))
+        #expect(elapsed < .seconds(20))
     }
 
     @Test func aLastLineWithoutANewlineIsKept() async {
