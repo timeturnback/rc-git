@@ -3,8 +3,8 @@
 /// so appending a page never changes rows already built — the pane can render incrementally.
 ///
 /// The builder only ever sees commits already paged in, so it satisfies "nothing scales with
-/// repository size" by construction. Lane indices are unbounded here; the renderer clamps
-/// the drawn width.
+/// repository size" by construction. Lane indices are unbounded here; `GraphRow.drawnEdges`
+/// clamps them to the drawn width.
 
 /// One line segment crossing a graph row.
 public struct GraphEdge: Hashable, Sendable {
@@ -54,6 +54,42 @@ public struct GraphRow: Hashable, Sendable {
         self.edges = edges
         self.laneCount = laneCount
         self.isMerge = isMerge
+    }
+
+    /// Lanes the graph column draws; lanes at or past the last one share its column.
+    public static let maxDrawnLanes = 12
+
+    /// The edges to stroke when lanes at or past `laneCap - 1` share one column: positions
+    /// clamp to that column, and of the edges that then trace the same segment only the last
+    /// survives, since it is the one painted on top. Order is otherwise kept, so the result
+    /// draws the same picture as `edges` with one stroke per visible segment.
+    public func drawnEdges(laneCap: Int) -> [GraphEdge] {
+        let last = max(laneCap, 1) - 1
+        let clamped = edges.map { edge in
+            GraphEdge(
+                from: min(edge.from, last), to: min(edge.to, last), colorIndex: edge.colorIndex,
+                phase: edge.phase)
+        }
+        var lastIndex: [Segment: Int] = [:]
+        for (index, edge) in clamped.enumerated() {
+            lastIndex[Segment(edge)] = index
+        }
+        return clamped.indices.compactMap { index in
+            lastIndex[Segment(clamped[index])] == index ? clamped[index] : nil
+        }
+    }
+
+    /// What a stroke covers: an edge without its color.
+    private struct Segment: Hashable {
+        let from: Int
+        let to: Int
+        let phase: GraphEdge.Phase
+
+        init(_ edge: GraphEdge) {
+            from = edge.from
+            to = edge.to
+            phase = edge.phase
+        }
     }
 }
 

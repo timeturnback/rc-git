@@ -158,6 +158,37 @@ import Testing
         #expect(nested.map(\.laneCount).max() == 2, "no third lane opens for b")
     }
 
+    @Test func drawnEdgesStrokeOverflowLanesOnceInTheLastColumn() throws {
+        let edges = (0..<30).map { GraphEdge(from: $0, to: $0, colorIndex: $0, phase: .through) }
+        let row = GraphRow(
+            commitLane: 0, colorIndex: 0, edges: edges, laneCount: 30, isMerge: false)
+        let cap = GraphRow.maxDrawnLanes
+        let drawn = row.drawnEdges(laneCap: cap)
+        #expect(drawn.count == cap, "one stroke per drawn column")
+        #expect(Array(drawn.prefix(cap - 1)) == Array(edges.prefix(cap - 1)), "under the cap")
+        let overflow = try #require(drawn.last)
+        #expect(
+            overflow == GraphEdge(from: cap - 1, to: cap - 1, colorIndex: 29, phase: .through),
+            "the last overflow edge is the one painted on top")
+    }
+
+    @Test func drawnEdgesKeepDistinctSegmentsInTheLastColumn() {
+        let edges = [
+            GraphEdge(from: 14, to: 13, colorIndex: 1, phase: .through),
+            GraphEdge(from: 20, to: 20, colorIndex: 2, phase: .out),
+            GraphEdge(from: 15, to: 15, colorIndex: 3, phase: .through),
+            GraphEdge(from: 2, to: 30, colorIndex: 4, phase: .out),
+        ]
+        let row = GraphRow(
+            commitLane: 2, colorIndex: 0, edges: edges, laneCount: 31, isMerge: false)
+        #expect(
+            row.drawnEdges(laneCap: 12) == [
+                GraphEdge(from: 11, to: 11, colorIndex: 2, phase: .out),
+                GraphEdge(from: 11, to: 11, colorIndex: 3, phase: .through),
+                GraphEdge(from: 2, to: 11, colorIndex: 4, phase: .out),
+            ], "phase and endpoints tell segments apart; color does not")
+    }
+
     @Test func truncationLeavesLanesOpen() {
         let builder = build([commitSummary(m, parents: [a, b])])
         #expect(builder.rows[0].laneCount == 2, "both parent lanes stay open past the last row")

@@ -2,13 +2,12 @@ import AppKit
 import RcGitKit
 
 /// Draws one `GraphRow`: the commit dot plus the lane segments crossing the row. Lanes past
-/// `maxDrawnLanes` clamp to the last drawn column, so a pathological repository widens
+/// `GraphRow.maxDrawnLanes` clamp to the last drawn column, so a pathological repository widens
 /// nothing. On an emphasized (selected) row everything draws in the selected-text color,
 /// since some palette colors sit too close to the selection background to see.
 final class GraphCellView: NSTableCellView {
     static let laneWidth: CGFloat = 10
     static let leadingPad: CGFloat = 4
-    static let maxDrawnLanes = 12
 
     /// Fixed palette indexed by `colorIndex`; stable because lane colors are assigned
     /// monotonically.
@@ -33,11 +32,11 @@ final class GraphCellView: NSTableCellView {
 
     /// The column width that fits `lanes` lanes, clamped to the drawing cap.
     static func width(lanes: Int) -> CGFloat {
-        CGFloat(min(max(lanes, 1), maxDrawnLanes)) * laneWidth + leadingPad * 2
+        CGFloat(min(max(lanes, 1), GraphRow.maxDrawnLanes)) * laneWidth + leadingPad * 2
     }
 
     private func x(_ lane: Int) -> CGFloat {
-        Self.leadingPad + CGFloat(min(lane, Self.maxDrawnLanes - 1)) * Self.laneWidth
+        Self.leadingPad + CGFloat(min(lane, GraphRow.maxDrawnLanes - 1)) * Self.laneWidth
             + Self.laneWidth / 2
     }
 
@@ -50,7 +49,7 @@ final class GraphCellView: NSTableCellView {
         guard let row else { return }
         let height = bounds.height
         let midY = height / 2
-        for edge in row.edges {
+        for edge in row.drawnEdges(laneCap: GraphRow.maxDrawnLanes) {
             let path = NSBezierPath()
             path.lineWidth = 1.5
             let fromX = x(edge.from)
