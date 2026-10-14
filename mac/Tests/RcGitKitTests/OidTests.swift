@@ -27,4 +27,24 @@ import Testing
         #expect(back == oid)
         #expect(oid.withC { Int($0.pointee.len) } == 20)
     }
+
+    /// The id lives inline: no heap buffer per id, so a 200k-entry path index is 200k values,
+    /// not 200k allocations.
+    @Test func storesBytesInline() {
+        #expect(MemoryLayout<Oid>.size == 33)
+    }
+
+    /// Only the meaningful bytes and their count decide identity: a zero-length id differs from
+    /// an all-zero 20-byte one, and ids that differ in their last byte differ.
+    @Test func equalityAndHashCoverCountAndEveryUsedByte() {
+        let zeros = Oid(bytes: [UInt8](repeating: 0, count: 20))
+        #expect(Oid.unhashed != zeros)
+        #expect(Oid.unhashed.isUnhashed)
+        #expect(!zeros.isUnhashed)
+        var last = [UInt8](repeating: 0, count: 20)
+        last[19] = 1
+        #expect(Oid(bytes: last) != zeros)
+        #expect(Oid(bytes: last).bytes == last)
+        #expect(Set([zeros, Oid(bytes: last), Oid.unhashed, zeros]).count == 3)
+    }
 }

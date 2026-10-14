@@ -232,7 +232,7 @@ import Testing
         #expect(index.truncated)
         #expect(index.entries.map(\.path) == [".env", "sub/.DS_Store", "run.sh"])
         #expect(index.entries.map(\.hidden) == [false, true, false])
-        #expect(index.entries.allSatisfy { $0.oid.bytes.isEmpty })
+        #expect(index.entries.allSatisfy { $0.oid.isUnhashed })
         try #require(index.entries.count == 3)
         #expect(index.entries[2].kind == .executableBlob)
     }

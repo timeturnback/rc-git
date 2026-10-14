@@ -3,10 +3,16 @@ import CRcGit
 /// Identity of a git object. Content-addressed: equal ids mean equal content, so caches keyed
 /// by `Oid` never go stale.
 public struct Oid: Hashable, Sendable, CustomStringConvertible {
-    public let bytes: [UInt8]
+    /// The id bytes, zero-padded to RcGitOid's 32, held inline so an id costs no allocation.
+    private var storage: (UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0)
+    /// Number of meaningful bytes in `storage`.
+    private let count: UInt8
 
+    /// Creates an id from its raw bytes. At most 32: the widest hash RcGitOid carries.
     public init(bytes: [UInt8]) {
-        self.bytes = bytes
+        precondition(bytes.count <= 32, "Oid(bytes:) takes at most 32 bytes, got \(bytes.count)")
+        count = UInt8(bytes.count)
+        withUnsafeMutableBytes(of: &storage) { $0.copyBytes(from: bytes) }
     }
 
     /// Parses a full 40-digit lowercase or uppercase hex id. `nil` for anything else.
@@ -20,7 +26,7 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
             else { return nil }
             bytes.append(high << 4 | low)
         }
-        self.bytes = bytes
+        self.init(bytes: bytes)
     }
 
     /// The value of one ASCII hex digit, or `nil` for any other code unit.
@@ -34,8 +40,30 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
     }
 
     init(c: RcGitOid) {
-        let count = Int(c.len)
-        self.bytes = withUnsafeBytes(of: c.bytes) { Array($0.prefix(count)) }
+        count = min(c.len, 32)
+        let used = Int(count)
+        withUnsafeMutableBytes(of: &storage) { target in
+            withUnsafeBytes(of: c.bytes) {
+                target.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0.prefix(used)))
+            }
+        }
+    }
+
+    /// The meaningful bytes, as a fresh array.
+    public var bytes: [UInt8] {
+        withUnsafeBytes(of: storage) { Array($0.prefix(Int(count))) }
+    }
+
+    public static func == (lhs: Oid, rhs: Oid) -> Bool {
+        lhs.count == rhs.count && lhs.storage == rhs.storage
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(count)
+        hasher.combine(storage.0)
+        hasher.combine(storage.1)
+        hasher.combine(storage.2)
+        hasher.combine(storage.3)
     }
 
     /// Lowercase hexadecimal form.
@@ -56,16 +84,14 @@ public struct Oid: Hashable, Sendable, CustomStringConvertible {
     public static let unhashed = Oid(bytes: [])
 
     /// True for `Oid.unhashed`: the id names no object and cannot key a cache.
-    public var isUnhashed: Bool { bytes.isEmpty }
+    public var isUnhashed: Bool { count == 0 }
 
     func withC<T>(_ body: (UnsafePointer<RcGitOid>) throws -> T) rethrows -> T {
         var c = RcGitOid()
-        withUnsafeMutableBytes(of: &c.bytes) { buffer in
-            for (offset, byte) in bytes.prefix(32).enumerated() {
-                buffer[offset] = byte
-            }
+        withUnsafeMutableBytes(of: &c.bytes) { target in
+            withUnsafeBytes(of: storage) { target.copyMemory(from: $0) }
         }
-        c.len = UInt8(min(bytes.count, 32))
+        c.len = count
         return try withUnsafePointer(to: &c, body)
     }
 }
