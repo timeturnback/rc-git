@@ -27,7 +27,9 @@ Four layers enforce it, and each catches what the others miss.
    (`blocking-http-transport-curl`, system libcurl) and SSH (russh, in-process; no `ssh`
    child) — and clippy bans the network entry points it lists — gix's `remote_at`,
    `find_remote`, `connect`, `handshake`, plus `russh::client::connect` and the std and
-   tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The curl
+   tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The ssh-agent
+   socket (`AgentClient::connect_uds`, `connect_env`) is banned the same way: the agent signs
+   on the user's behalf, so only the guard's `connect_agent` opens it. The curl
    feature also compiles gix's credential-helper and prompt machinery into the binary;
    it is unreachable: every connection, HTTPS and ssh, installs a credential callback that
    answers from caller-supplied credentials, only to a 401 from the host they were issued

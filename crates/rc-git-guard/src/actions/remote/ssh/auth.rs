@@ -510,6 +510,11 @@ struct ConnectedAgent {
 /// The ssh-agent the target's `IdentityAgent` names and the plain public keys it holds.
 /// A missing or broken agent is not an error — the ladder offers identity files only —
 /// and [`AgentSocket::None`] connects to none, so no agent key reaches the server.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ssh-agent signs on the user's behalf; this is the one place the guard opens \
+              its socket. See docs/safety.md"
+)]
 async fn connect_agent(socket: &AgentSocket) -> (Option<ConnectedAgent>, Vec<AgentKey>) {
     let socket = match socket {
         AgentSocket::Env => match std::env::var_os("SSH_AUTH_SOCK") {
