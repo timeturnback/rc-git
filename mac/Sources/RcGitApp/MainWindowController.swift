@@ -226,7 +226,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         modeControl?.selectedSegment = mode.rawValue
         switch mode {
         case .files: sidebarController.show(section: treeController.view)
-        case .history: sidebarController.show(section: nil)
+        case .history:
+            sidebarController.show(section: nil)
+            // Ref events skip the list while it is hidden; catch it up now.
+            reloadRefs(in: refsController)
         case .changes: sidebarController.show(section: changesSection)
         }
         renderBanner()
@@ -754,7 +757,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func wireRefs() {
         model.onRefsChanged = { [weak self] in
             guard let self else { return }
-            reloadRefs(in: refsController)
+            // Hidden outside History; `setMode(.history)` reloads it when it shows again.
+            if !refsController.view.isHidden { reloadRefs(in: refsController) }
             if let refPicker { reloadRefs(in: refPicker.refs) }
             renderBanner()
             window?.subtitle = browsingBanner().summary

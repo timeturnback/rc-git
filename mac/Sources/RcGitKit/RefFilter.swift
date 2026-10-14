@@ -31,11 +31,26 @@ extension RefListing {
     /// The broken refs whose full name contains `filter`, ignoring case, sorted naturally. A
     /// blank filter keeps every one; an empty result means the section is left out.
     public func unreadable(matching filter: String) -> [BrokenRef] {
-        let query = Self.query(from: filter)
-        return
-            broken
-            .filter { ref in query.map { ref.fullName.lowercased().contains($0) } ?? true }
-            .sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
+        guard let query = Self.query(from: filter) else { return sortedBroken }
+        return sortedBroken.filter { $0.fullName.lowercased().contains(query) }
+    }
+
+    /// `refs` grouped into the ref list's sections, each sorted naturally (`v2` before `v10`);
+    /// a kind with no refs has no section. The one place the ref list sorts.
+    static func naturalSections(of refs: [RefEntry]) -> [RefSection] {
+        let byKind = Dictionary(grouping: refs, by: \.kind)
+        return sectionOrder.compactMap { title, kind in
+            guard let members = byKind[kind] else { return nil }
+            let sorted = members.sorted {
+                $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending
+            }
+            return RefSection(title: title, kind: kind, refs: sorted)
+        }
+    }
+
+    /// `broken` sorted naturally by full name.
+    static func naturalOrder(of broken: [BrokenRef]) -> [BrokenRef] {
+        broken.sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
     }
 
     /// The filter as matching uses it: trimmed and lowercased, or `nil` when it is blank and
@@ -53,17 +68,13 @@ extension RefListing {
 
     /// The refs whose short name contains `filter`, ignoring case, grouped in section order
     /// and sorted naturally (`v2` before `v10`) within each. Empty sections are dropped; a
-    /// blank filter keeps every ref.
+    /// blank filter keeps every ref. Filters the listing's sorted sections and never sorts.
     public func sections(matching filter: String) -> [RefSection] {
-        let query = Self.query(from: filter)
-        return Self.sectionOrder.compactMap { title, kind in
-            let matches =
-                refs
-                .filter { ref in
-                    ref.kind == kind && (query.map { Self.rank(ref, query: $0) != nil } ?? true)
-                }
-                .sorted { $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending }
-            return matches.isEmpty ? nil : RefSection(title: title, kind: kind, refs: matches)
+        guard let query = Self.query(from: filter) else { return sortedSections }
+        return sortedSections.compactMap { section in
+            let matches = section.refs.filter { Self.rank($0, query: query) != nil }
+            return matches.isEmpty
+                ? nil : RefSection(title: section.title, kind: section.kind, refs: matches)
         }
     }
 

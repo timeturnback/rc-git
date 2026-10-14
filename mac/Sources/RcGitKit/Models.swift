@@ -56,14 +56,36 @@ public struct BrokenRef: Sendable, Hashable {
     }
 }
 
-/// Every reference in a repository.
+/// Every reference in a repository, plus the ref list's display order. The order is sorted
+/// once, when the listing is built or its refs change, so filtering never sorts; a listing
+/// built inside `Task.detached` is sorted off the main actor.
 public struct RefListing: Sendable, Hashable {
-    public var refs: [RefEntry]
-    public var broken: [BrokenRef]
+    public var refs: [RefEntry] {
+        didSet { sortedSections = Self.naturalSections(of: refs) }
+    }
+    public var broken: [BrokenRef] {
+        didSet { sortedBroken = Self.naturalOrder(of: broken) }
+    }
+    /// Every section of the ref list, unfiltered: section order, natural order within each.
+    private(set) var sortedSections: [RefSection]
+    /// `broken` in natural order of full name.
+    private(set) var sortedBroken: [BrokenRef]
 
     public init(refs: [RefEntry], broken: [BrokenRef] = []) {
         self.refs = refs
         self.broken = broken
+        sortedSections = Self.naturalSections(of: refs)
+        sortedBroken = Self.naturalOrder(of: broken)
+    }
+
+    /// Equal when the refs are: the sorted copies follow from them.
+    public static func == (lhs: RefListing, rhs: RefListing) -> Bool {
+        lhs.refs == rhs.refs && lhs.broken == rhs.broken
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(refs)
+        hasher.combine(broken)
     }
 }
 

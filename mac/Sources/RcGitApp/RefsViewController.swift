@@ -136,10 +136,17 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         view.window?.makeFirstResponder(search)
     }
 
+    /// Shows `listing`. A reload that changes nothing on screen does nothing: ref events and
+    /// selection moves call it far more often than the refs change.
     func reload(
         _ listing: RefListing, selected: RefEntry?, head: Head?,
         showsWorkingTree: Bool = false, workingTreeSelected: Bool = false
     ) {
+        guard
+            listing != self.listing || selected != self.selected || head != self.head
+                || showsWorkingTree != self.showsWorkingTree
+                || workingTreeSelected != self.workingTreeSelected
+        else { return }
         self.listing = listing
         self.selected = selected
         self.head = head
@@ -164,7 +171,7 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
         isReloading = true
         outline.reloadData()
-        outline.expandItem(nil, expandChildren: true)
+        for section in sections { outline.expandItem(section) }
         if behavior == .picker, RefListing.query(from: filter) != nil {
             // Typing narrows the list; Return takes the best match, not the row browsed now. A
             // filter only the Working Tree row matches highlights that row.

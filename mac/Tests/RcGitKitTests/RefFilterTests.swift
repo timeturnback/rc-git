@@ -56,6 +56,30 @@ private func names(_ sections: [RefSection]) -> [[String]] {
         #expect(names(listing.sections(matching: "")) == [["v1", "v2", "v10"]])
     }
 
+    @Test func changedRefsAreSortedAgain() {
+        var listing = RefListing(refs: [ref("v2", .tag)])
+        listing.refs.append(ref("v10", .tag))
+        listing.refs.append(ref("v1", .tag))
+        listing.refs.append(ref("main"))
+        #expect(names(listing.sections(matching: "")) == [["main"], ["v1", "v2", "v10"]])
+        #expect(names(listing.sections(matching: "v1")) == [["v1", "v10"]])
+        listing.broken = [
+            BrokenRef(fullName: "refs/tags/v10", error: "missing object"),
+            BrokenRef(fullName: "refs/tags/v9", error: "missing object"),
+        ]
+        #expect(
+            listing.unreadable(matching: "").map(\.fullName) == ["refs/tags/v9", "refs/tags/v10"])
+    }
+
+    @Test func listingsWithTheSameRefsAreEqual() {
+        let built = RefListing(refs: [ref("main"), ref("v1", .tag)])
+        var grown = RefListing(refs: [ref("main")])
+        grown.refs.append(ref("v1", .tag))
+        #expect(built == grown)
+        #expect(built.hashValue == grown.hashValue)
+        #expect(built != RefListing(refs: [ref("main")]))
+    }
+
     @Test func aWhitespaceFilterFiltersNothing() {
         #expect(names(mixed.sections(matching: "  \t ")) == names(mixed.sections(matching: "")))
         #expect(RefListing.query(from: " \n") == nil)
