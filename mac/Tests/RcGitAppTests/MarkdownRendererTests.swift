@@ -106,6 +106,36 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
         #expect(offset == definition.location)
     }
 
+    @Test func eachRunGetsTheFontItsStyleAsksFor() throws {
+        let rendered = MarkdownRenderer.render(
+            "plain *it* **bo** ***both*** `code` **`bc`** **again** x[^n]\n\n[^n]: t\n")
+        let text = rendered.text
+        let string = text.string as NSString
+        func font(of needle: String) throws -> NSFont {
+            let range = string.range(of: needle)
+            try #require(range.location != NSNotFound, "missing \(needle)")
+            let value = text.attribute(.font, at: range.location, effectiveRange: nil)
+            return try #require(value as? NSFont)
+        }
+        func traits(of needle: String) throws -> NSFontDescriptor.SymbolicTraits {
+            try font(of: needle).fontDescriptor.symbolicTraits
+        }
+        let body = MarkdownRenderer.Theme.body
+        #expect(try font(of: "plain") == body)
+        #expect(try traits(of: "it").contains(.italic))
+        #expect(try !traits(of: "it").contains(.bold))
+        #expect(try traits(of: "bo").contains(.bold))
+        #expect(try traits(of: "both").isSuperset(of: [.bold, .italic]))
+        #expect(try traits(of: "code").contains(.monoSpace))
+        #expect(try font(of: "code").pointSize == body.pointSize - 1)
+        #expect(try traits(of: "bc").isSuperset(of: [.monoSpace, .bold]))
+        #expect(try font(of: "again") == font(of: "bo"))
+        let marker = string.range(of: "xn")
+        try #require(marker.location != NSNotFound)
+        let markerFont = text.attribute(.font, at: marker.location + 1, effectiveRange: nil)
+        #expect(try #require(markerFont as? NSFont).pointSize == body.pointSize - 4)
+    }
+
     @Test func repeatedHeadingsGetDistinctAnchors() throws {
         let rendered = MarkdownRenderer.render("## Fixed\n\none\n\n## Fixed\n")
         let first = try #require(rendered.anchors["fixed"])

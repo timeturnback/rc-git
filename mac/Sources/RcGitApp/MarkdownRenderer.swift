@@ -21,8 +21,9 @@ enum MarkdownRenderer {
         return builder.finish(fallback: markdown)
     }
 
-    /// Fonts, colors, and indents the preview is drawn with. Computed rather than stored:
-    /// `NSFont` is not `Sendable`, and it caches instances itself.
+    /// Fonts, colors, and indents the preview is drawn with. Computed rather than stored,
+    /// because `NSFont` is not `Sendable`. Deriving a font is not free even when AppKit hands
+    /// back a cached instance, so `MarkdownBuilder` derives each run font once per render.
     enum Theme {
         static let bodySize: CGFloat = 13
         static let codeSize: CGFloat = 12
@@ -89,6 +90,20 @@ private struct MarkdownBuilder {
     /// share these instances: TextKit joins paragraphs into one block only by identity, so a
     /// fresh block per paragraph would break the quote bar between them.
     private var openQuotes: [NSTextBlock] = []
+    /// Every run font this render has derived, so each base, role and trait combination costs
+    /// one descriptor lookup rather than one per run. Keyed on the font itself, not its
+    /// identity, so a freed font can never alias a new one.
+    private var fonts: [FontKey: NSFont] = [:]
+
+    private struct FontKey: Hashable {
+        let base: NSFont
+        let traits: UInt32
+        let role: FontRole
+    }
+
+    private enum FontRole: UInt8 {
+        case plain, code, footnoteMarker
+    }
 
     mutating func append(_ document: MarkdownDocument) {
         headingAnchors = MarkdownDocument.headingAnchors(for: document.blocks).makeIterator()
@@ -232,32 +247,49 @@ private struct MarkdownBuilder {
             result.append(
                 NSAttributedString(
                     string: text,
-                    attributes: Self.attributes(
-                        for: run, font: font, color: color, style: style)))
+                    attributes: attributes(for: run, font: font, color: color, style: style)))
         }
     }
 
-    private static func attributes(
+    private mutating func attributes(
         for run: MarkdownRun, font: NSFont, color: NSColor, style: NSParagraphStyle
     ) -> [NSAttributedString.Key: Any] {
-        let font = Self.font(for: run, base: font)
+        let font = self.font(for: run, base: font)
         var attributes: [NSAttributedString.Key: Any] = [
             .paragraphStyle: style, .font: font, .foregroundColor: color,
         ]
         if run.style.contains(.footnoteMarker) {
             attributes[.baselineOffset] = font.pointSize * 0.45
         }
-        attributes.merge(decorations(for: run)) { _, decoration in decoration }
+        attributes.merge(Self.decorations(for: run)) { _, decoration in decoration }
         return attributes
     }
 
-    /// The run's font: monospaced for code, small for a footnote marker, then its traits.
-    private static func font(for run: MarkdownRun, base: NSFont) -> NSFont {
-        var font = run.style.contains(.code) ? monospaced(like: base) : base
-        if run.style.contains(.footnoteMarker) {
-            font = .systemFont(ofSize: max(font.pointSize - 4, 8))
+    /// The run's font, derived on the first run that needs it and reused after that.
+    private mutating func font(for run: MarkdownRun, base: NSFont) -> NSFont {
+        let role: FontRole =
+            run.style.contains(.footnoteMarker)
+            ? .footnoteMarker : run.style.contains(.code) ? .code : .plain
+        let traits = Self.symbolicTraits(for: run.style)
+        if role == .plain, traits.isEmpty { return base }
+        let key = FontKey(base: base, traits: traits.rawValue, role: role)
+        if let cached = fonts[key] { return cached }
+        let font = Self.derivedFont(base: base, traits: traits, role: role)
+        fonts[key] = font
+        return font
+    }
+
+    /// Monospaced for code, small for a footnote marker, then the run's traits. A footnote
+    /// marker is never code: the parser emits code spans as leaves.
+    private static func derivedFont(
+        base: NSFont, traits: NSFontDescriptor.SymbolicTraits, role: FontRole
+    ) -> NSFont {
+        let font: NSFont
+        switch role {
+        case .plain: font = base
+        case .code: font = monospaced(like: base)
+        case .footnoteMarker: font = .systemFont(ofSize: max(base.pointSize - 4, 8))
         }
-        let traits = symbolicTraits(for: run.style)
         guard !traits.isEmpty else { return font }
         let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
         return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
