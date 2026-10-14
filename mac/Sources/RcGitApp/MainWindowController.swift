@@ -1624,9 +1624,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         alert.alertStyle = decision.risk == .destructive ? .critical : .warning
         alert.addButton(withTitle: verb)
         alert.addButton(withTitle: "Cancel")
-        if #available(macOS 11.0, *) {
-            alert.buttons.first?.hasDestructiveAction = decision.risk == .destructive
-        }
+        alert.buttons.first?.hasDestructiveAction = decision.risk == .destructive
         alert.layout()
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { response in
