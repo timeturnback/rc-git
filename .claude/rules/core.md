@@ -32,7 +32,9 @@ paths: crates/rc-git-core/**
   so an unchanged file costs one `lstat` instead of a full hash. It may only ever *decline*:
   a conflicted, assume-valid, skip-worktree, intent-to-add or racy entry, an id that is not
   the tree's, or any read that fails falls through to hashing. Never let it answer
-  `Unchanged` from anything but a full stat match — that hides a real edit.
+  `Unchanged` from anything but a full stat match — that hides a real edit. The walk takes
+  one `lstat` per entry, as `DiskStat` (gix's `Metadata`, which fills `ctime` as git does),
+  and hands it to the cache in `DiskFacts`; never stat the same path again.
 - Compare a directory against its tree through `FsRules::index`, not a scan per file. A wide
   directory otherwise costs a pass over the whole tree listing for every file in it.
 - Name a disk entry with `FsRules::disk_name` and match it with `TreeIndex::resolve`: macOS

@@ -17,6 +17,11 @@ use crate::oid::Oid;
 use crate::repo::Repository;
 use crate::tree::{EntryKind, TreeEntry, sort_for_display, tree_children};
 
+/// One `lstat` of a working-tree entry, taken once by the walk and used for its kind, its size
+/// and the stat cache alike. `gix_index`'s own metadata, not `std::fs`: it fills `ctime` the
+/// way git does, so it compares with the index.
+type DiskStat = gix::index::fs::Metadata;
+
 /// How a file on disk relates to the same path in the compared tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorktreeStatus {
@@ -166,10 +171,11 @@ impl Repository {
             for DiskEntry {
                 name,
                 kind: disk,
-                size,
+                meta,
                 path,
             } in on_disk
             {
+                let size = meta.len();
                 let (name, in_tree) = by_name.resolve(name);
                 let rela = relative_path(dir, &name);
                 let Some(disk) = disk else {
@@ -183,6 +189,7 @@ impl Repository {
                     let disk = DiskFacts {
                         kind,
                         size,
+                        meta: &meta,
                         path: &path,
                         rela: &rela,
                     };
@@ -383,16 +390,16 @@ impl Repository {
     }
 }
 
-/// One directory entry as `symlink_metadata` saw it.
+/// One directory entry as its one `lstat` saw it.
 struct DiskEntry {
     name: BString,
     /// `None` for a FIFO, socket or device file.
     kind: Option<EntryKind>,
-    size: u64,
+    meta: DiskStat,
     path: PathBuf,
 }
 
-/// One directory's entries with their `symlink_metadata`, named as `fs` spells them. An entry
+/// One directory's entries with their `lstat`, named as `fs` spells them. An entry
 /// that vanished between the listing and its stat is left out, as git would never have seen it.
 fn list_disk_dir(disk_dir: &Path, dir: &str, fs: FsRules) -> Result<Vec<DiskEntry>> {
     let read = std::fs::read_dir(disk_dir)
@@ -406,7 +413,7 @@ fn list_disk_dir(disk_dir: &Path, dir: &str, fs: FsRules) -> Result<Vec<DiskEntr
             continue;
         }
         let path = entry.path();
-        let meta = match std::fs::symlink_metadata(&path) {
+        let meta = match DiskStat::from_path_no_follow(&path) {
             Ok(meta) => meta,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
             Err(source) => {
@@ -417,7 +424,7 @@ fn list_disk_dir(disk_dir: &Path, dir: &str, fs: FsRules) -> Result<Vec<DiskEntr
         on_disk.push(DiskEntry {
             name,
             kind: disk_kind(&meta),
-            size: meta.len(),
+            meta,
             path,
         });
     }
@@ -433,10 +440,12 @@ enum TreeAt {
     Submodule,
 }
 
-/// What `symlink_metadata` said about the file being compared, and where to find it.
+/// What the walk's one `lstat` said about the file being compared, and where to find it.
 struct DiskFacts<'a> {
     kind: EntryKind,
     size: u64,
+    /// That `lstat`, which the stat cache compares with the index instead of taking another.
+    meta: &'a DiskStat,
     /// The file's path on disk.
     path: &'a Path,
     /// The repository-relative path with `/` separators, for the index lookup.
@@ -544,7 +553,7 @@ impl<'repo> WorktreeContext<'repo> {
     ) -> Result<std::result::Result<WorktreeStatus, DiskError>> {
         if self
             .stats
-            .proves_unchanged(disk.rela, tree_entry.oid, disk.path)
+            .proves_unchanged(disk.rela, tree_entry.oid, disk.meta)
         {
             return Ok(Ok(WorktreeStatus::Unchanged));
         }
@@ -714,7 +723,7 @@ struct LoadedIndex {
 
 impl LoadedIndex {
     /// Whether this index proves the file at `rela_path` is still `oid`.
-    fn proves_unchanged(&self, rela_path: &BString, oid: Oid, disk_path: &Path) -> bool {
+    fn proves_unchanged(&self, rela_path: &BString, oid: Oid, meta: &DiskStat) -> bool {
         let Some(entry) = self.index.entry_by_path(rela_path.as_bstr()) else {
             return false;
         };
@@ -734,11 +743,7 @@ impl LoadedIndex {
         if entry.stat.is_racy(self.index.timestamp(), self.options) {
             return false;
         }
-        // `gix_index`'s own metadata, not `std::fs`: it fills `ctime` the way git does.
-        let Ok(meta) = gix::index::fs::Metadata::from_path_no_follow(disk_path) else {
-            return false;
-        };
-        let Ok(disk) = gix::index::entry::Stat::from_fs(&meta) else {
+        let Ok(disk) = gix::index::entry::Stat::from_fs(meta) else {
             return false;
         };
         entry.stat.matches(&disk, self.options)
@@ -757,7 +762,7 @@ impl<'repo> StatCache<'repo> {
     /// Whether the index proves the file at `rela_path` is still `oid`. A repository with no
     /// readable index answers `false` for every path, which only costs the hash it would have
     /// cost anyway.
-    fn proves_unchanged(&mut self, rela_path: &BString, oid: Oid, disk_path: &Path) -> bool {
+    fn proves_unchanged(&mut self, rela_path: &BString, oid: Oid, meta: &DiskStat) -> bool {
         if let StatCacheState::Unbuilt = self.state {
             self.state = match self.build() {
                 Some(loaded) => StatCacheState::Ready(loaded),
@@ -765,7 +770,7 @@ impl<'repo> StatCache<'repo> {
             };
         }
         match &self.state {
-            StatCacheState::Ready(loaded) => loaded.proves_unchanged(rela_path, oid, disk_path),
+            StatCacheState::Ready(loaded) => loaded.proves_unchanged(rela_path, oid, meta),
             StatCacheState::Unbuilt | StatCacheState::Unavailable => false,
         }
     }
@@ -1186,7 +1191,7 @@ impl StatusWalk<'_> {
         path: BString,
         disk_path: &Path,
     ) -> Result<Presence> {
-        let meta = match std::fs::symlink_metadata(disk_path) {
+        let meta = match DiskStat::from_path_no_follow(disk_path) {
             Ok(meta) => meta,
             Err(source) => return Ok(self.skip_entry(path, "stat working tree entry", source)),
         };
@@ -1211,6 +1216,7 @@ impl StatusWalk<'_> {
                 let disk = DiskFacts {
                     kind,
                     size: meta.len(),
+                    meta: &meta,
                     path: disk_path,
                     rela: &path,
                 };
@@ -1429,7 +1435,7 @@ impl FileWalk<'_> {
         path: BString,
         disk_path: &Path,
     ) -> Result<()> {
-        let meta = match std::fs::symlink_metadata(disk_path) {
+        let meta = match DiskStat::from_path_no_follow(disk_path) {
             Ok(meta) => meta,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(source) => {
@@ -1555,29 +1561,21 @@ fn git_kind(disk: EntryKind, tree: Option<EntryKind>, executable_bit: bool) -> E
     }
 }
 
-/// What a disk entry is, from its `symlink_metadata`. Only the owner's executable bit counts,
-/// as in git: a file executable by its group or others alone is still a plain blob. `None` for
-/// a FIFO, socket or device file, which git cannot track and which is never opened: `open` on
-/// a FIFO blocks until a writer appears.
-fn disk_kind(meta: &std::fs::Metadata) -> Option<EntryKind> {
-    let file_type = meta.file_type();
-    if file_type.is_symlink() {
+/// What a disk entry is, from its `lstat`. Only the owner's executable bit counts, as in git:
+/// a file executable by its group or others alone is still a plain blob. `None` for a FIFO,
+/// socket or device file, which git cannot track and which is never opened: `open` on a FIFO
+/// blocks until a writer appears.
+fn disk_kind(meta: &DiskStat) -> Option<EntryKind> {
+    if meta.is_symlink() {
         return Some(EntryKind::Symlink);
     }
-    if file_type.is_dir() {
+    if meta.is_dir() {
         return Some(EntryKind::Tree);
     }
-    if !file_type.is_file() {
+    if !meta.is_file() {
         return None;
     }
-    #[cfg(unix)]
-    let executable = {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o100 != 0
-    };
-    #[cfg(not(unix))]
-    let executable = false;
-    Some(if executable {
+    Some(if meta.is_executable() {
         EntryKind::ExecutableBlob
     } else {
         EntryKind::Blob
@@ -1728,15 +1726,48 @@ mod tests {
             let alpha = named(entries, "alpha.txt");
             let disk_path = root.join("vanished");
             let rela = BString::from("alpha.txt");
+            // The root's stat, taken before the file vanished: it matches no index entry, so
+            // the stat cache declines.
+            let meta = DiskStat::from_path_no_follow(root).unwrap();
             let disk = DiskFacts {
                 kind: EntryKind::Blob,
                 // The blob's size, so only hashing the file can settle it.
                 size: 6,
+                meta: &meta,
                 path: &disk_path,
                 rela: &rela,
             };
             let presence = walk.walk_tracked_file(alpha, &disk).unwrap();
             assert_eq!(presence, Presence::Gone);
+            assert_eq!(walk.report.entries, []);
+            assert_eq!(walk.report.unreadable, []);
+        });
+    }
+
+    /// The stat cache compares the index with the walk's own `lstat` and takes no second one:
+    /// handed `alpha.txt`'s stat for a path that no longer exists, it still vouches for the
+    /// file, where a second `lstat` of the path would fail and send it to be hashed.
+    #[test]
+    fn the_stat_cache_uses_the_walks_lstat_without_a_second_one() {
+        let fx = Fixture::standard();
+        // A second must pass so the index the `git add` writes is later than `alpha.txt`.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fx.write("Zeta.txt", b"omega\n");
+        fx.git(&["add", "Zeta.txt"]);
+        with_status_walk_in(&fx, |walk, entries, root| {
+            let alpha = named(entries, "alpha.txt");
+            let meta = DiskStat::from_path_no_follow(&root.join("alpha.txt")).unwrap();
+            let disk_path = root.join("vanished");
+            let rela = BString::from("alpha.txt");
+            let disk = DiskFacts {
+                kind: EntryKind::Blob,
+                size: meta.len(),
+                meta: &meta,
+                path: &disk_path,
+                rela: &rela,
+            };
+            let presence = walk.walk_tracked_file(alpha, &disk).unwrap();
+            assert_eq!(presence, Presence::OnDisk);
             assert_eq!(walk.report.entries, []);
             assert_eq!(walk.report.unreadable, []);
         });
@@ -1752,9 +1783,12 @@ mod tests {
             let alpha = named(entries, "alpha.txt");
             let disk_path = root.join("rewritten.txt");
             let rela = BString::from("alpha.txt");
+            // Another inode than the one the index recorded, so the stat cache declines.
+            let meta = DiskStat::from_path_no_follow(&disk_path).unwrap();
             let disk = DiskFacts {
                 kind: EntryKind::Blob,
                 size: 6,
+                meta: &meta,
                 path: &disk_path,
                 rela: &rela,
             };
