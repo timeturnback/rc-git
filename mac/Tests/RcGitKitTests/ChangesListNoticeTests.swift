@@ -46,4 +46,12 @@ import Testing
         #expect(notice.placeholder == "status failed")
         #expect(notice.isCurrent)
     }
+
+    @Test func onlyAStateWithRowsRebuildsTheList() {
+        let report = StatusReport(entries: [entry], scanned: 1, truncated: false)
+        #expect(ChangesState.idle.listedEntries == nil)
+        #expect(ChangesState.loading.listedEntries == nil)
+        #expect(ChangesState.loaded(report).listedEntries == [entry])
+        #expect(ChangesState.failed("status failed").listedEntries == [])
+    }
 }

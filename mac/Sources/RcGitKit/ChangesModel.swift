@@ -30,6 +30,17 @@ extension ChangesState {
     public static let scanningPlaceholder = "Scanning the working tree…"
     public static let cleanPlaceholder = "No changes"
 
+    /// The rows this state replaces the list with, or `nil` when it carries none and the rows
+    /// on screen stay as they are. Only `nil` spares the view a rebuild, which on a large
+    /// change list is the costliest step of rendering a status change.
+    public var listedEntries: [StatusEntry]? {
+        switch self {
+        case .idle, .loading: nil
+        case let .loaded(report): report.entries
+        case .failed: []
+        }
+    }
+
     /// The list's notice in this state. Only a loaded report with no entries says the tree
     /// is clean; before one lands, the list says it is scanning, and rows left from an earlier
     /// report stay but are not current.

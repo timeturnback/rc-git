@@ -440,14 +440,16 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         case .idle, .loading:
             break
         case let .loaded(report):
-            entries = report.entries
             showTruncation(
                 report.truncated
                     ? "Scan stopped after \(report.scanned) entries; the list is incomplete."
                     : nil)
         case .failed:
-            entries = []
             showTruncation(nil)
+        }
+        let listed = state.listedEntries
+        if let listed {
+            entries = listed
         }
         let notice = state.notice(showingRows: !entries.isEmpty)
         filesPlaceholder.isHidden = notice.placeholder == nil
@@ -458,7 +460,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             filesPlaceholder.toolTip = nil
         }
         listIsCurrent = notice.isCurrent
-        reloadFiles()
+        if listed != nil {
+            reloadFiles()
+        }
         refreshSummary()
     }
 
