@@ -994,7 +994,7 @@ fn commit_without_identity_names_the_repository_config_and_author_flag() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let message = stderr(&out);
     assert!(
-        message.starts_with("error: no author identity"),
+        message.starts_with("error: commit: no author identity"),
         "{message}"
     );
     assert!(

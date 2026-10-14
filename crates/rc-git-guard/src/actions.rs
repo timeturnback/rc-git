@@ -219,10 +219,13 @@ pub enum ActionError {
     /// No author identity is available: the repository's own config sets no
     /// `user.name`/`user.email` and none was passed in.
     #[error(
-        "no author identity: rc-git reads only this repository's .git/config (not \
+        "{op}: no author identity: rc-git reads only this repository's .git/config (not \
          ~/.gitconfig); set user.name/user.email there, or pass an identity"
     )]
-    MissingIdentity,
+    MissingIdentity {
+        /// What was being done.
+        op: &'static str,
+    },
     /// The identity to record has an empty name or email, or one holding `<`, `>` or a line
     /// break, which would corrupt the commit's `author` line. Refused before any object is
     /// written.
@@ -373,8 +376,9 @@ pub enum ActionError {
         /// What was being done.
         op: &'static str,
     },
-    /// The underlying git operation failed.
-    #[error("{op} '{name}': {source:#}")]
+    /// The underlying git operation failed. The message carries the whole source chain, each
+    /// cause once, so a nested cause (an io error under a gix one) is not lost.
+    #[error("{op} '{name}': {}", source_chain(.source.as_ref()))]
     Git {
         /// What was being done.
         op: &'static str,
@@ -384,6 +388,23 @@ pub enum ActionError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+}
+
+/// `source` and every cause beneath it joined with `: `, skipping a cause whose text the line
+/// already holds (many errors repeat their source in their own message). Each is formatted
+/// with `{:#}`, which keeps gix from appending its source location.
+fn source_chain(source: &(dyn std::error::Error + 'static)) -> String {
+    let mut line = format!("{source:#}");
+    let mut next = source.source();
+    while let Some(cause) = next {
+        let text = format!("{cause:#}");
+        if !line.contains(&text) {
+            line.push_str(": ");
+            line.push_str(&text);
+        }
+        next = cause.source();
+    }
+    line
 }
 
 /// What a refused host key contradicts, for the `HostKeyMismatch` message.
@@ -1200,6 +1221,33 @@ fn refuse_case_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wrapper whose message omits its cause, as many gix errors do.
+    #[derive(Debug, thiserror::Error)]
+    #[error("could not write the object")]
+    struct Wrapper(#[source] std::io::Error);
+
+    /// A wrapper that repeats its cause in its own message.
+    #[derive(Debug, thiserror::Error)]
+    #[error("lock failed: {0}")]
+    struct Repeats(#[source] std::io::Error);
+
+    #[test]
+    fn a_git_error_prints_every_nested_cause_once() {
+        let nested = std::io::Error::other("disk full");
+        let err = ActionError::git("commit", "index", Wrapper(nested));
+        assert_eq!(
+            err.to_string(),
+            "commit 'index': could not write the object: disk full"
+        );
+
+        let repeated = std::io::Error::other("held by another process");
+        let err = ActionError::git("commit", "index", Repeats(repeated));
+        assert_eq!(
+            err.to_string(),
+            "commit 'index': lock failed: held by another process"
+        );
+    }
 
     #[test]
     fn a_host_key_mismatch_names_what_it_contradicts() {

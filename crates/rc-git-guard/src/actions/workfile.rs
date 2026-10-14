@@ -18,7 +18,7 @@ use super::{ActionError, ActionResult, Author, HunkStamp, Identity, git_err};
 /// object write.
 ///
 /// # Errors
-/// [`ActionError::MissingIdentity`] when no source has one, and
+/// [`ActionError::MissingIdentity`] naming `op` when no source has one, and
 /// [`ActionError::InvalidIdentity`] naming `op` when the chosen name or email is empty or
 /// holds `<`, `>` or a line break, which would corrupt the `author` line.
 pub(super) fn resolve_identity(
@@ -30,7 +30,7 @@ pub(super) fn resolve_identity(
         .explicit
         .or_else(|| repository_identity(repo))
         .or(author.fallback)
-        .ok_or(ActionError::MissingIdentity)?;
+        .ok_or(ActionError::MissingIdentity { op })?;
     check_identity_field(op, "name", &identity.name)?;
     check_identity_field(op, "email", &identity.email)?;
     Ok(identity)

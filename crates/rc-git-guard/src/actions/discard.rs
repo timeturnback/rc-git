@@ -208,6 +208,7 @@ pub(super) fn restore_paths(
 /// `None`.
 ///
 /// # Errors
+/// [`ActionError::NoHunksSelected`] when `stamps` is empty,
 /// [`ActionError::HunkMismatch`] when the file moved under the selection,
 /// [`ActionError::Git`] when `path` is one git refuses or the file cannot be read or written.
 pub fn discard_hunks(
@@ -224,7 +225,10 @@ pub fn discard_hunks(
         path: path.to_owned(),
     };
     if stamps.is_empty() {
-        return Err(mismatch());
+        return Err(ActionError::NoHunksSelected {
+            op: OP,
+            path: path.to_owned(),
+        });
     }
     let work_dir = work_dir(&repo, OP)?;
     workfile::join_under(&work_dir, path, OP)?;

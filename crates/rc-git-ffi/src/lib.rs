@@ -3725,7 +3725,7 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
 /// reaching Swift only as text.
 fn action_status(err: &ActionError) -> i32 {
     match err {
-        ActionError::MissingIdentity => RCGIT_IDENTITY_REQUIRED,
+        ActionError::MissingIdentity { .. } => RCGIT_IDENTITY_REQUIRED,
         ActionError::Denied { .. }
         | ActionError::NotConfirmed { .. }
         | ActionError::CheckedOut { .. }
@@ -4193,7 +4193,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::InvalidIdentity { .. }
         | ActionError::Git { .. } => RCGIT_ERROR,
         ActionError::Cancelled { .. } => RCGIT_CANCELLED,
-        ActionError::MissingIdentity => RCGIT_IDENTITY_REQUIRED,
+        ActionError::MissingIdentity { .. } => RCGIT_IDENTITY_REQUIRED,
     }
 }
 

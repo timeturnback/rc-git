@@ -463,7 +463,7 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
 /// knows that is `--confirm`.
 fn cli_hint(err: &anyhow::Error) -> String {
     match err.downcast_ref::<ActionError>() {
-        Some(ActionError::MissingIdentity) => " (--author \"Name <email>\")".to_owned(),
+        Some(ActionError::MissingIdentity { .. }) => " (--author \"Name <email>\")".to_owned(),
         Some(ActionError::NotConfirmed { phrase, .. }) => {
             format!(" (rerun with --confirm {})", shell_word(phrase))
         }

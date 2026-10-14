@@ -1548,7 +1548,14 @@ mod commit_and_discard {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, ActionError::MissingIdentity), "{err}");
+        assert!(
+            matches!(err, ActionError::MissingIdentity { op: "commit" }),
+            "{err}"
+        );
+        assert!(
+            err.to_string().starts_with("commit: no author identity"),
+            "{err}"
+        );
         assert!(
             err.to_string()
                 .contains("reads only this repository's .git/config (not ~/.gitconfig)"),
@@ -2176,11 +2183,16 @@ mod commit_and_discard {
         fx.write("untracked.txt", b"junk\n");
         let stamp = stamps(&fx, "alpha.txt")[0];
 
-        for (path, selection) in [
-            ("alpha.txt", &[][..]),
-            ("untracked.txt", &[stamp][..]),
-            ("link", &[stamp][..]),
-        ] {
+        let err = discard_hunks(fx.path(), &policy, "alpha.txt", &[], None).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::NoHunksSelected { op: "discard", path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "discard: no hunks selected for 'alpha.txt'; select a hunk or the whole file"
+        );
+        for (path, selection) in [("untracked.txt", &[stamp][..]), ("link", &[stamp][..])] {
             let err = discard_hunks(fx.path(), &policy, path, selection, None).unwrap_err();
             assert!(
                 matches!(&err, ActionError::HunkMismatch { path: named } if named == path),
@@ -3481,7 +3493,15 @@ mod stash {
             "no changes to stash at the selected paths",
         );
         let err = refused_push(&fx, &["alpha.txt"], Author::default());
-        assert!(matches!(err, ActionError::MissingIdentity), "{err}");
+        assert!(
+            matches!(err, ActionError::MissingIdentity { op: "stash push" }),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("stash push: no author identity"),
+            "{err}"
+        );
         assert_eq!(stash_list(&fx), "");
         assert_eq!(
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
