@@ -285,12 +285,17 @@ fn load_identity(
         }
         Err(err) => return Err(Outcome::Unusable(err.to_string())),
     };
-    russh::keys::decode_secret_key(&contents, passphrase).map_err(|err| {
-        let encrypted_pkcs8 = contents
-            .lines()
-            .any(|line| line == "-----BEGIN ENCRYPTED PRIVATE KEY-----");
-        classify_load_error(&err, passphrase.is_some(), encrypted_pkcs8)
-    })
+    let has_header = |header: &str| contents.lines().any(|line| line == header);
+    let encrypted_pkcs8 = has_header("-----BEGIN ENCRYPTED PRIVATE KEY-----");
+    // russh fails a plain PKCS#8 key handed any passphrase, so a stored passphrase meant
+    // for another identity must not reach it.
+    let passphrase = if has_header("-----BEGIN PRIVATE KEY-----") {
+        None
+    } else {
+        passphrase
+    };
+    russh::keys::decode_secret_key(&contents, passphrase)
+        .map_err(|err| classify_load_error(&err, passphrase.is_some(), encrypted_pkcs8))
 }
 
 const NOT_A_KEY: &str = "not a private key";
@@ -654,6 +659,21 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// A passphrase stored for another identity must not lock out a plain PKCS#8 key.
+    #[test]
+    fn an_unencrypted_pkcs8_key_loads_even_with_a_passphrase_given() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        let key = keypair(2);
+        let mut pem = Vec::new();
+        russh::keys::encode_pkcs8_pem(&key, &mut pem).expect("encode");
+        dir.write("id_plain", &pem);
+        let loaded = load_identity(&dir.path().join("id_plain"), Some("x"), true, false);
+        assert_eq!(
+            loaded.map(|loaded| loaded.public_key().clone()),
+            Ok(key.public_key().clone())
+        );
     }
 
     #[test]
