@@ -129,10 +129,16 @@ pub(in crate::actions::remote) fn resolve(
     }
     let identities_configured = !identities.is_empty();
     if !identities_configured {
-        identities = ["id_rsa", "id_ecdsa", "id_ed25519"]
-            .into_iter()
-            .map(|name| ssh_dir.join(name))
-            .collect();
+        identities = [
+            "id_rsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_ed25519_sk",
+        ]
+        .into_iter()
+        .map(|name| ssh_dir.join(name))
+        .collect();
     }
     Ok(SshTarget {
         host,
@@ -1189,7 +1195,14 @@ HostName	real.example.com
         assert_eq!(target.port, 22);
         assert_eq!(
             target.identities,
-            ["id_rsa", "id_ecdsa", "id_ed25519"].map(|name| dir.path().join(name))
+            [
+                "id_rsa",
+                "id_ecdsa",
+                "id_ecdsa_sk",
+                "id_ed25519",
+                "id_ed25519_sk",
+            ]
+            .map(|name| dir.path().join(name))
         );
         assert!(!target.identities_configured);
         assert!(!target.identities_only);

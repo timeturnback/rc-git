@@ -289,6 +289,9 @@ fn load_identity(
         }
         Err(err) => return Err(Outcome::Unusable(err.to_string())),
     };
+    if is_security_key(&contents) {
+        return Err(Outcome::Unusable(SECURITY_KEY.to_owned()));
+    }
     let has_header = |header: &str| contents.lines().any(|line| line == header);
     let encrypted_pkcs8 = has_header("-----BEGIN ENCRYPTED PRIVATE KEY-----");
     if encrypted_pkcs8 && pbkdf2_prf(&contents) == Some(HMAC_WITH_SHA1) {
@@ -305,7 +308,21 @@ fn load_identity(
         .map_err(|err| classify_load_error(&err, passphrase.is_some(), encrypted_pkcs8))
 }
 
+/// Whether an OpenSSH-format key file holds a FIDO security key (`sk-*`). Its public half
+/// is stored in the clear, so an encrypted one is recognized without a passphrase. Signing
+/// needs the hardware token, which rc-git cannot drive.
+fn is_security_key(contents: &str) -> bool {
+    let Ok(key) = PrivateKey::from_openssh(contents) else {
+        return false;
+    };
+    matches!(
+        key.algorithm(),
+        Algorithm::SkEcdsaSha2NistP256 | Algorithm::SkEd25519
+    )
+}
+
 const NOT_A_KEY: &str = "not a private key";
+const SECURITY_KEY: &str = "a security key, which rc-git does not support";
 const NOT_HELD: &str = "names a key the agent does not hold";
 const SHA1_PKCS8: &str = "encrypted with PBKDF2-SHA1, which rc-git cannot decrypt; \
                           re-encrypt it with ssh-keygen -p";
@@ -681,6 +698,51 @@ mod tests {
         Tried {
             key: key.to_owned(),
             outcome,
+        }
+    }
+
+    fn security_key_pem(encrypted: bool) -> String {
+        use russh::keys::ssh_key::{private, public};
+        let public = public::SkEd25519::new(
+            *keypair(4)
+                .public_key()
+                .key_data()
+                .ed25519()
+                .expect("ed25519"),
+            "ssh:",
+        );
+        let sk = private::SkEd25519::new(public, 0x01, vec![7; 32]).expect("sk key");
+        let mut key =
+            PrivateKey::new(private::KeypairData::SkEd25519(sk), "token").expect("private key");
+        if encrypted {
+            let kdf = russh::keys::ssh_key::Kdf::Bcrypt {
+                salt: vec![9; 16],
+                rounds: 1,
+            };
+            key = key
+                .encrypt_with(russh::keys::ssh_key::Cipher::Aes256Ctr, kdf, 7, "pass")
+                .expect("encrypt");
+        }
+        key.to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .expect("encode")
+            .to_string()
+    }
+
+    /// A security key needs its hardware token to sign; offering it used to fail the
+    /// whole ladder mid-auth instead of moving on to the next key.
+    #[test]
+    fn a_security_key_file_is_skipped_as_unusable_encrypted_or_not() {
+        let dir = rc_git_testkit::Fixture::empty_dir();
+        for encrypted in [false, true] {
+            dir.write("id_ed25519_sk", security_key_pem(encrypted).as_bytes());
+            let path = dir.path().join("id_ed25519_sk");
+            for passphrase in [None, Some("pass")] {
+                assert_eq!(
+                    load_identity(&path, passphrase, false, false).err(),
+                    Some(Outcome::Unusable(SECURITY_KEY.to_owned())),
+                    "encrypted {encrypted}, {passphrase:?}"
+                );
+            }
         }
     }
 
