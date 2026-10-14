@@ -61,8 +61,6 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// rows arrive, and the row size it was measured at; `nil` when it has to be recomputed
     /// from every row.
     private var widestRow: (rowSize: NSTableView.RowSizeStyle, width: CGFloat)?
-    /// Set while `refilter` re-expands folders, which re-measures every row once at the end.
-    private var restoringExpansion = false
 
     override func loadView() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
@@ -248,13 +246,9 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     /// Re-applies `isRowVisible` to every row already read, after the hidden-files setting
     /// changed. Reads nothing; expanded folders stay expanded and the selection stays put
-    /// when its row is still on screen.
+    /// when its row is still on screen. `reloadData` keeps every expanded `Node` that is still
+    /// on the outline expanded, since each one is the same object across the reload.
     func refilter() {
-        let expanded = (0..<outline.numberOfRows).compactMap { row -> Node? in
-            guard let node = outline.item(atRow: row) as? Node, outline.isItemExpanded(node)
-            else { return nil }
-            return node
-        }
         let selected = outline.item(atRow: outline.selectedRow) as? Node
         roots = visible(allRoots)
         var pending = allRoots
@@ -264,11 +258,6 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
             pending += children
         }
         outline.reloadData()
-        restoringExpansion = true
-        for node in expanded where outline.row(forItem: node) >= 0 {
-            outline.expandItem(node)
-        }
-        restoringExpansion = false
         let selectedRow = selected.map { outline.row(forItem: $0) } ?? -1
         restoringSelection = true
         if selectedRow >= 0 {
@@ -381,7 +370,7 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         // A folder still loading measures its rows once they land, in `load`.
-        guard !restoringExpansion, let node = notification.userInfo?["NSObject"] as? Node,
+        guard let node = notification.userInfo?["NSObject"] as? Node,
             node.children != nil
         else { return }
         reportContentWidth(below: node)
