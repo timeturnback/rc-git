@@ -21,7 +21,7 @@ mod walk;
 mod worktree;
 
 pub use blame::{Blame, BlameRange};
-pub use blob::{BlobContent, DEFAULT_BLOB_LIMIT, GIT_BINARY_PROBE_BYTES, is_binary, line_starts};
+pub use blob::{BlobContent, DEFAULT_BLOB_LIMIT};
 pub use diff::{
     BlobDiff, ChangeKind, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLine, DiffLineKind, LineEnd,
     TreeChange,
@@ -34,7 +34,7 @@ pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
 pub use repo::{Repository, require_files_ref_storage, require_work_tree_at};
 pub use stash::{StashEntry, StashReflogLine, stash_reflog_lines};
-pub use tree::{EntryKind, TreeEntry, sort_for_display};
+pub use tree::{EntryKind, TreeEntry};
 pub use worktree::{
     StatusEntry, StatusReport, UnreadableEntry, WorktreeEntry, WorktreeFile, WorktreeFileList,
     WorktreeListing, WorktreeStatus,

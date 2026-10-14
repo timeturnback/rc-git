@@ -5,7 +5,7 @@ use crate::oid::Oid;
 use crate::repo::Repository;
 
 /// Git's own rule: a file is binary when a NUL byte appears in its first 8000 bytes.
-pub const GIT_BINARY_PROBE_BYTES: usize = 8000;
+const GIT_BINARY_PROBE_BYTES: usize = 8000;
 
 /// Default size cap for [`Repository::read_blob`]: 8 MiB.
 pub const DEFAULT_BLOB_LIMIT: u64 = 8 * 1024 * 1024;
@@ -13,7 +13,7 @@ pub const DEFAULT_BLOB_LIMIT: u64 = 8 * 1024 * 1024;
 /// What a blob read produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobContent {
-    /// Text, as stored. `line_starts` comes from [`line_starts`].
+    /// Text, as stored. `line_starts` comes from `line_starts`.
     Text {
         /// The bytes as stored.
         data: Vec<u8>,
@@ -106,7 +106,7 @@ pub(crate) fn classify(data: Vec<u8>) -> BlobContent {
 /// Applies git's binary heuristic: a NUL byte within the first
 /// [`GIT_BINARY_PROBE_BYTES`] bytes.
 #[must_use]
-pub fn is_binary(data: &[u8]) -> bool {
+pub(crate) fn is_binary(data: &[u8]) -> bool {
     let probe = &data[..data.len().min(GIT_BINARY_PROBE_BYTES)];
     memchr::memchr(0, probe).is_some()
 }
@@ -115,7 +115,7 @@ pub fn is_binary(data: &[u8]) -> bool {
 /// at 0 and each `\n` that is not the last byte starts another, so `"a\nb\n"` and `"a\nb"` both
 /// have two lines. A `\r` before the `\n` stays inside its line for the caller to trim.
 #[must_use]
-pub fn line_starts(data: &[u8]) -> Vec<usize> {
+pub(crate) fn line_starts(data: &[u8]) -> Vec<usize> {
     if data.is_empty() {
         return Vec::new();
     }

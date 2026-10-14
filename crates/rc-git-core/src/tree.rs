@@ -56,7 +56,7 @@ impl TreeEntry {
 }
 
 impl Repository {
-    /// Lists the direct children of `tree`, ordered for display by [`sort_for_display`].
+    /// Lists the direct children of `tree`, ordered for display by `sort_for_display`.
     ///
     /// Reads one tree object, never the subtrees, so expanding a folder costs the same in a
     /// ten-file repository and a hundred-thousand-file one.
@@ -151,7 +151,7 @@ pub(crate) fn tree_children(repo: &gix::Repository, tree: Oid) -> Result<Vec<Tre
 
 /// Orders entries the way a file browser shows them: directories first, then names compared
 /// ASCII-case-insensitively. Ties keep git's own order, so the result is deterministic.
-pub fn sort_for_display(entries: &mut [TreeEntry]) {
+pub(crate) fn sort_for_display(entries: &mut [TreeEntry]) {
     entries.sort_by_cached_key(|entry| {
         (
             entry.kind != EntryKind::Tree,
