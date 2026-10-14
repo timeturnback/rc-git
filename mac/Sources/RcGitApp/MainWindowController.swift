@@ -1313,11 +1313,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         sync.onCredentialsNeeded = { [weak self] host, kind, key, resume in
             guard let self, !isClosed else { return resume(.unavailable) }
-            promptForCredentials(host: host, kind: kind, key: key, completion: resume)
+            SyncPrompts.credentials(
+                on: window, host: host, kind: kind, key: key, completion: resume)
         }
         sync.onHostKeyNeeded = { [weak self] host, hostKey, resume in
             guard let self, !isClosed else { return resume(.unavailable) }
-            promptForHostKey(host: host, hostKey: hostKey, completion: resume)
+            SyncPrompts.hostKey(on: window, host: host, hostKey: hostKey, completion: resume)
         }
     }
 
@@ -1487,20 +1488,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     title: "rc-git could not open Terminal")
             }
         }
-    }
-
-    private func promptForCredentials(
-        host: String, kind: CredentialKind, key: String?,
-        completion: @escaping (CredentialReply) -> Void
-    ) {
-        SyncPrompts.credentials(
-            on: window, host: host, kind: kind, key: key, completion: completion)
-    }
-
-    private func promptForHostKey(
-        host: String, hostKey: String, completion: @escaping (HostKeyReply) -> Void
-    ) {
-        SyncPrompts.hostKey(on: window, host: host, hostKey: hostKey, completion: completion)
     }
 
     // MARK: Guarded mutations
