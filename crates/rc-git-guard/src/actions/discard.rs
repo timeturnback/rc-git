@@ -254,8 +254,16 @@ pub fn discard_hunks(
         DiskEntry::Present { .. } | DiskEntry::Directory => return Err(mismatch()),
         DiskEntry::Absent => return Err(ActionError::git(OP, path, "does not exist on disk")),
     };
-    let result = workfile::splice(&old, &new, &kept).map_err(|_| mismatch())?;
+    let result = splice_kept(path, &old, &new, &kept)?;
     Writer::new(&repo, &proof).restore_file(OP, &work_dir, path, (&result, kind))
+}
+
+/// The `HEAD` bytes `old` with only the `kept` hunks of `new` applied. A hunk that does not
+/// fit either side means the file moved under the selection.
+fn splice_kept(path: &str, old: &[u8], new: &[u8], kept: &[HunkStamp]) -> ActionResult<Vec<u8>> {
+    workfile::splice(old, new, kept).map_err(|_| ActionError::HunkMismatch {
+        path: path.to_owned(),
+    })
 }
 
 /// The tree `HEAD` points at; `None` on an unborn branch, where everything is untracked.
@@ -313,6 +321,31 @@ mod tests {
             std::fs::read(fx.path().join("alpha.txt")).unwrap(),
             b"stashed edit\n",
             "the path listed before the missing blob was not written"
+        );
+    }
+
+    #[test]
+    fn a_kept_hunk_that_does_not_fit_the_file_is_a_hunk_mismatch() {
+        let beyond_the_disk_side = HunkStamp {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 5,
+            new_lines: 1,
+        };
+        let err =
+            splice_kept("alpha.txt", b"one\n", b"two\n", &[beyond_the_disk_side]).unwrap_err();
+        assert!(
+            matches!(&err, ActionError::HunkMismatch { path } if path == "alpha.txt"),
+            "{err}"
+        );
+
+        let fitting = HunkStamp {
+            new_start: 1,
+            ..beyond_the_disk_side
+        };
+        assert_eq!(
+            splice_kept("alpha.txt", b"one\n", b"two\n", &[fitting]).unwrap(),
+            b"two\n"
         );
     }
 }

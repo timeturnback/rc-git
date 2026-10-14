@@ -797,6 +797,55 @@ fn pull_fast_forwards_files_index_and_ref() {
     );
 }
 
+/// Commits `origin`'s current working tree, pushes it into the served bare repository, fetches
+/// the clone, and fast-forwards it; the clone then matches the served `main` and is clean.
+fn pull_origin_change(remoted: &Remoted, title: &str) {
+    remoted.origin.commit(title, "2024-03-01T00:00:00+0000");
+    remoted.origin.push_main_to(&remoted.bare_path);
+    fetch_clone(remoted);
+
+    let outcome = pull_fast_forward(remoted.clone.path(), &Policy::default()).expect("pull");
+    assert_eq!(outcome.files_changed, 1);
+    assert_eq!(
+        remoted.clone.rev_parse("main"),
+        bare_rev(&remoted.bare, "main")
+    );
+    assert_eq!(
+        remoted.clone.git_output(&["status", "--porcelain"]),
+        "",
+        "index must agree with the new tree"
+    );
+}
+
+#[test]
+fn pull_fast_forwards_a_file_into_a_symlink() {
+    let remoted = remoted();
+    remoted.origin.remove("alpha.txt");
+    remoted.origin.symlink("README.md", "alpha.txt");
+    pull_origin_change(&remoted, "Replace alpha with a link");
+
+    assert_eq!(
+        std::fs::read_link(remoted.clone.path().join("alpha.txt")).expect("alpha.txt link"),
+        Path::new("README.md")
+    );
+}
+
+#[test]
+fn pull_fast_forwards_a_symlink_into_a_file() {
+    let remoted = remoted();
+    remoted.origin.remove("link");
+    remoted.origin.write("link", b"plain file\n");
+    pull_origin_change(&remoted, "Replace link with a file");
+
+    let link = remoted.clone.path().join("link");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("link metadata")
+            .is_file()
+    );
+    assert_eq!(std::fs::read(&link).expect("link"), b"plain file\n");
+}
+
 #[test]
 fn pull_reaches_heads_reflog_so_head_at_one_is_the_pre_pull_commit() {
     let remoted = remoted();
@@ -1610,6 +1659,34 @@ fn push_from_a_single_branch_clone_writes_no_unmapped_tracking_ref() {
     let pulled = pull_fast_forward(clone.path(), &Policy::default()).expect("pull");
     assert!(pulled.unpublished);
     assert_eq!(clone.rev_parse("topic"), tip);
+}
+
+#[test]
+fn push_to_a_url_upstream_writes_no_tracking_ref() {
+    let remoted = remoted();
+    let clone = &remoted.clone;
+    clone.git(&["remote", "remove", "origin"]);
+    clone.git(&["config", "branch.main.remote", &remoted.server.url()]);
+    clone.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let tip = clone.rev_parse("HEAD");
+
+    let outcome = push_upstream(
+        clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect("push to a URL upstream");
+    assert_eq!(outcome.pushed_commits, 1);
+    assert_eq!(outcome.tracking_ref_error, None);
+    assert_eq!(bare_rev(&remoted.bare, "main"), tip);
+    assert_eq!(
+        clone.git_output(&["for-each-ref", "--format=%(refname)", "refs/remotes/"]),
+        "",
+        "a URL upstream has no remote to track under"
+    );
 }
 
 #[test]

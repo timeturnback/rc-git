@@ -924,6 +924,17 @@ mod commit_and_discard {
     }
 
     #[test]
+    fn the_owner_exec_bit_alone_makes_a_committed_file_executable() {
+        let fx = Fixture::standard();
+        fx.write("alpha.txt", b"edited\n");
+        fx.set_mode("alpha.txt", 0o744);
+
+        commit_whole(&fx, &["alpha.txt"]);
+        assert_eq!(ls_tree_mode(&fx, "alpha.txt"), "100755");
+        assert_eq!(porcelain(&fx), "");
+    }
+
+    #[test]
     fn with_file_mode_off_a_commit_keeps_the_recorded_mode_whatever_the_disk_says() {
         let fx = Fixture::standard();
         fx.git(&["config", "core.fileMode", "false"]);
