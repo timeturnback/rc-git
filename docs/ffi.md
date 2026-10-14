@@ -35,6 +35,11 @@ in Swift value types.
   `rcgit_cancel_signal` from the UI thread while it runs, `rcgit_cancel_free` after it
   returns — never before, since the call borrows it for its whole life. `NULL` is
   accepted and means the caller has no way to cancel.
+- `RcGitLogCursor` and `RcGitHistoryWalk` hold a history walk between calls, so each page
+  resumes where the last stopped instead of re-walking from the tip. Each `_next` takes the
+  `RcGitRepo` the handle was made from; pages are taken one at a time behind a lock, and a
+  page that failed leaves the handle refusing every later one. Free a handle only after its
+  last `_next` has returned; the pages it returned stay valid.
 
 ## Memory
 

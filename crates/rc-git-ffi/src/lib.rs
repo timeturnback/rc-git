@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage,
-    CommitSummary, DiffHunk, DiffLineKind, EntryKind, LineEnd, Oid, RefKind, Repository,
-    ScanWindow, TreeChange, TreeEntry, WorktreeStatus,
+    CommitSummary, DiffHunk, DiffLineKind, EntryKind, HistoryWalk, LineEnd, LogCursor, Oid,
+    RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, ActionResult, Author, Cancel, CommitRequest, Credentials, Deleted, FileSelection,
@@ -455,9 +455,9 @@ pub struct RcGitCommitPage {
     pub commits: *mut RcGitCommit,
     /// Number of matching commits.
     pub len: usize,
-    /// How many commits the call examined past its `scan_skip`.
+    /// How many commits the page examined, matched or not.
     pub scanned: usize,
-    /// True when the walk reached the end of history within this call.
+    /// True when the walk reached the end of history within this page.
     pub complete: bool,
 }
 
@@ -1836,21 +1836,27 @@ pub unsafe extern "C" fn rcgit_blob_size(
     }
 }
 
-/// Commits reachable from `tip`, newest first, skipping `skip` and returning at most `limit`.
-/// Release with `rcgit_commit_list_free`.
+/// A walk over the commits reachable from one tip, newest first, taken a page at a time.
+/// Opaque: create with `rcgit_log_cursor_new`, page with `rcgit_log_cursor_next`, release
+/// with `rcgit_log_cursor_free`. Each page resumes where the previous one stopped. It may be
+/// used from any thread; concurrent pages are taken one after the other.
+pub struct RcGitLogCursor(LogCursor);
+
+const _: () = assert_send_sync::<RcGitLogCursor>();
+
+/// A cursor positioned before the newest commit reachable from `tip`; an annotated tag is
+/// followed to its commit. Release with `rcgit_log_cursor_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `error` is NULL
 /// or valid for writing a `char *`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_log(
+pub unsafe extern "C" fn rcgit_log_cursor_new(
     repo: *const RcGitRepo,
     tip: *const RcGitOid,
-    skip: usize,
-    limit: usize,
     error: *mut *mut c_char,
-) -> *mut RcGitCommitList {
-    const OP: &str = "rcgit_log";
+) -> *mut RcGitLogCursor {
+    const OP: &str = "rcgit_log_cursor_new";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, error) = unsafe { (repo_arg(repo), oid_arg(tip), Out::new(error)) };
     let Some(repo) = error.required(OP, "repo", repo) else {
@@ -1859,7 +1865,40 @@ pub unsafe extern "C" fn rcgit_log(
     let Some(tip) = error.valid(OP, "tip", tip) else {
         return ptr::null_mut();
     };
-    match repo.log(tip, skip, limit) {
+    match repo.log_cursor(tip) {
+        Ok(cursor) => export(RcGitLogCursor(cursor)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// The next at most `limit` commits of `cursor`, newest first; fewer only at the end of
+/// history. Release with `rcgit_commit_list_free`. After a failed page the cursor refuses
+/// every later one: start a new cursor.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open` and is the repository `cursor` was made from. `cursor`
+/// came from `rcgit_log_cursor_new` and has not been freed. `error` is NULL or valid for
+/// writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_log_cursor_next(
+    repo: *const RcGitRepo,
+    cursor: *const RcGitLogCursor,
+    limit: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitList {
+    const OP: &str = "rcgit_log_cursor_next";
+    // SAFETY: forwarded from this function's contract.
+    let (repo, cursor, error) = unsafe { (repo_arg(repo), opaque_arg(cursor), Out::new(error)) };
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(RcGitLogCursor(cursor)) = error.required(OP, "cursor", cursor) else {
+        return ptr::null_mut();
+    };
+    match cursor.next_page(repo, limit) {
         Ok(commits) => {
             let mut exported = Vec::with_capacity(commits.len());
             for commit in commits {
@@ -1875,10 +1914,31 @@ pub unsafe extern "C" fn rcgit_log(
     }
 }
 
-/// Releases a value from `rcgit_log`.
+/// Releases a cursor from `rcgit_log_cursor_new`. The pages it returned stay valid.
 ///
 /// # Safety
-/// `list` is NULL or came from `rcgit_log` and is not freed twice.
+/// `cursor` is NULL or came from `rcgit_log_cursor_new`, is not freed twice, and is not in
+/// use by a running `rcgit_log_cursor_next`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_log_cursor_free(cursor: *mut RcGitLogCursor) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(cursor) };
+}
+
+/// # Safety
+/// `handle` is NULL or a pointer from the matching `_new` function that has not been freed.
+unsafe fn opaque_arg<'a, T>(handle: *const T) -> Option<&'a T> {
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded from this function's contract.
+    Some(unsafe { &*handle })
+}
+
+/// Releases a value from `rcgit_log_cursor_next`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_log_cursor_next` and is not freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_commit_list_free(list: *mut RcGitCommitList) {
     // SAFETY: forwarded from this function's contract.
@@ -1964,85 +2024,17 @@ pub unsafe extern "C" fn rcgit_commit_detail_free(detail: *mut RcGitCommitDetail
     unsafe { release(detail) };
 }
 
-/// One page of a filtered history walk. Caller-owned input, passed by value.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RcGitScanPage {
-    /// Commits of the walk to pass over before this page: the previous pages' `scanned`
-    /// summed, never a match count.
-    pub scan_skip: usize,
-    /// Most matches the page returns.
-    pub limit: usize,
-    /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
-    /// page advances.
-    pub max_scan: usize,
-}
-
-impl RcGitScanPage {
-    /// The core's form of this page.
-    fn window(self) -> ScanWindow {
-        ScanWindow {
-            scan_skip: self.scan_skip,
-            limit: self.limit,
-            max_scan: self.max_scan,
-        }
-    }
-}
-
-/// Commits reachable from `tip` that changed `path`, newest first. Examines at most
-/// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
-/// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
+/// Releases a value from `rcgit_history_walk_next`.
 ///
 /// # Safety
-/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
-/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_path_history(
-    repo: *const RcGitRepo,
-    tip: *const RcGitOid,
-    path: *const c_char,
-    page: RcGitScanPage,
-    error: *mut *mut c_char,
-) -> *mut RcGitCommitPage {
-    const OP: &str = "rcgit_path_history";
-    // SAFETY: forwarded from this function's contract.
-    let (repo, tip, path, error) = unsafe {
-        (
-            repo_arg(repo),
-            oid_arg(tip),
-            bytes_arg(path),
-            Out::new(error),
-        )
-    };
-    let Some(repo) = error.required(OP, "repo", repo) else {
-        return ptr::null_mut();
-    };
-    let Some(tip) = error.valid(OP, "tip", tip) else {
-        return ptr::null_mut();
-    };
-    let Some(path) = error.required(OP, "path", path) else {
-        return ptr::null_mut();
-    };
-    match repo.path_history(tip, &String::from_utf8_lossy(path), page.window()) {
-        Ok(page) => export(RcGitCommitPage::export(page)),
-        Err(err) => {
-            error.report(err);
-            ptr::null_mut()
-        }
-    }
-}
-
-/// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
-///
-/// # Safety
-/// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
+/// `page` is NULL or came from `rcgit_history_walk_next` and is not freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_commit_page_free(page: *mut RcGitCommitPage) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(page) };
 }
 
-/// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
+/// What `rcgit_history_walk_new` matches: every set field must hold. Caller-owned input,
 /// passed by value; mirrors the core's `CommitFilter`.
 #[repr(C)]
 pub struct RcGitCommitFilter {
@@ -2058,27 +2050,37 @@ pub struct RcGitCommitFilter {
     pub has_before: bool,
     /// Latest committer time, seconds since the Unix epoch.
     pub before: i64,
-    /// Only commits that changed the entry at this path, judged as `rcgit_path_history`
-    /// judges it, or NULL for any.
+    /// Only commits whose entry at this path differs from the first parent's (from every
+    /// parent's for a merge; a root or shallow boundary commit matches when the entry exists),
+    /// or NULL for any. An empty path names the root tree.
     pub path: *const c_char,
 }
 
-/// Commits reachable from `tip` that match `filter`, newest first. Pages like
-/// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+/// A filtered walk over the commits reachable from one tip, newest first, taken a page at a
+/// time. Opaque: create with `rcgit_history_walk_new`, page with `rcgit_history_walk_next`,
+/// release with `rcgit_history_walk_free`. Each page resumes where the previous one
+/// stopped. It may be used from any thread; concurrent pages are taken one after the other.
+pub struct RcGitHistoryWalk(HistoryWalk);
+
+const _: () = assert_send_sync::<RcGitHistoryWalk>();
+
+/// A walk over the commits reachable from `tip` that match `filter`, positioned before the
+/// newest; an annotated tag is followed to its commit. A filter with only `path` set is that
+/// path's history. A set `after` ends the walk at that time instead of filtering. Release with
+/// `rcgit_history_walk_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
 /// `filter.message`, `filter.author` and `filter.path` are NULL or NUL-terminated strings.
 /// `error` is NULL or valid for writing a `char *`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_search_commits(
+pub unsafe extern "C" fn rcgit_history_walk_new(
     repo: *const RcGitRepo,
     tip: *const RcGitOid,
     filter: RcGitCommitFilter,
-    page: RcGitScanPage,
     error: *mut *mut c_char,
-) -> *mut RcGitCommitPage {
-    const OP: &str = "rcgit_search_commits";
+) -> *mut RcGitHistoryWalk {
+    const OP: &str = "rcgit_history_walk_new";
     // SAFETY: forwarded from this function's contract.
     let (repo, tip, message, author, path, error) = unsafe {
         (
@@ -2103,13 +2105,60 @@ pub unsafe extern "C" fn rcgit_search_commits(
         before: filter.has_before.then_some(filter.before),
         path: path.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
     };
-    match repo.search_commits(tip, &core_filter, page.window()) {
+    match repo.history_walk(tip, core_filter) {
+        Ok(walk) => export(RcGitHistoryWalk(walk)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// The next page of `walk`: at most `limit` matches from at most `max_scan` commits examined,
+/// whatever they match, so one call never holds a repository handle through a long scan.
+/// Loop until `complete`; a `max_scan` of 0 counts as 1, so every incomplete page advances.
+/// Release with `rcgit_commit_page_free`. After a failed page the walk refuses every later
+/// one: start a new walk.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open` and is the repository `walk` was made from. `walk` came
+/// from `rcgit_history_walk_new` and has not been freed. `error` is NULL or valid for
+/// writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_history_walk_next(
+    repo: *const RcGitRepo,
+    walk: *const RcGitHistoryWalk,
+    limit: usize,
+    max_scan: usize,
+    error: *mut *mut c_char,
+) -> *mut RcGitCommitPage {
+    const OP: &str = "rcgit_history_walk_next";
+    // SAFETY: forwarded from this function's contract.
+    let (repo, walk, error) = unsafe { (repo_arg(repo), opaque_arg(walk), Out::new(error)) };
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(RcGitHistoryWalk(walk)) = error.required(OP, "walk", walk) else {
+        return ptr::null_mut();
+    };
+    match walk.next_page(repo, limit, max_scan) {
         Ok(page) => export(RcGitCommitPage::export(page)),
         Err(err) => {
             error.report(err);
             ptr::null_mut()
         }
     }
+}
+
+/// Releases a walk from `rcgit_history_walk_new`. The pages it returned stay valid.
+///
+/// # Safety
+/// `walk` is NULL or came from `rcgit_history_walk_new`, is not freed twice, and is not in
+/// use by a running `rcgit_history_walk_next`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_history_walk_free(walk: *mut RcGitHistoryWalk) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(walk) };
 }
 
 /// Lists every file that differs between two trees, renames detected, sorted by path. `from`
@@ -4986,13 +5035,34 @@ mod tests {
         unsafe { rcgit_repo_free(repo) };
     }
 
+    /// One page of `limit` commits from a fresh cursor at `tip`, after skipping `skip` pages
+    /// of one commit each.
+    fn log_page(
+        repo: *const RcGitRepo,
+        tip: &RcGitOid,
+        skip: usize,
+        limit: usize,
+        error: &mut *mut c_char,
+    ) -> *mut RcGitCommitList {
+        let cursor = unsafe { rcgit_log_cursor_new(repo, tip, error) };
+        assert!(!cursor.is_null(), "{}", take_error(error));
+        for _ in 0..skip {
+            let page = unsafe { rcgit_log_cursor_next(repo, cursor, 1, error) };
+            assert!(!page.is_null(), "{}", take_error(error));
+            unsafe { rcgit_commit_list_free(page) };
+        }
+        let page = unsafe { rcgit_log_cursor_next(repo, cursor, limit, error) };
+        unsafe { rcgit_log_cursor_free(cursor) };
+        page
+    }
+
     #[test]
     fn log_and_single_commit() {
         let fx = Fixture::standard();
         let repo = open(&fx);
         let mut error = ptr::null_mut();
         let tip = resolve(repo, "main");
-        let list = unsafe { rcgit_log(repo, &raw const tip, 0, 10, &raw mut error) };
+        let list = log_page(repo, &tip, 0, 10, &mut error);
         assert!(!list.is_null(), "{}", take_error(&mut error));
         let list_ref = unsafe { &*list };
         let commits = unsafe { std::slice::from_raw_parts(list_ref.commits, list_ref.len) };
@@ -5016,8 +5086,12 @@ mod tests {
         assert_eq!(text(unsafe { &*commit }.title), COMMIT_1_TITLE);
         unsafe { rcgit_commit_free(commit) };
 
-        let page = unsafe { rcgit_log(repo, &raw const tip, 1, 10, &raw mut error) };
-        assert_eq!(deref(page, &mut error).len, 1);
+        let page = log_page(repo, &tip, 1, 10, &mut error);
+        assert_eq!(
+            deref(page, &mut error).len,
+            1,
+            "the cursor resumes after one"
+        );
         unsafe { rcgit_commit_list_free(page) };
         unsafe { rcgit_repo_free(repo) };
 
@@ -5030,7 +5104,7 @@ mod tests {
         );
         let repo = open(&fx);
         let zoned = resolve(repo, "main");
-        let list = unsafe { rcgit_log(repo, &raw const zoned, 0, 1, &raw mut error) };
+        let list = log_page(repo, &zoned, 0, 1, &mut error);
         assert!(!list.is_null(), "{}", take_error(&mut error));
         let commits = unsafe { std::slice::from_raw_parts((*list).commits, (*list).len) };
         assert_eq!(commits[0].author_offset, 19_800);
@@ -5043,12 +5117,45 @@ mod tests {
         unsafe { rcgit_repo_free(repo) };
     }
 
-    fn scan_page(scan_skip: usize, limit: usize, max_scan: usize) -> RcGitScanPage {
-        RcGitScanPage {
-            scan_skip,
-            limit,
-            max_scan,
-        }
+    #[test]
+    fn log_cursor_refuses_null_and_malformed_arguments() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tip = resolve(repo, "main");
+        let malformed = RcGitOid {
+            bytes: [0; 32],
+            len: 33,
+        };
+        let cursor = unsafe { rcgit_log_cursor_new(repo, &raw const malformed, &raw mut error) };
+        assert!(cursor.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_log_cursor_new: tip is malformed (len 33)"
+        );
+        let cursor = unsafe { rcgit_log_cursor_new(repo, &raw const tip, &raw mut error) };
+        assert!(!cursor.is_null(), "{}", take_error(&mut error));
+        let page = unsafe { rcgit_log_cursor_next(repo, ptr::null(), 10, &raw mut error) };
+        assert!(page.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_log_cursor_next: cursor is NULL"
+        );
+        let page = unsafe { rcgit_log_cursor_next(ptr::null(), cursor, 10, &raw mut error) };
+        assert!(page.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_log_cursor_next: repo is NULL"
+        );
+        let page = unsafe { rcgit_log_cursor_next(repo, cursor, 10, &raw mut error) };
+        assert_eq!(
+            deref(page, &mut error).len,
+            2,
+            "a refused call leaves the cursor in place"
+        );
+        unsafe { rcgit_commit_list_free(page) };
+        unsafe { rcgit_log_cursor_free(cursor) };
+        unsafe { rcgit_repo_free(repo) };
     }
 
     /// A filter on message and author substrings with no time bounds.
@@ -5064,6 +5171,34 @@ mod tests {
         }
     }
 
+    /// The commits `page` holds, with its `scanned` and `complete`.
+    fn page_parts(
+        page: *mut RcGitCommitPage,
+        error: &mut *mut c_char,
+    ) -> (Vec<String>, usize, bool) {
+        let page_ref = deref(page, error);
+        let commits = unsafe { std::slice::from_raw_parts(page_ref.commits, page_ref.len) };
+        let titles = commits.iter().map(|commit| text(commit.title)).collect();
+        let parts = (titles, page_ref.scanned, page_ref.complete);
+        unsafe { rcgit_commit_page_free(page) };
+        parts
+    }
+
+    /// The first page of a fresh walk at `tip` over `filter`.
+    fn first_page(
+        repo: *const RcGitRepo,
+        tip: &RcGitOid,
+        filter: RcGitCommitFilter,
+        (limit, max_scan): (usize, usize),
+        error: &mut *mut c_char,
+    ) -> *mut RcGitCommitPage {
+        let walk = unsafe { rcgit_history_walk_new(repo, tip, filter, error) };
+        assert!(!walk.is_null(), "{}", take_error(error));
+        let page = unsafe { rcgit_history_walk_next(repo, walk, limit, max_scan, error) };
+        unsafe { rcgit_history_walk_free(walk) };
+        page
+    }
+
     #[test]
     fn path_history_pages_with_a_scan_cursor() {
         let fx = Fixture::standard();
@@ -5071,50 +5206,40 @@ mod tests {
         let mut error = ptr::null_mut();
         let tip = resolve(repo, "main");
         let file = CString::new("src/lib.rs").unwrap();
-
-        let page = unsafe {
-            rcgit_path_history(
-                repo,
-                &raw const tip,
-                file.as_ptr(),
-                scan_page(0, 10, 100),
-                &raw mut error,
-            )
+        let by_path = |path: &CString| RcGitCommitFilter {
+            path: path.as_ptr(),
+            ..text_filter(ptr::null(), ptr::null())
         };
-        assert!(!page.is_null(), "{}", take_error(&mut error));
-        let page_ref = unsafe { &*page };
-        let commits = unsafe { std::slice::from_raw_parts(page_ref.commits, page_ref.len) };
-        assert_eq!(commits.len(), 1);
-        assert_eq!(text(commits[0].title), COMMIT_2_TITLE);
-        assert_eq!(page_ref.scanned, 2);
-        assert!(page_ref.complete);
-        unsafe { rcgit_commit_page_free(page) };
 
-        let capped = unsafe {
-            rcgit_path_history(
-                repo,
-                &raw const tip,
-                file.as_ptr(),
-                scan_page(0, 10, 1),
-                &raw mut error,
-            )
-        };
-        let capped_ref = deref(capped, &mut error);
-        assert_eq!(capped_ref.scanned, 1);
-        assert!(!capped_ref.complete);
-        unsafe { rcgit_commit_page_free(capped) };
+        let page = first_page(repo, &tip, by_path(&file), (10, 100), &mut error);
+        assert_eq!(
+            page_parts(page, &mut error),
+            (vec![COMMIT_2_TITLE.to_owned()], 2, true)
+        );
+        let capped = first_page(repo, &tip, by_path(&file), (10, 1), &mut error);
+        let (_, scanned, complete) = page_parts(capped, &mut error);
+        assert_eq!((scanned, complete), (1, false));
 
-        let null = unsafe {
-            rcgit_path_history(
-                repo,
-                &raw const tip,
-                ptr::null(),
-                scan_page(0, 10, 100),
-                &raw mut error,
-            )
+        let readme = CString::new("README.md").unwrap();
+        let walk = unsafe {
+            rcgit_history_walk_new(repo, &raw const tip, by_path(&readme), &raw mut error)
         };
+        assert!(!walk.is_null(), "{}", take_error(&mut error));
+        let first = unsafe { rcgit_history_walk_next(repo, walk, 10, 1, &raw mut error) };
+        assert_eq!(page_parts(first, &mut error), (vec![], 1, false));
+        let rest = unsafe { rcgit_history_walk_next(repo, walk, 10, 1, &raw mut error) };
+        assert_eq!(
+            page_parts(rest, &mut error),
+            (vec![COMMIT_1_TITLE.to_owned()], 1, true),
+            "the second page resumes after the commit the first examined"
+        );
+        let null = unsafe { rcgit_history_walk_next(repo, ptr::null(), 10, 1, &raw mut error) };
         assert!(null.is_null());
-        assert_eq!(take_error(&mut error), "rcgit_path_history: path is NULL");
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_history_walk_next: walk is NULL"
+        );
+        unsafe { rcgit_history_walk_free(walk) };
         unsafe { rcgit_commit_page_free(ptr::null_mut()) };
         unsafe { rcgit_repo_free(repo) };
     }
@@ -5127,39 +5252,30 @@ mod tests {
         let tip = resolve(repo, "main");
         let needle = CString::new("docs").unwrap();
 
-        let page = unsafe {
-            rcgit_search_commits(
-                repo,
-                &raw const tip,
-                text_filter(needle.as_ptr(), ptr::null()),
-                scan_page(0, 10, 100),
-                &raw mut error,
-            )
-        };
-        assert!(!page.is_null(), "{}", take_error(&mut error));
-        let page_ref = unsafe { &*page };
-        let commits = unsafe { std::slice::from_raw_parts(page_ref.commits, page_ref.len) };
-        assert_eq!(commits.len(), 1);
-        assert_eq!(text(commits[0].title), COMMIT_2_TITLE);
-        assert_eq!(page_ref.scanned, 2);
-        assert!(page_ref.complete);
-        unsafe { rcgit_commit_page_free(page) };
-
-        let all = unsafe {
-            rcgit_search_commits(
-                repo,
-                &raw const tip,
-                text_filter(ptr::null(), ptr::null()),
-                scan_page(0, 10, 100),
-                &raw mut error,
-            )
-        };
+        let page = first_page(
+            repo,
+            &tip,
+            text_filter(needle.as_ptr(), ptr::null()),
+            (10, 100),
+            &mut error,
+        );
         assert_eq!(
-            deref(all, &mut error).len,
+            page_parts(page, &mut error),
+            (vec![COMMIT_2_TITLE.to_owned()], 2, true)
+        );
+
+        let all = first_page(
+            repo,
+            &tip,
+            text_filter(ptr::null(), ptr::null()),
+            (10, 100),
+            &mut error,
+        );
+        assert_eq!(
+            page_parts(all, &mut error).0.len(),
             2,
             "NULL filters match everything"
         );
-        unsafe { rcgit_commit_page_free(all) };
 
         for (path, expected) in [("src/lib.rs", 1), ("README.md", 0)] {
             let path = CString::new(path).unwrap();
@@ -5167,52 +5283,64 @@ mod tests {
                 path: path.as_ptr(),
                 ..text_filter(needle.as_ptr(), ptr::null())
             };
-            let page = unsafe {
-                rcgit_search_commits(
-                    repo,
-                    &raw const tip,
-                    scoped,
-                    scan_page(0, 10, 100),
-                    &raw mut error,
-                )
-            };
-            assert!(!page.is_null(), "{}", take_error(&mut error));
+            let page = first_page(repo, &tip, scoped, (10, 100), &mut error);
             assert_eq!(
-                unsafe { &*page }.len,
+                page_parts(page, &mut error).0.len(),
                 expected,
                 "{path:?} scopes the search"
             );
-            unsafe { rcgit_commit_page_free(page) };
         }
 
         let before_epoch = RcGitCommitFilter {
             has_before: true,
             ..text_filter(ptr::null(), ptr::null())
         };
-        let none = unsafe {
-            rcgit_search_commits(
-                repo,
-                &raw const tip,
-                before_epoch,
-                scan_page(0, 10, 100),
-                &raw mut error,
-            )
-        };
-        assert!(!none.is_null(), "{}", take_error(&mut error));
-        assert_eq!(unsafe { &*none }.len, 0, "a set bound applies even at 0");
-        unsafe { rcgit_commit_page_free(none) };
+        let none = first_page(repo, &tip, before_epoch, (10, 100), &mut error);
+        assert!(
+            page_parts(none, &mut error).0.is_empty(),
+            "a set bound applies even at 0"
+        );
+
+        let initial = CString::new("Initial").unwrap();
+        let filter = text_filter(initial.as_ptr(), ptr::null());
+        let walk = unsafe { rcgit_history_walk_new(repo, &raw const tip, filter, &raw mut error) };
+        assert!(!walk.is_null(), "{}", take_error(&mut error));
+        let first = unsafe { rcgit_history_walk_next(repo, walk, 10, 1, &raw mut error) };
+        assert_eq!(page_parts(first, &mut error), (vec![], 1, false));
+        let rest = unsafe { rcgit_history_walk_next(repo, walk, 10, 1, &raw mut error) };
+        assert_eq!(
+            page_parts(rest, &mut error),
+            (vec![COMMIT_1_TITLE.to_owned()], 1, true),
+            "the second page resumes after the commit the first examined"
+        );
+        unsafe { rcgit_history_walk_free(walk) };
 
         let null = unsafe {
-            rcgit_search_commits(
+            rcgit_history_walk_new(
                 ptr::null(),
                 &raw const tip,
                 text_filter(ptr::null(), ptr::null()),
-                scan_page(0, 10, 100),
                 &raw mut error,
             )
         };
         assert!(null.is_null());
-        assert_eq!(take_error(&mut error), "rcgit_search_commits: repo is NULL");
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_history_walk_new: repo is NULL"
+        );
+        let null = unsafe {
+            rcgit_history_walk_new(
+                repo,
+                ptr::null(),
+                text_filter(ptr::null(), ptr::null()),
+                &raw mut error,
+            )
+        };
+        assert!(null.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_history_walk_new: tip is NULL"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 
@@ -5332,8 +5460,8 @@ mod tests {
         null_repo("rcgit_blob_size", status == RCGIT_ERROR, &mut error);
         let commit = unsafe { rcgit_commit(ptr::null(), &raw const tip, &raw mut error) };
         null_repo("rcgit_commit", commit.is_null(), &mut error);
-        let log = unsafe { rcgit_log(ptr::null(), &raw const tip, 0, 10, &raw mut error) };
-        null_repo("rcgit_log", log.is_null(), &mut error);
+        let log = unsafe { rcgit_log_cursor_new(ptr::null(), &raw const tip, &raw mut error) };
+        null_repo("rcgit_log_cursor_new", log.is_null(), &mut error);
         let refs = unsafe { rcgit_refs(ptr::null(), &raw mut error) };
         null_repo("rcgit_refs", refs.is_null(), &mut error);
         let status =
@@ -5383,8 +5511,10 @@ mod tests {
             rcgit_guard_decision_free,
             rcgit_head_free,
             rcgit_highlight_list_free,
+            rcgit_history_walk_free,
             rcgit_identity_free,
             rcgit_import_link_list_free,
+            rcgit_log_cursor_free,
             rcgit_ref_list_free,
             rcgit_remote_status_free,
             rcgit_repo_free,

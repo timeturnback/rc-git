@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary,
     DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind,
-    Repository, ScanWindow, TreeEntry, UnreadableEntry, WorktreeStatus,
+    Repository, TreeEntry, UnreadableEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -853,8 +853,9 @@ fn log(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode
     let rev = args.positional(0).unwrap_or("HEAD");
     let limit = args.number("-n")?.unwrap_or(20);
     let skip = args.number("--skip")?.unwrap_or(0);
-    let tip = repo.resolve(rev)?;
-    for commit in repo.log(tip, skip, limit)? {
+    let cursor = repo.log_cursor(repo.resolve(rev)?)?;
+    cursor.skip(skip)?;
+    for commit in cursor.next_page(repo, limit)? {
         write_commit_row(out, &commit)?;
     }
     Ok(ExitCode::SUCCESS)
@@ -920,16 +921,12 @@ fn filelog(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     let rev = args.positional(1).unwrap_or("HEAD");
     let limit = args.number("-n")?.unwrap_or(20);
     let max_scan = scan_budget(&args)?;
-    let tip = repo.resolve(rev)?;
-    let page = repo.path_history(
-        tip,
-        path,
-        ScanWindow {
-            scan_skip: 0,
-            limit,
-            max_scan,
-        },
-    )?;
+    let filter = CommitFilter {
+        path: Some(path.to_owned()),
+        ..CommitFilter::default()
+    };
+    let walk = repo.history_walk(repo.resolve(rev)?, filter)?;
+    let page = walk.next_page(repo, limit, max_scan)?;
     write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -959,16 +956,8 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         before: epoch(&args, "--until")?,
         path: None,
     };
-    let tip = repo.resolve(rev)?;
-    let page = repo.search_commits(
-        tip,
-        &filter,
-        ScanWindow {
-            scan_skip: 0,
-            limit,
-            max_scan,
-        },
-    )?;
+    let walk = repo.history_walk(repo.resolve(rev)?, filter)?;
+    let page = walk.next_page(repo, limit, max_scan)?;
     write_commit_page(out, &page, limit)?;
     Ok(ExitCode::SUCCESS)
 }

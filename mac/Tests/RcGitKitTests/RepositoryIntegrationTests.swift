@@ -140,14 +140,17 @@ import Testing
         #expect(try repo.readBlob(readme.oid, limit: 3) == .tooLarge(size: 17, limit: 3))
 
         let tip = try repo.resolve("main")
-        let commits = try repo.log(tip: tip)
+        let commits = try repo.logCursor(tip: tip).next(limit: 100)
         #expect(commits.map(\.title) == ["Add docs and library", "Initial import"])
         try #require(commits.count == 2)
         #expect(commits[0].parents == [commits[1].oid])
         #expect(commits[1].authorName == "Test Author")
         #expect(commits[1].authorTime == 1_704_067_200)
         #expect(try repo.commit(commits[1].oid) == commits[1])
-        #expect(try repo.log(tip: tip, skip: 1, limit: 5).count == 1)
+        let cursor = try repo.logCursor(tip: tip)
+        #expect(try cursor.next(limit: 1).map(\.title) == ["Add docs and library"])
+        #expect(try cursor.next(limit: 5).map(\.title) == ["Initial import"], "it resumes")
+        #expect(try cursor.next(limit: 5).isEmpty)
 
         #expect(throws: RepositoryError.self) { try repo.resolve("nope") }
         #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs.oid) }
@@ -188,20 +191,30 @@ import Testing
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let tip = try repo.resolve("main")
+        let library = CommitFilter(path: "src/lib.rs")
 
-        let page = try repo.pathHistory(
-            tip: tip, path: "src/lib.rs", scanSkip: 0, limit: 10, maxScan: 100)
+        let page = try repo.historyWalk(tip: tip, filter: library).next(limit: 10, maxScan: 100)
         #expect(page.commits.map(\.title) == ["Add docs and library"])
         #expect(page.scanned == 2)
         #expect(page.complete)
 
-        let capped = try repo.pathHistory(
-            tip: tip, path: "src/lib.rs", scanSkip: 0, limit: 10, maxScan: 1)
+        let capped = try repo.historyWalk(tip: tip, filter: library).next(limit: 10, maxScan: 1)
+        #expect(capped.commits.map(\.title) == ["Add docs and library"])
         #expect(capped.scanned == 1)
         #expect(!capped.complete)
 
-        let missing = try repo.pathHistory(
-            tip: tip, path: "nope.txt", scanSkip: 0, limit: 10, maxScan: 100)
+        let readme = try repo.historyWalk(tip: tip, filter: CommitFilter(path: "README.md"))
+        let first = try readme.next(limit: 10, maxScan: 1)
+        #expect(first.commits.isEmpty)
+        #expect(first.scanned == 1)
+        #expect(!first.complete)
+        let rest = try readme.next(limit: 10, maxScan: 1)
+        #expect(rest.commits.map(\.title) == ["Initial import"], "the walk resumes")
+        #expect(rest.scanned == 1)
+        #expect(rest.complete)
+
+        let missing = try repo.historyWalk(tip: tip, filter: CommitFilter(path: "nope.txt"))
+            .next(limit: 10, maxScan: 100)
         #expect(missing.commits.isEmpty)
         #expect(missing.complete)
     }
@@ -211,35 +224,40 @@ import Testing
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let tip = try repo.resolve("main")
+        let search = { (filter: CommitFilter) in
+            try repo.historyWalk(tip: tip, filter: filter).next(limit: 10, maxScan: 100)
+        }
 
-        let byMessage = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(message: "DOCS"), scanSkip: 0, limit: 10, maxScan: 100)
+        let byMessage = try search(CommitFilter(message: "DOCS"))
         #expect(byMessage.commits.map(\.title) == ["Add docs and library"])
         #expect(byMessage.complete)
 
-        let byAuthor = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(author: "example.com"), scanSkip: 0, limit: 10,
-            maxScan: 100)
+        let byAuthor = try search(CommitFilter(author: "example.com"))
         #expect(byAuthor.commits.count == 2)
 
-        let until = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(before: 1_704_067_200), scanSkip: 0, limit: 10,
-            maxScan: 100)
+        let until = try search(CommitFilter(before: 1_704_067_200))
         #expect(until.commits.map(\.title) == ["Initial import"])
 
-        let nothing = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(message: "zzz"), scanSkip: 0, limit: 10, maxScan: 100)
+        let since = try search(CommitFilter(after: 1_704_067_201))
+        #expect(since.commits.map(\.title) == ["Add docs and library"])
+
+        let nothing = try search(CommitFilter(message: "zzz"))
         #expect(nothing.commits.isEmpty)
         #expect(nothing.complete)
 
-        let inLibrary = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(message: "docs", path: "src/lib.rs"), scanSkip: 0,
-            limit: 10, maxScan: 100)
+        let inLibrary = try search(CommitFilter(message: "docs", path: "src/lib.rs"))
         #expect(inLibrary.commits.map(\.title) == ["Add docs and library"])
-        let inReadme = try repo.searchCommits(
-            tip: tip, filter: CommitFilter(message: "docs", path: "README.md"), scanSkip: 0,
-            limit: 10, maxScan: 100)
+        let inReadme = try search(CommitFilter(message: "docs", path: "README.md"))
         #expect(inReadme.commits.isEmpty, "the docs commit never touched README.md")
+
+        let initial = try repo.historyWalk(tip: tip, filter: CommitFilter(message: "Initial"))
+        let first = try initial.next(limit: 10, maxScan: 1)
+        #expect(first.commits.isEmpty)
+        #expect(first.scanned == 1)
+        #expect(!first.complete)
+        let rest = try initial.next(limit: 10, maxScan: 1)
+        #expect(rest.commits.map(\.title) == ["Initial import"], "the walk resumes")
+        #expect(rest.complete)
     }
 
     @Test func readsCommitDetails() throws {

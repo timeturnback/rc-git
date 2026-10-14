@@ -2,17 +2,57 @@
 
 use std::sync::OnceLock;
 
-use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Repository, ScanWindow};
+use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Oid, Repository};
 use rc_git_testkit::Fixture;
 
-/// A page wide enough for every fixture here: no skip, 100 matches, 1000 commits examined.
-const WIDE: ScanWindow = window(0, 100, 1000);
+/// How much of a walk one page takes: at most `limit` matches from `max_scan` commits.
+#[derive(Clone, Copy)]
+struct Window {
+    limit: usize,
+    max_scan: usize,
+}
 
-const fn window(scan_skip: usize, limit: usize, max_scan: usize) -> ScanWindow {
-    ScanWindow {
-        scan_skip,
-        limit,
-        max_scan,
+/// A page wide enough for every fixture here: 100 matches, 1000 commits examined.
+const WIDE: Window = window(100, 1000);
+
+const fn window(limit: usize, max_scan: usize) -> Window {
+    Window { limit, max_scan }
+}
+
+/// The first page of a fresh walk, the shape most tests here read.
+trait FirstPage {
+    fn path_history(&self, tip: Oid, path: &str, window: Window)
+    -> rc_git_core::Result<CommitPage>;
+    fn search_commits(
+        &self,
+        tip: Oid,
+        filter: &CommitFilter,
+        window: Window,
+    ) -> rc_git_core::Result<CommitPage>;
+}
+
+impl FirstPage for Repository {
+    fn path_history(
+        &self,
+        tip: Oid,
+        path: &str,
+        window: Window,
+    ) -> rc_git_core::Result<CommitPage> {
+        let filter = CommitFilter {
+            path: Some(path.to_owned()),
+            ..CommitFilter::default()
+        };
+        self.search_commits(tip, &filter, window)
+    }
+
+    fn search_commits(
+        &self,
+        tip: Oid,
+        filter: &CommitFilter,
+        window: Window,
+    ) -> rc_git_core::Result<CommitPage> {
+        self.history_walk(tip, filter.clone())?
+            .next_page(self, window.limit, window.max_scan)
     }
 }
 
@@ -148,43 +188,38 @@ fn path_history_pages_with_a_scan_cursor() {
     let tip = repo.resolve("main").unwrap();
     let whole = repo.path_history(tip, "file.txt", WIDE).unwrap();
 
+    let filter = CommitFilter {
+        path: Some("file.txt".to_owned()),
+        ..CommitFilter::default()
+    };
+    let walk = repo.history_walk(tip, filter).unwrap();
     let mut collected = Vec::new();
-    let mut scan_skip = 0;
+    let mut scanned = 0;
     loop {
-        let page = repo
-            .path_history(
-                tip,
-                "file.txt",
-                ScanWindow {
-                    scan_skip,
-                    limit: 100,
-                    max_scan: 2,
-                },
-            )
-            .unwrap();
+        let page = walk.next_page(&repo, 100, 2).unwrap();
         assert!(page.scanned <= 2);
         assert!(
             page.scanned > 0 || page.complete,
-            "every incomplete page advances the cursor"
+            "every incomplete page advances the walk"
         );
         collected.extend(page.commits);
-        scan_skip += page.scanned;
+        scanned += page.scanned;
         if page.complete {
             break;
         }
     }
-    assert_eq!(collected, whole.commits, "chunked calls equal one big call");
+    assert_eq!(collected, whole.commits, "chunked pages equal one big page");
+    assert_eq!(scanned, whole.scanned, "no commit is examined twice");
+    let after_end = walk.next_page(&repo, 100, 2).unwrap();
+    assert_eq!(after_end.scanned, 0);
+    assert!(after_end.complete && after_end.commits.is_empty());
 
-    let capped = repo
-        .path_history(tip, "file.txt", window(0, 100, 1))
-        .unwrap();
+    let capped = repo.path_history(tip, "file.txt", window(100, 1)).unwrap();
     assert_eq!(titles(&capped), ["evil merge"]);
     assert_eq!(capped.scanned, 1);
     assert!(!capped.complete);
 
-    let limited = repo
-        .path_history(tip, "file.txt", window(0, 1, 1000))
-        .unwrap();
+    let limited = repo.path_history(tip, "file.txt", window(1, 1000)).unwrap();
     assert_eq!(titles(&limited), ["evil merge"]);
     assert!(!limited.complete, "the limit stopped the walk early");
 }
@@ -195,15 +230,13 @@ fn a_zero_scan_cap_still_makes_progress() {
     let repo = Repository::open(fx.path()).unwrap();
     let tip = repo.resolve("main").unwrap();
 
-    let history = repo
-        .path_history(tip, "file.txt", window(0, 100, 0))
-        .unwrap();
+    let history = repo.path_history(tip, "file.txt", window(100, 0)).unwrap();
     assert_eq!(history.scanned, 1, "a zero cap examines one commit");
     assert_eq!(titles(&history), ["evil merge"]);
     assert!(!history.complete);
 
     let search = repo
-        .search_commits(tip, &CommitFilter::default(), window(0, 100, 0))
+        .search_commits(tip, &CommitFilter::default(), window(100, 0))
         .unwrap();
     assert_eq!(search.scanned, 1, "a zero cap examines one commit");
     assert_eq!(titles(&search), ["evil merge"]);
@@ -491,9 +524,8 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
         ..CommitFilter::default()
     };
 
-    let page = repo
-        .search_commits(tip, &nothing, window(0, 100, 2))
-        .unwrap();
+    let walk = repo.history_walk(tip, nothing).unwrap();
+    let page = walk.next_page(&repo, 100, 2).unwrap();
     assert_eq!(page.commits.len(), 0);
     assert_eq!(page.scanned, 2);
     assert!(
@@ -501,9 +533,7 @@ fn search_pages_with_a_scan_cursor_even_when_nothing_matches() {
         "the cap stopped the walk, not the end of history"
     );
 
-    let rest = repo
-        .search_commits(tip, &nothing, window(2, 100, 1000))
-        .unwrap();
+    let rest = walk.next_page(&repo, 100, 1000).unwrap();
     assert_eq!(rest.commits.len(), 0);
     assert_eq!(rest.scanned, 4);
     assert!(rest.complete);

@@ -15,7 +15,7 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
     /// Default cap for `worktreeStatus`, matching the path-search precedent.
     public static let defaultStatusScanCap = 200_000
 
-    private let handle: OpaquePointer
+    fileprivate let handle: OpaquePointer
 
     /// Opens a working directory or a `.git` directory.
     public init(path: String) throws {
@@ -182,50 +182,22 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return size
     }
 
-    /// Commits reachable from `tip`, newest first. The walk restarts from `tip` each call.
-    public func log(tip: Oid, skip: Int = 0, limit: Int = 100) throws -> [CommitSummary] {
+    /// A cursor over the commits reachable from `tip`, newest first. Each `next` resumes
+    /// where the previous one stopped.
+    public func logCursor(tip: Oid) throws -> any LogCursorReading {
         var error: UnsafeMutablePointer<CChar>? = nil
-        guard let list = tip.withC({ rcgit_log(handle, $0, skip, limit, &error) }) else {
+        guard let cursor = tip.withC({ rcgit_log_cursor_new(handle, $0, &error) }) else {
             throw RepositoryError.take(error, fallback: "cannot walk history from \(tip)")
         }
-        defer { rcgit_commit_list_free(list) }
-        var commits: [CommitSummary] = []
-        commits.reserveCapacity(list.pointee.len)
-        for index in 0..<list.pointee.len {
-            commits.append(CommitSummary(c: list.pointee.commits[index]))
-        }
-        return commits
+        return LogCursor(repository: self, handle: cursor)
     }
 
-    /// Commits reachable from `tip` that changed `path`, newest first. Examines at most
-    /// `maxScan` commits past `scanSkip`; loop on the returned page's `scanned` until
-    /// `complete`.
-    public func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int)
-        throws -> CommitPage
-    {
+    /// A walk over the commits reachable from `tip` matching every set field of `filter`,
+    /// newest first; a filter with only `path` set is that path's history. Each `next`
+    /// resumes where the previous one stopped. A set `after` also ends the walk at that time.
+    public func historyWalk(tip: Oid, filter: CommitFilter) throws -> any HistoryWalkReading {
         var error: UnsafeMutablePointer<CChar>? = nil
-        let page = tip.withC { tipPtr in
-            path.withCString { pathPtr in
-                rcgit_path_history(
-                    handle, tipPtr, pathPtr,
-                    RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan), &error)
-            }
-        }
-        guard let page else {
-            throw RepositoryError.take(error, fallback: "cannot walk history of '\(path)'")
-        }
-        defer { rcgit_commit_page_free(page) }
-        return Repository.commitPage(page.pointee)
-    }
-
-    /// Commits reachable from `tip` matching every set field of `filter`, newest first.
-    /// Pages like `pathHistory`; a set `after` also terminates the walk at that time, and a
-    /// set `path` keeps only the commits `pathHistory` would list for it.
-    public func searchCommits(
-        tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int
-    ) throws -> CommitPage {
-        var error: UnsafeMutablePointer<CChar>? = nil
-        let page = tip.withC { tipPtr in
+        let walk = tip.withC { tipPtr in
             Repository.withOptionalCString(filter.message) { messagePtr in
                 Repository.withOptionalCString(filter.author) { authorPtr in
                     Repository.withOptionalCString(filter.path) { pathPtr in
@@ -234,22 +206,27 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
                             has_after: filter.after != nil, after: filter.after ?? 0,
                             has_before: filter.before != nil, before: filter.before ?? 0,
                             path: pathPtr)
-                        return rcgit_search_commits(
-                            handle, tipPtr, cFilter,
-                            RcGitScanPage(scan_skip: scanSkip, limit: limit, max_scan: maxScan),
-                            &error)
+                        return rcgit_history_walk_new(handle, tipPtr, cFilter, &error)
                     }
                 }
             }
         }
-        guard let page else {
+        guard let walk else {
             throw RepositoryError.take(error, fallback: "cannot search history from \(tip)")
         }
-        defer { rcgit_commit_page_free(page) }
-        return Repository.commitPage(page.pointee)
+        return HistoryWalk(repository: self, handle: walk)
     }
 
-    private static func commitPage(_ c: RcGitCommitPage) -> CommitPage {
+    fileprivate static func commitList(_ c: RcGitCommitList) -> [CommitSummary] {
+        var commits: [CommitSummary] = []
+        commits.reserveCapacity(c.len)
+        for index in 0..<c.len {
+            commits.append(CommitSummary(c: c.commits[index]))
+        }
+        return commits
+    }
+
+    fileprivate static func commitPage(_ c: RcGitCommitPage) -> CommitPage {
         var commits: [CommitSummary] = []
         commits.reserveCapacity(c.len)
         for index in 0..<c.len {
@@ -601,5 +578,58 @@ extension CommitSummary {
             authorOffset: c.author_offset,
             title: String(cString: c.title)
         )
+    }
+}
+
+/// A log cursor of the Rust core. It keeps its repository alive, and may be used from any
+/// thread because the core takes its pages one at a time behind a lock.
+final class LogCursor: LogCursorReading, @unchecked Sendable {
+    private let repository: Repository
+    private let handle: OpaquePointer
+
+    fileprivate init(repository: Repository, handle: OpaquePointer) {
+        self.repository = repository
+        self.handle = handle
+    }
+
+    deinit {
+        rcgit_log_cursor_free(handle)
+    }
+
+    func next(limit: Int) throws -> [CommitSummary] {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard let list = rcgit_log_cursor_next(repository.handle, handle, limit, &error) else {
+            throw RepositoryError.take(error, fallback: "cannot walk history")
+        }
+        defer { rcgit_commit_list_free(list) }
+        return Repository.commitList(list.pointee)
+    }
+}
+
+/// A filtered history walk of the Rust core. It keeps its repository alive, and may be used
+/// from any thread because the core takes its pages one at a time behind a lock.
+final class HistoryWalk: HistoryWalkReading, @unchecked Sendable {
+    private let repository: Repository
+    private let handle: OpaquePointer
+
+    fileprivate init(repository: Repository, handle: OpaquePointer) {
+        self.repository = repository
+        self.handle = handle
+    }
+
+    deinit {
+        rcgit_history_walk_free(handle)
+    }
+
+    func next(limit: Int, maxScan: Int) throws -> CommitPage {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        guard
+            let page = rcgit_history_walk_next(
+                repository.handle, handle, limit, maxScan, &error)
+        else {
+            throw RepositoryError.take(error, fallback: "cannot walk history")
+        }
+        defer { rcgit_commit_page_free(page) }
+        return Repository.commitPage(page.pointee)
     }
 }

@@ -262,9 +262,9 @@ public enum CommitSearchQuery {
 public struct CommitPage: Sendable, Hashable {
     /// The commits that matched, newest first.
     public let commits: [CommitSummary]
-    /// How many commits the call examined past its scan skip.
+    /// How many commits the page examined, matched or not.
     public let scanned: Int
-    /// True when the walk reached the end of history within this call.
+    /// True when the walk reached the end of history within this page.
     public let complete: Bool
 
     public init(commits: [CommitSummary], scanned: Int, complete: Bool) {

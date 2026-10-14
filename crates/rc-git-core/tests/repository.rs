@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use rc_git_core::{
-    BlobContent, DEFAULT_BLOB_LIMIT, EntryKind, Error, ObjectKind, Oid, RefKind, Repository,
-    WorktreeStatus,
+    BlobContent, CommitSummary, DEFAULT_BLOB_LIMIT, EntryKind, Error, ObjectKind, Oid, RefKind,
+    Repository, WorktreeStatus,
 };
 use rc_git_testkit::{
     BIN_DAT, COMMIT_1_TITLE, COMMIT_2_TITLE, FEATURE_TITLE, Fixture, MAIN_RS, README,
@@ -13,6 +13,19 @@ use rc_git_testkit::{
 
 fn oid(hex: &str) -> Oid {
     Oid::from_hex(hex).unwrap()
+}
+
+/// One page of the log from a fresh cursor, the shape most log tests here read.
+trait LogPage {
+    fn log(&self, tip: Oid, skip: usize, limit: usize) -> rc_git_core::Result<Vec<CommitSummary>>;
+}
+
+impl LogPage for Repository {
+    fn log(&self, tip: Oid, skip: usize, limit: usize) -> rc_git_core::Result<Vec<CommitSummary>> {
+        let cursor = self.log_cursor(tip)?;
+        cursor.skip(skip)?;
+        cursor.next_page(self, limit)
+    }
 }
 
 fn names(entries: &[rc_git_core::TreeEntry]) -> Vec<String> {
@@ -947,6 +960,24 @@ fn log_reports_a_missing_commit_as_a_walk_error() {
     fx.remove(&loose);
     let repo = Repository::open(fx.path()).unwrap();
     let main = repo.resolve("main").unwrap();
+    let cursor = repo.log_cursor(main).unwrap();
+    let err = cursor.next_page(&repo, 10).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Git {
+                op: "walk commits",
+                ..
+            }
+        ),
+        "{err}"
+    );
+    let err = cursor.next_page(&repo, 10).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "resume commit walk: an earlier page of this walk failed; start a new walk",
+        "a cursor that lost its place refuses instead of skipping a commit"
+    );
     let err = repo.log(main, 0, 10).unwrap_err();
     assert!(
         matches!(
@@ -958,6 +989,61 @@ fn log_reports_a_missing_commit_as_a_walk_error() {
         ),
         "{err:?}"
     );
+}
+
+#[test]
+fn log_cursor_pages_concatenate_to_one_walk() {
+    let fx = Fixture::standard();
+    fx.commit_with_body("X", "parent", "2024-03-01T00:00:00Z");
+    fx.git(&["branch", "side"]);
+    fx.commit_with_body("C1", "newer child", "2024-04-01T00:00:00Z");
+    fx.git(&["checkout", "-q", "side"]);
+    fx.commit_with_body("C2", "child older than its parent", "2024-02-01T00:00:00Z");
+    fx.commit_with_body("C3", "side tip", "2024-04-15T00:00:00Z");
+    fx.git(&["checkout", "-q", "main"]);
+    let date = "2024-05-01T00:00:00Z";
+    fx.git_with_env(
+        &["merge", "-q", "--no-ff", "-m", "M", "side"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    let repo = Repository::open(fx.path()).unwrap();
+    let main = repo.resolve("main").unwrap();
+    let whole = repo
+        .log_cursor(main)
+        .unwrap()
+        .next_page(&repo, 1000)
+        .unwrap();
+    let expected = fx.git_output(&["rev-list", "--date-order", "main"]);
+    assert_eq!(
+        whole.len(),
+        expected.lines().count(),
+        "every reachable commit once"
+    );
+
+    for size in [1, 2, 3] {
+        let cursor = repo.log_cursor(main).unwrap();
+        let mut paged = Vec::new();
+        loop {
+            let page = cursor.next_page(&repo, size).unwrap();
+            assert!(page.len() <= size);
+            let done = page.len() < size;
+            paged.extend(page);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(paged, whole, "pages of {size} concatenate to one walk");
+    }
+
+    let cursor = repo.log_cursor(main).unwrap();
+    assert_eq!(cursor.skip(3).unwrap(), 3);
+    assert_eq!(cursor.next_page(&repo, 2).unwrap(), whole[3..5]);
+    assert_eq!(
+        cursor.skip(1000).unwrap(),
+        whole.len() - 5,
+        "skip stops at the end"
+    );
+    assert!(cursor.next_page(&repo, 10).unwrap().is_empty());
 }
 
 #[test]

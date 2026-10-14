@@ -1,44 +1,31 @@
 //! Filtered history walks: which commits touched a path, or match a search.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use gix::ObjectId;
 use gix::objs::tree::{EntryKind as GixEntryKind, EntryMode};
-use gix::revision::walk::Sorting;
-use gix::traverse::commit::simple::CommitTimeOrder;
+use gix::traverse::commit::Info;
 
 use crate::error::{Result, git, object};
-use crate::log::{CommitSummary, peel_to_commit, summarize};
+use crate::log::{CommitSummary, summarize};
 use crate::oid::Oid;
 use crate::repo::Repository;
 use crate::tree::lookup_path;
+use crate::walk::{self, Traversal};
 
 /// One page of a filtered history walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitPage {
     /// The commits that matched, newest commit time first.
     pub commits: Vec<CommitSummary>,
-    /// How many commits this call examined past `scan_skip`. The next page passes
-    /// `scan_skip + scanned` back, so the walk resumes where this call stopped.
+    /// How many commits this page examined, matched or not.
     pub scanned: usize,
-    /// True when the walk reached the end of history within this call.
+    /// True when the walk reached the end of history within this page.
     pub complete: bool,
 }
 
-/// Which slice of a filtered history walk one call examines and returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScanWindow {
-    /// Commits of the walk to pass over first: the previous pages' [`CommitPage::scanned`]
-    /// summed, never a match count.
-    pub scan_skip: usize,
-    /// Most matches the page returns.
-    pub limit: usize,
-    /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
-    /// page advances.
-    pub max_scan: usize,
-}
-
-/// What `search_commits` matches. Every set field must match; an empty filter matches every
+/// What a [`HistoryWalk`] matches. Every set field must match; an empty filter matches every
 /// commit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitFilter {
@@ -53,157 +40,160 @@ pub struct CommitFilter {
     /// Only commits whose committer time is at or before this time, seconds since the Unix
     /// epoch. Committer time can differ from the author time the CLI and UI show.
     pub before: Option<i64>,
-    /// Only commits that changed the entry at this path, judged as
-    /// [`path_history`](Repository::path_history) judges it. Checked last, since it reads two
-    /// tree entries per commit.
+    /// Only commits whose entry at this path differs from the first parent's — from every
+    /// parent's for merges, so a clean merge stays hidden. A root commit matches when the
+    /// entry exists, and so does a shallow boundary commit, whose parents are absent. Empty
+    /// and `.` segments are ignored, so `./a` names `a`; an empty path names the root tree,
+    /// so every commit that changed anything matches. Renames are not followed. Checked last,
+    /// since it reads two tree entries per commit.
     pub path: Option<String>,
 }
 
-impl Repository {
-    /// Commits reachable from `tip` whose entry at `path` differs from the first parent's —
-    /// from every parent's for merges, so a clean merge stays hidden — newest commit time
-    /// first. A root commit matches when the entry exists. Empty and `.` segments are
-    /// ignored, so `./a` names `a`. An empty `path` names the root tree, so every commit that
-    /// changed anything matches. Renames are not followed; blame covers deeper archaeology.
-    /// In a shallow clone a boundary commit is judged like a root, since its parents are absent.
-    ///
-    /// Like `log`, the walk restarts from `tip` and skips `window.scan_skip` commits, so keep
-    /// pages contiguous and cache them. At most `window.limit` matches are returned, and at
-    /// most `window.max_scan` commits are examined per call, whatever they match: this walk
-    /// reads two tree entries per commit, and the cap keeps one call from holding a
-    /// repository handle while it scans a long history. Loop on [`CommitPage::scanned`] until
-    /// [`CommitPage::complete`]. A `max_scan` of 0 counts as 1, so every incomplete page
-    /// advances the cursor.
-    ///
-    /// # Errors
-    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
-    /// annotated tag is followed to its commit.
-    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or the shallow
-    /// file is unreadable, [`Error::Object`](crate::Error::Object) when a commit or tree on the
-    /// way is unreadable.
-    pub fn path_history(&self, tip: Oid, path: &str, window: ScanWindow) -> Result<CommitPage> {
-        let ScanWindow {
-            scan_skip,
-            limit,
-            max_scan,
-        } = window;
-        let max_scan = max_scan.max(1);
-        self.with(|repo| {
-            let tip = peel_to_commit(repo, tip)?.id;
-            let walk = repo
-                .rev_walk([tip])
-                .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
-                .all()
-                .map_err(git("start commit walk"))?;
-            let mut test = PathTest::new(repo, path)?;
-            let mut commits = Vec::new();
-            let mut scanned = 0;
-            let mut complete = true;
-            for info in walk.skip(scan_skip) {
-                if commits.len() >= limit || scanned >= max_scan {
-                    complete = false;
-                    break;
-                }
-                scanned += 1;
-                let info = info.map_err(git("walk commits"))?;
-                let oid = Oid::from_gix(info.id);
-                let commit = info.object().map_err(object("read commit", oid))?;
-                if test.touches(repo, &info, &commit)? {
-                    commits.push(summarize(&commit)?);
-                }
-            }
-            Ok(CommitPage {
-                commits,
-                scanned,
-                complete,
-            })
-        })
-    }
+/// A filtered walk over the commits reachable from one tip, newest commit time first, taken
+/// a page at a time. Each [`next_page`](Self::next_page) resumes where the previous one
+/// stopped, so a sparse filter over a long history costs one pass in total however many pages
+/// it takes. The walk owns its state rather than a pooled repository handle, and may be used
+/// from any thread; pages are taken one at a time. Pass the walk the [`Repository`] that
+/// made it.
+pub struct HistoryWalk {
+    state: Mutex<FilteredWalk>,
+}
 
-    /// Commits reachable from `tip` that match every set field of `filter`, newest commit
-    /// time first. A time floor (`after`) terminates the walk instead of filtering, so dated
-    /// searches never scan past their window. A `path` keeps only the commits
-    /// [`path_history`](Self::path_history) would list for it.
-    ///
-    /// Pages like [`path_history`](Self::path_history): at most `window.max_scan` commits are
-    /// examined past `window.scan_skip`, and the page reports how many, so the caller loops until
-    /// [`CommitPage::complete`]; a `max_scan` of 0 counts as 1, so every incomplete page
-    /// advances. Message and author matching decode each examined commit —
-    /// the same cost class as `log` — and a time ceiling (`before`) is checked before any
-    /// decode.
+impl std::fmt::Debug for HistoryWalk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryWalk").finish_non_exhaustive()
+    }
+}
+
+/// What one [`HistoryWalk`] carries between pages.
+struct FilteredWalk {
+    traversal: Traversal,
+    filter: CommitFilter,
+    path_test: Option<PathTest>,
+}
+
+impl Repository {
+    /// A walk over the commits reachable from `tip` that match every set field of `filter`,
+    /// positioned before the newest. A time floor (`after`) ends the walk instead of
+    /// filtering, so dated searches never scan past their window. An annotated tag `tip` is
+    /// followed to its commit.
     ///
     /// # Errors
-    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob; an
-    /// annotated tag is followed to its commit.
-    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or advance or, with a
-    /// `path`, the shallow file is unreadable; [`Error::Object`](crate::Error::Object) when a
-    /// commit, or with a `path` a tree, on the way is unreadable.
-    pub fn search_commits(
-        &self,
-        tip: Oid,
-        filter: &CommitFilter,
-        window: ScanWindow,
-    ) -> Result<CommitPage> {
-        let ScanWindow {
-            scan_skip,
-            limit,
-            max_scan,
-        } = window;
-        let max_scan = max_scan.max(1);
+    /// [`Error::WrongKind`](crate::Error::WrongKind) when `tip` is, or tags, a tree or blob,
+    /// [`Error::Object`](crate::Error::Object) when it is missing,
+    /// [`Error::Git`](crate::Error::Git) when the walk cannot start or the shallow file is
+    /// unreadable.
+    pub fn history_walk(&self, tip: Oid, filter: CommitFilter) -> Result<HistoryWalk> {
         self.with(|repo| {
-            let sorting = match filter.after {
-                Some(seconds) => Sorting::ByCommitTimeCutoff {
-                    order: CommitTimeOrder::NewestFirst,
-                    seconds,
-                },
-                None => Sorting::ByCommitTime(CommitTimeOrder::NewestFirst),
-            };
-            let tip = peel_to_commit(repo, tip)?.id;
-            let walk = repo
-                .rev_walk([tip])
-                .sorting(sorting)
-                .all()
-                .map_err(git("start commit walk"))?;
-            let mut path_test = match &filter.path {
+            let traversal = Traversal::start(repo, tip, filter.after)?;
+            let path_test = match &filter.path {
                 Some(path) => Some(PathTest::new(repo, path)?),
                 None => None,
             };
-            let mut commits = Vec::new();
-            let mut scanned = 0;
-            let mut complete = true;
-            for info in walk.skip(scan_skip) {
-                if commits.len() >= limit || scanned >= max_scan {
-                    complete = false;
-                    break;
-                }
-                scanned += 1;
-                let info = info.map_err(git("walk commits"))?;
-                let oid = Oid::from_gix(info.id);
-                // Time-ordered walks always carry the commit time, so the ceiling costs no
-                // decode.
-                if let (Some(before), Some(time)) = (filter.before, info.commit_time)
-                    && time > before
-                {
-                    continue;
-                }
-                let commit = info.object().map_err(object("read commit", oid))?;
-                let summary = summarize(&commit)?;
-                if !matches(filter, &commit, &summary).map_err(object("decode commit", oid))? {
-                    continue;
-                }
-                if let Some(test) = path_test.as_mut()
-                    && !test.touches(repo, &info, &commit)?
-                {
-                    continue;
-                }
-                commits.push(summary);
-            }
-            Ok(CommitPage {
-                commits,
-                scanned,
-                complete,
+            Ok(HistoryWalk {
+                state: Mutex::new(FilteredWalk {
+                    traversal,
+                    filter,
+                    path_test,
+                }),
             })
         })
+    }
+}
+
+impl HistoryWalk {
+    /// The next page: at most `limit` matches, from at most `max_scan` commits examined,
+    /// whatever they match. The cap keeps one call from holding a repository handle while it
+    /// scans a long history; loop until [`CommitPage::complete`]. A `max_scan` of 0 counts as
+    /// 1, so every incomplete page advances. Message and author matching decode each examined
+    /// commit, a time ceiling (`before`) is checked before any decode, and a path is checked
+    /// last.
+    ///
+    /// # Errors
+    /// [`Error::Git`](crate::Error::Git) when the walk cannot advance or an earlier page of
+    /// this walk failed, [`Error::Object`](crate::Error::Object) when a commit, or with a
+    /// `path` a tree, on the way is unreadable.
+    pub fn next_page(
+        &self,
+        repo: &Repository,
+        limit: usize,
+        max_scan: usize,
+    ) -> Result<CommitPage> {
+        let max_scan = max_scan.max(1);
+        let mut guard = walk::lock(&self.state)?;
+        let state = &mut *guard;
+        state.traversal.ensure_usable()?;
+        let result = repo.with(|repo| state.page(repo, limit, max_scan));
+        if result.is_err() {
+            state.traversal.mark_broken();
+        }
+        result
+    }
+}
+
+impl FilteredWalk {
+    fn page(
+        &mut self,
+        repo: &gix::Repository,
+        limit: usize,
+        max_scan: usize,
+    ) -> Result<CommitPage> {
+        if let Some(test) = self.path_test.as_mut() {
+            // The memo serves one page; a fresh one costs a single extra tree read.
+            test.lookup = Lookup::default();
+        }
+        let mut commits = Vec::new();
+        let mut scanned = 0;
+        while let Some(info) = self.traversal.next_commit()? {
+            if commits.len() >= limit || scanned >= max_scan {
+                self.traversal.put_back(info);
+                return Ok(CommitPage {
+                    commits,
+                    scanned,
+                    complete: false,
+                });
+            }
+            scanned += 1;
+            if let Some(summary) = self.examine(repo, &info)? {
+                commits.push(summary);
+            }
+        }
+        Ok(CommitPage {
+            commits,
+            scanned,
+            complete: true,
+        })
+    }
+
+    /// The summary of the commit walked as `info` when it matches the filter.
+    fn examine(&mut self, repo: &gix::Repository, info: &Info) -> Result<Option<CommitSummary>> {
+        // Time-ordered walks always carry the commit time, so the ceiling costs no decode.
+        if let (Some(before), Some(time)) = (self.filter.before, info.commit_time)
+            && time > before
+        {
+            return Ok(None);
+        }
+        let oid = Oid::from_gix(info.id);
+        let commit = repo
+            .find_commit(info.id)
+            .map_err(object("read commit", oid))?;
+        let mut summary = None;
+        if self.filter.message.is_some() || self.filter.author.is_some() {
+            let decoded = summarize(&commit)?;
+            if !matches(&self.filter, &commit, &decoded).map_err(object("decode commit", oid))? {
+                return Ok(None);
+            }
+            summary = Some(decoded);
+        }
+        if let Some(test) = self.path_test.as_mut()
+            && !test.touches(repo, info, &commit)?
+        {
+            return Ok(None);
+        }
+        match summary {
+            Some(summary) => Ok(Some(summary)),
+            None => summarize(&commit).map(Some),
+        }
     }
 }
 
@@ -270,7 +260,7 @@ impl PathTest {
     fn touches(
         &mut self,
         repo: &gix::Repository,
-        info: &gix::revision::walk::Info<'_>,
+        info: &Info,
         commit: &gix::Commit<'_>,
     ) -> Result<bool> {
         let oid = Oid::from_gix(info.id);

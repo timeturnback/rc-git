@@ -9,9 +9,9 @@ constraints are clear.
   FSEvents, filters to `HEAD`, `packed-refs`, and `refs/` through `RefWatchFilter`, and
   drives `BrowserModel.refreshRefs()`. Every object cache stays; only refs re-read. The
   selection survives by name, reloads when its target moved, and falls back when deleted.
-- **Commit list.** The History pane pages through `log(tip, skip, limit)` on scroll, caches
-  pages per tip, and offers "Browse Files at This Commit". Selecting a commit shows the
-  files it changed against its first parent and each file's line diff.
+- **Commit list.** The History pane pages through a log cursor on scroll, caches pages per tip with
+  the cursor, and offers "Browse Files at This Commit". Selecting a commit shows the files it
+  changed against its first parent and each file's line diff.
 - **Syntax highlighting.** Tree-sitter in `rc-git-highlight`, exposed as
   `rcgit_highlight`, cached by blob id in `BrowserModel` (LRU-bounded), applied after first
   paint so plain text never waits on a parse — and only for the visible chunk, as temporary
@@ -71,19 +71,18 @@ constraints are clear.
   `CommitSummary.parents`, so appending a page never reshuffles drawn rows, and the builder
   is cached per tip alongside the pages. Rendering clamps at 12 drawn lanes; the column
   hides while a path scope or search shows a filtered list. No core or FFI change.
-- **Commit search.** A filter bar over the History pane (⇧⌘F) matches message or author as
-  the user types, with optional date bounds; matches stream in scan chunks with a progress
-  count, and a hex query jumps straight to that revision. `search_commits` shares
-  `path_history`'s scan-cursor paging; a since-bound uses gix's commit-time cutoff so the
-  walk terminates at the window instead of scanning to the root. Under a path scope the
-  search applies `path_history`'s path-change test too. No index is ever built.
-  The CLI gained `search`.
-- **Per-file history.** "Show File History" on tree rows and ⌥⌘Y for the open file scope the
-  History pane to the commits that changed one path, with a chip to clear. `path_history`
-  walks like `log` and compares the entry at the path against every parent (clean merges hide,
-  root commits count, renames are not followed), examining at most `max_scan` commits per call
-  so pages stream in chunks and a scope change between chunks cancels the rest. Pages cache by
-  `(tip, path)`. The CLI gained `filelog`.
+- **Commit search.** A filter bar over the History pane (⇧⌘F) matches message or author as the user
+  types, with optional date bounds; matches stream in scan chunks with a progress count, and a hex
+  query jumps straight to that revision. Search pages through the same resumable walk as path
+  history, `max_scan` commits per page; a since-bound uses gix's commit-time cutoff so the walk
+  terminates at the window instead of scanning to the root. Under a path scope the search applies
+  the path history's path-change test too. No index is ever built. The CLI gained `search`.
+- **Per-file history.** "Show File History" on tree rows and ⌥⌘Y for the open file scope the History
+  pane to the commits that changed one path, with a chip to clear. A history walk filtered by path
+  compares the entry at the path against every parent (clean merges hide, root commits count,
+  renames are not followed), examining at most `max_scan` commits per page, each page resuming where
+  the last stopped, so pages stream in chunks and a scope change between chunks cancels the rest.
+  Pages cache by `(tip, path)`. The CLI gained `filelog`.
 - **Commit detail.** Selecting a commit loads `commit_details` alongside the tree diff: full
   message body, committer when it differs from the author, refs pointing at the commit
   (computed from the ref listing, no extra walk), and parent links. Parent links and revision

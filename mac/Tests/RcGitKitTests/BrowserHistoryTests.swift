@@ -97,7 +97,7 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
             "a complete scope comes back without a walk")
     }
 
-    @Test func pathScopeWalksInChunksAndScopeChangeDropsTheRest() async {
+    @Test func pathScopePagesAndCompletes() async {
         await model.attach(repo)
         let touching = (0..<150).map { index in
             commitSummary(oid(UInt8(index % 250)), title: "touch \(index)")
@@ -111,6 +111,45 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         await model.loadMoreHistory()
         #expect(model.history.count == 150)
         #expect(model.historyComplete)
+    }
+
+    @Test func pathScopeWalksInChunksUntilAPageIsFull() async {
+        await model.attach(repo)
+        let touching = (0..<150).map { index in
+            commitSummary(oid(UInt8(index % 250)), title: "touch \(index)")
+        }
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "big")] = touching
+            repo.pathMatchesPerCall = 30
+        }
+        let calls = repo.lock.withLock { repo.pathHistoryCalls }
+        await model.showPathHistory("big")
+        #expect(model.history.count == 100)
+        #expect(
+            repo.lock.withLock { repo.pathHistoryCalls } == calls + 4,
+            "30 + 30 + 30 + 10 matches, each chunk resuming the same walk")
+        #expect(model.history.map(\.title) == touching.prefix(100).map(\.title))
+    }
+
+    @Test func pathScopeChangeBetweenChunksDropsTheRestOfTheWalk() async throws {
+        await model.attach(repo)
+        let touching = (0..<150).map { index in
+            commitSummary(oid(UInt8(index % 250)), title: "touch \(index)")
+        }
+        repo.lock.withLock {
+            repo.pathHistories[FakeRepository.pathKey(tip: mainCommit, path: "big")] = touching
+            repo.pathMatchesPerCall = 30
+            repo.pathHistoryDelay = 1
+        }
+        async let slow: Void = model.showPathHistory("big")
+        try await Task.sleep(for: .milliseconds(20))
+        model.clearHistoryScope()
+        await slow
+        #expect(model.historyScope == .all)
+        #expect(!model.history.contains { $0.title.hasPrefix("touch") })
+        #expect(
+            repo.lock.withLock { repo.pathHistoryCalls } == 1,
+            "the chunk in flight lands nowhere and no later chunk runs")
     }
 
     @Test func graphRowsFollowThePagedHistoryAndItsCache() async throws {

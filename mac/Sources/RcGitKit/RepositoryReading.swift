@@ -10,13 +10,10 @@ public protocol RepositoryReading: Sendable {
     func treeOf(_ oid: Oid) throws -> Oid
     func treeEntries(_ tree: Oid) throws -> [TreeEntry]
     func readBlob(_ oid: Oid, limit: UInt64) throws -> BlobContent
-    func log(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary]
+    func logCursor(tip: Oid) throws -> any LogCursorReading
     func commit(_ oid: Oid) throws -> CommitSummary
     func commitDetails(_ oid: Oid) throws -> CommitDetail
-    func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
-        -> CommitPage
-    func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
-        throws -> CommitPage
+    func historyWalk(tip: Oid, filter: CommitFilter) throws -> any HistoryWalkReading
     func diffTrees(from: Oid?, to: Oid) throws -> [TreeChange]
     func diffBlobs(old: Oid?, new: Oid?, limit: UInt64, context: UInt32) throws -> BlobDiff
     func blame(tip: Oid, path: String, limit: UInt64, since: Int64?) throws -> Blame
@@ -27,4 +24,20 @@ public protocol RepositoryReading: Sendable {
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff
     func stashList() throws -> [StashEntry]
+}
+
+/// A walk over the commits reachable from one tip, newest first. Each call resumes where the
+/// previous one stopped, so paging to depth N costs N commits in total.
+public protocol LogCursorReading: Sendable {
+    /// The next at most `limit` commits; fewer only at the end of history. After a failed
+    /// call every later one fails too: open a new cursor.
+    func next(limit: Int) throws -> [CommitSummary]
+}
+
+/// A filtered walk over the commits reachable from one tip, newest first. Each call resumes
+/// where the previous one stopped, so a sparse filter costs one pass over history in total.
+public protocol HistoryWalkReading: Sendable {
+    /// At most `limit` matches from at most `maxScan` commits examined; loop until the page
+    /// is `complete`. After a failed call every later one fails too: open a new walk.
+    func next(limit: Int, maxScan: Int) throws -> CommitPage
 }

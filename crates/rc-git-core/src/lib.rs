@@ -17,6 +17,7 @@ mod refs;
 mod repo;
 mod stash;
 mod tree;
+mod walk;
 mod worktree;
 
 pub use blame::{Blame, BlameRange};
@@ -27,8 +28,8 @@ pub use diff::{
 };
 pub use error::{BoxError, Error, ObjectKind, Result};
 pub use gix::bstr;
-pub use history::{CommitFilter, CommitPage, ScanWindow};
-pub use log::{CommitDetail, CommitSummary};
+pub use history::{CommitFilter, CommitPage, HistoryWalk};
+pub use log::{CommitDetail, CommitSummary, LogCursor};
 pub use oid::Oid;
 pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
 pub use repo::{Repository, require_files_ref_storage, require_work_tree_at};

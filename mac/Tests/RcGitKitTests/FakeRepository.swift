@@ -40,11 +40,17 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var summaries: [Oid: CommitSummary] = [:]
     var details: [Oid: CommitDetail] = [:]
     /// Per "tip.hex:path", the full matching history. The fake treats every stored commit as
-    /// one scanned commit, so `scanSkip` indexes into this list.
+    /// one scanned commit, so a path walk's position indexes into this list.
     var pathHistories: [String: [CommitSummary]] = [:]
+    /// Pages taken from path walks, across every walk.
     var pathHistoryCalls = 0
-    /// When set, `pathHistory` fails for every `scanSkip` at or past this index.
+    /// When set, a path walk page fails once its walk stands at or past this index.
     var pathHistoryFailFrom: Int?
+    /// When set, a path walk page returns at most this many matches, so one model page takes
+    /// several calls.
+    var pathMatchesPerCall: Int?
+    /// How long each path walk page takes, slept outside the lock.
+    var pathHistoryDelay: TimeInterval = 0
     var resolves: [String: Oid] = [:]
     /// Per spec, holds the next `resolve` call for it, then clears itself.
     var resolveGates: [String: CallGate] = [:]
@@ -179,7 +185,17 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         return content
     }
 
-    func log(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary] {
+    func logCursor(tip: Oid) throws -> any LogCursorReading {
+        FakeLogCursor(repository: self, tip: tip)
+    }
+
+    /// A walk that answers `pathPage` when `filter` names only a path, else `searchPage`.
+    func historyWalk(tip: Oid, filter: CommitFilter) throws -> any HistoryWalkReading {
+        FakeHistoryWalk(repository: self, tip: tip, filter: filter)
+    }
+
+    /// One page of a log cursor that has handed out `skip` commits; counts in `logCalls`.
+    func logPage(tip: Oid, skip: Int, limit: Int) throws -> [CommitSummary] {
         let (list, delay) = lock.withLock {
             logCalls += 1
             return (commits[tip], delays[tip] ?? 0)
@@ -214,21 +230,24 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             committerOffset: summary.authorOffset, tree: oid)
     }
 
-    func pathHistory(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
+    /// One page of a path walk standing at `scanSkip`; counts in `pathHistoryCalls`.
+    func pathPage(tip: Oid, path: String, scanSkip: Int, limit: Int, maxScan: Int) throws
         -> CommitPage
     {
-        let (found, failFrom) = lock.withLock { () -> ([CommitSummary]?, Int?) in
+        let (found, failFrom, cap, delay) = lock.withLock {
+            () -> ([CommitSummary]?, Int?, Int?, TimeInterval) in
             pathHistoryCalls += 1
             let key = FakeRepository.pathKey(tip: tip, path: path)
-            return (pathHistories[key], pathHistoryFailFrom)
+            return (pathHistories[key], pathHistoryFailFrom, pathMatchesPerCall, pathHistoryDelay)
         }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if let failFrom, scanSkip >= failFrom {
             throw RepositoryError("read commit: object \(tip) is missing or unreadable")
         }
         guard let found else {
             throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
         }
-        let slice = found.dropFirst(scanSkip).prefix(min(limit, maxScan))
+        let slice = found.dropFirst(scanSkip).prefix(min(limit, maxScan, cap ?? Int.max))
         return CommitPage(
             commits: Array(slice), scanned: slice.count,
             complete: scanSkip + slice.count >= found.count)
@@ -241,7 +260,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Filters the commits stored for `tip` by title, author, and membership in the stored
     /// path history for `filter.path`, one scanned per stored commit, so `scanSkip` indexes
     /// the unfiltered list.
-    func searchCommits(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
+    func searchPage(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
         throws -> CommitPage
     {
         let (found, delay, touching) = lock.withLock {
@@ -413,4 +432,55 @@ func textBlob(_ string: String) -> BlobContent {
         starts.append(UInt32(index + 1))
     }
     return .text(data: bytes, lineStarts: starts, validUTF8: true)
+}
+
+/// A log cursor over `FakeRepository.commits`: it remembers how many commits it handed out.
+final class FakeLogCursor: LogCursorReading, @unchecked Sendable {
+    private let repository: FakeRepository
+    private let tip: Oid
+    private let lock = NSLock()
+    private var position = 0
+
+    init(repository: FakeRepository, tip: Oid) {
+        self.repository = repository
+        self.tip = tip
+    }
+
+    func next(limit: Int) throws -> [CommitSummary] {
+        try lock.withLock {
+            let page = try repository.logPage(tip: tip, skip: position, limit: limit)
+            position += page.count
+            return page
+        }
+    }
+}
+
+/// A filtered walk over the fake's stored lists: it remembers how many commits it examined.
+final class FakeHistoryWalk: HistoryWalkReading, @unchecked Sendable {
+    private let repository: FakeRepository
+    private let tip: Oid
+    private let filter: CommitFilter
+    private let lock = NSLock()
+    private var position = 0
+
+    init(repository: FakeRepository, tip: Oid, filter: CommitFilter) {
+        self.repository = repository
+        self.tip = tip
+        self.filter = filter
+    }
+
+    func next(limit: Int, maxScan: Int) throws -> CommitPage {
+        try lock.withLock {
+            let page: CommitPage
+            if let path = filter.path, filter == CommitFilter(path: path) {
+                page = try repository.pathPage(
+                    tip: tip, path: path, scanSkip: position, limit: limit, maxScan: maxScan)
+            } else {
+                page = try repository.searchPage(
+                    tip: tip, filter: filter, scanSkip: position, limit: limit, maxScan: maxScan)
+            }
+            position += page.scanned
+            return page
+        }
+    }
 }

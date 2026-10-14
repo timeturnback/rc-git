@@ -1,13 +1,14 @@
 //! Proves the library never writes: every operation runs, then the fixture, `.git` and the
 //! working tree both, is compared with a snapshot taken before: every directory, every file's
 //! bytes, every symlink's target, and every entry's permission bits.
+#![expect(clippy::unwrap_used, reason = "test helpers panic on fixture failure")]
 
 use std::collections::BTreeMap;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use rc_git_core::{DEFAULT_BLOB_LIMIT, Repository, ScanWindow, WorktreeStatus};
+use rc_git_core::{DEFAULT_BLOB_LIMIT, Repository, WorktreeStatus};
 use rc_git_testkit::Fixture;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -91,6 +92,45 @@ fn assert_unchanged(before: &BTreeMap<PathBuf, Node>, after: &BTreeMap<PathBuf, 
     );
 }
 
+/// Every history walk: the log cursor, a path walk resumed across pages, and searches.
+fn walk_history(repo: &Repository, tip: rc_git_core::Oid) {
+    let cursor = repo.log_cursor(tip).unwrap();
+    cursor.skip(1).unwrap();
+    cursor.next_page(repo, 100).unwrap();
+    for commit in repo.log_cursor(tip).unwrap().next_page(repo, 100).unwrap() {
+        repo.commit(commit.oid).unwrap();
+        repo.commit_details(commit.oid).unwrap();
+    }
+    let by_path = rc_git_core::CommitFilter {
+        path: Some("README.md".to_owned()),
+        ..rc_git_core::CommitFilter::default()
+    };
+    let walk = repo.history_walk(tip, by_path).unwrap();
+    walk.next_page(repo, 100, 1).unwrap();
+    walk.next_page(repo, 100, 1000).unwrap();
+    let filter = rc_git_core::CommitFilter {
+        message: Some("docs".to_owned()),
+        ..rc_git_core::CommitFilter::default()
+    };
+    assert!(
+        !repo
+            .history_walk(tip, filter.clone())
+            .unwrap()
+            .next_page(repo, 100, 1000)
+            .unwrap()
+            .commits
+            .is_empty()
+    );
+    let scoped = rc_git_core::CommitFilter {
+        path: Some("README.md".to_owned()),
+        ..filter
+    };
+    repo.history_walk(tip, scoped)
+        .unwrap()
+        .next_page(repo, 100, 1000)
+        .unwrap();
+}
+
 #[test]
 fn every_operation_leaves_the_repository_untouched() {
     let fx = packed_fixture_with_local_changes();
@@ -117,32 +157,7 @@ fn every_operation_leaves_the_repository_untouched() {
         }
     }
     repo.entry_at_path(root, "src/main.rs").unwrap();
-    for commit in repo.log(tip, 0, 100).unwrap() {
-        repo.commit(commit.oid).unwrap();
-        repo.commit_details(commit.oid).unwrap();
-    }
-    let window = ScanWindow {
-        scan_skip: 0,
-        limit: 100,
-        max_scan: 1000,
-    };
-    repo.path_history(tip, "README.md", window).unwrap();
-    let filter = rc_git_core::CommitFilter {
-        message: Some("docs".to_owned()),
-        ..rc_git_core::CommitFilter::default()
-    };
-    assert!(
-        !repo
-            .search_commits(tip, &filter, window)
-            .unwrap()
-            .commits
-            .is_empty()
-    );
-    let scoped = rc_git_core::CommitFilter {
-        path: Some("README.md".to_owned()),
-        ..filter
-    };
-    repo.search_commits(tip, &scoped, window).unwrap();
+    walk_history(&repo, tip);
     let old = repo.resolve("v0.9").unwrap();
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(

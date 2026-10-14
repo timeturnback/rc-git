@@ -1,12 +1,13 @@
 //! Commit history.
 
-use gix::bstr::ByteSlice;
-use gix::revision::walk::Sorting;
-use gix::traverse::commit::simple::CommitTimeOrder;
+use std::sync::Mutex;
 
-use crate::error::{Error, ObjectKind, Result, git, object};
+use gix::bstr::ByteSlice;
+
+use crate::error::{Error, ObjectKind, Result, object};
 use crate::oid::Oid;
 use crate::repo::{Repository, peel_tags};
+use crate::walk::{self, Traversal};
 
 /// The parts of a commit a list view shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,33 +47,86 @@ pub struct CommitDetail {
     pub tree: Oid,
 }
 
-impl Repository {
-    /// Commits reachable from `tip`, newest commit time first; not topological — under clock
-    /// skew a parent can precede one of its children. Skips the first `skip` and returns at
-    /// most `limit`. The walk restarts from `tip` on every call, so a page deep in
-    /// a long history costs the pages before it; keep `skip` small or cache pages. An
-    /// annotated tag `tip` is followed to its commit.
+/// A page-at-a-time walk over the commits reachable from one tip, newest commit time first;
+/// not topological — under clock skew a parent can precede one of its children. Each
+/// [`next_page`](Self::next_page) resumes where the previous one stopped, so paging to depth
+/// N costs N commits in total, not N per page. The cursor owns its walk state rather than a
+/// pooled repository handle, and may be used from any thread; pages are taken one at a time.
+/// Pass the cursor the [`Repository`] that made it.
+pub struct LogCursor {
+    traversal: Mutex<Traversal>,
+}
+
+impl std::fmt::Debug for LogCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogCursor").finish_non_exhaustive()
+    }
+}
+
+impl LogCursor {
+    /// The next at most `limit` commits; fewer only at the end of history.
     ///
     /// # Errors
-    /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob,
-    /// [`Error::Git`] when the walk cannot start or advance (a commit it needs is missing),
-    /// [`Error::Object`] when a walked commit cannot be decoded.
-    pub fn log(&self, tip: Oid, skip: usize, limit: usize) -> Result<Vec<CommitSummary>> {
-        self.with(|repo| {
-            let tip = peel_to_commit(repo, tip)?.id;
-            let walk = repo
-                .rev_walk([tip])
-                .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
-                .all()
-                .map_err(git("start commit walk"))?;
+    /// [`Error::Git`] when the walk cannot advance (a commit it needs is missing) or an earlier
+    /// page of this cursor failed, [`Error::Object`] when a walked commit cannot be decoded.
+    pub fn next_page(&self, repo: &Repository, limit: usize) -> Result<Vec<CommitSummary>> {
+        let mut traversal = walk::lock(&self.traversal)?;
+        traversal.ensure_usable()?;
+        let result = repo.with(|repo| {
             let mut commits = Vec::with_capacity(limit.min(256));
-            for info in walk.skip(skip).take(limit) {
-                let info = info.map_err(git("walk commits"))?;
+            while commits.len() < limit {
+                let Some(info) = traversal.next_commit()? else {
+                    break;
+                };
                 let oid = Oid::from_gix(info.id);
-                let commit = info.object().map_err(object("read commit", oid))?;
+                let commit = repo
+                    .find_commit(info.id)
+                    .map_err(object("read commit", oid))?;
                 commits.push(summarize(&commit)?);
             }
             Ok(commits)
+        });
+        if result.is_err() {
+            traversal.mark_broken();
+        }
+        result
+    }
+
+    /// Passes over the next `count` commits without decoding them, and answers how many it
+    /// passed: fewer than `count` only at the end of history.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the walk cannot advance or an earlier page of this cursor failed.
+    pub fn skip(&self, count: usize) -> Result<usize> {
+        let mut traversal = walk::lock(&self.traversal)?;
+        traversal.ensure_usable()?;
+        let mut skipped = 0;
+        while skipped < count {
+            match traversal.next_commit() {
+                Ok(Some(_)) => skipped += 1,
+                Ok(None) => break,
+                Err(err) => {
+                    traversal.mark_broken();
+                    return Err(err);
+                }
+            }
+        }
+        Ok(skipped)
+    }
+}
+
+impl Repository {
+    /// A cursor over the commits reachable from `tip`, positioned before the newest. An
+    /// annotated tag `tip` is followed to its commit.
+    ///
+    /// # Errors
+    /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob, [`Error::Object`] when it
+    /// is missing, [`Error::Git`] when the walk cannot start or the shallow file is unreadable.
+    pub fn log_cursor(&self, tip: Oid) -> Result<LogCursor> {
+        self.with(|repo| {
+            Ok(LogCursor {
+                traversal: Mutex::new(Traversal::start(repo, tip, None)?),
+            })
         })
     }
 

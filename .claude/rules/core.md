@@ -21,11 +21,13 @@ paths: crates/rc-git-core/**
   scriptable. `docs/ffi.md` has the FFI half.
 - Fixtures come from `rc-git-testkit`. Write `.git` internals by hand only to simulate
   corruption, as `a_broken_ref_is_reported_without_hiding_the_rest` does.
-- Filtered history walks page by scan cursor (`scan_skip`/`scanned`/`max_scan` on
-  `CommitPage`), never by match count or oid cursor — an oid cursor drops side branches, and
-  match-skip re-does the filtering work. Cap every call so it cannot hold a pool handle
-  through a long scan. A time floor maps to `Sorting::ByCommitTimeCutoff`, which terminates
-  the walk instead of filtering; gix 0.87 has no topo order in `rev_walk`.
+- History pages resume through a walk handle (`LogCursor`, `HistoryWalk`) that owns its
+  traversal and object-database handle, never a pooled `gix::Repository`; never re-walk from
+  the tip with an offset, and never restart from saved frontier oids — without the seen set
+  a commit reachable from two of them, or tied on time, comes back twice. Filtered pages
+  report `scanned`/`complete` and cap examined commits with `max_scan`, so no call holds a
+  pool handle through a long scan. A time floor maps to `Sorting::ByCommitTimeCutoff`, which
+  terminates the walk instead of filtering; gix 0.87 has no topo order in `rev_walk`.
 - The working-tree status walk reads the index as a stat cache (`StatCache` in `worktree.rs`)
   so an unchanged file costs one `lstat` instead of a full hash. It may only ever *decline*:
   a conflicted, assume-valid, skip-worktree, intent-to-add or racy entry, an id that is not

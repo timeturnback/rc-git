@@ -201,6 +201,18 @@ typedef enum RcGitRisk {
 /// `rcgit_cancel_free` once the operation has returned.
 typedef struct RcGitCancel RcGitCancel;
 
+/// A filtered walk over the commits reachable from one tip, newest first, taken a page at a
+/// time. Opaque: create with `rcgit_history_walk_new`, page with `rcgit_history_walk_next`,
+/// release with `rcgit_history_walk_free`. Each page resumes where the previous one
+/// stopped. It may be used from any thread; concurrent pages are taken one after the other.
+typedef struct RcGitHistoryWalk RcGitHistoryWalk;
+
+/// A walk over the commits reachable from one tip, newest first, taken a page at a time.
+/// Opaque: create with `rcgit_log_cursor_new`, page with `rcgit_log_cursor_next`, release
+/// with `rcgit_log_cursor_free`. Each page resumes where the previous one stopped. It may be
+/// used from any thread; concurrent pages are taken one after the other.
+typedef struct RcGitLogCursor RcGitLogCursor;
+
 /// An open repository. Opaque: create with `rcgit_repo_open`, release with `rcgit_repo_free`.
 typedef struct RcGitRepo RcGitRepo;
 
@@ -349,25 +361,13 @@ typedef struct RcGitCommitPage {
   struct RcGitCommit *commits;
   /// Number of matching commits.
   size_t len;
-  /// How many commits the call examined past its `scan_skip`.
+  /// How many commits the page examined, matched or not.
   size_t scanned;
-  /// True when the walk reached the end of history within this call.
+  /// True when the walk reached the end of history within this page.
   bool complete;
 } RcGitCommitPage;
 
-/// One page of a filtered history walk. Caller-owned input, passed by value.
-typedef struct RcGitScanPage {
-  /// Commits of the walk to pass over before this page: the previous pages' `scanned`
-  /// summed, never a match count.
-  size_t scan_skip;
-  /// Most matches the page returns.
-  size_t limit;
-  /// Most commits the page examines past `scan_skip`; 0 counts as 1, so every incomplete
-  /// page advances.
-  size_t max_scan;
-} RcGitScanPage;
-
-/// What `rcgit_search_commits` matches: every set field must hold. Caller-owned input,
+/// What `rcgit_history_walk_new` matches: every set field must hold. Caller-owned input,
 /// passed by value; mirrors the core's `CommitFilter`.
 typedef struct RcGitCommitFilter {
   /// Case-insensitive (ASCII) substring of the full message, or NULL for any.
@@ -382,8 +382,9 @@ typedef struct RcGitCommitFilter {
   bool has_before;
   /// Latest committer time, seconds since the Unix epoch.
   int64_t before;
-  /// Only commits that changed the entry at this path, judged as `rcgit_path_history`
-  /// judges it, or NULL for any.
+  /// Only commits whose entry at this path differs from the first parent's (from every
+  /// parent's for a merge; a root or shallow boundary commit matches when the entry exists),
+  /// or NULL for any. An empty path names the root tree.
   const char *path;
 } RcGitCommitFilter;
 
@@ -929,22 +930,40 @@ int32_t rcgit_blob_size(const struct RcGitRepo *repo,
                         uint64_t *out,
                         char **error);
 
-/// Commits reachable from `tip`, newest first, skipping `skip` and returning at most `limit`.
-/// Release with `rcgit_commit_list_free`.
+/// A cursor positioned before the newest commit reachable from `tip`; an annotated tag is
+/// followed to its commit. Release with `rcgit_log_cursor_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `error` is NULL
 /// or valid for writing a `char *`.
-struct RcGitCommitList *rcgit_log(const struct RcGitRepo *repo,
-                                  const struct RcGitOid *tip,
-                                  size_t skip,
-                                  size_t limit,
-                                  char **error);
+struct RcGitLogCursor *rcgit_log_cursor_new(const struct RcGitRepo *repo,
+                                            const struct RcGitOid *tip,
+                                            char **error);
 
-/// Releases a value from `rcgit_log`.
+/// The next at most `limit` commits of `cursor`, newest first; fewer only at the end of
+/// history. Release with `rcgit_commit_list_free`. After a failed page the cursor refuses
+/// every later one: start a new cursor.
 ///
 /// # Safety
-/// `list` is NULL or came from `rcgit_log` and is not freed twice.
+/// `repo` came from `rcgit_repo_open` and is the repository `cursor` was made from. `cursor`
+/// came from `rcgit_log_cursor_new` and has not been freed. `error` is NULL or valid for
+/// writing a `char *`.
+struct RcGitCommitList *rcgit_log_cursor_next(const struct RcGitRepo *repo,
+                                              const struct RcGitLogCursor *cursor,
+                                              size_t limit,
+                                              char **error);
+
+/// Releases a cursor from `rcgit_log_cursor_new`. The pages it returned stay valid.
+///
+/// # Safety
+/// `cursor` is NULL or came from `rcgit_log_cursor_new`, is not freed twice, and is not in
+/// use by a running `rcgit_log_cursor_next`.
+void rcgit_log_cursor_free(struct RcGitLogCursor *cursor);
+
+/// Releases a value from `rcgit_log_cursor_next`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_log_cursor_next` and is not freed twice.
 void rcgit_commit_list_free(struct RcGitCommitList *list);
 
 /// One commit. Release with `rcgit_commit_free`.
@@ -978,37 +997,48 @@ struct RcGitCommitDetail *rcgit_commit_details(const struct RcGitRepo *repo,
 /// `detail` is NULL or came from `rcgit_commit_details` and is not freed twice.
 void rcgit_commit_detail_free(struct RcGitCommitDetail *detail);
 
-/// Commits reachable from `tip` that changed `path`, newest first. Examines at most
-/// `page.max_scan` commits past `page.scan_skip` and reports how many it examined, so the
-/// caller loops pages until `complete`. Release with `rcgit_commit_page_free`.
+/// Releases a value from `rcgit_history_walk_next`.
 ///
 /// # Safety
-/// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
-/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
-struct RcGitCommitPage *rcgit_path_history(const struct RcGitRepo *repo,
-                                           const struct RcGitOid *tip,
-                                           const char *path,
-                                           struct RcGitScanPage page,
-                                           char **error);
-
-/// Releases a value from `rcgit_path_history` or `rcgit_search_commits`.
-///
-/// # Safety
-/// `page` is NULL or came from `rcgit_path_history` or `rcgit_search_commits` and is not freed twice.
+/// `page` is NULL or came from `rcgit_history_walk_next` and is not freed twice.
 void rcgit_commit_page_free(struct RcGitCommitPage *page);
 
-/// Commits reachable from `tip` that match `filter`, newest first. Pages like
-/// `rcgit_path_history`. Release with `rcgit_commit_page_free`.
+/// A walk over the commits reachable from `tip` that match `filter`, positioned before the
+/// newest; an annotated tag is followed to its commit. A filter with only `path` set is that
+/// path's history. A set `after` ends the walk at that time instead of filtering. Release with
+/// `rcgit_history_walk_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`.
 /// `filter.message`, `filter.author` and `filter.path` are NULL or NUL-terminated strings.
 /// `error` is NULL or valid for writing a `char *`.
-struct RcGitCommitPage *rcgit_search_commits(const struct RcGitRepo *repo,
-                                             const struct RcGitOid *tip,
-                                             struct RcGitCommitFilter filter,
-                                             struct RcGitScanPage page,
-                                             char **error);
+struct RcGitHistoryWalk *rcgit_history_walk_new(const struct RcGitRepo *repo,
+                                                const struct RcGitOid *tip,
+                                                struct RcGitCommitFilter filter,
+                                                char **error);
+
+/// The next page of `walk`: at most `limit` matches from at most `max_scan` commits examined,
+/// whatever they match, so one call never holds a repository handle through a long scan.
+/// Loop until `complete`; a `max_scan` of 0 counts as 1, so every incomplete page advances.
+/// Release with `rcgit_commit_page_free`. After a failed page the walk refuses every later
+/// one: start a new walk.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open` and is the repository `walk` was made from. `walk` came
+/// from `rcgit_history_walk_new` and has not been freed. `error` is NULL or valid for
+/// writing a `char *`.
+struct RcGitCommitPage *rcgit_history_walk_next(const struct RcGitRepo *repo,
+                                                const struct RcGitHistoryWalk *walk,
+                                                size_t limit,
+                                                size_t max_scan,
+                                                char **error);
+
+/// Releases a walk from `rcgit_history_walk_new`. The pages it returned stay valid.
+///
+/// # Safety
+/// `walk` is NULL or came from `rcgit_history_walk_new`, is not freed twice, and is not in
+/// use by a running `rcgit_history_walk_next`.
+void rcgit_history_walk_free(struct RcGitHistoryWalk *walk);
 
 /// Lists every file that differs between two trees, renames detected, sorted by path. `from`
 /// and `to` may be any objects that peel to trees; a NULL `from` stands for the empty tree,

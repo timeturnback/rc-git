@@ -200,11 +200,13 @@ public final class BrowserModel {
         /// True when the tip is HEAD standing in for the working tree, not a browsed revision.
         let atHead: Bool
     }
-    /// The unfiltered pages of one tip plus the lane graph built alongside them.
+    /// The unfiltered pages of one tip plus the lane graph built alongside them, and the
+    /// cursor that stands after them, so returning to the tip resumes instead of re-walking.
     private struct HistoryPages {
         var commits: [CommitSummary]
         var complete: Bool
         var graph: GraphBuilder
+        var pager: LogPager?
     }
     /// Pages already walked, per tip. A tip is immutable, so entries never go stale.
     private var historyCache: [Oid: HistoryPages] = [:]
@@ -217,6 +219,12 @@ public final class BrowserModel {
     }
     private var pathHistoryCache:
         [PathHistoryKey: (commits: [CommitSummary], scanned: Int, complete: Bool)] = [:]
+    /// The path walk of the current scope, for one key and history generation. A scope change
+    /// drops it, so at most one path walk is open; a later visit to a cached scope opens a new
+    /// one at its first page.
+    private var pathPager: (key: PathHistoryKey, generation: Int, pager: HistoryPager)?
+    /// The walk of the active search; a new filter or `clearSearch` drops it.
+    private var searchPager: HistoryPager?
     /// Flattened file lists, per root tree. Content-addressed like every other cache.
     private var pathIndices: [Oid: PathIndex] = [:]
     private var indexBuild: (root: Oid, task: Task<PathIndex, any Error>)?
@@ -820,20 +828,25 @@ public final class BrowserModel {
         else { return }
         isLoadingHistory = true
         let generation = historyGeneration
-        let skip = history.count
+        let start = history.count
         let pageSize = Self.historyPageSize
+        let pager = historyCache[tip]?.pager
         let result = await RepositoryError.run {
-            try repository.log(tip: tip, skip: skip, limit: pageSize)
+            try LogPager.page(
+                pager, repository: repository, tip: tip, from: start, limit: pageSize)
         }
         guard isCurrent(generation, historyGeneration, load: "history") else { return }
         isLoadingHistory = false
         switch result {
-        case let .success(page):
+        case let .success((pager, page)):
+            // Released first, so the appends extend the loaded pages in place rather than
+            // copying everything the cache shares with them.
+            historyCache[tip] = nil
             history += page
             historyComplete = page.count < pageSize
             graph.append(page[...])
             historyCache[tip] = HistoryPages(
-                commits: history, complete: historyComplete, graph: graph)
+                commits: history, complete: historyComplete, graph: graph, pager: pager)
             onHistoryChanged?()
         case let .failure(error):
             historyError = error.message
@@ -862,22 +875,29 @@ public final class BrowserModel {
         isLoadingHistory = true
         let generation = historyGeneration
         let key = PathHistoryKey(tip: tip, path: path)
+        let filter = CommitFilter(path: path)
         let target = history.count + Self.historyPageSize
         let chunk = Self.pathHistoryScanChunk
         while history.count < target, !historyComplete {
-            let skip = pathHistoryCache[key]?.scanned ?? 0
+            let start = pathHistoryCache[key]?.scanned ?? 0
             let remaining = target - history.count
+            let pager = pathPager.flatMap { open in
+                open.key == key && open.generation == generation ? open.pager : nil
+            }
             let result = await RepositoryError.run {
-                try repository.pathHistory(
-                    tip: tip, path: path, scanSkip: skip, limit: remaining,
-                    maxScan: chunk)
+                try HistoryPager.page(
+                    pager, repository: repository, tip: tip, filter: filter, from: start,
+                    limit: remaining, maxScan: chunk)
             }
             guard isCurrent(generation, historyGeneration, load: "history") else { return }
             switch result {
-            case let .success(page):
+            case let .success((pager, page)):
+                pathPager = (key, generation, pager)
+                // Released first, so the append extends the loaded pages in place.
+                pathHistoryCache[key] = nil
                 history += page.commits
                 historyComplete = page.complete
-                pathHistoryCache[key] = (history, skip + page.scanned, page.complete)
+                pathHistoryCache[key] = (history, start + page.scanned, page.complete)
                 onHistoryChanged?()
             case let .failure(error):
                 // Keep the commits already shown; the error stops paging. Not cached:
@@ -910,6 +930,7 @@ public final class BrowserModel {
     private func scopeHistory(to path: String) -> Bool {
         guard repository != nil, let tip = historyAnchor else { return false }
         historyGeneration += 1
+        pathPager = nil
         isLoadingHistory = false
         historyError = nil
         historyScope = .path(path)
@@ -961,6 +982,7 @@ public final class BrowserModel {
             filter.path = path
         }
         searchGeneration += 1
+        searchPager = nil
         searchFilter = filter
         searchResults = []
         searchScanned = 0
@@ -985,6 +1007,7 @@ public final class BrowserModel {
     /// Drops the active search; the plain history is still loaded and shows again at once.
     public func clearSearch() {
         searchGeneration += 1
+        searchPager = nil
         let hadSearch = searchFilter != nil
         searchFilter = nil
         searchResults = []
@@ -1025,16 +1048,18 @@ public final class BrowserModel {
         let generation = searchGeneration
         let chunk = Self.searchScanChunk
         while searchResults.count < target, !searchComplete {
-            let skip = searchScanned
+            let start = searchScanned
             let remaining = target - searchResults.count
+            let pager = searchPager
             let result = await RepositoryError.run {
-                try repository.searchCommits(
-                    tip: tip, filter: filter, scanSkip: skip, limit: remaining,
-                    maxScan: chunk)
+                try HistoryPager.page(
+                    pager, repository: repository, tip: tip, filter: filter, from: start,
+                    limit: remaining, maxScan: chunk)
             }
             guard isCurrent(generation, searchGeneration, load: "search") else { return }
             switch result {
-            case let .success(page):
+            case let .success((pager, page)):
+                searchPager = pager
                 searchResults += page.commits
                 searchScanned += page.scanned
                 searchComplete = page.complete
@@ -1054,6 +1079,7 @@ public final class BrowserModel {
 
     private func resetHistory(anchor: Oid?) {
         historyGeneration += 1
+        pathPager = nil
         isLoadingHistory = false
         historyError = nil
         historyAnchor = anchor

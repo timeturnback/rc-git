@@ -14,7 +14,8 @@ Measured with `rc-git --time` on a warm page cache, release build, Apple silicon
 | switch ref | under 1 ms | one object read to peel to a tree |
 | expand folder | under 1 ms per 1 000 entries | one tree object decode plus sort |
 | open text file | header read plus inflate | 1 MiB inflates in a few ms; no decode above the limit; UTF-8 validity and line starts computed once in the core, decode and line-start mapping run off the main actor |
-| log page | under 2 ms per 100 commits | walk plus commit decode; commit-graph speeds ancestry |
+| log page | under 2 ms per 100 commits, at any depth | a `LogCursor` resumes where the last page stopped, so a page costs its own 100 commits however deep it is: paging a 200 000-commit history in pages of 100 took 0.86 s against 0.77 s in one pass; commit-graph speeds ancestry |
+| path history, commit search | one pass over the history scanned, whatever the chunking | a `HistoryWalk` examines each commit once across all its pages: `rare.txt` touched only by the root of a 200 000-commit history took 0.85 s in 5 000-commit chunks against 0.87 s in one pass (30 s in chunks before the walk resumed); each page is capped at `max_scan` commits so it never holds a pool handle through a long scan |
 | tree diff | scales with the difference | unchanged subtrees share an id and are skipped whole |
 | blob diff | two blob reads plus the diff | sizes checked against the limit before decoding |
 | working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match and the index cannot vouch for the file |
@@ -34,8 +35,11 @@ refs. Everything else is on demand.
 - **Read the header before the body.** `blob_size` and `read_blob` check size from the object
   header; a 2 GiB blob costs a header read.
 - **One tree object per expand.** Never walk a subtree to answer a question about a folder.
-- **Never load the whole log.** `log(tip, skip, limit)` pages; the UI asks for the next page
-  when scrolled. Deep pages re-walk from the tip, so keep `skip` small and cache pages.
+- **Never load the whole log.** A `LogCursor` pages; the UI asks for the next page when
+  scrolled and keeps the cursor with the tip's cached pages, so returning to a tip resumes.
+  Filtered history pages through one `HistoryWalk` per scope or search. Only a cursor that
+  lost its place (a dropped stale page) is replaced, and the new one re-walks the pages
+  already shown once.
 - **Key every cache on an object id.** Content addressing makes invalidation unnecessary.
 - **Render only the viewport.** The text view lays out lazily; the ruler draws visible
   fragments from line starts precomputed with the document; syntax colors apply per visible
