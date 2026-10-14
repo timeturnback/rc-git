@@ -98,7 +98,7 @@ impl Repository {
                 let full_name = lossy(reference.name.as_bstr());
                 let exact_name = reference.name.as_bstr().to_str().is_ok();
                 let (kind, short_name) = classify(reference.name.as_ref());
-                match reference.peel_to_id_packed(&repo.refs, &repo.objects, packed) {
+                match peel(repo, &mut reference, packed) {
                     Ok(id) => listing.refs.push(RefEntry {
                         full_name,
                         short_name,
@@ -109,7 +109,7 @@ impl Repository {
                     Err(error) => {
                         listing.broken.push(BrokenRef {
                             full_name,
-                            error: cause_chain(&error),
+                            error: cause_chain(&*error),
                         });
                     }
                 }
@@ -190,6 +190,27 @@ impl Repository {
             Ok(None)
         })
     }
+}
+
+/// The object `reference` finally points to: the peeled id `packed-refs` recorded when it has
+/// one, else the target after following symbolic refs, with annotated tags peeled. Each ref
+/// costs one object header read; only a tag is read in full, once per level of nesting.
+///
+/// # Errors
+/// When a symbolic ref cannot be followed, or an object's header or a tag cannot be read.
+fn peel(
+    repo: &gix::Repository,
+    reference: &mut gix::refs::Reference,
+    packed: Option<&gix::refs::packed::Buffer>,
+) -> std::result::Result<gix::ObjectId, BoxError> {
+    if let Some(peeled) = reference.peeled {
+        return Ok(peeled);
+    }
+    let mut id = reference.follow_to_object_packed(&repo.refs, packed)?;
+    while repo.find_header(id)?.kind() == gix::object::Kind::Tag {
+        id = repo.find_object(id)?.try_into_tag()?.target_id()?.detach();
+    }
+    Ok(id)
 }
 
 /// The reference an iteration error is about, reported under its name relative to the git dir,

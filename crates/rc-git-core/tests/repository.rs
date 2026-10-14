@@ -588,6 +588,36 @@ fn a_corrupt_object_behind_a_ref_names_the_real_cause() {
     );
 }
 
+/// A loose object whose zlib stream declares a stored block of `declared` bytes but ends after
+/// `data`: the object header inflates, the full object does not.
+fn truncated_loose_object(data: &[u8], declared: u16) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01, 0x01];
+    out.extend_from_slice(&declared.to_le_bytes());
+    out.extend_from_slice(&(!declared).to_le_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+#[test]
+fn a_ref_whose_object_body_is_unreadable_still_lists_by_its_header() {
+    let fx = Fixture::standard();
+    let id = "ab".repeat(20);
+    fx.write(
+        &format!(".git/objects/{}/{}", &id[..2], &id[2..]),
+        &truncated_loose_object(b"commit 200\0tree ", 400),
+    );
+    fx.write(".git/refs/heads/truncated", format!("{id}\n").as_bytes());
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    assert_eq!(listing.broken, [], "only the header is read for a commit");
+    let truncated = listing
+        .refs
+        .iter()
+        .find(|r| r.full_name == "refs/heads/truncated")
+        .unwrap();
+    assert_eq!(truncated.target, oid(&id));
+}
+
 #[test]
 fn resolve_accepts_rev_parse_syntax() {
     let fx = Fixture::standard();

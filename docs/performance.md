@@ -93,5 +93,6 @@ numbers honest.
 - Cold page cache: the first open of a large pack pays for disk reads; nothing to do in code.
 - Long delta chains: a blob at the end of a chain inflates every base. gix caches bases per
   handle, which is why handles are pooled instead of created per call.
-- Annotated tags: `refs()` peels each one through the object database unless `packed-refs`
-  carries peeled entries, which `git pack-refs` writes.
+- Ref peeling: `refs()` costs one object header read per ref, to learn its kind, and an
+  annotated tag one full read per level of nesting. A tag whose `packed-refs` entry carries a
+  peeled line (`git pack-refs` writes them) costs neither.
