@@ -826,12 +826,21 @@ fn confirmation_problem(given: bool) -> &'static str {
 /// The object cache every guard handle gets: a merged check, tree plan or diff re-reads the
 /// same commits and trees, and an uncached handle decodes each one again per read.
 const OBJECT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+/// The delta-base cache every guard handle gets, the same bound core gives its handles.
+const PACK_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 fn open(repo_path: &Path, op: &'static str, name: &str) -> ActionResult<gix::Repository> {
     let mut repo = gix::ThreadSafeRepository::open_opts(repo_path, gix::open::Options::isolated())
         .map(|shared| shared.to_thread_local())
         .map_err(git_err(op, name))?;
-    repo.object_cache_size_if_unset(OBJECT_CACHE_BYTES);
+    // Set unconditionally: the repository's own config (`gitoxide.objects.cacheLimit`,
+    // `core.deltaBaseCacheLimit`) would otherwise size both caches, up to unbounded.
+    repo.object_cache_size(OBJECT_CACHE_BYTES);
+    repo.objects.set_pack_cache(|| {
+        Box::new(gix::odb::pack::cache::lru::MemoryCappedHashmap::new(
+            PACK_CACHE_BYTES,
+        ))
+    });
     rc_git_core::require_files_ref_storage(
         repo_path,
         repo.config_snapshot()
@@ -1333,5 +1342,22 @@ mod tests {
         let fx = rc_git_testkit::Fixture::standard();
         let repo = open(fx.path(), "delete branch", "feature").unwrap();
         assert!(repo.objects.has_object_cache());
+        assert!(repo.objects.has_pack_cache());
+    }
+
+    #[test]
+    fn the_repository_config_cannot_size_the_guard_handle_caches() {
+        let fx = rc_git_testkit::Fixture::standard();
+        fx.git(&["config", "core.deltaBaseCacheLimit", "0"]);
+        fx.git(&["config", "gitoxide.objects.cacheLimit", "0"]);
+        let repo = open(fx.path(), "delete branch", "feature").unwrap();
+        assert_eq!(
+            (
+                repo.objects.has_object_cache(),
+                repo.objects.has_pack_cache()
+            ),
+            (true, true),
+            "guard handle (object cache, delta-base cache)"
+        );
     }
 }
