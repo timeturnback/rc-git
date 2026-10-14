@@ -1426,17 +1426,6 @@ unsafe fn release<T>(ptr: *mut T) {
 // Exported functions.
 // ---------------------------------------------------------------------------------------------
 
-/// Version of the library, as a static string. Do not free.
-#[unsafe(no_mangle)]
-pub extern "C" fn rcgit_version() -> *const c_char {
-    const VERSION: &CStr =
-        match CStr::from_bytes_with_nul(concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes()) {
-            Ok(version) => version,
-            Err(_) => c"0.0.0",
-        };
-    VERSION.as_ptr()
-}
-
 /// Releases a string returned by any `rcgit_*` function or stored into an `error` parameter.
 ///
 /// # Safety
@@ -1691,60 +1680,6 @@ pub unsafe extern "C" fn rcgit_tree_list_free(list: *mut RcGitTreeList) {
     unsafe { release(list) };
 }
 
-/// Finds the entry at a `/`-separated `path` below `root`. Returns NULL with `*error` untouched
-/// when the path does not exist, NULL with `*error` set on failure. Release with
-/// `rcgit_tree_entry_free`.
-///
-/// # Safety
-/// `repo` came from `rcgit_repo_open`. `root` points to a readable `RcGitOid`. `path` is a
-/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_entry_at_path(
-    repo: *const RcGitRepo,
-    root: *const RcGitOid,
-    path: *const c_char,
-    error: *mut *mut c_char,
-) -> *mut RcGitTreeEntry {
-    const OP: &str = "rcgit_entry_at_path";
-    // SAFETY: forwarded from this function's contract.
-    let (repo, root, path, error) = unsafe {
-        (
-            repo_arg(repo),
-            oid_arg(root),
-            bytes_arg(path),
-            Out::new(error),
-        )
-    };
-    let Some(repo) = error.required(OP, "repo", repo) else {
-        return ptr::null_mut();
-    };
-    let Some(root) = error.valid(OP, "root", root) else {
-        return ptr::null_mut();
-    };
-    let Some(path) = error.required(OP, "path", path) else {
-        return ptr::null_mut();
-    };
-    let path = String::from_utf8_lossy(path);
-    match repo.entry_at_path(root, &path) {
-        Ok(Some(entry)) => export(RcGitTreeEntry::export(entry)),
-        Ok(None) => ptr::null_mut(),
-        Err(err) => {
-            error.report(err);
-            ptr::null_mut()
-        }
-    }
-}
-
-/// Releases a value from `rcgit_entry_at_path`.
-///
-/// # Safety
-/// `entry` is NULL or came from `rcgit_entry_at_path` and is not freed twice.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_tree_entry_free(entry: *mut RcGitTreeEntry) {
-    // SAFETY: forwarded from this function's contract.
-    unsafe { release(entry) };
-}
-
 /// Reads a blob for display, refusing to decode anything larger than `limit` bytes. `limit` is
 /// capped at 4 GiB so line offsets fit in 32 bits. Release with `rcgit_blob_free`.
 ///
@@ -1834,40 +1769,6 @@ fn export_blob(content: BlobContent, limit: u64) -> RcGitBlob {
 pub unsafe extern "C" fn rcgit_blob_free(blob: *mut RcGitBlob) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(blob) };
-}
-
-/// Size of a blob without decoding it. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
-///
-/// # Safety
-/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
-/// for writing a `uint64_t`. `error` is NULL or valid for writing a `char *`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_blob_size(
-    repo: *const RcGitRepo,
-    oid: *const RcGitOid,
-    out: *mut u64,
-    error: *mut *mut c_char,
-) -> i32 {
-    const OP: &str = "rcgit_blob_size";
-    // SAFETY: forwarded from this function's contract.
-    let (repo, oid, out, error) =
-        unsafe { (repo_arg(repo), oid_arg(oid), Out::new(out), Out::new(error)) };
-    let Some(repo) = error.required(OP, "repo", repo) else {
-        return RCGIT_ERROR;
-    };
-    let Some(oid) = error.valid(OP, "oid", oid) else {
-        return RCGIT_ERROR;
-    };
-    match repo.blob_size(oid) {
-        Ok(size) => {
-            out.set(size);
-            RCGIT_OK
-        }
-        Err(err) => {
-            error.report(err);
-            RCGIT_ERROR
-        }
-    }
 }
 
 /// A walk over the commits reachable from one tip, newest first, taken a page at a time.
@@ -4195,19 +4096,6 @@ fn finish_oid(
     }
 }
 
-/// Lowercase hexadecimal form of an id. Release with `rcgit_string_free`.
-///
-/// # Safety
-/// `oid` points to a readable `RcGitOid`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcgit_oid_hex(oid: *const RcGitOid) -> *mut c_char {
-    // SAFETY: forwarded from this function's contract.
-    let Ok(oid) = (unsafe { oid_arg(oid) }) else {
-        return ptr::null_mut();
-    };
-    export_string(oid.to_hex())
-}
-
 // ---------------------------------------------------------------------------------------------
 // Remote operations. Network I/O runs through rc-git-guard; credentials come from the
 // caller, so no credential helper is ever spawned.
@@ -4749,16 +4637,11 @@ mod tests {
     }
 
     fn hex(oid: &RcGitOid) -> String {
-        take_string(unsafe { rcgit_oid_hex(oid) })
+        oid.to_oid().unwrap().to_hex()
     }
 
     fn commit_id(hex: &str) -> RcGitOid {
         Oid::from_hex(hex).unwrap().into()
-    }
-
-    #[test]
-    fn version_is_static_and_matches_cargo() {
-        assert_eq!(text(rcgit_version()), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -4992,28 +4875,6 @@ mod tests {
         assert_eq!(hex(&entries[1].oid), fx.rev_parse("main:src"));
         unsafe { rcgit_tree_list_free(list) };
 
-        let path = CString::new("src/main.rs").unwrap();
-        let entry =
-            unsafe { rcgit_entry_at_path(repo, &raw const root, path.as_ptr(), &raw mut error) };
-        assert!(!entry.is_null(), "{}", take_error(&mut error));
-        assert!(error.is_null());
-        let entry_ref = unsafe { &*entry };
-        assert_eq!(text(entry_ref.name), "main.rs");
-        assert_eq!(entry_ref.kind, RcGitEntryKind::Blob);
-        assert_eq!(hex(&entry_ref.oid), fx.rev_parse("main:src/main.rs"));
-        unsafe { rcgit_tree_entry_free(entry) };
-
-        let missing = CString::new("nope").unwrap();
-        let entry =
-            unsafe { rcgit_entry_at_path(repo, &raw const root, missing.as_ptr(), &raw mut error) };
-        assert!(entry.is_null());
-        assert!(error.is_null(), "not found is not an error");
-
-        let entry =
-            unsafe { rcgit_entry_at_path(repo, ptr::null(), path.as_ptr(), &raw mut error) };
-        assert!(entry.is_null());
-        assert_eq!(take_error(&mut error), "rcgit_entry_at_path: root is NULL");
-
         let blob = resolve(repo, "main:README.md");
         let list = unsafe { rcgit_tree_entries(repo, &raw const blob, &raw mut error) };
         assert!(list.is_null());
@@ -5063,19 +4924,9 @@ mod tests {
         assert_eq!((blob_ref.size, blob_ref.limit), (README.len() as u64, 3));
         unsafe { rcgit_blob_free(blob) };
 
-        let mut size = 0;
-        let status =
-            unsafe { rcgit_blob_size(repo, &raw const readme, &raw mut size, &raw mut error) };
-        assert_eq!(status, RCGIT_OK);
-        assert_eq!(size, README.len() as u64);
-
         let tree = resolve(repo, "main^{tree}");
         let blob = unsafe { rcgit_blob_read(repo, &raw const tree, 1 << 20, &raw mut error) };
         assert!(blob.is_null());
-        assert!(take_error(&mut error).contains("expected a blob"));
-        let status =
-            unsafe { rcgit_blob_size(repo, &raw const tree, &raw mut size, &raw mut error) };
-        assert_eq!(status, RCGIT_ERROR);
         assert!(take_error(&mut error).contains("expected a blob"));
 
         let blob = unsafe { rcgit_blob_read(repo, ptr::null(), 1 << 20, &raw mut error) };
@@ -5493,7 +5344,6 @@ mod tests {
         let path = CString::new("README.md").unwrap();
         let spec = CString::new("main").unwrap();
         let mut out = RcGitOid::empty();
-        let mut size = 0;
         let mut error = ptr::null_mut();
         let null_repo = |op: &str, failed: bool, error: &mut *mut c_char| {
             assert!(failed, "{op} succeeded with a NULL repo");
@@ -5514,9 +5364,6 @@ mod tests {
         let read =
             unsafe { rcgit_blob_read(ptr::null(), &raw const blob, 1 << 20, &raw mut error) };
         null_repo("rcgit_blob_read", read.is_null(), &mut error);
-        let status =
-            unsafe { rcgit_blob_size(ptr::null(), &raw const blob, &raw mut size, &raw mut error) };
-        null_repo("rcgit_blob_size", status == RCGIT_ERROR, &mut error);
         let commit = unsafe { rcgit_commit(ptr::null(), &raw const tip, &raw mut error) };
         null_repo("rcgit_commit", commit.is_null(), &mut error);
         let log = unsafe { rcgit_log_cursor_new(ptr::null(), &raw const tip, &raw mut error) };
@@ -5581,7 +5428,6 @@ mod tests {
             rcgit_status_list_free,
             rcgit_string_free,
             rcgit_tree_change_list_free,
-            rcgit_tree_entry_free,
             rcgit_tree_list_free,
             rcgit_worktree_file_list_free,
             rcgit_worktree_list_free,
@@ -5595,7 +5441,6 @@ mod tests {
         for (_, free) in frees {
             free();
         }
-        assert!(unsafe { rcgit_oid_hex(ptr::null()) }.is_null());
     }
 
     #[test]

@@ -813,9 +813,6 @@ typedef struct RcGitPushOutcome {
 extern "C" {
 #endif // __cplusplus
 
-/// Version of the library, as a static string. Do not free.
-const char *rcgit_version(void);
-
 /// Releases a string returned by any `rcgit_*` function or stored into an `error` parameter.
 ///
 /// # Safety
@@ -902,24 +899,6 @@ struct RcGitTreeList *rcgit_tree_entries(const struct RcGitRepo *repo,
 /// `list` is NULL or came from `rcgit_tree_entries` and is not freed twice.
 void rcgit_tree_list_free(struct RcGitTreeList *list);
 
-/// Finds the entry at a `/`-separated `path` below `root`. Returns NULL with `*error` untouched
-/// when the path does not exist, NULL with `*error` set on failure. Release with
-/// `rcgit_tree_entry_free`.
-///
-/// # Safety
-/// `repo` came from `rcgit_repo_open`. `root` points to a readable `RcGitOid`. `path` is a
-/// NUL-terminated string. `error` is NULL or valid for writing a `char *`.
-struct RcGitTreeEntry *rcgit_entry_at_path(const struct RcGitRepo *repo,
-                                           const struct RcGitOid *root,
-                                           const char *path,
-                                           char **error);
-
-/// Releases a value from `rcgit_entry_at_path`.
-///
-/// # Safety
-/// `entry` is NULL or came from `rcgit_entry_at_path` and is not freed twice.
-void rcgit_tree_entry_free(struct RcGitTreeEntry *entry);
-
 /// Reads a blob for display, refusing to decode anything larger than `limit` bytes. `limit` is
 /// capped at 4 GiB so line offsets fit in 32 bits. Release with `rcgit_blob_free`.
 ///
@@ -936,16 +915,6 @@ struct RcGitBlob *rcgit_blob_read(const struct RcGitRepo *repo,
 /// # Safety
 /// `blob` is NULL or came from `rcgit_blob_read` and is not freed twice.
 void rcgit_blob_free(struct RcGitBlob *blob);
-
-/// Size of a blob without decoding it. Returns `RCGIT_OK` and fills `out`, or `RCGIT_ERROR`.
-///
-/// # Safety
-/// `repo` came from `rcgit_repo_open`. `oid` points to a readable `RcGitOid`. `out` is valid
-/// for writing a `uint64_t`. `error` is NULL or valid for writing a `char *`.
-int32_t rcgit_blob_size(const struct RcGitRepo *repo,
-                        const struct RcGitOid *oid,
-                        uint64_t *out,
-                        char **error);
 
 /// A cursor positioned before the newest commit reachable from `tip`; an annotated tag is
 /// followed to its commit. Release with `rcgit_log_cursor_free`.
@@ -1532,12 +1501,6 @@ int32_t rcgit_tree_of(const struct RcGitRepo *repo,
                       const struct RcGitOid *oid,
                       struct RcGitOid *out,
                       char **error);
-
-/// Lowercase hexadecimal form of an id. Release with `rcgit_string_free`.
-///
-/// # Safety
-/// `oid` points to a readable `RcGitOid`.
-char *rcgit_oid_hex(const struct RcGitOid *oid);
 
 /// The checked-out branch's upstream and ahead/behind counts. Local only, no network.
 /// Returns NULL on failure, with the message in `error`.

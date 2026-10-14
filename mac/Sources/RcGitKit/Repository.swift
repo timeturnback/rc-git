@@ -30,11 +30,6 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         rcgit_repo_free(handle)
     }
 
-    /// Version of the Rust library, for sanity checks.
-    public static var libraryVersion: String {
-        String(cString: rcgit_version())
-    }
-
     /// This worktree's git directory: `.git`, or `.git/worktrees/<name>` for a linked worktree.
     public var gitDirectory: String {
         RepositoryError.takeString(rcgit_repo_git_dir(handle)) ?? ""
@@ -149,17 +144,6 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         return entries
     }
 
-    /// The entry at a `/`-separated path below `root`, or `nil` when it does not exist.
-    public func entry(at path: String, under root: Oid) throws -> TreeEntry? {
-        var error: UnsafeMutablePointer<CChar>? = nil
-        guard let entry = root.withC({ rcgit_entry_at_path(handle, $0, path, &error) }) else {
-            if let error { throw RepositoryError.take(error, fallback: "cannot look up \(path)") }
-            return nil
-        }
-        defer { rcgit_tree_entry_free(entry) }
-        return TreeEntry(c: entry.pointee)
-    }
-
     public func readBlob(_ oid: Oid, limit: UInt64 = Repository.defaultBlobLimit) throws
         -> BlobContent
     {
@@ -169,17 +153,6 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
         }
         defer { rcgit_blob_free(blob) }
         return BlobContent(c: blob.pointee)
-    }
-
-    /// Size in bytes, from the object header, without decoding the content.
-    public func blobSize(_ oid: Oid) throws -> UInt64 {
-        var size: UInt64 = 0
-        var error: UnsafeMutablePointer<CChar>? = nil
-        let status = oid.withC { rcgit_blob_size(handle, $0, &size, &error) }
-        guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot size blob \(oid)")
-        }
-        return size
     }
 
     /// A cursor over the commits reachable from `tip`, newest first. Each `next` resumes

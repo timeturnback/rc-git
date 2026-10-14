@@ -129,7 +129,7 @@ them and Cargo dependencies weekly.
 
 ## Versions
 
-Rust crates share `workspace.package.version`; the FFI reports it through `rcgit_version`.
+Rust crates share `workspace.package.version`.
 
 The app's version needs no bump. `mac/Info.plist` carries the major and minor of
 `CFBundleShortVersionString`; `scripts/build-app.sh` replaces the patch with the commit

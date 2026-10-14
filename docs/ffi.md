@@ -17,7 +17,7 @@ in Swift value types.
 - A function that can fail takes `char **error`. On failure it returns `NULL` (or
   `RCGIT_ERROR`) and, when `error` is not `NULL`, stores a message to release with
   `rcgit_string_free`. On success `*error` is untouched, which is why the Swift side
-  distinguishes "not found" from "failed" for `rcgit_entry_at_path`.
+  distinguishes "not found" from "failed" for `rcgit_default_branch`.
 - Object ids cross as `RcGitOid`: 32 bytes plus a length, 20 for SHA-1.
 - An `RcGitRepo` may be used from any thread, including several at once.
 - Statuses: `RCGIT_OK` (0) and `RCGIT_ERROR` (-1) for functions that fill an out parameter.

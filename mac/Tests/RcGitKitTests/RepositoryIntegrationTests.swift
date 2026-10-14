@@ -5,10 +5,6 @@ import Testing
 
 /// Drives the real Rust core through the C ABI against a repository built with the git CLI.
 @Suite struct RepositoryIntegrationTests {
-    @Test func libraryVersionIsExposed() {
-        #expect(Repository.libraryVersion.split(separator: ".").count == 3)
-    }
-
     @Test func openingANonRepositoryThrowsWithThePath() throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
@@ -119,14 +115,9 @@ import Testing
         #expect(entries[0].kind == .tree)
         #expect(entries[4].kind == .symlink)
 
-        let mainRs = try #require(try repo.entry(at: "src/main.rs", under: root))
-        #expect(mainRs.kind == .blob)
-        #expect(try repo.entry(at: "nope", under: root) == nil)
-        #expect(throws: RepositoryError.self) {
-            try repo.entry(at: "src/main.rs", under: try repo.resolve("main"))
-        }
-        #expect(try repo.blobSize(mainRs.oid) == 34)
-        guard case let .text(data, lineStarts, validUTF8) = try repo.readBlob(mainRs.oid) else {
+        let mainRs = try repo.resolve("main:src/main.rs")
+        #expect(try mainRs.hex == fixture.revParse("main:src/main.rs"))
+        guard case let .text(data, lineStarts, validUTF8) = try repo.readBlob(mainRs) else {
             Issue.record("expected text")
             return
         }
@@ -134,10 +125,10 @@ import Testing
         #expect(lineStarts == [0, 12, 32])
         #expect(validUTF8)
 
-        let bin = try #require(try repo.entry(at: "bin.dat", under: root))
-        #expect(try repo.readBlob(bin.oid) == .binary(size: 12))
-        let readme = try #require(try repo.entry(at: "README.md", under: root))
-        #expect(try repo.readBlob(readme.oid, limit: 3) == .tooLarge(size: 17, limit: 3))
+        let bin = try repo.resolve("main:bin.dat")
+        #expect(try repo.readBlob(bin) == .binary(size: 12))
+        let readme = try repo.resolve("main:README.md")
+        #expect(try repo.readBlob(readme, limit: 3) == .tooLarge(size: 17, limit: 3))
 
         let tip = try repo.resolve("main")
         let commits = try repo.logCursor(tip: tip).next(limit: 100)
@@ -153,7 +144,7 @@ import Testing
         #expect(try cursor.next(limit: 5).isEmpty)
 
         #expect(throws: RepositoryError.self) { try repo.resolve("nope") }
-        #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs.oid) }
+        #expect(throws: RepositoryError.self) { try repo.treeEntries(mainRs) }
     }
 
     /// Names git stores as bytes that are not UTF-8 arrive flagged, so nothing sends their
@@ -314,10 +305,9 @@ import Testing
         #expect(hunks[0].lines == [DiffLine(kind: .added, text: "guide")])
         #expect((hunks[0].newStart, hunks[0].newLines) == (1, 1))
 
-        let root = try repo.resolveTree("main")
-        let bin = try #require(try repo.entry(at: "bin.dat", under: root))
+        let bin = try repo.resolve("main:bin.dat")
         #expect(
-            try repo.diffBlobs(old: bin.oid, new: guide.new) == .binary(oldSize: 12, newSize: 6))
+            try repo.diffBlobs(old: bin, new: guide.new) == .binary(oldSize: 12, newSize: 6))
         #expect(
             try repo.diffBlobs(old: guide.new, new: guide.new, limit: 2)
                 == .tooLarge(size: 6, limit: 2))
