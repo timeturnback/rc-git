@@ -2,9 +2,9 @@
     clippy::expect_used,
     reason = "test helpers outside #[test] functions may panic"
 )]
-//! Fetch and upstream-status against a real smart-HTTP server (`git http-backend`
-//! behind the test kit's loopback listener). The git CLI builds the fixtures; the
-//! guard is the only code under test that touches the network.
+//! Fetch, pull, push, and upstream status against real loopback servers: smart HTTP
+//! (`git http-backend` behind the test kit's listener) and the test kit's russh SSH server. The
+//! git CLI builds the fixtures; the guard is the only code under test that touches the network.
 
 use std::path::{Path, PathBuf};
 

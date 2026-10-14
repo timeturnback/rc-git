@@ -1,5 +1,5 @@
-//! The write path: branch and tag creation and deletion, gated by the policy, with backup
-//! refs proving the safety net works.
+//! The write path: branch and tag creation and deletion, commit and discard, stash, and checkout,
+//! each gated by the policy, with backup refs proving the safety net works.
 
 use rc_git_guard::actions::{
     ActionError, Author, Identity, create_branch, create_tag, delete_branch, delete_tag,
