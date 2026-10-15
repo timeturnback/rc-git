@@ -1512,6 +1512,27 @@ fn sync_fetches_pulls_and_pushes() {
 }
 
 #[test]
+fn sync_with_a_local_upstream_skips_the_push() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    fx.git(&["branch", "base", "main~1"]);
+    fx.git(&["config", "branch.main.remote", "."]);
+    fx.git(&["config", "branch.main.merge", "refs/heads/base"]);
+    let base_before = fx.rev_parse("base");
+
+    let out = rc_git(&["sync", path]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("fetch\t.\tup to date"), "{text}");
+    assert!(text.contains("pull\tmain\tup to date"), "{text}");
+    assert!(
+        text.contains("push\tmain\tlocal upstream, not pushed"),
+        "{text}"
+    );
+    assert_eq!(fx.rev_parse("base"), base_before);
+}
+
+#[test]
 fn sync_pushes_a_branch_the_remote_does_not_have_yet() {
     let (_origin, bare, _server, clone) = served_clone();
     clone.git(&["checkout", "-q", "-b", "newwork"]);

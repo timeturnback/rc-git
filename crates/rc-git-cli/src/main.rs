@@ -90,7 +90,9 @@ usage: rc-git [--time] <command> <repo> [args]
   fetch <repo> [remote options]           update remote-tracking refs from the upstream remote
   pull  <repo> [remote options]           fetch, then fast-forward the current branch
   push  <repo> [remote options]           upload the current branch to its upstream
-  sync  <repo> [remote options]           fetch, fast-forward, then push
+  sync  <repo> [remote options]           fetch, fast-forward, then push; a branch whose
+                                          upstream is a local branch (remote '.') is not
+                                          pushed: push<TAB>branch<TAB>local upstream, not pushed
   Remote options: --username U, --token T (HTTPS; the token may also come from
   RC_GIT_TOKEN, which keeps it out of process lists and is read only with --username
   or an HTTPS upstream), --accept-hostkey SHA256:... (trust this ssh host-key
@@ -1937,7 +1939,10 @@ fn sync_verb(
     write_fetch(out, &fetch)?;
     let pull = rc_git_guard::actions::pull_fast_forward(repo_path, &policy)?;
     write_pull(out, &pull)?;
-    if pull.unpublished || rc_git_guard::actions::upstream_status(repo_path)?.ahead > 0 {
+    let upstream = rc_git_guard::actions::upstream_status(repo_path)?;
+    if upstream.remote == "." {
+        writeln!(out, "push\t{}\tlocal upstream, not pushed", pull.branch)?;
+    } else if pull.unpublished || upstream.ahead > 0 {
         let push = rc_git_guard::actions::push_upstream(repo_path, &policy, remote.auth(), cancel)?;
         write_push(out, &push)?;
     } else {
