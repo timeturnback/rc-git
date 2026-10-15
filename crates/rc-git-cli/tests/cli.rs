@@ -368,7 +368,7 @@ fn resolve_prints_the_oid() {
     let err = stderr(&bad);
     assert_eq!(
         err,
-        "error: 'nope' is not a revision in this repository: couldn't parse revision: \"nope\": \
+        "error: 'nope' is not a revision in this repository: \
          The ref partially named \"nope\" could not be found\n"
     );
     assert_eq!(err.matches("could not be found").count(), 1);

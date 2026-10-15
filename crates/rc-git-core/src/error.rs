@@ -78,7 +78,7 @@ pub enum Error {
         source: BoxError,
     },
     /// A revision expression did not resolve.
-    #[error("'{spec}' is not a revision in this repository: {}", Causes(.source))]
+    #[error("'{spec}' is not a revision in this repository: {}", RootCause(.source))]
     RevSpec {
         /// The expression as given.
         spec: String,
@@ -137,6 +137,23 @@ struct Causes<'a>(&'a BoxError);
 impl fmt::Display for Causes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&cause_chain(&**self.0))
+    }
+}
+
+/// Renders only the deepest error below a cause, in alternate form.
+///
+/// gix's rev-parse wraps the plain reason ("Commit b29e6f5 has 1 ancestors ...") in frames
+/// named after its parser internals (`delegate.traverse(NthAncestor(9)) failed`), which mean
+/// nothing to a reader. The full chain stays reachable through `source()` for logging.
+struct RootCause<'a>(&'a BoxError);
+
+impl fmt::Display for RootCause<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut root: &(dyn std::error::Error + 'static) = &**self.0;
+        while let Some(next) = root.source() {
+            root = next;
+        }
+        write!(f, "{root:#}")
     }
 }
 
@@ -313,14 +330,39 @@ mod tests {
             text: "couldn't parse revision",
             source: Some(Box::new(repeat)),
         };
-        let err = Error::RevSpec {
-            spec: "nope".into(),
+        let err = Error::Git {
+            op: "resolve ref",
             source: Box::new(top),
         };
         assert_eq!(
             err.to_string(),
-            "'nope' is not a revision in this repository: couldn't parse revision: \
-             ref 'nope' could not be found"
+            "resolve ref: couldn't parse revision: ref 'nope' could not be found"
+        );
+    }
+
+    #[test]
+    fn revspec_shows_only_the_deepest_cause() {
+        let leaf = Frame {
+            text: "Commit b29e6f5 has 1 ancestors along the first parent",
+            source: None,
+        };
+        let top = Frame {
+            text: "delegate.traverse(NthAncestor(9)) failed",
+            source: Some(Box::new(leaf)),
+        };
+        let err = Error::RevSpec {
+            spec: "HEAD~9".into(),
+            source: Box::new(top),
+        };
+        assert_eq!(
+            err.to_string(),
+            "'HEAD~9' is not a revision in this repository: \
+             Commit b29e6f5 has 1 ancestors along the first parent"
+        );
+        let kept = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(
+            kept.as_deref(),
+            Some("delegate.traverse(NthAncestor(9)) failed, at /build/src/lib.rs:1")
         );
     }
 }

@@ -651,8 +651,36 @@ fn resolve_accepts_rev_parse_syntax() {
     let msg = err.to_string();
     assert!(msg.starts_with("'nope' is not a revision"), "{msg}");
     assert!(msg.contains("could not be found"), "{msg}");
-    assert!(msg.matches("couldn't parse revision").count() <= 1, "{msg}");
+    assert!(!msg.contains("couldn't parse revision"), "{msg}");
     assert_no_source_location(&msg);
+}
+
+#[test]
+fn resolve_errors_name_the_reason_without_parser_internals() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    for (spec, reason) in [
+        ("HEAD~99999", "ancestor number 99999 is out of range"),
+        ("HEAD^5", "parent number 5 is out of range"),
+        ("main:nope.txt", "Could not find path \"nope.txt\""),
+        ("v1.0^{blob}", "while trying to peel to blob"),
+    ] {
+        let err = repo.resolve(spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with(&format!("'{spec}' is not a revision in this repository: ")),
+            "{msg}"
+        );
+        assert!(msg.contains(reason), "{msg}");
+        for internal in ["delegate", "NthAncestor", "unknown navigation", "failed:"] {
+            assert!(!msg.contains(internal), "{internal} in {msg}");
+        }
+        assert_no_source_location(&msg);
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "gix cause kept for logging: {spec}"
+        );
+    }
 }
 
 #[test]

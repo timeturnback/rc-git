@@ -506,18 +506,22 @@ fn interruptible_cancel() -> Result<Cancel> {
 ///
 /// Core and guard errors already carry their cause in their message, and gix appends
 /// `, at <file>:<line>` unless formatted with `{:#}`, so a frame whose text the line already
-/// holds is skipped. Context causes such as a parse failure are kept.
+/// holds is skipped. Context causes such as a parse failure are kept. The chain stops at a
+/// core error: its message already says what it means to say about the gix frames below it,
+/// and a revision error deliberately leaves out gix's parser internals.
 fn error_line(err: &anyhow::Error) -> String {
     let mut line = String::new();
     for frame in err.chain() {
         let text = format!("{frame:#}");
-        if line.contains(&text) {
-            continue;
+        if !line.contains(&text) {
+            if !line.is_empty() {
+                line.push_str(": ");
+            }
+            line.push_str(&text);
         }
-        if !line.is_empty() {
-            line.push_str(": ");
+        if frame.is::<rc_git_core::Error>() {
+            break;
         }
-        line.push_str(&text);
     }
     line
 }
