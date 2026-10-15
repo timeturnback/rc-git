@@ -44,6 +44,14 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.map(\.listDepth) == [1])
     }
 
+    @Test func anUnderlineIndentedToCodeDepthIsText() {
+        for underline in ["---", "==="] {
+            let blocks = MarkdownDocument.parse("a\n    \(underline)\n").blocks
+            #expect(blocks.map(\.kind) == [.paragraph], "\(underline)")
+            #expect(blocks.first.map { plain($0.runs) } == "a \(underline)", "\(underline)")
+        }
+    }
+
     @Test func softBreaksFoldAndTrailingSpacesKeepTheBreak() throws {
         let blocks = MarkdownDocument.parse("one\ntwo\n\nthree  \nfour\n").blocks
         try #require(blocks.count == 2)
@@ -162,6 +170,13 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(blocks.count == 1)
         #expect(blocks.first?.quoteDepth == 1)
         #expect(blocks.first.map { plain($0.runs) } == "quote continued")
+    }
+
+    @Test func aLazyEqualsLineIsTextNotAnUnderline() {
+        let blocks = MarkdownDocument.parse("> foo\n===\n").blocks
+        #expect(blocks.map(\.kind) == [.paragraph])
+        #expect(blocks.map(\.quoteDepth) == [1])
+        #expect(blocks.first.map { plain($0.runs) } == "foo ===")
     }
 
     @Test func anUnmarkedBlockStartLeavesTheQuote() {
@@ -588,6 +603,15 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         let source = "```md\n```js\n[ref]: https://sample.example\n```\n\n[docs][ref]\n"
         let nested = MarkdownDocument.parse(source)
         #expect(nested.blocks.last?.runs.first?.link == nil)
+    }
+
+    @Test func aDefinitionInsideAListItemResolves() {
+        let blocks = MarkdownDocument.parse("- item\n\n    [a]: /x\n\n[a]\n").blocks
+        #expect(blocks.last?.runs.first?.link?.destination == "/x")
+        let marker = MarkdownDocument.parse("- [b]: /y\n\n[b]\n").blocks
+        #expect(marker.last?.runs.first?.link?.destination == "/y")
+        let code = MarkdownDocument.parse("- item\n\n        [c]: /z\n\n[c]\n").blocks
+        #expect(code.last?.runs.first?.link == nil)
     }
 
     @Test func theFirstDefinitionOfALabelWins() {

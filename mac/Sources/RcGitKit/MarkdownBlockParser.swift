@@ -220,10 +220,10 @@ struct MarkdownBlockParser {
     /// Handles a line belonging to the paragraph already open: a setext underline that retitles
     /// it, a table delimiter that turns it into a table, or one more line of prose. An underline
     /// left of the open list item's content is no part of the item, as in CommonMark: `---`
-    /// there ends the list as a thematic break.
+    /// there ends the list as a thematic break. One indented to code depth is only more text.
     private mutating func continuePending(body: Range<Int>, indent: Int) -> Bool {
         if let level = setextLevel(body), pending?.kind == .paragraph,
-            indent >= (listIndents.last ?? 0)
+            indent >= (listIndents.last ?? 0), indent < codeIndent
         {
             retitlePending(level: level)
             index += 1
@@ -244,9 +244,11 @@ struct MarkdownBlockParser {
 
     /// True when a line with fewer `>` markers than the open quote is a lazy continuation of the
     /// quoted paragraph, as CommonMark and GitHub read a wrapped quote line written without `>`.
+    /// A setext underline cannot be lazy, so `===` there is text; `---` is a rule, which
+    /// `startsBlock` already refuses.
     private func continuesQuotedParagraphLazily(_ body: Range<Int>) -> Bool {
         guard pending?.kind == .paragraph else { return false }
-        return !startsBlock(body) && setextLevel(body) == nil && !isTableDelimiter(body)
+        return !startsBlock(body) && !isTableDelimiter(body)
     }
 
     /// The indent at which a line outside a paragraph is indented code, whatever it starts with.
@@ -607,13 +609,22 @@ extension MarkdownBlockParser {
         index = cursor + 1
     }
 
+    /// What `collectReferences` tracks between lines: the open paragraph, quote and list items.
+    private struct ReferenceScan {
+        var inParagraph = false
+        var quoteDepth = 0
+        /// Content indents of the list items open, as the main pass keeps them.
+        var listIndents: [Int] = []
+    }
+
     /// Collects `[label]: target` definitions before the main pass, because a reference may be
     /// used above the line that defines it. Fenced and indented code is skipped so a sample
     /// cannot define one, and so is a line that continues a paragraph, which the main pass
-    /// shows as text.
+    /// shows as text. List items are followed as the main pass follows them, so a definition
+    /// indented under an item counts and code depth is measured from the item's content.
     private mutating func collectReferences() {
         var fence: (marker: UInt8, count: Int, depth: Int)?
-        var inParagraph = false
+        var scan = ReferenceScan()
         for line in lines {
             if let open = fence, let rest = fenceBodyLine(line, depth: open.depth) {
                 if closesFence(trimmedStart(of: rest), opening: (open.marker, open.count)) {
@@ -623,25 +634,62 @@ extension MarkdownBlockParser {
             }
             fence = nil
             let (depth, rest) = strippingQuotes(line)
-            let body = trimmedStart(of: rest)
-            if body.isEmpty {
-                inParagraph = false
-                continue
-            }
-            if indentWidth(of: rest) >= 4 { continue }
+            guard let body = referenceScanBody(rest, depth: depth, scan: &scan) else { continue }
             if let opening = fenceInfo(body) {
                 fence = (opening.marker, opening.count, depth)
-                inParagraph = false
+                scan.inParagraph = false
                 continue
             }
-            if !inParagraph, let definition = referenceDefinition(body) {
+            if !scan.inParagraph, let definition = referenceDefinition(body) {
                 if references[definition.label] == nil {
                     references[definition.label] = definition.link
                 }
                 continue
             }
-            inParagraph = atxLevel(body) == nil && !isThematicBreak(body)
+            scan.inParagraph = atxLevel(body) == nil && !isThematicBreak(body)
         }
+    }
+
+    /// The line's content for `collectReferences`, past the list markers that open items, or nil
+    /// when nothing on it can define a reference: a blank line, indented code, or a bare marker.
+    private func referenceScanBody(
+        _ rest: Range<Int>, depth: Int, scan: inout ReferenceScan
+    ) -> Range<Int>? {
+        let body = trimmedStart(of: rest)
+        if body.isEmpty {
+            scan.inParagraph = false
+            return nil
+        }
+        let indent = indentWidth(of: rest)
+        let codeIndent = (scan.listIndents.last ?? 0) + 4
+        if scan.inParagraph, depth <= scan.quoteDepth, indent >= codeIndent || !startsBlock(body) {
+            return body
+        }
+        scan.inParagraph = false
+        if depth != scan.quoteDepth {
+            scan.listIndents.removeAll()
+            scan.quoteDepth = depth
+        }
+        while let last = scan.listIndents.last, indent < last { scan.listIndents.removeLast() }
+        return readingListMarkers(body, indent: indent, listIndents: &scan.listIndents)
+    }
+
+    /// Opens an item for each list marker leading `body`, as `dispatch` does, and returns what
+    /// follows them; nil when the rest is indented code or empty.
+    private func readingListMarkers(
+        _ body: Range<Int>, indent: Int, listIndents: inout [Int]
+    ) -> Range<Int>? {
+        var (body, indent) = (body, indent)
+        while indent < (listIndents.last ?? 0) + 4 {
+            guard !isThematicBreak(body), listIndents.count < Self.maximumListDepth,
+                let item = listItem(body, indent: indent)
+            else { return body }
+            listIndents.append(item.contentIndent)
+            body = trimmedStart(of: item.rest)
+            indent = item.contentIndent
+            if body.isEmpty { return nil }
+        }
+        return nil
     }
 
     /// The line with the fence's `depth` quote markers removed, or nil when it has fewer: the
