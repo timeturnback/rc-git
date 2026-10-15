@@ -780,6 +780,9 @@ typedef struct RcGitRemoteStatus {
   /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
   /// `behind` are then 0.
   bool has_upstream;
+  /// Whether the tracking ref exists, so `ahead` and `behind` were counted. False for a
+  /// never-pushed branch, a URL upstream, and without an upstream.
+  bool published;
   /// Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
   /// rather than an HTTPS token. False without an upstream.
   bool uses_ssh;

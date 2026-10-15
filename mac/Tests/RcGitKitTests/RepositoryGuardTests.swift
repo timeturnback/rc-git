@@ -378,8 +378,14 @@ import Testing
         #expect(status.url == "https://example.com:8443/repo.git")
         #expect(!status.usesSsh)
         // The fixture's refs/remotes/origin/main sits at HEAD, so nothing is ahead or behind.
+        #expect(status.published)
         #expect(status.ahead == 0)
         #expect(status.behind == 0)
+
+        try fixture.git(["checkout", "-q", "-b", "never-pushed"])
+        status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
+        #expect(status.hasUpstream, "origin is the fallback upstream")
+        #expect(!status.published, "refs/remotes/origin/never-pushed does not exist")
     }
 
     /// Points `main` at an unreachable origin; the tests below never touch the network.

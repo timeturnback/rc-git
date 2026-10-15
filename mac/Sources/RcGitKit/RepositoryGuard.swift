@@ -477,6 +477,9 @@ public struct RemoteStatus: Sendable, Hashable {
     /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
     /// `behind` are then 0.
     public let hasUpstream: Bool
+    /// Whether the tracking ref exists, so `ahead` and `behind` were counted. False for a
+    /// never-pushed branch, which reads 0 ahead without being in step.
+    public let published: Bool
     /// Whether the upstream is an ssh remote, as the guard parsed it. `url` cannot say:
     /// with the user removed, an scp-like `git@host:path` displays as `host:path`.
     public let usesSsh: Bool
@@ -666,6 +669,7 @@ extension RepositoryGuard {
             ahead: value.ahead,
             behind: value.behind,
             hasUpstream: value.has_upstream,
+            published: value.published,
             usesSsh: value.uses_ssh
         )
     }

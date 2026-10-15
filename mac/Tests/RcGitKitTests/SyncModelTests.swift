@@ -41,7 +41,8 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     }
 
     static func upstream(
-        host: String = "example.com", remote: String = "origin", ahead: Int = 0, behind: Int = 0
+        host: String = "example.com", remote: String = "origin", ahead: Int = 0, behind: Int = 0,
+        published: Bool = true
     ) -> RemoteStatus {
         RemoteStatus(
             remote: remote,
@@ -51,6 +52,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
             ahead: ahead,
             behind: behind,
             hasUpstream: true,
+            published: published,
             usesSsh: false
         )
     }
@@ -837,7 +839,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     @Test func noUpstreamFailsFastWithoutNetwork() async {
         let status = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         let (model, performer, _) = model(.init(preflights: [status]))
         await model.refreshStatus()
         await model.sync()
@@ -911,6 +913,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
             ahead: 0,
             behind: 0,
             hasUpstream: true,
+            published: true,
             usesSsh: true
         )
     }
@@ -1126,7 +1129,8 @@ private let switchedWithoutReflog = CheckoutOutcome(
         let store = InMemoryCredentialStore(["example.com": httpsToken])
         let scpLike = RemoteStatus(
             remote: "origin", url: "example.com:x/y.git", host: "example.com",
-            branch: "main", ahead: 0, behind: 0, hasUpstream: true, usesSsh: true)
+            branch: "main", ahead: 0, behind: 0, hasUpstream: true, published: true,
+            usesSsh: true)
         let (model, performer, _) = model(
             .init(
                 preflights: [scpLike],
@@ -1550,7 +1554,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     @Test func theBranchSwitchedToWithoutAnUpstreamStopsBeforeTheFetch() async {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         let (model, performer, _) = model(
             .init(
                 preflights: [StubSyncPerformer.upstream(), noUpstream],
@@ -1750,7 +1754,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     @Test func aCachedMissingUpstreamDoesNotRefuseOnceOneIsConfigured() async {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         let (model, performer, _) = model(
             .init(
                 preflights: [noUpstream, StubSyncPerformer.upstream()],
@@ -1824,7 +1828,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     @Test func remoteControlsNeedAKnownUpstreamAndAnIdleModel() {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         let upstream = StubSyncPerformer.upstream()
         #expect(remoteControls(availability(upstream)) == true)
         #expect(remoteControls(availability(nil)) == false, "no status read yet")
@@ -1840,7 +1844,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     @Test func backToDefaultNeedsAnIdleCheckoutButNoUpstream() {
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "topic",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         #expect(availability(noUpstream).canBackToDefault)
         #expect(availability(nil).canBackToDefault, "the switch needs no status read")
         #expect(!availability(nil, hasWorkingTree: false).canBackToDefault, "a bare repository")
@@ -1852,7 +1856,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
         let upstream = StubSyncPerformer.upstream()
         let noUpstream = RemoteStatus(
             remote: "", url: "", host: "", branch: "main",
-            ahead: 0, behind: 0, hasUpstream: false, usesSsh: false)
+            ahead: 0, behind: 0, hasUpstream: false, published: false, usesSsh: false)
         #expect(availability(upstream).syncButtonEnabled)
         #expect(!availability(noUpstream).syncButtonEnabled, "agrees with the Sync menu item")
         #expect(!availability(nil).syncButtonEnabled)
@@ -1876,6 +1880,11 @@ private let switchedWithoutReflog = CheckoutOutcome(
             SyncTitles.idleSyncTooltip(
                 status: StubSyncPerformer.upstream(ahead: 2, behind: 3), error: nil)
                 == "Sync — 2 to push, 3 to pull")
+        #expect(
+            SyncTitles.idleSyncTooltip(
+                status: StubSyncPerformer.upstream(published: false), error: nil)
+                == "Sync — not published",
+            "a never-pushed branch is not up to date")
         #expect(
             SyncTitles.idleSyncTooltip(status: nil, error: "HEAD is detached")
                 == "Sync — couldn't read upstream status: HEAD is detached")

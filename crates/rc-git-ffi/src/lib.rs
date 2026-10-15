@@ -4134,6 +4134,9 @@ pub struct RcGitRemoteStatus {
     /// else `origin` when it exists. True even before a tracking ref exists; `ahead` and
     /// `behind` are then 0.
     pub has_upstream: bool,
+    /// Whether the tracking ref exists, so `ahead` and `behind` were counted. False for a
+    /// never-pushed branch, a URL upstream, and without an upstream.
+    pub published: bool,
     /// Whether the remote is ssh (`ssh://` or scp-like), so it takes a key passphrase
     /// rather than an HTTPS token. False without an upstream.
     pub uses_ssh: bool,
@@ -4332,6 +4335,7 @@ pub unsafe extern "C" fn rcgit_guard_remote_preflight(
             ahead: status.ahead,
             behind: status.behind,
             has_upstream: status.has_upstream,
+            published: status.published,
             uses_ssh: status.uses_ssh,
         }),
         Err(err) => {
@@ -5982,6 +5986,7 @@ mod tests {
         assert!(!status.is_null(), "{}", take_error(&mut error));
         let status_ref = unsafe { &*status };
         assert!(!status_ref.has_upstream);
+        assert!(!status_ref.published);
         assert_eq!(text(status_ref.branch), "main");
         unsafe { rcgit_remote_status_free(status) };
 
@@ -6002,6 +6007,7 @@ mod tests {
         let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
         assert!(!status.is_null(), "{}", take_error(&mut error));
         let status_ref = unsafe { &*status };
+        assert!(status_ref.published);
         assert_eq!((status_ref.ahead, status_ref.behind), (1, 0));
         unsafe { rcgit_remote_status_free(status) };
 
@@ -6019,6 +6025,18 @@ mod tests {
         let status_ref = unsafe { &*status };
         assert!(status_ref.uses_ssh);
         assert_eq!(text(status_ref.url), "example.com:x/y.git");
+        unsafe { rcgit_remote_status_free(status) };
+
+        fx.git(&["checkout", "-b", "never-pushed"]);
+        let status = unsafe { rcgit_guard_remote_preflight(path.as_ptr(), &raw mut error) };
+        assert!(!status.is_null(), "{}", take_error(&mut error));
+        let status_ref = unsafe { &*status };
+        assert!(status_ref.has_upstream, "origin is the fallback upstream");
+        assert!(
+            !status_ref.published,
+            "refs/remotes/origin/never-pushed does not exist"
+        );
+        assert_eq!((status_ref.ahead, status_ref.behind), (0, 0));
         unsafe { rcgit_remote_status_free(status) };
 
         let status = unsafe { rcgit_guard_remote_preflight(ptr::null(), &raw mut error) };

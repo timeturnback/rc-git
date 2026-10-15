@@ -73,6 +73,7 @@ fn upstream_status_reports_no_upstream_without_a_remote() {
     let fixture = Fixture::standard();
     let status = upstream_status(fixture.path()).expect("status");
     assert!(!status.has_upstream);
+    assert!(!status.published);
     assert_eq!(status.branch, "main");
 }
 
@@ -84,6 +85,7 @@ fn upstream_status_reads_the_clone_configuration_and_counts() {
     assert_eq!(status.branch, "main");
     assert_eq!(status.remote, "origin");
     assert_eq!(status.upstream_ref, "refs/remotes/origin/main");
+    assert!(status.published);
     assert!(
         status.url.starts_with("http://127.0.0.1:"),
         "{}",
@@ -98,6 +100,23 @@ fn upstream_status_reads_the_clone_configuration_and_counts() {
         .commit("Local work", "2024-03-02T00:00:00+0000");
     let status = upstream_status(remoted.clone.path()).expect("status");
     assert_eq!((status.ahead, status.behind), (1, 0));
+}
+
+#[test]
+fn upstream_status_reports_a_never_pushed_branch_as_unpublished() {
+    let remoted = remoted();
+    remoted.clone.git(&["checkout", "-b", "topic"]);
+    remoted.clone.write("topic.txt", b"topic\n");
+    remoted
+        .clone
+        .commit("Topic work", "2024-03-02T00:00:00+0000");
+    let status = upstream_status(remoted.clone.path()).expect("status");
+    assert!(status.has_upstream, "origin is the fallback upstream");
+    assert!(
+        !status.published,
+        "refs/remotes/origin/topic does not exist"
+    );
+    assert_eq!((status.ahead, status.behind), (0, 0));
 }
 
 #[test]

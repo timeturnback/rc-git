@@ -168,7 +168,8 @@ impl std::fmt::Debug for Credentials {
 
 /// Where the checked-out branch pushes and pulls, and how far apart the sides are.
 /// `ahead`/`behind` compare the branch against its remote-tracking ref as of the last
-/// fetch; both are 0 when the tracking ref does not exist yet.
+/// fetch; both are 0 when the tracking ref does not exist yet, which `published` tells apart
+/// from a branch that is in step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// Short name of the checked-out branch.
@@ -192,6 +193,10 @@ pub struct UpstreamStatus {
     /// with a fetch URL from `branch.<name>.remote`, else `origin` when it exists. True even
     /// before a tracking ref exists; `ahead` and `behind` are then 0.
     pub has_upstream: bool,
+    /// Whether the tracking ref (or the local branch a local upstream names) exists, so
+    /// `ahead` and `behind` were counted. False for a never-pushed branch, a URL upstream,
+    /// and without an upstream.
+    pub published: bool,
     /// Whether the remote URL parses as ssh (`ssh://` or scp-like `user@host:path`), the
     /// transport that takes a key passphrase rather than an HTTPS token. False without an
     /// upstream. Read from the parsed scheme, since `url` drops the user an scp-like
@@ -219,15 +224,16 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
             ahead: 0,
             behind: 0,
             has_upstream: false,
+            published: false,
             uses_ssh: false,
         });
     };
     let upstream_ref = tracking_ref_name(&repo, &branch, OP)?.and_then(|tracking| tracking.name);
-    let (ahead, behind) = match (&upstream_ref, head_id) {
-        (Some(upstream_ref), Some(head_id)) => match peel_ref(&repo, upstream_ref) {
-            Some(upstream_id) => count_ahead_behind(&repo, head_id, upstream_id, OP)?,
-            None => (0, 0),
-        },
+    let upstream_id = upstream_ref
+        .as_deref()
+        .and_then(|name| peel_ref(&repo, name));
+    let (ahead, behind) = match (upstream_id, head_id) {
+        (Some(upstream_id), Some(head_id)) => count_ahead_behind(&repo, head_id, upstream_id, OP)?,
         (Some(_) | None, Some(_) | None) => (0, 0),
     };
     let url = upstream.url();
@@ -241,6 +247,7 @@ pub fn upstream_status(repo_path: &Path) -> ActionResult<UpstreamStatus> {
         ahead,
         behind,
         has_upstream: true,
+        published: upstream_id.is_some(),
     })
 }
 

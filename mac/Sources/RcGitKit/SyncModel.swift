@@ -116,12 +116,16 @@ public enum SyncTitles {
     }
 
     /// "Sync — 2 to push, 3 to pull" while idle, from the last preflight; when the last read
-    /// failed, says so with the cause rather than repeating an older answer.
+    /// failed, says so with the cause rather than repeating an older answer. A branch the
+    /// upstream has never seen reads "not published", since its 0 ahead counts nothing.
     public static func idleSyncTooltip(status: RemoteStatus?, error: String?) -> String {
         if let error {
             return "Sync — couldn't read upstream status: \(error)"
         }
         guard let status, status.hasUpstream else { return "Sync" }
+        if !status.published {
+            return "Sync — not published"
+        }
         if status.ahead == 0 && status.behind == 0 {
             return "Sync — up to date"
         }
