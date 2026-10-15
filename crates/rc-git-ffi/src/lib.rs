@@ -4192,7 +4192,7 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
             hostkey.set(export_string(key.clone()));
             RCGIT_PASSPHRASE_REQUIRED
         }
-        ActionError::Diverged { .. } => RCGIT_DIVERGED,
+        ActionError::Diverged { .. } | ActionError::PushRejected { .. } => RCGIT_DIVERGED,
         ActionError::UnknownHostKey {
             key_type,
             fingerprint,
@@ -4213,7 +4213,6 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
         | ActionError::HostKeyMismatch { .. }
         | ActionError::HostKeyRevoked { .. }
         | ActionError::AgentSignRefused { .. }
-        | ActionError::PushRejected { .. }
         | ActionError::NoUpstream { .. }
         | ActionError::UpstreamGone { .. }
         | ActionError::InvalidIdentity { .. }
@@ -4505,8 +4504,8 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
 
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
 /// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
-/// `RCGIT_OK`, `RCGIT_ERROR` (also when the remote has commits the branch lacks: the
-/// message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
+/// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_DIVERGED` (the remote has commits the branch lacks:
+/// the message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
 /// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
 /// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
 ///
@@ -6341,7 +6340,7 @@ mod tests {
         assert_eq!(code, RCGIT_OK, "{message}");
     }
 
-    fn push_behind_a_moved_remote_maps_to_error_not_diverged() {
+    fn push_behind_a_moved_remote_maps_to_diverged() {
         let origin = Fixture::standard();
         let (_bare, bare_path) = origin.bare_copy();
         let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
@@ -6370,7 +6369,7 @@ mod tests {
             )
         };
         let message = take_error(&mut error);
-        assert_eq!(code, RCGIT_ERROR, "{message}");
+        assert_eq!(code, RCGIT_DIVERGED, "{message}");
         assert!(message.contains("fetch and pull first"), "{message}");
     }
 
@@ -6451,7 +6450,7 @@ mod tests {
     fn remote_failures_map_to_auth_and_diverged_statuses() {
         anonymous_fetch_from_an_auth_server_maps_to_auth_required();
         encrypted_ssh_key_maps_to_passphrase_required_until_the_passphrase_is_given();
-        push_behind_a_moved_remote_maps_to_error_not_diverged();
+        push_behind_a_moved_remote_maps_to_diverged();
     }
 
     #[test]

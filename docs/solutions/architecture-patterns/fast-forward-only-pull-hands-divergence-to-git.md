@@ -114,10 +114,9 @@ What the diverged sheet does now:
   message and the command with Copy Command, Open in Terminal (copies, then opens
   `com.apple.Terminal` in the checkout through `NSWorkspace.open(_:withApplicationAt:configuration:)`),
   and Close on Escape. A bare repository has no checkout to pull into and keeps the plain
-  message. Only a diverged pull reaches this sheet: `finish_remote` in `crates/rc-git-ffi`
-  maps `ActionError::Diverged` to `RCGIT_DIVERGED` and a rejected push
-  (`ActionError::PushRejected`) to `RCGIT_ERROR`, so a push the remote refuses shows the
-  remote's own message as a plain error.
+  message. A diverged pull and a rejected push both reach this sheet: `finish_remote` in
+  `crates/rc-git-ffi` maps `ActionError::Diverged` and `ActionError::PushRejected` to
+  `RCGIT_DIVERGED`, matching the CLI, which exits with its diverged code for both.
 - The updater's `sync()` names the same command when the rc-git checkout diverges
   (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift:282`).
 
