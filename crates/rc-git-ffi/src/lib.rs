@@ -746,8 +746,9 @@ pub struct RcGitBlameRange {
     pub start_line: u32,
     /// Number of lines in the run.
     pub line_count: u32,
-    /// The walk stopped at the `since` floor before finding where these lines came from:
-    /// `commit` is the first commit older than the floor, and the lines are at least that old.
+    /// The walk stopped before finding where these lines came from: `commit` is the first
+    /// commit older than the `since` floor, or a shallow clone's boundary commit, and the lines
+    /// are at least that old.
     pub boundary: bool,
 }
 

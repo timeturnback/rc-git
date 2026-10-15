@@ -36,9 +36,10 @@ pub struct BlameRange {
     pub start_line: u32,
     /// Number of lines in the run.
     pub line_count: u32,
-    /// The walk stopped at the caller's `since` floor before finding where these lines came
-    /// from: `commit` is the first commit older than the floor, and the lines are at least that
-    /// old — git's `^` marker. Never set without a floor.
+    /// The walk stopped before finding where these lines came from — git's `^` marker. Either
+    /// `commit` is the first commit older than the caller's `since` floor, or it is a shallow
+    /// clone's boundary commit, whose parents the clone does not have; the lines are at least
+    /// that old.
     pub boundary: bool,
 }
 
@@ -58,7 +59,8 @@ impl Repository {
     /// walk runs to the floor while holding a pool handle; a real cancel needs upstream support.
     ///
     /// In a shallow clone the walk stops at the boundary, like `git blame`: a boundary commit
-    /// is judged like a root and keeps every line still unattributed when the walk reaches it.
+    /// is judged like a root and keeps every line still unattributed when the walk reaches it,
+    /// as [`BlameRange::boundary`] ranges.
     ///
     /// Renames are followed, as `git blame` does: when a commit adds `path`, its parent is
     /// searched for the file it was renamed from (default similarity, no copies), and the walk
@@ -121,27 +123,30 @@ impl Repository {
                 let culprit = odb.missing.get().map_or(tip, Oid::from_gix);
                 object("blame file", culprit)(source)
             })?;
-            to_ranges(repo, outcome.entries, since).map(Blame::Ranges)
+            to_ranges(repo, outcome.entries, since, &odb).map(Blame::Ranges)
         })
     }
 }
 
-/// The walk's entries as ranges ordered by line number. With a floor, a range whose commit is
-/// older than it is a boundary: gix-blame only attributes lines to such a commit when it stops
-/// there, since it never diffs one. Each distinct commit's time is read once.
+/// The walk's entries as ranges ordered by line number. A range whose commit is a shallow
+/// boundary in `odb` is a boundary, and so, with a floor, is one whose commit is older than it:
+/// gix-blame only attributes lines to such a commit when it stops there, since it never diffs
+/// one. Each distinct commit's time is read once.
 fn to_ranges(
     repo: &gix::Repository,
     entries: Vec<gix::blame::BlameEntry>,
     since: Option<i64>,
+    odb: &ShallowCut<'_>,
 ) -> Result<Vec<BlameRange>> {
     let mut older: HashMap<ObjectId, bool> = HashMap::new();
     let mut ranges: Vec<BlameRange> = Vec::with_capacity(entries.len());
     for entry in entries {
         let commit = Oid::from_gix(entry.commit_id);
-        let boundary = since
-            .map(|floor| is_older(repo, &mut older, commit, floor))
-            .transpose()?
-            .unwrap_or(false);
+        let boundary = odb.is_boundary(&entry.commit_id)
+            || since
+                .map(|floor| is_older(repo, &mut older, commit, floor))
+                .transpose()?
+                .unwrap_or(false);
         ranges.push(BlameRange {
             commit,
             start_line: entry.start_in_blamed_file + 1,

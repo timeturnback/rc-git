@@ -778,6 +778,28 @@ fn blame_stops_at_the_shallow_boundary() {
         [boundary, boundary, tip],
         "the boundary keeps the lines older than the clone, as `git blame` does"
     );
+    let marks: Vec<(Oid, bool)> = ranges
+        .iter()
+        .map(|range| (range.commit, range.boundary))
+        .collect();
+    assert_eq!(
+        marks,
+        [(boundary, true), (tip, false)],
+        "the boundary's lines are marked, as `git blame` prefixes them with `^`"
+    );
+    let git_marks: Vec<bool> = clone
+        .git_output(&["blame", "-s", "a.txt"])
+        .lines()
+        .map(|line| line.starts_with('^'))
+        .collect();
+    let our_marks: Vec<bool> = ranges
+        .iter()
+        .flat_map(|range| std::iter::repeat_n(range.boundary, range.line_count as usize))
+        .collect();
+    assert_eq!(
+        our_marks, git_marks,
+        "the same lines carry `^` in `git blame`"
+    );
 }
 
 /// Seconds since the Unix epoch of `2024-01-02T00:00:00+0000`, when `append_fixture` commits
