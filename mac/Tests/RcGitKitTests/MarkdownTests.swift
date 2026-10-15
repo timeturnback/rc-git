@@ -1,3 +1,4 @@
+import Darwin
 import Testing
 
 @testable import RcGitKit
@@ -515,21 +516,37 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     /// Each unit leaves an opener unmatched; a closer search per opener that rescans to the end
     /// of the block took 15-30 s here before the closers were paired once per block.
     @Test func unmatchedOpenersParseInLinearTime() {
-        let clock = ContinuousClock()
         for unit in ["x [y ", "a *b ", "[a](b ", "x<y ", "x<y", "*Note: x\n", "x [y](z(w "] {
-            let text = String(repeating: unit, count: 256 * 1024 / unit.utf8.count)
-            let elapsed = clock.measure { _ = MarkdownDocument.parse(text) }
-            #expect(elapsed < .seconds(2), "\(unit.debugDescription) took \(elapsed)")
+            expectLinearParse(unit)
         }
     }
 
     /// Each unit closes one emphasis and leaves one opener unmatched; a closer search per opener
     /// took 834 ms at 64 KiB in a release build before emphasis went through a delimiter stack.
     @Test func paragraphsOfEmphasisUnitsParseInLinearTime() {
-        let unit = "*x *y* "
-        let text = String(repeating: unit, count: 256 * 1024 / unit.utf8.count)
-        let elapsed = ContinuousClock().measure { _ = MarkdownDocument.parse(text) }
-        #expect(elapsed < .seconds(2), "took \(elapsed)")
+        expectLinearParse("*x *y* ")
+    }
+
+    /// Parses `unit` repeated to 64 KiB and to 256 KiB and compares the two. Four times the
+    /// input takes four times as long when linear and sixteen when quadratic; the bound sits at
+    /// eight plus a floor for noise on a fast parse. Both sides count this thread's CPU time, not
+    /// wall time, so a loaded machine that preempts the parse cannot flip the comparison.
+    private func expectLinearParse(
+        _ unit: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        func parseTime(kibibytes: Int) -> Duration {
+            let text = String(repeating: unit, count: kibibytes * 1024 / unit.utf8.count)
+            let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            _ = MarkdownDocument.parse(text)
+            let spent = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start
+            return .nanoseconds(Int64(spent))
+        }
+        let small = parseTime(kibibytes: 64)
+        let large = parseTime(kibibytes: 256)
+        #expect(
+            large < small * 8 + .milliseconds(50),
+            "\(unit.debugDescription): 64 KiB took \(small), 256 KiB took \(large)",
+            sourceLocation: sourceLocation)
     }
 
     /// CommonMark's rule of three: a run that can both open and close does not pair with one

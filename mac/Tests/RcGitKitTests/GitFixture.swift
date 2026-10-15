@@ -25,31 +25,74 @@ struct GitFixture {
 
     private static let standardTemplate = Task { try await buildStandard() }
 
+    /// Builds the history in one `git fast-import` stream and checks `main` out, three spawns
+    /// in all: every test waits on this build, and one spawn per commit, tag and checkout took
+    /// tens of seconds of each test's time limit on a loaded machine. Below git's
+    /// `fastimport.unpackLimit` the objects land loose, as a commit-by-commit build leaves them.
     private static func buildStandard() async throws -> GitFixture {
         let fixture = try emptyDirectory()
         try await fixture.git(["init", "-q", "-b", "main"])
-        try fixture.write("README.md", "# fixture\n\nhello\n")
-        try fixture.write("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n")
-        try fixture.writeBytes(
-            "bin.dat", [0x89, 0x50, 0x4e, 0x47, 0, 0, 0x62, 0x69, 0x6e, 0x61, 0x72, 0x79])
-        try await fixture.commit("Initial import", date: "2024-01-01T00:00:00+0000")
-        try await fixture.git(["tag", "v0.9"])
-        try await fixture.git(["checkout", "-q", "-b", "feature"])
-        try fixture.write("feature.txt", "feature\n")
-        try await fixture.commit("Feature work", date: "2024-01-02T00:00:00+0000")
-        try await fixture.git(["checkout", "-q", "main"])
-        try fixture.write("docs/guide.md", "guide\n")
-        try fixture.write("src/lib.rs", "pub fn one() -> u32 {\n    1\n}\n")
-        try fixture.write("alpha.txt", "alpha\n")
-        try fixture.write("Zeta.txt", "zeta\n")
-        try FileManager.default.createSymbolicLink(
-            atPath: fixture.path + "/link", withDestinationPath: "README.md")
-        try await fixture.commit("Add docs and library", date: "2024-01-03T00:00:00+0000")
-        try await fixture.git(
-            ["tag", "-a", "v1.0", "-m", "Release 1.0"],
-            extraEnvironment: ["GIT_COMMITTER_DATE": "2024-01-03T00:00:00+0000"])
-        try await fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        let stream = fixture.path + "/.git/fixture.stream"
+        try Data(standardStream()).write(to: URL(fileURLWithPath: stream))
+        try await fixture.git(["fast-import", "--quiet"], input: stream)
+        try FileManager.default.removeItem(atPath: stream)
+        try await fixture.git(["reset", "-q", "--hard"])
         return fixture
+    }
+
+    /// The standard history as a `git fast-import` stream: what `git commit` and `git tag -a`
+    /// would record with the fixture's identities and dates, messages ending in a newline.
+    private static func standardStream() -> [UInt8] {
+        var stream: [UInt8] = []
+        func line(_ text: String) { stream += Array((text + "\n").utf8) }
+        func data(_ bytes: [UInt8]) {
+            line("data \(bytes.count)")
+            stream += bytes
+            line("")
+        }
+        func file(_ path: String, _ contents: String, mode: String = "100644") {
+            line("M \(mode) inline \(path)")
+            data(Array(contents.utf8))
+        }
+        func commit(_ ref: String, mark: Int, from: Int?, title: String, seconds: Int) {
+            line("commit \(ref)")
+            line("mark :\(mark)")
+            line("author Test Author <author@example.com> \(seconds) +0000")
+            line("committer Test Committer <committer@example.com> \(seconds) +0000")
+            data(Array((title + "\n").utf8))
+            if let from { line("from :\(from)") }
+        }
+        let january1 = 1_704_067_200
+        let day = 86_400
+
+        commit("refs/heads/main", mark: 1, from: nil, title: "Initial import", seconds: january1)
+        file("README.md", "# fixture\n\nhello\n")
+        file("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n")
+        line("M 100644 inline bin.dat")
+        data([0x89, 0x50, 0x4e, 0x47, 0, 0, 0x62, 0x69, 0x6e, 0x61, 0x72, 0x79])
+        line("reset refs/tags/v0.9")
+        line("from :1")
+
+        commit(
+            "refs/heads/feature", mark: 2, from: 1, title: "Feature work",
+            seconds: january1 + day)
+        file("feature.txt", "feature\n")
+
+        commit(
+            "refs/heads/main", mark: 3, from: 1, title: "Add docs and library",
+            seconds: january1 + 2 * day)
+        file("docs/guide.md", "guide\n")
+        file("src/lib.rs", "pub fn one() -> u32 {\n    1\n}\n")
+        file("alpha.txt", "alpha\n")
+        file("Zeta.txt", "zeta\n")
+        file("link", "README.md", mode: "120000")
+        line("tag v1.0")
+        line("from :3")
+        line("tagger Test Committer <committer@example.com> \(january1 + 2 * day) +0000")
+        data(Array("Release 1.0\n".utf8))
+        line("reset refs/remotes/origin/main")
+        line("from :3")
+        return stream
     }
 
     func remove() {
@@ -78,15 +121,18 @@ struct GitFixture {
             extraEnvironment: ["GIT_COMMITTER_DATE": date])
     }
 
-    func git(_ args: [String], extraEnvironment: [String: String] = [:]) async throws {
-        _ = try await gitOutput(args, extraEnvironment: extraEnvironment)
+    func git(
+        _ args: [String], extraEnvironment: [String: String] = [:], input: String? = nil
+    ) async throws {
+        _ = try await gitOutput(args, extraEnvironment: extraEnvironment, input: input)
     }
 
-    /// Runs git in the fixture and returns its trimmed stdout. Every wait is a continuation, so
-    /// a test awaiting git holds no cooperative-pool thread.
-    func gitOutput(_ args: [String], extraEnvironment: [String: String] = [:]) async throws
-        -> String
-    {
+    /// Runs git in the fixture, reading stdin from the file at `input` when one is given, and
+    /// returns its trimmed stdout. Every wait is a continuation, so a test awaiting git holds
+    /// no cooperative-pool thread.
+    func gitOutput(
+        _ args: [String], extraEnvironment: [String: String] = [:], input: String? = nil
+    ) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + args
@@ -104,7 +150,14 @@ struct GitFixture {
         ]
         environment.merge(extraEnvironment) { _, new in new }
         process.environment = environment
-        process.standardInput = FileHandle.nullDevice
+        if let input {
+            guard let handle = FileHandle(forReadingAtPath: input) else {
+                throw FixtureError("cannot open \(input) as stdin for git \(args.first ?? "")")
+            }
+            process.standardInput = handle
+        } else {
+            process.standardInput = FileHandle.nullDevice
+        }
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout

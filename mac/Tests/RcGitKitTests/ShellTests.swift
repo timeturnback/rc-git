@@ -5,52 +5,74 @@ import Testing
 
 /// The runner behind the updater's toolchain probe and build. `/bin/sh -c` stands in for
 /// the app's login `zsh`, so no shell profile is read.
+///
+/// A spawn takes seconds on a loaded machine with endpoint agents, so every limit a child
+/// must outrun before it prints leaves seconds for its start, elapsed times run from the
+/// child's first line rather than from the spawn, and scripts sleep in one process instead of
+/// spawning `sleep` per step.
 @Suite(.timeLimit(.minutes(1))) struct ShellTests {
     private static let directory = FileManager.default.temporaryDirectory.path
 
     private static func run(
         _ script: String, timeout: Duration? = nil, idleTimeout: Duration? = nil
     ) async -> (Shell.Outcome, Duration) {
-        let clock = ContinuousClock()
-        let start = clock.now
-        let outcome = await Shell.run(
-            "/bin/sh", ["-c", script], in: directory, timeout: timeout, idleTimeout: idleTimeout)
-        return (outcome, clock.now - start)
+        await launch("/bin/sh", ["-c", script], timeout: timeout, idleTimeout: idleTimeout)
     }
 
-    /// Whether `pid` is gone, polled for up to two seconds: an orphan killed by a signal is
-    /// reaped by launchd, not at once.
+    /// Runs a command and times it from its first line of output, which is when it reports it
+    /// started; a command that never prints is timed from the spawn.
+    private static func launch(
+        _ executable: String, _ arguments: [String], timeout: Duration? = nil,
+        idleTimeout: Duration? = nil
+    ) async -> (Shell.Outcome, Duration) {
+        let spawned = ContinuousClock.now
+        let started = OneShot<ContinuousClock.Instant>()
+        let outcome = await Shell.run(
+            executable, arguments, in: directory, timeout: timeout, idleTimeout: idleTimeout,
+            onOutput: { _ in started.fulfil(.now) })
+        let finished = ContinuousClock.now
+        started.fulfil(spawned)
+        return (outcome, finished - (await started.value()))
+    }
+
+    /// Whether `pid` is gone, polled for up to ten seconds: an orphan killed by a signal is
+    /// reaped by launchd, not at once, and later still on a loaded machine.
     private static func isGone(_ pid: Int32) async -> Bool {
-        for _ in 0..<40 {
+        for _ in 0..<200 {
             if Darwin.kill(pid, 0) != 0 { return true }
             try? await Task.sleep(for: .milliseconds(50))
         }
         return false
     }
 
+    /// The bounds on elapsed time sit halfway to the 60 s sleep, far from the kill's few
+    /// seconds, so a loaded machine cannot flip them.
     @Test func aCommandPastItsLimitIsKilled() async {
-        let (outcome, elapsed) = await Self.run("sleep 30", timeout: .milliseconds(500))
+        let (outcome, elapsed) = await Self.run(
+            "echo started; exec sleep 60", timeout: .seconds(5))
         #expect(outcome.stopped == .timedOut)
-        #expect(elapsed < .seconds(5))
+        #expect(elapsed < .seconds(30))
     }
 
     /// A build blocked on a lock prints a line and then nothing; the idle clock stops it
     /// long before the wall clock would.
     @Test func aSilentCommandIsStoppedByTheIdleClock() async {
         let (outcome, elapsed) = await Self.run(
-            "echo waiting; exec sleep 30", timeout: .seconds(30), idleTimeout: .seconds(1))
+            "echo waiting; exec sleep 60", timeout: .seconds(60), idleTimeout: .seconds(5))
         #expect(outcome.stopped == .idle)
         #expect(outcome.lines == ["waiting"])
-        #expect(elapsed < .seconds(6))
+        #expect(elapsed < .seconds(30))
     }
 
-    /// Output re-arms the idle clock: 1.6 s of steady output outlives a 1 s idle limit.
+    /// Output re-arms the idle clock: 8 s of steady output outlives a 5 s idle limit. One
+    /// perl process sleeps between lines, where a `sleep` spawn per line could outlast it.
     @Test func steadyOutputKeepsTheIdleClockArmed() async {
-        let (outcome, _) = await Self.run(
-            "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.2; done", idleTimeout: .seconds(1))
+        let script = "$| = 1; for (1..10) { print qq($_\\n); select(undef, undef, undef, 0.8) }"
+        let (outcome, _) = await Self.launch(
+            "/usr/bin/perl", ["-e", script], idleTimeout: .seconds(5))
         #expect(outcome.stopped == nil)
         #expect(outcome.status == 0)
-        #expect(outcome.lines.count == 8)
+        #expect(outcome.lines.count == 10)
     }
 
     /// Cancelling the Task kills the whole process group: the grandchild the script
@@ -74,30 +96,28 @@ import Testing
     /// call off the `SIGKILL` the group gets after the grace.
     @Test func aTimeoutKillsAGrandchildThatIgnoresSigterm() async throws {
         let (outcome, elapsed) = await Self.run(
-            "(trap '' TERM; exec sleep 30) & echo $!; wait", timeout: .milliseconds(500))
+            "(trap '' TERM; exec sleep 60) & echo $!; wait", timeout: .seconds(5))
         #expect(outcome.stopped == .timedOut)
         let grandchild = try #require(outcome.lines.first.flatMap { Int32($0) })
         #expect(await Self.isGone(grandchild))
-        #expect(elapsed < .seconds(6))
+        #expect(elapsed < .seconds(30))
     }
 
     /// A leader that moved itself into another group leaves its own group empty; the kill
     /// falls back to the pid instead of finding no group and letting it run.
     @Test func aLeaderThatLeftItsGroupIsStillKilled() async {
-        let clock = ContinuousClock()
-        let start = clock.now
         let script =
             "$| = 1; setpgid(0, getpgrp(getppid())) or die $!; "
-            + "print qq(moved\\n); sleep 30"
-        let outcome = await Shell.run(
-            "/usr/bin/perl", ["-MPOSIX", "-e", script], in: Self.directory,
-            timeout: .milliseconds(500))
+            + "print qq(moved\\n); sleep 60"
+        let (outcome, elapsed) = await Self.launch(
+            "/usr/bin/perl", ["-MPOSIX", "-e", script], timeout: .seconds(5))
         #expect(outcome.lines == ["moved"])
         #expect(outcome.stopped == .timedOut)
-        #expect(clock.now - start < .seconds(6))
+        #expect(elapsed < .seconds(30))
     }
 
-    /// A Task cancelled before the command starts still stops it at once.
+    /// A Task cancelled before the command starts still stops it at once. Nothing prints, so
+    /// the bound counts the spawn too and sits halfway to the 30 s sleep.
     @Test func aCommandStartedFromACancelledTaskIsStopped() async {
         let clock = ContinuousClock()
         let start = clock.now
@@ -107,7 +127,7 @@ import Testing
         }
         let outcome = await run.value
         #expect(outcome.stopped == .cancelled)
-        #expect(clock.now - start < .seconds(5))
+        #expect(clock.now - start < .seconds(15))
     }
 
     /// A grandchild that inherited the pipe keeps it open after the shell exits; the wait
