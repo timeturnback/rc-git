@@ -243,6 +243,28 @@ import Testing
         #expect(model.fileState == .empty, "not the failed read of a file nobody asked for")
     }
 
+    @Test func restoreOfAnInexactWorkingTreeFileReadsNothing() async {
+        repo.workDir = "/work"
+        let lossy = "caf\u{FFFD}.txt"
+        repo.worktreeFiles["README.md"] = textBlob("# on disk\n")
+        repo.worktreeFiles[lossy] = textBlob("a file literally named with U+FFFD\n")
+        repo.worktreeListings[""] = WorktreeListing(entries: [
+            WorktreeEntry(name: "README.md", kind: .blob, status: .modified, oid: readme, size: 10),
+            WorktreeEntry(name: lossy, kind: .blob, status: .untracked, oid: nil, size: 30),
+        ])
+        await model.attach(repo)
+        await model.openWorktreeFile(name: lossy, path: lossy, pathIsExact: false)
+        let inexact = model.location
+        #expect(inexact.filePath == lossy)
+        #expect(!inexact.filePathIsExact)
+        await model.openPath("README.md")
+        let reads = repo.worktreeFileCalls
+        await model.restore(inexact)
+        #expect(repo.worktreeFileCalls == reads, "the stop's path names no one file")
+        #expect(model.openedFilePath == nil)
+        #expect(model.fileState == .empty)
+    }
+
     @Test func restoreReportsWhereItEndedOnce() async {
         await model.attach(repo)
         await model.openPath("README.md")

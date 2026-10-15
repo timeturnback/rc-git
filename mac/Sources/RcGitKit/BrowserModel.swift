@@ -1397,8 +1397,9 @@ public final class BrowserModel {
             tree = .nothing
         }
         return BrowserLocation(
-            tree: tree, filePath: openedFilePath, historyScope: historyScope,
-            detailCommit: diffCommit?.oid)
+            tree: tree, filePath: openedFilePath,
+            filePathIsExact: openedFilePath == nil || openedPathIsExact,
+            historyScope: historyScope, detailCommit: diffCommit?.oid)
     }
 
     /// Returns the browser to a location it was at, changing only what differs: a step
@@ -1446,17 +1447,20 @@ public final class BrowserModel {
             await restoreTree(target.tree)
             guard pendingRestore == nil, location.tree == target.tree else { return }
         }
-        guard await restoreFile(target.filePath) else { return }
+        guard await restoreFile(target.filePath, isExact: target.filePathIsExact) else { return }
         restoreScope(target.historyScope)
         await restoreDetail(target.detailCommit)
     }
 
     /// Opens the file a stop names, or empties the pane for a stop without one. Returns false
-    /// when another restore was asked for during the open, so the move stops there.
-    private func restoreFile(_ path: String?) async -> Bool {
-        guard openedFilePath != path else { return true }
+    /// when another restore was asked for during the open, so the move stops there. An inexact
+    /// path is not read: it resolves by spelling and could land on a file literally named
+    /// with U+FFFD, so the pane empties as for a file that is gone.
+    private func restoreFile(_ path: String?, isExact: Bool) async -> Bool {
+        let current = location
+        guard current.filePath != path || current.filePathIsExact != isExact else { return true }
         var opened = false
-        if let path {
+        if let path, isExact {
             opened = await openPath(path) == .opened
         }
         // A file that is gone empties the pane: the file of the stop left behind, still

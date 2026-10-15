@@ -24,15 +24,19 @@ public enum BrowsedTree: Equatable, Sendable {
 public struct BrowserLocation: Equatable, Sendable {
     public var tree: BrowsedTree
     public var filePath: String?
+    /// Whether every component of `filePath` is the stored name byte for byte. A path with
+    /// U+FFFD replacements names no one file, so returning to it reads nothing.
+    public var filePathIsExact: Bool
     public var historyScope: HistoryScope
     public var detailCommit: Oid?
 
     public init(
-        tree: BrowsedTree = .nothing, filePath: String? = nil, historyScope: HistoryScope = .all,
-        detailCommit: Oid? = nil
+        tree: BrowsedTree = .nothing, filePath: String? = nil, filePathIsExact: Bool = true,
+        historyScope: HistoryScope = .all, detailCommit: Oid? = nil
     ) {
         self.tree = tree
         self.filePath = filePath
+        self.filePathIsExact = filePathIsExact
         self.historyScope = historyScope
         self.detailCommit = detailCommit
     }

@@ -71,6 +71,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var blameGate: CallGate?
     var worktreeListings: [String: WorktreeListing] = [:]
     var worktreeFiles: [String: BlobContent] = [:]
+    var worktreeFileCalls = 0
     /// The full-repo status walk result, replaced by tests as the "disk" changes.
     var statusReport = StatusReport(entries: [], scanned: 0, truncated: false)
     var statusCalls = 0
@@ -355,7 +356,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     }
 
     func worktreeFile(path: String, limit: UInt64) throws -> BlobContent {
-        let found = lock.withLock { worktreeFiles[path] }
+        let found = lock.withLock { () -> BlobContent? in
+            worktreeFileCalls += 1
+            return worktreeFiles[path]
+        }
         guard let found else {
             throw RepositoryError("read working tree file: '\(path)': missing")
         }
