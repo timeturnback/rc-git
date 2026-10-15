@@ -135,6 +135,18 @@ public struct MarkdownDocument: Sendable, Hashable {
         byteCount <= previewLimit && Highlighter.language(forFileName: name) == "markdown"
     }
 
+    /// A preview above this many bytes takes long enough to build (about 45-125 ms at this
+    /// size, 0.7-2.0 s at `previewLimit`, `docs/performance.md`) that the pane clears the
+    /// previous file at once instead of leaving it on screen until the build lands.
+    public static let buildingPlaceholderThreshold = 512 * 1024
+
+    /// What the pane shows while the preview of `name`, `byteCount` bytes long, builds: a
+    /// placeholder above `buildingPlaceholderThreshold`, or `nil` to keep the previous text up
+    /// for a build quick enough that a placeholder would only flash.
+    public static func buildingPlaceholder(name: String, byteCount: Int) -> String? {
+        byteCount > buildingPlaceholderThreshold ? "Building the preview of \(name)…" : nil
+    }
+
     /// Parses `source`. Never fails: anything it does not recognise stays literal text.
     public static func parse(_ source: String) -> MarkdownDocument {
         var parser = MarkdownBlockParser(source: source)

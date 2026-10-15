@@ -282,19 +282,26 @@ final class FileViewController: NSViewController {
     }
 
     /// Shows the current document in the chosen mode. The attributed string is built off the
-    /// main actor; a stale build is dropped by generation.
+    /// main actor; a stale build is dropped by generation. A preview large enough that the
+    /// build is felt clears the previous text for a placeholder first.
     private func presentContent() {
         guard let (entry, document, path) = current else { return }
-        invalidateContent()
-        let generation = contentGeneration
-        linkSource = nil
-        clearHighlights()
-        clearImportLinks()
         let previewable = MarkdownDocument.isPreviewable(
             name: entry.name, byteCount: document.byteCount)
         modePicker.isHidden = !previewable
         let preview = previewable && markdownPrefersPreview
         modePicker.selectedSegment = preview ? 0 : 1
+        if preview,
+            let message = MarkdownDocument.buildingPlaceholder(
+                name: entry.name, byteCount: document.byteCount)
+        {
+            showPlaceholder(message)
+        }
+        invalidateContent()
+        let generation = contentGeneration
+        linkSource = nil
+        clearHighlights()
+        clearImportLinks()
         let text = document.text
         let build = Task.detached(priority: .userInitiated) {
             () -> MarkdownRenderer.Rendered? in

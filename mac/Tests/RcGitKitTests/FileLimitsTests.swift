@@ -28,4 +28,17 @@ import Testing
         #expect(MarkdownDocument.isPreviewable(name: "README.md", byteCount: limit))
         #expect(!MarkdownDocument.isPreviewable(name: "README.md", byteCount: limit + 1))
     }
+
+    @Test func aLargePreviewShowsABuildingPlaceholderAtOnce() {
+        let threshold = MarkdownDocument.buildingPlaceholderThreshold
+        #expect(MarkdownDocument.buildingPlaceholder(name: "README.md", byteCount: 0) == nil)
+        #expect(
+            MarkdownDocument.buildingPlaceholder(name: "README.md", byteCount: threshold) == nil)
+        #expect(
+            MarkdownDocument.buildingPlaceholder(name: "README.md", byteCount: threshold + 1)
+                == "Building the preview of README.md…")
+        #expect(
+            MarkdownDocument.buildingPlaceholder(
+                name: "README.md", byteCount: MarkdownDocument.previewLimit) != nil)
+    }
 }
