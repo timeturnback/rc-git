@@ -13,9 +13,10 @@ constraints are clear.
   the cursor, and offers "Browse Files at This Commit". Selecting a commit shows the files it
   changed against its first parent and each file's line diff.
 - **Syntax highlighting.** Tree-sitter in `rc-git-highlight`, exposed as
-  `rcgit_highlight`, cached by blob id in `BrowserModel` (LRU-bounded), applied after first
-  paint so plain text never waits on a parse — and only for the visible chunk, as temporary
-  attributes, so a large file never pays a whole-document pass on the main actor. Languages:
+  `rcgit_highlight`, cached per blob and extension in `BrowserModel` (LRU-bounded), applied
+  after first paint so plain text never waits on a parse — and only for the visible chunk, as
+  temporary attributes, so a large file never pays a whole-document pass on the main actor.
+  Languages:
   bash, C, JavaScript, JSON, markdown, Python, Rust, Swift, TOML, TypeScript, TSX, YAML.
   Markdown highlights
   its inline prose and fenced code blocks in their own language (injections resolved by hand;

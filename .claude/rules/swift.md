@@ -48,9 +48,10 @@ paths: mac/**
   pure and tested); flat rows are childless roots. Node identity dies on every reload, so
   expansion and selection are restored by `ChangeNode.key`, never by row index or `path` (a
   file and a folder can share one path).
-- The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping; the
-  line-number ruler assumes one fragment per line. Do not turn wrapping on without changing
-  `LineNumberRulerView` — the markdown preview mode may wrap only because it hides the ruler.
+- The file pane uses a TextKit 1 stack with `allowsNonContiguousLayout` and no wrapping;
+  `LineNumberRulerView` numbers only fragments that begin a line, so a wrapped continuation
+  gets no number. Wrapping would leave gaps in the gutter, not shift it — the markdown preview
+  mode wraps and hides the ruler.
   Syntax colors are temporary attributes applied per visible chunk; never add a layout-
   affecting attribute (font, paragraph style) through that path.
 - Text positions are UTF-16 offsets into the decoded `String`. `TextDocument` maps them from the
@@ -68,7 +69,7 @@ paths: mac/**
   which sets `setContentWidth(100, type: .percentageValueType)`
   (`docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md`).
 - Check preview layout by measuring, not by launching: `NSTextStorage` + `NSLayoutManager` +
-  a fixed-width `NSTextContainer`, then walk `lineFragmentUsedRect`. A fragment far narrower
+  a fixed-width `NSTextContainer`, then walk `lineFragmentRect`. A block fragment far narrower
   than the container is a collapsed block.
 - Every markdown link resolves through `MarkdownLinkTarget.resolve` against the pane's
   `repositoryPath`. Do not read a destination anywhere else: telling a repository path, a URL
@@ -146,8 +147,10 @@ paths: mac/**
   only forwards tab events to it. A stop names its tab by repository path, so closing a tab
   calls `tabClosed`; never keep a stop for a tab that is gone.
 - `BrowserModel.restore` coalesces like `ChangesModel`: a restore asked for while one runs
-  sets `pendingRestore` and returns. Do not let two run at once — the second would resolve
-  its file against a root the first is still loading.
+  sets `pendingRestore` and returns. Restores and ref refreshes share one queue: a restore
+  waits for `refreshRun`, and a refresh asked for during a restore sets `refreshPending` and
+  runs once it ends. Never let two run at once — the second would resolve its file against a
+  root the first is still loading.
 - Tests use `FakeRepository` (in-memory, configured per test) for behavior and `GitFixture`
   for the real bridge; `GitFixture` builds the same standard repository as `rc-git-testkit` —
   keep those two in step.

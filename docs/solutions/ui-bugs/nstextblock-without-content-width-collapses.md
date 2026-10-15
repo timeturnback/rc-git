@@ -33,7 +33,7 @@ as a vertical column of single characters, one per line, down the whole pane.
 ## Symptoms
 
 A `NSLayoutManager` measurement reproduces it without launching the app — lay the rendered
-string out in a 600-point `NSTextContainer` and print `lineFragmentUsedRect` per fragment:
+string out in a 600-point `NSTextContainer` and print `lineFragmentRect` per fragment:
 
 ```
 w= 149.1 x=   0.0  Getting Started\n
@@ -101,7 +101,7 @@ block or the container, so it stays correct under nesting and resizing.
 
 - Measure layout instead of launching the app: build `NSTextStorage` + `NSLayoutManager` +
   `NSTextContainer` at a fixed width, `ensureLayout(for:)`, and walk
-  `lineFragmentUsedRect(forGlyphAt:effectiveRange:)`. A fragment far narrower than the
+  `lineFragmentRect(forGlyphAt:effectiveRange:)`. A fragment far narrower than the
   container for text that should wrap is the signature of this bug, and the same harness
   checks a narrow container in the same run.
 - Rule going forward: any `NSTextBlock` that is not an `NSTextTableBlock` gets a content
