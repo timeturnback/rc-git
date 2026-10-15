@@ -129,16 +129,49 @@ impl Language {
         Self::Yaml,
     ];
 
+    /// The language's position in `ALL`. The match is exhaustive, so a new variant needs an
+    /// arm, and each arm's `const` block fails the build when `ALL` does not list it at its
+    /// discriminant.
+    const fn index(self) -> usize {
+        match self {
+            Self::Bash => const { Self::position_in_all(Self::Bash) },
+            Self::C => const { Self::position_in_all(Self::C) },
+            Self::JavaScript => const { Self::position_in_all(Self::JavaScript) },
+            Self::Json => const { Self::position_in_all(Self::Json) },
+            Self::Markdown => const { Self::position_in_all(Self::Markdown) },
+            Self::Python => const { Self::position_in_all(Self::Python) },
+            Self::Rust => const { Self::position_in_all(Self::Rust) },
+            Self::Swift => const { Self::position_in_all(Self::Swift) },
+            Self::Toml => const { Self::position_in_all(Self::Toml) },
+            Self::Tsx => const { Self::position_in_all(Self::Tsx) },
+            Self::TypeScript => const { Self::position_in_all(Self::TypeScript) },
+            Self::Yaml => const { Self::position_in_all(Self::Yaml) },
+        }
+    }
+
+    /// Finds `language` in `ALL`. Evaluated only in `const` blocks, where a failed assertion
+    /// is a compile error rather than a panic.
+    const fn position_in_all(language: Self) -> usize {
+        let mut position = 0;
+        while position < Self::ALL.len() && Self::ALL[position] as usize != language as usize {
+            position += 1;
+        }
+        assert!(
+            position < Self::ALL.len(),
+            "Language::ALL does not list a variant"
+        );
+        assert!(
+            position == language as usize,
+            "Language::ALL is not in declaration order"
+        );
+        position
+    }
+
     fn configuration(self) -> Result<&'static HighlightConfiguration, Error> {
         static CONFIGS: [OnceLock<Loaded>; LANGUAGE_COUNT] =
             [const { OnceLock::new() }; LANGUAGE_COUNT];
-        let Some(slot) = CONFIGS.get(self as usize) else {
-            return Err(Error::Grammar {
-                language: self,
-                detail: "no configuration slot: Language::ALL does not list it".to_owned(),
-            });
-        };
-        slot.get_or_init(|| build_configuration(self))
+        CONFIGS[self.index()]
+            .get_or_init(|| build_configuration(self))
             .as_ref()
             .map_err(|detail| Error::Grammar {
                 language: self,
@@ -1126,18 +1159,6 @@ mod tests {
             let spans = highlight(data, language, None)
                 .unwrap_or_else(|err| panic!("{}: {err}", language.name()));
             assert_ne!(spans.len(), 0, "{} produced no spans", language.name());
-        }
-    }
-
-    #[test]
-    fn all_lists_every_language_at_its_discriminant() {
-        for (index, language) in Language::ALL.into_iter().enumerate() {
-            assert_eq!(
-                language as usize,
-                index,
-                "{} is out of order",
-                language.name()
-            );
         }
     }
 
