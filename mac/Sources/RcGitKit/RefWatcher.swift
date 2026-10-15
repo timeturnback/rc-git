@@ -67,8 +67,8 @@ public struct WatcherStartError: Error, CustomStringConvertible {
 /// chunk. Consumers must coalesce, as `BrowserModel.refreshRefs` does.
 ///
 /// FSEvents reports canonical realpaths (`/private/tmp/...`, symlinks resolved), so both
-/// directories are resolved with `realpath(3)` once at init and that spelling is both watched
-/// and filtered against.
+/// directories are resolved with `CanonicalPath.resolve` once at init and that spelling is
+/// both watched and filtered against.
 ///
 /// `onChange` fires on a private queue; hop to the main actor before touching models.
 public final class RefWatcher: @unchecked Sendable {
@@ -83,17 +83,10 @@ public final class RefWatcher: @unchecked Sendable {
         gitDir: String, commonDir: String, latency: TimeInterval = 0.2,
         onChange: @escaping @Sendable () -> Void
     ) {
-        self.gitDir = Self.canonical(gitDir)
-        self.commonDir = Self.canonical(commonDir)
+        self.gitDir = CanonicalPath.resolve(gitDir)
+        self.commonDir = CanonicalPath.resolve(commonDir)
         self.latency = latency
         self.onChange = onChange
-    }
-
-    /// The realpath of `path`, or `path` itself when it cannot be resolved (it does not exist).
-    static func canonical(_ path: String) -> String {
-        guard let resolved = realpath(path, nil) else { return path }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     deinit {

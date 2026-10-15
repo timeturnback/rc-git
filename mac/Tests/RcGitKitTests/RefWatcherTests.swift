@@ -117,19 +117,4 @@ import Testing
 
         #expect(fired.wait(timeout: .now() + Self.bound) == .success)
     }
-
-    @Test func canonicalResolvesSymlinksAndKeepsPrivate() throws {
-        let fixture = try GitFixture.emptyDirectory()
-        defer { fixture.remove() }
-        let link = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rc-git-link-\(UUID().uuidString)").path
-        try FileManager.default.createSymbolicLink(
-            atPath: link, withDestinationPath: fixture.path)
-        defer { try? FileManager.default.removeItem(atPath: link) }
-
-        let resolved = RefWatcher.canonical(link)
-        #expect(resolved.hasPrefix("/private/"))
-        #expect(resolved == WorktreeWatcher.canonical(fixture.path))
-        #expect(RefWatcher.canonical("/no/such/dir") == "/no/such/dir")
-    }
 }

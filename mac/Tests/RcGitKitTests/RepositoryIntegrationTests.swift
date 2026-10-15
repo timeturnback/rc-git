@@ -35,12 +35,12 @@ import Testing
             "rev-parse", "--path-format=absolute", "--git-common-dir",
         ])
         #expect(
-            RefWatcher.canonical(linked.commonDirectory)
-                == RefWatcher.canonical(
+            CanonicalPath.resolve(linked.commonDirectory)
+                == CanonicalPath.resolve(
                     expected.trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(
-            RefWatcher.canonical(linked.gitDirectory)
-                != RefWatcher.canonical(linked.commonDirectory))
+            CanonicalPath.resolve(linked.gitDirectory)
+                != CanonicalPath.resolve(linked.commonDirectory))
     }
 
     @Test func brokenRefIsReportedWithoutHidingTheRest() throws {

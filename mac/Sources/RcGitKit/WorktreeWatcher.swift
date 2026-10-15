@@ -59,9 +59,9 @@ public enum WorktreeWatchFilter {
 /// The stream is rooted at the working directory and, when the common dir lies outside it (a
 /// linked worktree), also at the common dir's `info` folder, so an exclude edit there is seen.
 ///
-/// FSEvents reports canonical realpaths, so every directory is resolved with `realpath(3)`
-/// once at init; resolving only the working directory would let every `.git` write past the
-/// exclusion.
+/// FSEvents reports canonical realpaths, so every directory is resolved with
+/// `CanonicalPath.resolve` once at init; resolving only the working directory would let every
+/// `.git` write past the exclusion.
 ///
 /// `onChange` fires on a private queue; hop to the main actor before touching models.
 public final class WorktreeWatcher: @unchecked Sendable {
@@ -79,18 +79,11 @@ public final class WorktreeWatcher: @unchecked Sendable {
         workDir: String, gitDir: String, commonDir: String, latency: TimeInterval = 0.5,
         onChange: @escaping @Sendable () -> Void
     ) {
-        self.workDir = Self.canonical(workDir)
-        self.gitDir = Self.canonical(gitDir)
-        self.commonDir = Self.canonical(commonDir)
+        self.workDir = CanonicalPath.resolve(workDir)
+        self.gitDir = CanonicalPath.resolve(gitDir)
+        self.commonDir = CanonicalPath.resolve(commonDir)
         self.latency = latency
         self.onChange = onChange
-    }
-
-    /// The realpath of `path`, or `path` itself when it cannot be resolved (it does not exist).
-    static func canonical(_ path: String) -> String {
-        guard let resolved = realpath(path, nil) else { return path }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     deinit {
