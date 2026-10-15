@@ -93,10 +93,28 @@ public struct Head: Sendable, Hashable {
     public let refName: String?
     /// `nil` on an unborn branch.
     public let target: Oid?
+    /// Whether `refName` is the stored name byte for byte; true when detached. See
+    /// `RefEntry.hasExactName`.
+    public let hasExactRefName: Bool
 
-    public init(refName: String?, target: Oid?) {
+    public init(refName: String?, target: Oid?, hasExactRefName: Bool = true) {
         self.refName = refName
         self.target = target
+        self.hasExactRefName = hasExactRefName
+    }
+}
+
+/// The repository's mainline branch, which Back-to-default switches to.
+public struct DefaultBranch: Sendable, Hashable {
+    /// Branch name without `refs/heads/`, e.g. `main`.
+    public let name: String
+    /// Whether `name` is the stored name byte for byte. A repaired name would check out
+    /// whatever branch carries the repaired spelling, so nothing switches to an inexact one.
+    public let hasExactName: Bool
+
+    public init(name: String, hasExactName: Bool = true) {
+        self.name = name
+        self.hasExactName = hasExactName
     }
 }
 
@@ -147,6 +165,11 @@ public enum InexactName {
     /// The refusal for `action` (a verb phrase, such as "blame") on `path`.
     public static func pathRefusal(_ action: String, _ path: String) -> String {
         "cannot \(action) '\(path)': the path is not valid UTF-8"
+    }
+
+    /// The refusal for `action` (a verb phrase, such as "switch to") on branch `name`.
+    public static func branchRefusal(_ action: String, _ name: String) -> String {
+        "cannot \(action) '\(name)': the branch name is not valid UTF-8"
     }
 }
 

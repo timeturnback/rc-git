@@ -31,7 +31,7 @@ pub use gix::bstr;
 pub use history::{CommitFilter, CommitPage, HistoryWalk};
 pub use log::{CommitDetail, CommitSummary, LogCursor};
 pub use oid::Oid;
-pub use refs::{BrokenRef, Head, RefEntry, RefKind, RefListing};
+pub use refs::{BrokenRef, DefaultBranch, Head, RefEntry, RefKind, RefListing};
 pub use repo::{Repository, require_files_ref_storage, require_work_tree_at};
 pub use stash::{StashEntry, StashReflogLine, stash_reflog_lines};
 pub use tree::{EntryKind, TreeEntry};

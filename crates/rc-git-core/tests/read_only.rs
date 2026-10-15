@@ -144,7 +144,10 @@ fn every_operation_leaves_the_repository_untouched() {
     repo.head().unwrap();
     let listing = repo.refs().unwrap();
     assert_ne!(listing.refs.len(), 0);
-    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
+        Some("main")
+    );
     let tip = repo.resolve("main").unwrap();
     let root = repo.resolve_tree("v1.0").unwrap();
     assert_eq!(repo.tree_of(tip).unwrap(), root);

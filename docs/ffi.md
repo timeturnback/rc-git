@@ -12,7 +12,8 @@
   matching `rcgit_*_free`. Freeing `NULL` is a no-op.
 - A `char *` is NUL-terminated, with interior NULs stripped. Outbound tree entry names and
   paths that are not UTF-8 pass through as raw bytes. Ref names are repaired with U+FFFD in
-  the core, and `RcGitRef.has_exact_name` says whether that happened. Inbound path and
+  the core, and `RcGitRef.has_exact_name`, `RcGitHead.has_exact_ref_name` and
+  `RcGitDefaultBranch.has_exact_name` say whether that happened. Inbound path and
   ref-name arguments are read as UTF-8, lossily: an invalid byte becomes U+FFFD, so a
   non-UTF-8 name cannot be sent back. The Swift side records which names arrived intact and
   refuses path and ref actions on the rest.

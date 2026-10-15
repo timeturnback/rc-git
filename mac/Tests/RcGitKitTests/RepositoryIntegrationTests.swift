@@ -89,10 +89,11 @@ import Testing
 
         let head = try repo.head()
         #expect(head.refName == "refs/heads/main")
+        #expect(head.hasExactRefName)
         #expect(try head.target?.hex == fixture.revParse("HEAD"))
 
         #expect(
-            try repo.defaultBranch() == "main",
+            try repo.defaultBranch() == DefaultBranch(name: "main"),
             "the fixture has no remote HEAD, so the local mainline answers")
 
         let listing = try repo.refs()
@@ -175,6 +176,32 @@ import Testing
         #expect(!tag.hasExactName)
         let others = listing.refs.filter { $0.shortName != "v\u{FFFD}" }
         #expect(others.allSatisfy { $0.hasExactName })
+    }
+
+    /// A HEAD or remote HEAD naming a branch that is not UTF-8 arrives flagged, so nothing
+    /// checks out its U+FFFD spelling.
+    @Test func inexactHeadAndDefaultBranchArriveFlagged() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.git(["pack-refs", "--all"])
+        let packed = URL(fileURLWithPath: fixture.path).appendingPathComponent(".git/packed-refs")
+        let header = try String(contentsOf: packed, encoding: .utf8)
+            .replacingOccurrences(of: " sorted", with: "")
+        let main = try fixture.revParse("main")
+        try fixture.writeBytes(
+            ".git/packed-refs",
+            Array(header.utf8) + Array("\(main) refs/remotes/origin/tr".utf8) + [0xE9, 0x0A])
+        try fixture.writeBytes(
+            ".git/refs/remotes/origin/HEAD",
+            Array("ref: refs/remotes/origin/tr".utf8) + [0xE9, 0x0A])
+        try fixture.writeBytes(".git/HEAD", Array("ref: refs/heads/ma".utf8) + [0xE9, 0x0A])
+
+        let repo = try Repository(path: fixture.path)
+        let head = try repo.head()
+        #expect(head.refName == "refs/heads/ma\u{FFFD}")
+        #expect(!head.hasExactRefName)
+        #expect(
+            try repo.defaultBranch() == DefaultBranch(name: "tr\u{FFFD}", hasExactName: false))
     }
 
     @Test func walksPathHistoryWithAScanCursor() throws {

@@ -62,6 +62,21 @@ pub struct Head {
     pub ref_name: Option<String>,
     /// The commit `HEAD` resolves to. `None` on an unborn branch.
     pub target: Option<Oid>,
+    /// Whether `ref_name` is the stored name byte for byte; true when detached. When the stored
+    /// name is not valid UTF-8, `ref_name` carries U+FFFD replacements, and passing it back as a
+    /// ref name would name a different ref.
+    pub exact_ref_name: bool,
+}
+
+/// The repository's mainline branch, as [`Repository::default_branch`] names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBranch {
+    /// Branch name without `refs/heads/`, e.g. `main`.
+    pub name: String,
+    /// Whether `name` is the stored name byte for byte. When the remote `HEAD` names a branch
+    /// that is not valid UTF-8, `name` carries U+FFFD replacements, and checking it out would
+    /// switch to a different branch.
+    pub exact_name: bool,
 }
 
 impl Repository {
@@ -125,9 +140,15 @@ impl Repository {
     pub fn head(&self) -> Result<Head> {
         self.with(|repo| {
             let head = repo.head().map_err(git("read HEAD"))?;
-            let ref_name = head.referent_name().map(|name| lossy(name.as_bstr()));
+            let referent = head.referent_name();
+            let ref_name = referent.map(|name| lossy(name.as_bstr()));
+            let exact_ref_name = referent.is_none_or(|name| name.as_bstr().to_str().is_ok());
             let target = head.id().map(|id| Oid::from_gix(id.detach()));
-            Ok(Head { ref_name, target })
+            Ok(Head {
+                ref_name,
+                target,
+                exact_ref_name,
+            })
         })
     }
 
@@ -136,12 +157,13 @@ impl Repository {
     /// locally. `None` when nothing names one. The branch itself may not exist locally — the
     /// remote's `HEAD` is what the clone was told, so the caller reports a missing branch by
     /// name — but its remote-tracking branch must: a remote `HEAD` that names itself or a
-    /// tracking branch that is gone is skipped.
+    /// tracking branch that is gone is skipped. A remote `HEAD` naming a branch that is not
+    /// valid UTF-8 still answers, flagged by [`DefaultBranch::exact_name`].
     ///
     /// # Errors
     /// [`Error::Git`] when the reference store cannot be read or its directories cannot be
     /// walked. A remote reference that does not parse is skipped: it names no branch.
-    pub fn default_branch(&self) -> Result<Option<String>> {
+    pub fn default_branch(&self) -> Result<Option<DefaultBranch>> {
         self.with(|repo| {
             let platform = repo.references().map_err(git("open reference store"))?;
             let mut from_remote = None;
@@ -184,7 +206,10 @@ impl Repository {
                     .find_reference(&format!("refs/heads/{candidate}"))
                     .is_ok()
                 {
-                    return Ok(Some(candidate.to_owned()));
+                    return Ok(Some(DefaultBranch {
+                        name: candidate.to_owned(),
+                        exact_name: true,
+                    }));
                 }
             }
             Ok(None)
@@ -247,7 +272,10 @@ fn unparsable_ref(repo: &gix::Repository, op: &'static str, source: BoxError) ->
 /// other reference, for a remote `HEAD` that is not symbolic, that names itself, or whose
 /// tracking branch is gone (as after a remote renamed its default branch and a prune deleted
 /// the old one): none of those names a branch the remote still has.
-fn remote_head_branch(repo: &gix::Repository, reference: &gix::Reference<'_>) -> Option<String> {
+fn remote_head_branch(
+    repo: &gix::Repository,
+    reference: &gix::Reference<'_>,
+) -> Option<DefaultBranch> {
     let full_name = reference.name().as_bstr();
     let remote_prefix = full_name.strip_suffix(b"/HEAD")?;
     let gix::refs::TargetRef::Symbolic(target) = reference.target() else {
@@ -262,7 +290,10 @@ fn remote_head_branch(repo: &gix::Repository, reference: &gix::Reference<'_>) ->
     }
     // A target that cannot be read names no branch, the same as an unparsable remote ref.
     repo.find_reference(target).ok()?;
-    Some(lossy(branch.as_bstr()))
+    Some(DefaultBranch {
+        name: lossy(branch.as_bstr()),
+        exact_name: branch.to_str().is_ok(),
+    })
 }
 
 /// The kind of a reference and its display name. Branches, remote branches and tags drop their

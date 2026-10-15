@@ -6,7 +6,8 @@
 //! - A pointer returned by an `rcgit_*` function belongs to the caller until it is passed to the
 //!   matching `rcgit_*_free`. Freeing NULL is a no-op.
 //! - A `char *` is NUL-terminated. Outbound tree entry names and paths that are not UTF-8 pass
-//!   through as raw bytes; ref names are repaired, flagged by `RcGitRef::has_exact_name`.
+//!   through as raw bytes; ref names are repaired, flagged by `RcGitRef::has_exact_name`,
+//!   `RcGitHead::has_exact_ref_name` and `RcGitDefaultBranch::has_exact_name`.
 //!   Inbound path and ref-name arguments are read as UTF-8, lossily.
 //! - A function that can fail takes `char **error`. On failure it returns NULL (or `RCGIT_ERROR`)
 //!   and, when `error` is not NULL, stores a message to release with `rcgit_string_free`. On
@@ -124,12 +125,32 @@ pub struct RcGitHead {
     pub has_target: bool,
     /// The commit `HEAD` resolves to.
     pub target: RcGitOid,
+    /// Whether `ref_name` is the stored name byte for byte; true when detached. The core repairs
+    /// a name that is not valid UTF-8 with U+FFFD, and the repair must not go back as a ref.
+    pub has_exact_ref_name: bool,
 }
 
 impl Drop for RcGitHead {
     fn drop(&mut self) {
         // SAFETY: `ref_name` was produced by `export_string` and is released exactly once here.
         unsafe { release_string(self.ref_name) };
+    }
+}
+
+/// The repository's mainline branch.
+#[repr(C)]
+pub struct RcGitDefaultBranch {
+    /// Branch name without `refs/heads/`, e.g. `main`.
+    pub name: *mut c_char,
+    /// Whether `name` is the stored name byte for byte. The core repairs a name that is not
+    /// valid UTF-8 with U+FFFD, and checking the repair out would switch to a different branch.
+    pub has_exact_name: bool,
+}
+
+impl Drop for RcGitDefaultBranch {
+    fn drop(&mut self) {
+        // SAFETY: `name` was produced by `export_string` and is released exactly once here.
+        unsafe { release_string(self.name) };
     }
 }
 
@@ -1551,6 +1572,7 @@ pub unsafe extern "C" fn rcgit_head(
             ref_name: head.ref_name.map_or(ptr::null_mut(), export_string),
             has_target: head.target.is_some(),
             target: head.target.map_or_else(RcGitOid::empty, RcGitOid::from),
+            has_exact_ref_name: head.exact_ref_name,
         }),
         Err(err) => {
             error.report(err);
@@ -1561,7 +1583,8 @@ pub unsafe extern "C" fn rcgit_head(
 
 /// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
 /// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
-/// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
+/// nothing names one, and NULL with `error` set on failure. Release with
+/// `rcgit_default_branch_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
@@ -1569,20 +1592,33 @@ pub unsafe extern "C" fn rcgit_head(
 pub unsafe extern "C" fn rcgit_default_branch(
     repo: *const RcGitRepo,
     error: *mut *mut c_char,
-) -> *mut c_char {
+) -> *mut RcGitDefaultBranch {
     // SAFETY: forwarded from this function's contract.
     let (repo, error) = unsafe { (repo_arg(repo), Out::new(error)) };
     let Some(repo) = error.required("rcgit_default_branch", "repo", repo) else {
         return ptr::null_mut();
     };
     match repo.default_branch() {
-        Ok(Some(branch)) => export_string(branch),
+        Ok(Some(branch)) => export(RcGitDefaultBranch {
+            name: export_string(branch.name),
+            has_exact_name: branch.exact_name,
+        }),
         Ok(None) => ptr::null_mut(),
         Err(err) => {
             error.report(err);
             ptr::null_mut()
         }
     }
+}
+
+/// Releases a value from `rcgit_default_branch`.
+///
+/// # Safety
+/// `branch` is NULL or came from `rcgit_default_branch` and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_default_branch_free(branch: *mut RcGitDefaultBranch) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(branch) };
 }
 
 /// Releases a value from `rcgit_head`.
@@ -4801,6 +4837,7 @@ mod tests {
         assert!(error.is_null());
         let head_ref = unsafe { &*head };
         assert_eq!(text(head_ref.ref_name), "refs/heads/main");
+        assert!(head_ref.has_exact_ref_name);
         assert!(head_ref.has_target);
         assert_eq!(hex(&head_ref.target), fx.rev_parse("HEAD"));
         unsafe { rcgit_head_free(head) };
@@ -4829,6 +4866,18 @@ mod tests {
         let head_ref = deref(head, &mut error);
         assert!(!head_ref.has_target, "an unborn branch has no commit");
         assert_eq!(text(head_ref.ref_name), "refs/heads/work");
+        unsafe { rcgit_head_free(head) };
+        unsafe { rcgit_repo_free(repo) };
+
+        unborn.write(".git/HEAD", b"ref: refs/heads/wo\xe9\n");
+        let repo = open(&unborn);
+        let head = unsafe { rcgit_head(repo, &raw mut error) };
+        let head_ref = deref(head, &mut error);
+        assert_eq!(text(head_ref.ref_name), "refs/heads/wo\u{fffd}");
+        assert!(
+            !head_ref.has_exact_ref_name,
+            "the repaired name arrives flagged"
+        );
         unsafe { rcgit_head_free(head) };
         unsafe { rcgit_repo_free(repo) };
     }
@@ -5492,6 +5541,7 @@ mod tests {
             rcgit_commit_list_free,
             rcgit_commit_page_free,
             rcgit_commit_result_free,
+            rcgit_default_branch_free,
             rcgit_guard_decision_free,
             rcgit_head_free,
             rcgit_highlight_list_free,
@@ -7888,13 +7938,39 @@ mod tests {
     }
 
     #[test]
-    fn the_default_branch_crosses_as_a_string_or_null() {
+    fn the_default_branch_crosses_flagged_or_null() {
         let fx = Fixture::standard();
         let repo = open(&fx);
         let mut error = ptr::null_mut();
         let branch = unsafe { rcgit_default_branch(repo, &raw mut error) };
         assert!(error.is_null(), "success must leave error untouched");
-        assert_eq!(take_string(branch), "main");
+        let found = deref(branch, &mut error);
+        assert_eq!(text(found.name), "main");
+        assert!(found.has_exact_name);
+        unsafe { rcgit_default_branch_free(branch) };
+        unsafe { rcgit_repo_free(repo) };
+
+        fx.git(&["pack-refs", "--all"]);
+        let packed = std::fs::read(fx.git_dir().join("packed-refs")).unwrap();
+        let mut packed = String::from_utf8(packed)
+            .unwrap()
+            .replace(" sorted", "")
+            .into_bytes();
+        packed.extend_from_slice(
+            format!("{} refs/remotes/origin/tr", fx.rev_parse("main")).as_bytes(),
+        );
+        packed.extend_from_slice(b"\xe9\n");
+        fx.write(".git/packed-refs", &packed);
+        fx.write(
+            ".git/refs/remotes/origin/HEAD",
+            b"ref: refs/remotes/origin/tr\xe9\n",
+        );
+        let repo = open(&fx);
+        let branch = unsafe { rcgit_default_branch(repo, &raw mut error) };
+        let found = deref(branch, &mut error);
+        assert_eq!(text(found.name), "tr\u{fffd}");
+        assert!(!found.has_exact_name, "the repaired name arrives flagged");
+        unsafe { rcgit_default_branch_free(branch) };
         unsafe { rcgit_repo_free(repo) };
 
         let bare = Fixture::empty_dir();

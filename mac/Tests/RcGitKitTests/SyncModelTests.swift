@@ -8,7 +8,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
     struct Script {
         /// One answer per preflight, the last one repeating; `nil` makes that preflight throw.
         var preflights: [RemoteStatus?]
-        var defaultBranch: String? = "main"
+        var defaultBranch: DefaultBranch? = DefaultBranch(name: "main")
         var defaultBranchFails = false
         var fetches: [Result<FetchOutcome, SyncError>] = []
         var pulls: [Result<PullOutcome, SyncError>] = []
@@ -76,7 +76,7 @@ private final class StubSyncPerformer: SyncPerforming, @unchecked Sendable {
         return status
     }
 
-    func defaultBranch(repoPath: String) throws -> String? {
+    func defaultBranch(repoPath: String) throws -> DefaultBranch? {
         lock.lock()
         defer { lock.unlock() }
         defaultBranchCalls += 1
@@ -1759,6 +1759,31 @@ private let switchedWithoutReflog = CheckoutOutcome(
             performer.defaultBranchCalls == 1,
             "a repository that names no mainline is not asked again")
         #expect(model.defaultBranch == nil)
+    }
+
+    @Test func anInexactMainlineIsRefusedBeforeTheSwitch() async {
+        for refreshFirst in [true, false] {
+            let (model, performer, _) = model(
+                .init(
+                    preflights: [StubSyncPerformer.upstream()],
+                    defaultBranch: DefaultBranch(name: "tr\u{FFFD}", hasExactName: false)))
+            if refreshFirst {
+                await model.refreshStatus()
+                #expect(model.defaultBranch == "tr\u{FFFD}", "the name still titles the control")
+            }
+            await model.backToDefaultBranch()
+
+            if case let .failed(step, message) = model.state {
+                #expect(step == .checkout)
+                #expect(
+                    message == "cannot switch to 'tr\u{FFFD}': the branch name is not valid UTF-8",
+                    "refresh first: \(refreshFirst)")
+            } else {
+                Issue.record("expected failed, got \(model.state) (refresh first: \(refreshFirst))")
+            }
+            #expect(performer.checkoutBranches.isEmpty, "the repaired name is never checked out")
+            #expect(performer.fetchCredentials.isEmpty)
+        }
     }
 
     @Test func aFailedMainlineReadIsRetriedOnTheNextRefresh() async {

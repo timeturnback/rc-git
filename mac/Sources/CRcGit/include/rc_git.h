@@ -242,7 +242,19 @@ typedef struct RcGitHead {
   bool has_target;
   /// The commit `HEAD` resolves to.
   struct RcGitOid target;
+  /// Whether `ref_name` is the stored name byte for byte; true when detached. The core repairs
+  /// a name that is not valid UTF-8 with U+FFFD, and the repair must not go back as a ref.
+  bool has_exact_ref_name;
 } RcGitHead;
+
+/// The repository's mainline branch.
+typedef struct RcGitDefaultBranch {
+  /// Branch name without `refs/heads/`, e.g. `main`.
+  char *name;
+  /// Whether `name` is the stored name byte for byte. The core repairs a name that is not
+  /// valid UTF-8 with U+FFFD, and checking the repair out would switch to a different branch.
+  bool has_exact_name;
+} RcGitDefaultBranch;
 
 /// A reference and the object it finally points to.
 typedef struct RcGitRef {
@@ -890,11 +902,18 @@ struct RcGitHead *rcgit_head(const struct RcGitRepo *repo, char **error);
 
 /// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names, else
 /// whichever of `master` and `main` exists locally. Returns NULL without setting `error` when
-/// nothing names one, and NULL with `error` set on failure. Release with `rcgit_string_free`.
+/// nothing names one, and NULL with `error` set on failure. Release with
+/// `rcgit_default_branch_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `error` is NULL or valid for writing a `char *`.
-char *rcgit_default_branch(const struct RcGitRepo *repo, char **error);
+struct RcGitDefaultBranch *rcgit_default_branch(const struct RcGitRepo *repo, char **error);
+
+/// Releases a value from `rcgit_default_branch`.
+///
+/// # Safety
+/// `branch` is NULL or came from `rcgit_default_branch` and is not freed twice.
+void rcgit_default_branch_free(struct RcGitDefaultBranch *branch);
 
 /// Releases a value from `rcgit_head`.
 ///

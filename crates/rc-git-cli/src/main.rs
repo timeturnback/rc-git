@@ -744,7 +744,7 @@ fn default_branch(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Resu
         writeln!(io::stderr().lock(), "error: no default branch")?;
         return Ok(ExitCode::from(EXIT_ERROR));
     };
-    writeln!(out, "{branch}")?;
+    writeln!(out, "{}", branch.name)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use rc_git_core::bstr::ByteSlice;
 use rc_git_core::{
     BlobContent, CommitSummary, DEFAULT_BLOB_LIMIT, EntryKind, Error, ObjectKind, Oid, RefKind,
     Repository, WorktreeStatus,
@@ -176,7 +177,7 @@ fn the_default_branch_falls_back_to_a_local_master_or_main() {
     let fx = Fixture::standard();
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("main"),
         "no remote HEAD, so the local mainline answers"
     );
@@ -184,7 +185,7 @@ fn the_default_branch_falls_back_to_a_local_master_or_main() {
     fx.git(&["branch", "master", "main"]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("master"),
         "master wins over main when both exist locally"
     );
@@ -201,7 +202,7 @@ fn a_remote_head_names_the_default_branch() {
     ]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("trunk"),
         "the remote's HEAD wins over the local fallback, even with no such local branch"
     );
@@ -216,7 +217,10 @@ fn a_self_pointing_remote_head_falls_back_to_local_mainline() {
         "refs/remotes/origin/HEAD",
     ]);
     let repo = Repository::open(fx.path()).unwrap();
-    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
+        Some("main")
+    );
 }
 
 #[test]
@@ -229,7 +233,7 @@ fn a_dangling_remote_head_falls_back_to_local_mainline() {
     ]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("main"),
         "a remote HEAD naming a pruned tracking branch names nothing"
     );
@@ -265,7 +269,7 @@ fn origin_head_wins_over_other_remotes() {
     ]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("trunk"),
         "origin answers even though aaa sorts first"
     );
@@ -278,7 +282,7 @@ fn origin_head_wins_over_other_remotes() {
     ]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("trunk"),
         "origin answers even though upstream sorts last"
     );
@@ -286,7 +290,7 @@ fn origin_head_wins_over_other_remotes() {
     fx.git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
     let repo = Repository::open(fx.path()).unwrap();
     assert_eq!(
-        repo.default_branch().unwrap().as_deref(),
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
         Some("dev"),
         "without origin, the first remote in sort order answers"
     );
@@ -302,7 +306,10 @@ fn a_detached_remote_head_falls_back_to_local_mainline() {
         "main",
     ]);
     let repo = Repository::open(fx.path()).unwrap();
-    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
+        Some("main")
+    );
 }
 
 #[test]
@@ -437,6 +444,64 @@ fn a_non_utf8_ref_name_is_listed_as_inexact() {
 }
 
 #[test]
+fn a_non_utf8_remote_head_target_names_an_inexact_default_branch() {
+    let fx = Fixture::standard();
+    fx.git(&["pack-refs", "--all"]);
+    // Appended out of order, so the header must stop promising a sorted file.
+    let packed = std::fs::read(fx.git_dir().join("packed-refs")).unwrap();
+    let mut packed = packed.replace(b" sorted", b"");
+    packed.extend_from_slice(format!("{} refs/remotes/origin/tr", fx.rev_parse("main")).as_bytes());
+    packed.extend_from_slice(b"\xe9\n");
+    fx.write(".git/packed-refs", &packed);
+    fx.write(
+        ".git/refs/remotes/origin/HEAD",
+        b"ref: refs/remotes/origin/tr\xe9\n",
+    );
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let branch = repo.default_branch().unwrap().unwrap();
+    assert_eq!(branch.name, "tr\u{fffd}");
+    assert!(
+        !branch.exact_name,
+        "the repaired name must not go back as a branch to check out"
+    );
+
+    fx.git(&["update-ref", "refs/remotes/origin/trunk", "main"]);
+    fx.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+    let repo = Repository::open(fx.path()).unwrap();
+    let branch = repo.default_branch().unwrap().unwrap();
+    assert_eq!(branch.name, "trunk");
+    assert!(branch.exact_name);
+}
+
+#[test]
+fn a_non_utf8_head_branch_is_inexact() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    assert!(repo.head().unwrap().exact_ref_name);
+
+    fx.write(".git/HEAD", b"ref: refs/heads/ma\xe9\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(head.ref_name.as_deref(), Some("refs/heads/ma\u{fffd}"));
+    assert!(
+        !head.exact_ref_name,
+        "the repaired name must not go back as a ref name"
+    );
+
+    fx.git(&["checkout", "-q", "--detach", "main"]);
+    let repo = Repository::open(fx.path()).unwrap();
+    assert!(
+        repo.head().unwrap().exact_ref_name,
+        "a detached HEAD names no branch, so nothing is inexact"
+    );
+}
+
+#[test]
 fn refs_list_stash_and_notes_as_other_and_follow_remote_head() {
     let fx = Fixture::standard();
     fx.write("README.md", b"changed\n");
@@ -565,7 +630,10 @@ fn an_unparsable_ref_file_is_reported_without_hiding_the_rest() {
             .iter()
             .any(|r| r.full_name == "refs/heads/main")
     );
-    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        repo.default_branch().unwrap().map(|b| b.name).as_deref(),
+        Some("main")
+    );
 }
 
 #[test]

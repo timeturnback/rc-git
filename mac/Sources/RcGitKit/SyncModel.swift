@@ -10,7 +10,7 @@ import os
 public protocol SyncPerforming: Sendable {
     func preflight(repoPath: String) throws -> RemoteStatus
     /// The repository's mainline branch, or `nil` when nothing names one. Local and cheap.
-    func defaultBranch(repoPath: String) throws -> String?
+    func defaultBranch(repoPath: String) throws -> DefaultBranch?
     func fetch(
         repoPath: String, host: String, credentials: Credentials?, acceptedHostKey: String?,
         cancel: CancelToken
@@ -31,7 +31,7 @@ public struct GuardSyncPerformer: SyncPerforming {
         try RepositoryGuard.remotePreflight(repoPath: repoPath)
     }
 
-    public func defaultBranch(repoPath: String) throws -> String? {
+    public func defaultBranch(repoPath: String) throws -> DefaultBranch? {
         try Repository(path: repoPath).defaultBranch()
     }
 
@@ -266,8 +266,11 @@ public final class SyncModel {
     public private(set) var statusError: String?
     /// The repository's mainline branch, read once with the first status refresh. Names the
     /// Back-to-default control and is what it switches to.
-    public private(set) var defaultBranch: String?
-    /// Whether `defaultBranch` holds an answer, so a repository that names no mainline is not
+    public var defaultBranch: String? { mainline?.name }
+    /// The mainline branch with its exactness: a name repaired with U+FFFD names the control
+    /// but is never checked out.
+    private var mainline: DefaultBranch?
+    /// Whether `mainline` holds an answer, so a repository that names no mainline is not
     /// re-read on every refresh.
     private var defaultBranchRead = false
     /// A status read is running, and another is wanted once it lands. Watcher-driven, so it
@@ -364,7 +367,7 @@ public final class SyncModel {
         let (status, branch) = await (statusRead, branchRead)
         guard generation == statusGeneration, !isBusy else { return }
         if case let .success(name) = branch {
-            defaultBranch = name
+            mainline = name
             defaultBranchRead = true
         }
         apply(status)
@@ -581,7 +584,7 @@ public final class SyncModel {
     /// The mainline branch on a detached task, or `nil` when `needed` is false. A success
     /// carrying `nil` means nothing names a mainline; a failure means it could not be read.
     private func readDefaultBranch(if needed: Bool) async
-        -> Result<String?, StatusReadError>?
+        -> Result<DefaultBranch?, StatusReadError>?
     {
         guard needed else { return nil }
         let repoPath = repoPath
@@ -604,19 +607,20 @@ public final class SyncModel {
     }
 
     /// The branch the Back-to-default workflow targets. Fails the workflow when nothing names
-    /// one, because there is then no sensible branch to switch to, and with the cause when the
-    /// repository could not be read.
+    /// one, because there is then no sensible branch to switch to, with the cause when the
+    /// repository could not be read, and when the name is not valid UTF-8, because its
+    /// repaired spelling would check out a different branch.
     private func resolveDefaultBranch() async throws(StepFailure) -> String {
         try bailIfCancelled(.checkout)
         enter(.checkout)
-        if let branch = defaultBranch {
-            return branch
+        if let branch = mainline {
+            return try Self.checkoutName(branch)
         }
         switch await readDefaultBranch(if: true) {
         case let .success(branch?):
-            defaultBranch = branch
+            mainline = branch
             defaultBranchRead = true
-            return branch
+            return try Self.checkoutName(branch)
         case .success(nil), nil:
             defaultBranchRead = true
             throw StepFailure(
@@ -632,6 +636,17 @@ public final class SyncModel {
                 message: "cannot read the mainline branch: \(error.message)",
                 diverged: false)
         }
+    }
+
+    /// The name to check out for `branch`, refused when it was repaired on its way out of
+    /// the core.
+    private static func checkoutName(_ branch: DefaultBranch) throws(StepFailure) -> String {
+        guard branch.hasExactName else {
+            throw StepFailure(
+                step: .checkout, message: InexactName.branchRefusal("switch to", branch.name),
+                diverged: false)
+        }
+        return branch.name
     }
 
     /// Re-reads the upstream and makes it the status everything else reads, so the steps that

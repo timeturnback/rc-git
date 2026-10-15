@@ -52,15 +52,17 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             throw RepositoryError.take(error, fallback: "cannot read HEAD")
         }
         defer { rcgit_head_free(head) }
-        let refName = head.pointee.ref_name.map { String(cString: $0) }
+        let refName = head.pointee.ref_name.map { ExactName($0) }
         let target = head.pointee.has_target ? Oid(c: head.pointee.target) : nil
-        return Head(refName: refName, target: target)
+        return Head(
+            refName: refName?.text, target: target,
+            hasExactRefName: head.pointee.has_exact_ref_name && refName?.exact ?? true)
     }
 
     /// The repository's mainline branch without `refs/heads/`: what a remote's `HEAD` names,
     /// else whichever of `master` and `main` exists locally. `nil` when nothing names one.
     /// The branch may not exist locally; checking it out reports that by name.
-    public func defaultBranch() throws -> String? {
+    public func defaultBranch() throws -> DefaultBranch? {
         var error: UnsafeMutablePointer<CChar>? = nil
         guard let branch = rcgit_default_branch(handle, &error) else {
             if let error {
@@ -68,7 +70,10 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             }
             return nil
         }
-        return RepositoryError.takeString(branch)
+        defer { rcgit_default_branch_free(branch) }
+        let name = ExactName(branch.pointee.name)
+        return DefaultBranch(
+            name: name.text, hasExactName: branch.pointee.has_exact_name && name.exact)
     }
 
     public func refs() throws -> RefListing {
