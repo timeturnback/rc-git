@@ -128,6 +128,10 @@ public final class BrowserModel {
     public static let historyPageSize = 100
     /// How many commits one repository call may examine while filtering by path.
     public static let pathHistoryScanChunk = 5_000
+    /// How many commits the first repository call of a search page may examine. Each later
+    /// call doubles it up to `searchScanChunk`, so a query replaced while typing stops after a
+    /// short walk instead of holding a pool thread for a full chunk.
+    public static let searchFirstScanChunk = 500
     /// How many commits one repository call may examine while searching.
     public static let searchScanChunk = 10_000
 
@@ -1092,15 +1096,16 @@ public final class BrowserModel {
     private func continueSearch(target: Int) async {
         guard let repository, let tip = historyAnchor, let filter = searchFilter else { return }
         let generation = searchGeneration
-        let chunk = Self.searchScanChunk
+        var chunk = Self.searchFirstScanChunk
         while searchResults.count < target, !searchComplete {
             let start = searchScanned
             let remaining = target - searchResults.count
             let pager = searchPager
+            let maxScan = chunk
             let result = await RepositoryError.run {
                 try HistoryPager.page(
                     pager, repository: repository, tip: tip, filter: filter, from: start,
-                    limit: remaining, maxScan: chunk)
+                    limit: remaining, maxScan: maxScan)
             }
             guard isCurrent(generation, searchGeneration, load: "search") else { return }
             switch result {
@@ -1109,6 +1114,7 @@ public final class BrowserModel {
                 searchResults += page.commits
                 searchScanned += page.scanned
                 searchComplete = page.complete
+                chunk = min(chunk * 2, Self.searchScanChunk)
                 onSearchChanged?()
             case let .failure(error):
                 isSearching = false

@@ -321,6 +321,44 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(!model.isSearching)
     }
 
+    @Test func aSupersededSearchWalksOnlyItsFirstSmallChunk() async {
+        await model.attach(repo)
+        let filler = (0..<2_000).map { index in
+            commitSummary(oid(UInt8(index % 200)), title: "filler \(index)")
+        }
+        let gate = CallGate()
+        repo.lock.withLock {
+            repo.commits[mainCommit] = filler
+            repo.searchGate = gate
+        }
+        async let older: Void = model.search(CommitFilter(message: "no such commit"))
+        await gate.waitUntilArrived()
+        await model.search(CommitFilter(message: "filler"))
+        gate.open()
+        await older
+
+        let first = BrowserModel.searchFirstScanChunk
+        #expect(
+            repo.lock.withLock { repo.searchMaxScans } == [first, first],
+            "the replaced query walked one small chunk; the newer one filled its page in one")
+        #expect(model.searchFilter == CommitFilter(message: "filler"))
+        #expect(model.searchResults.count == BrowserModel.historyPageSize)
+    }
+
+    @Test func searchChunksDoubleUpToTheCap() async {
+        await model.attach(repo)
+        let filler = (0..<16_000).map { index in
+            commitSummary(oid(UInt8(index % 200)), title: "filler \(index)")
+        }
+        repo.lock.withLock { repo.commits[mainCommit] = filler }
+        await model.search(CommitFilter(message: "no such commit"))
+        #expect(
+            repo.lock.withLock { repo.searchMaxScans }
+                == [500, 1_000, 2_000, 4_000, 8_000, 10_000])
+        #expect(model.searchComplete)
+        #expect(model.searchResults.isEmpty)
+    }
+
     @Test func aSearchTypedBeforeHistoryHasAnAnchorRunsOnceItDoes() async {
         let gate = CallGate()
         repo.lock.withLock { repo.refsGate = gate }

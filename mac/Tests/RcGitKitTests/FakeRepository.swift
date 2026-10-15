@@ -59,6 +59,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Per oid, holds the next `commit` call for it, then clears itself.
     var commitGates: [Oid: CallGate] = [:]
     var searchCalls = 0
+    /// The `maxScan` each `searchPage` call passed, in call order.
+    var searchMaxScans: [Int] = []
     /// Holds the next `searchPage` call, then clears itself.
     var searchGate: CallGate?
     var logCalls = 0
@@ -286,6 +288,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         let (found, delay, touching, gate) = lock.withLock {
             () -> ([CommitSummary]?, TimeInterval, Set<Oid>?, CallGate?) in
             searchCalls += 1
+            searchMaxScans.append(maxScan)
             let touching = filter.path.map { path in
                 Set((pathHistories[FakeRepository.pathKey(tip: tip, path: path)] ?? []).map(\.oid))
             }
