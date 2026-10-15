@@ -1141,9 +1141,10 @@ fn render_blob_diff(diff: BlobDiff, path: &str, out: &mut Vec<u8>) -> Result<Exi
                     };
                     out.extend_from_slice(sign.as_bytes());
                     out.extend_from_slice(&line.text);
-                    out.push(b'\n');
-                    if line.eol == LineEnd::None {
-                        out.extend_from_slice(b"\\ No newline at end of file\n");
+                    match line.eol {
+                        LineEnd::Lf => out.push(b'\n'),
+                        LineEnd::CrLf => out.extend_from_slice(b"\r\n"),
+                        LineEnd::None => out.extend_from_slice(b"\n\\ No newline at end of file\n"),
                     }
                 }
             }
