@@ -57,6 +57,8 @@ enum MainMenu {
         menu.addItem(
             item(
                 "About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        menu.addItem(.separator())
+        menu.addItem(item(keys.settings, #selector(AppDelegate.showSettings(_:))))
         if let updateMode {
             menu.addItem(.separator())
             // The dev bundle earns key equivalents: rebuilding is the edit-run loop, not

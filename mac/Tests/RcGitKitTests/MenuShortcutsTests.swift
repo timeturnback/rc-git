@@ -17,7 +17,7 @@ import Testing
     ]
 
     @Test func reflectionSeesEveryRow() {
-        #expect(Self.rows.count == 43)
+        #expect(Self.rows.count == 44)
     }
 
     @Test func noTwoItemsShareAChord() {

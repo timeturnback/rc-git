@@ -47,6 +47,7 @@ public struct MenuShortcut: Hashable, Sendable {
 public struct MenuShortcuts: Sendable {
     public init() {}
 
+    public let settings = MenuShortcut("Settings…", ",")
     public let hideApp = MenuShortcut("Hide", "h")
     public let hideOthers = MenuShortcut("Hide Others", "h", [.command, .option])
     public let quit = MenuShortcut("Quit", "q")

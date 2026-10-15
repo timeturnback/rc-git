@@ -147,6 +147,11 @@ system files) are consulted read-only and never written; a host they do not know
 refused until the user approves the offered key's fingerprint, and that approval is
 remembered by the app itself, per host.
 
+A key that contradicts an earlier in-app approval is refused the same way, without the trust
+sheet: a changed key is never treated as first contact. When the change is a legitimate
+rotation, the user removes the host's approval in Settings (Approved SSH Host Keys); the next
+fetch then meets the new key as unknown and asks again.
+
 A key that is `@revoked`, or that contradicts every `known_hosts` entry for the host, is
 refused with no way to approve it inside rc-git — like a guard deny, the message points the user at ssh itself. Lookup is keyed
 by the name actually dialed, so a config alias shares the trust of the real host behind

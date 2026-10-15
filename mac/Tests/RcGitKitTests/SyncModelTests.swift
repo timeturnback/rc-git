@@ -228,6 +228,12 @@ private final class InMemoryHostKeyStore: HostKeyStoring, @unchecked Sendable {
         items[host] = nil
     }
 
+    func approvals() -> [HostKeyApproval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items.map { HostKeyApproval(host: $0.key, fingerprint: $0.value) }
+    }
+
     var stored: [String: String] {
         lock.lock()
         defer { lock.unlock() }
@@ -1048,6 +1054,39 @@ private let switchedWithoutReflog = CheckoutOutcome(
         }
         #expect(performer.fetchHostKeys == ["SHA256:abc123"])
         #expect(hostKeys.stored["git.example.com"] == "SHA256:abc123")
+    }
+
+    @Test func aRemovedApprovalMakesTheRotatedKeyUnknownAgain() async {
+        let hostKeys = InMemoryHostKeyStore(["git.example.com": "SHA256:abc123"])
+        let (model, performer, _) = model(
+            .init(
+                preflights: [Self.sshUpstream()],
+                fetches: [
+                    .failure(
+                        .hostKeyUnknown(
+                            message: "not a known host",
+                            hostKey: "ssh-ed25519 SHA256:rotated")),
+                    .success(cleanFetch),
+                ]
+            ), hostKeys: hostKeys)
+        let settings = ApprovedHostsModel(store: hostKeys)
+        settings.remove(at: [0])
+        #expect(settings.rows.isEmpty)
+        var promptedKey: String?
+        model.onHostKeyNeeded = { _, hostKey, resume in
+            promptedKey = hostKey
+            resume(.trusted)
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(promptedKey == "ssh-ed25519 SHA256:rotated", "a forgotten host is first contact")
+        if case .done = model.state {
+        } else {
+            Issue.record("expected done, got \(model.state)")
+        }
+        #expect(performer.fetchHostKeys == [nil, "SHA256:rotated"])
+        #expect(hostKeys.stored["git.example.com"] == "SHA256:rotated")
     }
 
     @Test func sshPassphrasePromptRetriesAndStoresUnderTheSshKind() async {

@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let recentMenu = NSMenu(title: "Open Recent")
     private let build = AppBuild.current
     private var updateController: UpdateWindowController?
+    private var settingsController: SettingsWindowController?
     /// Set while the tabs are handed to a relaunching build; see `handOffTabs` and
     /// `reclaimTabs`.
     private var tabsHandedOff = false
@@ -120,6 +121,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         return controller
+    }
+
+    /// Opens Settings: the ssh hosts approved in the app, where a rotated key's approval is
+    /// removed so the next fetch can approve the new one.
+    @objc func showSettings(_ sender: Any?) {
+        let controller = settingsController ?? SettingsWindowController()
+        settingsController = controller
+        controller.present()
     }
 
     /// Shows or hides the entries `HiddenFiles` names in every tab, and remembers the choice

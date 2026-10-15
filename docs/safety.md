@@ -94,8 +94,11 @@ Opening a repository someone else produced must be harmless.
   can run a local server end to end), and sends credentials only when the caller passed
   them. SSH host keys are verified against a read-only `known_hosts`: an unknown key is
   refused until the user approves its fingerprint, and a contradicting key is always
-  fatal. Nothing else in a repository operation leaves the machine; the updater below is
-  the one exception.
+  fatal. A key that contradicts an approval made in the app is fatal too; the only way past
+  it is for the user to remove that host's approval in Settings, after which the next fetch
+  treats the key as unknown and asks again. The app never drops an approval on its own.
+  Nothing else in a repository operation leaves the machine; the updater below is the one
+  exception.
 
 ## Guarding mutations
 
