@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use gix::ObjectId;
+use gix::objs::tree::EntryKind;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, PreviousValue};
 
@@ -20,9 +21,11 @@ use super::commit::{
     whole_file_edit, work_dir,
 };
 use super::discard::restore_paths;
-use super::treeapply::{core_oid, entry_kind};
+use super::treeapply::{
+    blob_size_is, core_oid, entry_kind, file_equals_blob, is_absent, link_matches,
+};
 use super::treebuild;
-use super::workfile::{self, DiskEntry};
+use super::workfile;
 use super::write::Writer;
 use super::{ActionError, ActionResult, Author, Deleted, Identity, authorize, git_err, open};
 use crate::{Action, Policy};
@@ -484,7 +487,7 @@ fn check_changes(
     for change in changes {
         let path = change.path.to_string();
         let source_path = change.source_path.as_ref().map(ToString::to_string);
-        let symlink = entry_kind(&path, change.entry, op)? == gix::objs::tree::EntryKind::Link;
+        let symlink = entry_kind(&path, change.entry, op)? == EntryKind::Link;
         workfile::validate_path(op, &path, symlink)?;
         if let Some(source) = &source_path {
             workfile::validate_path(op, source, symlink)?;
@@ -636,7 +639,9 @@ fn require_only_removed(
 }
 
 /// The path's bytes on disk must equal the blob the stash recorded as its base. A missing
-/// path or a directory is dirty; any other read failure is an error naming the path.
+/// path, a directory or a special file is dirty, and so is a file whose size differs from the
+/// blob header, without a read; any other file is streamed against the blob. Any other read
+/// failure is an error naming the path.
 fn require_base_content(
     repo: &gix::Repository,
     work_dir: &Path,
@@ -644,16 +649,32 @@ fn require_base_content(
     base: Option<rc_git_core::Oid>,
     op: &'static str,
 ) -> ActionResult<()> {
-    let dirty = || ActionError::DirtyPath {
-        op,
-        path: path.to_owned(),
-    };
     let base = base
         .ok_or_else(|| ActionError::git(op, "refs/stash", "a modification carries no base blob"))?;
-    let expected = blob_data(repo, op, path, gix_oid(base, op)?)?;
-    match workfile::disk_entry(work_dir, path, op)? {
-        DiskEntry::Present { data, .. } if data == expected => Ok(()),
-        DiskEntry::Present { .. } | DiskEntry::Absent | DiskEntry::Directory => Err(dirty()),
+    let oid = gix_oid(base, op)?;
+    let full = workfile::join_under(work_dir, path, op)?;
+    let meta = match std::fs::symlink_metadata(&full) {
+        Ok(meta) => Some(meta),
+        Err(error) if is_absent(&error) => None,
+        Err(error) => return Err(ActionError::git(op, path, error)),
+    };
+    let matches = match meta {
+        Some(meta) if meta.file_type().is_symlink() => {
+            link_matches(repo, &full, (path, oid, EntryKind::Link), op)?
+        }
+        Some(meta) if meta.is_file() => {
+            blob_size_is(repo, (path, oid), meta.len(), op)?
+                && file_equals_blob(repo, &full, (path, oid), op)?
+        }
+        Some(_) | None => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(ActionError::DirtyPath {
+            op,
+            path: path.to_owned(),
+        })
     }
 }
 

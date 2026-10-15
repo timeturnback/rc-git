@@ -3459,6 +3459,32 @@ mod stash {
     }
 
     #[test]
+    fn apply_refuses_a_resized_path_from_its_size_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        fx.write("alpha.txt", b"stash me\n");
+        fx.git(&["stash", "push", "-q", "-m", "kept"]);
+        fx.write("alpha.txt", b"a longer conflicting edit\n");
+        let path = fx.path().join("alpha.txt");
+        // Unreadable, so any content read would fail as an error instead of a dirty path.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = stash_apply(fx.path(), &policy, 0, stash_oid(&fx, 0), None);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, ActionError::DirtyPath { op: "stash apply", path } if path == "alpha.txt"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"a longer conflicting edit\n"
+        );
+        assert_eq!(stash_list(&fx), "On main: kept", "the stash survives");
+    }
+
+    #[test]
     fn apply_refuses_a_dirty_path_and_touches_nothing() {
         let fx = Fixture::standard();
         let policy = Policy::default();

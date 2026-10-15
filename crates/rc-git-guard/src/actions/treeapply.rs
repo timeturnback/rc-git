@@ -541,15 +541,44 @@ fn disk_matches(
     if file_mode && disk_kind != kind {
         return Ok(false);
     }
-    let header = repo.find_header(oid).map_err(git_err(op, path))?;
-    if meta.len() != header.size() {
+    if !blob_size_is(repo, (path, oid), meta.len(), op)? {
         return Ok(false);
     }
     if proof.proves_unchanged(path, oid, &meta) {
         return Ok(true);
     }
+    file_equals_blob(repo, &full, (path, oid), op)
+}
+
+/// Whether blob `oid` is `len` bytes long, read from its header alone, so a file whose size
+/// differs is settled without reading either side.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `path` when the header cannot be read.
+pub(super) fn blob_size_is(
+    repo: &gix::Repository,
+    (path, oid): (&str, ObjectId),
+    len: u64,
+    op: &'static str,
+) -> ActionResult<bool> {
+    let header = repo.find_header(oid).map_err(git_err(op, path))?;
+    Ok(header.size() == len)
+}
+
+/// Whether the regular file at `full` holds exactly the bytes of blob `oid`, the file streamed
+/// [`COMPARE_CHUNK`] bytes at a time against the blob, so it is never held whole beside it.
+/// A file gone since it was inspected is a mismatch.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `op` and `path` when the file or the blob cannot be read.
+pub(super) fn file_equals_blob(
+    repo: &gix::Repository,
+    full: &Path,
+    (path, oid): (&str, ObjectId),
+    op: &'static str,
+) -> ActionResult<bool> {
     let expected = blob_data(repo, op, path, oid)?;
-    let file = match std::fs::File::open(&full) {
+    let file = match std::fs::File::open(full) {
         Ok(file) => file,
         Err(error) if is_absent(&error) => return Ok(false),
         Err(error) => return Err(ActionError::git(op, path, error)),
@@ -562,7 +591,7 @@ fn disk_matches(
 ///
 /// # Errors
 /// [`ActionError::Git`] naming `op` and the path when the link or the blob cannot be read.
-fn link_matches(
+pub(super) fn link_matches(
     repo: &gix::Repository,
     full: &Path,
     (path, oid, kind): (&str, ObjectId, EntryKind),
@@ -581,7 +610,7 @@ fn link_matches(
 
 /// Whether an I/O error means the path is not there: missing, or a file stands where a parent
 /// directory was (`a` for `a/b`), which means `a/b` is gone too.
-fn is_absent(error: &std::io::Error) -> bool {
+pub(super) fn is_absent(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
