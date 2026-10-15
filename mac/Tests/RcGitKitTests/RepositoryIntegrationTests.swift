@@ -125,6 +125,13 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self) == "fn main() {\n    println!(\"hi\");\n}\n")
         #expect(lineStarts == [0, 12, 32])
         #expect(validUTF8)
+        let size = UInt64(data.count)
+        guard case .text = try repo.readBlob(mainRs, limit: size) else {
+            Issue.record("expected a blob exactly at the limit to be read")
+            return
+        }
+        #expect(
+            try repo.readBlob(mainRs, limit: size - 1) == .tooLarge(size: size, limit: size - 1))
 
         let bin = try repo.resolve("main:bin.dat")
         #expect(try repo.readBlob(bin) == .binary(size: 12))
@@ -338,6 +345,13 @@ import Testing
         #expect(
             try repo.diffBlobs(old: guide.new, new: guide.new, limit: 2)
                 == .tooLarge(size: 6, limit: 2))
+        guard case .text = try repo.diffBlobs(old: guide.new, new: guide.new, limit: 6) else {
+            Issue.record("expected sides exactly at the limit to be diffed")
+            return
+        }
+        #expect(
+            try repo.diffBlobs(old: guide.new, new: guide.new, limit: 5)
+                == .tooLarge(size: 6, limit: 5))
 
         guard case let .ranges(spans) = try repo.blame(tip: new, path: "README.md") else {
             Issue.record("expected ranges")

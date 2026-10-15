@@ -5086,6 +5086,20 @@ mod tests {
         assert_eq!(deref(blob, &mut error).limit, u64::from(u32::MAX));
         unsafe { rcgit_blob_free(blob) };
 
+        let size = MAIN_RS.len() as u64;
+        let blob = unsafe { rcgit_blob_read(repo, &raw const main_rs, size, &raw mut error) };
+        assert_eq!(
+            deref(blob, &mut error).kind,
+            RcGitBlobKind::Text,
+            "a blob exactly at the limit is read"
+        );
+        unsafe { rcgit_blob_free(blob) };
+        let blob = unsafe { rcgit_blob_read(repo, &raw const main_rs, size - 1, &raw mut error) };
+        let blob_ref = deref(blob, &mut error);
+        assert_eq!(blob_ref.kind, RcGitBlobKind::TooLarge);
+        assert_eq!((blob_ref.size, blob_ref.limit), (size, size - 1));
+        unsafe { rcgit_blob_free(blob) };
+
         let bin = resolve(repo, "main:bin.dat");
         let blob = unsafe { rcgit_blob_read(repo, &raw const bin, 1 << 20, &raw mut error) };
         let blob_ref = deref(blob, &mut error);
@@ -5800,6 +5814,19 @@ mod tests {
         let diff_ref = deref(diff, &mut error);
         assert_eq!(diff_ref.kind, RcGitBlobDiffKind::TooLarge);
         assert_eq!((diff_ref.size, diff_ref.limit), (6, 2));
+        unsafe { rcgit_blob_diff_free(diff) };
+
+        let diff = diff_blobs(&guide, 6, &mut error);
+        assert_eq!(
+            deref(diff, &mut error).kind,
+            RcGitBlobDiffKind::Text,
+            "sides exactly at the limit are diffed"
+        );
+        unsafe { rcgit_blob_diff_free(diff) };
+        let diff = diff_blobs(&guide, 5, &mut error);
+        let diff_ref = deref(diff, &mut error);
+        assert_eq!(diff_ref.kind, RcGitBlobDiffKind::TooLarge);
+        assert_eq!((diff_ref.size, diff_ref.limit), (6, 5));
         unsafe { rcgit_blob_diff_free(diff) };
         unsafe { rcgit_repo_free(repo) };
     }

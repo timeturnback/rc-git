@@ -414,6 +414,37 @@ fn packed_refs_list_and_peel_like_loose_ones() {
 }
 
 #[test]
+fn a_packed_tag_takes_its_target_from_the_recorded_peeled_line() {
+    let fx = Fixture::standard();
+    fx.git(&["pack-refs", "--all"]);
+    let tagged = fx.rev_parse("v1.0^{commit}");
+    let elsewhere = fx.rev_parse("v0.9");
+    assert_ne!(tagged, elsewhere);
+    let packed = std::fs::read(fx.git_dir().join("packed-refs")).unwrap();
+    let recorded = format!("^{tagged}\n");
+    assert_eq!(
+        packed.find_iter(recorded.as_bytes()).count(),
+        1,
+        "the fixture's packed-refs records v1.0's peeled id once"
+    );
+    let packed = packed.replace(recorded.as_bytes(), format!("^{elsewhere}\n").as_bytes());
+    fx.write(".git/packed-refs", &packed);
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let listing = repo.refs().unwrap();
+    let tag = listing
+        .refs
+        .iter()
+        .find(|r| r.full_name == "refs/tags/v1.0")
+        .unwrap();
+    assert_eq!(
+        tag.target,
+        oid(&elsewhere),
+        "the ^ line is read instead of peeling the tag object again"
+    );
+}
+
+#[test]
 fn a_non_utf8_ref_name_is_listed_as_inexact() {
     let fx = Fixture::standard();
     fx.git(&["pack-refs", "--all"]);

@@ -139,6 +139,17 @@ fn cat_streams_text_and_signals_binary_and_oversize() {
     assert_eq!(large.status.code(), Some(4));
     assert!(stderr(&large).contains("over the 2 byte limit"));
 
+    let size = MAIN_RS.len();
+    let at_limit = rc_git(&["cat", path, "main", "src/main.rs", &size.to_string()]);
+    assert!(
+        at_limit.status.success(),
+        "a file exactly at the limit is shown"
+    );
+    assert_eq!(at_limit.stdout, MAIN_RS);
+    let below_size = rc_git(&["cat", path, "main", "src/main.rs", &(size - 1).to_string()]);
+    assert_eq!(below_size.status.code(), Some(4));
+    assert!(stderr(&below_size).contains(&format!("over the {} byte limit", size - 1)));
+
     let dir = rc_git(&["cat", path, "main", "src"]);
     assert_eq!(dir.status.code(), Some(1));
     assert!(stderr(&dir).contains("is a directory"));
