@@ -2725,10 +2725,11 @@ pub unsafe extern "C" fn rcgit_stash_list_free(list: *mut RcGitStashList) {
     unsafe { release(list) };
 }
 
-/// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
-/// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
-/// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
+/// Highlights `len` bytes of `data` as the language the file name `name` implies by its
+/// extension or whole name, as `rcgit_language_name` reads it. A bare fence label such as
+/// `rust` is not a file name and stays plain; `rcgit_highlight_fence` takes those. Returns NULL
+/// with `*error` untouched when `name` maps to no known language, so plain text costs nothing;
+/// NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
 /// when `cancel` was signalled. `cancel` may be NULL when the caller has no way to cancel.
 /// Needs no repository. Release with `rcgit_highlight_list_free`.
 ///
@@ -2759,11 +2760,58 @@ pub unsafe extern "C" fn rcgit_highlight(
     let Some(data) = error.required("rcgit_highlight", "data", data) else {
         return ptr::null_mut();
     };
-    let name = String::from_utf8_lossy(name);
-    let Some(language) = Language::from_file_name(&name).or_else(|| Language::from_fence(&name))
-    else {
+    let Some(language) = Language::from_file_name(&String::from_utf8_lossy(name)) else {
         return ptr::null_mut();
     };
+    export_highlight(data, language, cancel, &error)
+}
+
+/// Highlights `len` bytes of `data` as the language a markdown fence's info string `fence`
+/// names, such as `rust` or `ts`. Returns NULL with `*error` untouched when `fence` names no
+/// known language; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
+/// fails, including when `cancel` was signalled. `cancel` may be NULL when the caller has no
+/// way to cancel. Needs no repository. Release with `rcgit_highlight_list_free`.
+///
+/// # Safety
+/// `fence` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `cancel` is NULL or came from `rcgit_cancel_new` and is not freed before this returns.
+/// `error` is NULL or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_highlight_fence(
+    fence: *const c_char,
+    data: *const u8,
+    len: usize,
+    cancel: *const RcGitCancel,
+    error: *mut *mut c_char,
+) -> *mut RcGitHighlightList {
+    // SAFETY: forwarded from this function's contract.
+    let (fence, data, cancel, error) = unsafe {
+        (
+            bytes_arg(fence),
+            slice_arg(data, len),
+            cancel_flags(cancel),
+            Out::new(error),
+        )
+    };
+    let Some(fence) = error.required("rcgit_highlight_fence", "fence", fence) else {
+        return ptr::null_mut();
+    };
+    let Some(data) = error.required("rcgit_highlight_fence", "data", data) else {
+        return ptr::null_mut();
+    };
+    let Some(language) = Language::from_fence(&String::from_utf8_lossy(fence)) else {
+        return ptr::null_mut();
+    };
+    export_highlight(data, language, cancel, &error)
+}
+
+/// Highlights `data` as `language` and exports the spans, or reports why it could not.
+fn export_highlight(
+    data: &[u8],
+    language: Language,
+    cancel: Option<&RcGitCancel>,
+    error: &Out<*mut c_char>,
+) -> *mut RcGitHighlightList {
     let cancel = cancel.map(|cancel| &cancel.highlight);
     match rc_git_highlight::highlight(data, language, cancel) {
         Ok(spans) => {
@@ -2785,10 +2833,11 @@ pub unsafe extern "C" fn rcgit_highlight(
     }
 }
 
-/// Releases a value from `rcgit_highlight`.
+/// Releases a value from `rcgit_highlight` or `rcgit_highlight_fence`.
 ///
 /// # Safety
-/// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
+/// `list` is NULL or came from `rcgit_highlight` or `rcgit_highlight_fence` and is not freed
+/// twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_highlight_list_free(list: *mut RcGitHighlightList) {
     // SAFETY: forwarded from this function's contract.
@@ -4406,8 +4455,8 @@ pub unsafe extern "C" fn rcgit_remote_status_free(status: *mut RcGitRemoteStatus
 }
 
 /// A cancellation flag for one remote operation or one highlight. Opaque: create with
-/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push` or
-/// `rcgit_highlight`, set it from any thread with `rcgit_cancel_signal`, release it with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push`, `rcgit_highlight`
+/// or `rcgit_highlight_fence`, set it from any thread with `rcgit_cancel_signal`, release it with
 /// `rcgit_cancel_free` once the operation has returned.
 pub struct RcGitCancel {
     remote: Cancel,
@@ -4445,7 +4494,8 @@ pub unsafe extern "C" fn rcgit_cancel_signal(cancel: *const RcGitCancel) {
 ///
 /// # Safety
 /// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
-/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push` or `rcgit_highlight`.
+/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push`, `rcgit_highlight` or
+/// `rcgit_highlight_fence`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_cancel_free(cancel: *mut RcGitCancel) {
     // SAFETY: forwarded from this function's contract.
@@ -7702,9 +7752,11 @@ mod tests {
                 &raw mut error,
             )
         };
-        assert!(!list.is_null(), "a fence info string names a language too");
+        assert!(
+            list.is_null(),
+            "a file named like a fence label stays plain"
+        );
         assert!(error.is_null());
-        unsafe { rcgit_highlight_list_free(list) };
 
         let unknown = CString::new("photo.png").unwrap();
         let list = unsafe {
@@ -7735,6 +7787,65 @@ mod tests {
             unsafe { rcgit_highlight(name.as_ptr(), ptr::null(), 5, ptr::null(), &raw mut error) };
         assert!(list.is_null());
         assert_eq!(take_error(&mut error), "rcgit_highlight: data is NULL");
+    }
+
+    #[test]
+    fn a_fence_label_highlights_through_its_own_entry_point() {
+        let mut error = ptr::null_mut();
+        let data = b"fn main() {}\n";
+        let fence = CString::new("rust").unwrap();
+        let list = unsafe {
+            rcgit_highlight_fence(
+                fence.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                ptr::null(),
+                &raw mut error,
+            )
+        };
+        assert!(!list.is_null(), "a fenced rust block highlights");
+        assert!(error.is_null());
+        let list_ref = unsafe { &*list };
+        let spans = unsafe { std::slice::from_raw_parts(list_ref.spans, list_ref.len) };
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.kind == RcGitHighlightClass::Keyword)
+        );
+        unsafe { rcgit_highlight_list_free(list) };
+
+        for label in ["main.rs", "mermaid"] {
+            let label = CString::new(label).unwrap();
+            let list = unsafe {
+                rcgit_highlight_fence(
+                    label.as_ptr(),
+                    data.as_ptr(),
+                    data.len(),
+                    ptr::null(),
+                    &raw mut error,
+                )
+            };
+            assert!(list.is_null(), "{label:?} is not a fence label");
+            assert!(error.is_null(), "an unknown fence label is not an error");
+        }
+
+        let list = unsafe {
+            rcgit_highlight_fence(ptr::null(), data.as_ptr(), 0, ptr::null(), &raw mut error)
+        };
+        assert!(list.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_highlight_fence: fence is NULL"
+        );
+
+        let list = unsafe {
+            rcgit_highlight_fence(fence.as_ptr(), ptr::null(), 5, ptr::null(), &raw mut error)
+        };
+        assert!(list.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_highlight_fence: data is NULL"
+        );
     }
 
     #[test]

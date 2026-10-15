@@ -63,14 +63,35 @@ public enum Highlighter {
     /// would fight the editor for memory. Above this, files stay plain.
     public static let byteLimit = 2 * 1024 * 1024
 
-    /// Highlights `data` as the language `name`'s extension implies. `nil` when the
-    /// extension maps to no known language or the parse fails; the caller shows plain text.
+    /// Highlights `data` as the language the file name `name` implies. `nil` when the name
+    /// maps to no known language or the parse fails; the caller shows plain text. A file named
+    /// like a fence label, such as `rust`, stays plain.
     public static func highlight(name: String, data: [UInt8]) -> [HighlightSpan]? {
         guard data.count <= byteLimit else { return nil }
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = data.withUnsafeBufferPointer { buffer in
             rcgit_highlight(name, buffer.baseAddress, buffer.count, nil, &error)
         }
+        return spans(from: list, error: error)
+    }
+
+    /// Highlights `data` as the language a markdown fence's info string `fence` names, such
+    /// as `rust`. `nil` when the label names no known language or the parse fails.
+    public static func highlight(fence: String, data: [UInt8]) -> [HighlightSpan]? {
+        guard data.count <= byteLimit else { return nil }
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let list = data.withUnsafeBufferPointer { buffer in
+            rcgit_highlight_fence(fence, buffer.baseAddress, buffer.count, nil, &error)
+        }
+        return spans(from: list, error: error)
+    }
+
+    /// Takes ownership of a highlight result and its error: logs the error, copies the spans
+    /// out, and frees the list.
+    private static func spans(
+        from list: UnsafeMutablePointer<RcGitHighlightList>?,
+        error: UnsafeMutablePointer<CChar>?
+    ) -> [HighlightSpan]? {
         if let error { HighlightFailureLog.report(error) }
         guard let list else { return nil }
         defer { rcgit_highlight_list_free(list) }

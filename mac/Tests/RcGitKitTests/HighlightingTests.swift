@@ -17,6 +17,14 @@ import Testing
         #expect(Highlighter.highlight(name: "noext", data: data) == nil)
     }
 
+    @Test func fenceLabelsHighlightOnlyAsFences() {
+        let data = Array("fn main() {}\n".utf8)
+        #expect(Highlighter.highlight(name: "rust", data: data) == nil)
+        let spans = Highlighter.highlight(fence: "rust", data: data)
+        #expect(spans?.contains { $0.class == .keyword } == true)
+        #expect(Highlighter.highlight(fence: "mermaid", data: data) == nil)
+    }
+
     @Test func aFailureMessageIsLoggedOnce() {
         let message = "highlighting test-\(UUID()): the grammar failed to load: query"
         #expect(HighlightFailureLog.isFirst(message))

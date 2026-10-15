@@ -2173,15 +2173,13 @@ fn highlight_input(
     }
 }
 
-/// The language the app highlights a file as: by extension or file name, else by the name as
-/// a fence label, the way `rcgit_highlight` picks it.
-fn highlight_language(name: &str) -> Option<rc_git_highlight::Language> {
-    rc_git_highlight::Language::from_file_name(name)
-        .or_else(|| rc_git_highlight::Language::from_fence(name))
-}
-
 fn highlight_verb(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    let (data, language) = match highlight_input(repo, "highlight", args, highlight_language)? {
+    let (data, language) = match highlight_input(
+        repo,
+        "highlight",
+        args,
+        rc_git_highlight::Language::from_file_name,
+    )? {
         HighlightInput::Text { data, language } => (data, language),
         HighlightInput::Declined(code) => return Ok(code),
     };

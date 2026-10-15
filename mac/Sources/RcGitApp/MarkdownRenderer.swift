@@ -226,7 +226,7 @@ private struct MarkdownBuilder {
             ])
         guard let language, !text.isEmpty,
             text.utf8.count <= MarkdownRenderer.Theme.highlightLimit,
-            let spans = Highlighter.highlight(name: language, data: Array(text.utf8))
+            let spans = Highlighter.highlight(fence: language, data: Array(text.utf8))
         else { return string }
         for span in HighlightMapper.utf16Ranges(for: spans, in: text)
         where NSMaxRange(span.range) <= string.length {

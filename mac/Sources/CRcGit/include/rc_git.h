@@ -206,8 +206,8 @@ typedef enum RcGitRisk {
 } RcGitRisk;
 
 /// A cancellation flag for one remote operation or one highlight. Opaque: create with
-/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push` or
-/// `rcgit_highlight`, set it from any thread with `rcgit_cancel_signal`, release it with
+/// `rcgit_cancel_new`, pass it to `rcgit_guard_fetch`, `rcgit_guard_push`, `rcgit_highlight`
+/// or `rcgit_highlight_fence`, set it from any thread with `rcgit_cancel_signal`, release it with
 /// `rcgit_cancel_free` once the operation has returned.
 typedef struct RcGitCancel RcGitCancel;
 
@@ -1238,10 +1238,11 @@ struct RcGitStashList *rcgit_stash_list(const struct RcGitRepo *repo, char **err
 /// `list` is NULL or came from `rcgit_stash_list` and is not freed twice.
 void rcgit_stash_list_free(struct RcGitStashList *list);
 
-/// Highlights `len` bytes of `data` as the language `name` implies: an extension when `name`
-/// is a file name, otherwise a markdown fence's info string such as `rust`. Returns NULL with
-/// `*error` untouched when `name` maps to no known language, so plain text costs nothing; NULL
-/// with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
+/// Highlights `len` bytes of `data` as the language the file name `name` implies by its
+/// extension or whole name, as `rcgit_language_name` reads it. A bare fence label such as
+/// `rust` is not a file name and stays plain; `rcgit_highlight_fence` takes those. Returns NULL
+/// with `*error` untouched when `name` maps to no known language, so plain text costs nothing;
+/// NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing fails, including
 /// when `cancel` was signalled. `cancel` may be NULL when the caller has no way to cancel.
 /// Needs no repository. Release with `rcgit_highlight_list_free`.
 ///
@@ -1255,10 +1256,27 @@ struct RcGitHighlightList *rcgit_highlight(const char *name,
                                            const struct RcGitCancel *cancel,
                                            char **error);
 
-/// Releases a value from `rcgit_highlight`.
+/// Highlights `len` bytes of `data` as the language a markdown fence's info string `fence`
+/// names, such as `rust` or `ts`. Returns NULL with `*error` untouched when `fence` names no
+/// known language; NULL with `*error` set when `data` is NULL with a nonzero `len` or parsing
+/// fails, including when `cancel` was signalled. `cancel` may be NULL when the caller has no
+/// way to cancel. Needs no repository. Release with `rcgit_highlight_list_free`.
 ///
 /// # Safety
-/// `list` is NULL or came from `rcgit_highlight` and is not freed twice.
+/// `fence` is a NUL-terminated string. `data` is NULL or points to `len` readable bytes.
+/// `cancel` is NULL or came from `rcgit_cancel_new` and is not freed before this returns.
+/// `error` is NULL or valid for writing a `char *`.
+struct RcGitHighlightList *rcgit_highlight_fence(const char *fence,
+                                                 const uint8_t *data,
+                                                 size_t len,
+                                                 const struct RcGitCancel *cancel,
+                                                 char **error);
+
+/// Releases a value from `rcgit_highlight` or `rcgit_highlight_fence`.
+///
+/// # Safety
+/// `list` is NULL or came from `rcgit_highlight` or `rcgit_highlight_fence` and is not freed
+/// twice.
 void rcgit_highlight_list_free(struct RcGitHighlightList *list);
 
 /// Names the language the file name `name` implies by its extension, as `rcgit_highlight`
@@ -1581,7 +1599,8 @@ void rcgit_cancel_signal(const struct RcGitCancel *cancel);
 ///
 /// # Safety
 /// `cancel` is NULL or came from `rcgit_cancel_new`, is not freed twice, and is not
-/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push` or `rcgit_highlight`.
+/// in use by a running `rcgit_guard_fetch`, `rcgit_guard_push`, `rcgit_highlight` or
+/// `rcgit_highlight_fence`.
 void rcgit_cancel_free(struct RcGitCancel *cancel);
 
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
