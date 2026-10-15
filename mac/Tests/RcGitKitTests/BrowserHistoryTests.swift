@@ -1020,6 +1020,19 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(!model.canBlameOpenedFile, "the link lookup carries the file's status")
     }
 
+    @Test func blameRefusesAnUntrackedFileOpenedFromPathSearch() async {
+        repo.workDir = "/w"
+        repo.worktreeListings[""] = WorktreeListing(entries: [
+            WorktreeEntry(name: "new.txt", kind: .blob, status: .untracked, oid: nil, size: 6)
+        ])
+        repo.worktreeFiles["new.txt"] = textBlob("fresh\n")
+        await model.attach(repo)
+        let pick = PathIndexEntry(path: "new.txt", oid: .unhashed, kind: .blob, hidden: false)
+        await model.openSearchResult(pick)
+        #expect(model.openedFilePath == "new.txt")
+        #expect(!model.canBlameOpenedFile, "the search pick carries the file's status")
+    }
+
     @Test func blameOfARefIsNotTitledHead() async {
         await model.attach(repo)
         #expect(!model.browsingWorkingTree)

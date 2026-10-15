@@ -1839,13 +1839,37 @@ public final class BrowserModel {
     }
 
     /// Opens a path-search pick: from disk while browsing the working tree, else the blob.
+    /// A working-tree pick carries its status against HEAD, so an untracked file is not
+    /// offered for blame; the lookup lists one directory per path component.
     public func openSearchResult(_ entry: PathIndexEntry) async {
         if browsingWorkingTree {
+            let status = await searchResultStatus(entry)
             await openWorktreeFile(
-                name: entry.name, path: entry.path, pathIsExact: entry.hasExactPath)
+                name: entry.name, path: entry.path, pathIsExact: entry.hasExactPath,
+                status: status)
         } else {
             let treeEntry = TreeEntry(name: entry.name, oid: entry.oid, kind: entry.kind)
             await openFile(treeEntry, path: entry.path, pathIsExact: entry.hasExactPath)
+        }
+    }
+
+    /// The working-tree status of a path-search pick, or `nil` when it cannot be known: an
+    /// inexact path is refused by the open itself, and a failed lookup is logged and leaves
+    /// the open to report what the read finds.
+    private func searchResultStatus(_ entry: PathIndexEntry) async -> WorktreeStatus? {
+        guard entry.hasExactPath, let repository, let root = rootTree else { return nil }
+        let path = entry.path
+        let lookup = await RepositoryError.run {
+            try Self.worktreeFileStatus(at: path, repository: repository, root: root)
+        }
+        switch lookup {
+        case let .success(status):
+            return status
+        case let .failure(error):
+            let message = error.message
+            Self.logger.warning(
+                "no status for \(path, privacy: .public): \(message, privacy: .public)")
+            return nil
         }
     }
 
