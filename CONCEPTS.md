@@ -128,6 +128,11 @@ the same-named branch, as git's `push.default=simple` does, and when it pushes t
 upstream's remote it refuses a branch whose config names an upstream under another name, so
 what push uploads to is always what the counts and pull compare against.
 
+A branch whose `branch.<name>.remote` is a bare URL rather than a remote's name can be
+pushed, but not fetched or pulled: with no remote there are no fetch refspecs and no
+remote-tracking ref to read. Fetch and pull refuse it with a message that names the URL and
+says to add a named remote (`git remote add`) and point the branch at it.
+
 Every one of them ends. The app carries a cancel flag into the call that the user can
 raise from the other side while the transfer holds the thread, and each transport keeps
 an idle budget — the gap it tolerates between bytes, not the length of the transfer, so

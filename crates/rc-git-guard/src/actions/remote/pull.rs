@@ -15,7 +15,10 @@ use crate::actions::write::Writer;
 use crate::actions::{ActionError, ActionResult, authorize, is_ancestor_of_any, open, treeapply};
 use crate::{Action, Policy};
 
-use super::{count_ahead_behind, current_branch, peel_ref, tracking_ref_name};
+use super::{
+    Upstream, count_ahead_behind, current_branch, peel_ref, resolve_upstream, tracking_ref_name,
+    url_upstream_refused,
+};
 
 const OP: &str = "pull";
 /// What the branch and `HEAD` reflogs record for a fast-forward pull.
@@ -49,7 +52,8 @@ pub struct PullOutcome {
 /// when no remote resolves for the branch, [`ActionError::UpstreamGone`] when the tracking
 /// ref `branch.<name>.merge` names no longer exists, [`ActionError::DetachedHead`], and
 /// [`ActionError::Git`] for everything else, including a git operation in progress (merge,
-/// rebase, cherry-pick, revert, bisect) and an unresolved conflict in the index.
+/// rebase, cherry-pick, revert, bisect), an unresolved conflict in the index, and an
+/// upstream that is a bare URL rather than a named remote.
 pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<PullOutcome> {
     let repo = open(repo_path, OP, "repository")?;
     crate::actions::refuse_any_operation_in_progress(&repo, OP, "repository")?;
@@ -114,10 +118,16 @@ pub fn pull_fast_forward(repo_path: &Path, policy: &Policy) -> ActionResult<Pull
 /// published: no `branch.<name>.merge`, and the fallback tracking ref does not exist or no
 /// fetch refspec maps the branch to one.
 fn upstream_tip(repo: &gix::Repository, branch: &str) -> ActionResult<Option<ObjectId>> {
-    let tracking = tracking_ref_name(repo, branch, OP)?.ok_or_else(|| ActionError::NoUpstream {
-        op: OP,
-        branch: branch.to_owned(),
-    })?;
+    let Some(tracking) = tracking_ref_name(repo, branch, OP)? else {
+        let upstream = resolve_upstream(repo, branch, gix::remote::Direction::Fetch, OP)?;
+        if let Some(Upstream::Url { url }) = upstream {
+            return Err(url_upstream_refused(OP, &url));
+        }
+        return Err(ActionError::NoUpstream {
+            op: OP,
+            branch: branch.to_owned(),
+        });
+    };
     let Some(name) = tracking.name else {
         return Ok(None);
     };

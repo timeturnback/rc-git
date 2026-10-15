@@ -11,8 +11,8 @@ use crate::{Action, Confirmation, Policy};
 
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    claim_transfer, detached_upstream, host_of, http_options, map_network_error, redacted,
-    resolve_upstream, run_detached, vet_remote_url,
+    claim_transfer, detached_upstream, host_of, http_options, map_network_error, resolve_upstream,
+    run_detached, url_upstream_refused, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -69,14 +69,7 @@ pub fn fetch_upstream(
                 updated_refs: Vec::new(),
             });
         }
-        Upstream::Url { url } => {
-            return Err(ActionError::git(
-                OP,
-                redacted(&url),
-                "the upstream is a URL with no remote configured for it; rc-git fetches only \
-                 from a named remote (add one with `git remote add`)",
-            ));
-        }
+        Upstream::Url { url } => return Err(url_upstream_refused(OP, &url)),
         Upstream::Named { name, url } => (name, url),
     };
     let remote = find_remote(&repo, &remote_name)?;

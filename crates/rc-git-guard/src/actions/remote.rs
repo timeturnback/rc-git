@@ -314,6 +314,19 @@ pub(super) enum Upstream {
     },
 }
 
+/// The refusal fetch and pull give a branch whose `branch.<name>.remote` is a bare URL: with no
+/// remote there are no fetch refspecs and no remote-tracking ref, so rc-git reads only from a
+/// named remote and tells the user to add one. Push still works (see `CONCEPTS.md`).
+fn url_upstream_refused(op: &'static str, url: &gix::Url) -> ActionError {
+    ActionError::git(
+        op,
+        redacted(url),
+        "the upstream is a URL with no remote configured for it; rc-git fetches and pulls \
+         only from a named remote (add one with `git remote add <name> <url>` and point \
+         the branch's remote at it)",
+    )
+}
+
 impl Upstream {
     /// What reports and errors call the upstream: `.`, the remote's name, or the URL
     /// without userinfo.

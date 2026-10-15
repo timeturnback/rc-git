@@ -2776,8 +2776,17 @@ fn fetch_and_pull_refuse_a_url_upstream_by_name() {
     let message = err.to_string();
     assert!(matches!(err, ActionError::Git { .. }), "{message}");
     assert!(message.contains("named remote"), "{message}");
+    assert!(message.contains("git remote add"), "{message}");
     assert!(!message.contains("secret"), "{message}");
 
     let err = pull_fast_forward(fixture.path(), &Policy::default()).expect_err("pull");
-    assert!(matches!(err, ActionError::NoUpstream { .. }), "{err}");
+    let message = err.to_string();
+    assert!(matches!(err, ActionError::Git { .. }), "{message}");
+    assert!(
+        message.starts_with("pull 'https://example.invalid/x.git': "),
+        "{message}"
+    );
+    assert!(message.contains("named remote"), "{message}");
+    assert!(message.contains("git remote add"), "{message}");
+    assert!(!message.contains("secret"), "{message}");
 }
