@@ -1091,7 +1091,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changes.onStatusChanged = { [weak self] in
             guard let self, let changesModel else { return }
             if case let .loaded(report) = changesModel.statusState {
-                worktreeWatcher?.setIgnoredDirs(report.ignoredDirs)
+                worktreeWatcher?.setPrunedDirs(
+                    ignored: report.ignoredDirs, nestedRepos: report.nestedRepos)
             }
             changesController.renderStatus(changesModel.statusState)
         }

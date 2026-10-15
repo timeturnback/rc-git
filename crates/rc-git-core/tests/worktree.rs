@@ -1245,6 +1245,14 @@ fn worktree_status_never_enters_a_nested_repository_or_a_git_directory() {
     assert_eq!(status_paths(&report), []);
     // The root's entries, `nested` itself and `src`'s entries; nothing inside either `.git`.
     assert!(report.scanned < 15, "scanned {}", report.scanned);
+    // `src` is tracked, so its stray `.git` makes no nested repository of it.
+    let nested: Vec<String> = report
+        .nested_repos
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(nested, ["nested".to_owned()]);
+    assert!(report.ignored_dirs.is_empty());
 }
 
 #[test]
@@ -1516,7 +1524,7 @@ fn status_within_five_seconds(path: &std::path::Path) -> Result<rc_git_core::Sta
             let tree = repo.resolve_tree("HEAD")?;
             repo.worktree_status(Some(tree), 10_000)
         });
-        sender.send(report)
+        sender.send(Box::new(report))
     });
     match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(report) => report.map_err(|error| error.to_string()),

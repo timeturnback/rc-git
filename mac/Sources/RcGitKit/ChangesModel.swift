@@ -658,7 +658,7 @@ public final class ChangesModel {
         }
         return StatusReport(
             entries: entries, scanned: report.scanned, truncated: report.truncated,
-            ignoredDirs: report.ignoredDirs)
+            ignoredDirs: report.ignoredDirs, nestedRepos: report.nestedRepos)
     }
 }
 

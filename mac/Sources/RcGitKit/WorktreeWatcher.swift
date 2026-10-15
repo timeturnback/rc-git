@@ -9,28 +9,36 @@ import Foundation
 /// and still counts. Events strictly
 /// below a directory the last scan pruned as ignored (`StatusReport.ignoredDirs`) are dropped
 /// too: the walk never opens it, so a build writing into `target/` cannot change the list. The
-/// directory's own path stays relevant, since a file replacing it may not be ignored. Pure, so
-/// the filter is testable without FSEvents.
+/// directory's own path stays relevant, since a file replacing it may not be ignored. Events
+/// below an untracked directory holding its own repository (`StatusReport.nestedRepos`) are
+/// dropped the same way, except at its `.git`: removing that turns the folder's files into
+/// untracked ones. Pure, so the filter is testable without FSEvents.
 public enum WorktreeWatchFilter {
     /// Whether an event at `path` can change the outcome of `worktreeStatus`. `commonDir` is
     /// the git directory every worktree shares (`gitDir` itself outside a linked worktree);
     /// its `info/exclude` is the one the status walk reads. `ignoredRoots` holds
-    /// repository-relative directories the last status walk pruned unopened.
+    /// repository-relative directories the last status walk pruned as ignored, and
+    /// `nestedRoots` those it left unopened because they hold their own repository.
     public static func isRelevant(
         _ path: String, workDir: String, gitDir: String, commonDir: String,
-        ignoredRoots: Set<String> = []
+        ignoredRoots: Set<String> = [], nestedRoots: Set<String> = []
     ) -> Bool {
         if path == excludeFile(commonDir: commonDir) { return true }
         let root = normalized(workDir)
         guard path == root || path.hasPrefix(root + "/") else { return false }
         let git = normalized(gitDir)
         if path == git || path.hasPrefix(git + "/") { return false }
-        return !isBelowIgnoredRoot(String(path.dropFirst(root.count + 1)), ignoredRoots)
+        let relative = String(path.dropFirst(root.count + 1))
+        if isBelow(relative, anyOf: ignoredRoots) { return false }
+        guard isBelow(relative, anyOf: nestedRoots) else { return true }
+        let gitSuffix = "/.git"
+        return relative.hasSuffix(gitSuffix)
+            && nestedRoots.contains(String(relative.dropLast(gitSuffix.count)))
     }
 
-    /// Whether some proper ancestor of the repository-relative `relative` is an ignored root.
+    /// Whether some proper ancestor of the repository-relative `relative` is in `roots`.
     /// Checks each ancestor in the set, so the cost follows the path's depth, not the set.
-    private static func isBelowIgnoredRoot(_ relative: String, _ roots: Set<String>) -> Bool {
+    private static func isBelow(_ relative: String, anyOf roots: Set<String>) -> Bool {
         guard !roots.isEmpty else { return false }
         var index = relative.startIndex
         while let slash = relative[index...].firstIndex(of: "/") {
@@ -72,8 +80,14 @@ public final class WorktreeWatcher: @unchecked Sendable {
     private let onChange: @Sendable () -> Void
     private let queue = DispatchQueue(label: "rc-git.worktree-watcher")
     private var stream: FSEventStreamRef?
-    private let ignoredLock = NSLock()
-    private var ignoredRoots: Set<String> = []
+    private let prunedLock = NSLock()
+    private var prunedRoots = PrunedRoots()
+
+    /// The directories the latest scan left unopened, read and replaced under `prunedLock`.
+    private struct PrunedRoots {
+        var ignored: Set<String> = []
+        var nested: Set<String> = []
+    }
 
     public init(
         workDir: String, gitDir: String, commonDir: String, latency: TimeInterval = 0.5,
@@ -91,10 +105,11 @@ public final class WorktreeWatcher: @unchecked Sendable {
     }
 
     /// Replaces the directories whose contents no longer count as a change, with the
-    /// `StatusReport.ignoredDirs` of the latest scan. Safe to call from any thread.
-    public func setIgnoredDirs(_ dirs: [String]) {
-        let roots = Set(dirs)
-        ignoredLock.withLock { ignoredRoots = roots }
+    /// `StatusReport.ignoredDirs` and `StatusReport.nestedRepos` of the latest scan. Safe to
+    /// call from any thread.
+    public func setPrunedDirs(ignored: [String], nestedRepos: [String]) {
+        let roots = PrunedRoots(ignored: Set(ignored), nested: Set(nestedRepos))
+        prunedLock.withLock { prunedRoots = roots }
     }
 
     /// The `.git` subdirectories FSEvents should never report: object, ref and reflog churn
@@ -160,11 +175,11 @@ public final class WorktreeWatcher: @unchecked Sendable {
     }
 
     fileprivate func handle(paths: [String]) {
-        let ignored = ignoredLock.withLock { ignoredRoots }
+        let pruned = prunedLock.withLock { prunedRoots }
         if paths.contains(where: {
             WorktreeWatchFilter.isRelevant(
                 $0, workDir: workDir, gitDir: gitDir, commonDir: commonDir,
-                ignoredRoots: ignored)
+                ignoredRoots: pruned.ignored, nestedRoots: pruned.nested)
         }) {
             onChange()
         }

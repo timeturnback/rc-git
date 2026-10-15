@@ -94,6 +94,21 @@ import Testing
         #expect(relevant("/repo"))
     }
 
+    @Test func writesInsideANestedRepositoryAreDroppedButItsGitStaysRelevant() {
+        let nested: Set<String> = ["vendor/lib"]
+        func relevant(_ path: String) -> Bool {
+            WorktreeWatchFilter.isRelevant(
+                path, workDir: workDir, gitDir: gitDir, commonDir: gitDir, nestedRoots: nested)
+        }
+        #expect(!relevant("/repo/vendor/lib/a.txt"))
+        #expect(!relevant("/repo/vendor/lib/.git/index"))
+        #expect(!relevant("/repo/vendor/lib/.git/objects/ab/cdef"))
+        #expect(relevant("/repo/vendor/lib/.git"), "removing it makes the files untracked")
+        #expect(relevant("/repo/vendor/lib"), "a file replacing the folder is untracked")
+        #expect(relevant("/repo/vendor/lib2/a.txt"), "a sibling sharing the prefix is not below it")
+        #expect(relevant("/repo/vendor/x"))
+    }
+
     @Test func noIgnoredFoldersKeepsEveryWorktreeWrite() {
         #expect(
             WorktreeWatchFilter.isRelevant(

@@ -565,8 +565,8 @@ typedef struct RcGitStatusEntry {
   uint64_t size;
 } RcGitStatusEntry;
 
-/// An untracked directory the status walk pruned without opening it: no write below it can
-/// change the status until the ignore rules or the tree change.
+/// An untracked directory the status walk pruned without opening it, because an ignore rule
+/// matched it or it holds its own repository.
 typedef struct RcGitIgnoredDir {
   /// Repository-relative path with `/` separators; may be non-UTF-8.
   char *path;
@@ -586,6 +586,11 @@ typedef struct RcGitStatusList {
   struct RcGitIgnoredDir *ignored_dirs;
   /// Number of ignored directories.
   size_t ignored_len;
+  /// `nested_len` untracked directories left unopened because they hold their own
+  /// repository, sorted by path.
+  struct RcGitIgnoredDir *nested_repos;
+  /// Number of nested repositories.
+  size_t nested_len;
 } RcGitStatusList;
 
 /// One file on disk from a full working-tree listing.

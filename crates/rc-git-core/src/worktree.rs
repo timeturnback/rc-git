@@ -135,6 +135,11 @@ pub struct StatusReport {
     /// write below one can change this report until the ignore rules or the tree change, so
     /// a watcher may drop events under them.
     pub ignored_dirs: Vec<BString>,
+    /// Untracked directories the walk left unopened because they hold a repository of their
+    /// own, sorted by path. Only a write to the `.git` directly below one (the repository
+    /// appearing or going) can change this report, so a watcher may drop every other event
+    /// under them.
+    pub nested_repos: Vec<BString>,
 }
 
 impl Repository {
@@ -262,6 +267,7 @@ impl Repository {
             report.truncated = walk.budget.truncated;
             report.entries.sort_by(|a, b| a.path.cmp(&b.path));
             report.ignored_dirs.sort();
+            report.nested_repos.sort();
             report.warnings = walk.context.into_warnings();
             Ok(report)
         })
@@ -1292,6 +1298,7 @@ impl StatusWalk<'_> {
             return Ok(());
         }
         if holds_nested_repository(disk_path) {
+            self.report.nested_repos.push(path.clone());
             return Ok(());
         }
         self.walk_dir(None, path, disk_path)

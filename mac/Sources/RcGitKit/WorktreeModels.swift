@@ -69,14 +69,20 @@ public struct StatusReport: Sendable, Hashable {
     /// Untracked directories an ignore rule pruned unopened, repository-relative and sorted.
     /// No write below one can change the report, so the worktree watcher drops those events.
     public let ignoredDirs: [String]
+    /// Untracked directories left unopened because they hold their own repository,
+    /// repository-relative and sorted. Only their `.git` appearing or going can change the
+    /// report, so the worktree watcher drops every other event below them.
+    public let nestedRepos: [String]
 
     public init(
-        entries: [StatusEntry], scanned: Int, truncated: Bool, ignoredDirs: [String] = []
+        entries: [StatusEntry], scanned: Int, truncated: Bool, ignoredDirs: [String] = [],
+        nestedRepos: [String] = []
     ) {
         self.entries = entries
         self.scanned = scanned
         self.truncated = truncated
         self.ignoredDirs = ignoredDirs
+        self.nestedRepos = nestedRepos
     }
 }
 

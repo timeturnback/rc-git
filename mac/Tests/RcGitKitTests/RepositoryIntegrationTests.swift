@@ -525,7 +525,20 @@ import Testing
 
         let report = try repo.worktreeStatus(tree: try repo.resolveTree("HEAD"))
         #expect(report.ignoredDirs == ["target", "tools/target"])
+        #expect(report.nestedRepos.isEmpty)
         #expect(!report.entries.contains { $0.path.hasPrefix("target/") })
+    }
+
+    @Test func statusReportsTheNestedRepositoriesItSkipped() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("vendor/lib/a.txt", "a\n")
+        try fixture.write("vendor/lib/.git/HEAD", "ref: refs/heads/main\n")
+        let repo = try Repository(path: fixture.path)
+
+        let report = try repo.worktreeStatus(tree: try repo.resolveTree("HEAD"))
+        #expect(report.nestedRepos == ["vendor/lib"])
+        #expect(!report.entries.contains { $0.path.hasPrefix("vendor/") })
     }
 
     @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {

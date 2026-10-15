@@ -930,20 +930,26 @@ pub struct RcGitStatusList {
     pub ignored_dirs: *mut RcGitIgnoredDir,
     /// Number of ignored directories.
     pub ignored_len: usize,
+    /// `nested_len` untracked directories left unopened because they hold their own
+    /// repository, sorted by path.
+    pub nested_repos: *mut RcGitIgnoredDir,
+    /// Number of nested repositories.
+    pub nested_len: usize,
 }
 
 impl Drop for RcGitStatusList {
     fn drop(&mut self) {
-        // SAFETY: both arrays were produced by `export_vec` with these lengths.
+        // SAFETY: all three arrays were produced by `export_vec` with these lengths.
         unsafe {
             release_vec(self.entries, self.len);
             release_vec(self.ignored_dirs, self.ignored_len);
+            release_vec(self.nested_repos, self.nested_len);
         };
     }
 }
 
-/// An untracked directory the status walk pruned without opening it: no write below it can
-/// change the status until the ignore rules or the tree change.
+/// An untracked directory the status walk pruned without opening it, because an ignore rule
+/// matched it or it holds its own repository.
 #[repr(C)]
 pub struct RcGitIgnoredDir {
     /// Repository-relative path with `/` separators; may be non-UTF-8.
@@ -2545,14 +2551,8 @@ pub unsafe extern "C" fn rcgit_worktree_status(
                 });
             }
             let (entries, len) = export_vec(entries);
-            let ignored = report
-                .ignored_dirs
-                .into_iter()
-                .map(|path| RcGitIgnoredDir {
-                    path: export_string(Vec::from(path)),
-                })
-                .collect();
-            let (ignored_dirs, ignored_len) = export_vec(ignored);
+            let (ignored_dirs, ignored_len) = export_vec(pruned_dirs(report.ignored_dirs));
+            let (nested_repos, nested_len) = export_vec(pruned_dirs(report.nested_repos));
             export(RcGitStatusList {
                 entries,
                 len,
@@ -2560,6 +2560,8 @@ pub unsafe extern "C" fn rcgit_worktree_status(
                 truncated: report.truncated,
                 ignored_dirs,
                 ignored_len,
+                nested_repos,
+                nested_len,
             })
         }
         Err(err) => {
@@ -2567,6 +2569,17 @@ pub unsafe extern "C" fn rcgit_worktree_status(
             ptr::null_mut()
         }
     }
+}
+
+/// The C rows for directories the status walk left unopened.
+fn pruned_dirs(paths: Vec<rc_git_core::bstr::BString>) -> Vec<RcGitIgnoredDir> {
+    let mut dirs = Vec::with_capacity(paths.len());
+    for path in paths {
+        dirs.push(RcGitIgnoredDir {
+            path: export_string(Vec::from(path)),
+        });
+    }
+    dirs
 }
 
 /// Releases a value from `rcgit_worktree_status`.
@@ -6044,6 +6057,30 @@ mod tests {
     }
 
     #[test]
+    fn worktree_status_lists_nested_repositories() {
+        let fx = Fixture::standard();
+        fx.write("vendor/lib/a.txt", b"a\n");
+        fx.write("vendor/lib/.git/HEAD", b"ref: refs/heads/main\n");
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tree = resolve(repo, "HEAD^{tree}");
+
+        let list = unsafe { rcgit_worktree_status(repo, &raw const tree, 100_000, &raw mut error) };
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let nested =
+            unsafe { std::slice::from_raw_parts(list_ref.nested_repos, list_ref.nested_len) };
+        let nested: Vec<String> = nested.iter().map(|dir| text(dir.path)).collect();
+        assert_eq!(nested, ["vendor/lib"]);
+        assert_eq!(
+            list_ref.len, 0,
+            "nothing inside the nested repository is listed"
+        );
+        unsafe { rcgit_status_list_free(list) };
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
     #[expect(
         clippy::disallowed_methods,
         reason = "the test arranges the fixture's working tree; the library never mutates"
@@ -6091,6 +6128,7 @@ mod tests {
             unsafe { std::slice::from_raw_parts(list_ref.ignored_dirs, list_ref.ignored_len) };
         let ignored: Vec<String> = ignored.iter().map(|dir| text(dir.path)).collect();
         assert_eq!(ignored, ["target"]);
+        assert_eq!(list_ref.nested_len, 0);
         unsafe { rcgit_status_list_free(list) };
 
         let path = CString::new("alpha.txt").unwrap();

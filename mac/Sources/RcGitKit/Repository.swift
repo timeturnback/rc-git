@@ -382,18 +382,26 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
                     hasExactPath: path.exact
                 ))
         }
-        var ignoredDirs: [String] = []
-        for index in 0..<list.pointee.ignored_len {
-            // A lossily decoded path names no directory on disk; leaving it out only costs
-            // rescans for writes below it.
-            let name = ExactName(list.pointee.ignored_dirs[index].path)
-            if name.exact {
-                ignoredDirs.append(name.text)
-            }
-        }
         return StatusReport(
             entries: entries, scanned: list.pointee.scanned, truncated: list.pointee.truncated,
-            ignoredDirs: ignoredDirs)
+            ignoredDirs: Self.exactDirs(list.pointee.ignored_dirs, count: list.pointee.ignored_len),
+            nestedRepos: Self.exactDirs(list.pointee.nested_repos, count: list.pointee.nested_len))
+    }
+
+    /// The paths of directories the status walk left unopened. A lossily decoded path names no
+    /// directory on disk; leaving it out only costs rescans for writes below it.
+    private static func exactDirs(
+        _ dirs: UnsafeMutablePointer<RcGitIgnoredDir>?, count: Int
+    ) -> [String] {
+        guard let dirs else { return [] }
+        var paths: [String] = []
+        for index in 0..<count {
+            let name = ExactName(dirs[index].path)
+            if name.exact {
+                paths.append(name.text)
+            }
+        }
+        return paths
     }
 
     /// Every file on disk, sorted by path: tracked, untracked, and ignored alike. An ignored
