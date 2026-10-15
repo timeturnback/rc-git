@@ -84,6 +84,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     var failNextStatus = false
     /// Per path, the worktree-vs-blob diff.
     var worktreeDiffs: [String: BlobDiff] = [:]
+    /// Per path, how many `diffWorktreeFile` calls read it.
+    var worktreeDiffCalls: [String: Int] = [:]
     /// Per path, holds the next `diffWorktreeFile` call for it, then clears itself.
     var worktreeDiffGates: [String: CallGate] = [:]
     var stashes: [StashEntry] = []
@@ -413,7 +415,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         -> BlobDiff
     {
         let (found, gate) = lock.withLock {
-            (worktreeDiffs[path], worktreeDiffGates.removeValue(forKey: path))
+            worktreeDiffCalls[path, default: 0] += 1
+            return (worktreeDiffs[path], worktreeDiffGates.removeValue(forKey: path))
         }
         gate?.pass()
         guard let found else {

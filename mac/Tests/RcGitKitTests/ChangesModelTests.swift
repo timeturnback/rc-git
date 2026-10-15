@@ -592,6 +592,30 @@ import Testing
         #expect(shown.count == 1, "an unchanged diff does not re-render")
     }
 
+    @Test func aRescanReadsASelectedPartiallyTickedFileOnce() async throws {
+        let first = Self.firstHunk.stamp
+        let second = Self.secondHunk.stamp
+        let diff = BlobDiff.text(hunks: [Self.firstHunk, Self.secondHunk])
+        repo.lock.withLock {
+            repo.statusReport = reportWith(aTxt: true)
+            repo.worktreeDiffs["a.txt"] = diff
+        }
+        await model.loadStatus()
+        guard case let .loaded(report) = model.statusState else {
+            Issue.record("expected loaded, got \(model.statusState)")
+            return
+        }
+        await model.select(try #require(report.entries.first { $0.path == "a.txt" }))
+        model.toggleHunk("a.txt", second, all: [first, second])
+        let before = repo.lock.withLock { repo.worktreeDiffCalls["a.txt", default: 0] }
+
+        await model.loadStatus()
+        let after = repo.lock.withLock { repo.worktreeDiffCalls["a.txt", default: 0] }
+        #expect(after - before == 1, "the tick check and the pane share one read")
+        #expect(model.isPartiallyTicked("a.txt"))
+        #expect(model.diffState == .loaded("a.txt", diff))
+    }
+
     @Test func aDiffThatCannotBeReadShowsTheErrorForThatPath() async throws {
         await model.loadStatus()
         guard case let .loaded(report) = model.statusState else {

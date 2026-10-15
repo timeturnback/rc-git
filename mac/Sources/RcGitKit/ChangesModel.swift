@@ -308,78 +308,87 @@ public final class ChangesModel {
                 try repository.worktreeStatus(
                     tree: tree, maxScan: Repository.defaultStatusScanCap),
                 showsHidden: showsHidden)
-            let hunks = Self.currentHunks(of: partialPaths, in: report, repository: repository)
-            return (report, target, hunks)
+            let diffs = Self.partialDiffs(of: partialPaths, in: report, repository: repository)
+            return (report, target, diffs)
         }
         guard generation == statusGeneration else { return }
         var selectedEntry: StatusEntry?
+        var selectedDiff: Result<BlobDiff, RepositoryError>?
         switch result {
-        case let .success((report, head, hunks)):
+        case let .success((report, head, diffs)):
             statusState = .loaded(report)
             expectedHead = head
             inexactPaths = Set(report.entries.filter { !$0.hasExactPath }.map(\.path))
             let current = Set(report.entries.map(\.path))
             untickedPaths.formIntersection(current)
             tickedHunks = tickedHunks.filter { current.contains($0.key) }
-            revalidateHunkTicks(hunks)
+            revalidateHunkTicks(diffs)
             if let selectedPath, !current.contains(selectedPath) {
                 self.selectedPath = nil
                 diffState = .idle
                 onDiffChanged?()
             }
             selectedEntry = report.entries.first { $0.path == selectedPath }
+            selectedDiff = selectedPath.flatMap { diffs[$0] }
         case let .failure(error):
             statusState = .failed(error.message)
         }
         onStatusChanged?()
         if let selectedEntry {
-            await reloadDiff(selectedEntry)
+            await reloadDiff(selectedEntry, read: selectedDiff)
         }
     }
 
     /// Re-reads the selected file's diff from a fresh scan's entry, whose `oid` follows a moved
-    /// `HEAD`. Unlike `select(_:)` it never shows `.loading`, so a watcher-driven rescan does not
-    /// flash the placeholder, and it fires `onDiffChanged` only when what the pane shows
-    /// changed, so an unchanged file keeps its table and scroll.
-    private func reloadDiff(_ entry: StatusEntry) async {
+    /// `HEAD`, or takes `read` when the scan already read that entry for its hunk ticks. Unlike
+    /// `select(_:)` it never shows `.loading`, so a watcher-driven rescan does not flash the
+    /// placeholder, and it fires `onDiffChanged` only when what the pane shows changed, so an
+    /// unchanged file keeps its table and scroll.
+    private func reloadDiff(
+        _ entry: StatusEntry, read: Result<BlobDiff, RepositoryError>?
+    ) async {
         diffGeneration += 1
         let generation = diffGeneration
-        let fresh = await readDiffState(entry)
+        let fresh =
+            if let read {
+                Self.paneState(entry.path, read)
+            } else {
+                await readDiffState(entry)
+            }
         guard generation == diffGeneration, selectedPath == entry.path, fresh != diffState
         else { return }
         diffState = fresh
         onDiffChanged?()
     }
 
-    /// Each partially ticked path's current hunk stamps, read from the fresh report's entry:
-    /// one diff per partially ticked file, so the cost is bounded by what the user picked,
-    /// never by the repository. A file whose diff cannot be read, or is not text, maps to its
-    /// read error or to no stamps, and either way its partial tick is dropped.
-    nonisolated private static func currentHunks(
+    /// Each partially ticked path's current diff, read from the fresh report's entry: one diff
+    /// per partially ticked file, so the cost is bounded by what the user picked, never by the
+    /// repository. The selected file's read is handed to `reloadDiff` rather than read twice.
+    nonisolated private static func partialDiffs(
         of paths: Set<String>, in report: StatusReport, repository: RepositoryReading
-    ) -> [String: Result<Set<HunkStamp>, RepositoryError>] {
-        var hunks: [String: Result<Set<HunkStamp>, RepositoryError>] = [:]
+    ) -> [String: Result<BlobDiff, RepositoryError>] {
+        var diffs: [String: Result<BlobDiff, RepositoryError>] = [:]
         for entry in report.entries where paths.contains(entry.path) {
-            hunks[entry.path] = Result {
-                guard case let .text(fileHunks) = try worktreeDiff(entry, repository: repository)
-                else { return [] }
-                return Set(fileHunks.map(\.stamp))
+            diffs[entry.path] = Result {
+                try worktreeDiff(entry, repository: repository)
             }.mapError { RepositoryError(wrapping: $0) }
         }
-        return hunks
+        return diffs
     }
 
     /// Keeps only the ticked stamps that still name a current hunk. Ticking the rest of what
     /// is left collapses to a whole-file tick; nothing left unticks the file rather than
-    /// widening the tick to hunks the user never picked. A failed read drops the tick the same
-    /// way and is reported.
-    private func revalidateHunkTicks(_ hunks: [String: Result<Set<HunkStamp>, RepositoryError>]) {
-        for (path, read) in hunks {
+    /// widening the tick to hunks the user never picked. A diff that is not text has no hunks,
+    /// and a failed read drops the tick the same way and is reported.
+    private func revalidateHunkTicks(_ diffs: [String: Result<BlobDiff, RepositoryError>]) {
+        for (path, read) in diffs {
             guard let ticked = tickedHunks[path] else { continue }
             let current: Set<HunkStamp>
             switch read {
-            case let .success(stamps):
-                current = stamps
+            case let .success(.text(hunks)):
+                current = Set(hunks.map(\.stamp))
+            case .success:
+                current = []
             case let .failure(error):
                 current = []
                 report(error.message)
@@ -475,9 +484,16 @@ public final class ChangesModel {
         let result = await RepositoryError.run {
             try Self.worktreeDiff(entry, repository: repository)
         }
-        return switch result {
-        case let .success(diff): .loaded(entry.path, diff)
-        case let .failure(error): .failed(entry.path, error.message)
+        return Self.paneState(entry.path, result)
+    }
+
+    /// What the pane shows for a diff read of `path`.
+    private static func paneState(
+        _ path: String, _ read: Result<BlobDiff, RepositoryError>
+    ) -> WorktreeDiffState {
+        switch read {
+        case let .success(diff): .loaded(path, diff)
+        case let .failure(error): .failed(path, error.message)
         }
     }
 
