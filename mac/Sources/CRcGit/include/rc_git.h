@@ -822,12 +822,16 @@ typedef struct RcGitPullOutcome {
   bool already_up_to_date;
 } RcGitPullOutcome;
 
-/// What a push did. Plain data, no free function.
+/// What a push did. `warning`, when not NULL, is the caller's to release with
+/// `rcgit_string_free`; nothing else in it is owned.
 typedef struct RcGitPushOutcome {
   /// Commits uploaded.
   size_t pushed_commits;
   /// Whether there was nothing to push.
   bool already_up_to_date;
+  /// Why the remote-tracking ref still points at the old tip although the push landed, so
+  /// ahead/behind reads stale until the next fetch or push; NULL when it moved.
+  char *warning;
 } RcGitPushOutcome;
 
 #ifdef __cplusplus
@@ -1588,7 +1592,9 @@ int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out,
 /// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_DIVERGED` (the remote has commits the branch lacks:
 /// the message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
 /// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
-/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
+/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path). On
+/// `RCGIT_OK`, `out->warning` is set when the push landed but the remote-tracking ref did not
+/// move; the caller releases it with `rcgit_string_free`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or

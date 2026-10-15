@@ -172,8 +172,9 @@ public struct SyncSummary: Sendable, Hashable {
     /// finished, and what it did is still reported.
     public let cancelledAfter: SyncStep?
     /// What went wrong beside the transfer, for the user to read: the saved credentials could
-    /// not be read, the ones that just worked could not be saved, or a branch switch landed
-    /// without its reflog line. `nil` when nothing did.
+    /// not be read, the ones that just worked could not be saved, a branch switch landed
+    /// without its reflog line, or a push landed without moving its tracking ref. `nil` when
+    /// nothing did.
     public let notice: String?
 
     public init(
@@ -465,7 +466,8 @@ public final class SyncModel {
         await workflow(start: .push) { model async throws(StepFailure) -> SyncSummary in
             let pushed = try await model.runPush()
             return SyncSummary(
-                fetchedRefs: 0, pulledFiles: 0, pushedCommits: pushed.pushedCommits)
+                fetchedRefs: 0, pulledFiles: 0, pushedCommits: pushed.pushedCommits,
+                notice: pushed.warning)
         }
     }
 
@@ -483,7 +485,8 @@ public final class SyncModel {
             return SyncSummary(
                 fetchedRefs: fetched.updatedRefs,
                 pulledFiles: pulled.filesChanged,
-                pushedCommits: pushed.pushedCommits
+                pushedCommits: pushed.pushedCommits,
+                notice: pushed.warning
             )
         }
     }

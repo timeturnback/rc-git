@@ -1243,6 +1243,11 @@ impl<T> Out<T> {
         // SAFETY: `new` guarantees the pointer is valid for writes when not NULL.
         unsafe { self.0.write(value) };
     }
+
+    /// Whether the caller passed NULL, so a value that owns an allocation must not be built.
+    fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
 }
 
 impl Out<*mut c_char> {
@@ -4174,14 +4179,17 @@ pub struct RcGitPullOutcome {
     pub already_up_to_date: bool,
 }
 
-/// What a push did. Plain data, no free function.
+/// What a push did. `warning`, when not NULL, is the caller's to release with
+/// `rcgit_string_free`; nothing else in it is owned.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct RcGitPushOutcome {
     /// Commits uploaded.
     pub pushed_commits: usize,
     /// Whether there was nothing to push.
     pub already_up_to_date: bool,
+    /// Why the remote-tracking ref still points at the old tip although the push landed, so
+    /// ahead/behind reads stale until the next fetch or push; NULL when it moved.
+    pub warning: *mut c_char,
 }
 
 /// Maps a remote-action error to its status code and reports the message. An unknown
@@ -4511,7 +4519,9 @@ pub unsafe extern "C" fn rcgit_guard_pull_ff(
 /// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_DIVERGED` (the remote has commits the branch lacks:
 /// the message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
 /// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
-/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
+/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path). On
+/// `RCGIT_OK`, `out->warning` is set when the push landed but the remote-tracking ref did not
+/// move; the caller releases it with `rcgit_string_free`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
@@ -4550,9 +4560,16 @@ pub unsafe extern "C" fn rcgit_guard_push(
         cancel,
     ) {
         Ok(outcome) => {
+            let warning = match outcome.tracking_ref_error {
+                Some(error) if !out.is_null() => export_string(format!(
+                    "push landed, but the tracking ref was not moved: {error}"
+                )),
+                Some(_) | None => ptr::null_mut(),
+            };
             out.set(RcGitPushOutcome {
                 pushed_commits: outcome.pushed_commits,
                 already_up_to_date: outcome.already_up_to_date,
+                warning,
             });
             RCGIT_OK
         }
@@ -6082,6 +6099,7 @@ mod tests {
         let mut push_out = RcGitPushOutcome {
             pushed_commits: 0,
             already_up_to_date: false,
+            warning: ptr::null_mut(),
         };
         let code = unsafe {
             rcgit_guard_push(
@@ -6162,6 +6180,7 @@ mod tests {
         let mut push_out = RcGitPushOutcome {
             pushed_commits: 0,
             already_up_to_date: false,
+            warning: ptr::null_mut(),
         };
         let code = unsafe {
             rcgit_guard_push(
@@ -6374,6 +6393,7 @@ mod tests {
         let mut out = RcGitPushOutcome {
             pushed_commits: 0,
             already_up_to_date: false,
+            warning: ptr::null_mut(),
         };
         let mut error = ptr::null_mut();
         let code = unsafe {
@@ -6407,6 +6427,7 @@ mod tests {
         let mut out = RcGitPushOutcome {
             pushed_commits: 0,
             already_up_to_date: false,
+            warning: ptr::null_mut(),
         };
         let mut error = ptr::null_mut();
         let code = unsafe {
@@ -6461,7 +6482,43 @@ mod tests {
         let push_out = ffi_push(&path);
         assert!(!push_out.already_up_to_date);
         assert_eq!(push_out.pushed_commits, 1);
+        assert!(
+            push_out.warning.is_null(),
+            "a moved tracking ref is no warning"
+        );
         assert!(ffi_push(&path).already_up_to_date);
+    }
+
+    /// A push the server accepted is `RCGIT_OK` even when the tracking ref could not move;
+    /// the app learns why through `warning` instead of reading stale ahead/behind silently.
+    #[test]
+    fn a_stuck_tracking_ref_after_a_push_crosses_as_a_warning() {
+        let origin = Fixture::standard();
+        let (_bare, bare_path) = origin.bare_copy();
+        let server = rc_git_testkit::HttpGitServer::serve(&bare_path);
+        let clone = Fixture::empty_dir();
+        clone.git(&["clone", "--quiet", &server.url(), "."]);
+        let before = clone.rev_parse("refs/remotes/origin/main");
+        clone.write("local.txt", b"local\n");
+        clone.commit("Local work", "2024-03-02T00:00:00+0000");
+        let lock = clone.path().join(".git/refs/remotes/origin/main.lock");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test setup holds the tracking ref's lock, as a concurrent git would"
+        )]
+        std::fs::write(&lock, b"").expect("hold the tracking ref lock");
+        let path = CString::new(clone.path().to_str().unwrap()).unwrap();
+
+        let push_out = ffi_push(&path);
+        assert_eq!(push_out.pushed_commits, 1);
+        assert!(
+            !push_out.warning.is_null(),
+            "the stuck tracking ref must be reported"
+        );
+        let warning = take_string(push_out.warning);
+        assert!(warning.contains("tracking ref was not moved"), "{warning}");
+        assert!(warning.contains("refs/remotes/origin/main"), "{warning}");
+        assert_eq!(clone.rev_parse("refs/remotes/origin/main"), before);
     }
 
     #[test]

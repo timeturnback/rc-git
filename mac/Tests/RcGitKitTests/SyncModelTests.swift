@@ -1489,6 +1489,42 @@ private let switchedWithoutReflog = CheckoutOutcome(
         #expect(alreadyOnMain.warning == nil)
     }
 
+    @Test func aPushThatLeftItsTrackingRefFinishesWithTheWarning() async {
+        let stuck = PushOutcome(
+            pushedCommits: 1,
+            warning: "push landed, but the tracking ref was not moved: lock held")
+        let (model, _, _) = model(
+            .init(preflights: [StubSyncPerformer.upstream(ahead: 1)], pushes: [.success(stuck)]))
+        await model.refreshStatus()
+        await model.push()
+
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 0, pulledFiles: 0, pushedCommits: 1, notice: stuck.warning)),
+            "the push landed, so it is done, with the stale tracking ref as a notice")
+    }
+
+    @Test func aSyncWhosePushLeftItsTrackingRefFinishesWithTheWarning() async {
+        let stuck = PushOutcome(pushedCommits: 1, warning: "tracking ref was not moved")
+        let (model, _, _) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [.success(cleanFetch)],
+                pulls: [.success(cleanPull)],
+                pushes: [.success(stuck)]
+            ))
+        await model.refreshStatus()
+        await model.sync()
+
+        #expect(
+            model.state
+                == .done(
+                    SyncSummary(
+                        fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1, notice: stuck.warning)))
+    }
+
     @Test func backToDefaultOnTheBranchAlreadyStillFetchesButReportsNoSwitch() async {
         let (model, performer, _) = model(
             .init(

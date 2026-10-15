@@ -627,6 +627,14 @@ public struct PullOutcome: Sendable, Hashable {
 public struct PushOutcome: Sendable, Hashable {
     /// Commits uploaded; 0 when the remote branch was already up to date.
     public let pushedCommits: Int
+    /// Why the remote-tracking ref did not move although the push landed, so ahead/behind
+    /// reads stale until the next fetch; `nil` when it moved.
+    public let warning: String?
+
+    public init(pushedCommits: Int, warning: String? = nil) {
+        self.pushedCommits = pushedCommits
+        self.warning = warning
+    }
 }
 
 /// What a branch switch did.
@@ -742,7 +750,7 @@ extension RepositoryGuard {
     ) throws(SyncError) -> PushOutcome {
         var error: UnsafeMutablePointer<CChar>? = nil
         var hostkey: UnsafeMutablePointer<CChar>? = nil
-        var out = RcGitPushOutcome(pushed_commits: 0, already_up_to_date: false)
+        var out = RcGitPushOutcome(pushed_commits: 0, already_up_to_date: false, warning: nil)
         let status = withOwnedCStrings([
             credentials?.username, credentials?.token, host, acceptedHostKey,
         ]) { strings in
@@ -754,7 +762,8 @@ extension RepositoryGuard {
         guard status == RCGIT_OK else {
             throw syncError(status, error, hostkey, fallback: "cannot push")
         }
-        return PushOutcome(pushedCommits: out.pushed_commits)
+        return PushOutcome(
+            pushedCommits: out.pushed_commits, warning: RepositoryError.takeString(out.warning))
     }
 
     /// The typed error for a failed local guarded action: `IdentityRequiredError` for
