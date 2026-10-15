@@ -317,6 +317,50 @@ fn search_filters_by_message_author_and_dates() {
 }
 
 #[test]
+fn search_path_keeps_only_commits_that_changed_it() {
+    let fx = Fixture::standard();
+    fx.write("src/x/a.rs", b"a\n");
+    fx.commit("foo in x", "2024-01-04T00:00:00+0000");
+    fx.write("docs/other.md", b"other\n");
+    fx.commit("foo elsewhere", "2024-01-05T00:00:00+0000");
+    fx.write("src/x/b.rs", b"b\n");
+    fx.commit("bar in x", "2024-01-06T00:00:00+0000");
+    let path = fx.path().to_str().unwrap();
+
+    let scoped = rc_git(&["search", path, "--path", "src/x", "--message", "foo"]);
+    assert!(scoped.status.success(), "{}", stderr(&scoped));
+    let rows = stdout(&scoped);
+    let oid = fx.rev_parse("HEAD~2");
+    assert_eq!(rows.lines().count(), 1, "{rows}");
+    assert!(rows.starts_with(&format!("{oid}\t")), "{rows}");
+    assert!(rows.ends_with("\tfoo in x\n"), "{rows}");
+
+    let unscoped = stdout(&rc_git(&["search", path, "--message", "foo"]));
+    assert_eq!(unscoped.lines().count(), 2, "{unscoped}");
+
+    assert_eq!(
+        stdout(&rc_git(&[
+            "search",
+            path,
+            "--path",
+            "./src//x/",
+            "--message",
+            "foo"
+        ])),
+        rows,
+        "--path takes any spelling of the path"
+    );
+
+    let parent = rc_git(&["search", path, "--path", "src/../docs"]);
+    assert_eq!(parent.status.code(), Some(2));
+    assert!(
+        stderr(&parent).contains("'..' segment"),
+        "{}",
+        stderr(&parent)
+    );
+}
+
+#[test]
 fn show_prints_header_and_message() {
     let fx = Fixture::standard();
     fx.commit_with_body("Detail commit", "The body.", "2024-01-04T00:00:00+0000");

@@ -28,8 +28,9 @@ usage: rc-git [--time] <command> <repo> [args]
   cat     <repo> <rev> <path> [limit]     file contents; limit in bytes, default 8 MiB
   log     <repo> [rev] [-n N] [--skip N]  commits, newest first (default 20)
   filelog <repo> <path> [rev] [-n N] [--max-scan N]  commits that changed a path
-  search  <repo> [rev] [--message S] [--author S] [--since EPOCH] [--until EPOCH] [-n N]
-          [--max-scan N]                  commits matching every given filter
+  search  <repo> [rev] [--message S] [--author S] [--since EPOCH] [--until EPOCH]
+          [--path P] [-n N] [--max-scan N]  commits matching every given filter;
+                                          --path keeps commits that changed P
   show    <repo> <rev>                    one commit: header lines, then the message
   diff    <repo> <rev>                    changed files of one commit against its first parent;
                                           a root commit lists every file as added
@@ -955,6 +956,7 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
             "--author",
             "--since",
             "--until",
+            "--path",
         ],
         &[],
     )?;
@@ -967,7 +969,7 @@ fn search(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitC
         author: args.value(&["--author"]).map(str::to_owned),
         after: epoch(&args, "--since")?,
         before: epoch(&args, "--until")?,
-        path: None,
+        path: args.value(&["--path"]).map(canonical_path).transpose()?,
     };
     let walk = repo.history_walk(repo.resolve(rev)?, filter)?;
     let page = walk.next_page(repo, limit, max_scan)?;
