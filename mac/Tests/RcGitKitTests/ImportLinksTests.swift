@@ -35,6 +35,14 @@ import Testing
         #expect(ImportLinks.find(name: "big.ts", text: big) == nil)
     }
 
+    @Test func textExactlyAtTheLimitIsParsed() throws {
+        let head = "import a from './a';\n"
+        let text = head + String(repeating: " ", count: Highlighter.byteLimit - head.utf8.count)
+        #expect(text.utf8.count == Highlighter.byteLimit)
+        let links = try #require(ImportLinks.find(name: "big.ts", text: text))
+        #expect(links.count == 2)
+    }
+
     @Test func theMapAnswersInsideALinkAndNowhereElse() {
         let text = "import a from './mod';\n"
         let links = [

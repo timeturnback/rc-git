@@ -195,6 +195,26 @@ import Testing
         #expect(reports == 0)
     }
 
+    @Test func highlightsAndLinksStopJustPastTheByteLimit() async {
+        await model.attach(repo)
+        let head = "import a from './a';\n"
+        let fill = Highlighter.byteLimit - head.utf8.count
+        let atLimit = TextDocument(
+            bytes: Array((head + String(repeating: " ", count: fill)).utf8), lineStarts: [0],
+            validUTF8: true)
+        let over = TextDocument(
+            bytes: Array((head + String(repeating: " ", count: fill + 1)).utf8), lineStarts: [0],
+            validUTF8: true)
+        #expect(atLimit.byteCount == Highlighter.byteLimit)
+        let entry = TreeEntry(name: "big.ts", oid: oid(0x51), kind: .blob)
+        let overEntry = TreeEntry(name: "over.ts", oid: oid(0x52), kind: .blob)
+
+        #expect(await model.highlights(for: entry, document: atLimit) != nil)
+        #expect(await model.importLinks(for: entry, document: atLimit)?.count == 2)
+        #expect(await model.highlights(for: overEntry, document: over) == nil)
+        #expect(await model.importLinks(for: overEntry, document: over) == nil)
+    }
+
     @Test func loadAnywayReadsTheWorkingTreeFile() async {
         let big = String(repeating: "x", count: Int(Repository.defaultBlobLimit) + 1)
         repo.worktreeFiles["big.txt"] = textBlob(big)
