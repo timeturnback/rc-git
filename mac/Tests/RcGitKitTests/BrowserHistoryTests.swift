@@ -299,6 +299,28 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(!model.isSearching)
     }
 
+    @Test func aSearchChunkLandingAfterANewerSearchStartsIsDropped() async {
+        await model.attach(repo)
+        let gate = CallGate()
+        repo.lock.withLock { repo.searchGate = gate }
+        var seen: [[String]] = []
+        model.onSearchChanged = { seen.append(self.model.searchResults.map(\.title)) }
+        async let older: Void = model.search(CommitFilter(message: "main"))
+        await gate.waitUntilArrived()
+        await model.search(CommitFilter(message: "main 1"))
+        gate.open()
+        await older
+
+        #expect(model.searchFilter == CommitFilter(message: "main 1"))
+        #expect(model.searchResults.count == 61, "main 1, main 10-19, main 100-149")
+        #expect(model.searchResults.allSatisfy { $0.title.contains("main 1") })
+        #expect(
+            seen.allSatisfy { titles in titles.allSatisfy { $0.contains("main 1") } },
+            "the older filter's last chunk never rendered")
+        #expect(model.searchComplete)
+        #expect(!model.isSearching)
+    }
+
     @Test func aSearchUnderAPathScopeMatchesOnlyCommitsTouchingIt() async {
         await model.attach(repo)
         let all = repo.commits[mainCommit] ?? []
@@ -573,6 +595,35 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(model.refs.refs.count == 3)
         #expect(model.selectedRef?.shortName == "main")
         #expect(reported == nil)
+    }
+
+    @Test func aRefreshInFlightWhenAnotherRepositoryAttachesIsDropped() async {
+        await model.attach(repo)
+        let gate = CallGate()
+        repo.lock.withLock { repo.refsGate = gate }
+        let refresh = Task { await model.refreshRefs() }
+        await gate.waitUntilArrived()
+
+        let other = FakeRepository()
+        let otherCommit = oid(0x51)
+        let otherTree = oid(0x52)
+        other.listing = RefListing(refs: [branch("other", at: otherCommit)])
+        other.headValue = Head(refName: "refs/heads/other", target: otherCommit)
+        other.treeOfMap = [otherCommit: otherTree]
+        other.trees[otherTree] = []
+        await model.attach(other)
+        #expect(model.selectedRef?.shortName == "other")
+
+        var refsEvents = 0
+        model.onRefsChanged = { refsEvents += 1 }
+        gate.open()
+        await refresh.value
+
+        #expect(model.refs.refs.map(\.shortName) == ["other"], "the old listing never lands")
+        #expect(model.head?.target == otherCommit)
+        #expect(model.selectedRef?.shortName == "other")
+        #expect(model.rootTree == otherTree)
+        #expect(refsEvents == 0, "the dropped refresh re-renders nothing")
     }
 
     @Test func aBurstOfRefreshesCostsTwoListings() async {

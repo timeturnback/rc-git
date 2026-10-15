@@ -57,6 +57,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Per oid, holds the next `commit` call for it, then clears itself.
     var commitGates: [Oid: CallGate] = [:]
     var searchCalls = 0
+    /// Holds the next `searchPage` call, then clears itself.
+    var searchGate: CallGate?
     var logCalls = 0
     var treeDiffs: [Oid: [TreeChange]] = [:]
     var blobDiffs: [String: BlobDiff] = [:]
@@ -273,14 +275,17 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     func searchPage(tip: Oid, filter: CommitFilter, scanSkip: Int, limit: Int, maxScan: Int)
         throws -> CommitPage
     {
-        let (found, delay, touching) = lock.withLock {
-            () -> ([CommitSummary]?, TimeInterval, Set<Oid>?) in
+        let (found, delay, touching, gate) = lock.withLock {
+            () -> ([CommitSummary]?, TimeInterval, Set<Oid>?, CallGate?) in
             searchCalls += 1
             let touching = filter.path.map { path in
                 Set((pathHistories[FakeRepository.pathKey(tip: tip, path: path)] ?? []).map(\.oid))
             }
-            return (commits[tip], delays[tip] ?? 0, touching)
+            let gate = searchGate
+            searchGate = nil
+            return (commits[tip], delays[tip] ?? 0, touching, gate)
         }
+        gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
             throw RepositoryError("read object header: object \(tip): missing")
