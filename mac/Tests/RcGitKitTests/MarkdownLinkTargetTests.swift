@@ -30,6 +30,16 @@ import Testing
         #expect(resolve("my-app+v2:open") == .otherScheme(URL(string: "my-app+v2:open")!))
     }
 
+    @Test func aSchemeFollowsTheCommonMarkASCIIRule() {
+        #expect(
+            resolve("x-apple.systempreferences:foo")
+                == .otherScheme(URL(string: "x-apple.systempreferences:foo")!))
+        #expect(resolve("é:x") == .repositoryPath("docs/guide/é:x", fragment: nil))
+        #expect(resolve("éa:x") == .repositoryPath("docs/guide/éa:x", fragment: nil))
+        #expect(resolve("1ab:x") == .repositoryPath("docs/guide/1ab:x", fragment: nil))
+        #expect(resolve("C:x") == .repositoryPath("docs/guide/C:x", fragment: nil))
+    }
+
     @Test func aLocalFileURLIsRefused() {
         #expect(resolve("file:///etc/passwd") == nil)
         #expect(resolve("FILE:///etc/passwd") == nil)

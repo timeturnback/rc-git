@@ -63,14 +63,13 @@ public enum MarkdownLinkTarget: Sendable, Hashable {
         return raw.removingPercentEncoding ?? raw
     }
 
-    /// The scheme of an absolute URL, or `nil` when the destination is a path. A bare
-    /// `C:` style prefix is not a scheme here; a scheme needs at least two letters.
+    /// The scheme of an absolute URL, or `nil` when the destination is a path. A scheme follows
+    /// CommonMark's ASCII rule, so `x-apple.systempreferences:` is one and `é:` is not. A bare
+    /// `C:` style prefix is not a scheme here; a scheme needs at least two characters.
     private static func scheme(of destination: String) -> String? {
         guard let colon = destination.firstIndex(of: ":") else { return nil }
         let candidate = destination[destination.startIndex..<colon]
-        guard candidate.count >= 2,
-            candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" })
-        else { return nil }
+        guard candidate.utf8.count >= 2, Ascii.isSchemeShaped(candidate.utf8) else { return nil }
         if let slash = destination.firstIndex(of: "/"), slash < colon { return nil }
         return candidate.lowercased()
     }

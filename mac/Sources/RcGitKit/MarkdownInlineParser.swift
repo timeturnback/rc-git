@@ -767,11 +767,6 @@ extension InlineScanner {
 
     /// CommonMark's scheme rule: an ASCII letter, then 1-31 ASCII letters, digits, `+`, `.` or `-`.
     private static func isAutolinkScheme(_ scheme: [UInt8]) -> Bool {
-        guard (2...32).contains(scheme.count), let first = scheme.first, Ascii.isLetter(first)
-        else { return false }
-        return scheme.dropFirst().allSatisfy {
-            Ascii.isLetter($0) || Ascii.isDigit($0) || $0 == Ascii.plus || $0 == Ascii.dot
-                || $0 == Ascii.hyphen
-        }
+        (2...32).contains(scheme.count) && Ascii.isSchemeShaped(scheme)
     }
 }

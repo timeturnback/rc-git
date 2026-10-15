@@ -40,6 +40,15 @@ enum Ascii {
     }
 
     static func isSpace(_ byte: UInt8) -> Bool { byte == space || byte == tab }
+
+    /// CommonMark's scheme characters: an ASCII letter, then ASCII letters, digits, `+`, `.` or
+    /// `-`. Callers bound the length, since autolinks and link destinations differ there.
+    static func isSchemeShaped(_ scheme: some Collection<UInt8>) -> Bool {
+        guard let first = scheme.first, isLetter(first) else { return false }
+        return scheme.dropFirst().allSatisfy {
+            isLetter($0) || isDigit($0) || $0 == plus || $0 == dot || $0 == hyphen
+        }
+    }
 }
 
 /// Splits a markdown file into blocks. It works on the UTF-8 bytes: every delimiter markdown
