@@ -322,7 +322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// not opened twice. The saved list becomes the tabs now on screen, launch document
     /// included, followed by the repositories whose volume is not mounted yet; one that is
     /// gone from a reachable folder is dropped, so it is not retried on every launch (see
-    /// `OpenTabs.restoredPaths`). Each repository that failed to open is logged once.
+    /// `OpenTabs.restoredPaths`). Each repository that failed to open is logged once and
+    /// named in a banner on the front window (`RestoreNotice`).
     private func restoreTabs() {
         let saved = openTabs.paths
         let savedSelection = openTabs.selectedIndex
@@ -343,15 +344,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for path in failed where !kept.contains(path) {
             Self.logger.notice("restore tab: dropped \(path, privacy: .public) from the saved tabs")
         }
+        let notice = RestoreNotice.make(failed: failed, kept: kept)
         guard !live.isEmpty else {
             openTabs.save(paths: kept, selectedIndex: 0)
-            newWindow().showWindow(nil)
+            let front = newWindow()
+            front.showWindow(nil)
+            if let notice { front.showRestoreNotice(notice) }
             return
         }
         let selected = OpenTabs.restoredSelection(
             saved: saved, selectedIndex: savedSelection, opened: live,
             launchDocument: launchDocument)
-        controllers.first { $0.repositoryPath == live[selected] }?.showWindow(nil)
+        let front = controllers.first { $0.repositoryPath == live[selected] }
+        front?.showWindow(nil)
+        if let notice { front?.showRestoreNotice(notice) }
         openTabs.save(paths: kept, selectedIndex: selected)
     }
 

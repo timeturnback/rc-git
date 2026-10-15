@@ -40,6 +40,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var syncToolbarItem: NSToolbarItem?
     private var backToDefaultButton: NSButton?
     private var backToDefaultToolbarItem: NSToolbarItem?
+    /// The strip `showRestoreNotice` added, until its Dismiss button removes it.
+    private var restoreNotice: NSTitlebarAccessoryViewController?
     private let goToFileController = GoToFileController()
     private let blamePanel = BlamePanelController()
     /// The ref picker the branch banner opens, and the popover showing it, while it is open.
@@ -727,6 +729,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         accessory.view = container
         accessory.layoutAttribute = .leading
         window.addTitlebarAccessoryViewController(accessory)
+    }
+
+    /// A non-modal strip under the toolbar naming the saved tabs a launch restore could not
+    /// reopen. The close button removes it; nothing else does, so it stays until read.
+    func showRestoreNotice(_ notice: RestoreNotice) {
+        guard let window else { return }
+        dismissRestoreNotice(nil)
+        let accessory = NSTitlebarAccessoryViewController()
+        let icon = NSImageView(image: Icons.unreadableRef ?? NSImage())
+        icon.contentTintColor = .systemOrange
+        let label = NSTextField(labelWithString: notice.summary)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.toolTip = notice.detail
+        let close = NSButton(
+            title: "Dismiss", target: self, action: #selector(dismissRestoreNotice(_:)))
+        close.bezelStyle = .accessoryBarAction
+        let row = NSStackView(views: [icon, label, close])
+        row.spacing = Style.rowGap
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Style.margin),
+            row.trailingAnchor.constraint(
+                equalTo: container.trailingAnchor, constant: -Style.margin),
+            row.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        container.frame.size.height = row.fittingSize.height + Style.barPadding * 2
+        accessory.view = container
+        accessory.layoutAttribute = .bottom
+        window.addTitlebarAccessoryViewController(accessory)
+        restoreNotice = accessory
+    }
+
+    @objc private func dismissRestoreNotice(_ sender: Any?) {
+        guard let window, let restoreNotice,
+            let index = window.titlebarAccessoryViewControllers.firstIndex(of: restoreNotice)
+        else { return }
+        window.removeTitlebarAccessoryViewController(at: index)
+        self.restoreNotice = nil
     }
 
     /// Model-wide callbacks: navigation stops, errors and the blame panel.
