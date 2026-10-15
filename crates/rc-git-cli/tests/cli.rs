@@ -1942,6 +1942,60 @@ fn interrupting_a_stalled_fetch_exits_130() {
     assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
 }
 
+/// Opens the FIFO at `path` for writing on a helper thread and waits up to `limit` for a
+/// reader: the open returns only once another process has opened it to read.
+fn await_fifo_reader(path: &std::path::Path, limit: std::time::Duration) -> std::fs::File {
+    let (opened, writer) = std::sync::mpsc::channel();
+    let path = path.to_owned();
+    std::thread::spawn(move || {
+        #[expect(clippy::disallowed_methods, reason = "tests hold a FIFO's write end")]
+        let file = std::fs::OpenOptions::new().write(true).open(&path);
+        drop(opened.send(file));
+    });
+    writer.recv_timeout(limit).unwrap().unwrap()
+}
+
+#[test]
+fn second_signal_ends_a_step_that_ignores_the_first() {
+    let fx = Fixture::standard();
+    fx.git(&[
+        "remote",
+        "add",
+        "origin",
+        "ssh://git@127.0.0.1:1/remote.git",
+    ]);
+    // The ssh config is read with a plain blocking read before the dial: a FIFO whose writer
+    // never writes holds the fetch there, where the cancel flag is never looked at.
+    let ssh_home = Fixture::empty_dir();
+    ssh_home.mkfifo("config");
+    let config = ssh_home.path().join("config");
+
+    let mut child = rc_git_command()
+        .args([
+            "fetch",
+            fx.path().to_str().unwrap(),
+            "--ssh-dir",
+            ssh_home.path().to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _held_open = await_fifo_reader(&config, std::time::Duration::from_secs(10));
+
+    send_signal(child.id(), "INT");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the first signal only sets the cancel flag"
+    );
+    send_signal(child.id(), "INT");
+
+    let out = wait_with_deadline(&mut child, std::time::Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "", "the hard exit prints nothing");
+}
+
 #[test]
 fn branch_create_and_tag_create_make_refs_and_never_move_one() {
     let fx = Fixture::standard();

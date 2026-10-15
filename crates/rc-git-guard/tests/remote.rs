@@ -1899,21 +1899,26 @@ fn a_preset_cancel_flag_stops_the_push_before_it_connects() {
 
 #[test]
 fn a_failed_push_never_names_the_remote_url_password() {
-    let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("reserve a port")
-        .port();
+    // A URL written straight into `branch.main.remote` is the upstream's name in errors, and
+    // plain http to a non-loopback host is refused by that name before any connection.
     let fixture = Fixture::standard();
-    let url = format!("http://user:secret@127.0.0.1:{closed_port}/x.git");
-    fixture.git(&["remote", "add", "origin", &url]);
+    fixture.git(&[
+        "config",
+        "branch.main.remote",
+        "http://user:secret@example.invalid/x.git",
+    ]);
     let err = push_upstream(
         fixture.path(),
         &Policy::default(),
         RemoteAuth::default(),
         &Cancel::new(),
     )
-    .expect_err("nothing listens on the port");
+    .expect_err("plain http to a remote host is refused");
     let message = err.to_string();
+    assert!(
+        message.contains("http://example.invalid/x.git"),
+        "the refusal names the URL: {message}"
+    );
     assert!(!message.contains("secret"), "{message}");
 }
 
