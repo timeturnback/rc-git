@@ -11,8 +11,8 @@ use crate::{Action, Confirmation, Policy};
 
 use super::{
     Cancel, Credentials, RemoteAuth, RemoteScheme, Upstream, authenticate_with, bail_if_cancelled,
-    claim_transfer, detached_upstream, host_of, http_options, map_network_error, resolve_upstream,
-    run_detached, url_upstream_refused, vet_remote_url,
+    claim_transfer, detached_upstream, host_of, http_options, map_network_error, redacted,
+    resolve_upstream, run_detached, url_upstream_refused, vet_remote_url,
 };
 
 const OP: &str = "fetch";
@@ -129,19 +129,61 @@ pub fn fetch_upstream(
     })
 }
 
+/// The remote a fetch reads from, as [`fetch_remote`] resolves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchRemote {
+    /// The remote's name, `.` for a local upstream, or the redacted URL for a URL upstream.
+    pub remote: String,
+    /// The fetch URL with any credentials redacted, empty for a local upstream.
+    pub url: String,
+    /// Whether the URL parses as ssh (`ssh://` or scp-like `user@host:path`), the transport
+    /// that takes a key passphrase rather than an HTTPS token.
+    pub uses_ssh: bool,
+}
+
+/// The remote [`fetch_upstream`] would read from, resolved the same way: the checked-out
+/// branch's upstream, or `origin` on a detached `HEAD`. Local only: no network I/O, no
+/// credentials. `None` when [`fetch_upstream`] would fail with [`ActionError::NoUpstream`].
+///
+/// # Errors
+/// [`ActionError::Git`] when the repository, `HEAD` or the remote configuration cannot be
+/// read.
+pub fn fetch_remote(repo_path: &Path) -> ActionResult<Option<FetchRemote>> {
+    const READ_OP: &str = "read fetch remote";
+    let repo = open(repo_path, READ_OP, "repository")?;
+    let (_branch, upstream) = resolve_fetch_source(&repo, READ_OP)?;
+    Ok(upstream.map(|upstream| {
+        let url = upstream.url();
+        FetchRemote {
+            remote: upstream.label(),
+            url: url.map(redacted).unwrap_or_default(),
+            uses_ssh: url.is_some_and(|url| url.scheme == gix::url::Scheme::Ssh),
+        }
+    }))
+}
+
 /// Where a fetch reads from: the checked-out branch's upstream, or on a detached `HEAD`
 /// `origin`, since a fetch needs no branch.
 fn fetch_source(repo: &gix::Repository) -> ActionResult<Upstream> {
-    let head_name = repo.head_name().map_err(git_err(OP, "HEAD"))?;
-    let (branch, upstream) = match head_name {
+    let (branch, upstream) = resolve_fetch_source(repo, OP)?;
+    upstream.ok_or(ActionError::NoUpstream { op: OP, branch })
+}
+
+/// The branch a fetch reads for (`HEAD` when detached) and its upstream, `None` when there
+/// is none to fetch from.
+fn resolve_fetch_source(
+    repo: &gix::Repository,
+    op: &'static str,
+) -> ActionResult<(String, Option<Upstream>)> {
+    let head_name = repo.head_name().map_err(git_err(op, "HEAD"))?;
+    Ok(match head_name {
         Some(head_name) => {
             let branch = head_name.shorten().to_string();
-            let upstream = resolve_upstream(repo, &branch, gix::remote::Direction::Fetch, OP)?;
+            let upstream = resolve_upstream(repo, &branch, gix::remote::Direction::Fetch, op)?;
             (branch, upstream)
         }
-        None => ("HEAD".to_owned(), detached_upstream(repo, OP)?),
-    };
-    upstream.ok_or(ActionError::NoUpstream { op: OP, branch })
+        None => ("HEAD".to_owned(), detached_upstream(repo, op)?),
+    })
 }
 
 /// The named remote of `repo`.

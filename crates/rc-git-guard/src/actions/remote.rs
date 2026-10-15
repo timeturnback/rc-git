@@ -21,7 +21,7 @@ mod push;
 mod report;
 mod ssh;
 
-pub use fetch::{FetchOutcome, RefUpdate, fetch_upstream};
+pub use fetch::{FetchOutcome, FetchRemote, RefUpdate, fetch_remote, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
 pub use push::{PushOutcome, push_upstream};
 

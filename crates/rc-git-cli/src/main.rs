@@ -1761,28 +1761,19 @@ enum Transport {
     Other,
 }
 
-/// The transport of the checked-out branch's upstream, read from the repository's own
-/// configuration without any network I/O. A detached `HEAD` has no branch upstream to read;
-/// a fetch there still runs against `origin`, so it reads as [`Transport::Other`].
+/// The transport of the remote a fetch reads from, read from the repository's own
+/// configuration without any network I/O: the checked-out branch's upstream, or `origin` on
+/// a detached `HEAD`, resolved by the guard exactly as the fetch resolves it.
 fn upstream_transport(repo_path: &std::path::Path) -> Result<Transport> {
-    let status = match rc_git_guard::actions::upstream_status(repo_path) {
-        Ok(status) => status,
-        Err(ActionError::DetachedHead { .. }) => return Ok(Transport::Other),
-        Err(err) => return Err(err.into()),
-    };
-    if !status.has_upstream {
+    let Some(remote) = rc_git_guard::actions::fetch_remote(repo_path)? else {
         return Ok(Transport::Other);
+    };
+    if remote.uses_ssh {
+        return Ok(Transport::Ssh);
     }
-    let url = status.url.as_str();
+    let url = remote.url.as_str();
     if url.starts_with("https://") || url.starts_with("http://") {
         return Ok(Transport::Https);
-    }
-    let scp_like = !url.contains("://")
-        && url
-            .split_once(':')
-            .is_some_and(|(host, _)| !host.is_empty() && !host.contains('/'));
-    if url.starts_with("ssh://") || scp_like {
-        return Ok(Transport::Ssh);
     }
     Ok(Transport::Other)
 }

@@ -1799,6 +1799,30 @@ fn ssh_unknown_host_exits_6_and_accept_hostkey_lets_the_fetch_through() {
 }
 
 #[test]
+fn key_passphrase_env_unlocks_the_key_for_a_detached_head_fetch() {
+    let origin = Fixture::standard();
+    let (_bare, bare_path) = origin.bare_copy();
+    let server = rc_git_testkit::SshGitServer::serve(&bare_path);
+    let (clone, ssh_home) = Fixture::ssh_clone(&bare_path, &server);
+    let passphrase = server.write_encrypted_client_key(ssh_home.path());
+    server.write_known_hosts(ssh_home.path());
+    clone.git(&["checkout", "-q", "--detach"]);
+    let path = clone.path().to_str().unwrap();
+    let args = [
+        "fetch",
+        path,
+        "--ssh-dir",
+        ssh_home.path().to_str().unwrap(),
+    ];
+
+    let out = rc_git(&args);
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+
+    let out = rc_git_with_env(&args, &[("RC_GIT_KEY_PASSPHRASE", passphrase)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
 fn default_branch_names_the_mainline_or_fails() {
     let fx = Fixture::standard();
     let out = rc_git(&["default-branch", fx.path().to_str().unwrap()]);
