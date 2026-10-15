@@ -685,10 +685,8 @@ public final class BrowserModel {
     ) async {
         guard repository != nil, !entry.kind.isDirectory else { return }
         openedFileSource = .blob(entry)
-        if let path {
-            openedFilePath = path
-            openedPathIsExact = pathIsExact && entry.hasExactName
-        }
+        openedFilePath = path
+        openedPathIsExact = pathIsExact && entry.hasExactName
         openedFileLimit = limit
         await loadFile(entry) { repository in
             try repository.readBlob(entry.oid, limit: limit)

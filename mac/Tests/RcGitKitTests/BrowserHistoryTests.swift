@@ -1032,6 +1032,15 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(title == "Blame — a.txt")
     }
 
+    @Test func aFileOpenedWithoutAPathDropsThePreviousPath() async {
+        await model.attach(repo)
+        await model.openFile(TreeEntry(name: "a.txt", oid: newBlob, kind: .blob), path: "a.txt")
+        #expect(model.canBlameOpenedFile)
+        await model.openFile(TreeEntry(name: "b.txt", oid: newBlob, kind: .blob))
+        #expect(model.openedFilePath == nil, "blame and history must not target a.txt")
+        #expect(!model.canBlameOpenedFile)
+    }
+
     @Test func blameWithNothingSelectedThrows() async {
         repo.listing = RefListing(refs: [])
         repo.headValue = Head(refName: nil, target: nil)
