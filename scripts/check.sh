@@ -74,6 +74,8 @@ shellcheck scripts/*.sh scripts/tests/*.sh
 shfmt -d scripts/*.sh scripts/tests/*.sh
 step "install-app rollback"
 scripts/tests/install-app.test.sh
+step "bounded runner"
+scripts/tests/bounded.test.sh
 step "github actions"
 actionlint
 zizmor --offline .github
@@ -215,7 +217,9 @@ if ((fast == 0)); then
   step "swift build"
   swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
   step "swift test"
-  swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
+  # Bounded: a test that blocks a thread ignores its .timeLimit and would stall the gate.
+  scripts/bounded.sh 1200 \
+    swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
 fi
 
 printf '\nall checks passed\n'
