@@ -142,22 +142,37 @@ public struct PathIndex: Sendable {
         if trimmed.isEmpty {
             return Array(entries.lazy.filter { includeHidden || !$0.hidden }.prefix(limit))
         }
+        var scored = try matches(trimmed, includeHidden: includeHidden)
+        scored.sort { Self.ranksBefore($0, $1) }
+        return scored.prefix(limit).map(\.entry)
+    }
+
+    /// Every entry `query` matches, with its score, in index order.
+    ///
+    /// - Throws: `CancellationError` when the calling task is cancelled during the scan.
+    private func matches(_ query: String, includeHidden: Bool) throws
+        -> [(score: Int, entry: PathIndexEntry)]
+    {
         var scored: [(score: Int, entry: PathIndexEntry)] = []
         for (position, entry) in entries.enumerated() {
             if position % Self.cancellationStride == 0 { try Task.checkCancellation() }
             guard includeHidden || !entry.hidden else { continue }
-            if let score = FuzzyMatch.score(entry.searchKey, query: trimmed) {
+            if let score = FuzzyMatch.score(entry.searchKey, query: query) {
                 scored.append((score, entry))
             }
         }
-        scored.sort {
-            if $0.score != $1.score { return $0.score > $1.score }
-            let left = $0.entry.path.utf8.count
-            let right = $1.entry.path.utf8.count
-            if left != right { return left < right }
-            return $0.entry.path < $1.entry.path
-        }
-        return scored.prefix(limit).map(\.entry)
+        return scored
+    }
+
+    /// Search order: higher score first, then the shorter path, then the path itself.
+    private static func ranksBefore(
+        _ left: (score: Int, entry: PathIndexEntry), _ right: (score: Int, entry: PathIndexEntry)
+    ) -> Bool {
+        if left.score != right.score { return left.score > right.score }
+        let leftLength = left.entry.path.utf8.count
+        let rightLength = right.entry.path.utf8.count
+        if leftLength != rightLength { return leftLength < rightLength }
+        return left.entry.path < right.entry.path
     }
 }
 

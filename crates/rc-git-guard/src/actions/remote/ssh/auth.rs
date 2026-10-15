@@ -107,13 +107,8 @@ pub(super) async fn authenticate(
                 let Some(path) = target.identities.get(index) else {
                     continue;
                 };
-                let public_only = file_keys
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|file_key| file_key.public_only);
-                let outcome = ladder
-                    .offer_file(path, passphrase, target.identities_configured, public_only)
-                    .await?;
+                let public_only = is_public_only(&file_keys, index);
+                let outcome = ladder.offer_file(path, passphrase, public_only).await?;
                 (path.display().to_string(), outcome)
             }
         };
@@ -123,6 +118,15 @@ pub(super) async fn authenticate(
         tried.push(Tried { key, outcome });
     }
     Err(ladder_error(op, &target.host, &tried, agent_reach))
+}
+
+/// Whether the identity file at `index` is a public key, which stands only for the agent
+/// key it matches.
+fn is_public_only(file_keys: &[Option<FileKey>], index: usize) -> bool {
+    file_keys
+        .get(index)
+        .and_then(Option::as_ref)
+        .is_some_and(|file_key| file_key.public_only)
 }
 
 /// Whether the ladder had an ssh-agent to offer keys from.
@@ -286,9 +290,9 @@ impl Ladder<'_> {
         &mut self,
         path: &Path,
         passphrase: Option<&str>,
-        configured: bool,
         public_only: bool,
     ) -> ActionResult<Outcome> {
+        let configured = self.target.identities_configured;
         let key = match load_identity(path, passphrase, configured, public_only) {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
@@ -387,7 +391,13 @@ fn pbkdf2_prf(pem: &str) -> Option<ObjectIdentifier> {
     if oid(algorithm.first()?)? != PBES2 {
         return None;
     }
-    let kdf = sequence(*sequence(*algorithm.get(1)?)?.first()?)?;
+    prf_of_pbes2(*algorithm.get(1)?)
+}
+
+/// The PBKDF2 PRF named in a `PBES2-params` value, or `None` when its key derivation is
+/// not PBKDF2 or does not parse.
+fn prf_of_pbes2(pbes2_params: AnyRef<'_>) -> Option<ObjectIdentifier> {
+    let kdf = sequence(*sequence(pbes2_params)?.first()?)?;
     if oid(kdf.first()?)? != PBKDF2 {
         return None;
     }

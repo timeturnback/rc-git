@@ -1289,21 +1289,13 @@ public final class BrowserModel {
     /// a newer request or `cancelBlame` superseded it; when the open file or revision changed
     /// while it ran, `.empty` is published instead. Failures publish `.failed`.
     public func requestBlame() async {
-        guard let repository else { return publishBlame(.failed("no repository is open")) }
-        guard let target = blameTarget() else {
-            let message =
-                openedFilePath == nil
-                ? "no file with a known path is open" : "nothing is selected to blame at"
-            return publishBlame(.failed(message))
-        }
-        guard !openedFileIsUntracked else {
-            return publishBlame(
-                .failed("\(target.path) is untracked; it has no history to blame"))
-        }
-        guard openedPathIsExact else {
-            return publishBlame(.failed(InexactName.pathRefusal("blame", target.path)))
-        }
-        guard target != blameInFlight else { return }
+        let target = blameTarget()
+        let refusal = Self.blameRefusal(
+            repositoryOpen: repository != nil, openedPath: openedFilePath,
+            atRevision: target != nil, untracked: openedFileIsUntracked,
+            exactPath: openedPathIsExact)
+        if let refusal { return publishBlame(.failed(refusal)) }
+        guard let repository, let target, target != blameInFlight else { return }
         blameGeneration += 1
         let generation = blameGeneration
         blameInFlight = target
@@ -1321,6 +1313,21 @@ public final class BrowserModel {
         case let .failure(error):
             publishBlame(.failed(error.message))
         }
+    }
+
+    /// Why Show Blame cannot run, checked in order: no repository, no file with a known path
+    /// (`openedPath`), no revision to blame it at, an untracked file, a path that is not
+    /// valid UTF-8. `nil` when it can run.
+    public nonisolated static func blameRefusal(
+        repositoryOpen: Bool, openedPath: String?, atRevision: Bool, untracked: Bool,
+        exactPath: Bool
+    ) -> String? {
+        guard repositoryOpen else { return "no repository is open" }
+        guard let path = openedPath else { return "no file with a known path is open" }
+        guard atRevision else { return "nothing is selected to blame at" }
+        guard !untracked else { return "\(path) is untracked; it has no history to blame" }
+        guard exactPath else { return InexactName.pathRefusal("blame", path) }
+        return nil
     }
 
     /// Drops the running blame walk's result, so it never reaches a closed window. A blame

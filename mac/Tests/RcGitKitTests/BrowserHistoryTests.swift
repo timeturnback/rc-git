@@ -1117,6 +1117,27 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(title == "Blame — a.txt at HEAD")
     }
 
+    @Test func blameRefusalNamesTheFirstUnmetConditionAndNilWhenAllHold() {
+        func refusal(
+            repositoryOpen: Bool = true, openedPath: String? = "a.txt", atRevision: Bool = true,
+            untracked: Bool = false, exactPath: Bool = true
+        ) -> String? {
+            BrowserModel.blameRefusal(
+                repositoryOpen: repositoryOpen, openedPath: openedPath, atRevision: atRevision,
+                untracked: untracked, exactPath: exactPath)
+        }
+        #expect(refusal() == nil)
+        #expect(
+            refusal(repositoryOpen: false, openedPath: nil, atRevision: false)
+                == "no repository is open")
+        #expect(refusal(openedPath: nil, atRevision: false) == "no file with a known path is open")
+        #expect(refusal(atRevision: false, untracked: true) == "nothing is selected to blame at")
+        #expect(
+            refusal(untracked: true, exactPath: false)
+                == "a.txt is untracked; it has no history to blame")
+        #expect(refusal(exactPath: false) == InexactName.pathRefusal("blame", "a.txt"))
+    }
+
     @Test func blameRefusesAnUntrackedFileInTheWorkingTree() async {
         repo.workDir = "/w"
         repo.worktreeFiles["new.txt"] = textBlob("fresh\n")

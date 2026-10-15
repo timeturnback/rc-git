@@ -50,14 +50,26 @@ public struct ImportResolver {
         let specifier = String(specifier.prefix { $0 != "?" })
         guard !specifier.isEmpty, !specifier.hasPrefix("/") else { return nil }
         let directory = sourcePath.split(separator: "/").dropLast().map(String.init)
-        let last = specifier.split(separator: "/", omittingEmptySubsequences: false).last
-        if specifier.hasPrefix("./") || specifier.hasPrefix("../") || last == "." || last == ".." {
-            // `.`, `..` and a trailing slash name a directory, never a file beside it.
-            let namesDirectory = last == "." || last == ".." || last == ""
-            return try RepoPath.flatten(directory, specifier).flatMap(
-                namesDirectory ? indexFile : probe)
+        switch Self.relativeKind(of: specifier) {
+        case .file: return try RepoPath.flatten(directory, specifier).flatMap(probe)
+        case .directory: return try RepoPath.flatten(directory, specifier).flatMap(indexFile)
+        case nil: return try resolveThroughConfig(specifier, from: directory, budget: ReadBudget())
         }
-        return try resolveThroughConfig(specifier, from: directory, budget: ReadBudget())
+    }
+
+    /// What a relative specifier names.
+    private enum RelativeKind {
+        case file
+        case directory
+    }
+
+    /// What `specifier` names when it is relative to the importing file, `nil` when it is not.
+    /// `.`, `..` and a trailing slash name a directory, never a file beside it.
+    private static func relativeKind(of specifier: String) -> RelativeKind? {
+        let last = specifier.split(separator: "/", omittingEmptySubsequences: false).last
+        if last == "." || last == ".." { return .directory }
+        guard specifier.hasPrefix("./") || specifier.hasPrefix("../") else { return nil }
+        return last == "" ? .directory : .file
     }
 
     // MARK: Files
@@ -69,19 +81,26 @@ public struct ImportResolver {
         guard let name = components.last else { return try indexFile(in: []) }
         let parent = Array(components.dropLast())
         guard let siblings = try list(parent.joined(separator: "/")) else { return nil }
-        var candidates = [name]
-        candidates += Self.extensions.map { name + $0 }
-        for (compiled, sources) in Self.sourceExtensions where name.hasSuffix(compiled) {
-            let stem = name.dropLast(compiled.count)
-            candidates += sources.map { String(stem) + $0 }
-        }
-        for candidate in candidates where Self.isFile(candidate, in: siblings) {
-            return (parent + [candidate]).joined(separator: "/")
+        let candidates = Self.fileCandidates(for: name)
+        if let found = candidates.first(where: { Self.isFile($0, in: siblings) }) {
+            return (parent + [found]).joined(separator: "/")
         }
         guard siblings.contains(where: { $0.name == name && $0.kind.isDirectory }) else {
             return nil
         }
         return try indexFile(in: components)
+    }
+
+    /// The file names `name` may stand for, in the order they are tried: itself, itself with
+    /// each source extension, then the sources of its compiled extension.
+    private static func fileCandidates(for name: String) -> [String] {
+        var candidates = [name]
+        candidates += extensions.map { name + $0 }
+        for (compiled, sources) in sourceExtensions where name.hasSuffix(compiled) {
+            let stem = name.dropLast(compiled.count)
+            candidates += sources.map { String(stem) + $0 }
+        }
+        return candidates
     }
 
     private func indexFile(in directory: [String]) throws -> String? {
