@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct TextDocumentTests {
+@Suite(.timeLimit(.minutes(1))) struct TextDocumentTests {
     @Test func decodesUtf8AndCountsLines() {
         let document = TextDocument(
             bytes: Array("a\nb\n".utf8), lineStarts: [0, 2], validUTF8: true)
@@ -123,7 +123,7 @@ import Testing
     }
 }
 
-@Suite struct LineNumberingTests {
+@Suite(.timeLimit(.minutes(1))) struct LineNumberingTests {
     @Test func labelsOnlyExactLineStarts() {
         // "a\nb\nc": LF lines start at 0, 2, 4.
         #expect(LineNumbering.label(at: 0, lineStarts: [0, 2, 4]) == 1)

@@ -4,15 +4,15 @@ import Testing
 @testable import RcGitKit
 
 /// Every spelling of one repository gives one `tabKey`, the spelling FSEvents reports.
-@Suite struct CanonicalPathTests {
+@Suite(.timeLimit(.minutes(1))) struct CanonicalPathTests {
     /// `path` under the other name of its `/private` root: `/var/x` for `/private/var/x` and
     /// the reverse. `/tmp` and `/var` are both symlinks into `/private` on macOS.
     private static func otherPrivateSpelling(_ path: String) -> String {
         path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : "/private" + path
     }
 
-    @Test func everySpellingOfARepositoryGivesOneKey() throws {
-        let fixture = try GitFixture.standard()
+    @Test func everySpellingOfARepositoryGivesOneKey() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let aliases = try GitFixture.emptyDirectory()
         defer { aliases.remove() }
@@ -41,26 +41,26 @@ import Testing
         }
     }
 
-    @Test func twoRepositoriesGetTwoKeys() throws {
-        let first = try GitFixture.standard()
+    @Test func twoRepositoriesGetTwoKeys() async throws {
+        let first = try await GitFixture.standard()
         defer { first.remove() }
-        let second = try GitFixture.standard()
+        let second = try await GitFixture.standard()
         defer { second.remove() }
         #expect(try Repository(path: first.path).tabKey != Repository(path: second.path).tabKey)
     }
 
-    @Test func aLinkedWorktreeHasItsOwnKey() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aLinkedWorktreeHasItsOwnKey() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let outside = try GitFixture.emptyDirectory()
         defer { outside.remove() }
         let linkedPath = outside.path + "/linked"
-        try fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
+        try await fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
         #expect(try Repository(path: fixture.path).tabKey != Repository(path: linkedPath).tabKey)
     }
 
-    @Test func aRepositoryOpenedThroughItsGitDirShowsItsWorkingDirectory() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aRepositoryOpenedThroughItsGitDirShowsItsWorkingDirectory() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let workDir = CanonicalPath.resolve(fixture.path)
         #expect(workDir.hasPrefix("/private/"))
@@ -70,13 +70,13 @@ import Testing
         }
     }
 
-    @Test func aBareRepositoryShowsThePathItWasOpenedThrough() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aBareRepositoryShowsThePathItWasOpenedThrough() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let outside = try GitFixture.emptyDirectory()
         defer { outside.remove() }
         let barePath = outside.path + "/bare.git"
-        try fixture.git(["clone", "-q", "--bare", fixture.path, barePath])
+        try await fixture.git(["clone", "-q", "--bare", fixture.path, barePath])
         let repository = try Repository(path: barePath)
         #expect(repository.tabPath(openedAs: barePath) == CanonicalPath.resolve(barePath))
     }

@@ -20,7 +20,7 @@ private func names(_ sections: [RefSection]) -> [[String]] {
     sections.map { $0.refs.map(\.shortName) }
 }
 
-@Suite struct RefFilterTests {
+@Suite(.timeLimit(.minutes(1))) struct RefFilterTests {
     let mixed = RefListing(refs: [
         ref("other-thing", .other),
         ref("v1.0", .tag),

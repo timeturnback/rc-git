@@ -55,10 +55,11 @@ public struct PathIndex: Sendable {
     /// `limit` files. Each directory lists its subdirectories first, each in full and in the
     /// order `children` returns them, then its own files. This is the one operation that walks a
     /// whole tree, so it must run in the background and checks for task cancellation between
-    /// directory reads.
+    /// directory reads. `children` is awaited once per directory, so a blocking read can hop
+    /// off the cooperative pool while the walk stays cancellable.
     public static func build(
-        root: Oid, limit: Int = maxEntries, children: (Oid) throws -> [TreeEntry]
-    ) throws -> PathIndex {
+        root: Oid, limit: Int = maxEntries, children: (Oid) async throws -> [TreeEntry]
+    ) async throws -> PathIndex {
         var entries: [PathIndexEntry] = []
         var pending: [PendingWalk] = [.tree(root, prefix: "", hidden: false, exact: true)]
         while let next = pending.popLast() {
@@ -72,7 +73,7 @@ public struct PathIndex: Sendable {
                 }
             case .tree(let tree, let prefix, let hidden, let exact):
                 try Task.checkCancellation()
-                let listed = try children(tree)
+                let listed = try await children(tree)
                 pending += readDirectory(listed, prefix: prefix, hidden: hidden, exact: exact)
             }
         }

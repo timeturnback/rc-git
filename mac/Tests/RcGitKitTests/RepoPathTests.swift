@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct RepoPathTests {
+@Suite(.timeLimit(.minutes(1))) struct RepoPathTests {
     @Test func climbingPastTheRootIsNil() {
         #expect(RepoPath.flatten([], "..") == nil)
         #expect(RepoPath.flatten(["a"], "../..") == nil)

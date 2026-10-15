@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// The banner shown when saved tabs did not reopen at launch.
-@Suite struct RestoreNoticeTests {
+@Suite(.timeLimit(.minutes(1))) struct RestoreNoticeTests {
     @Test func everyTabOpenedShowsNoNotice() {
         #expect(RestoreNotice.make(failed: [], kept: ["/r/a"]) == nil)
     }

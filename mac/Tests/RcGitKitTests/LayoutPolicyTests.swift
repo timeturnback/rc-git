@@ -4,7 +4,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct LayoutPolicyTests {
+@Suite(.timeLimit(.minutes(1))) struct LayoutPolicyTests {
     @Test func wideWindowShowsEverything() {
         let layout = LayoutPolicy.layout(for: CGSize(width: 1400, height: 900))
         #expect(layout == Layout(showsSidebar: true))
@@ -213,7 +213,7 @@ import Testing
     }
 }
 
-@Suite struct SidebarFitTests {
+@Suite(.timeLimit(.minutes(1))) struct SidebarFitTests {
     @Test func fitAppliesOnlyToAnOpenUnpinnedSidebarShowingFiles() {
         #expect(SidebarFit.applies(isPinned: false, showsFiles: true, isCollapsed: false))
         #expect(!SidebarFit.applies(isPinned: true, showsFiles: true, isCollapsed: false))
@@ -253,7 +253,7 @@ import Testing
     }
 }
 
-@Suite struct SidebarWidthPinTests {
+@Suite(.timeLimit(.minutes(1))) struct SidebarWidthPinTests {
     @Test func unpinnedUntilPinnedThenRemembered() throws {
         try withScratchDefaults { defaults in
             #expect(!SidebarWidthPin(defaults: defaults).isPinned)

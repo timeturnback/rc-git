@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// Which hunk a row of the Changes diff pane belongs to: a header row, then one row per line.
-@Suite struct DiffHunkRowTests {
+@Suite(.timeLimit(.minutes(1))) struct DiffHunkRowTests {
     static let first = DiffHunk(
         oldStart: 1, oldLines: 1, newStart: 1, newLines: 2,
         lines: [DiffLine(kind: .context, text: "a"), DiffLine(kind: .added, text: "b")])

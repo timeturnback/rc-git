@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// Drives the real Rust core through the C ABI against a repository built with the git CLI.
-@Suite struct RepositoryIntegrationTests {
+@Suite(.timeLimit(.minutes(1))) struct RepositoryIntegrationTests {
     @Test func openingANonRepositoryThrowsWithThePath() throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
@@ -20,8 +20,8 @@ import Testing
         }
     }
 
-    @Test func commonDirectoryIsTheSharedGitDirOfALinkedWorktree() throws {
-        let fixture = try GitFixture.standard()
+    @Test func commonDirectoryIsTheSharedGitDirOfALinkedWorktree() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let outside = try GitFixture.emptyDirectory()
         defer { outside.remove() }
@@ -29,9 +29,9 @@ import Testing
         #expect(main.commonDirectory == main.gitDirectory)
 
         let linkedPath = outside.path + "/linked"
-        try fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
+        try await fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
         let linked = try Repository(path: linkedPath)
-        let expected = try GitFixture(path: linkedPath).gitOutput([
+        let expected = try await GitFixture(path: linkedPath).gitOutput([
             "rev-parse", "--path-format=absolute", "--git-common-dir",
         ])
         #expect(
@@ -43,8 +43,8 @@ import Testing
                 != CanonicalPath.resolve(linked.commonDirectory))
     }
 
-    @Test func brokenRefIsReportedWithoutHidingTheRest() throws {
-        let fixture = try GitFixture.standard()
+    @Test func brokenRefIsReportedWithoutHidingTheRest() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write(".git/refs/heads/x", "not a ref\n")
         let listing = try Repository(path: fixture.path).refs()
@@ -57,17 +57,17 @@ import Testing
         #expect(names == ["main", "feature", "origin/main", "v0.9", "v1.0"])
     }
 
-    @Test func headCrossesDetachedAndUnbornAndABareRepositoryHasNoWorkingDirectory() throws {
-        let fixture = try GitFixture.standard()
+    @Test func headCrossesDetachedAndUnbornAndABareRepositoryHasNoWorkingDirectory() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(["checkout", "-q", "--detach", "HEAD"])
+        try await fixture.git(["checkout", "-q", "--detach", "HEAD"])
         let detached = try Repository(path: fixture.path).head()
         #expect(detached.refName == nil)
-        #expect(try detached.target?.hex == fixture.revParse("HEAD"))
+        #expect(try await detached.target?.hex == fixture.revParse("HEAD"))
 
         let unbornFixture = try GitFixture.emptyDirectory()
         defer { unbornFixture.remove() }
-        try unbornFixture.git(["init", "-q", "-b", "work"])
+        try await unbornFixture.git(["init", "-q", "-b", "work"])
         let unborn = try Repository(path: unbornFixture.path).head()
         #expect(unborn.target == nil)
         #expect(unborn.refName == "refs/heads/work")
@@ -75,13 +75,13 @@ import Testing
         let outside = try GitFixture.emptyDirectory()
         defer { outside.remove() }
         let barePath = outside.path + "/bare.git"
-        try fixture.git(["clone", "--bare", "--quiet", ".", barePath])
+        try await fixture.git(["clone", "--bare", "--quiet", ".", barePath])
         let bare = try Repository(path: barePath)
         #expect(bare.workingDirectory == nil)
     }
 
-    @Test func readsRefsTreesBlobsAndHistory() throws {
-        let fixture = try GitFixture.standard()
+    @Test func readsRefsTreesBlobsAndHistory() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         #expect(repo.gitDirectory.hasSuffix(".git"))
@@ -90,7 +90,7 @@ import Testing
         let head = try repo.head()
         #expect(head.refName == "refs/heads/main")
         #expect(head.hasExactRefName)
-        #expect(try head.target?.hex == fixture.revParse("HEAD"))
+        #expect(try await head.target?.hex == fixture.revParse("HEAD"))
 
         #expect(
             try repo.defaultBranch() == DefaultBranch(name: "main"),
@@ -102,10 +102,10 @@ import Testing
         #expect(names == ["main", "feature", "origin/main", "v0.9", "v1.0"])
         let tag = try #require(listing.refs.first { $0.shortName == "v1.0" })
         #expect(tag.kind == .tag)
-        #expect(try tag.target.hex == fixture.revParse("v1.0^{commit}"))
+        #expect(try await tag.target.hex == fixture.revParse("v1.0^{commit}"))
 
         let root = try repo.resolveTree("main")
-        #expect(try root.hex == fixture.revParse("main^{tree}"))
+        #expect(try await root.hex == fixture.revParse("main^{tree}"))
         #expect(try repo.treeOf(tag.target) == root)
         let entries = try repo.treeEntries(root)
         #expect(
@@ -117,7 +117,7 @@ import Testing
         #expect(entries[4].kind == .symlink)
 
         let mainRs = try repo.resolve("main:src/main.rs")
-        #expect(try mainRs.hex == fixture.revParse("main:src/main.rs"))
+        #expect(try await mainRs.hex == fixture.revParse("main:src/main.rs"))
         guard case let .text(data, lineStarts, validUTF8) = try repo.readBlob(mainRs) else {
             Issue.record("expected text")
             return
@@ -158,16 +158,16 @@ import Testing
 
     /// Names git stores as bytes that are not UTF-8 arrive flagged, so nothing sends their
     /// U+FFFD spelling back as a path or ref name.
-    @Test func inexactNameTreeEntriesAndRefsArriveFlagged() throws {
-        let fixture = try GitFixture.standard()
+    @Test func inexactNameTreeEntriesAndRefsArriveFlagged() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        let blob = try #require(Oid(hex: try fixture.revParse("main:README.md")))
+        let blob = try await #require(Oid(hex: try fixture.revParse("main:README.md")))
         let raw = Array("100644 f".utf8) + [0xFF] + Array("o".utf8) + [0] + blob.bytes
         try fixture.writeBytes("raw-tree", raw)
-        let treeHex = try fixture.gitOutput(["hash-object", "-w", "-t", "tree", "raw-tree"])
+        let treeHex = try await fixture.gitOutput(["hash-object", "-w", "-t", "tree", "raw-tree"])
         let packed = URL(fileURLWithPath: fixture.path).appendingPathComponent(".git/packed-refs")
         var refs = (try? Data(contentsOf: packed)) ?? Data()
-        let main = try fixture.revParse("main")
+        let main = try await fixture.revParse("main")
         refs.append(contentsOf: Array("\(main) refs/tags/v".utf8) + [0xE9, 0x0A])
         try refs.write(to: packed)
 
@@ -188,14 +188,14 @@ import Testing
 
     /// A HEAD or remote HEAD naming a branch that is not UTF-8 arrives flagged, so nothing
     /// checks out its U+FFFD spelling.
-    @Test func inexactHeadAndDefaultBranchArriveFlagged() throws {
-        let fixture = try GitFixture.standard()
+    @Test func inexactHeadAndDefaultBranchArriveFlagged() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(["pack-refs", "--all"])
+        try await fixture.git(["pack-refs", "--all"])
         let packed = URL(fileURLWithPath: fixture.path).appendingPathComponent(".git/packed-refs")
         let header = try String(contentsOf: packed, encoding: .utf8)
             .replacingOccurrences(of: " sorted", with: "")
-        let main = try fixture.revParse("main")
+        let main = try await fixture.revParse("main")
         try fixture.writeBytes(
             ".git/packed-refs",
             Array(header.utf8) + Array("\(main) refs/remotes/origin/tr".utf8) + [0xE9, 0x0A])
@@ -212,8 +212,8 @@ import Testing
             try repo.defaultBranch() == DefaultBranch(name: "tr\u{FFFD}", hasExactName: false))
     }
 
-    @Test func walksPathHistoryWithAScanCursor() throws {
-        let fixture = try GitFixture.standard()
+    @Test func walksPathHistoryWithAScanCursor() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let tip = try repo.resolve("main")
@@ -245,8 +245,8 @@ import Testing
         #expect(missing.complete)
     }
 
-    @Test func searchesCommitsByMessageAuthorAndTime() throws {
-        let fixture = try GitFixture.standard()
+    @Test func searchesCommitsByMessageAuthorAndTime() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let tip = try repo.resolve("main")
@@ -286,10 +286,10 @@ import Testing
         #expect(rest.complete)
     }
 
-    @Test func readsCommitDetails() throws {
-        let fixture = try GitFixture.standard()
+    @Test func readsCommitDetails() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(
+        try await fixture.git(
             [
                 "commit", "-q", "--allow-empty", "-m", "Detail commit", "-m", "The body.",
                 "--date", "2024-01-04T00:00:00+0000",
@@ -305,7 +305,7 @@ import Testing
         #expect(detail.committerName == "Test Committer")
         #expect(detail.committerEmail == "committer@example.com")
         #expect(detail.committerTime == 1_704_326_400)
-        #expect(try detail.tree.hex == fixture.revParse("main^{tree}"))
+        #expect(try await detail.tree.hex == fixture.revParse("main^{tree}"))
 
         let titledOnly = try repo.resolve("main~1")
         #expect(try repo.commitDetails(titledOnly).body.isEmpty)
@@ -314,8 +314,8 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.commitDetails(tree) }
     }
 
-    @Test func diffsTreesAndBlobsAndBlames() throws {
-        let fixture = try GitFixture.standard()
+    @Test func diffsTreesAndBlobsAndBlames() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let old = try repo.resolve("v0.9")
@@ -361,7 +361,7 @@ import Testing
         try #require(spans.count == 1)
         #expect(spans[0].startLine == 1)
         #expect(spans[0].lineCount == 3)
-        #expect(try spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
+        #expect(try await spans[0].commit.hex == fixture.revParse("v0.9^{commit}"))
         #expect(!spans[0].boundary)
 
         guard case let .ranges(stopped) = try repo.blame(tip: new, path: "README.md", since: .max)
@@ -370,7 +370,7 @@ import Testing
             return
         }
         let marked = try #require(stopped.first)
-        #expect(try marked.commit.hex == fixture.revParse("main"))
+        #expect(try await marked.commit.hex == fixture.revParse("main"))
         #expect(marked.boundary, "a floor past the tip leaves every line at the tip, marked")
 
         let declined = try repo.blame(tip: new, path: "README.md", limit: 2)
@@ -378,13 +378,13 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.blame(tip: new, path: "nope.txt") }
     }
 
-    @Test func diffsModifiedDeletedAndRenamedPathsAndEditedLines() throws {
-        let fixture = try GitFixture.standard()
+    @Test func diffsModifiedDeletedAndRenamedPathsAndEditedLines() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("README.md", "# fixture\n\nhi\n")
-        try fixture.git(["mv", "alpha.txt", "beta.txt"])
-        try fixture.git(["rm", "-q", "Zeta.txt"])
-        try fixture.commit("Edit", date: "2024-01-05T00:00:00+0000")
+        try await fixture.git(["mv", "alpha.txt", "beta.txt"])
+        try await fixture.git(["rm", "-q", "Zeta.txt"])
+        try await fixture.commit("Edit", date: "2024-01-05T00:00:00+0000")
         let repo = try Repository(path: fixture.path)
 
         let changes = try repo.diffTrees(from: try repo.resolve("main~1"), to: repo.resolve("HEAD"))
@@ -410,26 +410,26 @@ import Testing
             ])
     }
 
-    @Test func defaultBranchIsNilWhenNothingNamesAMainline() throws {
+    @Test func defaultBranchIsNilWhenNothingNamesAMainline() async throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
-        try fixture.git(["init", "-q", "-b", "trunk"])
+        try await fixture.git(["init", "-q", "-b", "trunk"])
         try fixture.write("a.txt", "a\n")
-        try fixture.commit("one", date: "2024-01-01T00:00:00+0000")
+        try await fixture.commit("one", date: "2024-01-01T00:00:00+0000")
         #expect(try Repository(path: fixture.path).defaultBranch() == nil)
     }
 
-    @Test func diffLinesCarryTheirLineEnding() throws {
+    @Test func diffLinesCarryTheirLineEnding() async throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
-        try fixture.git(["init", "-q", "-b", "main"])
+        try await fixture.git(["init", "-q", "-b", "main"])
         try fixture.write("f.txt", "x\na")
-        try fixture.commit("one", date: "2024-01-01T00:00:00+0000")
+        try await fixture.commit("one", date: "2024-01-01T00:00:00+0000")
         try fixture.write("f.txt", "x\r\na\n")
-        try fixture.commit("two", date: "2024-01-02T00:00:00+0000")
+        try await fixture.commit("two", date: "2024-01-02T00:00:00+0000")
         let repo = try Repository(path: fixture.path)
-        let old = try #require(Oid(hex: try fixture.revParse("main~1:f.txt")))
-        let new = try #require(Oid(hex: try fixture.revParse("main:f.txt")))
+        let old = try await #require(Oid(hex: try fixture.revParse("main~1:f.txt")))
+        let new = try await #require(Oid(hex: try fixture.revParse("main:f.txt")))
 
         guard case let .text(hunks) = try repo.diffBlobs(old: old, new: new) else {
             Issue.record("expected a text diff")
@@ -450,8 +450,8 @@ import Testing
         #expect(LineEnd.none.marker?.contains("no newline at end of file") == true)
     }
 
-    @Test func listsAndReadsTheWorkingTree() throws {
-        let fixture = try GitFixture.standard()
+    @Test func listsAndReadsTheWorkingTree() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("untracked.txt", "new\n")
         try fixture.write(".gitignore", "ignored.txt\n")
@@ -463,7 +463,7 @@ import Testing
 
         let listing = try repo.worktreeEntries(tree: tree, dir: "")
         #expect(listing.missing.map(\.name) == ["Zeta.txt"])
-        #expect(try listing.missing.first?.oid.hex == fixture.revParse("HEAD:Zeta.txt"))
+        #expect(try await listing.missing.first?.oid.hex == fixture.revParse("HEAD:Zeta.txt"))
         let untracked = try #require(listing.entries.first { $0.name == "untracked.txt" })
         #expect(untracked.status == .untracked)
         #expect(untracked.oid == nil)
@@ -471,7 +471,7 @@ import Testing
         #expect(ignored.status == .ignored)
         let readme = try #require(listing.entries.first { $0.name == "README.md" })
         #expect(readme.status == .unchanged)
-        #expect(try readme.oid?.hex == fixture.revParse("HEAD:README.md"))
+        #expect(try await readme.oid?.hex == fixture.revParse("HEAD:README.md"))
 
         guard case let .text(data, _, _) = try repo.worktreeFile(path: "untracked.txt") else {
             Issue.record("expected text")
@@ -481,8 +481,8 @@ import Testing
         #expect(throws: RepositoryError.self) { try repo.worktreeFile(path: "nope.txt") }
     }
 
-    @Test func listsEveryFileOnDiskIncludingIgnoredOnes() throws {
-        let fixture = try GitFixture.standard()
+    @Test func listsEveryFileOnDiskIncludingIgnoredOnes() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write(".gitignore", ".env\nbuild/\n")
         try fixture.write(".env", "SECRET=1\n")
@@ -502,10 +502,10 @@ import Testing
         #expect(capped.truncated)
     }
 
-    @Test func scansAnUnbornBranchWithNoTree() throws {
+    @Test func scansAnUnbornBranchWithNoTree() async throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }
-        try fixture.git(["init", "-q", "-b", "main"])
+        try await fixture.git(["init", "-q", "-b", "main"])
         try fixture.write("a.txt", "hi\n")
         let repo = try Repository(path: fixture.path)
         #expect(try repo.head().target == nil)
@@ -515,8 +515,8 @@ import Testing
         #expect(report.entries.map(\.status) == [.untracked])
     }
 
-    @Test func statusReportsTheIgnoredFoldersItPruned() throws {
-        let fixture = try GitFixture.standard()
+    @Test func statusReportsTheIgnoredFoldersItPruned() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write(".gitignore", "target/\n")
         try fixture.write("target/debug/x.o", "object\n")
@@ -529,8 +529,8 @@ import Testing
         #expect(!report.entries.contains { $0.path.hasPrefix("target/") })
     }
 
-    @Test func statusReportsTheNestedRepositoriesItSkipped() throws {
-        let fixture = try GitFixture.standard()
+    @Test func statusReportsTheNestedRepositoriesItSkipped() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("vendor/lib/a.txt", "a\n")
         try fixture.write("vendor/lib/.git/HEAD", "ref: refs/heads/main\n")
@@ -541,11 +541,11 @@ import Testing
         #expect(!report.entries.contains { $0.path.hasPrefix("vendor/") })
     }
 
-    @Test func scansStatusDiffsWorktreeFilesAndListsStashes() throws {
-        let fixture = try GitFixture.standard()
+    @Test func scansStatusDiffsWorktreeFilesAndListsStashes() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("alpha.txt", "stash me\n")
-        try fixture.git(["stash", "push", "-q", "-m", "kept"])
+        try await fixture.git(["stash", "push", "-q", "-m", "kept"])
         try fixture.write("alpha.txt", "alpha\nbeta\n")
         try fixture.write("untracked.txt", "new\n")
         try FileManager.default.removeItem(
@@ -562,7 +562,7 @@ import Testing
         #expect(rows.map(\.1) == [.deleted, .modified, .untracked])
         try #require(report.entries.count == 3)
         let modified = report.entries[1]
-        #expect(try modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
+        #expect(try await modified.oid?.hex == fixture.revParse("HEAD:alpha.txt"))
 
         guard
             case let .text(hunks) = try repo.diffWorktreeFile(
@@ -580,11 +580,11 @@ import Testing
         try #require(stashes.count == 1)
         #expect(stashes[0].index == 0)
         #expect(stashes[0].message.hasSuffix("kept"))
-        #expect(try stashes[0].oid.hex == fixture.revParse("stash@{0}"))
+        #expect(try await stashes[0].oid.hex == fixture.revParse("stash@{0}"))
     }
 
     @Test func repositoryIsUsableFromManyThreadsAtOnce() async throws {
-        let fixture = try GitFixture.standard()
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let repo = try Repository(path: fixture.path)
         let root = try repo.resolveTree("main")

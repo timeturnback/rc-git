@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct NavigatorTests {
+@Suite(.timeLimit(.minutes(1))) struct NavigatorTests {
     private final class Tab {}
 
     private let one = Tab()

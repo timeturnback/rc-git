@@ -13,7 +13,7 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     return nil
 }
 
-@Suite struct MarkdownBlockTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownBlockTests {
     @Test func atxHeadingsCarryTheirLevel() throws {
         let blocks = MarkdownDocument.parse("# One\n\n### Three ###\n").blocks
         try #require(blocks.count == 2)
@@ -318,7 +318,7 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     }
 }
 
-@Suite struct MarkdownAnchorTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownAnchorTests {
     @Test func headingsSlugLikeGitHub() {
         #expect(MarkdownDocument.anchor(for: "Working agreement") == "working-agreement")
         #expect(MarkdownDocument.anchor(for: "`Oid` keys, and why") == "oid-keys-and-why")
@@ -356,7 +356,7 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     }
 }
 
-@Suite struct MarkdownListTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownListTests {
     @Test func bulletsAndOrdinalsCarryOneMarkerPerItem() {
         let blocks = MarkdownDocument.parse("- one\n- two\n\n1. first\n2. second\n").blocks
         #expect(blocks.map(\.marker) == [.bullet, .bullet, .ordered(1), .ordered(2)])
@@ -417,7 +417,7 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     }
 }
 
-@Suite struct MarkdownTableTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownTableTests {
     private func table(_ source: String) -> MarkdownTable? {
         for block in MarkdownDocument.parse(source).blocks {
             if case let .table(value) = block.kind { return value }
@@ -467,7 +467,7 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
     }
 }
 
-@Suite struct MarkdownInlineTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownInlineTests {
     private func runs(_ source: String) -> [MarkdownRun] {
         MarkdownDocument.parse(source).blocks.first?.runs ?? []
     }

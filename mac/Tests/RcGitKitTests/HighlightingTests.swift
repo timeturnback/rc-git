@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// The highlighting bridge and the byte-to-UTF-16 span mapping.
-@Suite struct HighlightingTests {
+@Suite(.timeLimit(.minutes(1))) struct HighlightingTests {
     @Test func rustSourceGetsSpansAndUnknownExtensionsGetNone() {
         let data = Array("fn main() { let s = \"hi\"; }\n".utf8)
         let spans = Highlighter.highlight(name: "main.rs", data: data)

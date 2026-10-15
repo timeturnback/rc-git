@@ -1929,7 +1929,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     }
 }
 
-@Suite struct SyncTitlesTests {
+@Suite(.timeLimit(.minutes(1))) struct SyncTitlesTests {
     @Test func noPreflightYetShowsTheBareVerbs() {
         #expect(SyncTitles.pull(nil) == "Pull")
         #expect(SyncTitles.push(nil) == "Push")
@@ -2037,7 +2037,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     }
 }
 
-@Suite struct ReconcileCommandTests {
+@Suite(.timeLimit(.minutes(1))) struct ReconcileCommandTests {
     @Test func aPlainPathStaysBare() {
         #expect(
             ReconcileCommand.rebase(workDir: "/Users/me/WorkSpace/rc-git")
@@ -2051,7 +2051,7 @@ private let switchedWithoutReflog = CheckoutOutcome(
     }
 }
 
-@Suite struct SyncReportTests {
+@Suite(.timeLimit(.minutes(1))) struct SyncReportTests {
     @Test func aWorkflowThatRanToTheEndWithNothingToSayReportsNothing() {
         #expect(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1).report == nil)
     }

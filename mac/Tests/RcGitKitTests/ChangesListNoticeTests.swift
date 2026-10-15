@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// What the change list says in place of rows, and whether its rows are current.
-@Suite struct ChangesListNoticeTests {
+@Suite(.timeLimit(.minutes(1))) struct ChangesListNoticeTests {
     private let entry = StatusEntry(
         path: "a.txt", kind: .blob, status: .modified, oid: nil, size: 1)
 

@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct ClosedTabsTests {
+@Suite(.timeLimit(.minutes(1))) struct ClosedTabsTests {
     @Test func emptyHasNothingToReopen() {
         var closed = ClosedTabs()
         #expect(!closed.canReopen(skipping: []))

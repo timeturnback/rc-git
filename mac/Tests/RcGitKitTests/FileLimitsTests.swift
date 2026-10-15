@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// What the file pane offers for a file: the markdown preview, and "Load anyway".
-@Suite struct FileLimitsTests {
+@Suite(.timeLimit(.minutes(1))) struct FileLimitsTests {
     @Test func loadAnywayStopsAtTheHardLimit() {
         #expect(FileLimits.canForceLoad(size: FileLimits.hardLimit - 1))
         #expect(FileLimits.canForceLoad(size: FileLimits.hardLimit))

@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct MarkdownLinkTargetTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownLinkTargetTests {
     private func resolve(_ destination: String, from source: String? = "docs/guide/index.md")
         -> MarkdownLinkTarget?
     {

@@ -85,6 +85,49 @@ if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI
   echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
   exit 1
 fi
+step "blocking work off the pool"
+# A Task.detached runs on the cooperative pool, one thread per core: a blocking call there
+# starves every task. Blocking work goes through BlockingWork; a detached task that never
+# blocks says why in a `// pool-safe:` comment directly above it.
+# shellcheck disable=SC2016 # awk's own $0
+unmarked="$(find mac/Sources/RcGitKit -name '*.swift' -print0 | xargs -0 awk '
+  FNR == 1 { safe = 0 }
+  /^[[:space:]]*\/\// { if ($0 ~ /pool-safe:/) safe = 1; next }
+  /Task\.detached/ && !safe { print FILENAME ":" FNR ": " $0 }
+  { safe = 0 }')"
+if [[ -n $unmarked ]]; then
+  printf '%s\n' "$unmarked"
+  echo 'error: Task.detached in RcGitKit without a // pool-safe: reason above it;' \
+    'run blocking work through BlockingWork.run (.claude/rules/swift.md)' >&2
+  exit 1
+fi
+step "suite time limits"
+# A suite's .timeLimit reaches every test and nested suite inside it; a struct holding only
+# @Test functions is a suite too. Without one, a hung test stalls the gate until bounded.sh.
+# shellcheck disable=SC2016 # awk's own $0
+unlimited="$(find mac/Tests -name '*.swift' -print0 | xargs -0 awk '
+  FNR == 1 { pending = ""; limited = 0 }
+  /^[A-Za-z@]/ {
+    if ($0 ~ /^@Test/) {
+      if ($0 !~ /\.timeLimit\(/) print FILENAME ":" FNR ": top-level @Test"
+      pending = ""
+      next
+    }
+    if ($0 ~ /(^|[[:space:]])(struct|class|enum|actor|extension)[[:space:]]+[A-Za-z_]/) {
+      limited = ((pending " " $0) ~ /\.timeLimit\(/)
+      pending = ""
+      next
+    }
+    if ($0 ~ /^@/) { pending = pending " " $0; next }
+    pending = ""
+  }
+  /^[[:space:]]+@Test/ && !limited && $0 !~ /\.timeLimit\(/ { print FILENAME ":" FNR ": " $0 }')"
+if [[ -n $unlimited ]]; then
+  printf '%s\n' "$unlimited"
+  echo 'error: @Test outside a .timeLimit; give its top-level suite' \
+    '@Suite(.timeLimit(.minutes(1)))' >&2
+  exit 1
+fi
 step "table cell fonts"
 # NSTableCellView resets its textField outlet's font at layout; see .claude/rules/swift.md.
 if grep -rnE --include='*.swift' 'textField[?!]?\.font[[:space:]]*=' mac/Sources/RcGitApp; then

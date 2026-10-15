@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct ChangeTreeTests {
+@Suite(.timeLimit(.minutes(1))) struct ChangeTreeTests {
     private func entry(_ path: String) -> StatusEntry {
         StatusEntry(path: path, kind: .blob, status: .modified, oid: nil, size: 1)
     }

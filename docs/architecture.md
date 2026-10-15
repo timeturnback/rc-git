@@ -119,8 +119,11 @@ next step and goes on to it. What a tab reports during a restore is not recorded
 ## Threading
 
 - `BrowserModel` is `@MainActor`. All state changes and callbacks happen there.
-- Repository calls run in `Task.detached` closures. `Repository` is `@unchecked Sendable`; the
-  Rust side guarantees thread safety through the handle pool.
+- Repository calls, keychain reads and transfers run through `BlockingWork.run`, which runs them
+  on a dedicated overcommitting dispatch queue and resumes the caller through a continuation.
+  A blocking call on the cooperative pool (inside `Task.detached`) holds one of its few threads,
+  and enough of them starve every task. `Repository` is `@unchecked Sendable`; the Rust side
+  guarantees thread safety through the handle pool.
 - Every load carries a generation number captured before the await and compared after.
 
 ## Caching

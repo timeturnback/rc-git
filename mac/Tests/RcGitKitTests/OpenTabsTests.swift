@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct OpenTabsTests {
+@Suite(.timeLimit(.minutes(1))) struct OpenTabsTests {
     @Test func clampsSelectionIntoTheList() {
         #expect(OpenTabs.clampedSelection(1, count: 3) == 1)
         #expect(OpenTabs.clampedSelection(0, count: 3) == 0)

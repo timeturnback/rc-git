@@ -7,7 +7,7 @@ private func mainLayout(_ path: String, gitDir: String) -> Bool {
     RefWatchFilter.isRelevant(path, gitDir: gitDir, commonDir: gitDir)
 }
 
-@Suite struct RefWatchFilterTests {
+@Suite(.timeLimit(.minutes(1))) struct RefWatchFilterTests {
     let gitDir = "/tmp/repo/.git"
 
     @Test func refPathsAreRelevant() {

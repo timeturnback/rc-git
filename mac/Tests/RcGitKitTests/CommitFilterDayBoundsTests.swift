@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// How a Since/Until day pick becomes the filter's inclusive instants.
-@Suite struct CommitFilterDayBoundsTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitFilterDayBoundsTests {
     private func calendar(_ zone: String) throws -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: zone))

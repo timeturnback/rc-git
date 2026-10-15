@@ -3,23 +3,40 @@ import RcGitKit
 
 /// Holds one synchronous repository call until the test opens it, and tells the test when the
 /// call has arrived, so a race between two loads is ordered by the test rather than by sleeps.
+/// Only the held call blocks a thread, one of `BlockingWork`'s; the test awaits a continuation.
 final class CallGate: @unchecked Sendable {
-    private let arrived = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    // Guarded by `lock`: arrivals no waiter has taken yet, and the test waiting for one.
+    private var arrivals = 0
+    private var waiter: CheckedContinuation<Void, Never>?
     private let opened = DispatchSemaphore(value: 0)
 
     /// Called by the fake on the worker thread: reports arrival, then blocks until `open()`.
     func pass() {
-        arrived.signal()
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard let waiting = waiter else {
+                arrivals += 1
+                return nil
+            }
+            waiter = nil
+            return waiting
+        }
+        waiting?.resume()
         opened.wait()
     }
 
-    /// Suspends until a call has reached `pass()`. The wait runs off the cooperative pool.
+    /// Suspends until a call has reached `pass()`, without holding a thread.
     func waitUntilArrived() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async {
-                self.arrived.wait()
-                continuation.resume()
+            let arrived = lock.withLock { () -> Bool in
+                guard arrivals > 0 else {
+                    waiter = continuation
+                    return false
+                }
+                arrivals -= 1
+                return true
             }
+            if arrived { continuation.resume() }
         }
     }
 

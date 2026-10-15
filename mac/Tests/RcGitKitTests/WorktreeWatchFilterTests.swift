@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct WorktreeWatchFilterTests {
+@Suite(.timeLimit(.minutes(1))) struct WorktreeWatchFilterTests {
     let workDir = "/repo"
     let gitDir = "/repo/.git"
 

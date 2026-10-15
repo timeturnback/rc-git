@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct BackForwardListTests {
+@Suite(.timeLimit(.minutes(1))) struct BackForwardListTests {
     private func stop(
         _ repository: String = "/one", mode: ContentMode = .files, file: String? = nil,
         commit: Oid? = nil

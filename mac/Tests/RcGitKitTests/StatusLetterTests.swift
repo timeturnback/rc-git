@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// The one-letter labels the changed-file rows and tree badges show.
-@Suite struct StatusLetterTests {
+@Suite(.timeLimit(.minutes(1))) struct StatusLetterTests {
     @Test func worktreeStatusLettersMatchGitStatus() {
         #expect(WorktreeStatus.modified.letter == "M")
         #expect(WorktreeStatus.untracked.letter == "U")

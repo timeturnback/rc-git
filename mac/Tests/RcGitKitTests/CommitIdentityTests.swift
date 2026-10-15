@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct CommitIdentityParseTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitIdentityParseTests {
     @Test func aValidIdentityIsTrimmedOfSpacesAndNewlines() {
         let parsed = CommitIdentity.parse(name: "  Ada Lovelace\n", email: "\tlong@example.com \n")
         #expect(parsed == .success(CommitIdentity(name: "Ada Lovelace", email: "long@example.com")))
@@ -46,7 +46,7 @@ import Testing
     }
 }
 
-@Suite struct CommitIdentityStoreTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitIdentityStoreTests {
     let work = CommitIdentity(name: "Work Me", email: "me@work.example")
 
     @Test func anIdentityIsSavedForOneRepositoryOnly() throws {
@@ -81,7 +81,7 @@ import Testing
     }
 }
 
-@Suite struct CommitAuthorTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitAuthorTests {
     let configured = CommitIdentity(name: "Repo", email: "repo@example.com")
     let saved = CommitIdentity(name: "Saved", email: "saved@example.com")
 
@@ -126,7 +126,7 @@ private final class GatedConfigReader: @unchecked Sendable {
     }
 }
 
-@MainActor @Suite struct CommitAuthorModelTests {
+@MainActor @Suite(.timeLimit(.minutes(1))) struct CommitAuthorModelTests {
     let old = CommitIdentity(name: "Old", email: "old@example.com")
     let new = CommitIdentity(name: "New", email: "new@example.com")
 

@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct BranchBannerTests {
+@Suite(.timeLimit(.minutes(1))) struct BranchBannerTests {
     private let tip = Oid(hex: "1a2b3c4d5e6f708192a3b4c5d6e7f80910a1b2c3")!
     private let other = Oid(hex: "ffeeddccbbaa99887766554433221100ffeeddcc")!
 

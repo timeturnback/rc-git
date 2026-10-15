@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct OidTests {
+@Suite(.timeLimit(.minutes(1))) struct OidTests {
     @Test func hexRoundTrips() throws {
         let hex = "0123456789abcdef0123456789abcdef01234567"
         let oid = try #require(Oid(hex: hex))

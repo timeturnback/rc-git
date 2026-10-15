@@ -198,6 +198,7 @@ final class GroupKiller: @unchecked Sendable {
         defer { lock.unlock() }
         guard stopReason == nil else { return }
         stopReason = reason
+        // pool-safe: signals and an async sleep between polls; nothing here blocks a thread.
         task = Task.detached { [self] in
             signal(SIGTERM)
             let clock = ContinuousClock()

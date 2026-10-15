@@ -36,7 +36,7 @@ private final class GatedProvider {
 private struct GatedFailure: Error {}
 
 @MainActor
-@Suite struct PathSearchSessionTests {
+@Suite(.timeLimit(.minutes(1))) struct PathSearchSessionTests {
     private func session(_ provider: GatedProvider) -> (PathSearchSession, () -> [String]) {
         let session = PathSearchSession()
         session.provider = { try await provider.search($0) }

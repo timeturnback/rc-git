@@ -4,7 +4,7 @@ import Testing
 
 /// Lane assignment for the history graph: linear chains, branches, merges, octopus merges,
 /// closing roots, and append stability.
-@Suite struct CommitGraphTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitGraphTests {
     let r = oid(0x01)
     let a = oid(0x0A)
     let b = oid(0x0B)

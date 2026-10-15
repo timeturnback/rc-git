@@ -316,9 +316,7 @@ public final class BrowserModel {
         rootGeneration += 1
         refreshGeneration += 1
         let generation = rootGeneration
-        let loaded = await Task.detached(priority: .userInitiated) {
-            Self.loadListing(from: repository)
-        }.value
+        let loaded = await BlockingWork.run { Self.loadListing(from: repository) }
         guard isCurrent(generation, rootGeneration, load: "root") else { return }
         switch loaded {
         case let .success((listing, head)):
@@ -380,9 +378,7 @@ public final class BrowserModel {
         defer { endMove() }
         refreshGeneration += 1
         let generation = refreshGeneration
-        let loaded = await Task.detached(priority: .userInitiated) {
-            Self.loadListing(from: repository)
-        }.value
+        let loaded = await BlockingWork.run { Self.loadListing(from: repository) }
         guard isCurrent(generation, refreshGeneration, load: "refresh") else { return }
         switch loaded {
         case let .success((listing, head)):
@@ -527,10 +523,9 @@ public final class BrowserModel {
     public func worktreeRows(at dir: String) async throws -> [BrowseRow] {
         guard let repository else { throw RepositoryError("no repository is open") }
         guard let root = rootTree else { return [] }
-        return try await Task.detached(priority: .userInitiated) {
-            let listing = try repository.worktreeEntries(tree: root, dir: dir)
-            return Self.rows(for: listing)
-        }.value
+        return try await BlockingWork.run {
+            Result { Self.rows(for: try repository.worktreeEntries(tree: root, dir: dir)) }
+        }.get()
     }
 
     /// Merges a listing into display order: directories first, then names, deleted files in
@@ -683,9 +678,9 @@ public final class BrowserModel {
         if let cached = trees.cached(tree) { return cached }
         guard let repository else { throw RepositoryError("no repository is open") }
         let store = trees
-        return try await Task.detached(priority: .userInitiated) {
-            try store.entries(of: tree, read: repository.treeEntries)
-        }.value
+        return try await BlockingWork.run {
+            Result { try store.entries(of: tree, read: repository.treeEntries) }
+        }.get()
     }
 
     /// Loads a file into the file pane. `limit` caps how much is decoded; pass a larger value
@@ -1605,6 +1600,7 @@ public final class BrowserModel {
         let cancel = CancelToken()
         let id = ObjectIdentifier(cancel)
         runningHighlights[id] = cancel
+        // pool-safe: a CPU-bound parse over bytes already in memory; it never waits.
         let spans = await Task.detached(priority: .utility) {
             Highlighter.highlight(name: name, data: Array(text.utf8), cancel: cancel)
         }.value
@@ -1653,6 +1649,7 @@ public final class BrowserModel {
         if cacheable, let cached = importLinkCache[key] { return cached }
         let name = entry.name
         let text = document.text
+        // pool-safe: a CPU-bound scan over text already in memory; it never waits.
         let links = await Task.detached(priority: .utility) {
             ImportLinks.find(name: name, text: text)
         }.value
@@ -1795,9 +1792,14 @@ public final class BrowserModel {
         guard let repository else { throw RepositoryError("no repository is open") }
         indexBuild?.task.cancel()
         let store = trees
+        // pool-safe: the walk awaits each tree read through BlockingWork and keeps only its
+        // bookkeeping here, where cancelling the task stops it at the next directory.
         let task = Task.detached(priority: .utility) {
-            try PathIndex.build(root: root) { tree in
-                try store.cached(tree) ?? repository.treeEntries(tree)
+            try await PathIndex.build(root: root) { tree in
+                if let cached = store.cached(tree) { return cached }
+                return try await BlockingWork.run(qos: .utility) {
+                    Result { try repository.treeEntries(tree) }
+                }.get()
             }
         }
         indexBuild = (root, task)
@@ -1832,6 +1834,7 @@ public final class BrowserModel {
             ? try await worktreePathIndex(comparedTo: root) : try await pathIndex(for: root)
         guard generation == pathSearchGeneration else { throw CancellationError() }
         let includeHidden = showsHiddenFiles
+        // pool-safe: a CPU-bound scan of the index in memory, cancelled between strides.
         let task = Task.detached(priority: .userInitiated) {
             try index.search(query, limit: limit, includeHidden: includeHidden)
         }
@@ -1865,9 +1868,14 @@ public final class BrowserModel {
             return try await build.task.value
         }
         guard let repository else { throw RepositoryError("no repository is open") }
-        let task = Task.detached(priority: .userInitiated) {
-            let list = try repository.worktreeFiles(tree: root, maxScan: PathIndex.maxEntries)
-            return PathIndex(root: root, worktreeFiles: list)
+        let task = Task {
+            try await BlockingWork.run {
+                Result {
+                    let list = try repository.worktreeFiles(
+                        tree: root, maxScan: PathIndex.maxEntries)
+                    return PathIndex(root: root, worktreeFiles: list)
+                }
+            }.get()
         }
         worktreeIndexBuild = (generation, task)
         defer {

@@ -36,7 +36,7 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
     return colors
 }
 
-@Suite struct MarkdownRendererTests {
+@Suite(.timeLimit(.minutes(1))) struct MarkdownRendererTests {
     @Test func standaloneBlocksFillThePane() throws {
         let source = """
             ---

@@ -12,30 +12,43 @@ struct GitFixture {
         return GitFixture(path: url.path)
     }
 
-    static func standard() throws -> GitFixture {
+    /// A fresh copy of the standard repository. git builds it once per test process and each
+    /// test copies that: a spawn costs up to a second under load, and every git-backed test
+    /// building its own dozen-commit fixture at once ran past the suites' time limits.
+    static func standard() async throws -> GitFixture {
+        let template = try await standardTemplate.value
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rc-git-swift-\(UUID().uuidString)").path
+        try FileManager.default.copyItem(atPath: template.path, toPath: path)
+        return GitFixture(path: path)
+    }
+
+    private static let standardTemplate = Task { try await buildStandard() }
+
+    private static func buildStandard() async throws -> GitFixture {
         let fixture = try emptyDirectory()
-        try fixture.git(["init", "-q", "-b", "main"])
+        try await fixture.git(["init", "-q", "-b", "main"])
         try fixture.write("README.md", "# fixture\n\nhello\n")
         try fixture.write("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n")
         try fixture.writeBytes(
             "bin.dat", [0x89, 0x50, 0x4e, 0x47, 0, 0, 0x62, 0x69, 0x6e, 0x61, 0x72, 0x79])
-        try fixture.commit("Initial import", date: "2024-01-01T00:00:00+0000")
-        try fixture.git(["tag", "v0.9"])
-        try fixture.git(["checkout", "-q", "-b", "feature"])
+        try await fixture.commit("Initial import", date: "2024-01-01T00:00:00+0000")
+        try await fixture.git(["tag", "v0.9"])
+        try await fixture.git(["checkout", "-q", "-b", "feature"])
         try fixture.write("feature.txt", "feature\n")
-        try fixture.commit("Feature work", date: "2024-01-02T00:00:00+0000")
-        try fixture.git(["checkout", "-q", "main"])
+        try await fixture.commit("Feature work", date: "2024-01-02T00:00:00+0000")
+        try await fixture.git(["checkout", "-q", "main"])
         try fixture.write("docs/guide.md", "guide\n")
         try fixture.write("src/lib.rs", "pub fn one() -> u32 {\n    1\n}\n")
         try fixture.write("alpha.txt", "alpha\n")
         try fixture.write("Zeta.txt", "zeta\n")
         try FileManager.default.createSymbolicLink(
             atPath: fixture.path + "/link", withDestinationPath: "README.md")
-        try fixture.commit("Add docs and library", date: "2024-01-03T00:00:00+0000")
-        try fixture.git(
+        try await fixture.commit("Add docs and library", date: "2024-01-03T00:00:00+0000")
+        try await fixture.git(
             ["tag", "-a", "v1.0", "-m", "Release 1.0"],
             extraEnvironment: ["GIT_COMMITTER_DATE": "2024-01-03T00:00:00+0000"])
-        try fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        try await fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
         return fixture
     }
 
@@ -43,8 +56,8 @@ struct GitFixture {
         try? FileManager.default.removeItem(atPath: path)
     }
 
-    func revParse(_ spec: String) throws -> String {
-        try gitOutput(["rev-parse", "--verify", spec])
+    func revParse(_ spec: String) async throws -> String {
+        try await gitOutput(["rev-parse", "--verify", spec])
     }
 
     func write(_ relative: String, _ contents: String) throws {
@@ -58,18 +71,22 @@ struct GitFixture {
         try Data(bytes).write(to: url)
     }
 
-    func commit(_ title: String, date: String) throws {
-        try git(["add", "-A"])
-        try git(
+    func commit(_ title: String, date: String) async throws {
+        try await git(["add", "-A"])
+        try await git(
             ["commit", "-q", "-m", title, "--date", date],
             extraEnvironment: ["GIT_COMMITTER_DATE": date])
     }
 
-    func git(_ args: [String], extraEnvironment: [String: String] = [:]) throws {
-        _ = try gitOutput(args, extraEnvironment: extraEnvironment)
+    func git(_ args: [String], extraEnvironment: [String: String] = [:]) async throws {
+        _ = try await gitOutput(args, extraEnvironment: extraEnvironment)
     }
 
-    func gitOutput(_ args: [String], extraEnvironment: [String: String] = [:]) throws -> String {
+    /// Runs git in the fixture and returns its trimmed stdout. Every wait is a continuation, so
+    /// a test awaiting git holds no cooperative-pool thread.
+    func gitOutput(_ args: [String], extraEnvironment: [String: String] = [:]) async throws
+        -> String
+    {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + args
@@ -92,46 +109,80 @@ struct GitFixture {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
+        let exited = OneShot<Bool>()
+        process.terminationHandler = { _ in exited.fulfil(true) }
         let output = PipeDrain(stdout.fileHandleForReading)
         let errors = PipeDrain(stderr.fileHandleForReading)
         try process.run()
         let command = "git \(args.joined(separator: " "))"
-        guard exited.wait(timeout: .now() + GitFixture.timeout) == .success else {
+        guard await exited.value(within: .seconds(GitFixture.timeoutSeconds), else: false) else {
             process.terminate()
-            throw FixtureError("\(command) timed out after \(Int(GitFixture.timeout)) s")
+            throw FixtureError("\(command) timed out after \(GitFixture.timeoutSeconds) s")
         }
         guard process.terminationStatus == 0 else {
             throw FixtureError(
-                "\(command) failed: " + String(decoding: errors.wait(), as: UTF8.self))
+                "\(command) failed: " + String(decoding: await errors.wait(), as: UTF8.self))
         }
-        return String(decoding: output.wait(), as: UTF8.self).trimmingCharacters(
+        return String(decoding: await output.wait(), as: UTF8.self).trimmingCharacters(
             in: .whitespacesAndNewlines)
     }
 
-    private static let timeout: Double = 60
+    private static let timeoutSeconds = 60
+}
+
+/// A value set once, from any thread, and awaited without holding a thread. The first
+/// `fulfil` wins; later ones are ignored.
+final class OneShot<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    // Guarded by `lock`.
+    private var value: Value?
+    private var waiters: [CheckedContinuation<Value, Never>] = []
+
+    func fulfil(_ newValue: Value) {
+        let resumed = lock.withLock { () -> [CheckedContinuation<Value, Never>] in
+            guard value == nil else { return [] }
+            value = newValue
+            defer { waiters = [] }
+            return waiters
+        }
+        for waiter in resumed { waiter.resume(returning: newValue) }
+    }
+
+    func value() async -> Value {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Value, Never>) in
+            let ready = lock.withLock { () -> Value? in
+                if let value { return value }
+                waiters.append(continuation)
+                return nil
+            }
+            if let ready { continuation.resume(returning: ready) }
+        }
+    }
+
+    /// The value, or `fallback` once `limit` passes without one.
+    func value(within limit: DispatchTimeInterval, else fallback: Value) async -> Value {
+        DispatchQueue.global().asyncAfter(deadline: .now() + limit) {
+            self.fulfil(fallback)
+        }
+        return await value()
+    }
 }
 
 /// Reads one pipe to end of file on its own thread, so a child that fills one pipe while the
-/// other is being read cannot block, and a hung child cannot outlast the timed wait. A dedicated
-/// `Thread`, not `DispatchQueue.global()`: tests block cooperative-pool threads on semaphores,
-/// and a queued drain block then never gets a thread to run on.
-private final class PipeDrain: @unchecked Sendable {
-    // Written once on the drain thread before `done` signals; read only after the wait.
-    private var data = Data()
-    private let done = DispatchSemaphore(value: 0)
+/// other is being read cannot block, and a hung child cannot outlast the timed wait. The
+/// blocking read holds a dedicated `Thread`, never a cooperative-pool one.
+private final class PipeDrain: Sendable {
+    private let data = OneShot<Data>()
 
     init(_ handle: FileHandle) {
+        let data = data
         Thread {
-            self.data = handle.readDataToEndOfFile()
-            self.done.signal()
+            data.fulfil(handle.readDataToEndOfFile())
         }.start()
     }
 
-    func wait() -> Data {
-        done.wait()
-        return data
+    func wait() async -> Data {
+        await data.value()
     }
 }
 

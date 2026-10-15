@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct FuzzyMatchTests {
+@Suite(.timeLimit(.minutes(1))) struct FuzzyMatchTests {
     @Test func onlySubsequencesMatch() {
         #expect(FuzzyMatch.score("src/main.rs", query: "mainrs") != nil)
         #expect(FuzzyMatch.score("src/main.rs", query: "xyz") == nil)
@@ -44,7 +44,7 @@ import Testing
     }
 }
 
-@Suite struct PathIndexTests {
+@Suite(.timeLimit(.minutes(1))) struct PathIndexTests {
     let root = oid(1)
     let sub = oid(2)
     let deep = oid(3)
@@ -67,9 +67,9 @@ import Testing
         ]
     }
 
-    @Test func buildFlattensEveryFileAndSkipsSubmodules() throws {
+    @Test func buildFlattensEveryFileAndSkipsSubmodules() async throws {
         let fixed = trees()
-        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
+        let index = try await PathIndex.build(root: root) { try #require(fixed[$0]) }
         let paths = index.entries.map(\.path)
         #expect(
             paths == ["src/nested/link", "src/main.rs", "src/run.sh", "README.md"],
@@ -78,7 +78,7 @@ import Testing
         #expect(index.entries.first { $0.path == "src/main.rs" }?.name == "main.rs")
     }
 
-    @Test func buildListsSiblingFoldersInOrderBeforeFiles() throws {
+    @Test func buildListsSiblingFoldersInOrderBeforeFiles() async throws {
         let first = oid(0x20)
         let second = oid(0x21)
         let fixed: [Oid: [TreeEntry]] = [
@@ -90,18 +90,18 @@ import Testing
             first: [TreeEntry(name: "x", oid: oid(0x23), kind: .blob)],
             second: [TreeEntry(name: "y", oid: oid(0x24), kind: .blob)],
         ]
-        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
+        let index = try await PathIndex.build(root: root) { try #require(fixed[$0]) }
         #expect(try index.search("").map(\.path) == ["a/x", "b/y", "z.txt"])
-        let capped = try PathIndex.build(root: root, limit: 1) { try #require(fixed[$0]) }
+        let capped = try await PathIndex.build(root: root, limit: 1) { try #require(fixed[$0]) }
         #expect(capped.entries.map(\.path) == ["a/x"], "the cut keeps the first folder")
     }
 
-    @Test func inexactNameMarksItsPathAndEveryPathBelowIt() throws {
+    @Test func inexactNameMarksItsPathAndEveryPathBelowIt() async throws {
         var fixed = trees()
         fixed[root]?[0] = TreeEntry(name: "s\u{FFFD}c", oid: sub, kind: .tree, hasExactName: false)
         fixed[root]?.append(
             TreeEntry(name: "f\u{FFFD}o", oid: oid(0x14), kind: .blob, hasExactName: false))
-        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
+        let index = try await PathIndex.build(root: root) { try #require(fixed[$0]) }
         let inexact = index.entries.filter { !$0.hasExactPath }.map(\.path).sorted()
         #expect(
             inexact == [
@@ -110,9 +110,9 @@ import Testing
         #expect(index.entries.first { $0.path == "README.md" }?.hasExactPath == true)
     }
 
-    @Test func searchRanksAndLimits() throws {
+    @Test func searchRanksAndLimits() async throws {
         let fixed = trees()
-        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
+        let index = try await PathIndex.build(root: root) { try #require(fixed[$0]) }
         let matches = try index.search("mainrs")
         #expect(matches.first?.path == "src/main.rs")
         #expect(try index.search("zzz").isEmpty)
@@ -153,7 +153,7 @@ import Testing
         #expect(try index.search("button").first?.path == "components/button/Button.tsx")
     }
 
-    @Test func hiddenFilesAreMarkedAndLeftOutOnRequest() throws {
+    @Test func hiddenFilesAreMarkedAndLeftOutOnRequest() async throws {
         var fixed = trees()
         let meta = oid(0x70)
         fixed[root]! += [
@@ -162,7 +162,7 @@ import Testing
             TreeEntry(name: ".env", oid: oid(0x72), kind: .blob),
         ]
         fixed[meta] = [TreeEntry(name: "HEAD", oid: oid(0x73), kind: .blob)]
-        let index = try PathIndex.build(root: root) { try #require(fixed[$0]) }
+        let index = try await PathIndex.build(root: root) { try #require(fixed[$0]) }
         let hidden = index.entries.filter(\.hidden).map(\.path).sorted()
         #expect(hidden == [".DS_Store", ".git/HEAD"], "a hidden folder hides what is inside it")
 
@@ -177,39 +177,39 @@ import Testing
         #expect(try index.search("head").map(\.path) == [".git/HEAD"])
     }
 
-    @Test func buildStopsAtTheLimitAndSaysSo() throws {
+    @Test func buildStopsAtTheLimitAndSaysSo() async throws {
         let fixed = trees()
-        let capped = try PathIndex.build(root: root, limit: 2) { try #require(fixed[$0]) }
+        let capped = try await PathIndex.build(root: root, limit: 2) { try #require(fixed[$0]) }
         #expect(capped.entries.count == 2)
         #expect(capped.truncated, "a walk cut at the limit is flagged")
-        let whole = try PathIndex.build(root: root, limit: 4) { try #require(fixed[$0]) }
+        let whole = try await PathIndex.build(root: root, limit: 4) { try #require(fixed[$0]) }
         #expect(whole.entries.count == 4)
         #expect(!whole.truncated, "a walk that fits the limit exactly drops nothing")
-        let roomy = try PathIndex.build(root: root, limit: 5) { try #require(fixed[$0]) }
+        let roomy = try await PathIndex.build(root: root, limit: 5) { try #require(fixed[$0]) }
         #expect(roomy.entries.count == 4)
         #expect(!roomy.truncated)
     }
 
-    @Test func buildStopsAtTheEntryCap() throws {
-        func flat(_ count: Int) throws -> PathIndex {
+    @Test func buildStopsAtTheEntryCap() async throws {
+        func flat(_ count: Int) async throws -> PathIndex {
             let files = (0..<count).map { TreeEntry(name: "f\($0)", oid: oid(0x77), kind: .blob) }
-            return try PathIndex.build(root: root) { _ in files }
+            return try await PathIndex.build(root: root) { _ in files }
         }
-        let over = try flat(PathIndex.maxEntries + 1)
+        let over = try await flat(PathIndex.maxEntries + 1)
         #expect(over.truncated)
         #expect(over.entries.count == PathIndex.maxEntries)
-        let exact = try flat(PathIndex.maxEntries)
+        let exact = try await flat(PathIndex.maxEntries)
         #expect(!exact.truncated, "nothing was dropped")
         #expect(exact.entries.count == PathIndex.maxEntries)
-        #expect(try !flat(PathIndex.maxEntries - 1).truncated)
+        #expect(try await !flat(PathIndex.maxEntries - 1).truncated)
     }
 
     @Test func buildStopsAtTheNextDirectoryOnceCancelled() async {
         let fixed = trees()
         let root = root
-        let task = Task.detached { () throws -> PathIndex in
+        let task = Task.detached { () async throws -> PathIndex in
             var reads = 0
-            return try PathIndex.build(root: root) { tree in
+            return try await PathIndex.build(root: root) { tree in
                 reads += 1
                 if reads == 1 { withUnsafeCurrentTask { $0?.cancel() } }
                 return fixed[tree] ?? []
@@ -262,7 +262,7 @@ import Testing
             "the letter matches only the name that has it, never bytes of other letters")
     }
 
-    @Test func buildReadsEachDirectoryOnce() throws {
+    @Test func buildReadsEachDirectoryOnce() async throws {
         var wide: [Oid: [TreeEntry]] = [:]
         wide[root] = (0..<50).map {
             TreeEntry(name: "dir\($0)", oid: oid(UInt8($0 + 4)), kind: .tree)
@@ -273,7 +273,7 @@ import Testing
             }
         }
         var reads = 0
-        let index = try PathIndex.build(root: root) { tree in
+        let index = try await PathIndex.build(root: root) { tree in
             reads += 1
             return try #require(wide[tree])
         }

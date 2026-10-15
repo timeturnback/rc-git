@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct MenuShortcutsTests {
+@Suite(.timeLimit(.minutes(1))) struct MenuShortcutsTests {
     /// Every row of the table, read by reflection so a row added later cannot be left out.
     private static let rows: [MenuShortcut] = Mirror(reflecting: MenuShortcuts()).children
         .compactMap { $0.value as? MenuShortcut }

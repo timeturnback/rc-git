@@ -22,7 +22,7 @@ private func commit(_ byte: UInt8, title: String) -> CommitSummary {
 }
 
 @MainActor
-struct HistoryViewControllerTests {
+@Suite(.timeLimit(.minutes(1))) struct HistoryViewControllerTests {
     private let first = commit(0x11, title: "fix one")
     private let second = commit(0x22, title: "fix two")
 

@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// The import-link bridge and the byte-to-UTF-16 hit map.
-@Suite struct ImportLinksTests {
+@Suite(.timeLimit(.minutes(1))) struct ImportLinksTests {
     private func clicked(_ link: ImportLink, in text: String) -> String {
         String(decoding: Array(text.utf8)[Int(link.start)..<Int(link.end)], as: UTF8.self)
     }

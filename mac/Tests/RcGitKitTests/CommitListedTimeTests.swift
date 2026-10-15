@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// Which time the History Date column shows for a commit.
-@Suite struct CommitListedTimeTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitListedTimeTests {
     private let rebased = CommitSummary(
         oid: Oid(hex: "1a2b3c4d5e6f708192a3b4c5d6e7f80910a1b2c3")!, parents: [],
         authorName: "A", authorEmail: "a@example.com", authorTime: 1_704_412_800,

@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// Which submitted History searches try a revision jump.
-@Suite struct CommitSearchQueryTests {
+@Suite(.timeLimit(.minutes(1))) struct CommitSearchQueryTests {
     @Test func fourToFortyASCIIHexDigitsAreARevision() {
         #expect(CommitSearchQuery.revision("abc1", scope: .message) == "abc1")
         #expect(CommitSearchQuery.revision("2024", scope: .message) == "2024")

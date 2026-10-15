@@ -3,7 +3,7 @@ import Testing
 @testable import RcGitKit
 
 /// The line a diff or file pane shows instead of content.
-@Suite struct BlobDiffPlaceholderTests {
+@Suite(.timeLimit(.minutes(1))) struct BlobDiffPlaceholderTests {
     @Test func identicalTextSaysNoLineChanges() {
         #expect(BlobDiff.text(hunks: []).placeholder(path: "a/b.txt") == "a/b.txt: no line changes")
     }

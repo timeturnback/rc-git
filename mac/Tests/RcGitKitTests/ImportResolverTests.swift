@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// Module specifiers to repository paths, over an in-memory tree.
-@Suite struct ImportResolverTests {
+@Suite(.timeLimit(.minutes(1))) struct ImportResolverTests {
     /// A resolver over `files`, path to content. Directories are whatever the paths imply.
     private func resolver(_ files: [String: String]) -> ImportResolver {
         ImportResolver(

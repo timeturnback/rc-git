@@ -285,7 +285,7 @@ public enum CredentialEntry: Sendable {
 }
 
 /// State machine for fetch/pull/push/sync: busy-gated, credential-negotiating, with every
-/// blocking call on a detached task. Guarded actions run here (through the injected
+/// blocking call run through `BlockingWork`. Guarded actions run here (through the injected
 /// performer); the window controller renders the state.
 @MainActor
 public final class SyncModel {
@@ -605,20 +605,20 @@ public final class SyncModel {
         let message: String
     }
 
-    /// One preflight on a detached task.
+    /// One preflight, run through `BlockingWork`.
     private func readStatus() async -> Result<RemoteStatus, StatusReadError> {
         let repoPath = repoPath
         let performer = performer
-        return await Task.detached(priority: .utility) {
+        return await BlockingWork.run(qos: .utility) {
             do {
                 return .success(try performer.preflight(repoPath: repoPath))
             } catch {
                 return .failure(StatusReadError(message: Self.message(of: error)))
             }
-        }.value
+        }
     }
 
-    /// The mainline branch on a detached task, or `nil` when `needed` is false. A success
+    /// The mainline branch, read through `BlockingWork`, or `nil` when `needed` is false. A success
     /// carrying `nil` means nothing names a mainline; a failure means it could not be read.
     private func readDefaultBranch(if needed: Bool) async
         -> Result<DefaultBranch?, StatusReadError>?
@@ -626,13 +626,13 @@ public final class SyncModel {
         guard needed else { return nil }
         let repoPath = repoPath
         let performer = performer
-        return await Task.detached(priority: .utility) {
+        return await BlockingWork.run(qos: .utility) {
             do {
                 return .success(try performer.defaultBranch(repoPath: repoPath))
             } catch {
                 return .failure(StatusReadError(message: Self.message(of: error)))
             }
-        }.value
+        }
     }
 
     private nonisolated static func message(of error: any Error) -> String {
@@ -721,7 +721,7 @@ public final class SyncModel {
         enter(.checkout)
         let performer = performer
         let repoPath = repoPath
-        let result = await detached { () throws(SyncError) -> CheckoutOutcome in
+        let result = await blocking { () throws(SyncError) -> CheckoutOutcome in
             try performer.checkout(repoPath: repoPath, branch: branch)
         }
         switch result {
@@ -732,14 +732,14 @@ public final class SyncModel {
         }
     }
 
-    /// Runs one transfer step off the main actor and returns its outcome. The closure type is
-    /// spelled at each call site because a closure literal infers `throws(any Error)`.
-    private func detached<T: Sendable>(
+    /// Runs one transfer step through `BlockingWork` and returns its outcome. The closure type
+    /// is spelled at each call site because a closure literal infers `throws(any Error)`.
+    private func blocking<T: Sendable>(
         _ body: @escaping @Sendable () throws(SyncError) -> T
     ) async -> Result<T, SyncError> {
-        await Task.detached(priority: .userInitiated) {
+        await BlockingWork.run {
             Result { () throws(SyncError) -> T in try body() }
-        }.value
+        }
     }
 
     private func runFetch() async throws(StepFailure) -> FetchOutcome {
@@ -757,7 +757,7 @@ public final class SyncModel {
         enter(.pull)
         let performer = performer
         let repoPath = repoPath
-        let result = await detached { () throws(SyncError) -> PullOutcome in
+        let result = await blocking { () throws(SyncError) -> PullOutcome in
             try performer.pullFastForward(repoPath: repoPath)
         }
         switch result {
@@ -811,7 +811,7 @@ public final class SyncModel {
             let attemptCredentials = credentials
             let attemptHostKey = acceptedHostKey
             let cancel = cancel
-            let result = await detached { () throws(SyncError) -> Outcome in
+            let result = await blocking { () throws(SyncError) -> Outcome in
                 try operation(performer, host, attemptCredentials, attemptHostKey, cancel)
             }
             switch result {
@@ -911,9 +911,9 @@ public final class SyncModel {
             return known.credentials
         }
         let store = store
-        let read = await Task.detached(priority: .userInitiated) {
+        let read = await BlockingWork.run {
             Result { try store.credentials(host: host, kind: kind) }
-        }.value
+        }
         switch read {
         case let .success(found):
             workflowCredentials = WorkflowCredentials(host: host, kind: kind, credentials: found)
@@ -935,9 +935,9 @@ public final class SyncModel {
     private func remember(_ credentials: Credentials, host: String, kind: CredentialKind) async {
         workflowCredentials = WorkflowCredentials(host: host, kind: kind, credentials: credentials)
         let store = store
-        let write = await Task.detached(priority: .userInitiated) {
+        let write = await BlockingWork.run {
             Result { try store.store(credentials, host: host, kind: kind) }
-        }.value
+        }
         guard case let .failure(error) = write else { return }
         let message = Self.message(of: error)
         Self.logger.error(
@@ -962,7 +962,7 @@ public final class SyncModel {
         try bailIfCancelled(step)
         let performer = performer
         let cancel = cancel
-        let result = await detached { () throws(SyncError) -> Outcome in
+        let result = await blocking { () throws(SyncError) -> Outcome in
             try operation(performer, "", nil, nil, cancel)
         }
         switch result {

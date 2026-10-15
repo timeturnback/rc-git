@@ -4,14 +4,14 @@ import Testing
 @testable import RcGitKit
 
 /// The guarded write path, driven through the C ABI against a real fixture.
-@Suite struct RepositoryGuardTests {
-    @Test func createsPlansAndDeletesWithBackups() throws {
-        let fixture = try GitFixture.standard()
+@Suite(.timeLimit(.minutes(1))) struct RepositoryGuardTests {
+    @Test func createsPlansAndDeletesWithBackups() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
 
         try RepositoryGuard.createBranch(
             repoPath: fixture.path, name: "topic", revspec: "main~1")
-        #expect(try fixture.revParse("refs/heads/topic") == fixture.revParse("main~1"))
+        #expect(try await fixture.revParse("refs/heads/topic") == fixture.revParse("main~1"))
         let duplicate = #expect(throws: RepositoryError.self) {
             try RepositoryGuard.createBranch(repoPath: fixture.path, name: "topic", revspec: "main")
         }
@@ -29,12 +29,14 @@ import Testing
                 repoPath: fixture.path, name: "feature", input: "wrong")
         }
         #expect(refused?.message.contains("typed confirmation did not match") == true)
-        let oldTip = try fixture.revParse("refs/heads/feature")
+        let oldTip = try await fixture.revParse("refs/heads/feature")
         let backup = try RepositoryGuard.deleteBranch(
             repoPath: fixture.path, name: "feature", input: "feature")
         #expect(backup == "refs/rc-git/backup/branch/feature")
-        #expect(throws: FixtureError.self) { try fixture.revParse("refs/heads/feature") }
-        #expect(try fixture.revParse(try #require(backup)) == oldTip)
+        await #expect(throws: FixtureError.self) {
+            try await fixture.revParse("refs/heads/feature")
+        }
+        #expect(try await fixture.revParse(try #require(backup)) == oldTip)
 
         let denied = try RepositoryGuard.planBranchDelete(repoPath: fixture.path, name: "main")
         #expect(denied.kind == .deny)
@@ -43,20 +45,20 @@ import Testing
         let tagPlan = RepositoryGuard.planTagDelete(name: "v1.0")
         #expect(tagPlan?.typedPhrase == "v1.0")
         // The backup stores the unpeeled target: the annotated tag object, not its commit.
-        let oldTag = try fixture.revParse("refs/tags/v1.0")
+        let oldTag = try await fixture.revParse("refs/tags/v1.0")
         let unpeeled = #expect(throws: StaleRepositoryError.self) {
             try RepositoryGuard.deleteTag(
                 repoPath: fixture.path, name: "v1.0", expected: try commitID(oldTag),
                 input: "v1.0")
         }
         #expect(unpeeled?.message.contains("changed since the list was built") == true)
-        #expect(try fixture.revParse("refs/tags/v1.0") == oldTag)
-        let shownTag = try commitID(try fixture.revParse("refs/tags/v1.0^{}"))
+        #expect(try await fixture.revParse("refs/tags/v1.0") == oldTag)
+        let shownTag = try await commitID(try fixture.revParse("refs/tags/v1.0^{}"))
         let tagBackup = try RepositoryGuard.deleteTag(
             repoPath: fixture.path, name: "v1.0", expected: shownTag, input: "v1.0")
         #expect(tagBackup == "refs/rc-git/backup/tag/v1.0")
-        #expect(throws: FixtureError.self) { try fixture.revParse("refs/tags/v1.0") }
-        #expect(try fixture.revParse(try #require(tagBackup)) == oldTag)
+        await #expect(throws: FixtureError.self) { try await fixture.revParse("refs/tags/v1.0") }
+        #expect(try await fixture.revParse(try #require(tagBackup)) == oldTag)
     }
 
     @Test func aCommitWithHousekeepingLeftUndoneWarnsForEachPart() throws {
@@ -96,33 +98,34 @@ import Testing
         #expect(discard?.risk == .destructive)
     }
 
-    @Test func commitsStashesAndDiscardsThroughTheBridge() throws {
-        let fixture = try GitFixture.standard()
+    @Test func commitsStashesAndDiscardsThroughTheBridge() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let author = CommitIdentity(name: "Bridge User", email: "bridge@example.com")
         try fixture.write("alpha.txt", "bridge edit\n")
-        let head = try fixture.revParse("HEAD")
+        let head = try await fixture.revParse("HEAD")
 
         let outcome = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Bridge commit", fallback: author,
             expectedHead: try commitID(head), selections: [.whole(path: "alpha.txt")], input: nil)
         #expect(outcome.branch == "main")
-        #expect(try outcome.oid.hex == fixture.revParse("HEAD"))
+        #expect(try await outcome.oid.hex == fixture.revParse("HEAD"))
         #expect(outcome.indexRefreshed)
         #expect(outcome.reflogWritten)
         #expect(outcome.warning == nil)
         #expect(
-            try fixture.gitOutput(["log", "-1", "--format=%an|%ae|%s"])
+            try await fixture.gitOutput(["log", "-1", "--format=%an|%ae|%s"])
                 == "Bridge User|bridge@example.com|Bridge commit")
-        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]).isEmpty)
 
         try fixture.write("alpha.txt", "stash via bridge\n")
         try RepositoryGuard.stashPush(
             repoPath: fixture.path, paths: ["alpha.txt"], message: "bridged",
             fallback: author, input: nil)
-        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
         #expect(
-            try fixture.gitOutput(["log", "-1", "--format=%an|%ae", "refs/stash"])
+            try await fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        #expect(
+            try await fixture.gitOutput(["log", "-1", "--format=%an|%ae", "refs/stash"])
                 == "Bridge User|bridge@example.com")
         let shown = try #require(try Repository(path: fixture.path).stashList().first)
         let elsewhere = StashEntry(index: 0, oid: try commitID(head), message: shown.message)
@@ -130,54 +133,55 @@ import Testing
             try RepositoryGuard.stashDrop(repoPath: fixture.path, entry: elsewhere, input: "drop")
         }
         #expect(stale?.message.contains("changed since the list was built") == true)
-        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
-        let stashTip = try fixture.revParse("stash@{0}")
+        #expect(
+            try await fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
+        let stashTip = try await fixture.revParse("stash@{0}")
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, entry: shown, input: nil)
         #expect(backup == "refs/rc-git/backup/stash/0")
-        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
-        #expect(try fixture.revParse(try #require(backup)) == stashTip)
-        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+        #expect(try await fixture.gitOutput(["stash", "list"]).isEmpty)
+        #expect(try await fixture.revParse(try #require(backup)) == stashTip)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
         #expect(
             try String(contentsOfFile: fixture.path + "/alpha.txt", encoding: .utf8)
                 == "stash via bridge\n")
 
         try RepositoryGuard.discard(repoPath: fixture.path, paths: ["alpha.txt"], input: nil)
-        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 
-    @Test func createsATagAndAppliesAndDropsAStashThroughTheBridge() throws {
-        let fixture = try GitFixture.standard()
+    @Test func createsATagAndAppliesAndDropsAStashThroughTheBridge() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
 
         try RepositoryGuard.createTag(repoPath: fixture.path, name: "v2.0", revspec: "main~1")
-        #expect(try fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
+        #expect(try await fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
         #expect(throws: RepositoryError.self) {
             try RepositoryGuard.createTag(repoPath: fixture.path, name: "v2.0", revspec: "main")
         }
-        #expect(try fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
+        #expect(try await fixture.revParse("refs/tags/v2.0") == fixture.revParse("main~1"))
 
         try fixture.write("alpha.txt", "stashed\n")
-        try fixture.git(["stash", "push", "-q", "-m", "kept"])
+        try await fixture.git(["stash", "push", "-q", "-m", "kept"])
         let entry = try #require(try Repository(path: fixture.path).stashList().first)
         try RepositoryGuard.stashApply(repoPath: fixture.path, entry: entry, input: nil)
         #expect(
             try String(contentsOfFile: fixture.path + "/alpha.txt", encoding: .utf8)
                 == "stashed\n")
-        #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: kept")
+        #expect(try await fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: kept")
 
         let backup = try RepositoryGuard.stashDrop(
             repoPath: fixture.path, entry: entry, input: "drop")
         #expect(backup == "refs/rc-git/backup/stash/0")
-        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
+        #expect(try await fixture.gitOutput(["stash", "list"]).isEmpty)
     }
 
-    @Test func hunkSelectionsCommitAndDiscardThroughTheBridge() throws {
-        let fixture = try GitFixture.standard()
+    @Test func hunkSelectionsCommitAndDiscardThroughTheBridge() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         let author = CommitIdentity(name: "Bridge User", email: "bridge@example.com")
         let lines = (1...20).map { "l\($0)\n" }
         try fixture.write("hunky.txt", lines.joined())
-        try fixture.commit("Add hunky", date: "2024-01-05T00:00:00+0000")
+        try await fixture.commit("Add hunky", date: "2024-01-05T00:00:00+0000")
         var edited = lines
         edited[17] = "L18a\nL18b\n"
         edited[0] = "l1\nTOP1\nTOP2\n"
@@ -188,9 +192,9 @@ import Testing
         #expect(stamps[1] == HunkStamp(oldStart: 15, oldLines: 6, newStart: 17, newLines: 7))
         _ = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Second hunk", fallback: author,
-            expectedHead: try commitID(fixture.revParse("HEAD")),
+            expectedHead: try await commitID(fixture.revParse("HEAD")),
             selections: [.hunks(path: "hunky.txt", stamps: [stamps[1]])], input: nil)
-        let committed = try fixture.gitOutput(["show", "HEAD:hunky.txt"])
+        let committed = try await fixture.gitOutput(["show", "HEAD:hunky.txt"])
         #expect(committed.contains("L18a\nL18b"))
         #expect(!committed.contains("TOP1"))
 
@@ -198,31 +202,32 @@ import Testing
         try #require(remaining.count == 1)
         try RepositoryGuard.discardHunks(
             repoPath: fixture.path, path: "hunky.txt", stamps: remaining, input: nil)
-        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]).isEmpty)
     }
 
-    @Test func aCommitAgainstAMovedHeadThrowsAndCommitsNothing() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aCommitAgainstAMovedHeadThrowsAndCommitsNothing() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("alpha.txt", "judged against an old head\n")
-        let head = try fixture.revParse("HEAD")
+        let head = try await fixture.revParse("HEAD")
+        let staleHead = try await commitID(fixture.revParse("HEAD~1"))
 
         #expect(throws: StaleRepositoryError.self) {
             _ = try RepositoryGuard.commit(
                 repoPath: fixture.path, message: "Stale",
                 fallback: CommitIdentity(name: "Bridge User", email: "bridge@example.com"),
-                expectedHead: try commitID(fixture.revParse("HEAD~1")),
+                expectedHead: staleHead,
                 selections: [.whole(path: "alpha.txt")], input: nil)
         }
-        #expect(try fixture.revParse("HEAD") == head)
-        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+        #expect(try await fixture.revParse("HEAD") == head)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
     }
 
-    @Test func anEmptyHunkSelectionThrowsAndCommitsNothing() throws {
-        let fixture = try GitFixture.standard()
+    @Test func anEmptyHunkSelectionThrowsAndCommitsNothing() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("alpha.txt", "never committed\n")
-        let head = try fixture.revParse("HEAD")
+        let head = try await fixture.revParse("HEAD")
 
         do {
             _ = try RepositoryGuard.commit(
@@ -234,8 +239,8 @@ import Testing
         } catch let error as RepositoryError {
             #expect(error.message.contains("no hunks selected for 'alpha.txt'"))
         }
-        #expect(try fixture.revParse("HEAD") == head)
-        #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+        #expect(try await fixture.revParse("HEAD") == head)
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
     }
 
     @Test func aStaleRepositoryIsANoticeAndEveryOtherFailureAnAlert() {
@@ -270,12 +275,12 @@ import Testing
         return hunks.map(\.stamp)
     }
 
-    @Test func aSavedFallbackNeverOverridesTheRepositoryEmail() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aSavedFallbackNeverOverridesTheRepositoryEmail() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         #expect(try RepositoryGuard.configuredIdentity(repoPath: fixture.path) == nil)
-        try fixture.git(["config", "user.name", "Work Me"])
-        try fixture.git(["config", "user.email", "work@example.com"])
+        try await fixture.git(["config", "user.name", "Work Me"])
+        try await fixture.git(["config", "user.email", "work@example.com"])
         #expect(
             try RepositoryGuard.configuredIdentity(repoPath: fixture.path)
                 == CommitIdentity(name: "Work Me", email: "work@example.com"))
@@ -284,11 +289,11 @@ import Testing
         try fixture.write("alpha.txt", "work edit\n")
         _ = try RepositoryGuard.commit(
             repoPath: fixture.path, message: "Work commit", fallback: saved,
-            expectedHead: try commitID(fixture.revParse("HEAD")),
+            expectedHead: try await commitID(fixture.revParse("HEAD")),
             selections: [.whole(path: "alpha.txt")],
             input: nil)
         #expect(
-            try fixture.gitOutput(["log", "-1", "--format=%ae|%ce"])
+            try await fixture.gitOutput(["log", "-1", "--format=%ae|%ce"])
                 == "work@example.com|work@example.com")
 
         try fixture.write("alpha.txt", "stash edit\n")
@@ -296,14 +301,15 @@ import Testing
             repoPath: fixture.path, paths: ["alpha.txt"], message: nil, fallback: saved,
             input: nil)
         #expect(
-            try fixture.gitOutput(["log", "-1", "--format=%ae", "stash@{0}"]) == "work@example.com")
+            try await fixture.gitOutput(["log", "-1", "--format=%ae", "stash@{0}"])
+                == "work@example.com")
     }
 
-    @Test func aMissingIdentityThrowsItsOwnTypedError() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aMissingIdentityThrowsItsOwnTypedError() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
         try fixture.write("alpha.txt", "nobody's edit\n")
-        let head = try fixture.revParse("HEAD")
+        let head = try await fixture.revParse("HEAD")
 
         let commitError = #expect(throws: IdentityRequiredError.self) {
             _ = try RepositoryGuard.commit(
@@ -312,14 +318,14 @@ import Testing
                 selections: [.whole(path: "alpha.txt")], input: nil)
         }
         #expect(commitError?.message.contains("no author identity") == true)
-        #expect(try fixture.revParse("HEAD") == head)
+        #expect(try await fixture.revParse("HEAD") == head)
 
         #expect(throws: IdentityRequiredError.self) {
             try RepositoryGuard.stashPush(
                 repoPath: fixture.path, paths: ["alpha.txt"], message: nil, fallback: nil,
                 input: nil)
         }
-        #expect(try fixture.gitOutput(["stash", "list"]).isEmpty)
+        #expect(try await fixture.gitOutput(["stash", "list"]).isEmpty)
     }
 
     @Test func configuredIdentityNamesAMissingRepository() throws {
@@ -328,10 +334,10 @@ import Testing
         }
     }
 
-    @Test func checkoutSwitchesBranchesAndRefusesADirtyPath() throws {
-        let fixture = try GitFixture.standard()
+    @Test func checkoutSwitchesBranchesAndRefusesADirtyPath() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        let expected = try fixture.gitOutput(["diff", "--name-only", "main", "feature"])
+        let expected = try await fixture.gitOutput(["diff", "--name-only", "main", "feature"])
             .split(separator: "\n").count
 
         let outcome = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
@@ -339,9 +345,9 @@ import Testing
         #expect(!outcome.alreadyOnBranch)
         #expect(outcome.reflogWritten)
         #expect(outcome.filesChanged == expected)
-        #expect(try outcome.newHead.hex == fixture.revParse("feature"))
-        #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
-        #expect(try fixture.gitOutput(["status", "--porcelain"]).isEmpty)
+        #expect(try await outcome.newHead.hex == fixture.revParse("feature"))
+        #expect(try await fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
+        #expect(try await fixture.gitOutput(["status", "--porcelain"]).isEmpty)
 
         let again = try RepositoryGuard.checkout(repoPath: fixture.path, branch: "feature")
         #expect(again.alreadyOnBranch)
@@ -358,7 +364,7 @@ import Testing
         } else {
             Issue.record("expected .failure, got \(String(describing: dirty))")
         }
-        #expect(try fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
+        #expect(try await fixture.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]) == "feature")
     }
 
     private func commitID(_ hex: String) throws -> Oid {
@@ -367,18 +373,18 @@ import Testing
 }
 
 /// The remote preflight, driven through the C ABI against a real fixture.
-@Suite struct RemotePreflightTests {
-    @Test func preflightMarshalsUpstreamConfigurationAndCounts() throws {
-        let fixture = try GitFixture.standard()
+@Suite(.timeLimit(.minutes(1))) struct RemotePreflightTests {
+    @Test func preflightMarshalsUpstreamConfigurationAndCounts() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
 
         var status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
         #expect(!status.hasUpstream)
         #expect(status.branch == "main")
 
-        try fixture.git(["remote", "add", "origin", "https://example.com:8443/repo.git"])
-        try fixture.git(["config", "branch.main.remote", "origin"])
-        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+        try await fixture.git(["remote", "add", "origin", "https://example.com:8443/repo.git"])
+        try await fixture.git(["config", "branch.main.remote", "origin"])
+        try await fixture.git(["config", "branch.main.merge", "refs/heads/main"])
         status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
         #expect(status.hasUpstream)
         #expect(status.remote == "origin")
@@ -390,61 +396,61 @@ import Testing
         #expect(status.ahead == 0)
         #expect(status.behind == 0)
 
-        try fixture.git(["checkout", "-q", "-b", "never-pushed"])
+        try await fixture.git(["checkout", "-q", "-b", "never-pushed"])
         status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
         #expect(status.hasUpstream, "origin is the fallback upstream")
         #expect(!status.published, "refs/remotes/origin/never-pushed does not exist")
     }
 
     /// Points `main` at an unreachable origin; the tests below never touch the network.
-    private func configureUpstream(_ fixture: GitFixture) throws {
-        try fixture.git(["remote", "add", "origin", "https://127.0.0.1:9/repo.git"])
-        try fixture.git(["config", "branch.main.remote", "origin"])
-        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+    private func configureUpstream(_ fixture: GitFixture) async throws {
+        try await fixture.git(["remote", "add", "origin", "https://127.0.0.1:9/repo.git"])
+        try await fixture.git(["config", "branch.main.remote", "origin"])
+        try await fixture.git(["config", "branch.main.merge", "refs/heads/main"])
     }
 
     /// Moves `refs/remotes/origin/main` one commit (adding `news.txt`) past `main`.
-    private func advanceTrackingRef(_ fixture: GitFixture) throws {
+    private func advanceTrackingRef(_ fixture: GitFixture) async throws {
         try fixture.write("news.txt", "news\n")
-        try fixture.commit("Upstream", date: "2024-03-01T00:00:00+0000")
-        try fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
-        try fixture.git(["reset", "-q", "--hard", "HEAD~1"])
+        try await fixture.commit("Upstream", date: "2024-03-01T00:00:00+0000")
+        try await fixture.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        try await fixture.git(["reset", "-q", "--hard", "HEAD~1"])
     }
 
-    @Test func countsCrossTheBridgeUnswapped() throws {
-        let fixture = try GitFixture.standard()
+    @Test func countsCrossTheBridgeUnswapped() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try configureUpstream(fixture)
-        try fixture.git(["commit", "--allow-empty", "-q", "-m", "local"])
+        try await configureUpstream(fixture)
+        try await fixture.git(["commit", "--allow-empty", "-q", "-m", "local"])
 
         let status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
         #expect(status.ahead == 1)
         #expect(status.behind == 0)
     }
 
-    @Test func pullFastForwardAdvancesToTheTrackingRef() throws {
-        let fixture = try GitFixture.standard()
+    @Test func pullFastForwardAdvancesToTheTrackingRef() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try configureUpstream(fixture)
-        try advanceTrackingRef(fixture)
+        try await configureUpstream(fixture)
+        try await advanceTrackingRef(fixture)
         #expect(try RepositoryGuard.remotePreflight(repoPath: fixture.path).behind == 1)
 
         let outcome = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
-        #expect(try fixture.revParse("HEAD") == fixture.revParse("refs/remotes/origin/main"))
+        #expect(try await fixture.revParse("HEAD") == fixture.revParse("refs/remotes/origin/main"))
         #expect(outcome.filesChanged == 1)
 
         let again = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
         #expect(again.filesChanged == 0)
     }
 
-    @Test func aDivergedPullThrowsDiverged() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aDivergedPullThrowsDiverged() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try configureUpstream(fixture)
-        try advanceTrackingRef(fixture)
+        try await configureUpstream(fixture)
+        try await advanceTrackingRef(fixture)
         try fixture.write("local.txt", "local\n")
-        try fixture.commit("Local", date: "2024-03-02T00:00:00+0000")
-        let head = try fixture.revParse("HEAD")
+        try await fixture.commit("Local", date: "2024-03-02T00:00:00+0000")
+        let head = try await fixture.revParse("HEAD")
 
         do {
             _ = try RepositoryGuard.pullFastForward(repoPath: fixture.path)
@@ -456,13 +462,13 @@ import Testing
             }
             #expect(message.contains("1 ahead and 1 behind"), "\(message)")
         }
-        #expect(try fixture.revParse("HEAD") == head)
+        #expect(try await fixture.revParse("HEAD") == head)
     }
 
-    @Test func pushMapsACancelAndARefusedRemoteThroughTheBridge() throws {
-        let fixture = try GitFixture.standard()
+    @Test func pushMapsACancelAndARefusedRemoteThroughTheBridge() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try configureUpstream(fixture)
+        try await configureUpstream(fixture)
 
         let cancel = CancelToken()
         cancel.signal()
@@ -476,7 +482,7 @@ import Testing
             }
         }
 
-        try fixture.git(["remote", "set-url", "origin", "git://example.com/x.git"])
+        try await fixture.git(["remote", "set-url", "origin", "git://example.com/x.git"])
         do {
             _ = try RepositoryGuard.push(repoPath: fixture.path, credentials: nil)
             Issue.record("expected a git:// push to be refused")
@@ -489,8 +495,8 @@ import Testing
         }
     }
 
-    @Test func pushWithoutARemoteNamesTheMissingRemote() throws {
-        let fixture = try GitFixture.standard()
+    @Test func pushWithoutARemoteNamesTheMissingRemote() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
 
         do {
@@ -505,12 +511,12 @@ import Testing
         }
     }
 
-    @Test func anScpLikeOriginReportsSshThoughItsUrlLostTheUser() throws {
-        let fixture = try GitFixture.standard()
+    @Test func anScpLikeOriginReportsSshThoughItsUrlLostTheUser() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(["remote", "add", "origin", "git@example.com:x/y.git"])
-        try fixture.git(["config", "branch.main.remote", "origin"])
-        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+        try await fixture.git(["remote", "add", "origin", "git@example.com:x/y.git"])
+        try await fixture.git(["config", "branch.main.remote", "origin"])
+        try await fixture.git(["config", "branch.main.merge", "refs/heads/main"])
 
         let status = try RepositoryGuard.remotePreflight(repoPath: fixture.path)
         #expect(status.usesSsh)
@@ -518,12 +524,12 @@ import Testing
         #expect(status.host == "example.com")
     }
 
-    @Test func aSignalledTokenStopsAFetchBeforeItReachesTheNetwork() throws {
-        let fixture = try GitFixture.standard()
+    @Test func aSignalledTokenStopsAFetchBeforeItReachesTheNetwork() async throws {
+        let fixture = try await GitFixture.standard()
         defer { fixture.remove() }
-        try fixture.git(["remote", "add", "origin", "http://127.0.0.1:9/repo.git"])
-        try fixture.git(["config", "branch.main.remote", "origin"])
-        try fixture.git(["config", "branch.main.merge", "refs/heads/main"])
+        try await fixture.git(["remote", "add", "origin", "http://127.0.0.1:9/repo.git"])
+        try await fixture.git(["config", "branch.main.remote", "origin"])
+        try await fixture.git(["config", "branch.main.merge", "refs/heads/main"])
 
         let cancel = CancelToken()
         #expect(!cancel.isSignalled)
@@ -546,7 +552,7 @@ import Testing
 }
 
 /// A failed or refused action is titled by what was attempted, never as a failed read.
-@Suite struct GuardFailureTitleTests {
+@Suite(.timeLimit(.minutes(1))) struct GuardFailureTitleTests {
     @Test func namesTheVerbInLowerCase() {
         #expect(
             RepositoryGuard.failureTitle(verb: "Delete Branch") == "rc-git could not delete branch")
@@ -561,7 +567,7 @@ import Testing
 }
 
 /// A ref-name sheet enables Create only once a name is left after trimming.
-@Suite struct EnteredRefNameTests {
+@Suite(.timeLimit(.minutes(1))) struct EnteredRefNameTests {
     @Test func aRefNameSheetNeedsANameLeftAfterTrimming() {
         #expect(RepositoryGuard.enteredRefName("") == nil)
         #expect(RepositoryGuard.enteredRefName("  \t\n") == nil)
@@ -571,7 +577,7 @@ import Testing
 }
 
 /// A token must not leak through any way Swift turns a value into text.
-@Suite struct CredentialsRedactionTests {
+@Suite(.timeLimit(.minutes(1))) struct CredentialsRedactionTests {
     private enum Holder {
         case signIn(Credentials)
     }

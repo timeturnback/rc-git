@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct RecentRepositoriesTests {
+@Suite(.timeLimit(.minutes(1))) struct RecentRepositoriesTests {
     @Test func insertingMovesToFrontAndDeduplicates() {
         let list = RecentRepositories.inserting("/b", into: ["/a", "/b", "/c"])
         #expect(list == ["/b", "/a", "/c"])

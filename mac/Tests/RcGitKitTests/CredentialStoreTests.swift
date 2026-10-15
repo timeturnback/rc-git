@@ -4,7 +4,7 @@ import Testing
 
 @testable import RcGitKit
 
-struct CredentialStoreTests {
+@Suite(.timeLimit(.minutes(1))) struct CredentialStoreTests {
     @Test(arguments: [
         (CredentialKind.httpsToken, kSecAttrProtocolHTTPS as String),
         (CredentialKind.sshPassphrase, kSecAttrProtocolSSH as String),

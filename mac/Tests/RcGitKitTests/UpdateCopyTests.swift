@@ -4,7 +4,7 @@ import Testing
 @testable import RcGitKit
 
 /// What the update window says and enables, per bundle and state.
-@Suite struct UpdateCopyTests {
+@Suite(.timeLimit(.minutes(1))) struct UpdateCopyTests {
     private static func build(
         variant: AppVariant = .release, name: String = "rc-git", sourceRoot: String? = "/checkout"
     ) -> AppBuild {

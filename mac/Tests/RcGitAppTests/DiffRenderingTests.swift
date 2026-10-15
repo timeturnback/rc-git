@@ -15,7 +15,7 @@ private func colorRuns(_ text: NSAttributedString) -> [(String, NSColor?)] {
     return runs
 }
 
-struct DiffRenderingTests {
+@Suite(.timeLimit(.minutes(1))) struct DiffRenderingTests {
     @Test func colorsEachLineByKindAcrossHunks() {
         let hunks = [
             DiffHunk(

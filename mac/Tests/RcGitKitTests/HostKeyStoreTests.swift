@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct HostKeyStoreTests {
+@Suite(.timeLimit(.minutes(1))) struct HostKeyStoreTests {
     private static let key = "rcgit.acceptedHostKeys"
 
     @Test func unknownHostHasNoFingerprint() throws {
@@ -78,7 +78,7 @@ import Testing
 }
 
 @MainActor
-@Suite struct ApprovedHostsModelTests {
+@Suite(.timeLimit(.minutes(1))) struct ApprovedHostsModelTests {
     @Test func rowsAreSortedByHost() throws {
         try withScratchDefaults { defaults in
             let store = UserDefaultsHostKeyStore(defaults: defaults)

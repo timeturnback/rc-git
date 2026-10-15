@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct ShellWordTests {
+@Suite(.timeLimit(.minutes(1))) struct ShellWordTests {
     /// Both shells a quoted word reaches: `sh` for scripts, `zsh` for the updater and Terminal.
     /// `zsh -f` skips startup files, so the user's own config cannot change the result.
     private static let shells: [[String]] = [["/bin/sh"], ["/bin/zsh", "-f"]]

@@ -42,7 +42,7 @@ private final class CountingCredentialStore: CredentialStoring, @unchecked Senda
     }
 }
 
-@Suite struct CachingCredentialStoreTests {
+@Suite(.timeLimit(.minutes(1))) struct CachingCredentialStoreTests {
     private let saved = Credentials(username: "user", token: "saved")
 
     @Test func twoReadsCostOneInnerRead() throws {

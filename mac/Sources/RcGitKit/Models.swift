@@ -56,7 +56,7 @@ public struct BrokenRef: Sendable, Hashable {
 
 /// Every reference in a repository, plus the ref list's display order. The order is sorted
 /// once, when the listing is built or its refs change, so filtering never sorts; a listing
-/// built inside `Task.detached` is sorted off the main actor.
+/// built inside `BlockingWork` is sorted off the main actor.
 public struct RefListing: Sendable, Hashable {
     public var refs: [RefEntry] {
         didSet { sortedSections = Self.naturalSections(of: refs) }

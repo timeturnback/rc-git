@@ -2,7 +2,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct HiddenFilesTests {
+@Suite(.timeLimit(.minutes(1))) struct HiddenFilesTests {
     @Test func hidesVersionControlAndOperatingSystemClutter() {
         for name in [
             ".git", ".svn", ".hg", "CVS", ".DS_Store", "Thumbs.db", ".Spotlight-V100", ".Trashes",
@@ -38,7 +38,7 @@ import Testing
     }
 }
 
-@Suite struct HiddenFilesPreferenceTests {
+@Suite(.timeLimit(.minutes(1))) struct HiddenFilesPreferenceTests {
     @Test func startsOffAndEachToggleFlipsAndRemembers() throws {
         try withScratchDefaults { defaults in
             let preference = HiddenFilesPreference(defaults: defaults)

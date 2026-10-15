@@ -3,7 +3,7 @@ import Testing
 
 @testable import RcGitKit
 
-@Suite struct AppBuildTests {
+@Suite(.timeLimit(.minutes(1))) struct AppBuildTests {
     private static func stamped(_ overrides: [String: Any] = [:]) -> [String: Any] {
         var info: [String: Any] = [
             "CFBundleName": "rc-git",

@@ -10,8 +10,12 @@ paths: mac/**
   the model does not have.
 - Every asynchronous load bumps a generation counter and checks it before applying the result.
   A user who clicked something else must never see the older result land.
-- Repository calls run inside `Task.detached`; the model is `@MainActor` and callbacks fire on
-  the main actor. `Repository` is `@unchecked Sendable` because the Rust side is thread-safe.
+- Blocking calls (repository, keychain, transfer) run through `BlockingWork.run`, never
+  `Task.detached`, which holds a cooperative-pool thread while it waits; `check.sh` fails on a
+  detached task without a `// pool-safe:` reason. The model is `@MainActor` and callbacks fire
+  on the main actor. `Repository` is `@unchecked Sendable` because the Rust side is thread-safe.
+- Every test suite carries `.timeLimit(.minutes(1))`, which `check.sh` enforces. A test waits
+  through a continuation, never a semaphore on a pool thread (`CallGate`, `OneShot`).
 - Window size decisions go through `LayoutPolicy.layout(for:)` and its tests. The window
   controller applies the result and remembers whether it collapsed the sidebar itself, so a
   user's manual collapse is respected.

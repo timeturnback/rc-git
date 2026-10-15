@@ -27,7 +27,7 @@ private func topLabels(_ controller: RefsViewController) throws -> [String] {
 }
 
 @MainActor
-struct RefsViewControllerTests {
+@Suite(.timeLimit(.minutes(1))) struct RefsViewControllerTests {
     private let listing = RefListing(refs: [
         RefEntry(
             fullName: "refs/heads/main", shortName: "main", kind: .localBranch,
