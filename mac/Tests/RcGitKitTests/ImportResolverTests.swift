@@ -28,59 +28,59 @@ import Testing
         Dictionary(uniqueKeysWithValues: paths.map { ($0, "") })
     }
 
-    @Test func relativeSpecifiersResolveAgainstTheImportingFile() {
+    @Test func relativeSpecifiersResolveAgainstTheImportingFile() throws {
         let tree = resolver(
             sources("src/app/page.tsx", "src/app/util.ts", "src/lib/format.tsx", "src/app/a.css"))
-        #expect(tree.resolve("./util", from: "src/app/page.tsx") == "src/app/util.ts")
-        #expect(tree.resolve("../lib/format", from: "src/app/page.tsx") == "src/lib/format.tsx")
-        #expect(tree.resolve("./a.css", from: "src/app/page.tsx") == "src/app/a.css")
-        #expect(tree.resolve("./util.ts", from: "src/app/page.tsx") == "src/app/util.ts")
+        #expect(try tree.resolve("./util", from: "src/app/page.tsx") == "src/app/util.ts")
+        #expect(try tree.resolve("../lib/format", from: "src/app/page.tsx") == "src/lib/format.tsx")
+        #expect(try tree.resolve("./a.css", from: "src/app/page.tsx") == "src/app/a.css")
+        #expect(try tree.resolve("./util.ts", from: "src/app/page.tsx") == "src/app/util.ts")
     }
 
-    @Test func aMissingFileAndAClimbOutOfTheRepositoryResolveToNothing() {
+    @Test func aMissingFileAndAClimbOutOfTheRepositoryResolveToNothing() throws {
         let tree = resolver(sources("src/page.tsx"))
-        #expect(tree.resolve("./nope", from: "src/page.tsx") == nil)
-        #expect(tree.resolve("./nope/deeper", from: "src/page.tsx") == nil)
-        #expect(tree.resolve("../../outside", from: "src/page.tsx") == nil)
-        #expect(tree.resolve("", from: "src/page.tsx") == nil)
-        #expect(tree.resolve("/etc/passwd", from: "src/page.tsx") == nil)
+        #expect(try tree.resolve("./nope", from: "src/page.tsx") == nil)
+        #expect(try tree.resolve("./nope/deeper", from: "src/page.tsx") == nil)
+        #expect(try tree.resolve("../../outside", from: "src/page.tsx") == nil)
+        #expect(try tree.resolve("", from: "src/page.tsx") == nil)
+        #expect(try tree.resolve("/etc/passwd", from: "src/page.tsx") == nil)
     }
 
-    @Test func typescriptSourcesAreTriedBeforeJavascriptAndDeclarations() {
+    @Test func typescriptSourcesAreTriedBeforeJavascriptAndDeclarations() throws {
         let tree = resolver(sources("a.ts", "a.js", "b.d.ts", "b.js", "c.jsx", "main.ts"))
-        #expect(tree.resolve("./a", from: "main.ts") == "a.ts")
-        #expect(tree.resolve("./b", from: "main.ts") == "b.d.ts")
-        #expect(tree.resolve("./c", from: "main.ts") == "c.jsx")
+        #expect(try tree.resolve("./a", from: "main.ts") == "a.ts")
+        #expect(try tree.resolve("./b", from: "main.ts") == "b.d.ts")
+        #expect(try tree.resolve("./c", from: "main.ts") == "c.jsx")
     }
 
-    @Test func aDirectoryResolvesToItsIndexAndLosesToAFileOfTheSameName() {
+    @Test func aDirectoryResolvesToItsIndexAndLosesToAFileOfTheSameName() throws {
         let tree = resolver(
             sources(
                 "ui/index.tsx", "kit/index.js", "both.ts", "both/index.ts", "empty/x.css", "m.ts"))
-        #expect(tree.resolve("./ui", from: "m.ts") == "ui/index.tsx")
-        #expect(tree.resolve("./kit", from: "m.ts") == "kit/index.js")
-        #expect(tree.resolve("./both", from: "m.ts") == "both.ts")
-        #expect(tree.resolve("./empty", from: "m.ts") == nil, "a directory with no index")
-        #expect(tree.resolve(".", from: "ui/Button.tsx") == "ui/index.tsx")
-        #expect(tree.resolve("..", from: "both/deep/x.ts") == "both/index.ts")
-        #expect(tree.resolve("./both/", from: "m.ts") == "both/index.ts")
+        #expect(try tree.resolve("./ui", from: "m.ts") == "ui/index.tsx")
+        #expect(try tree.resolve("./kit", from: "m.ts") == "kit/index.js")
+        #expect(try tree.resolve("./both", from: "m.ts") == "both.ts")
+        #expect(try tree.resolve("./empty", from: "m.ts") == nil, "a directory with no index")
+        #expect(try tree.resolve(".", from: "ui/Button.tsx") == "ui/index.tsx")
+        #expect(try tree.resolve("..", from: "both/deep/x.ts") == "both/index.ts")
+        #expect(try tree.resolve("./both/", from: "m.ts") == "both/index.ts")
     }
 
-    @Test func aCompiledExtensionFindsItsSource() {
+    @Test func aCompiledExtensionFindsItsSource() throws {
         let tree = resolver(sources("a.ts", "b.tsx", "c.mts", "d.js", "main.ts"))
-        #expect(tree.resolve("./a.js", from: "main.ts") == "a.ts")
-        #expect(tree.resolve("./b.js", from: "main.ts") == "b.tsx")
-        #expect(tree.resolve("./b.jsx", from: "main.ts") == "b.tsx")
-        #expect(tree.resolve("./c.mjs", from: "main.ts") == "c.mts")
-        #expect(tree.resolve("./d.js", from: "main.ts") == "d.js", "the file as written wins")
+        #expect(try tree.resolve("./a.js", from: "main.ts") == "a.ts")
+        #expect(try tree.resolve("./b.js", from: "main.ts") == "b.tsx")
+        #expect(try tree.resolve("./b.jsx", from: "main.ts") == "b.tsx")
+        #expect(try tree.resolve("./c.mjs", from: "main.ts") == "c.mts")
+        #expect(try tree.resolve("./d.js", from: "main.ts") == "d.js", "the file as written wins")
     }
 
-    @Test func aQuerySuffixIsNotPartOfThePath() {
+    @Test func aQuerySuffixIsNotPartOfThePath() throws {
         let tree = resolver(sources("src/icon.svg", "src/main.ts"))
-        #expect(tree.resolve("./icon.svg?react", from: "src/main.ts") == "src/icon.svg")
+        #expect(try tree.resolve("./icon.svg?react", from: "src/main.ts") == "src/icon.svg")
     }
 
-    @Test func pathAliasesComeFromTheNearestConfigWithCommentsAndTrailingCommas() {
+    @Test func pathAliasesComeFromTheNearestConfigWithCommentsAndTrailingCommas() throws {
         var files = sources("src/components/Button.tsx", "src/app/page.tsx", "src/env.ts")
         files["tsconfig.json"] = """
             {
@@ -96,14 +96,14 @@ import Testing
             """
         let tree = resolver(files)
         #expect(
-            tree.resolve("@/components/Button", from: "src/app/page.tsx")
+            try tree.resolve("@/components/Button", from: "src/app/page.tsx")
                 == "src/components/Button.tsx")
-        #expect(tree.resolve("env", from: "src/app/page.tsx") == "src/env.ts")
-        #expect(tree.resolve("@/missing", from: "src/app/page.tsx") == nil)
-        #expect(tree.resolve("react", from: "src/app/page.tsx") == nil, "a registry package")
+        #expect(try tree.resolve("env", from: "src/app/page.tsx") == "src/env.ts")
+        #expect(try tree.resolve("@/missing", from: "src/app/page.tsx") == nil)
+        #expect(try tree.resolve("react", from: "src/app/page.tsx") == nil, "a registry package")
     }
 
-    @Test func theLongestPatternWinsAndTargetsAreTriedInOrder() {
+    @Test func theLongestPatternWinsAndTargetsAreTriedInOrder() throws {
         var files = sources("src/x.ts", "generated/api/x.ts", "fallback/only.ts", "main.ts")
         files["tsconfig.json"] = """
             {"compilerOptions": {"paths": {
@@ -112,12 +112,12 @@ import Testing
             }}}
             """
         let tree = resolver(files)
-        #expect(tree.resolve("@/x", from: "main.ts") == "src/x.ts")
-        #expect(tree.resolve("@/api/x", from: "main.ts") == "generated/api/x.ts")
-        #expect(tree.resolve("@/only", from: "main.ts") == "fallback/only.ts")
+        #expect(try tree.resolve("@/x", from: "main.ts") == "src/x.ts")
+        #expect(try tree.resolve("@/api/x", from: "main.ts") == "generated/api/x.ts")
+        #expect(try tree.resolve("@/only", from: "main.ts") == "fallback/only.ts")
     }
 
-    @Test func equalPrefixPatternsPickTheLongerSuffix() {
+    @Test func equalPrefixPatternsPickTheLongerSuffix() throws {
         var files = sources(
             "s1/a.css", "s2/a.css", "s3/a.css", "s4/a.css", "s5/a.css", "s6/a.css", "main.ts")
         files["tsconfig.json"] = """
@@ -127,23 +127,23 @@ import Testing
             }}}
             """
         for _ in 0..<20 {
-            #expect(resolver(files).resolve("@/a.css", from: "main.ts") == "s6/a.css")
+            #expect(try resolver(files).resolve("@/a.css", from: "main.ts") == "s6/a.css")
         }
     }
 
-    @Test func baseUrlPlacesBareSpecifiersAndPathTargets() {
+    @Test func baseUrlPlacesBareSpecifiersAndPathTargets() throws {
         var files = sources("app/src/components/Button.tsx", "app/src/lib/x.ts", "app/src/main.ts")
         files["app/jsconfig.json"] = """
             {"compilerOptions": {"baseUrl": "./src", "paths": {"~lib/*": ["lib/*"]}}}
             """
         let tree = resolver(files)
         #expect(
-            tree.resolve("components/Button", from: "app/src/main.ts")
+            try tree.resolve("components/Button", from: "app/src/main.ts")
                 == "app/src/components/Button.tsx")
-        #expect(tree.resolve("~lib/x", from: "app/src/main.ts") == "app/src/lib/x.ts")
+        #expect(try tree.resolve("~lib/x", from: "app/src/main.ts") == "app/src/lib/x.ts")
     }
 
-    @Test func anExtendedConfigSuppliesWhatTheNearestLeavesUnset() {
+    @Test func anExtendedConfigSuppliesWhatTheNearestLeavesUnset() throws {
         var files = sources("packages/ui/src/Button.tsx", "packages/web/src/page.tsx")
         files["tsconfig.base.json"] = """
             {"compilerOptions": {"paths": {"@ui/*": ["./packages/ui/src/*"]}}}
@@ -153,19 +153,19 @@ import Testing
             """
         let tree = resolver(files)
         #expect(
-            tree.resolve("@ui/Button", from: "packages/web/src/page.tsx")
+            try tree.resolve("@ui/Button", from: "packages/web/src/page.tsx")
                 == "packages/ui/src/Button.tsx",
             "targets start from the config that wrote them")
     }
 
-    @Test func anExtendsCycleEnds() {
+    @Test func anExtendsCycleEnds() throws {
         var files = sources("src/a.ts")
         files["tsconfig.json"] = #"{"extends": "./other.json"}"#
         files["other.json"] = #"{"extends": "./tsconfig.json"}"#
-        #expect(resolver(files).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(try resolver(files).resolve("@/a", from: "src/a.ts") == nil)
     }
 
-    @Test func aSolutionConfigHandsOverToTheConfigsItReferences() {
+    @Test func aSolutionConfigHandsOverToTheConfigsItReferences() throws {
         var files = sources("src/lib/x.ts", "src/main.tsx")
         files["tsconfig.json"] = """
             {"files": [], "references": [{"path": "./tsconfig.node.json"}, \
@@ -173,35 +173,35 @@ import Testing
             """
         files["tsconfig.node.json"] = #"{"compilerOptions": {"composite": true}}"#
         files["tsconfig.app.json"] = #"{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}"#
-        #expect(resolver(files).resolve("@/lib/x", from: "src/main.tsx") == "src/lib/x.ts")
+        #expect(try resolver(files).resolve("@/lib/x", from: "src/main.tsx") == "src/lib/x.ts")
     }
 
-    @Test func aReferenceMayNameADirectoryAndTheLastExtendedConfigWins() {
+    @Test func aReferenceMayNameADirectoryAndTheLastExtendedConfigWins() throws {
         var files = sources("app/src/x.ts", "lib/x.ts", "lib/y.ts")
         files["tsconfig.json"] = #"{"references": [{"path": "./app"}]}"#
         files["app/tsconfig.json"] = #"{"extends": ["../base.json", "./local.json"]}"#
         files["base.json"] = #"{"compilerOptions": {"paths": {"@/*": ["./lib/*"]}}}"#
         files["app/local.json"] = #"{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}"#
-        #expect(resolver(files).resolve("@/x", from: "lib/y.ts") == "app/src/x.ts")
+        #expect(try resolver(files).resolve("@/x", from: "lib/y.ts") == "app/src/x.ts")
     }
 
-    @Test func anInheritedBaseUrlPlacesTheTargetsOfPathsWrittenBelowIt() {
+    @Test func anInheritedBaseUrlPlacesTheTargetsOfPathsWrittenBelowIt() throws {
         var files = sources("lib/y.ts", "app/src/main.ts")
         files["base.json"] = #"{"compilerOptions": {"baseUrl": "./lib"}}"#
         files["app/tsconfig.json"] = """
             {"extends": "../base.json", "compilerOptions": {"paths": {"~/*": ["./*"]}}}
             """
         let tree = resolver(files)
-        #expect(tree.resolve("~/y", from: "app/src/main.ts") == "lib/y.ts")
-        #expect(tree.resolve("y", from: "app/src/main.ts") == "lib/y.ts")
+        #expect(try tree.resolve("~/y", from: "app/src/main.ts") == "lib/y.ts")
+        #expect(try tree.resolve("y", from: "app/src/main.ts") == "lib/y.ts")
     }
 
-    @Test func aConfigFartherUpAnswersWhenTheNearestCannot() {
+    @Test func aConfigFartherUpAnswersWhenTheNearestCannot() throws {
         var files = sources("shared/x.ts", "apps/web/src/page.tsx")
         files["apps/web/tsconfig.json"] = #"{"compilerOptions": {"strict": true}}"#
         files["tsconfig.json"] = #"{"compilerOptions": {"paths": {"shared/*": ["./shared/*"]}}}"#
         #expect(
-            resolver(files).resolve("shared/x", from: "apps/web/src/page.tsx") == "shared/x.ts")
+            try resolver(files).resolve("shared/x", from: "apps/web/src/page.tsx") == "shared/x.ts")
     }
 
     /// A resolver over `files` that counts every config read into `reads`.
@@ -214,30 +214,53 @@ import Testing
             })
     }
 
-    @Test(.timeLimit(.minutes(1))) func aFanOutOfExtendsStaysWithinTheReadBudget() {
+    @Test(.timeLimit(.minutes(1))) func aFanOutOfExtendsStaysWithinTheReadBudget() throws {
         var files = sources("src/a.ts")
         let entries = Array(repeating: #""./tsconfig.json""#, count: 50)
         files["tsconfig.json"] = #"{"extends": ["# + entries.joined(separator: ", ") + "]}"
         let reads = ReadCounter()
-        #expect(counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(try counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
         #expect(reads.count <= ImportResolver.configReadLimit)
     }
 
-    @Test(.timeLimit(.minutes(1))) func aFanOutAcrossDistinctConfigsStaysWithinTheReadBudget() {
+    @Test(.timeLimit(.minutes(1))) func aFanOutAcrossDistinctConfigsStaysWithinTheReadBudget()
+        throws
+    {
         var files = sources("src/a.ts")
         let names = (0..<20).map { "c\($0).json" }
         let extends = #"{"extends": ["# + names.map { #""./\#($0)""# }.joined(separator: ", ")
         files["tsconfig.json"] = extends + "]}"
         for name in names { files[name] = extends + "]}" }
         let reads = ReadCounter()
-        #expect(counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(try counting(files, into: reads).resolve("@/a", from: "src/a.ts") == nil)
         #expect(reads.count == ImportResolver.configReadLimit)
     }
 
-    @Test func anUnreadableConfigResolvesNothing() {
+    @Test func aFailedReadThrowsRatherThanResolvingToNothing() {
+        struct Unreadable: Error {}
+        let files = sources("src/page.tsx", "src/util.ts")
+        let failingList = ImportResolver(
+            list: { path in
+                if path == "src" { throw Unreadable() }
+                return listing(path, in: files)
+            },
+            read: { _ in nil })
+        #expect(throws: Unreadable.self) {
+            try failingList.resolve("./util", from: "src/page.tsx")
+        }
+        var configured = files
+        configured["tsconfig.json"] = #"{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}"#
+        let failingRead = ImportResolver(
+            list: { listing($0, in: configured) }, read: { _ in throw Unreadable() })
+        #expect(throws: Unreadable.self) {
+            try failingRead.resolve("@/util", from: "src/page.tsx")
+        }
+    }
+
+    @Test func anUnreadableConfigResolvesNothing() throws {
         var files = sources("src/a.ts")
         files["tsconfig.json"] = "{ not json"
-        #expect(resolver(files).resolve("@/a", from: "src/a.ts") == nil)
+        #expect(try resolver(files).resolve("@/a", from: "src/a.ts") == nil)
     }
 }
 
@@ -280,7 +303,7 @@ private final class ReadCounter {
 
     @Test func aRelativeImportOpensTheFileItNames() async {
         await model.attach(repo)
-        #expect(await model.openImport("./Button", from: "src/App.tsx"))
+        #expect(await model.openImport("./Button", from: "src/App.tsx") == .opened)
         #expect(model.openedFilePath == "src/Button.tsx")
         guard case let .text(entry, _) = model.fileState else {
             Issue.record("expected text, got \(model.fileState)")
@@ -291,24 +314,36 @@ private final class ReadCounter {
 
     @Test func anAliasedImportOpensThroughTheConfig() async {
         await model.attach(repo)
-        #expect(await model.openImport("@/Button", from: "src/App.tsx"))
+        #expect(await model.openImport("@/Button", from: "src/App.tsx") == .opened)
         #expect(model.openedFilePath == "src/Button.tsx")
     }
 
     @Test func aPackageImportOpensNothingAndLeavesTheFileInPlace() async {
         await model.attach(repo)
         #expect(await model.openPath("src/App.tsx") == .opened)
-        #expect(!(await model.openImport("react", from: "src/App.tsx")))
-        #expect(!(await model.openImport("./missing", from: "src/App.tsx")))
+        #expect(await model.openImport("react", from: "src/App.tsx") == .missing)
+        #expect(await model.openImport("./missing", from: "src/App.tsx") == .missing)
         #expect(model.openedFilePath == "src/App.tsx")
+    }
+
+    @Test func aFailedTreeReadIsAFailureNotAMissingModule() async {
+        await model.attach(repo)
+        repo.lock.withLock { repo.failNextTree = true }
+        guard case let .failed(message) = await model.openImport("@/Button", from: "src/App.tsx")
+        else {
+            Issue.record("a failed read must not read as a missing module")
+            return
+        }
+        #expect(message.contains("read tree"))
+        #expect(model.openedFilePath == nil, "nothing opened")
     }
 
     @Test func resolutionReadsEachDirectoryOnce() async {
         await model.attach(repo)
-        #expect(await model.openImport("@/Button", from: "src/App.tsx"))
+        #expect(await model.openImport("@/Button", from: "src/App.tsx") == .opened)
         let calls = repo.lock.withLock { repo.treeEntryCalls }
         #expect(calls == 2, "the root and src, however many candidates were probed")
-        #expect(await model.openImport("./Button", from: "src/App.tsx"))
+        #expect(await model.openImport("./Button", from: "src/App.tsx") == .opened)
         #expect(repo.lock.withLock { repo.treeEntryCalls } == calls, "served from the tree cache")
     }
 
@@ -324,9 +359,28 @@ private final class ReadCounter {
         repo.worktreeFiles["src/New.tsx"] = textBlob("export const fresh = 1;\n")
         await model.attach(repo)
         #expect(model.browsingWorkingTree)
-        #expect(await model.openImport("./New", from: "src/App.tsx"))
+        #expect(await model.openImport("./New", from: "src/App.tsx") == .opened)
         #expect(model.openedFilePath == "src/New.tsx", "an untracked file is on disk only")
-        #expect(!(await model.openImport("./Button", from: "src/App.tsx")), "not on disk")
+        #expect(await model.openImport("./Button", from: "src/App.tsx") == .missing, "not on disk")
+        #expect(
+            await model.openImport("./nope/deeper", from: "src/App.tsx") == .missing,
+            "a directory that is not on disk")
+    }
+
+    @Test func anUnreadableDirectoryOnDiskIsAFailureNotAMissingModule() async {
+        repo.workDir = "/checkout"
+        repo.worktreeListings[""] = WorktreeListing(entries: [
+            WorktreeEntry(name: "src", kind: .tree, status: .unchanged, oid: nil, size: 0),
+            WorktreeEntry(name: "lib", kind: .tree, status: .unchanged, oid: nil, size: 0),
+        ])
+        repo.worktreeListings["src"] = WorktreeListing(entries: [
+            WorktreeEntry(name: "App.tsx", kind: .blob, status: .unchanged, oid: app, size: 1)
+        ])
+        await model.attach(repo)
+        guard case .failed = await model.openImport("../lib/x", from: "src/App.tsx") else {
+            Issue.record("lib is on disk and could not be listed")
+            return
+        }
     }
 
     @Test func aResolutionTheUserMovedPastOpensNothing() async {
@@ -337,7 +391,7 @@ private final class ReadCounter {
         await gate.waitUntilArrived()
         await model.openFile(TreeEntry(name: "tsconfig.json", oid: config, kind: .blob))
         gate.open()
-        #expect(await stale, "a stale resolution is not a dead link")
+        #expect(await stale == .opened, "a stale resolution is not a dead link")
         guard case let .text(entry, _) = model.fileState else {
             Issue.record("expected text, got \(model.fileState)")
             return

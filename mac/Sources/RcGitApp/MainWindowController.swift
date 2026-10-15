@@ -961,10 +961,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         fileController.onOpenImport = { [weak self] specifier, source in
             guard let self else { return }
             Task {
-                // Most misses are packages from a registry; a sheet for each would be noise.
-                guard await self.model.openImport(specifier, from: source) else {
+                switch await self.model.openImport(specifier, from: source) {
+                case .opened:
+                    break
+                case .missing:
+                    // Most misses are packages from a registry; a sheet for each would be noise.
                     NSSound.beep()
-                    return
+                case let .failed(message):
+                    self.presentError(message)
                 }
             }
         }

@@ -8,13 +8,15 @@ import Foundation
 ///
 /// Every answer comes from the two closures, so resolution reads only the directories on the
 /// way to a candidate and, for a specifier that is not relative, the config files above the
-/// importing file. Nothing is walked and nothing is kept between calls.
+/// importing file. Nothing is walked and nothing is kept between calls. A closure throws when a
+/// read fails, as distinct from finding nothing, and `resolve` passes that error on, so an
+/// unreadable directory is never mistaken for a module that is not in the tree.
 public struct ImportResolver {
     /// The children of a directory by repository path, `""` for the root. `nil` when the path
     /// is not a directory.
-    private let list: (String) -> [TreeEntry]?
+    private let list: (String) throws -> [TreeEntry]?
     /// The bytes of a config file by repository path. `nil` when it cannot be read as text.
-    private let read: (String) -> [UInt8]?
+    private let read: (String) throws -> [UInt8]?
 
     /// Extensions tried on a specifier that leaves its own out, in TypeScript's order.
     static let extensions = [
@@ -32,14 +34,19 @@ public struct ImportResolver {
     /// `extends`, so a committed config that fans out cannot multiply the work of one click.
     static let configReadLimit = 16
 
-    public init(list: @escaping (String) -> [TreeEntry]?, read: @escaping (String) -> [UInt8]?) {
+    public init(
+        list: @escaping (String) throws -> [TreeEntry]?,
+        read: @escaping (String) throws -> [UInt8]?
+    ) {
         self.list = list
         self.read = read
     }
 
     /// Resolves `specifier` as written in the file at `sourcePath`. `nil` when it names
     /// nothing in the tree.
-    public func resolve(_ specifier: String, from sourcePath: String) -> String? {
+    ///
+    /// - Throws: Whatever `list` or `read` threw for a directory or config on the way.
+    public func resolve(_ specifier: String, from sourcePath: String) throws -> String? {
         let specifier = String(specifier.prefix { $0 != "?" })
         guard !specifier.isEmpty, !specifier.hasPrefix("/") else { return nil }
         let directory = sourcePath.split(separator: "/").dropLast().map(String.init)
@@ -47,10 +54,10 @@ public struct ImportResolver {
         if specifier.hasPrefix("./") || specifier.hasPrefix("../") || last == "." || last == ".." {
             // `.`, `..` and a trailing slash name a directory, never a file beside it.
             let namesDirectory = last == "." || last == ".." || last == ""
-            return RepoPath.flatten(directory, specifier).flatMap(
+            return try RepoPath.flatten(directory, specifier).flatMap(
                 namesDirectory ? indexFile : probe)
         }
-        return resolveThroughConfig(specifier, from: directory, budget: ReadBudget())
+        return try resolveThroughConfig(specifier, from: directory, budget: ReadBudget())
     }
 
     // MARK: Files
@@ -58,10 +65,10 @@ public struct ImportResolver {
     /// The file a path names once extensions are settled: the path itself, the path with a
     /// source extension, the source of a compiled extension, or the index file of the
     /// directory it names. An empty path is the repository root.
-    private func probe(_ components: [String]) -> String? {
-        guard let name = components.last else { return indexFile(in: []) }
+    private func probe(_ components: [String]) throws -> String? {
+        guard let name = components.last else { return try indexFile(in: []) }
         let parent = Array(components.dropLast())
-        guard let siblings = list(parent.joined(separator: "/")) else { return nil }
+        guard let siblings = try list(parent.joined(separator: "/")) else { return nil }
         var candidates = [name]
         candidates += Self.extensions.map { name + $0 }
         for (compiled, sources) in Self.sourceExtensions where name.hasSuffix(compiled) {
@@ -74,11 +81,11 @@ public struct ImportResolver {
         guard siblings.contains(where: { $0.name == name && $0.kind.isDirectory }) else {
             return nil
         }
-        return indexFile(in: components)
+        return try indexFile(in: components)
     }
 
-    private func indexFile(in directory: [String]) -> String? {
-        guard let entries = list(directory.joined(separator: "/")) else { return nil }
+    private func indexFile(in directory: [String]) throws -> String? {
+        guard let entries = try list(directory.joined(separator: "/")) else { return nil }
         for fileExtension in Self.extensions {
             let name = "index" + fileExtension
             if Self.isFile(name, in: entries) {
@@ -138,12 +145,12 @@ public struct ImportResolver {
     /// has each one it references tried in order.
     private func resolveThroughConfig(
         _ specifier: String, from directory: [String], budget: ReadBudget
-    ) -> String? {
+    ) throws -> String? {
         var current = directory
         while true {
-            if let entries = list(current.joined(separator: "/")) {
+            if let entries = try list(current.joined(separator: "/")) {
                 for name in Self.configNames where Self.isFile(name, in: entries) {
-                    if let found = resolve(
+                    if let found = try resolve(
                         specifier, withConfigAt: current + [name], budget: budget)
                     {
                         return found
@@ -156,33 +163,35 @@ public struct ImportResolver {
     }
 
     private func resolve(_ specifier: String, withConfigAt path: [String], budget: ReadBudget)
-        -> String?
+        throws -> String?
     {
-        guard let config = modulePaths(at: path, visited: [], budget: budget) else { return nil }
-        if let found = resolve(specifier, with: config) { return found }
+        guard let config = try modulePaths(at: path, visited: [], budget: budget) else {
+            return nil
+        }
+        if let found = try resolve(specifier, with: config) { return found }
         for reference in config.references {
             guard !budget.isSpent else { return nil }
-            let file = configFile(at: reference)
-            guard let referenced = modulePaths(at: file, visited: [], budget: budget),
-                let found = resolve(specifier, with: referenced)
+            let file = try configFile(at: reference)
+            guard let referenced = try modulePaths(at: file, visited: [], budget: budget),
+                let found = try resolve(specifier, with: referenced)
             else { continue }
             return found
         }
         return nil
     }
 
-    private func resolve(_ specifier: String, with config: ModulePaths) -> String? {
+    private func resolve(_ specifier: String, with config: ModulePaths) throws -> String? {
         if let paths = config.paths,
             let (targets, wildcard) = Self.match(specifier, in: paths.patterns)
         {
             let base = config.baseURL ?? paths.directory
             for target in targets where !target.hasPrefix("/") {
                 let path = target.replacingOccurrences(of: "*", with: wildcard)
-                if let found = RepoPath.flatten(base, path).flatMap(probe) { return found }
+                if let found = try RepoPath.flatten(base, path).flatMap(probe) { return found }
             }
         }
         guard let baseURL = config.baseURL else { return nil }
-        return RepoPath.flatten(baseURL, specifier).flatMap(probe)
+        return try RepoPath.flatten(baseURL, specifier).flatMap(probe)
     }
 
     /// The `paths` entry a specifier falls under and the text its `*` stands for. An exact
@@ -214,13 +223,14 @@ public struct ImportResolver {
     }
 
     /// Reads one config and, for whatever it leaves unset, the configs it extends. `nil` when
-    /// the file cannot be read or parsed. Only a relative `extends` is followed: a config
-    /// shipped in a package is not in the tree. `visited` holds the configs further down the
-    /// `extends` chain, so a cycle ends; `nil` too once `budget` is spent.
+    /// the file is not text or does not parse; a failed read throws. Only a relative `extends`
+    /// is followed: a config shipped in a package is not in the tree. `visited` holds the
+    /// configs further down the `extends` chain, so a cycle ends; `nil` too once `budget` is
+    /// spent.
     private func modulePaths(at path: [String], visited: Set<[String]>, budget: ReadBudget)
-        -> ModulePaths?
+        throws -> ModulePaths?
     {
-        guard budget.spend(), let bytes = read(path.joined(separator: "/")),
+        guard budget.spend(), let bytes = try read(path.joined(separator: "/")),
             let root = try? JSONSerialization.jsonObject(
                 with: Data(bytes), options: [.json5Allowed]) as? [String: Any]
         else { return nil }
@@ -234,7 +244,7 @@ public struct ImportResolver {
             result.paths = (patterns, directory)
         }
         result.references = Self.references(in: root, directory: directory)
-        inherit(into: &result, from: root, at: path, visited: visited, budget: budget)
+        try inherit(into: &result, from: root, at: path, visited: visited, budget: budget)
         return result
     }
 
@@ -251,7 +261,7 @@ public struct ImportResolver {
     private func inherit(
         into result: inout ModulePaths, from root: [String: Any], at path: [String],
         visited: Set<[String]>, budget: ReadBudget
-    ) {
+    ) throws {
         let chain = visited.union([path])
         guard chain.count <= Self.extendsDepth, result.baseURL == nil || result.paths == nil
         else { return }
@@ -259,8 +269,8 @@ public struct ImportResolver {
         var seen = chain
         for parent in Self.extended(by: root).reversed() where parent.hasPrefix(".") {
             guard !budget.isSpent else { return }
-            guard let file = unseenConfig(parent, directory: directory, seen: &seen),
-                let inherited = modulePaths(at: file, visited: chain, budget: budget)
+            guard let file = try unseenConfig(parent, directory: directory, seen: &seen),
+                let inherited = try modulePaths(at: file, visited: chain, budget: budget)
             else { continue }
             result.fillUnset(from: inherited)
         }
@@ -275,21 +285,21 @@ public struct ImportResolver {
     /// The config file an `extends` entry names, or `nil` when it leaves the repository or
     /// names a config already in `seen`, which then holds it.
     private func unseenConfig(_ parent: String, directory: [String], seen: inout Set<[String]>)
-        -> [String]?
+        throws -> [String]?
     {
         guard let target = RepoPath.flatten(directory, parent), seen.insert(target).inserted
         else { return nil }
-        let file = configFile(at: target)
+        let file = try configFile(at: target)
         guard file == target || seen.insert(file).inserted else { return nil }
         return file
     }
 
     /// The config file a reference or an `extends` names: the path itself, the path with
     /// `.json` when that was left out, or the `tsconfig.json` of the directory it names.
-    private func configFile(at target: [String]) -> [String] {
+    private func configFile(at target: [String]) throws -> [String] {
         guard let name = target.last else { return ["tsconfig.json"] }
         let parent = Array(target.dropLast())
-        guard let siblings = list(parent.joined(separator: "/")) else { return target }
+        guard let siblings = try list(parent.joined(separator: "/")) else { return target }
         if Self.isFile(name, in: siblings) { return target }
         if Self.isFile(name + ".json", in: siblings) { return parent + [name + ".json"] }
         return target + ["tsconfig.json"]

@@ -1624,30 +1624,38 @@ public final class BrowserModel {
 
     /// Opens the file a module specifier names, the way an import link in the file pane asks
     /// for one. `sourcePath` is the repository-relative path of the file the specifier is
-    /// written in. Returns `false` when the specifier names nothing in this tree, which is
-    /// what a package from a registry does.
+    /// written in. Answers `.missing` when the specifier names nothing in this tree, which is
+    /// what a package from a registry does, and `.failed` when a read on the way failed, so a
+    /// broken read is not passed off as a missing module. A resolution the user moved past
+    /// answers `.opened`: the newer open stands, and there is nothing to report.
     ///
     /// Resolution reads the directories on the way to each candidate, through the shared tree
     /// cache, and the config files above `sourcePath` when the specifier is not relative. It
     /// keeps nothing: a click is rare, and a config differs from one tree to the next.
     @discardableResult
-    public func openImport(_ specifier: String, from sourcePath: String) async -> Bool {
-        guard let repository, let root = rootTree else { return false }
+    public func openImport(_ specifier: String, from sourcePath: String) async -> OpenPathOutcome {
+        guard let repository, let root = rootTree else { return .missing }
         let fileToken = fileGeneration
         let rootToken = rootGeneration
         let onDisk = browsingWorkingTree
         let store = trees
-        let path = await Task.detached(priority: .userInitiated) { () -> String? in
+        let resolved = await RepositoryError.run {
             let resolver =
                 onDisk
                 ? Self.worktreeResolver(repository: repository, root: root)
                 : Self.treeResolver(repository: repository, root: root, store: store)
-            return resolver.resolve(specifier, from: sourcePath)
-        }.value
+            return try resolver.resolve(specifier, from: sourcePath)
+        }
         // The user opened something else, or switched ref, while this resolved.
-        guard fileToken == fileGeneration, rootToken == rootGeneration else { return true }
-        guard let path else { return false }
-        return await openPath(path) == .opened
+        guard fileToken == fileGeneration, rootToken == rootGeneration else { return .opened }
+        switch resolved {
+        case let .failure(error):
+            return .failed(error.message)
+        case .success(nil):
+            return .missing
+        case let .success(path?):
+            return await openPath(path)
+        }
     }
 
     /// A resolver over a committed tree: one tree object per directory on the way to a path,
@@ -1655,49 +1663,80 @@ public final class BrowserModel {
     nonisolated private static func treeResolver(
         repository: any RepositoryReading, root: Oid, store: TreeStore
     ) -> ImportResolver {
-        let list: (String) -> [TreeEntry]? = { path in
+        let list: (String) throws -> [TreeEntry]? = { path in
             var current = root
             for component in path.split(separator: "/") {
-                let entries = try? store.entries(of: current, read: repository.treeEntries)
-                guard let match = entries?.first(where: { $0.name == component }),
+                let entries = try store.entries(of: current, read: repository.treeEntries)
+                guard let match = entries.first(where: { $0.name == component }),
                     match.kind.isDirectory
                 else { return nil }
                 current = match.oid
             }
-            return try? store.entries(of: current, read: repository.treeEntries)
+            return try store.entries(of: current, read: repository.treeEntries)
         }
         return ImportResolver(list: list) { path in
             let parent = path.split(separator: "/").dropLast().joined(separator: "/")
             let name = path.split(separator: "/").last.map(String.init)
-            guard let entry = list(parent)?.first(where: { $0.name == name }),
-                let content = try? repository.readBlob(entry.oid, limit: importConfigLimit),
-                case let .text(data, _, _) = content
+            guard let entry = try list(parent)?.first(where: { $0.name == name }),
+                case let .text(data, _, _) = try repository.readBlob(
+                    entry.oid, limit: importConfigLimit)
             else { return nil }
             return data
         }
     }
 
-    /// A resolver over the files on disk, for the working tree.
+    /// A resolver over the files on disk, for the working tree. The core answers a path that is
+    /// not there with an error, as it does a read that failed, so a failed read is checked
+    /// against the directories on the way: a missing one is `nil`, and the error stands only
+    /// when everything on the way is there.
     nonisolated private static func worktreeResolver(
         repository: any RepositoryReading, root: Oid
     ) -> ImportResolver {
-        ImportResolver(
-            list: { path in
-                guard let listing = try? repository.worktreeEntries(tree: root, dir: path) else {
-                    return nil
-                }
-                return listing.entries.map {
+        let list: (String) throws -> [TreeEntry]? = { path in
+            do {
+                return try repository.worktreeEntries(tree: root, dir: path).entries.map {
                     TreeEntry(name: $0.name, oid: $0.oid ?? .unhashed, kind: $0.kind)
                 }
-            },
-            read: { path in
+            } catch {
                 guard
-                    let content = try? repository.worktreeFile(
-                        path: path, limit: importConfigLimit),
-                    case let .text(data, _, _) = content
+                    try worktreeEntry(at: path, repository: repository, root: root)?.kind
+                        .isDirectory == true
                 else { return nil }
+                throw error
+            }
+        }
+        return ImportResolver(list: list) { path in
+            do {
+                let content = try repository.worktreeFile(path: path, limit: importConfigLimit)
+                guard case let .text(data, _, _) = content else { return nil }
                 return data
-            })
+            } catch {
+                guard let entry = try worktreeEntry(at: path, repository: repository, root: root),
+                    !entry.kind.isDirectory
+                else { return nil }
+                throw error
+            }
+        }
+    }
+
+    /// The working-tree entry at `path`, listing one directory per component; `nil` when a
+    /// component is not there or one on the way is not a directory. The root is a directory
+    /// with no entry of its own, so an empty path answers a stand-in tree entry.
+    nonisolated private static func worktreeEntry(
+        at path: String, repository: any RepositoryReading, root: Oid
+    ) throws -> TreeEntry? {
+        var found = TreeEntry(name: "", oid: .unhashed, kind: .tree)
+        var dir = ""
+        for component in path.split(separator: "/").map(String.init) {
+            guard found.kind.isDirectory else { return nil }
+            let listing = try repository.worktreeEntries(tree: root, dir: dir)
+            guard let match = listing.entries.first(where: { $0.name == component }) else {
+                return nil
+            }
+            found = TreeEntry(name: match.name, oid: match.oid ?? .unhashed, kind: match.kind)
+            dir = dir.isEmpty ? component : dir + "/" + component
+        }
+        return found
     }
 
     /// The most a `tsconfig.json` may weigh and still be read for its module paths.
