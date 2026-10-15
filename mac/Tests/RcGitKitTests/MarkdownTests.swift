@@ -523,10 +523,44 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         }
     }
 
-    @Test func anInnerOpenerWithNoCloserStaysLiteral() {
+    /// Each unit closes one emphasis and leaves one opener unmatched; a closer search per opener
+    /// took 834 ms at 64 KiB in a release build before emphasis went through a delimiter stack.
+    @Test func paragraphsOfEmphasisUnitsParseInLinearTime() {
+        let unit = "*x *y* "
+        let text = String(repeating: unit, count: 256 * 1024 / unit.utf8.count)
+        let elapsed = ContinuousClock().measure { _ = MarkdownDocument.parse(text) }
+        #expect(elapsed < .seconds(2), "took \(elapsed)")
+    }
+
+    /// CommonMark's rule of three: a run that can both open and close does not pair with one
+    /// whose length sums with its own to a multiple of three.
+    @Test func aRunInsideAWordDoesNotCloseTheOuterEmphasisEarly() {
+        let parsed = runs("*a**b**c*")
+        #expect(parsed.map(\.text) == ["a", "b", "c"])
+        #expect(parsed.map(\.style) == [.emphasis, [.emphasis, .strong], .emphasis])
+    }
+
+    /// The closer pairs with the nearest opener, which leaves the unmatched outer one literal.
+    @Test func aCloserPairsWithTheNearestOpener() {
         let parsed = runs("*a **b c*")
-        #expect(plain(parsed) == "a **b c")
-        #expect(parsed.allSatisfy { $0.style == .emphasis })
+        #expect(parsed.map(\.text) == ["*a *", "b c"])
+        #expect(parsed.map(\.style) == [[], .emphasis])
+    }
+
+    @Test func leftoverDelimitersStayLiteralBesideTheMatchedOnes() {
+        let strong = runs("**a*")
+        #expect(strong.map(\.text) == ["*", "a"])
+        #expect(strong.map(\.style) == [[], .emphasis])
+        let nested = runs("***a** b*")
+        #expect(nested.map(\.text) == ["a", " b"])
+        #expect(nested.map(\.style) == [[.emphasis, .strong], .emphasis])
+    }
+
+    @Test func underscoresFollowTheirFlankingRules() {
+        let parsed = runs("_a_b_ and __x__")
+        #expect(parsed.map(\.text) == ["a_b", " and ", "x"])
+        #expect(parsed.map(\.style) == [.emphasis, [], .strong])
+        #expect(plain(runs("a _b_c")) == "a _b_c")
     }
 
     @Test func underscoresInsideAWordAreLiteral() {

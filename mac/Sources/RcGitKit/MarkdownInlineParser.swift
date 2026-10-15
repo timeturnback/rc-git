@@ -63,11 +63,10 @@ struct InlineScanner {
     let bracketClosers: [Int32]
     /// For each index, the first `)` at or after it that closes past the paren depth there.
     let parenClosers: [Int32]
+    /// Every emphasis the block's delimiter-stack pass matched, keyed by its first opening byte.
+    let emphasisPairs: [Int: EmphasisPair]
     var output: [MarkdownRun] = []
     private var buffer: [UInt8] = []
-    /// Per marker and range end, a start at or past which no emphasis run can close, learned
-    /// from a search that failed. Keeps a paragraph of unmatched openers linear.
-    private var unclosableFrom: [Int: Int] = [:]
     /// The last scan for the byte ending an autolink: where it started and where it stopped.
     private var autolinkScan = (from: 0, stop: -1)
 
@@ -78,6 +77,7 @@ struct InlineScanner {
         let spans = Self.codeSpans(in: bytes, runs: runs)
         self.backtickRuns = runs
         self.codeSpanEnds = spans
+        self.emphasisPairs = EmphasisPairing.pairs(in: bytes, skipping: spans)
         self.bracketClosers = Self.closers(
             in: bytes, open: Ascii.leftBracket, close: Ascii.rightBracket, skipping: spans)
         self.parenClosers = Self.closers(
@@ -284,112 +284,23 @@ struct InlineScanner {
             MarkdownRun(text: content, style: frame.style.union(.code), link: frame.link))
     }
 
+    /// Opens the emphasis the pairing pass matched at `cursor`, when its closer falls inside
+    /// this frame. Any other delimiter byte is literal text.
     private mutating func emphasis(at cursor: Int, in frame: Frame) -> Int? {
-        guard frame.depth < MarkdownInlineParser.maximumDepth else { return nil }
-        let end = frame.end
-        let marker = bytes[cursor]
-        var run = cursor
-        while has(marker, at: run, end: end) { run += 1 }
-        guard let (width, added) = Self.delimiter(marker: marker, runLength: run - cursor)
-        else { return nil }
-        guard canOpen(marker: marker, at: cursor, width: width, end: end) else { return nil }
-        guard let close = closingRun(marker: marker, width: width, from: cursor + width, end: end)
+        guard frame.depth < MarkdownInlineParser.maximumDepth,
+            let pair = emphasisPairs[cursor], pair.close + pair.width <= frame.end
         else { return nil }
         flush(frame)
+        let added = Self.emphasisStyle(marker: bytes[cursor], width: pair.width)
         parse(
-            from: cursor + width,
-            in: frame.nested(end: close, style: frame.style.union(added), link: frame.link))
-        return close + width
+            from: cursor + pair.width,
+            in: frame.nested(end: pair.close, style: frame.style.union(added), link: frame.link))
+        return pair.close + pair.width
     }
 
-    /// How many delimiter bytes to consume, and what that run means.
-    private static func delimiter(marker: UInt8, runLength: Int) -> (Int, MarkdownStyle)? {
-        if marker == Ascii.tilde {
-            return runLength == 2 ? (2, .strikethrough) : nil
-        }
-        switch runLength {
-        case 0: return nil
-        case 1: return (1, .emphasis)
-        case 2: return (2, .strong)
-        default: return (3, [.strong, .emphasis])
-        }
-    }
-
-    private func canOpen(marker: UInt8, at cursor: Int, width: Int, end: Int) -> Bool {
-        let after = cursor + width
-        guard after < end, !Ascii.isSpace(bytes[after]), bytes[after] != Ascii.newline else {
-            return false
-        }
-        guard marker == Ascii.underscore, cursor > 0 else { return true }
-        return !Ascii.isLetter(bytes[cursor - 1]) && !Ascii.isDigit(bytes[cursor - 1])
-    }
-
-    /// Where the matching closing run starts, or `nil` when the delimiter never closes. A
-    /// same-marker run that opens on the way is pushed, and a later run closes those inner
-    /// openers first, innermost out, so `*a **b** c*` keeps its strong run inside the
-    /// emphasis. An inner opener the closing run cannot fit stays literal.
-    ///
-    /// A failed search records the start of the last run that could close: a later search
-    /// starting there or past it sees no closer at all, so it fails without scanning.
-    private mutating func closingRun(marker: UInt8, width: Int, from: Int, end: Int) -> Int? {
-        let key = end << 8 | Int(marker)
-        if let limit = unclosableFrom[key], from >= limit { return nil }
-        var openers: [Int] = []
-        var lastCloser = from
-        var cursor = from
-        while cursor < end {
-            if bytes[cursor] == Ascii.backslash {
-                cursor += 2
-                continue
-            }
-            if let spanEnd = codeSpanEnds[cursor], spanEnd <= end {
-                cursor = spanEnd
-                continue
-            }
-            guard bytes[cursor] == marker else {
-                cursor += 1
-                continue
-            }
-            var stop = cursor
-            while stop < end, bytes[stop] == marker { stop += 1 }
-            if canClose(marker: marker, run: cursor..<stop, from: from, end: end) {
-                lastCloser = cursor
-                var remaining = stop - cursor
-                while let inner = openers.last, inner <= remaining {
-                    remaining -= inner
-                    openers.removeLast()
-                }
-                if remaining >= width { return stop - remaining }
-            } else if opensInside(run: cursor..<stop, from: from, end: end) {
-                openers.append(stop - cursor)
-            }
-            cursor = stop
-        }
-        unclosableFrom[key] = min(unclosableFrom[key] ?? lastCloser, lastCloser)
-        return nil
-    }
-
-    private func canClose(marker: UInt8, run: Range<Int>, from: Int, end: Int) -> Bool {
-        guard run.lowerBound > from else { return false }
-        let before = bytes[run.lowerBound - 1]
-        guard !Ascii.isSpace(before), before != Ascii.newline else { return false }
-        return closes(marker: marker, after: run.upperBound, end: end)
-    }
-
-    /// A run inside a delimiter's span that opens a nested one of the same marker.
-    private func opensInside(run: Range<Int>, from: Int, end: Int) -> Bool {
-        guard run.upperBound < end else { return false }
-        let after = bytes[run.upperBound]
-        guard !Ascii.isSpace(after), after != Ascii.newline else { return false }
-        guard run.lowerBound > from else { return true }
-        let before = bytes[run.lowerBound - 1]
-        return Ascii.isSpace(before) || before == Ascii.newline
-    }
-
-    /// `_` does not close inside a word, which is what keeps `snake_case_name` intact.
-    private func closes(marker: UInt8, after stop: Int, end: Int) -> Bool {
-        guard marker == Ascii.underscore, stop < end else { return true }
-        return !Ascii.isLetter(bytes[stop]) && !Ascii.isDigit(bytes[stop])
+    private static func emphasisStyle(marker: UInt8, width: Int) -> MarkdownStyle {
+        if marker == Ascii.tilde { return .strikethrough }
+        return width == 1 ? .emphasis : .strong
     }
 }
 
@@ -768,5 +679,170 @@ extension InlineScanner {
     /// CommonMark's scheme rule: an ASCII letter, then 1-31 ASCII letters, digits, `+`, `.` or `-`.
     private static func isAutolinkScheme(_ scheme: [UInt8]) -> Bool {
         (2...32).contains(scheme.count) && Ascii.isSchemeShaped(scheme)
+    }
+}
+
+// MARK: - Emphasis pairing
+
+/// One matched emphasis: `width` delimiter bytes open it, and the `width` bytes at `close`
+/// close it.
+struct EmphasisPair {
+    let close: Int
+    let width: Int
+}
+
+/// CommonMark's process-emphasis pass over one block. Runs of `*`, `_` and `~~` outside code
+/// spans and escapes become a delimiter stack; each closer, left to right, pairs with the
+/// nearest opener that may take it, and the delimiters between the two drop out as literal
+/// text. A failed search records where it stopped per closer kind, so no opener is walked twice
+/// for nothing and the pass stays linear.
+struct EmphasisPairing {
+    private struct Delimiter {
+        let marker: UInt8
+        /// The run's whole length, which the rule of three reads.
+        let length: Int
+        let canOpen: Bool
+        let canClose: Bool
+        /// The bytes not yet matched: openers give theirs up from the end, closers from the
+        /// start, so the matched bytes are always the ones next to the text they wrap.
+        var low: Int
+        var high: Int
+        var previous: Int
+        var next: Int
+    }
+
+    private enum Neighbor { case space, punctuation, other }
+
+    private let bytes: [UInt8]
+    private var delimiters: [Delimiter] = []
+    private var pairs: [Int: EmphasisPair] = [:]
+
+    /// The pairs in `bytes`, keyed by the first byte of each opening delimiter.
+    static func pairs(in bytes: [UInt8], skipping spans: [Int: Int]) -> [Int: EmphasisPair] {
+        var pairing = EmphasisPairing(bytes: bytes)
+        pairing.collect(skipping: spans)
+        pairing.process()
+        return pairing.pairs
+    }
+
+    private init(bytes: [UInt8]) { self.bytes = bytes }
+
+    private mutating func collect(skipping spans: [Int: Int]) {
+        var cursor = 0
+        while cursor < bytes.count {
+            let marker = bytes[cursor]
+            if marker == Ascii.backslash {
+                cursor += 2
+                continue
+            }
+            if let spanEnd = spans[cursor] {
+                cursor = spanEnd
+                continue
+            }
+            guard marker == Ascii.asterisk || marker == Ascii.underscore || marker == Ascii.tilde
+            else {
+                cursor += 1
+                continue
+            }
+            var stop = cursor
+            while stop < bytes.count, bytes[stop] == marker { stop += 1 }
+            push(marker: marker, run: cursor..<stop)
+            cursor = stop
+        }
+    }
+
+    /// Classifies the run by what flanks it. Strikethrough takes only `~~`.
+    private mutating func push(marker: UInt8, run: Range<Int>) {
+        guard marker != Ascii.tilde || run.count == 2 else { return }
+        let before = run.lowerBound > 0 ? Self.neighbor(bytes[run.lowerBound - 1]) : .space
+        let after = run.upperBound < bytes.count ? Self.neighbor(bytes[run.upperBound]) : .space
+        let left = after != .space && (after != .punctuation || before != .other)
+        let right = before != .space && (before != .punctuation || after != .other)
+        let underscore = marker == Ascii.underscore
+        let canOpen = left && (!underscore || !right || before == .punctuation)
+        let canClose = right && (!underscore || !left || after == .punctuation)
+        guard canOpen || canClose else { return }
+        let index = delimiters.count
+        delimiters.append(
+            Delimiter(
+                marker: marker, length: run.count, canOpen: canOpen, canClose: canClose,
+                low: run.lowerBound, high: run.upperBound, previous: index - 1, next: index + 1))
+    }
+
+    /// Bytes past ASCII count as letters: they are never whitespace here and rarely punctuation.
+    private static func neighbor(_ byte: UInt8) -> Neighbor {
+        if Ascii.isSpace(byte) || byte == Ascii.newline || byte == Ascii.carriageReturn {
+            return .space
+        }
+        return byte < 0x80 && InlineScanner.isEscapable(byte) ? .punctuation : .other
+    }
+
+    private mutating func process() {
+        if let last = delimiters.indices.last { delimiters[last].next = -1 }
+        var floors: [Int: Int] = [:]
+        var current = delimiters.isEmpty ? -1 : 0
+        while current >= 0 {
+            let closer = delimiters[current]
+            guard closer.canClose else {
+                current = closer.next
+                continue
+            }
+            let kind = Int(closer.marker) << 3 + (closer.canOpen ? 3 : 0) + closer.length % 3
+            if let opener = opener(for: closer, above: floors[kind] ?? -1) {
+                current = match(opener: opener, closer: current)
+                continue
+            }
+            floors[kind] = closer.previous
+            if !closer.canOpen { unlink(current) }
+            current = closer.next
+        }
+    }
+
+    /// The nearest opener after `floor` that `closer` may pair with.
+    private func opener(for closer: Delimiter, above floor: Int) -> Int? {
+        var candidate = closer.previous
+        while candidate > floor {
+            let opener = delimiters[candidate]
+            if opener.canOpen, opener.marker == closer.marker, Self.mayPair(opener, closer) {
+                return candidate
+            }
+            candidate = opener.previous
+        }
+        return nil
+    }
+
+    /// The rule of three: when either run could both open and close, their lengths may not sum
+    /// to a multiple of three unless both are multiples of three.
+    private static func mayPair(_ opener: Delimiter, _ closer: Delimiter) -> Bool {
+        guard opener.canClose || closer.canOpen else { return true }
+        let sum = opener.length + closer.length
+        return !sum.isMultiple(of: 3)
+            || (opener.length.isMultiple(of: 3) && closer.length.isMultiple(of: 3))
+    }
+
+    /// Records the pair, drops the delimiters between the two, and returns the delimiter the
+    /// pass looks at next: the closer again while it has bytes left.
+    private mutating func match(opener: Int, closer: Int) -> Int {
+        let openerLeft = delimiters[opener].high - delimiters[opener].low
+        let closerLeft = delimiters[closer].high - delimiters[closer].low
+        let strikethrough = delimiters[opener].marker == Ascii.tilde
+        let width = strikethrough || (openerLeft >= 2 && closerLeft >= 2) ? 2 : 1
+        delimiters[opener].high -= width
+        pairs[delimiters[opener].high] = EmphasisPair(close: delimiters[closer].low, width: width)
+        delimiters[closer].low += width
+        delimiters[opener].next = closer
+        delimiters[closer].previous = opener
+        if openerLeft == width { unlink(opener) }
+        guard closerLeft == width else { return closer }
+        let next = delimiters[closer].next
+        unlink(closer)
+        return next
+    }
+
+    private mutating func unlink(_ index: Int) {
+        let previous = delimiters[index].previous
+        let next = delimiters[index].next
+        if previous >= 0 { delimiters[previous].next = next }
+        if next >= 0 { delimiters[next].previous = previous }
     }
 }
