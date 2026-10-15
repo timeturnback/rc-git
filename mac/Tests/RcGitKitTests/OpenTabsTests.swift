@@ -55,7 +55,7 @@ import Testing
         let paths = OpenTabs.restoredPaths(
             opened: ["/Users/me/open"],
             failed: ["/Volumes/Ext/repo", "/Users/me/gone", "/Volumes/Share/other"],
-            parentExists: { !$0.hasPrefix("/Volumes/") })
+            directoryExists: { !$0.hasPrefix("/Volumes/") })
         #expect(paths == ["/Users/me/open", "/Volumes/Ext/repo", "/Volumes/Share/other"])
     }
 
@@ -64,14 +64,33 @@ import Testing
     @Test func restoreWithNothingOpenedKeepsUnreachablePaths() {
         let paths = OpenTabs.restoredPaths(
             opened: [], failed: ["/Volumes/Ext/a", "/Users/me/gone"],
-            parentExists: { !$0.hasPrefix("/Volumes/") })
+            directoryExists: { !$0.hasPrefix("/Volumes/") })
         #expect(paths == ["/Volumes/Ext/a"])
         #expect(
-            OpenTabs.restoredPaths(opened: [], failed: ["/a"], parentExists: { _ in true }).isEmpty)
+            OpenTabs.restoredPaths(opened: [], failed: ["/a"], directoryExists: { _ in true })
+                .isEmpty)
         #expect(OpenTabs.restoredPaths(opened: [], failed: []).isEmpty)
     }
 
-    @Test func parentDirectoryExistsLooksAtTheContainingFolder() throws {
+    /// A volume root's parent is `/Volumes`, which exists whether or not the disk is mounted,
+    /// so the root itself decides: missing means unmounted, and the path is kept.
+    @Test func restoreKeepsAnUnmountedVolumeRoot() {
+        let mounted: Set<String> = ["/", "/Volumes/", "/Volumes/Here/", "/Users/me/"]
+        let paths = OpenTabs.restoredPaths(
+            opened: [],
+            failed: ["/Volumes/Ext", "/Volumes/Here", "/Volumes/Gone/", "/Users/me/gone"],
+            directoryExists: { mounted.contains($0.hasSuffix("/") ? $0 : $0 + "/") })
+        #expect(paths == ["/Volumes/Ext", "/Volumes/Gone/"])
+    }
+
+    @Test func mountFolderIsTheVolumeRootOrTheContainingFolder() {
+        #expect(OpenTabs.mountFolder(of: "/Volumes/Ext") == "/Volumes/Ext")
+        #expect(OpenTabs.mountFolder(of: "/Volumes/Ext/") == "/Volumes/Ext/")
+        #expect(OpenTabs.mountFolder(of: "/Volumes/Ext/repo") == "/Volumes/Ext/")
+        #expect(OpenTabs.mountFolder(of: "/Users/me/repo") == "/Users/me/")
+    }
+
+    @Test func directoryExistsNeedsAFolder() throws {
         let folder = URL.temporaryDirectory.appending(path: "rc-git-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer {
@@ -84,12 +103,10 @@ import Testing
         let file = folder.appending(path: "file")
         try Data().write(to: file)
 
-        let missingRepository = folder.appending(path: "repo").path(percentEncoded: false)
-        #expect(OpenTabs.parentDirectoryExists(missingRepository))
-        let underMissingFolder = folder.appending(path: "nope/repo").path(percentEncoded: false)
-        #expect(!OpenTabs.parentDirectoryExists(underMissingFolder))
-        let underFile = file.appending(path: "repo").path(percentEncoded: false)
-        #expect(!OpenTabs.parentDirectoryExists(underFile))
+        #expect(OpenTabs.directoryExists(folder.path(percentEncoded: false)))
+        let missing = folder.appending(path: "nope").path(percentEncoded: false)
+        #expect(!OpenTabs.directoryExists(missing))
+        #expect(!OpenTabs.directoryExists(file.path(percentEncoded: false)))
     }
 
     /// Without `dropping` — ⇧⌘W and ⌘Q — what is recorded is the live order plus everything

@@ -66,23 +66,35 @@ public struct OpenTabs {
     }
 
     /// The list to save after a launch restore: the tabs that opened, then each saved path
-    /// that failed to open while its parent folder was unreachable — an external disk or a
-    /// network share not mounted yet. Such a path is kept for the next launch. A failed path
-    /// whose parent folder exists is dropped: the volume is there and the repository is not,
+    /// that failed to open while it was unreachable (see `mountFolder`) — an external disk or
+    /// a network share not mounted yet. Such a path is kept for the next launch. A failed path
+    /// whose mount folder exists is dropped: the volume is there and the repository is not,
     /// so retrying it on every launch would fail the same way.
     public static func restoredPaths(
         opened: [String], failed: [String],
-        parentExists: (String) -> Bool = parentDirectoryExists
+        directoryExists: (String) -> Bool = directoryExists
     ) -> [String] {
-        merged(live: opened, saved: failed.filter { !parentExists($0) })
+        merged(live: opened, saved: failed.filter { !directoryExists(mountFolder(of: $0)) })
     }
 
-    /// Whether the folder that contains `path` exists, which is what tells a repository that
-    /// is gone from one whose volume is not mounted.
-    public static func parentDirectoryExists(_ path: String) -> Bool {
-        let parent = URL(filePath: path).deletingLastPathComponent().path(percentEncoded: false)
+    /// The folder whose absence means `path` is unreachable rather than gone: the path itself
+    /// when it is a volume root (`/Volumes/Ext`), since `/Volumes` stays put while the disk is
+    /// unmounted; otherwise the folder that contains it.
+    public static func mountFolder(of path: String) -> String {
+        let url = URL(filePath: path)
+        let parent = url.deletingLastPathComponent()
+        if parent.standardizedFileURL.path(percentEncoded: false) == volumesFolder {
+            return url.path(percentEncoded: false)
+        }
+        return parent.path(percentEncoded: false)
+    }
+
+    private static let volumesFolder = "/Volumes/"
+
+    /// Whether a folder exists at `path`.
+    public static func directoryExists(_ path: String) -> Bool {
         var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: parent, isDirectory: &isDirectory)
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
             && isDirectory.boolValue
     }
 
