@@ -919,10 +919,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         historyController.renderSearch(
             filter: model.searchFilter, results: model.searchResults,
             scanned: model.searchScanned, complete: model.searchComplete,
-            searching: model.isSearching, error: model.searchError)
-        if let commit = model.diffCommit {
-            historyController.selectCommitRow(commit.oid)
-        }
+            searching: model.isSearching, error: model.searchError,
+            detail: model.diffCommit?.oid)
     }
 
     /// The Files sidebar tree and the Go to File panel that opens into it.

@@ -491,10 +491,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Renders search state: swaps the table to the matches while a search is active.
     /// A non-nil `error` means the search stopped on a failure: the count gives way to the
-    /// message, and no further page is asked for.
+    /// message, and no further page is asked for. The reload drops the table's selection, so
+    /// `detail`, the commit the detail pane shows, gets its row selected again when listed.
     func renderSearch(
         filter: CommitFilter?, results: [CommitSummary], scanned: Int, complete: Bool,
-        searching: Bool, error: String?
+        searching: Bool, error: String?, detail: Oid?
     ) {
         let wasActive = searchActive
         searchFilter = filter
@@ -527,6 +528,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         isReloading = false
         if active != wasActive {
             table.scrollRowToVisible(0)
+        }
+        if let detail {
+            selectCommitRow(detail)
         }
         requestMoreIfNearEnd()
     }
