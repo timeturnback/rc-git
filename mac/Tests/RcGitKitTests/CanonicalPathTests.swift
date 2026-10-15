@@ -59,6 +59,28 @@ import Testing
         #expect(try Repository(path: fixture.path).tabKey != Repository(path: linkedPath).tabKey)
     }
 
+    @Test func aRepositoryOpenedThroughItsGitDirShowsItsWorkingDirectory() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let workDir = CanonicalPath.resolve(fixture.path)
+        #expect(workDir.hasPrefix("/private/"))
+        for spelling in [fixture.path, fixture.path + "/.git", fixture.path + "/.git/"] {
+            let repository = try Repository(path: spelling)
+            #expect(repository.tabPath(openedAs: spelling) == workDir, "\(spelling)")
+        }
+    }
+
+    @Test func aBareRepositoryShowsThePathItWasOpenedThrough() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let outside = try GitFixture.emptyDirectory()
+        defer { outside.remove() }
+        let barePath = outside.path + "/bare.git"
+        try fixture.git(["clone", "-q", "--bare", fixture.path, barePath])
+        let repository = try Repository(path: barePath)
+        #expect(repository.tabPath(openedAs: barePath) == CanonicalPath.resolve(barePath))
+    }
+
     @Test func resolveKeepsPrivateAndMakesARelativePathAbsolute() {
         #expect(CanonicalPath.resolve("/var") == "/private/var")
         #expect(CanonicalPath.resolve("/tmp/../var/") == "/private/var")

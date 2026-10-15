@@ -209,7 +209,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     ///
     /// The path is canonical (`CanonicalPath.resolve`), so tabs, recents and the sync sheet's
     /// `cd` hold neither a relative path nor a `/private`-stripped one. The same path as an
-    /// open tab skips opening the repository again.
+    /// open tab skips opening the repository again. The tab shows and saves
+    /// `Repository.tabPath`: the working directory even when `path` named its `.git`.
     ///
     /// - Throws: The error `Repository(path:)` throws when `path` does not open.
     private func openTab(_ path: String) throws -> (controller: MainWindowController, isNew: Bool) {
@@ -223,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return (existing, false)
         }
         let controller = controllers.first(where: { $0.isEmpty }) ?? newWindow()
-        controller.show(repository, path: path, key: key)
+        controller.show(repository, path: repository.tabPath(openedAs: path), key: key)
         return (controller, true)
     }
 

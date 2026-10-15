@@ -22,4 +22,12 @@ extension Repository {
     public var tabKey: String {
         CanonicalPath.resolve(gitDirectory)
     }
+
+    /// The path a tab shows and saves for this repository, opened through `path`: the
+    /// canonical working directory, so opening `<repo>/.git` titles the tab `<repo>` and
+    /// recents and saved tabs hold the working directory. A bare repository keeps the
+    /// canonical `path`.
+    public func tabPath(openedAs path: String) -> String {
+        workingDirectory.map(CanonicalPath.resolve) ?? CanonicalPath.resolve(path)
+    }
 }
