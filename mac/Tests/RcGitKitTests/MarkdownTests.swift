@@ -720,6 +720,14 @@ private func firstRun(_ blocks: [MarkdownBlock], where match: (MarkdownRun) -> B
         #expect(parsed.first?.link?.destination == "https://ci.example/actions")
     }
 
+    @Test func imageWithoutAltInsideALinkShowsItsOwnSource() {
+        let parsed = runs("[![](a.png)](https://x)")
+        #expect(parsed.count == 1)
+        #expect(parsed.first?.isImage == true)
+        #expect(parsed.first?.text == "a.png")
+        #expect(parsed.first?.link?.destination == "https://x")
+    }
+
     @Test func inlineTagsAreDroppedAndBreaksSurvive() {
         #expect(plain(runs("a <span>b</span> c")) == "a b c")
         #expect(plain(runs("a<br>b")) == "a\nb")

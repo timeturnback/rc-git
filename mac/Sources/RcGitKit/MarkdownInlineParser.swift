@@ -323,7 +323,7 @@ extension InlineScanner {
         }
         flush(frame)
         if image {
-            emitImage(inner, target: frame.link ?? target.link, style: frame.style)
+            emitImage(inner, source: target.link, in: frame)
         } else {
             parse(
                 from: inner.lowerBound,
@@ -342,14 +342,14 @@ extension InlineScanner {
                 link: MarkdownLink(destination: "#" + MarkdownDocument.footnoteAnchor(for: label))))
     }
 
-    private mutating func emitImage(
-        _ inner: Range<Int>, target: MarkdownLink, style: MarkdownStyle
-    ) {
+    /// An image run: its alt text, or its own source when the alt is empty. Inside a link it
+    /// follows the enclosing link, so the fallback text still names the image, not the link.
+    private mutating func emitImage(_ inner: Range<Int>, source: MarkdownLink, in frame: Frame) {
         let alt = String(decoding: bytes[inner], as: UTF8.self)
         output.append(
             MarkdownRun(
-                text: alt.isEmpty ? target.destination : alt, style: style, link: target,
-                isImage: true))
+                text: alt.isEmpty ? source.destination : alt, style: frame.style,
+                link: frame.link ?? source, isImage: true))
     }
 
     /// The target that follows a bracket, whether written inline or as a reference.
