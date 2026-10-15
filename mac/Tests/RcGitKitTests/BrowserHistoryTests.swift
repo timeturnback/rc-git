@@ -321,6 +321,36 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         #expect(!model.isSearching)
     }
 
+    @Test func aSearchTypedBeforeHistoryHasAnAnchorRunsOnceItDoes() async {
+        let gate = CallGate()
+        repo.lock.withLock { repo.refsGate = gate }
+        async let attached: Void = model.attach(repo)
+        await gate.waitUntilArrived()
+        await model.search(CommitFilter(message: "main 1"))
+        #expect(model.searchFilter == nil, "no anchor yet, so nothing is searched")
+        gate.open()
+        await attached
+
+        #expect(model.searchFilter == CommitFilter(message: "main 1"))
+        #expect(model.searchResults.count == 61, "main 1, main 10-19, main 100-149")
+        #expect(model.searchComplete)
+        #expect(!model.isSearching)
+    }
+
+    @Test func aSearchClearedBeforeHistoryHasAnAnchorNeverRuns() async {
+        let gate = CallGate()
+        repo.lock.withLock { repo.refsGate = gate }
+        async let attached: Void = model.attach(repo)
+        await gate.waitUntilArrived()
+        await model.search(CommitFilter(message: "main 1"))
+        await model.search(CommitFilter())
+        gate.open()
+        await attached
+
+        #expect(model.searchFilter == nil)
+        #expect(repo.lock.withLock { repo.searchCalls } == 0)
+    }
+
     @Test func aSearchUnderAPathScopeMatchesOnlyCommitsTouchingIt() async {
         await model.attach(repo)
         let all = repo.commits[mainCommit] ?? []

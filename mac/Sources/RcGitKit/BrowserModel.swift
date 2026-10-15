@@ -193,6 +193,8 @@ public final class BrowserModel {
     private var reportedLocation = BrowserLocation()
     /// The tip whose history the history pane shows. Kept while browsing one of its commits.
     private var historyAnchor: Oid?
+    /// A search asked for while there was no anchor to walk from; it runs once one is set.
+    private var pendingSearch: CommitFilter?
     /// One blame walk's inputs, plus the file generation it was asked under.
     private struct BlameTarget: Equatable, Sendable {
         let path: String
@@ -469,6 +471,7 @@ public final class BrowserModel {
         onRefsChanged?()
         resetHistory(anchor: ref.target)
         await loadRoot(of: ref.target, rollingBackTo: previous)
+        await runPendingSearch()
     }
 
     /// Shows the tree of one commit, picked from the history pane. The sidebar deselects and
@@ -499,6 +502,7 @@ public final class BrowserModel {
         onRefsChanged?()
         resetHistory(anchor: target)
         await loadRoot(of: target, rollingBackTo: previous)
+        await runPendingSearch()
     }
 
     /// Shows or hides the entries `HiddenFiles` names in the tree and path search. Nothing
@@ -996,9 +1000,14 @@ public final class BrowserModel {
     /// Starts a search over the current anchor's history, streaming matches in scan chunks.
     /// Under a path scope it searches only the commits that changed that path. An empty
     /// filter clears instead. A newer search, scope change, or ref switch between chunks
-    /// drops the rest of the walk, and `onSearchChanged` reports the drop.
+    /// drops the rest of the walk, and `onSearchChanged` reports the drop. Asked for before
+    /// history has an anchor, the filter waits and runs as soon as a ref or tree is shown.
     public func search(_ filter: CommitFilter) async {
-        guard repository != nil, historyAnchor != nil else { return }
+        guard repository != nil else { return }
+        guard historyAnchor != nil else {
+            pendingSearch = filter.isEmpty ? nil : filter
+            return
+        }
         if filter.isEmpty {
             clearSearch()
             return
@@ -1030,8 +1039,10 @@ public final class BrowserModel {
         await continueSearch(target: searchResults.count + Self.historyPageSize)
     }
 
-    /// Drops the active search; the plain history is still loaded and shows again at once.
+    /// Drops the active search, and one waiting for an anchor; the plain history is still
+    /// loaded and shows again at once.
     public func clearSearch() {
+        pendingSearch = nil
         searchGeneration += 1
         searchPager = nil
         let hadSearch = searchFilter != nil
@@ -1067,6 +1078,13 @@ public final class BrowserModel {
             // revision, and the message search for the same text is already running.
             return false
         }
+    }
+
+    /// Runs the search typed before history had an anchor, once one is set.
+    private func runPendingSearch() async {
+        guard historyAnchor != nil, let filter = pendingSearch else { return }
+        pendingSearch = nil
+        await search(filter)
     }
 
     private func continueSearch(target: Int) async {
@@ -1110,7 +1128,9 @@ public final class BrowserModel {
         historyError = nil
         historyAnchor = anchor
         historyScope = .all
+        let waiting = pendingSearch
         clearSearch()
+        pendingSearch = waiting
         clearCommitDetail()
         if let anchor, let cached = historyCache.value(for: anchor) {
             history = cached.commits
@@ -1511,6 +1531,7 @@ public final class BrowserModel {
             await browseCommit(summary)
             if historyAnchor != historyTip {
                 resetHistory(anchor: historyTip)
+                await runPendingSearch()
             }
         }
     }
