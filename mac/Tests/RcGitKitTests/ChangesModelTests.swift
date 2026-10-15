@@ -622,6 +622,53 @@ import Testing
         #expect(stashCallbacks == 1)
     }
 
+    @Test func theStashSelectionFollowsItsCommitWhenAPushShiftsTheRows() async {
+        let picked = StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")
+        repo.lock.withLock { repo.stashes = [picked] }
+        await model.loadStashes()
+        model.selectStash(at: 0)
+        #expect(model.selectedStashIndex == 0)
+
+        repo.lock.withLock {
+            repo.stashes = [
+                StashEntry(index: 0, oid: oid(0x0D), message: "WIP on main: y"),
+                StashEntry(index: 1, oid: picked.oid, message: picked.message),
+            ]
+        }
+        await model.loadStashes()
+        #expect(model.selectedStashIndex == 1, "the pick stays on the commit, not the row")
+    }
+
+    @Test func theStashSelectionClearsWhenItsStashIsGone() async {
+        repo.lock.withLock {
+            repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
+        }
+        await model.loadStashes()
+        model.selectStash(at: 0)
+        repo.lock.withLock {
+            repo.stashes = [StashEntry(index: 0, oid: oid(0x0D), message: "WIP on main: y")]
+        }
+        await model.loadStashes()
+        #expect(model.selectedStashIndex == nil)
+
+        model.selectStash(at: 5)
+        #expect(model.selectedStashIndex == nil, "a row past the list picks nothing")
+        model.selectStash(at: 0)
+        model.selectStash(at: nil)
+        #expect(model.selectedStashIndex == nil)
+    }
+
+    @Test func aFailedStashReadShowsNoSelection() async {
+        repo.lock.withLock {
+            repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]
+        }
+        await model.loadStashes()
+        model.selectStash(at: 0)
+        repo.lock.withLock { repo.failNextStash = true }
+        await model.loadStashes()
+        #expect(model.selectedStashIndex == nil, "the view shows the error, not the list")
+    }
+
     @Test func aFailedStashListSurfacesThroughOnErrorAndKeepsTheLastList() async {
         repo.lock.withLock {
             repo.stashes = [StashEntry(index: 0, oid: oid(0x0C), message: "WIP on main: x")]

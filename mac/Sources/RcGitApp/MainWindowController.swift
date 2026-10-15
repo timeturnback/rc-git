@@ -1047,7 +1047,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         changes.onStashChanged = { [weak self] in
             guard let self, let changesModel else { return }
             changesController.renderStashes(
-                changesModel.stashes, state: changesModel.stashState)
+                changesModel.stashes, state: changesModel.stashState,
+                selectedIndex: changesModel.selectedStashIndex)
         }
         changes.onError = { [weak self] message in
             self?.presentError(message)
@@ -1073,6 +1074,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         changesController.onCommit = { [weak self] message in
             self?.performCommit(message)
+        }
+        changesController.onSelectStash = { [weak self] index in
+            self?.changesModel?.selectStash(at: index)
         }
         changesController.onStashPush = { [weak self] in
             self?.performStashPush()

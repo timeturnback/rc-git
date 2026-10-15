@@ -53,6 +53,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var onToggleHunk: ((String, HunkStamp, [HunkStamp]) -> Void)?
     var onCommit: ((String) -> Void)?
     var onStashPush: (() -> Void)?
+    /// The stash row the user picked, or `nil` when the pick was cleared.
+    var onSelectStash: ((Int?) -> Void)?
     var onStashApply: ((StashEntry) -> Void)?
     var onStashPop: ((StashEntry) -> Void)?
     var onStashDrop: ((StashEntry) -> Void)?
@@ -524,9 +526,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// Shows the stash list, or, when the last read failed, its error in place of a list that
-    /// is no longer current.
-    func renderStashes(_ stashes: [StashEntry], state: StashListState) {
-        let selected = selectedStash?.oid
+    /// is no longer current, with `selectedIndex` (the model's pick) selected.
+    func renderStashes(_ stashes: [StashEntry], state: StashListState, selectedIndex: Int?) {
         switch state {
         case .loaded:
             self.stashes = stashes
@@ -539,10 +540,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         isReloading = true
         stashTable.reloadData()
-        // Re-select by commit, not row: a push from elsewhere shifts every entry down a row.
-        let row = selected.flatMap { oid in self.stashes.firstIndex { $0.oid == oid } }
         stashTable.selectRowIndexes(
-            row.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
+            selectedIndex.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
         isReloading = false
         updateStashButtons()
         show(stashGroup, visible: !self.stashes.isEmpty || state != .loaded, width: &stashWidth)
@@ -952,6 +951,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isReloading, notification.object as? NSTableView === stashTable else { return }
+        let row = stashTable.selectedRow
+        onSelectStash?(row >= 0 ? row : nil)
         updateStashButtons()
     }
 }

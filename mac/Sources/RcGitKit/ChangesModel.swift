@@ -134,6 +134,9 @@ public final class ChangesModel {
     public private(set) var diffState: WorktreeDiffState = .idle
     public private(set) var stashes: [StashEntry] = []
     public private(set) var stashState: StashListState = .loaded
+    /// The stash the user picked, by commit rather than row: a push from elsewhere shifts
+    /// every entry down a row, and the pick must stay on the stash the user saw.
+    private var selectedStashOid: Oid?
     public private(set) var selectedPath: String?
     /// The commit `HEAD` pointed at when the list was loaded; `nil` on an unborn branch.
     /// Guarded commits pass it back so a moved `HEAD` is refused instead of raced.
@@ -419,6 +422,9 @@ public final class ChangesModel {
         switch result {
         case let .success(entries):
             stashes = entries
+            if let selectedStashOid, !entries.contains(where: { $0.oid == selectedStashOid }) {
+                self.selectedStashOid = nil
+            }
             stashState = .loaded
             reportedStashFailure = nil
         case let .failure(error):
@@ -429,6 +435,18 @@ public final class ChangesModel {
             }
         }
         onStashChanged?()
+    }
+
+    /// The row of the picked stash in `stashes`, or `nil` when none is picked or the last read
+    /// failed, since the view then shows the error in place of the list.
+    public var selectedStashIndex: Int? {
+        guard stashState == .loaded, let selectedStashOid else { return nil }
+        return stashes.firstIndex { $0.oid == selectedStashOid }
+    }
+
+    /// Picks the stash at `index` in `stashes`; `nil` or a row past the list clears the pick.
+    public func selectStash(at index: Int?) {
+        selectedStashOid = index.flatMap { stashes.indices.contains($0) ? stashes[$0].oid : nil }
     }
 
     /// Logs a failure, then shows it through `onError`.
