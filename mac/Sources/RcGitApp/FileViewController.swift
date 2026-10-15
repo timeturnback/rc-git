@@ -47,6 +47,9 @@ final class FileViewController: NSViewController {
 
     /// Bumped on every content change; every background build checks it before applying.
     private var contentGeneration = 0
+    /// The in-flight build of the text on screen, cancelled when the content moves on so a
+    /// preview of a file nobody is looking at stops before it styles every block.
+    private var contentBuild: Task<MarkdownRenderer.Rendered?, Never>?
     /// The file being shown, with the repository path its links resolve against, captured
     /// when it rendered so a later `repositoryPath` for the next file never applies to it.
     private var current: (entry: TreeEntry, document: TextDocument, path: String?)?
@@ -214,7 +217,7 @@ final class FileViewController: NSViewController {
         case let .loading(entry):
             // Drops an in-flight build for the previous file, and stops its picker and links
             // acting on the text still painted under the new name.
-            contentGeneration += 1
+            invalidateContent()
             current = nil
             modePicker.isHidden = true
             anchors = [:]
@@ -269,11 +272,19 @@ final class FileViewController: NSViewController {
 
     // MARK: Content
 
+    /// Drops every build in flight for the content on screen: bumps the generation so a result
+    /// that lands is ignored, and cancels the preview build so it stops early.
+    private func invalidateContent() {
+        contentGeneration += 1
+        contentBuild?.cancel()
+        contentBuild = nil
+    }
+
     /// Shows the current document in the chosen mode. The attributed string is built off the
     /// main actor; a stale build is dropped by generation.
     private func presentContent() {
         guard let (entry, document, path) = current else { return }
-        contentGeneration += 1
+        invalidateContent()
         let generation = contentGeneration
         linkSource = nil
         clearHighlights()
@@ -284,18 +295,22 @@ final class FileViewController: NSViewController {
         let preview = previewable && markdownPrefersPreview
         modePicker.selectedSegment = preview ? 0 : 1
         let text = document.text
+        let build = Task.detached(priority: .userInitiated) {
+            () -> MarkdownRenderer.Rendered? in
+            if preview { return MarkdownRenderer.render(text) }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: MarkdownRenderer.Theme.code,
+                .foregroundColor: NSColor.textColor,
+            ]
+            return MarkdownRenderer.Rendered(
+                text: NSAttributedString(string: text, attributes: attributes), anchors: [:])
+        }
+        contentBuild = build
         Task { [weak self] in
-            let built = await Task.detached(priority: .userInitiated) {
-                () -> MarkdownRenderer.Rendered in
-                if preview { return MarkdownRenderer.render(text) }
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: MarkdownRenderer.Theme.code,
-                    .foregroundColor: NSColor.textColor,
-                ]
-                return MarkdownRenderer.Rendered(
-                    text: NSAttributedString(string: text, attributes: attributes), anchors: [:])
-            }.value
-            guard let self, generation == self.contentGeneration else { return }
+            let result = await build.value
+            guard let self, generation == self.contentGeneration, let built = result else {
+                return
+            }
             self.anchors = built.anchors
             self.linkSource = LinkSource(path: path)
             self.show(built.text, asPreview: preview, document: document)
@@ -355,7 +370,7 @@ final class FileViewController: NSViewController {
     }
 
     private func showPlaceholder(_ message: String) {
-        contentGeneration += 1
+        invalidateContent()
         anchors = [:]
         linkSource = nil
         clearHighlights()

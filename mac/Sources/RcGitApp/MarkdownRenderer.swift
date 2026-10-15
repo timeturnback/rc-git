@@ -15,9 +15,13 @@ enum MarkdownRenderer {
         let anchors: [String: Int]
     }
 
-    static func render(_ markdown: String) -> Rendered {
+    /// Parses and styles `markdown`, or returns `nil` when the calling task is cancelled
+    /// between the two: the file pane cancels a build for a file it has moved on from.
+    static func render(_ markdown: String) -> Rendered? {
+        let document = MarkdownDocument.parse(markdown)
+        if Task.isCancelled { return nil }
         var builder = MarkdownBuilder()
-        builder.append(MarkdownDocument.parse(markdown))
+        builder.append(document)
         return builder.finish(fallback: markdown)
     }
 

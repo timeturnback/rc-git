@@ -56,7 +56,7 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
             html
             </div>
             """
-        let text = MarkdownRenderer.render(source).text
+        let text = try #require(MarkdownRenderer.render(source)).text
         let lines = fragments(of: text, width: 600)
         try #require(lines.count >= 6)
         for (width, line) in lines {
@@ -64,9 +64,9 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
         }
     }
 
-    @Test func sourceThatRendersNothingComesBackUnchanged() {
+    @Test func sourceThatRendersNothingComesBackUnchanged() throws {
         let source = "   \n\n  \n"
-        let rendered = MarkdownRenderer.render(source)
+        let rendered = try #require(MarkdownRenderer.render(source))
         #expect(rendered.text.string == source)
         #expect(rendered.anchors.isEmpty)
     }
@@ -75,7 +75,7 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
         let line = "let value = \"text\" // comment\n"
         let count = MarkdownRenderer.Theme.highlightLimit / line.utf8.count + 1
         let body = String(repeating: line, count: count)
-        let text = MarkdownRenderer.render("```swift\n" + body + "```\n").text
+        let text = try #require(MarkdownRenderer.render("```swift\n" + body + "```\n")).text
         let range = (text.string as NSString).range(of: body)
         try #require(range.location != NSNotFound)
         let colors = foregroundColors(in: text, range: range)
@@ -85,7 +85,7 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
 
     @Test func aCodeBlockUnderTheHighlightLimitIsColored() throws {
         let body = "let value = \"text\" // comment\n"
-        let text = MarkdownRenderer.render("```swift\n" + body + "```\n").text
+        let text = try #require(MarkdownRenderer.render("```swift\n" + body + "```\n")).text
         let range = (text.string as NSString).range(of: body)
         try #require(range.location != NSNotFound)
         let colors = foregroundColors(in: text, range: range)
@@ -93,7 +93,7 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
     }
 
     @Test func aFootnoteMarkerLinksToItsDefinition() throws {
-        let rendered = MarkdownRenderer.render("See[^Note].\n\n[^Note]: text\n")
+        let rendered = try #require(MarkdownRenderer.render("See[^Note].\n\n[^Note]: text\n"))
         var destination: String?
         rendered.text.enumerateAttribute(
             .link, in: NSRange(location: 0, length: rendered.text.length)
@@ -107,8 +107,9 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
     }
 
     @Test func eachRunGetsTheFontItsStyleAsksFor() throws {
-        let rendered = MarkdownRenderer.render(
-            "plain *it* **bo** ***both*** `code` **`bc`** **again** x[^n]\n\n[^n]: t\n")
+        let rendered = try #require(
+            MarkdownRenderer.render(
+                "plain *it* **bo** ***both*** `code` **`bc`** **again** x[^n]\n\n[^n]: t\n"))
         let text = rendered.text
         let string = text.string as NSString
         func font(of needle: String) throws -> NSFont {
@@ -137,11 +138,22 @@ private func foregroundColors(in text: NSAttributedString, range: NSRange) -> [N
     }
 
     @Test func repeatedHeadingsGetDistinctAnchors() throws {
-        let rendered = MarkdownRenderer.render("## Fixed\n\none\n\n## Fixed\n")
+        let rendered = try #require(MarkdownRenderer.render("## Fixed\n\none\n\n## Fixed\n"))
         let first = try #require(rendered.anchors["fixed"])
         let second = try #require(rendered.anchors["fixed-1"])
         let string = rendered.text.string as NSString
         #expect(first == 0)
         #expect(second == string.range(of: "Fixed", options: .backwards).location)
+    }
+
+    @Test func aCancelledRenderReturnsNil() async {
+        let source = "# Title\n\nbody\n"
+        let cancelled = Task.detached { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return MarkdownRenderer.render(source) == nil
+        }
+        let live = Task.detached { MarkdownRenderer.render(source) == nil }
+        #expect(await cancelled.value)
+        #expect(await !live.value)
     }
 }
