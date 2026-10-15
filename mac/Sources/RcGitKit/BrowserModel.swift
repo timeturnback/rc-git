@@ -168,7 +168,9 @@ public final class BrowserModel {
     public var onLocationChanged: (() -> Void)?
 
     private var rootGeneration = 0
-    private var fileGeneration = 0
+    private var fileGeneration = 0 {
+        didSet { cancelRunningHighlights() }
+    }
     private var refreshGeneration = 0
     private var historyGeneration = 0
     private var diffGeneration = 0
@@ -255,6 +257,9 @@ public final class BrowserModel {
     /// Least recently used first.
     private var highlightCacheOrder: [HighlightKey] = []
     private var highlightCacheSpanCount = 0
+    /// The cancel tokens of highlights still parsing, signalled when the open file changes so
+    /// a 2 MiB parse stops instead of running to the end for a file nobody is looking at.
+    private var runningHighlights: [ObjectIdentifier: CancelToken] = [:]
     /// Import links, per blob and file extension. They live and die with the entry's highlight
     /// spans, so the bounds above cover them too and they need no bookkeeping of their own.
     private var importLinkCache: [HighlightKey: [ImportLink]] = [:]
@@ -1557,13 +1562,26 @@ public final class BrowserModel {
         }
         let name = entry.name
         let text = document.text
+        let cancel = CancelToken()
+        let id = ObjectIdentifier(cancel)
+        runningHighlights[id] = cancel
         let spans = await Task.detached(priority: .utility) {
-            Highlighter.highlight(name: name, data: Array(text.utf8))
+            Highlighter.highlight(name: name, data: Array(text.utf8), cancel: cancel)
         }.value
+        runningHighlights.removeValue(forKey: id)
         if cacheable, let spans {
             storeHighlights(spans, for: key)
         }
-        return spans
+        // Another file opened meanwhile: a parse that finished first is cached, not shown.
+        return cancel.isSignalled ? nil : spans
+    }
+
+    /// Asks every highlight still parsing to stop; the open file they were for is gone.
+    private func cancelRunningHighlights() {
+        for cancel in runningHighlights.values {
+            cancel.signal()
+        }
+        runningHighlights.removeAll()
     }
 
     /// Inserts one entry and evicts from the least recently used end until both caps hold.

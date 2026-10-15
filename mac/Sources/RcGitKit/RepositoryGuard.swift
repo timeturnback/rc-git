@@ -510,9 +510,9 @@ extension Credentials: CustomStringConvertible, CustomDebugStringConvertible, Cu
     }
 }
 
-/// A flag the app raises to stop a fetch or a push that is already running. The guard
-/// polls it between steps and inside the ssh transport's reads, so a cancel lands
-/// within a fraction of a second instead of waiting for a dead connection to notice.
+/// A flag the app raises to stop a fetch, a push or a highlight already running. The core
+/// polls it between steps, inside the ssh transport's reads and while a parse runs, so a
+/// cancel lands within a fraction of a second instead of waiting for the work to end.
 ///
 /// One token belongs to one operation. Hold it until that operation returns: the Rust
 /// side borrows it for the whole call, and `deinit` frees it.
@@ -549,7 +549,7 @@ public final class CancelToken: @unchecked Sendable {
 
 extension Optional where Wrapped == CancelToken {
     /// The C flag, or NULL when the caller passed none.
-    fileprivate var pointer: OpaquePointer? { self?.handle }
+    var pointer: OpaquePointer? { self?.handle }
 }
 
 /// A commit or stash refused because it has no author identity: the repository's own config

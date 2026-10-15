@@ -65,12 +65,20 @@ public enum Highlighter {
 
     /// Highlights `data` as the language the file name `name` implies. `nil` when the name
     /// maps to no known language or the parse fails; the caller shows plain text. A file named
-    /// like a fence label, such as `rust`, stays plain.
-    public static func highlight(name: String, data: [UInt8]) -> [HighlightSpan]? {
+    /// like a fence label, such as `rust`, stays plain. Signalling `cancel` from another thread
+    /// stops the parse and answers `nil`; a cancel is not logged as a failure.
+    public static func highlight(
+        name: String, data: [UInt8], cancel: CancelToken? = nil
+    ) -> [HighlightSpan]? {
         guard data.count <= byteLimit else { return nil }
         var error: UnsafeMutablePointer<CChar>? = nil
         let list = data.withUnsafeBufferPointer { buffer in
-            rcgit_highlight(name, buffer.baseAddress, buffer.count, nil, &error)
+            rcgit_highlight(name, buffer.baseAddress, buffer.count, cancel.pointer, &error)
+        }
+        if let cancel, cancel.isSignalled, let unlogged = error {
+            // The parse stopped because it was asked to: nothing failed worth logging.
+            rcgit_string_free(unlogged)
+            error = nil
         }
         return spans(from: list, error: error)
     }

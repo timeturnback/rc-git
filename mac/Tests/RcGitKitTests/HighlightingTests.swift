@@ -25,6 +25,33 @@ import Testing
         #expect(Highlighter.highlight(fence: "mermaid", data: data) == nil)
     }
 
+    @Test func aSignalledCancelStopsTheParse() {
+        let data = Array("fn main() {}\n".utf8)
+        let cancel = CancelToken()
+        cancel.signal()
+        #expect(Highlighter.highlight(name: "main.rs", data: data, cancel: cancel) == nil)
+        #expect(Highlighter.highlight(name: "main.rs", data: data, cancel: CancelToken()) != nil)
+    }
+
+    @Test func aCancelStopsTheParseWellBeforeItWouldEnd() async throws {
+        let bytes = slowRust
+        let clock = ContinuousClock()
+        let full = clock.measure { _ = Highlighter.highlight(name: "big.rs", data: bytes) }
+        try #require(full >= .seconds(1), "a full parse is the slow side of the race: \(full)")
+
+        let cancel = CancelToken()
+        let pending = Task.detached {
+            (Highlighter.highlight(name: "big.rs", data: bytes, cancel: cancel), clock.now)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let signalled = clock.now
+        cancel.signal()
+        let (spans, finished) = await pending.value
+        let elapsed = signalled.duration(to: finished)
+        #expect(spans == nil)
+        #expect(elapsed < full / 2, "stopped after \(elapsed); a full parse took \(full)")
+    }
+
     @Test func aFailureMessageIsLoggedOnce() {
         let message = "highlighting test-\(UUID()): the grammar failed to load: query"
         #expect(HighlightFailureLog.isFirst(message))
@@ -200,6 +227,22 @@ import Testing
         #expect(first != second, "two disk files must not share one cache slot")
     }
 
+    @Test func aSupersededHighlightReturnsNilAndCachesNothing() async throws {
+        let model = BrowserModel()
+        await model.attach(FakeRepository())
+        let entry = TreeEntry(name: "big.rs", oid: oid(0x61), kind: .blob)
+        let big = TextDocument(bytes: slowRust, lineStarts: [0], validUTF8: true)
+        let pending = Task { await model.highlights(for: entry, document: big) }
+        try await Task.sleep(for: .milliseconds(100))
+        await model.openFile(TreeEntry(name: "next.rs", oid: oid(0x62), kind: .blob))
+        #expect(await pending.value == nil, "the file it was for is no longer open")
+        // A parse that ran to the end would have been cached under the blob id.
+        #expect(
+            await model.highlights(for: entry, document: plainA)
+                == Highlighter.highlight(name: entry.name, data: Array(plainA.text.utf8)),
+            "the stopped parse left nothing in the cache")
+    }
+
     private let plainA = TextDocument(
         bytes: Array("fn main() {}\n".utf8), lineStarts: [0], validUTF8: true)
     private let plainB = TextDocument(
@@ -216,3 +259,11 @@ import Testing
         TreeEntry(name: "f\(seed).rs", oid: oid(UInt8(seed)), kind: .blob)
     }
 }
+
+/// Rust just under `Highlighter.byteLimit` with a token every byte or two: one statement after
+/// another in one body, so a full parse takes long enough to cancel partway.
+let slowRust: [UInt8] = {
+    let statement = "a=(b+c)*d;"
+    let count = (Highlighter.byteLimit - 10) / statement.utf8.count
+    return Array("fn f(){\(String(repeating: statement, count: count))}\n".utf8)
+}()
