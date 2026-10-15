@@ -9,7 +9,7 @@ import Testing
     private func commit(_ title: String) -> CommitSummary {
         CommitSummary(
             oid: other, parents: [], authorName: "A", authorEmail: "a@example.com",
-            authorTime: 0, authorOffset: 0, title: title)
+            authorTime: 0, authorOffset: 0, committerTime: 0, title: title)
     }
 
     // MARK: Files

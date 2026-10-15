@@ -145,6 +145,7 @@ import Testing
         #expect(commits[0].parents == [commits[1].oid])
         #expect(commits[1].authorName == "Test Author")
         #expect(commits[1].authorTime == 1_704_067_200)
+        #expect(commits[1].committerTime == 1_704_067_200)
         #expect(try repo.commit(commits[1].oid) == commits[1])
         let cursor = try repo.logCursor(tip: tip)
         #expect(try cursor.next(limit: 1).map(\.title) == ["Add docs and library"])

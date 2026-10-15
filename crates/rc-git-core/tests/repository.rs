@@ -1354,6 +1354,7 @@ fn offsets_are_seconds_east_of_utc_and_kept_apart() {
         (1_704_418_200, -5_400)
     );
     assert_ne!(summary.author_time, detail.committer_time);
+    assert_eq!(summary.committer_time, detail.committer_time);
 
     // gix reads a malformed offset as UTC and keeps the seconds.
     let repo = raw_signature_commit(&fx, "short-offset", "1704412800 +07");
@@ -1368,12 +1369,14 @@ fn offsets_are_seconds_east_of_utc_and_kept_apart() {
         (detail.committer_time, detail.committer_offset),
         (1_704_412_800, 0)
     );
+    assert_eq!(summary.committer_time, 1_704_412_800);
 
     // A time with no leading digits cannot be parsed at all: the fallback reports epoch and UTC.
     let repo = raw_signature_commit(&fx, "no-seconds", "- +0700");
     let unparsable = repo.resolve("no-seconds").unwrap();
     let summary = repo.commit(unparsable).unwrap();
     assert_eq!((summary.author_time, summary.author_offset), (0, 0));
+    assert_eq!(summary.committer_time, 0);
     let detail = repo.commit_details(unparsable).unwrap();
     assert_eq!((detail.committer_time, detail.committer_offset), (0, 0));
 }

@@ -347,6 +347,8 @@ typedef struct RcGitCommit {
   int64_t author_time;
   /// Author timezone, seconds east of UTC.
   int32_t author_offset;
+  /// Committer time, seconds since the Unix epoch: the time a date filter compares.
+  int64_t committer_time;
   /// First paragraph of the message.
   char *title;
 } RcGitCommit;

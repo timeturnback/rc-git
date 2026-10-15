@@ -570,6 +570,7 @@ extension CommitSummary {
             authorEmail: String(cString: c.author_email),
             authorTime: c.author_time,
             authorOffset: c.author_offset,
+            committerTime: c.committer_time,
             title: String(cString: c.title)
         )
     }

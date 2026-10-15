@@ -79,7 +79,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let sincePicker = NSDatePicker()
     private let untilCheck = NSButton()
     private let untilPicker = NSDatePicker()
-    private var searchActive = false
+    /// The model's search filter; non-nil while a search is active.
+    private var searchFilter: CommitFilter?
+    private var searchActive: Bool { searchFilter != nil }
     private var searchResults: [CommitSummary] = []
     private var searchComplete = false
     private var searchFailed = false
@@ -439,13 +441,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         fieldRow.alignment = .centerY
         fieldRow.spacing = 6
 
-        // The filter compares committer time, as `git log --since/--until` does, while the
-        // Date column shows author time, so the labels name the date they filter on.
+        // The filter compares committer time, as `git log --since/--until` does, so the labels
+        // name the date they filter on and the Date column shows it while a date bound is set.
         for (check, title) in [(sinceCheck, "Committed since"), (untilCheck, "Committed until")] {
             check.title = title
             check.toolTip =
-                "Filters on the commit date. The Date column shows the author date, which "
-                + "differs for rebased or cherry-picked commits."
+                "Filters on the commit date. While a date bound is set, the Date column shows "
+                + "the commit date too; otherwise it shows the author date."
             check.setButtonType(.switch)
             check.target = self
             check.action = #selector(searchOptionsChanged(_:))
@@ -491,11 +493,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     /// A non-nil `error` means the search stopped on a failure: the count gives way to the
     /// message, and no further page is asked for.
     func renderSearch(
-        active: Bool, results: [CommitSummary], scanned: Int, complete: Bool, searching: Bool,
-        error: String?
+        filter: CommitFilter?, results: [CommitSummary], scanned: Int, complete: Bool,
+        searching: Bool, error: String?
     ) {
         let wasActive = searchActive
-        searchActive = active
+        searchFilter = filter
+        let active = searchActive
         searchResults = results
         searchComplete = complete
         searchFailed = error != nil
@@ -1170,7 +1173,8 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.textField?.attributedStringValue = CellText.make(commit.authorName)
             cell.toolTip = "\(commit.authorName) <\(commit.authorEmail)>"
         default:
-            let date = Date(timeIntervalSince1970: TimeInterval(commit.authorTime))
+            let time = commit.listedTime(filter: searchFilter)
+            let date = Date(timeIntervalSince1970: TimeInterval(time))
             cell.textField?.attributedStringValue = CellText.make(
                 Self.dateFormatter.string(from: date))
         }

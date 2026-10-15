@@ -24,6 +24,8 @@ pub struct CommitSummary {
     pub author_time: i64,
     /// Author timezone, seconds east of UTC.
     pub author_offset: i32,
+    /// Committer time, seconds since the Unix epoch: the time a date filter compares.
+    pub committer_time: i64,
     /// First paragraph of the message folded onto one line, as git's `%s`.
     pub title: String,
 }
@@ -201,6 +203,13 @@ pub(crate) fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {
         Ok(time) => (time.seconds, time.offset),
         Err(_) => (author.seconds(), 0),
     };
+    let committer = decoded
+        .committer()
+        .map_err(object("decode committer", oid))?;
+    let committer_time = match committer.time() {
+        Ok(time) => time.seconds,
+        Err(_) => committer.seconds(),
+    };
     let mut parents = Vec::new();
     for parent in decoded.parents() {
         parents.push(Oid::from_gix(parent));
@@ -212,6 +221,7 @@ pub(crate) fn summarize(commit: &gix::Commit<'_>) -> Result<CommitSummary> {
         author_email: author.email.to_str_lossy().into_owned(),
         author_time,
         author_offset,
+        committer_time,
         title: decoded.message().summary().to_str_lossy().into_owned(),
     })
 }

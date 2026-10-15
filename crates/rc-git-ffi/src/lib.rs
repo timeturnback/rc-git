@@ -381,6 +381,8 @@ pub struct RcGitCommit {
     pub author_time: i64,
     /// Author timezone, seconds east of UTC.
     pub author_offset: i32,
+    /// Committer time, seconds since the Unix epoch: the time a date filter compares.
+    pub committer_time: i64,
     /// First paragraph of the message.
     pub title: *mut c_char,
 }
@@ -400,6 +402,7 @@ impl RcGitCommit {
             author_email: export_string(commit.author_email),
             author_time: commit.author_time,
             author_offset: commit.author_offset,
+            committer_time: commit.committer_time,
             title: export_string(commit.title),
         }
     }
@@ -5442,6 +5445,40 @@ mod tests {
             take_error(&mut error),
             "rcgit_history_walk_new: tip is NULL"
         );
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn commit_summary_carries_committer_time() {
+        let fx = Fixture::standard();
+        fx.git_with_env(
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "rebased",
+                "--date",
+                "2024-01-05T00:00:00+0000",
+            ],
+            &[("GIT_COMMITTER_DATE", "2024-01-07T00:00:00+0000")],
+        );
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let tip = resolve(repo, "main");
+        let list = log_page(repo, &tip, 0, 1, &mut error);
+        assert!(!list.is_null(), "{}", take_error(&mut error));
+        let list_ref = unsafe { &*list };
+        let commits = unsafe { std::slice::from_raw_parts(list_ref.commits, list_ref.len) };
+        assert_eq!(commits[0].author_time, 1_704_412_800);
+        assert_eq!(commits[0].committer_time, 1_704_585_600);
+        unsafe { rcgit_commit_list_free(list) };
+
+        let commit = unsafe { rcgit_commit(repo, &raw const tip, &raw mut error) };
+        assert!(!commit.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { &*commit }.committer_time, 1_704_585_600);
+        unsafe { rcgit_commit_free(commit) };
+        assert!(error.is_null());
         unsafe { rcgit_repo_free(repo) };
     }
 

@@ -917,7 +917,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func renderSearch() {
         historyController.renderGraph(model.graphRows, maxLanes: model.graphMaxLaneCount)
         historyController.renderSearch(
-            active: model.searchFilter != nil, results: model.searchResults,
+            filter: model.searchFilter, results: model.searchResults,
             scanned: model.searchScanned, complete: model.searchComplete,
             searching: model.isSearching, error: model.searchError)
         if let commit = model.diffCommit {

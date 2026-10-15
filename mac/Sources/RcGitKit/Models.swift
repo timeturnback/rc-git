@@ -194,11 +194,13 @@ public struct CommitSummary: Sendable, Hashable {
     public let authorTime: Int64
     /// Seconds east of UTC.
     public let authorOffset: Int32
+    /// Seconds since the Unix epoch: the time a date filter compares.
+    public let committerTime: Int64
     public let title: String
 
     public init(
         oid: Oid, parents: [Oid], authorName: String, authorEmail: String,
-        authorTime: Int64, authorOffset: Int32, title: String
+        authorTime: Int64, authorOffset: Int32, committerTime: Int64, title: String
     ) {
         self.oid = oid
         self.parents = parents
@@ -206,7 +208,16 @@ public struct CommitSummary: Sendable, Hashable {
         self.authorEmail = authorEmail
         self.authorTime = authorTime
         self.authorOffset = authorOffset
+        self.committerTime = committerTime
         self.title = title
+    }
+
+    /// The time the History Date column shows under `filter`: committer time while the filter
+    /// bounds dates, since that is the time it compares, and author time otherwise. Showing
+    /// author time there would place a rebased commit outside the range it matched.
+    public func listedTime(filter: CommitFilter?) -> Int64 {
+        guard let filter, filter.after != nil || filter.before != nil else { return authorTime }
+        return committerTime
     }
 }
 
@@ -218,8 +229,8 @@ public struct CommitFilter: Sendable, Hashable {
     public var author: String?
     /// Only commits whose committer time is at or after this time, seconds since the Unix
     /// epoch, as `git log --since` compares. Also stops the walk at the first commit committed
-    /// before it, so clock skew can hide newer ancestors. Committer time can differ from the
-    /// author time a `CommitSummary` carries.
+    /// before it, so clock skew can hide newer ancestors. Committer time can differ from author
+    /// time; `CommitSummary.listedTime` picks which one a list shows.
     public var after: Int64?
     /// Only commits whose committer time is at or before this time, seconds since the Unix
     /// epoch, as `git log --until` compares.

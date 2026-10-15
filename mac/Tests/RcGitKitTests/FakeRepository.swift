@@ -434,7 +434,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
 func commitSummary(_ id: Oid, parents: [Oid] = [], title: String = "change") -> CommitSummary {
     CommitSummary(
         oid: id, parents: parents, authorName: "Test Author", authorEmail: "author@example.com",
-        authorTime: 1_704_067_200, authorOffset: 0, title: title)
+        authorTime: 1_704_067_200, authorOffset: 0, committerTime: 1_704_067_200, title: title)
 }
 
 func branch(_ name: String, at target: Oid, kind: RefKind = .localBranch) -> RefEntry {
