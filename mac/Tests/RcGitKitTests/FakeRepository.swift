@@ -187,7 +187,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let content else {
-            throw RepositoryError("read blob: object \(oid) is missing or unreadable")
+            throw RepositoryError("read blob header: object \(oid): missing")
         }
         if case let .text(data, _, _) = content, UInt64(data.count) > limit {
             return .tooLarge(size: UInt64(data.count), limit: limit)
@@ -212,7 +212,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let list else {
-            throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
+            throw RepositoryError("read object header: object \(tip): missing")
         }
         return Array(list.dropFirst(skip).prefix(limit))
     }
@@ -226,7 +226,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         }
         gate?.pass()
         guard let found else {
-            throw RepositoryError("read commit: object \(oid) is missing or unreadable")
+            throw RepositoryError("read commit: object \(oid): missing")
         }
         return found
     }
@@ -252,10 +252,10 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if let failFrom, scanSkip >= failFrom {
-            throw RepositoryError("read commit: object \(tip) is missing or unreadable")
+            throw RepositoryError("read commit: object \(tip): missing")
         }
         guard let found else {
-            throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
+            throw RepositoryError("read object header: object \(tip): missing")
         }
         let slice = found.dropFirst(scanSkip).prefix(min(limit, maxScan, cap ?? Int.max))
         return CommitPage(
@@ -283,7 +283,7 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let found else {
-            throw RepositoryError("start commit walk: object \(tip) is missing or unreadable")
+            throw RepositoryError("read object header: object \(tip): missing")
         }
         let slice = found.dropFirst(scanSkip).prefix(maxScan)
         var matched: [CommitSummary] = []
@@ -322,7 +322,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             return blobDiffs[key]
         }
         guard let found else {
-            throw RepositoryError("read blob: a diff side is missing or unreadable")
+            let side = (old ?? new).map { "\($0)" } ?? "none"
+            throw RepositoryError("read blob header: object \(side): missing")
         }
         return found
     }

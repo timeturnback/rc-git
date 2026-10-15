@@ -344,7 +344,7 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         var reported: String?
         model.onError = { reported = $0 }
         await model.showPathHistory("unknown")
-        #expect(reported?.contains("start commit walk") == true)
+        #expect(reported?.contains("read object header") == true)
     }
 
     @Test func pathScopeFailureKeepsShownCommitsAndStopsPaging() async {
@@ -393,7 +393,7 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         var reported: String?
         model.onError = { reported = $0 }
         await model.loadMoreHistory()
-        #expect(reported?.contains("start commit walk") == true)
+        #expect(reported?.contains("read object header") == true)
         #expect(!model.isLoadingHistory)
     }
 
@@ -408,7 +408,7 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
         await model.loadMoreHistory()
         #expect(repo.lock.withLock { repo.logCalls } == 1, "a scroll does not re-walk")
         #expect(reports == 1, "one alert, not one per scroll")
-        #expect(model.historyError?.contains("start commit walk") == true)
+        #expect(model.historyError?.contains("read object header") == true)
         #expect(!model.historyComplete)
         #expect(events >= 1, "the failure renders")
 
@@ -431,7 +431,7 @@ private func listedRef(in model: BrowserModel, named name: String) throws -> Ref
             if model.searchError != nil { failedOnRender = true }
         }
         await model.search(CommitFilter(message: "x"))
-        #expect(reported?.contains("start commit walk") == true)
+        #expect(reported?.contains("read object header") == true)
         #expect(!model.isSearching)
         #expect(!model.searchComplete)
         #expect(failedOnRender, "onSearchChanged fired after the failure")
