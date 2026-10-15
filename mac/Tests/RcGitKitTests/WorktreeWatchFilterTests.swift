@@ -9,54 +9,79 @@ import Testing
     @Test func fileEditsInsideTheWorktreeAreRelevant() {
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/repo/src/main.rs", workDir: workDir, gitDir: gitDir))
-        #expect(WorktreeWatchFilter.isRelevant("/repo/new.txt", workDir: workDir, gitDir: gitDir))
-        #expect(WorktreeWatchFilter.isRelevant("/repo", workDir: workDir, gitDir: gitDir))
+                "/repo/src/main.rs", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
+        #expect(
+            WorktreeWatchFilter.isRelevant(
+                "/repo/new.txt", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
+        #expect(
+            WorktreeWatchFilter.isRelevant(
+                "/repo", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
     }
 
     @Test func everythingUnderGitDirIsDropped() {
         #expect(
             !WorktreeWatchFilter.isRelevant(
-                "/repo/.git/index", workDir: workDir, gitDir: gitDir))
+                "/repo/.git/index", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
         #expect(
             !WorktreeWatchFilter.isRelevant(
-                "/repo/.git/refs/heads/main", workDir: workDir, gitDir: gitDir))
-        #expect(!WorktreeWatchFilter.isRelevant("/repo/.git", workDir: workDir, gitDir: gitDir))
+                "/repo/.git/refs/heads/main", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
+        #expect(
+            !WorktreeWatchFilter.isRelevant(
+                "/repo/.git", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
     }
 
     @Test func anExcludeFileEditIsRelevant() {
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/repo/.git/info/exclude", workDir: workDir, gitDir: gitDir))
+                "/repo/.git/info/exclude", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
         #expect(
             !WorktreeWatchFilter.isRelevant(
-                "/repo/.git/info/attributes", workDir: workDir, gitDir: gitDir))
+                "/repo/.git/info/attributes", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
+    }
+
+    @Test func aLinkedWorktreeReadsTheCommonDirExcludeFile() {
+        let linked = "/elsewhere/linked"
+        let common = "/repo/.git"
+        let own = common + "/worktrees/linked"
+        func relevant(_ path: String) -> Bool {
+            WorktreeWatchFilter.isRelevant(path, workDir: linked, gitDir: own, commonDir: common)
+        }
+        #expect(relevant("/repo/.git/info/exclude"), "outside the worktree, but its rules apply")
+        #expect(relevant("/elsewhere/linked/a.txt"))
+        #expect(!relevant("/repo/.git/worktrees/linked/info/exclude"), "git never reads it")
+        #expect(!relevant("/repo/.git/info/attributes"))
+        #expect(!relevant("/repo/.git/index"))
+        #expect(!relevant("/repo/a.txt"), "the main worktree's files are not this list")
     }
 
     @Test func aDotGitPrefixedSiblingIsNotTheGitDir() {
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/repo/.github/workflows/ci.yml", workDir: workDir, gitDir: gitDir))
+                "/repo/.github/workflows/ci.yml", workDir: workDir, gitDir: gitDir,
+                commonDir: gitDir))
     }
 
     @Test func pathsOutsideTheWorktreeAreDropped() {
         #expect(
-            !WorktreeWatchFilter.isRelevant("/elsewhere/file", workDir: workDir, gitDir: gitDir))
+            !WorktreeWatchFilter.isRelevant(
+                "/elsewhere/file", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/repo/file", workDir: workDir + "/", gitDir: gitDir),
+                "/repo/file", workDir: workDir + "/", gitDir: gitDir, commonDir: gitDir),
             "a trailing slash on the configured root is normalized")
     }
 
     @Test func aSiblingSharingTheWorkDirPrefixIsDropped() {
-        #expect(!WorktreeWatchFilter.isRelevant("/repo2/x", workDir: workDir, gitDir: gitDir))
+        #expect(
+            !WorktreeWatchFilter.isRelevant(
+                "/repo2/x", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
     }
 
     @Test func writesBelowAPrunedIgnoredFolderAreDropped() {
         let ignored: Set<String> = ["target", "tools/build"]
         func relevant(_ path: String) -> Bool {
             WorktreeWatchFilter.isRelevant(
-                path, workDir: workDir, gitDir: gitDir, ignoredRoots: ignored)
+                path, workDir: workDir, gitDir: gitDir, commonDir: gitDir, ignoredRoots: ignored)
         }
         #expect(!relevant("/repo/target/debug/x.o"))
         #expect(!relevant("/repo/target/x"))
@@ -72,16 +97,18 @@ import Testing
     @Test func noIgnoredFoldersKeepsEveryWorktreeWrite() {
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/repo/target/debug/x.o", workDir: workDir, gitDir: gitDir))
+                "/repo/target/debug/x.o", workDir: workDir, gitDir: gitDir, commonDir: gitDir))
     }
 
     @Test func realpathEventsMatchACanonicalRoot() {
         let root = "/private/tmp/r"
         #expect(
             WorktreeWatchFilter.isRelevant(
-                "/private/tmp/r/a.txt", workDir: root, gitDir: root + "/.git"))
+                "/private/tmp/r/a.txt", workDir: root, gitDir: root + "/.git",
+                commonDir: root + "/.git"))
         #expect(
             !WorktreeWatchFilter.isRelevant(
-                "/private/tmp/r/.git/index", workDir: root, gitDir: root + "/.git"))
+                "/private/tmp/r/.git/index", workDir: root, gitDir: root + "/.git",
+                commonDir: root + "/.git"))
     }
 }

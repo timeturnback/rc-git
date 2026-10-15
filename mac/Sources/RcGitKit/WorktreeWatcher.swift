@@ -2,23 +2,28 @@ import CoreServices
 import Foundation
 
 /// Decides which filesystem events under the working directory mean the change list may be
-/// stale. Everything inside `.git` is dropped except `info/exclude`, whose patterns decide which
-/// untracked files the status walk reports: the ref watcher owns the rest of that side, and
-/// object or index churn never changes what the working tree looks like. Events strictly
+/// stale. Everything inside `.git` is dropped except the common dir's `info/exclude`, whose
+/// patterns decide which untracked files the status walk reports: the ref watcher owns the rest
+/// of that side, and object or index churn never changes what the working tree looks like. In a
+/// linked worktree that file lies outside the working directory, under the shared common dir,
+/// and still counts. Events strictly
 /// below a directory the last scan pruned as ignored (`StatusReport.ignoredDirs`) are dropped
 /// too: the walk never opens it, so a build writing into `target/` cannot change the list. The
 /// directory's own path stays relevant, since a file replacing it may not be ignored. Pure, so
 /// the filter is testable without FSEvents.
 public enum WorktreeWatchFilter {
-    /// Whether an event at `path` can change the outcome of `worktreeStatus`. `ignoredRoots`
-    /// holds repository-relative directories the last status walk pruned unopened.
+    /// Whether an event at `path` can change the outcome of `worktreeStatus`. `commonDir` is
+    /// the git directory every worktree shares (`gitDir` itself outside a linked worktree);
+    /// its `info/exclude` is the one the status walk reads. `ignoredRoots` holds
+    /// repository-relative directories the last status walk pruned unopened.
     public static func isRelevant(
-        _ path: String, workDir: String, gitDir: String, ignoredRoots: Set<String> = []
+        _ path: String, workDir: String, gitDir: String, commonDir: String,
+        ignoredRoots: Set<String> = []
     ) -> Bool {
+        if path == excludeFile(commonDir: commonDir) { return true }
         let root = normalized(workDir)
         guard path == root || path.hasPrefix(root + "/") else { return false }
         let git = normalized(gitDir)
-        if path == git + "/info/exclude" { return true }
         if path == git || path.hasPrefix(git + "/") { return false }
         return !isBelowIgnoredRoot(String(path.dropFirst(root.count + 1)), ignoredRoots)
     }
@@ -35,6 +40,11 @@ public enum WorktreeWatchFilter {
         return false
     }
 
+    /// The repository's own exclude file, shared by every worktree.
+    static func excludeFile(commonDir: String) -> String {
+        normalized(commonDir) + "/info/exclude"
+    }
+
     private static func normalized(_ dir: String) -> String {
         dir.hasSuffix("/") ? String(dir.dropLast()) : dir
     }
@@ -46,7 +56,10 @@ public enum WorktreeWatchFilter {
 /// save refreshes immediately), then the rest after the latency window, possibly in more than
 /// one chunk. Consumers must coalesce, as `ChangesModel.loadStatus` does.
 ///
-/// FSEvents reports canonical realpaths, so both directories are resolved with `realpath(3)`
+/// The stream is rooted at the working directory and, when the common dir lies outside it (a
+/// linked worktree), also at the common dir's `info` folder, so an exclude edit there is seen.
+///
+/// FSEvents reports canonical realpaths, so every directory is resolved with `realpath(3)`
 /// once at init; resolving only the working directory would let every `.git` write past the
 /// exclusion.
 ///
@@ -54,6 +67,7 @@ public enum WorktreeWatchFilter {
 public final class WorktreeWatcher: @unchecked Sendable {
     private let workDir: String
     private let gitDir: String
+    private let commonDir: String
     private let latency: TimeInterval
     private let onChange: @Sendable () -> Void
     private let queue = DispatchQueue(label: "rc-git.worktree-watcher")
@@ -62,11 +76,12 @@ public final class WorktreeWatcher: @unchecked Sendable {
     private var ignoredRoots: Set<String> = []
 
     public init(
-        workDir: String, gitDir: String, latency: TimeInterval = 0.5,
+        workDir: String, gitDir: String, commonDir: String, latency: TimeInterval = 0.5,
         onChange: @escaping @Sendable () -> Void
     ) {
         self.workDir = Self.canonical(workDir)
         self.gitDir = Self.canonical(gitDir)
+        self.commonDir = Self.canonical(commonDir)
         self.latency = latency
         self.onChange = onChange
     }
@@ -97,6 +112,14 @@ public final class WorktreeWatcher: @unchecked Sendable {
         return ["objects", "refs", "logs"].map { gitDir + "/" + $0 }
     }
 
+    /// The directories the stream is rooted at: the working directory, plus the common dir's
+    /// `info` folder when it lies outside it.
+    var watchedPaths: [String] {
+        let info = commonDir + "/info"
+        guard !info.hasPrefix(workDir + "/") else { return [workDir] }
+        return [workDir, info]
+    }
+
     /// Starts delivering events. Later calls do nothing while a stream is running; after a
     /// failure, `start()` may be called again.
     ///
@@ -115,7 +138,7 @@ public final class WorktreeWatcher: @unchecked Sendable {
             guard
                 let created = FSEventStreamCreate(
                     kCFAllocatorDefault, worktreeEventCallback, &context,
-                    [workDir] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                    watchedPaths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                     latency, flags)
             else { throw WatcherStartError(call: "FSEventStreamCreate", path: workDir) }
             // A refused exclusion list only costs filtered callbacks: `WorktreeWatchFilter`
@@ -147,7 +170,8 @@ public final class WorktreeWatcher: @unchecked Sendable {
         let ignored = ignoredLock.withLock { ignoredRoots }
         if paths.contains(where: {
             WorktreeWatchFilter.isRelevant(
-                $0, workDir: workDir, gitDir: gitDir, ignoredRoots: ignored)
+                $0, workDir: workDir, gitDir: gitDir, commonDir: commonDir,
+                ignoredRoots: ignored)
         }) {
             onChange()
         }

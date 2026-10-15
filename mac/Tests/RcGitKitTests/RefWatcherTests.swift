@@ -57,7 +57,8 @@ import Testing
         let workDir = try #require(repository.workingDirectory)
         let fired = DispatchSemaphore(value: 0)
         let watcher = WorktreeWatcher(
-            workDir: workDir, gitDir: repository.gitDirectory, latency: 0.05
+            workDir: workDir, gitDir: repository.gitDirectory,
+            commonDir: repository.commonDirectory, latency: 0.05
         ) {
             fired.signal()
         }
@@ -65,6 +66,34 @@ import Testing
         defer { watcher.stop() }
 
         try fixture.write("edited.txt", "edited\n")
+
+        #expect(fired.wait(timeout: .now() + Self.bound) == .success)
+    }
+
+    @Test func aCommonDirExcludeEditFiresOnChangeForALinkedWorktree() throws {
+        let fixture = try GitFixture.standard()
+        defer { fixture.remove() }
+        let outside = try GitFixture.emptyDirectory()
+        defer { outside.remove() }
+        let linkedPath = outside.path + "/linked"
+        try fixture.git(["worktree", "add", "-q", "-b", "wt", linkedPath])
+        let repository = try Repository(path: linkedPath)
+        let workDir = try #require(repository.workingDirectory)
+        let fired = DispatchSemaphore(value: 0)
+        let watcher = WorktreeWatcher(
+            workDir: workDir, gitDir: repository.gitDirectory,
+            commonDir: repository.commonDirectory, latency: 0.05
+        ) {
+            fired.signal()
+        }
+        #expect(watcher.watchedPaths.count == 2)
+        try watcher.start()
+        defer { watcher.stop() }
+
+        try FileManager.default.createDirectory(
+            atPath: repository.commonDirectory + "/info", withIntermediateDirectories: true)
+        try Data("*.log\n".utf8).write(
+            to: URL(fileURLWithPath: repository.commonDirectory + "/info/exclude"))
 
         #expect(fired.wait(timeout: .now() + Self.bound) == .success)
     }

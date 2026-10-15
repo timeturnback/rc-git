@@ -172,7 +172,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         worktreeWatcher = nil
         if let workDir = repository.workingDirectory {
             let treeWatcher = WorktreeWatcher(
-                workDir: workDir, gitDir: repository.gitDirectory
+                workDir: workDir, gitDir: repository.gitDirectory,
+                commonDir: repository.commonDirectory
             ) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let changes = self?.changesModel else { return }
