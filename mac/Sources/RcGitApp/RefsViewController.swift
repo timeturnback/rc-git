@@ -50,6 +50,10 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     /// The one pseudo-row above the sections: the files on disk.
     private final class WorkingTreeRow {}
 
+    /// A note at the top while the refs could not be re-read: the listing below is the last
+    /// one read, so it no longer reads as current. Never picked.
+    private final class StaleRow {}
+
     /// The picker's highlight marks where Return goes, so it draws in the accent color the
     /// way a menu's does, although keyboard focus stays in the filter field.
     private final class PickerRowView: NSTableRowView {
@@ -67,6 +71,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
     private var head: Head?
     private var selected: RefEntry?
     private let workingTreeRow = WorkingTreeRow()
+    private let staleRow = StaleRow()
+    private var stale = false
     private var showsWorkingTree = false
     /// Whether the Working Tree row is in the list now: shown, and kept by the filter.
     private var listsWorkingTree = false
@@ -136,22 +142,24 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
         view.window?.makeFirstResponder(search)
     }
 
-    /// Shows `listing`. A reload that changes nothing on screen does nothing: ref events and
-    /// selection moves call it far more often than the refs change.
+    /// Shows `listing`, under a stale note when `stale`. A reload that changes nothing on
+    /// screen does nothing: ref events and selection moves call it far more often than the
+    /// refs change.
     func reload(
         _ listing: RefListing, selected: RefEntry?, head: Head?,
-        showsWorkingTree: Bool, workingTreeSelected: Bool
+        showsWorkingTree: Bool, workingTreeSelected: Bool, stale: Bool
     ) {
         guard
             listing != self.listing || selected != self.selected || head != self.head
                 || showsWorkingTree != self.showsWorkingTree
-                || workingTreeSelected != self.workingTreeSelected
+                || workingTreeSelected != self.workingTreeSelected || stale != self.stale
         else { return }
         self.listing = listing
         self.selected = selected
         self.head = head
         self.showsWorkingTree = showsWorkingTree
         self.workingTreeSelected = workingTreeSelected
+        self.stale = stale
         rebuild()
     }
 
@@ -369,8 +377,13 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
 
     // MARK: NSOutlineViewDataSource
 
+    /// The rows above the sections, top first.
+    private var pseudoRows: [AnyObject] {
+        (stale ? [staleRow] : []) + (listsWorkingTree ? [workingTreeRow] : [])
+    }
+
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        if item == nil { return sections.count + (listsWorkingTree ? 1 : 0) }
+        if item == nil { return pseudoRows.count + sections.count }
         if let section = item as? Section { return section.refs.count + section.broken.count }
         return 0
     }
@@ -380,10 +393,8 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             if index < section.refs.count { return section.refs[index] }
             return section.broken[index - section.refs.count]
         }
-        if listsWorkingTree {
-            return index == 0 ? workingTreeRow : sections[index - 1]
-        }
-        return sections[index]
+        let pseudo = pseudoRows
+        return index < pseudo.count ? pseudo[index] : sections[index - pseudo.count]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -414,6 +425,14 @@ final class RefsViewController: NSViewController, NSOutlineViewDataSource, NSOut
             cell.label.stringValue = "Working Tree"
             cell.isEmphasized = false
             cell.toolTip = "Files on disk, compared with HEAD"
+            return cell
+        }
+        if item is StaleRow {
+            let cell = refCell()
+            cell.imageView?.image = Icons.unreadableRef
+            cell.label.stringValue = BranchBanner.staleRefsDetail
+            cell.isEmphasized = false
+            cell.toolTip = "The list shows the refs as last read."
             return cell
         }
         if let row = item as? BrokenRow {

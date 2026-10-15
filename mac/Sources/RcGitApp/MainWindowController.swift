@@ -995,7 +995,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func reloadRefs(in refs: RefsViewController) {
         refs.reload(
             model.refs, selected: model.selectedRef, head: model.head,
-            showsWorkingTree: hasWorkingTree, workingTreeSelected: model.browsingWorkingTree)
+            showsWorkingTree: hasWorkingTree, workingTreeSelected: model.browsingWorkingTree,
+            stale: model.refsStale)
     }
 
     private func browsingBanner() -> BranchBanner {
