@@ -242,9 +242,6 @@ impl<'a> VerbArgs<'a> {
     }
 }
 
-/// Spells a repository path one way: leading `/` and `./`, doubled slashes and `.` segments
-/// dropped, so `./src//lib.rs` is `src/lib.rs` and `/` is the root (empty). A `..` segment is
-/// a usage error, since no tree entry can carry that name.
 /// The tree `HEAD` points at, or `None` on an unborn branch, read once so the caller compares
 /// the working tree against one consistent `HEAD`.
 fn head_tree(repo: &Repository) -> Result<Option<Oid>> {
@@ -254,6 +251,9 @@ fn head_tree(repo: &Repository) -> Result<Option<Oid>> {
     }
 }
 
+/// Spells a repository path one way: leading `/` and `./`, doubled slashes and `.` segments
+/// dropped, so `./src//lib.rs` is `src/lib.rs` and `/` is the root (empty). A `..` segment is
+/// a usage error, since no tree entry can carry that name.
 fn canonical_path(raw: &str) -> Result<String> {
     let mut segments = Vec::new();
     for segment in raw.split('/') {
