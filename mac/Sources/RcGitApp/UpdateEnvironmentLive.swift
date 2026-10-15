@@ -114,7 +114,7 @@ struct AppUpdateEnvironment: UpdateEnvironment {
 
     /// A cancel reaches the pull through `SyncModel.cancelRunning`, the same stop the
     /// Changes tab's Cancel uses.
-    func sync() async -> String? {
+    func sync() async -> UpdateSyncResult {
         let model = await MainActor.run { makeSyncModel() }
         let reconcile = ReconcileCommand.rebase(workDir: sourceRoot)
         await withTaskCancellationHandler {
@@ -126,14 +126,14 @@ struct AppUpdateEnvironment: UpdateEnvironment {
         }
         return await MainActor.run {
             switch model.state {
-            case .done:
-                return nil
+            case let .done(summary):
+                return .synced(notice: summary.notice)
             case let .diverged(message):
-                return "\(message); run `\(reconcile)` in a terminal, then update again"
+                return .failure("\(message); run `\(reconcile)` in a terminal, then update again")
             case let .failed(_, message):
-                return message
+                return .failure(message)
             default:
-                return "the pull did not finish"
+                return .failure("the pull did not finish")
             }
         }
     }

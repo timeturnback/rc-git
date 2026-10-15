@@ -195,6 +195,43 @@ public struct SyncSummary: Sendable, Hashable {
             fetchedRefs: fetchedRefs, pulledFiles: pulledFiles, pushedCommits: pushedCommits,
             cancelledAfter: cancelledAfter, notice: joined.isEmpty ? nil : joined)
     }
+
+    /// What the user is told once the workflow is done, or `nil` when it ran to the end with
+    /// nothing to report. A notice is a problem; a cancel that stopped after a finished step
+    /// is only explained, since that step's work stands.
+    public var report: SyncReport? {
+        let cancelNote = cancelledAfter.map(Self.cancelNote)
+        if let notice {
+            let message = [cancelNote, notice].compactMap { $0 }.joined(separator: "\n\n")
+            return SyncReport(
+                title: "rc-git synced, with a problem", message: message, isProblem: true)
+        }
+        guard let cancelNote else { return nil }
+        return SyncReport(title: "Sync cancelled", message: cancelNote, isProblem: false)
+    }
+
+    /// Why a cancel did not undo `step`: it finished before the cancel could stop it.
+    private static func cancelNote(after step: SyncStep) -> String {
+        switch step {
+        case .checkout:
+            "The branch switch had already finished, so it stands; nothing was fetched or pulled."
+        case .fetch:
+            "The fetch had already finished, so its refs stand; nothing after it ran."
+        case .pull:
+            "The pull had already finished, so its changes stand; nothing was pushed."
+        case .push:
+            "The push had already finished, so it stands."
+        }
+    }
+}
+
+/// A finished workflow's message for the user: a problem the sync survived, or why a cancel
+/// left a finished step in place.
+public struct SyncReport: Sendable, Hashable {
+    public let title: String
+    public let message: String
+    /// A problem warns; a cancel explanation only informs.
+    public let isProblem: Bool
 }
 
 /// Where the sync workflow stands.

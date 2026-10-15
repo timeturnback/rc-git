@@ -85,6 +85,14 @@ public enum SourceStateResult: Sendable, Hashable {
     case failure(String)
 }
 
+/// What fetching and fast-forwarding the checkout produced.
+public enum UpdateSyncResult: Sendable, Hashable {
+    /// The checkout is up to date with its upstream. `notice` is a problem the pull survived
+    /// (saved credentials unreadable, new ones not saved), for the update window to show.
+    case synced(notice: String?)
+    case failure(String)
+}
+
 /// What probing the toolchain produced.
 public enum ToolchainCheck: Sendable, Hashable {
     /// Every tool the build needs is on the login shell's `PATH`.
@@ -108,9 +116,8 @@ public protocol UpdateEnvironment: Sendable {
     func toolchain() async -> ToolchainCheck
     /// The checkout's commit and dirty paths, or why they could not be read.
     func sourceState() async -> SourceStateResult
-    /// Fetches and fast-forwards the checkout. `nil` on success. Stops early when the
-    /// calling Task is cancelled.
-    func sync() async -> String?
+    /// Fetches and fast-forwards the checkout. Stops early when the calling Task is cancelled.
+    func sync() async -> UpdateSyncResult
     /// Builds the bundle this mode produces and puts it in place (`install-app.sh` for
     /// `.update`, `build-app.sh --dev` for `.rebuild`), streaming the script's output. `nil` on
     /// success. Bounded by the implementation, and stops — killing the build — when the
@@ -364,11 +371,14 @@ public final class UpdateModel {
         }
         enter(.sync)
         note("fetching and fast-forwarding")
-        let message = await environment.sync()
+        let result = await environment.sync()
         guard !stoppedByCancel(.sync) else { return false }
-        if let message {
+        switch result {
+        case let .failure(message):
             fail(.sync, message)
             return false
+        case let .synced(notice):
+            if let notice { note("warning: \(notice)") }
         }
         note("reading the checkout after the fetch")
         guard let after = await readSource(step: .sync) else { return false }

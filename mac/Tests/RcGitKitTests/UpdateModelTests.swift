@@ -12,6 +12,8 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
         /// One entry per `sourceState` call: preflight reads it, then the sync step does.
         var sourceStates: [SourceStateResult] = []
         var syncFailure: String?
+        /// A problem the pull survived, reported with a successful sync.
+        var syncNotice: String?
         var installFailure: String?
         /// Printed by the build in one read.
         var installOutput: [String] = []
@@ -54,10 +56,10 @@ private final class StubUpdateEnvironment: UpdateEnvironment, @unchecked Sendabl
             ? script.sourceStates.removeFirst() : script.sourceStates[0]
     }
 
-    func sync() async -> String? {
+    func sync() async -> UpdateSyncResult {
         await probe()
         calls.append("sync")
-        return script.syncFailure
+        return script.syncFailure.map { .failure($0) } ?? .synced(notice: script.syncNotice)
     }
 
     func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? {
@@ -119,7 +121,7 @@ private final class GatedToolchainEnvironment: UpdateEnvironment, @unchecked Sen
     }
 
     func sourceState() async -> SourceStateResult { .failure("unused") }
-    func sync() async -> String? { "unused" }
+    func sync() async -> UpdateSyncResult { .failure("unused") }
     func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? { "unused" }
     func handOff() async {}
     func reclaim() async {}
@@ -153,9 +155,9 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         return .state(SourceState(commit: commit, branch: "master", dirtyPaths: []))
     }
 
-    func sync() async -> String? {
+    func sync() async -> UpdateSyncResult {
         calls.append("sync")
-        return await hangOnce(.sync) ? "the pull was cancelled" : nil
+        return await hangOnce(.sync) ? .failure("the pull was cancelled") : .synced(notice: nil)
     }
 
     func install(onOutput: @escaping @Sendable ([String]) -> Void) async -> String? {
@@ -423,6 +425,22 @@ private final class HangingStepEnvironment: UpdateEnvironment, @unchecked Sendab
         #expect(seen.last?.state == model.state)
         #expect(Self.eachRedrawCarriesOneChange(seen))
         #expect(!environment.calls.contains("install"))
+    }
+
+    @Test func aProblemThePullSurvivedIsLoggedAndTheUpdateGoesOn() async {
+        let notice = "the credentials for github.com could not be saved: status -25308"
+        let (model, environment) = Self.model(
+            .init(
+                sourceStates: [
+                    .state(SourceState(commit: Self.head, branch: "master", dirtyPaths: [])),
+                    .state(SourceState(commit: Self.upstream, branch: "master", dirtyPaths: [])),
+                ],
+                syncNotice: notice
+            ))
+        await model.start()
+        #expect(model.state == .installed)
+        #expect(model.log.contains("warning: \(notice)"))
+        #expect(environment.calls.contains("install"))
     }
 
     @Test func aFailedBuildNeverRelaunches() async {

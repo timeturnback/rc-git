@@ -1367,13 +1367,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// Rescans after a pull that changed files and reports a problem the sync survived.
+    /// Rescans after a pull that changed files, and reports a problem the sync survived or a
+    /// cancel that landed after a step had finished.
     private func handleSyncCompletion(_ summary: SyncSummary) {
         if summary.pulledFiles > 0 {
             changeListIsStale()
         }
-        if let notice = summary.notice {
-            presentError(notice, title: "rc-git synced, with a problem")
+        if let report = summary.report {
+            presentError(
+                report.message, title: report.title,
+                style: report.isProblem ? .warning : .informational)
         }
     }
 

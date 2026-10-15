@@ -2005,3 +2005,45 @@ private let switchedWithoutReflog = CheckoutOutcome(
                 == "cd '/Users/me/My Repos/app' && git pull --rebase")
     }
 }
+
+@Suite struct SyncReportTests {
+    @Test func aWorkflowThatRanToTheEndWithNothingToSayReportsNothing() {
+        #expect(SyncSummary(fetchedRefs: 1, pulledFiles: 2, pushedCommits: 1).report == nil)
+    }
+
+    @Test func aCancelAfterAFinishedPullIsExplainedNotWarned() throws {
+        let summary = SyncSummary(
+            fetchedRefs: 1, pulledFiles: 2, pushedCommits: 0, cancelledAfter: .pull)
+        let report = try #require(summary.report)
+        #expect(!report.isProblem)
+        #expect(report.title == "Sync cancelled")
+        #expect(report.message.contains("pull had already finished"))
+        #expect(report.message.contains("nothing was pushed"))
+    }
+
+    @Test func aCancelAfterAFinishedSwitchSaysTheSwitchStands() throws {
+        let summary = SyncSummary(
+            fetchedRefs: 0, pulledFiles: 4, pushedCommits: 0, cancelledAfter: .checkout)
+        let report = try #require(summary.report)
+        #expect(!report.isProblem)
+        #expect(report.message.contains("branch switch had already finished"))
+    }
+
+    @Test func aNoticeIsAProblem() throws {
+        let summary = SyncSummary(
+            fetchedRefs: 1, pulledFiles: 0, pushedCommits: 0, notice: "token not saved")
+        let report = try #require(summary.report)
+        #expect(report.isProblem)
+        #expect(report.message == "token not saved")
+    }
+
+    @Test func aNoticeAfterACancelCarriesBoth() throws {
+        let summary = SyncSummary(
+            fetchedRefs: 0, pulledFiles: 1, pushedCommits: 0, cancelledAfter: .checkout,
+            notice: "no reflog line")
+        let report = try #require(summary.report)
+        #expect(report.isProblem)
+        #expect(report.message.contains("branch switch had already finished"))
+        #expect(report.message.hasSuffix("no reflog line"))
+    }
+}
