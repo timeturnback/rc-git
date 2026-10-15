@@ -2261,11 +2261,12 @@ pub unsafe extern "C" fn rcgit_blob_diff_free(diff: *mut RcGitBlobDiff) {
 /// it. This walks history, so its cost grows with the history between `tip` and the commit
 /// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
 /// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
-/// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
-/// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
-/// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
-/// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
-/// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
+/// larger than `limit` bytes, capped at 4 GiB, comes back as `TooLarge` after one header
+/// read; the versions the walk reaches in history are not size-checked. `since` (seconds since
+/// the Unix epoch, or `i64::MIN` for none) is the walk's budget: it never reads past a commit
+/// older than it, and the lines still unattributed there come back as `boundary` ranges on
+/// that commit. The walk cannot be cancelled once started. Release with
+/// `rcgit_blame_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
@@ -2299,6 +2300,7 @@ pub unsafe extern "C" fn rcgit_blame(
         return ptr::null_mut();
     };
     let since = (since != i64::MIN).then_some(since);
+    let limit = limit.min(u64::from(u32::MAX));
     match repo.blame(tip, &String::from_utf8_lossy(path), limit, since) {
         Ok(Blame::TooLarge { size, limit }) => export(RcGitBlameList {
             kind: RcGitBlameKind::TooLarge,
@@ -5654,6 +5656,20 @@ mod tests {
         assert_eq!((range.start_line, range.line_count), (1, 3));
         assert_eq!(hex(&range.commit), fx.rev_parse("v0.9^{commit}"));
         assert!(!range.boundary, "i64::MIN is no floor");
+        unsafe { rcgit_blame_list_free(blame) };
+
+        let blame = unsafe {
+            rcgit_blame(
+                repo,
+                &raw const new,
+                path.as_ptr(),
+                u64::MAX,
+                i64::MIN,
+                &raw mut error,
+            )
+        };
+        assert!(!blame.is_null(), "{}", take_error(&mut error));
+        assert_eq!(unsafe { (*blame).limit }, u64::from(u32::MAX));
         unsafe { rcgit_blame_list_free(blame) };
 
         let blame = blame_at(i64::MAX, &mut error);

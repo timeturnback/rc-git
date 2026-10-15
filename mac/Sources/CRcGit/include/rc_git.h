@@ -1082,11 +1082,12 @@ void rcgit_blob_diff_free(struct RcGitBlobDiff *diff);
 /// it. This walks history, so its cost grows with the history between `tip` and the commit
 /// that introduced the oldest surviving line — up to the whole ancestry for a file with a line
 /// from the first commit; call it for the file on screen, never in bulk. A file at `tip`
-/// larger than `limit` bytes comes back as `TooLarge` after one header read; the versions the
-/// walk reaches in history are not size-checked. `since` (seconds since the Unix epoch, or
-/// `i64::MIN` for none) is the walk's budget: it never reads past a commit older than it, and
-/// the lines still unattributed there come back as `boundary` ranges on that commit. The walk
-/// cannot be cancelled once started. Release with `rcgit_blame_list_free`.
+/// larger than `limit` bytes, capped at 4 GiB, comes back as `TooLarge` after one header
+/// read; the versions the walk reaches in history are not size-checked. `since` (seconds since
+/// the Unix epoch, or `i64::MIN` for none) is the walk's budget: it never reads past a commit
+/// older than it, and the lines still unattributed there come back as `boundary` ranges on
+/// that commit. The walk cannot be cancelled once started. Release with
+/// `rcgit_blame_list_free`.
 ///
 /// # Safety
 /// `repo` came from `rcgit_repo_open`. `tip` points to a readable `RcGitOid`. `path` is a
