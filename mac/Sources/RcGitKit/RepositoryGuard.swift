@@ -585,6 +585,9 @@ public enum SyncError: Error, Sendable, Hashable {
     /// The host wants credentials it did not get, or rejected the given ones. Over ssh
     /// it means every key was offered and none accepted: no passphrase can fix that.
     case authRequired(message: String)
+    /// The remote redirected to another host, which asked for credentials. rc-git sends
+    /// credentials only to the remote's own host, so no prompt can fix it.
+    case credentialHostRefused(message: String)
     /// An encrypted ssh key file stayed locked, with no passphrase or the wrong one; `key`
     /// is the file's path, to name in the passphrase prompt.
     case passphraseRequired(message: String, key: String)
@@ -603,7 +606,8 @@ public enum SyncError: Error, Sendable, Hashable {
 
     public var message: String {
         switch self {
-        case let .authRequired(message), let .cancelled(message), let .diverged(message),
+        case let .authRequired(message), let .credentialHostRefused(message),
+            let .cancelled(message), let .diverged(message),
             let .stale(message), let .failure(message), let .hostKeyUnknown(message, _),
             let .passphraseRequired(message, _):
             message
@@ -787,6 +791,7 @@ extension RepositoryGuard {
         let message = RepositoryError.takeString(error) ?? fallback
         switch status {
         case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
+        case RCGIT_CREDENTIAL_HOST_REFUSED: return .credentialHostRefused(message: message)
         case RCGIT_CANCELLED: return .cancelled(message: message)
         case RCGIT_DIVERGED: return .diverged(message: message)
         case RCGIT_STALE: return .stale(message: message)

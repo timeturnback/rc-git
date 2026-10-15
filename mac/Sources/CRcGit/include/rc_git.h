@@ -44,6 +44,11 @@
 /// Reload and let the user try again on what is there now.
 #define RCGIT_STALE -8
 
+/// Status for remote functions over HTTPS: the remote redirected to another host, which asked
+/// for credentials. rc-git sends credentials only to the remote's own host, so asking the user
+/// again cannot help; show `error`, which names both hosts.
+#define RCGIT_CREDENTIAL_HOST_REFUSED -9
+
 /// Namespace of a reference.
 typedef enum RcGitRefKind {
   /// `refs/heads/*`
@@ -1563,9 +1568,9 @@ void rcgit_cancel_free(struct RcGitCancel *cancel);
 /// Fetches from the branch's upstream remote, updating remote-tracking refs. `auth`
 /// may be NULL for an anonymous attempt with default ssh configuration; `cancel` may
 /// be NULL when the caller has no way to cancel. Returns `RCGIT_OK`, `RCGIT_ERROR`,
-/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`, `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then
-/// holds the offered key for the user to verify), or `RCGIT_PASSPHRASE_REQUIRED`
-/// (`hostkey` then holds the locked key file's path).
+/// `RCGIT_AUTH_REQUIRED`, `RCGIT_CREDENTIAL_HOST_REFUSED`, `RCGIT_CANCELLED`,
+/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key for the user to verify), or
+/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path).
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or
@@ -1590,11 +1595,11 @@ int32_t rcgit_guard_pull_ff(const char *repo_path, struct RcGitPullOutcome *out,
 /// Pushes the checked-out branch to its upstream. Plain push only; a force push is not
 /// offered here. `cancel` may be NULL when the caller has no way to cancel. Returns
 /// `RCGIT_OK`, `RCGIT_ERROR`, `RCGIT_DIVERGED` (the remote has commits the branch lacks:
-/// the message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`, `RCGIT_CANCELLED`,
-/// `RCGIT_HOSTKEY_UNKNOWN` (`hostkey` then holds the offered key), or
-/// `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the locked key file's path). On
-/// `RCGIT_OK`, `out->warning` is set when the push landed but the remote-tracking ref did not
-/// move; the caller releases it with `rcgit_string_free`.
+/// the message says to fetch and pull first), `RCGIT_AUTH_REQUIRED`,
+/// `RCGIT_CREDENTIAL_HOST_REFUSED`, `RCGIT_CANCELLED`, `RCGIT_HOSTKEY_UNKNOWN` (`hostkey`
+/// then holds the offered key), or `RCGIT_PASSPHRASE_REQUIRED` (`hostkey` then holds the
+/// locked key file's path). On `RCGIT_OK`, `out->warning` is set when the push landed but
+/// the remote-tracking ref did not move; the caller releases it with `rcgit_string_free`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated path; `auth` is NULL or valid with NULL or

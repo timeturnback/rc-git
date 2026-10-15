@@ -249,6 +249,20 @@ pub enum ActionError {
         /// The host to authenticate with.
         host: String,
     },
+    /// The remote redirected to another host, which asked for credentials. rc-git sends
+    /// credentials only to the remote's own host, so no credentials can fix it.
+    #[error(
+        "{op}: '{host}' redirected to '{requested}', which asked for credentials; rc-git sends \
+         credentials only to '{host}' — point the remote's URL at '{requested}' if it is trusted"
+    )]
+    CredentialHostRefused {
+        /// What was being done.
+        op: &'static str,
+        /// The remote's own host, the only one credentials go to.
+        host: String,
+        /// The host that asked for credentials.
+        requested: String,
+    },
     /// The remote's URL scheme is one rc-git does not speak (`git://`, `file://`,
     /// non-loopback `http://`).
     #[error(
@@ -1326,6 +1340,21 @@ mod tests {
             err.to_string(),
             "commit: author email \"b> <c\" must not contain '<', '>' or a line break; fix the \
              identity and retry"
+        );
+    }
+
+    #[test]
+    fn a_refused_credential_host_names_both_hosts() {
+        let err = ActionError::CredentialHostRefused {
+            op: "fetch",
+            host: "git.example.com".to_owned(),
+            requested: "login.example.net".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "fetch: 'git.example.com' redirected to 'login.example.net', which asked for \
+             credentials; rc-git sends credentials only to 'git.example.com' — point the \
+             remote's URL at 'login.example.net' if it is trusted"
         );
     }
 

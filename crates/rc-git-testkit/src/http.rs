@@ -35,6 +35,8 @@ enum Mode {
     Backend(Option<BasicAuth>),
     /// Reads the request head, then holds the socket open and never writes.
     Stall,
+    /// Answers every request with `302 Found` to the same path and query under this origin.
+    Redirect(String),
 }
 
 impl HttpGitServer {
@@ -59,6 +61,17 @@ impl HttpGitServer {
         Self::start(git_dir, Mode::Stall)
     }
 
+    /// Answers every request with a `302 Found` to the same path on `to`, so a client asking
+    /// this server for `git_dir` is sent to `to`'s copy: a remote that redirects to another
+    /// host. `git_dir` only names the mount, which must match `to`'s.
+    ///
+    /// # Panics
+    /// When the listener cannot bind or `git --exec-path` fails.
+    #[must_use]
+    pub fn serve_redirecting(git_dir: &std::path::Path, to: &Self) -> Self {
+        Self::start(git_dir, Mode::Redirect(to.origin()))
+    }
+
     /// Serves `git_dir` behind HTTP Basic auth: requests without the exact
     /// `user:pass` credentials get `401` with a `WWW-Authenticate` challenge.
     ///
@@ -75,7 +88,13 @@ impl HttpGitServer {
     /// URL of the served repository, e.g. `http://127.0.0.1:49321/fixture.git`.
     #[must_use]
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/{}", self.port, self.mount)
+        format!("{}/{}", self.origin(), self.mount)
+    }
+
+    /// Scheme, host and port of the server, e.g. `http://127.0.0.1:49321`.
+    #[must_use]
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
     }
 
     /// Connections accepted so far, each one HTTP request. The shutdown connection made
@@ -129,6 +148,7 @@ impl HttpGitServer {
                         handle_connection(stream, (&root, &backend), auth, &streamed);
                     }
                     Mode::Stall => stall(stream, &stop),
+                    Mode::Redirect(origin) => redirect(stream, &origin),
                 });
             }
         });
@@ -195,6 +215,17 @@ fn stall(stream: TcpStream, stop: &AtomicBool) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     drop(reader);
+}
+
+/// Answers `302 Found` to the request's path and query under `origin`.
+fn redirect(stream: TcpStream, origin: &str) {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+    let mut writer = stream;
+    let Some(head) = read_head(&mut reader) else {
+        return;
+    };
+    let location = format!("Location: {origin}{}\r\n", head.target);
+    write_response(&mut writer, "302 Found", &location, b"");
 }
 
 /// The request line and the headers the server acts on.

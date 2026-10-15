@@ -703,7 +703,9 @@ fn redacted(url: &gix::Url) -> String {
 }
 
 /// The credential callback handed to gix: answers with the caller's credentials, or
-/// fails so the operation reports [`ActionError::AuthRequired`]. gix invokes it only
+/// fails so the operation reports [`ActionError::AuthRequired`] (or
+/// [`ActionError::CredentialHostRefused`] when the request names a host other than the
+/// remote's own). gix invokes it only
 /// after the server answered 401, so anonymous access to public remotes works. The
 /// credentials go only to a 401 whose context names `host` (`host` or `host:port`, as
 /// [`host_of`] spells it): a request to any other host, or one naming no host, gets none.
@@ -746,17 +748,26 @@ fn context_host(context: &gix::credentials::protocol::Context) -> Option<String>
     context.host.clone()
 }
 
-/// Maps a network failure to [`ActionError::AuthRequired`] when the server demanded
-/// credentials, else wraps it as [`ActionError::Git`]. Only the handshake's credential
-/// errors, a transport-level 401 and a missing identity count; a local I/O failure deeper
-/// in the chain (an unwritable pack directory) stays a [`ActionError::Git`]. An ssh
-/// server's refusal replaces gix's wrapping as the cause, so its stderr is what shows.
+/// Maps a network failure to [`ActionError::CredentialHostRefused`] when a host other than
+/// `host` asked for credentials (the remote redirected there), to
+/// [`ActionError::AuthRequired`] when the server demanded credentials, else wraps it as
+/// [`ActionError::Git`]. Only the handshake's credential errors, a transport-level 401 and a
+/// missing identity count; a local I/O failure deeper in the chain (an unwritable pack
+/// directory) stays a [`ActionError::Git`]. An ssh server's refusal replaces gix's wrapping
+/// as the cause, so its stderr is what shows.
 fn map_network_error(
     error: Box<dyn std::error::Error + Send + Sync + 'static>,
     op: &'static str,
     name: &str,
     host: &str,
 ) -> ActionError {
+    if let Some(requested) = foreign_credential_host(error.as_ref(), host) {
+        return ActionError::CredentialHostRefused {
+            op,
+            host: host.to_owned(),
+            requested,
+        };
+    }
     if demands_credentials(error.as_ref()) {
         return ActionError::AuthRequired {
             op,
@@ -832,16 +843,36 @@ fn transport_io_error<'a>(
 
 /// Whether the credential callback said it has no identity to offer, anywhere in the chain.
 fn lacks_identity(error: &(dyn std::error::Error + 'static)) -> bool {
+    missing_identity_context(error).is_some()
+}
+
+/// The request the credential callback refused for want of an identity, anywhere in the
+/// chain.
+fn missing_identity_context<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a gix::credentials::protocol::Context> {
     let mut current = Some(error);
     while let Some(err) = current {
-        if let Some(gix::credentials::protocol::Error::IdentityMissing { .. }) =
+        if let Some(gix::credentials::protocol::Error::IdentityMissing { context }) =
             err.downcast_ref::<gix::credentials::protocol::Error>()
         {
-            return true;
+            return Some(context);
         }
         current = err.source();
     }
-    false
+    None
+}
+
+/// The host that asked for credentials, when it is not `host`: the transport followed a
+/// redirect and the 401 came from there. [`authenticate_with`] never answers such a
+/// request, so asking the user again cannot help. `None` when the request named `host`, or
+/// no host at all.
+fn foreign_credential_host(
+    error: &(dyn std::error::Error + 'static),
+    host: &str,
+) -> Option<String> {
+    let requested = context_host(missing_identity_context(error)?)?;
+    (requested != host).then_some(requested)
 }
 
 /// Returns [`ActionError::Cancelled`] when the flag is already set, so a cancelled
@@ -1119,6 +1150,47 @@ mod tests {
         ] {
             assert_eq!(answer(host, url), None, "{host} answered {url}");
         }
+    }
+
+    /// The error gix reports when the credential callback refused a request for `url`.
+    fn identity_missing_for(url: &str) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+        let context = gix::credentials::protocol::Context {
+            url: Some(url.into()),
+            ..Default::default()
+        };
+        Box::new(gix::protocol::handshake::Error::Credentials(
+            gix::credentials::protocol::Error::IdentityMissing { context },
+        ))
+    }
+
+    #[test]
+    fn a_credential_request_from_another_host_is_a_refused_host() {
+        let mapped = map(identity_missing_for("http://127.0.0.1:4011/repo.git"));
+        assert!(
+            matches!(
+                &mapped,
+                ActionError::CredentialHostRefused { op: "fetch", host, requested }
+                    if host == "127.0.0.1:4010" && requested == "127.0.0.1:4011"
+            ),
+            "{mapped}"
+        );
+    }
+
+    #[test]
+    fn a_credential_request_from_the_remote_host_is_auth_required() {
+        let mapped = map(identity_missing_for("http://127.0.0.1:4010/repo.git"));
+        assert!(
+            matches!(mapped, ActionError::AuthRequired { .. }),
+            "{mapped}"
+        );
+        let nameless = gix::credentials::protocol::Error::IdentityMissing {
+            context: gix::credentials::protocol::Context::default(),
+        };
+        let mapped = map(Box::new(nameless));
+        assert!(
+            matches!(mapped, ActionError::AuthRequired { .. }),
+            "{mapped}"
+        );
     }
 
     #[test]

@@ -1109,6 +1109,41 @@ private let switchedWithoutReflog = CheckoutOutcome(
         #expect(store.stored.isEmpty)
     }
 
+    /// A redirect to another host that asks for credentials gets none from rc-git, so asking
+    /// the user again cannot help: the step fails at once with the guard's message.
+    @Test func aRefusedCredentialHostFailsAtOnceWithoutAPrompt() async {
+        let refusal =
+            "fetch: 'example.com' redirected to 'login.example.net', which asked for credentials"
+        let (model, performer, store) = model(
+            .init(
+                preflights: [StubSyncPerformer.upstream()],
+                fetches: [
+                    .failure(.credentialHostRefused(message: refusal)),
+                    .success(cleanFetch),
+                ]
+            ))
+        var prompts = 0
+        model.onCredentialsNeeded = { _, _, _, resume in
+            prompts += 1
+            resume(.provided(Credentials(username: "me", token: "typed")))
+        }
+        await model.refreshStatus()
+        await model.fetch()
+
+        #expect(prompts == 0, "no credentials can satisfy another host")
+        if case let .failed(step, message) = model.state {
+            #expect(step == .fetch)
+            #expect(message == refusal)
+        } else {
+            Issue.record("expected failed, got \(model.state)")
+        }
+        #expect(performer.fetchCredentials.count == 1, "no retry")
+        #expect(store.stored.isEmpty)
+        let refused = SyncError.credentialHostRefused(message: "m")
+        #expect(SyncModel.credentialRetry(after: refused, kind: .httpsToken) == .none)
+        #expect(SyncModel.credentialRetry(after: refused, kind: .sshPassphrase) == .none)
+    }
+
     @Test func onlyTheErrorTheSecretCanFixEarnsAPrompt() {
         let locked = SyncError.passphraseRequired(message: "m", key: "/k/id")
         let rejected = SyncError.authRequired(message: "m")

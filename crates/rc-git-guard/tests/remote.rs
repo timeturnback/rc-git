@@ -471,6 +471,54 @@ fn credentials_issued_for_another_host_are_never_sent() {
     assert_eq!(outcome.pushed_commits, 1);
 }
 
+#[test]
+fn a_redirect_to_another_host_that_asks_for_credentials_is_refused_by_name() {
+    let origin = Fixture::standard();
+    let (bare, bare_path) = origin.bare_copy();
+    let target = rc_git_testkit::HttpGitServer::serve_with_auth(&bare_path, "user", "sekret");
+    let front = rc_git_testkit::HttpGitServer::serve_redirecting(&bare_path, &target);
+    let clone = Fixture::basic_auth_clone(&target, "user", "sekret");
+    clone.git(&["remote", "set-url", "origin", &front.url()]);
+    clone.write("local.txt", b"local\n");
+    clone.commit("Local work", "2024-03-02T00:00:00+0000");
+    let status = upstream_status(clone.path()).expect("status");
+    let creds = Credentials {
+        username: "user".to_owned(),
+        token: "sekret".to_owned(),
+    };
+    let own_host = RemoteAuth {
+        host: Some(&status.host),
+        ..auth(&creds)
+    };
+    let target_host = target.origin().trim_start_matches("http://").to_owned();
+    let refused = |result: &str, err: &ActionError| match err {
+        ActionError::CredentialHostRefused {
+            host, requested, ..
+        } => {
+            assert_eq!(host, &status.host, "{result}");
+            assert_eq!(requested, &target_host, "{result}");
+        }
+        other => panic!("{result}: expected CredentialHostRefused, got {other:?}"),
+    };
+
+    let anonymous = fetch_upstream(
+        clone.path(),
+        &Policy::default(),
+        RemoteAuth::default(),
+        &Cancel::new(),
+    )
+    .expect_err("anonymous fetch through the redirect");
+    refused("anonymous fetch", &anonymous);
+    let fetched = fetch_upstream(clone.path(), &Policy::default(), own_host, &Cancel::new())
+        .expect_err("fetch through the redirect");
+    refused("fetch", &fetched);
+    assert!(fetched.to_string().contains(&target_host), "{fetched}");
+    let pushed = push_upstream(clone.path(), &Policy::default(), own_host, &Cancel::new())
+        .expect_err("push through the redirect");
+    refused("push", &pushed);
+    assert_ne!(bare_rev(&bare, "main"), clone.rev_parse("HEAD"));
+}
+
 /// Sets the mode of `path`, for the tests that make a directory unwritable.
 fn chmod(path: &Path, mode: u32) {
     #[expect(
