@@ -34,15 +34,15 @@ rc-git's in-process ssh transport offered keys in a different order from OpenSSH
 ## What Didn't Work
 
 - **Treating it as host resolution.** The earlier alias fix already resolves `HostName` through russh-config (see the related doc). The about-3-second failure and the EOF, with no lookup error, show that the dial reached GitHub and got through authentication.
-- **Treating it as a transport or framing bug.** `failed to fill whole buffer` is std's `UnexpectedEof` message. It means gix's handshake asked for a pkt-line and the channel closed first. The real reason was on the channel's stderr, and rc-git never reads stderr. The transport wraps `channel.into_stream()` (`crates/rc-git-guard/src/actions/remote/ssh.rs:66`), and `SshRead` is a reader over the channel's stdout only (`crates/rc-git-guard/src/actions/remote/ssh/session.rs:141-181`). GitHub's `ERROR: Repository not found.` was dropped, and gix reported the EOF instead.
+- **Treating it as a transport or framing bug.** `failed to fill whole buffer` is std's `UnexpectedEof` message. It means gix's handshake asked for a pkt-line and the channel closed first. The real reason was on the channel's stderr, which rc-git did not read at the time: the transport wrapped russh's `channel.into_stream()`, a reader over stdout only, so GitHub's `ERROR: Repository not found.` was dropped and gix reported the EOF instead. Since then `transport` (`crates/rc-git-guard/src/actions/remote/ssh.rs`) splits the channel and `SshRead` reads through `ChannelReader` (`ssh/output.rs`), which takes stdout, stderr and the exit status off one queue and ends the stream with a `ServerRefusal` carrying the server's stderr.
 - **Using `git ls-remote` as the control.** It proves the config and the key are good. OpenSSH orders keys correctly, though, so it cannot expose an ordering bug. What cracked it was checking which identity each path authenticates as: match the `ssh-add -l` fingerprints against `ssh-keygen -lf <key>.pub`, then compare `ssh -T git@github.com` (first agent key wins) with `ssh -T git@github.com-work` (the configured key wins).
 - **A narrower fix would not have been enough.** Honoring `IdentitiesOnly` alone fixes this config but not the same alias without `IdentitiesOnly`. OpenSSH still offers the configured key before the agent's other keys there, while the old ladder would still lead with agent order.
 
 ## Solution
 
-The fix makes the ladder follow OpenSSH's `pubkey_prepare` (`sshconnect2.c`): first agent keys that match a configured identity file, in agent order; then the agent's other keys unless `IdentitiesOnly`; then the identity files the agent does not hold, in config order. rc-git's agent read keeps only plain public keys, so the certificate steps OpenSSH puts first do not arise (`auth.rs:220-226`). All three parts are in `crates/rc-git-guard/src/actions/remote/ssh/`.
+The fix makes the ladder follow OpenSSH's `pubkey_prepare` (`sshconnect2.c`): first agent keys that match a configured identity file, in agent order; then the agent's other keys unless `IdentitiesOnly`; then the identity files the agent does not hold, in config order. rc-git's agent read keeps only plain public keys (`connect_agent` skips every `AgentIdentity` that is not `PublicKey`), so the certificate steps OpenSSH puts first do not arise. All three parts are in `crates/rc-git-guard/src/actions/remote/ssh/`.
 
-**1. Offer order** (`auth.rs:124-154`). This is a pure function over comparable keys, so it is unit-tested with integers. An agent key that matches a file stands in for that file, so the file is not offered a second time:
+**1. Offer order** (`offer_order` in `auth.rs`). This is a pure function over comparable keys, so it is unit-tested with integers. An agent key that matches a file stands in for that file, so the file is not offered a second time:
 
 ```rust
 fn offer_order<K: PartialEq>(
@@ -78,19 +78,19 @@ fn offer_order<K: PartialEq>(
 }
 ```
 
-`authenticate` feeds it `PublicKey::key_data()` rather than `PublicKey` (`auth.rs:73-83`). ssh-key derives `PartialEq` on `PublicKey` over the comment too (ssh-key 0.7.0-rc.11, `src/public.rs:94-106`, a dependency path). The agent's copy and the `.pub` file's copy usually have different comments, so whole-key equality never matches. `file_public_key` (`auth.rs:233-243`) reads `<path>.pub`. When that file is missing, it takes the public half that an OpenSSH-format private key stores in the clear, so an encrypted key matches its agent copy without a passphrase. `authenticate` walks the order through a `Ladder` (handle, target, RSA hash, op; `auth.rs:157-201`). Each offer ends as `Outcome::Accepted`, `Rejected` or `Locked` (`auth.rs:35-40`). A locked file becomes `PassphraseRequired` only after every other candidate has failed (`auth.rs:84-118`).
+`authenticate` calls it through `key_order`, which compares keys by `key_identity` — `PublicKey::key_data()` rather than `PublicKey`. ssh-key derives `PartialEq` on `PublicKey` over the comment too (ssh-key 0.7.0-rc.11, `src/public.rs:94-106`, a dependency path). The agent's copy and the `.pub` file's copy usually have different comments, so whole-key equality never matches. `file_public_key` follows OpenSSH's `sshkey_load_public` order: the file itself when `IdentityFile` names a public key (it then stands only for the agent key it matches), then `<path>.pub`, then the public half an OpenSSH-format private key stores in the clear, so an encrypted key matches its agent copy without a passphrase. `authenticate` walks the order through a `Ladder` (handle, target, RSA hash, op). Each offer ends as an `Outcome`: `Accepted`, `Rejected`, `Locked` (the passphrase, or its absence, cannot open the file), `Unusable` with a reason, or `Absent` (a default identity file that does not exist). Only when nothing was accepted does `ladder_error` pick the error: `PassphraseRequired` for the first locked file, else a `Git` error naming each unusable file, else `AuthRequired`.
 
-**2. `IdentitiesOnly` is read, although russh-config drops it.** russh-config 0.58.0's `HostConfig` has only `user`, `hostname`, `port`, `identity_file`, `proxy_command`, `proxy_jump`, `add_keys_to_agent`, `user_known_hosts_file` and `strict_host_key_checking` (`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/russh-config-0.58.0/src/lib.rs:30-49`). Its parser sends any other key to a `debug!` and throws it away (same file, `lib.rs:291-293`). rc-git builds a second view of the normalized config that keeps only `Host` lines and rewrites each `IdentitiesOnly <v>` as `User <v>` (`target.rs:207-223`):
+**2. `IdentitiesOnly` is read, although russh-config drops it.** russh-config 0.58.0's `HostConfig` has only `user`, `hostname`, `port`, `identity_file`, `proxy_command`, `proxy_jump`, `add_keys_to_agent`, `user_known_hosts_file` and `strict_host_key_checking` (`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/russh-config-0.58.0/src/lib.rs:30-49`). Its parser sends any other key to a `debug!` and throws it away (same file, `lib.rs:291-293`). rc-git builds a second view of the normalized config that keeps only `Host` lines and rewrites each line of one directive as `User <v>` (`directive_as_user` in `target.rs`, used today for `IdentitiesOnly`, `HostKeyAlias` and `IdentityAgent`):
 
 ```rust
-fn identities_only_as_user(normalized: &str) -> String {
+fn directive_as_user(normalized: &str, keyword: &str) -> String {
     let mut view = String::new();
     for line in normalized.lines() {
         let line = line.trim_start();
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         if key.eq_ignore_ascii_case("host") {
             view.push_str(line);
-        } else if key.eq_ignore_ascii_case("identitiesonly") {
+        } else if key.eq_ignore_ascii_case(keyword) {
             view.push_str("User ");
             view.push_str(value);
         } else {
@@ -102,9 +102,9 @@ fn identities_only_as_user(normalized: &str) -> String {
 }
 ```
 
-`load_config` parses that view through the same `parse_for_host` as the real config (`target.rs:182-186`, `target.rs:195-201`) and reads `.user` as the `IdentitiesOnly` value. Only `Host` lines survive in the view, so a real `User` directive cannot leak into the answer.
+`load_config` parses that view through the same `parse_for_host` as the real config and reads `.user` as the directive's value; `IdentitiesOnly` counts as set for `yes` or `true`, quoted or not. Only `Host` lines survive in the view, so a real `User` directive cannot leak into the answer.
 
-**3. Default keys only when no `IdentityFile` applies** (`target.rs:82-92`). rc-git used to append `id_ed25519`, `id_ecdsa` and `id_rsa` after any configured files. OpenSSH adds them only when `num_identity_files == 0` (`fill_default_options` in `readconf.c`). A default key tried after the configured one can log in as another account for the same reason the agent key did.
+**3. Default keys only when no `IdentityFile` applies** (`resolve` in `target.rs`, which sets `identities_configured`). rc-git used to append `id_ed25519`, `id_ecdsa` and `id_rsa` after any configured files; it now falls back to OpenSSH's default list only when the config names none. OpenSSH adds them only when `num_identity_files == 0` (`fill_default_options` in `readconf.c`). A default key tried after the configured one can log in as another account for the same reason the agent key did.
 
 Verified with `cargo run -p rc-git-cli -- fetch <repo>` on the failing repository, which returned `fetch origin up to date`. A second alias repository still fetches, and `scripts/check.sh --fast` passes.
 
@@ -117,9 +117,9 @@ Rewriting `IdentitiesOnly` as `User` reuses russh-config's own block matching an
 ## Prevention
 
 - Treat key offer order as account selection. Any change to `auth.rs` keeps the `pubkey_prepare` order, which these tests in `auth.rs` pin: `an_agent_key_matching_an_identity_file_is_offered_before_the_rest` (the field failure), `identities_only_drops_agent_keys_that_match_no_identity_file`, `identities_only_with_the_key_outside_the_agent_offers_only_the_file`, `identity_files_the_agent_does_not_hold_follow_every_agent_key_in_config_order`, `no_agent_offers_every_identity_file_in_config_order`. The public-key source is pinned by `the_public_key_comes_from_the_pub_file_beside_the_identity`, `without_a_pub_file_the_public_key_comes_from_the_private_key` and `an_unreadable_identity_has_no_public_key`.
-- Before relying on an ssh directive, check that russh-config's `HostConfig` carries it. Its catch-all arm drops unknown keys with only a `debug!`. A directive that is not a field needs a view like `identities_only_as_user` plus a test. `IdentitiesOnly` resolution is pinned by `identities_only_is_read_from_the_matching_block` and `identities_only_takes_the_first_value_in_file_order` in `target.rs`, and default-key suppression by `config_host_name_user_port_and_identity_are_honored`. Other options multi-account setups use, such as `IdentityAgent` and `CertificateFile`, are still not `HostConfig` fields.
+- Before relying on an ssh directive, check that russh-config's `HostConfig` carries it. Its catch-all arm drops unknown keys with only a `debug!`. A directive that is not a field goes through `directive_as_user` plus a test. `IdentitiesOnly` resolution is pinned by `identities_only_is_read_from_the_matching_block` and `identities_only_takes_the_first_value_in_file_order` in `target.rs`, and default-key suppression by `config_host_name_user_port_and_identity_are_honored`. `IdentityAgent` and `HostKeyAlias` are read through the same view; `CertificateFile` is still not read.
 - Compare ssh keys by `key_data()`, never with `PublicKey ==`, because the comment takes part in equality.
-- Read `failed to fill whole buffer` (or any `UnexpectedEof`) straight after connect as "the server closed the channel after exec", not as a network fault. Check which account authenticated before touching the transport: `ssh -T git@<real host>` against `ssh -T git@<alias>`, and `ssh-add -l` against `ssh-keygen -lf <key>.pub`.
+- Read `failed to fill whole buffer` (or any `UnexpectedEof`) straight after connect as "the server closed the channel after exec", not as a network fault. The transport now surfaces the server's stderr as `the server said: ...`; when that names a missing repository on a multi-account host, suspect the account. Check which account authenticated before touching the transport: `ssh -T git@<real host>` against `ssh -T git@<alias>`, and `ssh-add -l` against `ssh-keygen -lf <key>.pub`.
 
 ## Related Issues
 

@@ -31,23 +31,24 @@ tags:
 ## Context
 
 The Sync sheet reported `cannot fast-forward 'master': local is 2 ahead and 4 behind; reconcile
-with git` — `ActionError::Diverged` (`crates/rc-git-guard/src/actions.rs:243`). On the same
+with git` — `ActionError::Diverged` (`crates/rc-git-guard/src/actions.rs`). On the same
 checkout, `git pull` in a terminal worked. Neither tool was broken; they read different config.
 
 - Terminal git read the user's `~/.gitconfig`, which sets `pull.rebase = true`, so it replayed
   the 2 local commits on top of the 4 upstream ones. VS Code and Zed run the git binary, so they
   inherit the same config: pull strategy, committer identity, and signing.
-- rc-git never spawns git for a repository operation (`clippy.toml:17` bans
-  `std::process::Command::new` in the Rust crates; only the self-updater shells out, to rebuild
-  rc-git itself), and every repository goes through an isolated open: `gix::open::Options::isolated()` at
-  `crates/rc-git-core/src/repo.rs:37` and `crates/rc-git-guard/src/actions.rs:469`. Only
-  `.git/config` is read; `include`/`includeIf` are ignored (`docs/safety.md:38-40`).
+- rc-git never spawns git for a repository operation (`clippy.toml`'s `disallowed-methods`
+  bans `std::process::Command::new` in the Rust crates; only the self-updater shells out, to rebuild
+  rc-git itself), and every repository goes through an isolated open: `gix::open::Options::isolated()` in
+  `open_options` (`crates/rc-git-core/src/repo.rs`) and `open`
+  (`crates/rc-git-guard/src/actions.rs`). Only `.git/config` is read; `include`/`includeIf`
+  are ignored (`docs/safety.md`, "Untrusted repositories").
   `pull.rebase` never reaches the app.
 - The guard's pull only fast-forwards. `pull_fast_forward`
-  (`crates/rc-git-guard/src/actions/remote/pull.rs:40`) returns `Diverged` with ahead/behind
-  counts when the local tip is not an ancestor of the upstream (`:70`). Otherwise it follows the
-  dirty-overlap order: plan the paths, refuse on any overlap (`:81`), write, move the ref last
-  (`:83`).
+  (`crates/rc-git-guard/src/actions/remote/pull.rs`) returns `Diverged` with ahead/behind
+  counts when the local tip is not an ancestor of the upstream. Otherwise it follows the
+  dirty-overlap order: plan the paths (`treeapply::plan`), refuse on any overlap
+  (`treeapply::verify_clean`), write (`treeapply::apply`), move the ref last (`advance_ref`).
 
 The decision was whether rc-git should do what the terminal did.
 
@@ -62,14 +63,14 @@ Three options were weighed:
    no-process rule. Git, not the guard, would write the working tree, so the dirty-overlap
    refusal and the ref-last ordering would no longer hold. An app launched from the Dock also
    has no login-shell `PATH` — the updater routes its own shell work through a login `zsh` for
-   that reason (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift:5`).
+   that reason (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift`).
 3. **Rebase in-process.** Deferred as large. It needs four things the isolated open withholds or
    gix lacks:
    - **Strategy.** `pull.rebase` and `pull.ff` live in user config, so the app cannot tell a
      user who wants rebase from one who wants merge.
    - **Identity.** Each replayed commit needs a committer. The guard takes an explicit author,
      else the repository's own `user.name`/`user.email`
-     (`crates/rc-git-guard/src/actions/workfile.rs:15-31`). When neither is set, the app asks
+     (`resolve_identity` in `crates/rc-git-guard/src/actions/workfile.rs`). When neither is set, the app asks
      (`MainWindowController.askForIdentity(completion:)`, called from
      `performCommit(_:prompted:)` and `performStashPush(prompted:)`) and saves the answer for
      that repository only, once the commit or stash succeeds; the repository's own config wins
@@ -79,33 +80,35 @@ Three options were weighed:
      `gpg.format = ssh`; recent commits show `G` under `git log --format=%G?`), but the settings
      come from a file the user's global config pulls in with `includeIf`, not from `.git/config`,
      so the isolated open never sees them. The guard writes commit objects with
-     no `gpgsig` header (`extra_headers: Vec::new()` at
-     `crates/rc-git-guard/src/actions/commit.rs:111`, and the same in `stash.rs`). A rebase
+     no `gpgsig` header (`extra_headers: Vec::new()` in `write_commit`,
+     `crates/rc-git-guard/src/actions/commit.rs`, and the same in `write_stash_commits`,
+     `stash.rs`). A rebase
      rewrites existing commits, so it would silently swap signed commits for unsigned ones, and a
      branch rule requiring signed commits would reject the next push. SSHSIG signing through the
-     ssh-agent is possible — `russh` is already a dependency (`Cargo.toml:32`) and already
+     ssh-agent is possible — `russh` is already a workspace dependency in `Cargo.toml` and already
      talks to the agent for auth — but it is new work.
    - **The replay itself.** gix `=0.87.1` offers three-way tree merges behind its `merge`
-     feature, which `Cargo.toml:24` does not enable, and has no rebase. Replaying commits,
+     feature, which the workspace `gix` entry in `Cargo.toml` does not enable, and has no rebase. Replaying commits,
      aborting on a conflict, refusing when the local side holds a merge commit or a commit
      already reachable from a remote-tracking ref, and recording a backup ref before the branch
      moves would all be written by hand.
 
    The safety policy is already settled for it: `Action::RewriteHistory`
-   (`crates/rc-git-guard/src/lib.rs:70`) asks for a confirm and a backup ref on unpublished
-   history, and denies published history on a protected branch (`docs/safety.md:80-81`). Revisit
+   (`crates/rc-git-guard/src/lib.rs`) asks for a confirm and a backup ref on unpublished
+   history, and denies published history on a protected branch (the "rewrite unpublished/published
+   history" rows of the policy table in `docs/safety.md`). Revisit
    the rebase only if divergence happens often enough that the trip to the terminal is a real
    cost, and settle signing first.
 
 What the diverged sheet does now:
 
-- `ReconcileCommand.rebase(workDir:)` (`mac/Sources/RcGitKit/SyncModel.swift:86`) returns
+- `ReconcileCommand.rebase(workDir:)` (`mac/Sources/RcGitKit/SyncModel.swift`) returns
   `cd <quoted workdir> && git pull --rebase`. The `cd` lets the line paste into any shell and
   leaves that shell in the checkout when the rebase stops on a conflict. `--rebase` is explicit
   because the app cannot read `pull.rebase`; per this session's reading, current git stops and
   asks for a strategy when a plain `git pull` meets diverged branches with none configured. A
   user who prefers merge edits the line.
-- `ShellWord.quote` (`mac/Sources/RcGitKit/ShellWord.swift:11`) leaves a word bare when every
+- `ShellWord.quote` (`mac/Sources/RcGitKit/ShellWord.swift`) leaves a word bare when every
   scalar is in the set Python's `shlex.quote` leaves bare minus `=`, and otherwise single-quotes
   it with each embedded quote written as `'\''`. `=` is quoted because both consumers run the
   word in zsh (the updater's `/bin/zsh -lc`, Terminal's default shell), whose EQUALS option
@@ -118,7 +121,7 @@ What the diverged sheet does now:
   `crates/rc-git-ffi` maps `ActionError::Diverged` and `ActionError::PushRejected` to
   `RCGIT_DIVERGED`, matching the CLI, which exits with its diverged code for both.
 - The updater's `sync()` names the same command when the rc-git checkout diverges
-  (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift:282`).
+  (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift`).
 
 ## Why This Matters
 
@@ -128,7 +131,7 @@ signed ones, a different committer, a rebase where they set merge. The differenc
 as a rejected push or a commit under the wrong name, far from the click that caused it.
 
 The gap already exists in a smaller form. In a repository set up for signing, commits made from
-the Changes tab are unsigned (`commit.rs:111`). An in-process rebase would widen that from "new
+the Changes tab are unsigned (`write_commit` in `commit.rs`). An in-process rebase would widen that from "new
 commits are unsigned" to "signed commits are replaced with unsigned ones".
 
 A handed-over command keeps both rules intact: rc-git writes only through the guard and spawns

@@ -115,8 +115,9 @@ than by reading a failing assertion.
   table's alignments and its padding of short rows, task items, nested list depth, setext
   headings, front matter, footnote split, reference links resolved in either order, and the
   inline cases that must *not* fire (`snake_case_name`, `2 * 3 = 6`, `**never closed`).
-- `docs/performance.md` carries the preview's budget — about 20 ms per MiB, off the main
-  actor — so a change that regresses it has a number to fail against.
+- `docs/performance.md` carries the preview's budget in its "markdown preview" row — parse
+  plus attributed-string build, off the main actor, capped at 8 MiB — so a change that
+  regresses it has a number to fail against.
 - Rule going forward: before adopting a platform parser for a format with extensions, write
   the ten-line probe that dumps its parse of a sample covering those extensions. Presentation
   intents existing for a construct does not mean the construct is usable, and a construct

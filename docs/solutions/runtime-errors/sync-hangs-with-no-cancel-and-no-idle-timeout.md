@@ -61,7 +61,8 @@ success and forever.
 ## Solution
 
 **One flag that outlives the call.** `Cancel` wraps `Arc<AtomicBool>` and replaces the bare
-borrow on `fetch_upstream`, `push_upstream`, `sync` and `build_pack`, so the ssh transport can
+borrow on `fetch_upstream`, `push_upstream` and the pack helpers `count_pack` and
+`write_pack` (the CLI's `sync` verb runs fetch, pull and push in turn), so the ssh transport can
 hold a share of it after the function that built the transport has returned
 (`crates/rc-git-guard/src/actions/remote.rs`).
 

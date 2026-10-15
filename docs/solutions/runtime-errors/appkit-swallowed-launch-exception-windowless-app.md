@@ -94,7 +94,7 @@ Verified with the poison frame still saved in defaults and `NSApplicationCrashOn
 The failure chain:
 
 1. `window.delegate = self` was set before `buildSplitViews()` ran.
-2. `setFrameAutosaveName("rc-git.window")` restores the saved frame during `init`. When the saved size differs from the initial `contentRect`, the restore resizes the window.
+2. `setFrameAutosaveName("rc-git.window")` restored the saved frame during `init` (today `setFrameUsingName(Self.frameName)` does the same). When the saved size differs from the initial `contentRect`, the restore resizes the window.
 3. The resize synchronously posts `NSWindowDidResizeNotification` → the delegate's `windowDidResize` → `applyLayout()`.
 4. `applyLayout()` ran `outerSplit.splitViewItems[0]` — but `buildSplitViews()` had not run yet, so the array was empty → `NSRangeException`.
 5. The exception unwound into AppKit's launch Apple Event processing (`aeProcessAppleEvent` → `_NSAppleEventManagerGenericHandler`), where **AppKit swallows it silently** — nothing on stderr, nothing in the unified log. `applicationDidFinishLaunching` aborted before reaching `showWindow(nil)`, so the windows existed in the window server (created with `defer: false`) but were never ordered in. The event loop then ran normally: a healthy-looking, windowless app.
@@ -113,7 +113,7 @@ Reordering `init` makes the split view items exist before any resize can fire `a
 **Code rules:**
 
 - Never set a window/view delegate before the state its callbacks touch exists. `windowDidResize` can fire inside `init`.
-- Treat `setFrameAutosaveName(_:)` as an immediate `windowDidResize` source, not passive bookkeeping — it restores (and resizes) at the call site.
+- Treat a frame restore — `setFrameUsingName(_:)`, which `MainWindowController.init()` calls, or `setFrameAutosaveName(_:)` when a frame is saved under that name — as an immediate `windowDidResize` source, not passive bookkeeping: it restores (and resizes) at the call site.
 - In delegate callbacks that can fire during construction, prefer `guard let x = collection.first` over `collection[0]`.
 - An exception thrown during launch Apple Event handling is swallowed by AppKit: the symptom is a windowless-but-running app with empty logs, not a crash. Reach for `NSApplicationCrashOnExceptions` early when launch behavior is inexplicable.
 
