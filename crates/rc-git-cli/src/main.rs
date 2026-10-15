@@ -113,6 +113,8 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   5 authentication required, 6 ssh host key unverified (rerun with --accept-hostkey),
   7 diverged or push rejected (reconcile with git, e.g. git pull --rebase),
   8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
+  9 no author identity (rerun with --author \"Name <email>\"),
+  10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push or sync between steps
   (a second one exits at once, even mid-step)
 ";
@@ -125,6 +127,8 @@ const EXIT_AUTH: u8 = 5;
 const EXIT_HOSTKEY: u8 = 6;
 const EXIT_DIVERGED: u8 = 7;
 const EXIT_STALE_HUNK: u8 = 8;
+const EXIT_IDENTITY: u8 = 9;
+const EXIT_NOT_CONFIRMED: u8 = 10;
 const EXIT_INTERRUPTED: u8 = 130;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
@@ -455,6 +459,8 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
         Some(ActionError::UnknownHostKey { .. }) => EXIT_HOSTKEY,
         Some(ActionError::Diverged { .. } | ActionError::PushRejected { .. }) => EXIT_DIVERGED,
         Some(ActionError::HunkMismatch { .. }) => EXIT_STALE_HUNK,
+        Some(ActionError::MissingIdentity { .. }) => EXIT_IDENTITY,
+        Some(ActionError::NotConfirmed { .. }) => EXIT_NOT_CONFIRMED,
         Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
         Some(_) | None => EXIT_ERROR,
     }

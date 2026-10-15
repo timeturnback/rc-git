@@ -1041,7 +1041,7 @@ fn commit_without_identity_names_the_repository_config_and_author_flag() {
     fx.write("alpha.txt", b"no identity\n");
 
     let out = rc_git(&["commit", path, "-m", "nobody", "alpha.txt"]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(9), "{}", stderr(&out));
     let message = stderr(&out);
     assert!(
         message.starts_with("error: commit: no author identity"),
@@ -1282,14 +1282,14 @@ fn the_stash_verbs_round_trip() {
     fx.git(&["checkout", "-q", "--", "alpha.txt"]);
 
     let out = rc_git(&["stash-drop", path, "0"]);
-    assert_eq!(out.status.code(), Some(1), "drop needs --confirm drop");
+    assert_eq!(out.status.code(), Some(10), "drop needs --confirm drop");
     assert_eq!(
         stderr(&out),
         "error: stash drop 'refs/stash': no typed confirmation was given; \
          type 'drop' to confirm (rerun with --confirm drop)\n"
     );
     let out = rc_git(&["stash-drop", path, "0", "--confirm", "drpo"]);
-    assert_eq!(out.status.code(), Some(1), "a wrong phrase is refused");
+    assert_eq!(out.status.code(), Some(10), "a wrong phrase is refused");
     assert!(
         stderr(&out).contains("did not match; type 'drop' to confirm (rerun with --confirm drop)"),
         "{}",
@@ -2094,7 +2094,7 @@ fn branch_delete_of_an_unmerged_branch_needs_its_name_and_backs_it_up() {
     );
 
     let out = rc_git(&["branch-delete", path, "feature", "--confirm", "nope"]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(10), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("rerun with --confirm feature"),
         "{}",
