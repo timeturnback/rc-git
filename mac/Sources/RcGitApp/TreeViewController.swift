@@ -121,6 +121,12 @@ final class TreeViewController: NSViewController, NSOutlineViewDataSource, NSOut
         load(root, path: "", into: nil)
     }
 
+    /// Measures every row on the outline again, for a pane that could not use the widths
+    /// reported while `shouldReportContentWidth` said no.
+    func remeasureContentWidth() {
+        reportContentWidth()
+    }
+
     /// Between a cell's trailing edge and the list's, once the column fills the list: the
     /// source list's `Style.margin` row inset plus the padding it keeps inside the selection.
     /// Measured with `frameOfCell(atColumn:row:)`; AppKit does not publish it.

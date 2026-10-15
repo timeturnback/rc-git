@@ -213,6 +213,46 @@ import Testing
     }
 }
 
+@Suite struct SidebarFitTests {
+    @Test func fitAppliesOnlyToAnOpenUnpinnedSidebarShowingFiles() {
+        #expect(SidebarFit.applies(isPinned: false, showsFiles: true, isCollapsed: false))
+        #expect(!SidebarFit.applies(isPinned: true, showsFiles: true, isCollapsed: false))
+        #expect(!SidebarFit.applies(isPinned: false, showsFiles: false, isCollapsed: false))
+        #expect(!SidebarFit.applies(isPinned: false, showsFiles: true, isCollapsed: true))
+    }
+
+    /// Feeds `fit` one state per step, as (showsFiles, isCollapsed), and returns whether each
+    /// step asked the tree to measure again.
+    private func measures(
+        _ steps: [(showsFiles: Bool, isCollapsed: Bool)], isPinned: Bool = false
+    ) -> [Bool] {
+        var fit = SidebarFit()
+        return steps.map {
+            fit.update(isPinned: isPinned, showsFiles: $0.showsFiles, isCollapsed: $0.isCollapsed)
+        }
+    }
+
+    @Test func returningToFilesMeasuresAgainOnce() {
+        let steps = [(true, false), (false, false), (true, false), (true, false)]
+        #expect(measures(steps) == [true, false, true, false])
+    }
+
+    @Test func reopeningTheSidebarMeasuresAgain() {
+        let steps = [(true, false), (true, true), (true, false)]
+        #expect(measures(steps) == [true, false, true])
+    }
+
+    @Test func reopeningTheSidebarOutsideFilesWaitsForFiles() {
+        let steps = [(false, true), (false, false), (true, false)]
+        #expect(measures(steps) == [false, false, true])
+    }
+
+    @Test func aPinnedSidebarNeverMeasuresAgain() {
+        let steps = [(true, false), (false, false), (true, false), (true, true), (true, false)]
+        #expect(measures(steps, isPinned: true) == [false, false, false, false, false])
+    }
+}
+
 @Suite struct SidebarWidthPinTests {
     @Test func unpinnedUntilPinnedThenRemembered() throws {
         try withScratchDefaults { defaults in

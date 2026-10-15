@@ -62,6 +62,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var sidebarCollapse = SidebarCollapse()
     /// Set once the user drags the sidebar divider; the automatic fit stands back after that.
     private let sidebarWidthPin = SidebarWidthPin()
+    private var sidebarFit = SidebarFit()
     /// The defaults name every tab saves its window frame under and the next window restores.
     private static let frameName = "rc-git.window"
     private var repositoryName = ""
@@ -236,6 +237,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             reloadRefs(in: refsController)
         case .changes: sidebarController.show(section: changesSection)
         }
+        refreshSidebarFit()
         renderBanner()
         if mode == .history, model.history.isEmpty {
             Task { await model.loadMoreHistory() }
@@ -644,13 +646,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Whether `fitSidebarWidth` would apply a width now; the tree measures nothing otherwise.
     private var sidebarFitsContent: Bool {
-        !sidebarWidthPin.isPinned
-            && contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue
-            // A width for a collapsed sidebar would re-open it behind the user.
-            && outerSplit.splitViewItems.first?.isCollapsed == false
+        SidebarFit.applies(
+            isPinned: sidebarWidthPin.isPinned,
+            showsFiles: contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue,
+            isCollapsed: outerSplit.splitViewItems.first?.isCollapsed ?? true)
+    }
+
+    /// Has the tree measure its rows again when the fit turns back on, since it skipped every
+    /// width while Files was hidden or the sidebar collapsed.
+    private func refreshSidebarFit() {
+        let turnedOn = sidebarFit.update(
+            isPinned: sidebarWidthPin.isPinned,
+            showsFiles: contentTabs.selectedTabViewItemIndex == ContentMode.files.rawValue,
+            isCollapsed: outerSplit.splitViewItems.first?.isCollapsed ?? true)
+        if turnedOn {
+            treeController.remeasureContentWidth()
+        }
     }
 
     @objc private func sidebarDidResize(_ notification: Notification) {
+        // A collapse or re-open resizes the sidebar too, however it was triggered.
+        refreshSidebarFit()
         guard SidebarResize.isUserDrag(notification.userInfo) else { return }
         sidebarWidthPin.pin()
     }

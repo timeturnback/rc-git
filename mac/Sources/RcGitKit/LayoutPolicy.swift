@@ -140,6 +140,29 @@ public struct SidebarCollapse: Equatable, Sendable {
     }
 }
 
+/// Whether the sidebar sizes itself to the tree's rows, and when that turns back on. The tree
+/// measures nothing while the fit stands back, so a width skipped then must be measured again
+/// the moment Files shows or the sidebar re-opens, or the sidebar keeps its stale width.
+public struct SidebarFit: Equatable, Sendable {
+    public private(set) var applies = false
+
+    public init() {}
+
+    /// Whether the fit applies: a divider the user dragged is theirs, only Files shows the tree,
+    /// and a width for a collapsed sidebar would re-open it behind the user.
+    public static func applies(isPinned: Bool, showsFiles: Bool, isCollapsed: Bool) -> Bool {
+        !isPinned && showsFiles && !isCollapsed
+    }
+
+    /// Records the fit's state now; `true` when it has just turned on and the tree must
+    /// measure its rows again.
+    public mutating func update(isPinned: Bool, showsFiles: Bool, isCollapsed: Bool) -> Bool {
+        let now = Self.applies(isPinned: isPinned, showsFiles: showsFiles, isCollapsed: isCollapsed)
+        defer { applies = now }
+        return now && !applies
+    }
+}
+
 /// Reads `NSSplitView.didResizeSubviewsNotification` user info.
 public enum SidebarResize {
     /// Whether the resize was the user dragging a divider. `setPosition(_:ofDividerAt:)` posts
