@@ -845,7 +845,10 @@ private let switchedWithoutReflog = CheckoutOutcome(
         await model.sync()
 
         if case let .failed(_, message) = model.state {
-            #expect(message.contains("no upstream"))
+            #expect(
+                message
+                    == "branch 'main' has no remote to use; add an 'origin' remote or set "
+                    + "branch.main.remote")
         } else {
             Issue.record("expected failed, got \(model.state)")
         }
@@ -1638,7 +1641,10 @@ private let switchedWithoutReflog = CheckoutOutcome(
         #expect(performer.checkoutBranches == ["main"], "the switch is local and still runs")
         if case let .failed(step, message) = model.state {
             #expect(step == .fetch)
-            #expect(message.contains("no upstream"))
+            #expect(
+                message
+                    == "branch 'main' has no remote to use; add an 'origin' remote or set "
+                    + "branch.main.remote")
         } else {
             Issue.record("expected failed, got \(model.state)")
         }

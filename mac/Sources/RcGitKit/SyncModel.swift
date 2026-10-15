@@ -702,13 +702,18 @@ public final class SyncModel {
         case let .success(status) where !status.hasUpstream:
             throw StepFailure(
                 step: step,
-                message:
-                    "branch '\(status.branch)' has no upstream; configure one with git first",
+                message: Self.noUpstreamMessage(branch: status.branch),
                 diverged: false
             )
         case .success:
             return
         }
+    }
+
+    /// The guard's own `NoUpstream` wording, so the refusal reads the same from either layer.
+    static func noUpstreamMessage(branch: String) -> String {
+        "branch '\(branch)' has no remote to use; add an 'origin' remote or set "
+            + "branch.\(branch).remote"
     }
 
     private func runCheckout(_ branch: String) async throws(StepFailure) -> CheckoutOutcome {

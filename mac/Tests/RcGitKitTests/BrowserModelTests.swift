@@ -217,6 +217,22 @@ import Testing
         #expect(repo.lock.withLock { repo.readBlobCalls } == 0, "the disk file is no blob")
     }
 
+    @Test func loadAnywayNeverPassesTheHardLimit() async {
+        let huge = oid(0x7e)
+        repo.blobs[huge] = textBlob("stands for a file over the hard limit")
+        repo.blobSizes[huge] = FileLimits.hardLimit + 1
+        await model.attach(repo)
+        await model.openFile(TreeEntry(name: "huge.bin", oid: huge, kind: .blob))
+
+        await model.loadAnyway(limit: FileLimits.hardLimit + 1)
+        guard case let .tooLarge(_, size, limit) = model.fileState else {
+            Issue.record("expected too large, got \(model.fileState)")
+            return
+        }
+        #expect(size == FileLimits.hardLimit + 1)
+        #expect(limit == FileLimits.hardLimit)
+    }
+
     @Test func openFileProducesTextBinaryAndTooLargeStates() async {
         await model.attach(repo)
         let readmeEntry = TreeEntry(name: "README.md", oid: readme, kind: .blob)

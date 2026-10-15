@@ -704,8 +704,10 @@ public final class BrowserModel {
 
     /// Re-reads the file on screen with a larger `limit`, from where it was opened: the
     /// working directory for a file read from disk, its blob otherwise. A file deleted from
-    /// disk opened through its HEAD blob, so `browsingWorkingTree` cannot decide this.
-    public func loadAnyway(limit: UInt64) async {
+    /// disk opened through its HEAD blob, so `browsingWorkingTree` cannot decide this. The
+    /// limit never exceeds `FileLimits.hardLimit`, whatever the caller asks for.
+    public func loadAnyway(limit requested: UInt64) async {
+        let limit = min(requested, FileLimits.hardLimit)
         switch openedFileSource {
         case nil:
             return

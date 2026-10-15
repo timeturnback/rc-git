@@ -110,7 +110,8 @@ final class FileViewController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             placeholder.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: root.centerYAnchor),
-            placeholder.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor, constant: -40),
+            placeholder.widthAnchor.constraint(
+                lessThanOrEqualTo: root.widthAnchor, constant: -2 * Style.margin),
             loadAnyway.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             loadAnyway.topAnchor.constraint(equalTo: placeholder.bottomAnchor, constant: 12),
         ])

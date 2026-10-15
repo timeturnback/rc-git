@@ -35,6 +35,8 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     let lock = NSLock()
     var trees: [Oid: [TreeEntry]] = [:]
     var blobs: [Oid: BlobContent] = [:]
+    /// Per oid, the size its header claims, so a test can stand for a blob too big to build.
+    var blobSizes: [Oid: UInt64] = [:]
     var readBlobCalls = 0
     var commits: [Oid: [CommitSummary]] = [:]
     var summaries: [Oid: CommitSummary] = [:]
@@ -186,10 +188,14 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             readBlobCalls += 1
             return (blobs[oid], delays[oid] ?? 0, gates.removeValue(forKey: oid))
         }
+        let claimedSize = lock.withLock { blobSizes[oid] }
         gate?.pass()
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         guard let content else {
             throw RepositoryError("read blob header: object \(oid): missing")
+        }
+        if let claimedSize, claimedSize > limit {
+            return .tooLarge(size: claimedSize, limit: limit)
         }
         if case let .text(data, _, _) = content, UInt64(data.count) > limit {
             return .tooLarge(size: UInt64(data.count), limit: limit)
