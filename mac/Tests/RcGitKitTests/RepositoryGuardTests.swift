@@ -118,9 +118,10 @@ import Testing
                 == "Bridge User|bridge@example.com")
         let shown = try #require(try Repository(path: fixture.path).stashList().first)
         let elsewhere = StashEntry(index: 0, oid: try commitID(head), message: shown.message)
-        #expect(throws: RepositoryError.self) {
+        let stale = #expect(throws: StaleRepositoryError.self) {
             try RepositoryGuard.stashDrop(repoPath: fixture.path, entry: elsewhere, input: "drop")
         }
+        #expect(stale?.message.contains("changed since the list was built") == true)
         #expect(try fixture.gitOutput(["stash", "list", "--format=%gs"]) == "On main: bridged")
         let stashTip = try fixture.revParse("stash@{0}")
         let backup = try RepositoryGuard.stashPop(repoPath: fixture.path, entry: shown, input: nil)
@@ -198,7 +199,7 @@ import Testing
         try fixture.write("alpha.txt", "judged against an old head\n")
         let head = try fixture.revParse("HEAD")
 
-        #expect(throws: RepositoryError.self) {
+        #expect(throws: StaleRepositoryError.self) {
             _ = try RepositoryGuard.commit(
                 repoPath: fixture.path, message: "Stale",
                 fallback: CommitIdentity(name: "Bridge User", email: "bridge@example.com"),
@@ -227,6 +228,29 @@ import Testing
         }
         #expect(try fixture.revParse("HEAD") == head)
         #expect(try fixture.gitOutput(["status", "--porcelain"]) == "M alpha.txt")
+    }
+
+    @Test func aStaleRepositoryIsANoticeAndEveryOtherFailureAnAlert() {
+        let stale = RepositoryGuard.failureResponse(
+            to: StaleRepositoryError(message: "stash drop: the stash changed"))
+        #expect(
+            stale
+                == .stale(
+                    notice: "stash drop: the stash changed\n"
+                        + "The list has been reloaded; check it and try again."))
+        #expect(
+            RepositoryGuard.failureResponse(to: RepositoryError("discard: dirty"))
+                == .failed(message: "discard: dirty"))
+        #expect(
+            RepositoryGuard.failureResponse(to: IdentityRequiredError(message: "no identity"))
+                == .failed(message: "no identity"))
+        #expect(
+            RepositoryGuard.failureResponse(to: SyncError.stale(message: "pull: moved"))
+                == .stale(
+                    notice: "pull: moved\nThe list has been reloaded; check it and try again."))
+        #expect(
+            RepositoryGuard.failureResponse(to: SyncError.diverged(message: "pull: diverged"))
+                == .failed(message: "pull: diverged"))
     }
 
     private func worktreeStamps(_ fixture: GitFixture, _ path: String) throws -> [HunkStamp] {

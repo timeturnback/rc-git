@@ -39,6 +39,11 @@
 /// Ask for that key's passphrase and retry with it.
 #define RCGIT_PASSPHRASE_REQUIRED -7
 
+/// Status for guarded mutations: the repository changed since the caller built what it showed
+/// (a ref moved, a stash entry shifted, `HEAD` advanced), so nothing was written; see `error`.
+/// Reload and let the user try again on what is there now.
+#define RCGIT_STALE -8
+
 /// Namespace of a reference.
 typedef enum RcGitRefKind {
   /// `refs/heads/*`
@@ -1315,7 +1320,8 @@ int32_t rcgit_guard_tag_create(const char *repo_path,
 /// Deletes the local branch `name`. `input` is what the user typed to answer the challenge,
 /// or NULL when the decision needed only a plain confirm; it is verified inside the guard.
 /// On success, when a backup ref was written its full name is stored into `backup` (release
-/// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK`, `RCGIT_STALE` when
+/// the branch moved since the decision was made, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` and `name` are NUL-terminated strings; `input` is NULL or one. `backup` is
@@ -1386,8 +1392,8 @@ void rcgit_identity_free(struct RcGitIdentity *identity);
 /// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
 /// the repository's own config sets no `user.name`/`user.email`; without either the commit
 /// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
-/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
-/// `RCGIT_ERROR`.
+/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`,
+/// `RCGIT_STALE` when `HEAD` moved, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
@@ -1421,8 +1427,8 @@ int32_t rcgit_guard_stash_push(const char *repo_path,
 
 /// Writes `stash@{index}` back to the working tree, keeping the entry. `expected` is the
 /// stash commit the caller showed at that position; refused when the entry there is now
-/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK` or
-/// `RCGIT_ERROR`.
+/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK`,
+/// `RCGIT_STALE` when the entry is gone or is another one, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated string; `expected` points to a readable `RcGitOid`;
@@ -1437,7 +1443,7 @@ int32_t rcgit_guard_stash_apply(const char *repo_path,
 /// Applies `stash@{index}` and drops it once every file is restored, refusing as
 /// `rcgit_guard_stash_apply` does when the entry there is no longer `expected`. On success,
 /// the backup ref's full name is stored into `backup` (release with `rcgit_string_free`).
-/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// Returns `RCGIT_OK`, `RCGIT_STALE`, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.

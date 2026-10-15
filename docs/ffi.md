@@ -30,6 +30,9 @@
   only: an encrypted key stayed locked, and `hostkey` holds that key file's path). Their inputs travel in one
   `RcGitRemoteAuth` struct whose fields may all be `NULL`. Commit and stash push add
   `RCGIT_IDENTITY_REQUIRED` (-6): no author identity, so the app asks for one and retries.
+  Every guarded mutation adds `RCGIT_STALE` (-8): the repository changed since the caller
+  built what it showed (a ref moved, a stash entry shifted), nothing was written, so the app
+  reloads and shows a soft notice instead of an error.
 - A status the app branches on is a named code from an exhaustive match on the error, never
   text the app searches for in the message.
 - `RcGitCancel` is the one handle meant to be touched from a second thread: the thread

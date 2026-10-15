@@ -935,7 +935,7 @@ public final class SyncModel {
         case (.authRequired, .httpsToken): .prompt(key: nil)
         case let (.passphraseRequired(_, key), .sshPassphrase): .prompt(key: key)
         case (.authRequired, .sshPassphrase), (.passphraseRequired, .httpsToken),
-            (.diverged, _), (.hostKeyUnknown, _), (.cancelled, _), (.failure, _):
+            (.diverged, _), (.stale, _), (.hostKeyUnknown, _), (.cancelled, _), (.failure, _):
             .none
         }
     }

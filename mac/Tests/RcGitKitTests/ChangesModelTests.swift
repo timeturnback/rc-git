@@ -50,6 +50,28 @@ import Testing
                 == "cannot discard 'f\u{FFFD}o': the path is not valid UTF-8")
     }
 
+    @Test func recoveringFromAStaleRepositoryReloadsBothLists() async {
+        await model.refresh()
+        let before = repo.lock.withLock { (repo.statusCalls, repo.stashCalls) }
+        let response = await model.recover(
+            from: StaleRepositoryError(message: "stash drop: the stash changed"))
+        guard case .stale = response else {
+            Issue.record("expected a stale notice, got \(response)")
+            return
+        }
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0 + 1)
+        #expect(repo.lock.withLock { repo.stashCalls } == before.1 + 1)
+    }
+
+    @Test func recoveringFromAnyOtherFailureLeavesTheListsAlone() async {
+        await model.refresh()
+        let before = repo.lock.withLock { (repo.statusCalls, repo.stashCalls) }
+        let response = await model.recover(from: RepositoryError("discard: refused"))
+        #expect(response == .failed(message: "discard: refused"))
+        #expect(repo.lock.withLock { repo.statusCalls } == before.0)
+        #expect(repo.lock.withLock { repo.stashCalls } == before.1)
+    }
+
     @Test func loadsStatusAndCapturesExpectedHead() async {
         var statusCallbacks = 0
         model.onStatusChanged = { statusCallbacks += 1 }

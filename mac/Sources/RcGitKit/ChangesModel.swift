@@ -199,6 +199,17 @@ public final class ChangesModel {
         _ = await (status, stash)
     }
 
+    /// Answers a guarded action that failed. A stale repository reloads the change and stash
+    /// lists before returning, so the notice the window shows sits over what is there now;
+    /// any other failure leaves the lists alone.
+    public func recover(from error: any Error) async -> GuardFailure {
+        let response = RepositoryGuard.failureResponse(to: error)
+        if case .stale = response {
+            await refresh()
+        }
+        return response
+    }
+
     /// The working tree, the refs or the hidden-files setting changed. A visible list
     /// rescans now; a hidden one only remembers, so a burst of events while it is off screen
     /// costs no scan at all.

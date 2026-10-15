@@ -1168,8 +1168,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self?.performCommit(message, prompted: identity)
                 }
             } else {
-                self?.presentError(
-                    Self.failureMessage(error), title: RepositoryGuard.failureTitle(verb: "Commit"))
+                self?.presentGuardFailure(error, verb: "Commit")
             }
         }
     }
@@ -1206,8 +1205,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     self?.performStashPush(prompted: identity)
                 }
             } else {
-                self?.presentError(
-                    Self.failureMessage(error), title: RepositoryGuard.failureTitle(verb: "Stash"))
+                self?.presentGuardFailure(error, verb: "Stash")
             }
         }
     }
@@ -1668,17 +1666,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 if let onFailure {
                     onFailure(error)
                 } else {
-                    self?.presentError(
-                        Self.failureMessage(error),
-                        title: RepositoryGuard.failureTitle(verb: verb))
+                    self?.presentGuardFailure(error, verb: verb)
                 }
             }
         }
     }
 
-    /// The text to show for a failed guarded action.
-    private static func failureMessage(_ error: any Error) -> String {
-        (error as? RepositoryError)?.message ?? String(describing: error)
+    /// Shows a failed guarded action as RcGitKit decides: a stale repository reloads the
+    /// lists and gets a soft notice, anything else an alert titled by `verb`.
+    private func presentGuardFailure(_ error: any Error, verb: String) {
+        Task { [weak self] in
+            let response: GuardFailure
+            if let changesModel = self?.changesModel {
+                response = await changesModel.recover(from: error)
+            } else {
+                response = RepositoryGuard.failureResponse(to: error)
+            }
+            switch response {
+            case let .stale(notice):
+                self?.presentError(
+                    notice, title: RepositoryGuard.staleTitle, style: .informational)
+            case let .failed(message):
+                self?.presentError(message, title: RepositoryGuard.failureTitle(verb: verb))
+            }
+        }
     }
 
     private func presentError(

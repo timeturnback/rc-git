@@ -58,6 +58,10 @@ pub const RCGIT_IDENTITY_REQUIRED: i32 = -6;
 /// passphrase or the wrong one; `hostkey` holds the key file's path, `error` the message.
 /// Ask for that key's passphrase and retry with it.
 pub const RCGIT_PASSPHRASE_REQUIRED: i32 = -7;
+/// Status for guarded mutations: the repository changed since the caller built what it showed
+/// (a ref moved, a stash entry shifted, `HEAD` advanced), so nothing was written; see `error`.
+/// Reload and let the user try again on what is there now.
+pub const RCGIT_STALE: i32 = -8;
 
 /// An object id: the first `len` bytes of `bytes` are the hash (20 for SHA-1).
 #[repr(C)]
@@ -3030,7 +3034,8 @@ pub unsafe extern "C" fn rcgit_guard_tag_create(
 /// Deletes the local branch `name`. `input` is what the user typed to answer the challenge,
 /// or NULL when the decision needed only a plain confirm; it is verified inside the guard.
 /// On success, when a backup ref was written its full name is stored into `backup` (release
-/// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// with `rcgit_string_free`; NULL `backup` is fine). Returns `RCGIT_OK`, `RCGIT_STALE` when
+/// the branch moved since the decision was made, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` and `name` are NUL-terminated strings; `input` is NULL or one. `backup` is
@@ -3618,8 +3623,8 @@ pub unsafe extern "C" fn rcgit_identity_free(identity: *mut RcGitIdentity) {
 /// when `HEAD` moved from `request.expected_head`. `request.fallback` is recorded only when
 /// the repository's own config sets no `user.name`/`user.email`; without either the commit
 /// is refused with `RCGIT_IDENTITY_REQUIRED`. On success `out` holds the result; release it
-/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`, or
-/// `RCGIT_ERROR`.
+/// with `rcgit_commit_result_free`. Returns `RCGIT_OK`, `RCGIT_IDENTITY_REQUIRED`,
+/// `RCGIT_STALE` when `HEAD` moved, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated string and `input` is NULL or one. `request` is NULL or
@@ -3745,11 +3750,11 @@ pub unsafe extern "C" fn rcgit_guard_stash_push(
 fn action_status(err: &ActionError) -> i32 {
     match err {
         ActionError::MissingIdentity { .. } => RCGIT_IDENTITY_REQUIRED,
+        ActionError::StaleRepository { .. } => RCGIT_STALE,
         ActionError::Denied { .. }
         | ActionError::NotConfirmed { .. }
         | ActionError::CheckedOut { .. }
         | ActionError::DetachedHead { .. }
-        | ActionError::StaleRepository { .. }
         | ActionError::HunkMismatch { .. }
         | ActionError::NoHunksSelected { .. }
         | ActionError::DirtyPath { .. }
@@ -3772,8 +3777,8 @@ fn action_status(err: &ActionError) -> i32 {
 
 /// Writes `stash@{index}` back to the working tree, keeping the entry. `expected` is the
 /// stash commit the caller showed at that position; refused when the entry there is now
-/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK` or
-/// `RCGIT_ERROR`.
+/// another one, or when any touched path has uncommitted changes. Returns `RCGIT_OK`,
+/// `RCGIT_STALE` when the entry is gone or is another one, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// `repo_path` is a NUL-terminated string; `expected` points to a readable `RcGitOid`;
@@ -3819,7 +3824,7 @@ pub unsafe extern "C" fn rcgit_guard_stash_apply(
 /// Applies `stash@{index}` and drops it once every file is restored, refusing as
 /// `rcgit_guard_stash_apply` does when the entry there is no longer `expected`. On success,
 /// the backup ref's full name is stored into `backup` (release with `rcgit_string_free`).
-/// Returns `RCGIT_OK` or `RCGIT_ERROR`.
+/// Returns `RCGIT_OK`, `RCGIT_STALE`, or `RCGIT_ERROR`.
 ///
 /// # Safety
 /// As `rcgit_guard_stash_apply`; `backup` is NULL or valid for writing a `char *`.
@@ -4196,11 +4201,11 @@ fn finish_remote(error: &Out<*mut c_char>, hostkey: &Out<*mut c_char>, err: &Act
             hostkey.set(export_string(format!("{key_type} {fingerprint}")));
             RCGIT_HOSTKEY_UNKNOWN
         }
+        ActionError::StaleRepository { .. } => RCGIT_STALE,
         ActionError::Denied { .. }
         | ActionError::NotConfirmed { .. }
         | ActionError::CheckedOut { .. }
         | ActionError::DetachedHead { .. }
-        | ActionError::StaleRepository { .. }
         | ActionError::HunkMismatch { .. }
         | ActionError::NoHunksSelected { .. }
         | ActionError::DirtyPath { .. }
@@ -4583,6 +4588,21 @@ mod tests {
         assert_eq!(finish_remote(&error, &hostkey_out, &err), RCGIT_ERROR);
         assert!(hostkey.is_null());
         assert!(take_error(&mut message).contains("refused to sign with 'work@laptop'"));
+    }
+
+    /// A repository that changed under the caller is its own status on both mappings, so the
+    /// app reloads instead of showing a failure.
+    #[test]
+    fn a_stale_repository_reports_its_own_status() {
+        let err = ActionError::StaleRepository { op: "pull" };
+        let mut message = ptr::null_mut();
+        let mut hostkey = ptr::null_mut();
+        let (error, hostkey_out) =
+            unsafe { (Out::new(&raw mut message), Out::new(&raw mut hostkey)) };
+        assert_eq!(finish_remote(&error, &hostkey_out, &err), RCGIT_STALE);
+        assert!(hostkey.is_null());
+        assert!(take_error(&mut message).contains("pull"));
+        assert_eq!(action_status(&err), RCGIT_STALE);
     }
 
     fn open(fx: &Fixture) -> *mut RcGitRepo {
@@ -6491,7 +6511,7 @@ mod tests {
                 &raw mut error,
             )
         };
-        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(status, RCGIT_STALE);
         assert!(take_error(&mut error).contains("changed since the list was built"));
         let status = unsafe {
             rcgit_guard_stash_drop(
@@ -6503,7 +6523,7 @@ mod tests {
                 &raw mut error,
             )
         };
-        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(status, RCGIT_STALE);
         assert!(take_error(&mut error).contains("changed since the list was built"));
         let status = unsafe {
             rcgit_guard_stash_pop(
@@ -6827,7 +6847,7 @@ mod tests {
         );
 
         let (status, message) = commit_against(&commit_id(&fx.rev_parse("HEAD~1")));
-        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(status, RCGIT_STALE, "a moved HEAD is stale, not a failure");
         assert!(!message.contains("malformed"), "{message}");
         assert_eq!(
             fx.rev_parse("HEAD"),

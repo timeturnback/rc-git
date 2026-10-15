@@ -131,6 +131,26 @@ public enum RepositoryGuard {
         "rc-git could not \(verb.lowercased())"
     }
 
+    /// Title for the soft notice after an action found the repository changed under it.
+    public static let staleTitle = "The repository changed"
+
+    /// How the window answers a failed guarded action. A stale repository is not a failure:
+    /// nothing was written, so the lists reload and a soft notice says to look again. Every
+    /// other error is an alert with its message.
+    public static func failureResponse(to error: any Error) -> GuardFailure {
+        switch error {
+        case let error as StaleRepositoryError: .stale(notice: staleNotice(error.message))
+        case let SyncError.stale(message): .stale(notice: staleNotice(message))
+        case let error as RepositoryError: .failed(message: error.message)
+        case let error as SyncError: .failed(message: error.message)
+        default: .failed(message: String(describing: error))
+        }
+    }
+
+    private static func staleNotice(_ message: String) -> String {
+        "\(message)\nThe list has been reloaded; check it and try again."
+    }
+
     /// The branch or tag name a name sheet hands on: the field without surrounding
     /// whitespace, or `nil` while nothing is left, which keeps the sheet's Create disabled.
     /// Whether git accepts the name is the guard's call, made when the ref is created.
@@ -179,7 +199,7 @@ public enum RepositoryGuard {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = rcgit_guard_branch_delete(repoPath, name, input, &backup, &error)
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot delete branch '\(name)'")
+            throw actionError(status, error, fallback: "cannot delete branch '\(name)'")
         }
         return RepositoryError.takeString(backup)
     }
@@ -193,7 +213,7 @@ public enum RepositoryGuard {
         var error: UnsafeMutablePointer<CChar>? = nil
         let status = rcgit_guard_tag_delete(repoPath, name, input, &backup, &error)
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot delete tag '\(name)'")
+            throw actionError(status, error, fallback: "cannot delete tag '\(name)'")
         }
         return RepositoryError.takeString(backup)
     }
@@ -340,7 +360,7 @@ public enum RepositoryGuard {
             rcgit_guard_stash_apply(repoPath, entry.index, expected, input, &error)
         }
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot apply the stash")
+            throw actionError(status, error, fallback: "cannot apply the stash")
         }
     }
 
@@ -356,7 +376,7 @@ public enum RepositoryGuard {
             rcgit_guard_stash_pop(repoPath, entry.index, expected, input, &backup, &error)
         }
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot pop the stash")
+            throw actionError(status, error, fallback: "cannot pop the stash")
         }
         return RepositoryError.takeString(backup)
     }
@@ -373,7 +393,7 @@ public enum RepositoryGuard {
             rcgit_guard_stash_drop(repoPath, entry.index, expected, input, &backup, &error)
         }
         guard status == RCGIT_OK else {
-            throw RepositoryError.take(error, fallback: "cannot drop the stash")
+            throw actionError(status, error, fallback: "cannot drop the stash")
         }
         return RepositoryError.takeString(backup)
     }
@@ -538,6 +558,25 @@ public struct IdentityRequiredError: Error, Sendable, Hashable, CustomStringConv
     public var description: String { message }
 }
 
+/// An action refused because the repository changed since the list it acted on was built: a
+/// ref moved, a stash entry shifted, `HEAD` advanced. Nothing was written; reload and let the
+/// user try again on what is there now.
+public struct StaleRepositoryError: Error, Sendable, Hashable, CustomStringConvertible {
+    public let message: String
+
+    public var description: String { message }
+}
+
+/// What the window shows for a failed guarded action, decided by
+/// `RepositoryGuard.failureResponse(to:)`.
+public enum GuardFailure: Sendable, Hashable {
+    /// The repository changed under the action: reload, then show `notice` as a soft,
+    /// informational sheet.
+    case stale(notice: String)
+    /// A real failure or refusal: show `message` as an alert.
+    case failed(message: String)
+}
+
 /// How a remote operation failed, typed so the caller can prompt or explain.
 public enum SyncError: Error, Sendable, Hashable {
     /// The host wants credentials it did not get, or rejected the given ones. Over ssh
@@ -548,6 +587,8 @@ public enum SyncError: Error, Sendable, Hashable {
     case passphraseRequired(message: String, key: String)
     /// Local and remote history diverged; reconcile in git.
     case diverged(message: String)
+    /// The repository changed since the operation was planned; nothing was written.
+    case stale(message: String)
     /// The ssh host's key is not known; `hostKey` is `"<key type> <fingerprint>"` for
     /// the user to verify before trusting.
     case hostKeyUnknown(message: String, hostKey: String)
@@ -560,7 +601,7 @@ public enum SyncError: Error, Sendable, Hashable {
     public var message: String {
         switch self {
         case let .authRequired(message), let .cancelled(message), let .diverged(message),
-            let .failure(message), let .hostKeyUnknown(message, _),
+            let .stale(message), let .failure(message), let .hostKeyUnknown(message, _),
             let .passphraseRequired(message, _):
             message
         }
@@ -712,16 +753,18 @@ extension RepositoryGuard {
         return PushOutcome(pushedCommits: out.pushed_commits)
     }
 
-    /// The typed error for a failed commit or stash push: `IdentityRequiredError` for
-    /// `RCGIT_IDENTITY_REQUIRED`, else `RepositoryError`.
+    /// The typed error for a failed local guarded action: `IdentityRequiredError` for
+    /// `RCGIT_IDENTITY_REQUIRED`, `StaleRepositoryError` for `RCGIT_STALE`, else
+    /// `RepositoryError`.
     private static func actionError(
         _ status: Int32, _ error: UnsafeMutablePointer<CChar>?, fallback: String
     ) -> any Error {
         let failure = RepositoryError.take(error, fallback: fallback)
-        if status == RCGIT_IDENTITY_REQUIRED {
-            return IdentityRequiredError(message: failure.message)
+        switch status {
+        case RCGIT_IDENTITY_REQUIRED: return IdentityRequiredError(message: failure.message)
+        case RCGIT_STALE: return StaleRepositoryError(message: failure.message)
+        default: return failure
         }
-        return failure
     }
 
     private static func syncError(
@@ -733,6 +776,7 @@ extension RepositoryGuard {
         case RCGIT_AUTH_REQUIRED: return .authRequired(message: message)
         case RCGIT_CANCELLED: return .cancelled(message: message)
         case RCGIT_DIVERGED: return .diverged(message: message)
+        case RCGIT_STALE: return .stale(message: message)
         case RCGIT_HOSTKEY_UNKNOWN:
             return .hostKeyUnknown(
                 message: message, hostKey: RepositoryError.takeString(hostkey) ?? "")
