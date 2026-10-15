@@ -79,8 +79,11 @@ usage: rc-git [--time] <command> <repo> [args]
   tag-create  <repo> <name> [rev]         create a lightweight tag the same way
   branch-delete <repo> <name> [--confirm <name>]  delete a branch; an unmerged one needs its
                                           name typed and is backed up first
-  tag-delete  <repo> <name> --confirm <name>  delete a tag, backed up first; both print
-                                          deleted<TAB>full name, then backup<TAB>ref if written
+  tag-delete  <repo> <name> --confirm <name> [--expect-target <oid>]
+                                          delete a tag, backed up first; with --expect-target,
+                                          refuse if it no longer peels to that full object id;
+                                          both print deleted<TAB>full name, then
+                                          backup<TAB>ref if written
   plan-delete <repo> branch|tag <name>    what deleting would need, one record:
                                           allow|confirm|deny<TAB>risk<TAB>phrase<TAB>backup
                                           yes|no<TAB>summary or reason ('-' when none)
@@ -2021,7 +2024,11 @@ fn ref_delete_verb(
         RefSort::Branch => "branch-delete",
         RefSort::Tag => "tag-delete",
     };
-    let args = split_args(label, args, &["--confirm"], &[])?;
+    let flags: &[&'static str] = match sort {
+        RefSort::Branch => &["--confirm"],
+        RefSort::Tag => &["--confirm", "--expect-target"],
+    };
+    let args = split_args(label, args, flags, &[])?;
     args.expect(1, 1, "<name>")?;
     let Some(name) = args.positional(0) else {
         bail!("{label} needs <name>\n\n{USAGE}");
@@ -2040,13 +2047,29 @@ fn ref_delete_verb(
     }
     let deleted = match sort {
         RefSort::Branch => rc_git_guard::actions::delete_branch(repo_path, &policy, name, input)?,
-        RefSort::Tag => rc_git_guard::actions::delete_tag(repo_path, &policy, name, input)?,
+        RefSort::Tag => {
+            let expected = expected_tag_target(repo_path, name, args.value(&["--expect-target"]))?;
+            rc_git_guard::actions::delete_tag(repo_path, &policy, name, expected, input)?
+        }
     };
     writeln!(out, "deleted\t{}", deleted.full_name)?;
     if let Some(backup) = deleted.backup_ref {
         writeln!(out, "backup\t{backup}")?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The object the guard checks the tag `name` against before deleting it: the caller's
+/// `--expect-target`, so a tag moved since they looked is kept, or else what it peels to now.
+fn expected_tag_target(repo_path: &std::path::Path, name: &str, flag: Option<&str>) -> Result<Oid> {
+    if let Some(hex) = flag {
+        return Oid::from_hex(hex).map_err(|_| {
+            usage_error(format!(
+                "tag-delete --expect-target takes a full object id, not '{hex}'\n\n{USAGE}"
+            ))
+        });
+    }
+    Ok(Repository::open(repo_path)?.resolve(&format!("refs/tags/{name}^{{}}"))?)
 }
 
 /// `plan-delete branch|tag <name>`: the guard's decision as one record, so a caller can see

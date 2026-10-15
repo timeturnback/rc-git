@@ -3180,24 +3180,28 @@ pub unsafe extern "C" fn rcgit_guard_branch_delete(
     delete_ref_with(delete_branch, repo_path, name, input, &outs)
 }
 
-/// Deletes the tag `name`. Same contract as `rcgit_guard_branch_delete`.
+/// Deletes the tag `name`. `expected` is the object the caller showed the tag pointing at,
+/// after peeling (the ref list's target). Otherwise the same contract as
+/// `rcgit_guard_branch_delete`; `RCGIT_STALE` means the tag no longer peels to `expected`.
 ///
 /// # Safety
-/// As `rcgit_guard_branch_delete`.
+/// As `rcgit_guard_branch_delete`; `expected` points to a readable `RcGitOid`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcgit_guard_tag_delete(
     repo_path: *const c_char,
     name: *const c_char,
+    expected: *const RcGitOid,
     input: *const c_char,
     backup: *mut *mut c_char,
     error: *mut *mut c_char,
 ) -> i32 {
     const OP: &str = "rcgit_guard_tag_delete";
     // SAFETY: forwarded from this function's contract.
-    let (repo_path, name, input, outs) = unsafe {
+    let (repo_path, name, expected, input, outs) = unsafe {
         (
             bytes_arg(repo_path),
             bytes_arg(name),
+            oid_arg(expected),
             bytes_arg(input),
             DeletedOuts {
                 backup: Out::new(backup),
@@ -3211,7 +3215,13 @@ pub unsafe extern "C" fn rcgit_guard_tag_delete(
     let Some(name) = outs.error.required(OP, "name", name) else {
         return RCGIT_ERROR;
     };
-    delete_ref_with(delete_tag, repo_path, name, input, &outs)
+    let Some(expected) = outs.error.valid(OP, "expected", expected) else {
+        return RCGIT_ERROR;
+    };
+    let delete = |path: &Path, policy: &Policy, name: &str, input: Option<&str>| {
+        delete_tag(path, policy, name, expected, input)
+    };
+    delete_ref_with(delete, repo_path, name, input, &outs)
 }
 
 /// The status of a local guarded mutation (branch, tag, stash, discard), reporting the
@@ -3257,9 +3267,6 @@ struct DeletedOuts {
 /// The guard call behind `rcgit_guard_branch_create` and `rcgit_guard_tag_create`.
 type CreateRef = fn(&Path, &Policy, &str, &str) -> ActionResult<()>;
 
-/// The guard call behind `rcgit_guard_branch_delete` and `rcgit_guard_tag_delete`.
-type DeleteRef = fn(&Path, &Policy, &str, Option<&str>) -> ActionResult<Deleted>;
-
 /// The guard call behind `rcgit_guard_stash_pop` and `rcgit_guard_stash_drop`.
 type RemoveStash = fn(&Path, &Policy, usize, Oid, Option<&str>) -> ActionResult<Deleted>;
 
@@ -3284,7 +3291,7 @@ fn create_ref_with(
 
 /// Runs `delete` on the checked arguments of a ref-deleting entry point.
 fn delete_ref_with(
-    delete: DeleteRef,
+    delete: impl FnOnce(&Path, &Policy, &str, Option<&str>) -> ActionResult<Deleted>,
     repo_path: &[u8],
     name: &[u8],
     input: Option<&[u8]>,
@@ -7256,8 +7263,16 @@ mod tests {
             rcgit_guard_branch_delete(p, name.as_ptr(), p, &raw mut backup, &raw mut error)
         };
         null_path("rcgit_guard_branch_delete", status, &mut error);
-        let status =
-            unsafe { rcgit_guard_tag_delete(p, name.as_ptr(), p, &raw mut backup, &raw mut error) };
+        let status = unsafe {
+            rcgit_guard_tag_delete(
+                p,
+                name.as_ptr(),
+                p.cast(),
+                p,
+                &raw mut backup,
+                &raw mut error,
+            )
+        };
         null_path("rcgit_guard_tag_delete", status, &mut error);
         let status =
             unsafe { rcgit_guard_tag_create(p, name.as_ptr(), name.as_ptr(), &raw mut error) };
@@ -8128,10 +8143,12 @@ mod tests {
         assert_eq!(text(unsafe { &*plan }.typed_phrase), "v1.0");
         unsafe { rcgit_guard_decision_free(plan) };
         let mut backup = ptr::null_mut();
+        let shown = commit_id(&fx.rev_parse("v1.0^{}"));
         let status = unsafe {
             rcgit_guard_tag_delete(
                 path.as_ptr(),
                 tag.as_ptr(),
+                &raw const shown,
                 tag.as_ptr(),
                 &raw mut backup,
                 &raw mut error,
@@ -8147,6 +8164,42 @@ mod tests {
         assert_eq!(
             take_error(&mut error),
             "rcgit_guard_branch_create: repo_path is NULL"
+        );
+    }
+
+    #[test]
+    fn a_tag_delete_checks_the_target_the_caller_showed() {
+        let fx = Fixture::standard();
+        let path = CString::new(fx.path().as_os_str().as_bytes()).unwrap();
+        let tag = CString::new("v1.0").unwrap();
+        let tag_object = commit_id(&fx.rev_parse("v1.0"));
+        let mut backup = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let delete = |expected: *const RcGitOid, backup: &mut *mut c_char, error: &mut _| unsafe {
+            rcgit_guard_tag_delete(
+                path.as_ptr(),
+                tag.as_ptr(),
+                expected,
+                tag.as_ptr(),
+                backup,
+                error,
+            )
+        };
+
+        let status = delete(&raw const tag_object, &mut backup, &mut error);
+        assert_eq!(status, RCGIT_STALE, "compared against the peeled target");
+        assert!(take_error(&mut error).contains("changed since the list was built"));
+        assert!(backup.is_null());
+        let status = delete(ptr::null(), &mut backup, &mut error);
+        assert_eq!(status, RCGIT_ERROR);
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_guard_tag_delete: expected is NULL"
+        );
+        assert_eq!(
+            fx.git_output(&["tag", "--list", "v1.0"]),
+            "v1.0",
+            "nothing was deleted"
         );
     }
 

@@ -1388,12 +1388,15 @@ int32_t rcgit_guard_branch_delete(const char *repo_path,
                                   char **backup,
                                   char **error);
 
-/// Deletes the tag `name`. Same contract as `rcgit_guard_branch_delete`.
+/// Deletes the tag `name`. `expected` is the object the caller showed the tag pointing at,
+/// after peeling (the ref list's target). Otherwise the same contract as
+/// `rcgit_guard_branch_delete`; `RCGIT_STALE` means the tag no longer peels to `expected`.
 ///
 /// # Safety
-/// As `rcgit_guard_branch_delete`.
+/// As `rcgit_guard_branch_delete`; `expected` points to a readable `RcGitOid`.
 int32_t rcgit_guard_tag_delete(const char *repo_path,
                                const char *name,
+                               const struct RcGitOid *expected,
                                const char *input,
                                char **backup,
                                char **error);

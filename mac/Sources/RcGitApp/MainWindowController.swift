@@ -1593,8 +1593,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 return
             }
             let name = ref.shortName
+            let shown = ref.target
             followDecision(decision, verb: "Delete Tag") { input in
-                try RepositoryGuard.deleteTag(repoPath: path, name: name, input: input)
+                try RepositoryGuard.deleteTag(
+                    repoPath: path, name: name, expected: shown, input: input)
             }
         }
     }

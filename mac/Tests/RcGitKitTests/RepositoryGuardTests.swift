@@ -44,8 +44,16 @@ import Testing
         #expect(tagPlan?.typedPhrase == "v1.0")
         // The backup stores the unpeeled target: the annotated tag object, not its commit.
         let oldTag = try fixture.revParse("refs/tags/v1.0")
+        let unpeeled = #expect(throws: StaleRepositoryError.self) {
+            try RepositoryGuard.deleteTag(
+                repoPath: fixture.path, name: "v1.0", expected: try commitID(oldTag),
+                input: "v1.0")
+        }
+        #expect(unpeeled?.message.contains("changed since the list was built") == true)
+        #expect(try fixture.revParse("refs/tags/v1.0") == oldTag)
+        let shownTag = try commitID(try fixture.revParse("refs/tags/v1.0^{}"))
         let tagBackup = try RepositoryGuard.deleteTag(
-            repoPath: fixture.path, name: "v1.0", input: "v1.0")
+            repoPath: fixture.path, name: "v1.0", expected: shownTag, input: "v1.0")
         #expect(tagBackup == "refs/rc-git/backup/tag/v1.0")
         #expect(throws: FixtureError.self) { try fixture.revParse("refs/tags/v1.0") }
         #expect(try fixture.revParse(try #require(tagBackup)) == oldTag)

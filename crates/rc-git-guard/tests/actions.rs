@@ -12,6 +12,15 @@ fn refs(fx: &Fixture) -> String {
     fx.git_output(&["for-each-ref", "--format=%(refname)"])
 }
 
+/// What the ref list shows `tag` pointing at: its target after peeling.
+#[expect(
+    clippy::unwrap_used,
+    reason = "test helper panics on a malformed tag target"
+)]
+fn shown(fx: &Fixture, tag: &str) -> rc_git_core::Oid {
+    rc_git_core::Oid::from_hex(&fx.rev_parse(&format!("refs/tags/{tag}^{{}}"))).unwrap()
+}
+
 fn porcelain(fx: &Fixture) -> String {
     fx.git_output(&["status", "--porcelain"])
 }
@@ -696,21 +705,22 @@ fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();
     let policy = Policy::default();
     let tag_object = fx.rev_parse("v1.0");
+    let v1 = shown(&fx, "v1.0");
 
-    let err = delete_tag(fx.path(), &policy, "v1.0", None).unwrap_err();
+    let err = delete_tag(fx.path(), &policy, "v1.0", v1, None).unwrap_err();
     assert!(matches!(err, ActionError::NotConfirmed { .. }), "{err}");
     assert_eq!(
         err.to_string(),
         "delete tag 'v1.0': no typed confirmation was given; type 'v1.0' to confirm"
     );
-    let blank = delete_tag(fx.path(), &policy, "v1.0", Some("  ")).unwrap_err();
+    let blank = delete_tag(fx.path(), &policy, "v1.0", v1, Some("  ")).unwrap_err();
     assert_eq!(
         blank.to_string(),
         err.to_string(),
         "blank input counts as none"
     );
 
-    let deleted = delete_tag(fx.path(), &policy, "v1.0", Some(" v1.0 ")).unwrap();
+    let deleted = delete_tag(fx.path(), &policy, "v1.0", v1, Some(" v1.0 ")).unwrap();
     assert_eq!(
         deleted.backup_ref.as_deref(),
         Some("refs/rc-git/backup/tag/v1.0")
@@ -722,8 +732,40 @@ fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
         "an annotated tag's backup keeps the tag object, message and all"
     );
 
-    let err = delete_tag(fx.path(), &policy, "nope", Some("nope")).unwrap_err();
+    let err = delete_tag(fx.path(), &policy, "nope", v1, Some("nope")).unwrap_err();
     assert!(matches!(err, ActionError::Git { .. }), "{err}");
+}
+
+#[test]
+fn a_tag_moved_since_it_was_shown_is_not_deleted() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let before = shown(&fx, "v0.9");
+    fx.git(&["tag", "-f", "v0.9", "feature"]);
+    let moved = fx.rev_parse("v0.9");
+    assert_ne!(moved, before.to_hex(), "the fixture must move the tag");
+
+    let err = delete_tag(fx.path(), &policy, "v0.9", before, Some("v0.9")).unwrap_err();
+    assert!(matches!(err, ActionError::StaleRepository { .. }), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "delete tag: the repository changed since the list was built; refresh and retry"
+    );
+    assert_eq!(fx.rev_parse("v0.9"), moved, "the moved tag is kept");
+    assert!(!refs(&fx).contains("refs/rc-git/backup"));
+}
+
+#[test]
+fn an_annotated_tag_is_judged_by_the_commit_it_peels_to() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let tag_object = rc_git_core::Oid::from_hex(&fx.rev_parse("v1.0")).unwrap();
+    assert_ne!(tag_object, shown(&fx, "v1.0"), "v1.0 must be annotated");
+
+    let err = delete_tag(fx.path(), &policy, "v1.0", tag_object, Some("v1.0")).unwrap_err();
+    assert!(matches!(err, ActionError::StaleRepository { .. }), "{err}");
+    delete_tag(fx.path(), &policy, "v1.0", shown(&fx, "v1.0"), Some("v1.0")).unwrap();
+    assert!(!refs(&fx).contains("refs/tags/v1.0"));
 }
 
 #[test]
@@ -731,14 +773,21 @@ fn a_tag_nested_under_a_backed_up_name_still_backs_up() {
     let fx = Fixture::standard();
     let policy = Policy::default();
     let target = fx.rev_parse("v0.9");
-    let deleted = delete_tag(fx.path(), &policy, "v0.9", Some("v0.9")).unwrap();
+    let deleted = delete_tag(fx.path(), &policy, "v0.9", shown(&fx, "v0.9"), Some("v0.9")).unwrap();
     assert_eq!(
         deleted.backup_ref.as_deref(),
         Some("refs/rc-git/backup/tag/v0.9")
     );
 
     fx.git(&["tag", "v0.9/rc", &target]);
-    let deleted = delete_tag(fx.path(), &policy, "v0.9/rc", Some("v0.9/rc")).unwrap();
+    let deleted = delete_tag(
+        fx.path(),
+        &policy,
+        "v0.9/rc",
+        shown(&fx, "v0.9/rc"),
+        Some("v0.9/rc"),
+    )
+    .unwrap();
     assert_eq!(
         deleted.backup_ref.as_deref(),
         Some("refs/rc-git/backup/tag/v0.9%2Frc")
@@ -815,7 +864,7 @@ fn a_case_variant_of_a_packed_ref_is_never_created_or_deleted() {
     );
     assert_eq!(fx.rev_parse("main"), main_tip);
     assert!(create_tag(fx.path(), &policy, "V1.0", "feature").is_err());
-    assert!(delete_tag(fx.path(), &policy, "V1.0", Some("V1.0")).is_err());
+    assert!(delete_tag(fx.path(), &policy, "V1.0", shown(&fx, "v1.0"), Some("V1.0")).is_err());
     assert_eq!(fx.rev_parse("v1.0"), tag_object);
     assert!(!refs(&fx).contains("refs/heads/MAIN"));
     assert!(!refs(&fx).contains("refs/rc-git/backup"));

@@ -204,14 +204,18 @@ public enum RepositoryGuard {
         return RepositoryError.takeString(backup)
     }
 
-    /// Deletes a tag; `input` answers the challenge. Returns the backup ref, if written.
+    /// Deletes a tag; `input` answers the challenge. `expected` is the target the ref list
+    /// showed (after peeling); a tag that moved since throws `StaleRepositoryError`. Returns
+    /// the backup ref, if written.
     @discardableResult
-    public static func deleteTag(repoPath: String, name: String, input: String?) throws
-        -> String?
+    public static func deleteTag(repoPath: String, name: String, expected: Oid, input: String?)
+        throws -> String?
     {
         var backup: UnsafeMutablePointer<CChar>? = nil
         var error: UnsafeMutablePointer<CChar>? = nil
-        let status = rcgit_guard_tag_delete(repoPath, name, input, &backup, &error)
+        let status = expected.withC { expected in
+            rcgit_guard_tag_delete(repoPath, name, expected, input, &backup, &error)
+        }
         guard status == RCGIT_OK else {
             throw actionError(status, error, fallback: "cannot delete tag '\(name)'")
         }

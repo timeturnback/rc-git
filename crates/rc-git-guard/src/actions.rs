@@ -793,21 +793,26 @@ pub fn delete_branch(
 }
 
 /// Deletes a tag. Always destructive under the policy: `input` must match the tag name.
-/// Writes `refs/rc-git/backup/tag/<name>` first and reports it.
+/// `expected` is the object the caller showed the tag pointing at, after peeling (the ref
+/// list's target); a tag that peels to anything else is not deleted. Writes
+/// `refs/rc-git/backup/tag/<name>` first and reports it.
 ///
 /// # Errors
-/// [`ActionError::NotConfirmed`] when the typed input does not match,
+/// [`ActionError::StaleRepository`] when the tag no longer peels to `expected` or moves before
+/// the delete lands, [`ActionError::NotConfirmed`] when the typed input does not match,
 /// [`ActionError::Git`] when the tag does not exist.
 pub fn delete_tag(
     repo_path: &Path,
     policy: &Policy,
     name: &str,
+    expected: rc_git_core::Oid,
     input: Option<&str>,
 ) -> ActionResult<Deleted> {
     const OP: &str = "delete tag";
     let repo = open(repo_path, OP, name)?;
     let full_name = format!("refs/tags/{name}");
     require_listed_ref(&repo, OP, &full_name)?;
+    let judged_tip = tag_as_shown(&repo, OP, &full_name, expected)?;
     let action = Action::DeleteTag {
         name: name.to_owned(),
     };
@@ -817,8 +822,34 @@ pub fn delete_tag(
         OP,
         &full_name,
         ("tag", name),
-        None,
+        Some(judged_tip),
     )
+}
+
+/// The id [`delete_ref`] judges the tag `full_name` by (its own target, the tag object for an
+/// annotated tag), once the object it peels to is checked against `expected`.
+///
+/// # Errors
+/// [`ActionError::StaleRepository`] naming `op` when the tag peels to another object,
+/// [`ActionError::Git`] when it cannot be read or peeled.
+fn tag_as_shown(
+    repo: &gix::Repository,
+    op: &'static str,
+    full_name: &str,
+    expected: rc_git_core::Oid,
+) -> ActionResult<gix::ObjectId> {
+    let reference = repo
+        .find_reference(full_name)
+        .map_err(git_err(op, full_name))?;
+    let direct = reference.target().try_id().map(ToOwned::to_owned);
+    let peeled = reference
+        .into_fully_peeled_id()
+        .map_err(git_err(op, full_name))?
+        .detach();
+    if peeled.as_slice() != expected.as_bytes() {
+        return Err(ActionError::StaleRepository { op });
+    }
+    Ok(direct.unwrap_or(peeled))
 }
 
 /// Asks `policy` about `action` and turns the user's `input` into the proof every write

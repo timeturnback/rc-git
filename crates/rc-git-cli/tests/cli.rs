@@ -2224,6 +2224,43 @@ fn tag_delete_needs_the_tag_name_and_backs_the_tag_up() {
 }
 
 #[test]
+fn tag_delete_keeps_a_tag_moved_since_the_expected_target() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let seen = fx.rev_parse("v0.9^{}");
+    fx.git(&["tag", "-f", "v0.9", "feature"]);
+    let moved = fx.rev_parse("v0.9");
+    let delete = |expected: &str| {
+        rc_git(&[
+            "tag-delete",
+            path,
+            "v0.9",
+            "--confirm",
+            "v0.9",
+            "--expect-target",
+            expected,
+        ])
+    };
+
+    let out = delete(&seen);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("changed since"), "{}", stderr(&out));
+    assert_eq!(fx.rev_parse("v0.9"), moved, "a stale delete writes nothing");
+    assert_eq!(fx.git_output(&["for-each-ref", "refs/rc-git/backup/"]), "");
+
+    let out = delete("abc123");
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("'abc123'"), "{}", stderr(&out));
+
+    let out = rc_git(&["branch-delete", path, "feature", "--expect-target", &moved]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+
+    let out = delete(&moved);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.git_output(&["tag", "--list", "v0.9"]), "");
+}
+
+#[test]
 fn plan_delete_previews_what_a_deletion_asks_for() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();
