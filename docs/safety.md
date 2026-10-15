@@ -178,7 +178,9 @@ The Changes tab's write paths add their own guarantees:
   at the stash's base state, so it can never overwrite uncommitted work. Apply, pop and drop
   name the entry by position and by the stash commit the list showed there, and refuse when
   that position now holds another entry; the pop and drop challenges name the entry and its
-  message. Ticked untracked files go into the stash tree itself rather than git's
+  message. When `refs/stash` is not the commit the newest readable reflog line records (a
+  cut-short last line, say), `git stash list` and `git stash apply stash@{0}` name different
+  entries, so apply, pop and drop refuse and hand the stash to git. Ticked untracked files go into the stash tree itself rather than git's
   third-parent scheme; `git stash pop` recreates them all the same. An entry made with
   `git stash -u` or `-a` carries that third parent, which rc-git does not restore, so apply
   and pop refuse it before writing anything, name its untracked files, and hand it to

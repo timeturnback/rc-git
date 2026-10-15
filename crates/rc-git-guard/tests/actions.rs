@@ -3368,6 +3368,62 @@ mod stash {
     }
 
     #[test]
+    fn an_unterminated_reflog_tail_refuses_apply_pop_and_drop() {
+        let fx = Fixture::standard();
+        let policy = Policy::default();
+        for label in ["kept", "second"] {
+            fx.write("alpha.txt", format!("{label}\n").as_bytes());
+            fx.git(&["stash", "push", "-q", "-m", label]);
+        }
+        let mut log = std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap();
+        assert_eq!(log.pop(), Some(b'\n'));
+        fx.write(".git/logs/refs/stash", &log);
+        let listed =
+            rc_git_core::Oid::from_hex(&fx.git_output(&["stash", "list", "--format=%H"])).unwrap();
+        assert_ne!(listed.to_hex(), fx.rev_parse("refs/stash"));
+        let top = fx.rev_parse("refs/stash");
+        let refs_before = refs(&fx);
+
+        let attempts = [
+            (
+                "stash apply",
+                stash_apply(fx.path(), &policy, 0, listed, None),
+            ),
+            (
+                "stash pop",
+                stash_pop(fx.path(), &policy, 0, listed, None).map(|_| ()),
+            ),
+            (
+                "stash drop",
+                stash_drop(fx.path(), &policy, 0, listed, Some("drop")).map(|_| ()),
+            ),
+        ];
+        for (op, result) in attempts {
+            let err = result.unwrap_err();
+            assert!(
+                matches!(&err, ActionError::Git { op: got, .. } if *got == op),
+                "{err}"
+            );
+            assert!(
+                err.to_string().contains("refs/stash is not the entry"),
+                "{err}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(fx.path().join("alpha.txt")).unwrap(),
+            b"alpha\n",
+            "nothing was applied"
+        );
+        assert_eq!(fx.rev_parse("refs/stash"), top, "the ref did not move");
+        assert_eq!(
+            std::fs::read(fx.path().join(".git/logs/refs/stash")).unwrap(),
+            log,
+            "the reflog was not rewritten"
+        );
+        assert_eq!(refs(&fx), refs_before, "no backup ref was written");
+    }
+
+    #[test]
     fn apply_refuses_a_stashed_gitlink_before_writing_anything() {
         let fx = Fixture::standard();
         let policy = Policy::default();

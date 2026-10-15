@@ -881,7 +881,10 @@ fn line_oids(line: &[u8], op: &'static str) -> ActionResult<(ObjectId, ObjectId)
 
 /// The entry `stash@{index}` names, read from the reflog like git does. The caller showed
 /// `expected` at that position, so a missing entry or a different commit there means the
-/// stash changed since the list was built: [`ActionError::StaleRepository`].
+/// stash changed since the list was built: [`ActionError::StaleRepository`]. When `refs/stash`
+/// is not the commit the newest readable reflog line records (a cut-short or damaged log),
+/// `git stash list` and `git stash apply stash@{0}` name different entries, so the action is
+/// refused with [`ActionError::Git`] and handed to git.
 fn stash_entry_at(
     repo: &gix::Repository,
     index: usize,
@@ -893,11 +896,23 @@ fn stash_entry_at(
         .try_find_reference("refs/stash")
         .map_err(git_err(op, "refs/stash"))?
         .ok_or_else(stale)?;
+    let top = reference.target().try_id().map(ToOwned::to_owned);
     let mut platform = reference.log_iter();
     if platform.all().map_err(git_err(op, "refs/stash"))?.is_none() {
         return Err(stale());
     }
     let valid = rc_git_core::stash_reflog_lines(&platform.buf);
+    if let Some(newest) = valid.last()
+        && top != Some(gix_oid(newest.oid, op)?)
+    {
+        return Err(ActionError::git(
+            op,
+            "refs/stash",
+            "refs/stash is not the entry its newest readable reflog line records, so the \
+             stash list and `stash@{0}` disagree; nothing was changed. Repair the stash with \
+             git in a terminal (`git stash list`, `git reflog show refs/stash`)",
+        ));
+    }
     let line = index
         .checked_add(1)
         .and_then(|from_end| valid.len().checked_sub(from_end))
