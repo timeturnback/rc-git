@@ -21,8 +21,7 @@ public struct PathIndexEntry: Sendable, Hashable {
         self.kind = kind
         self.hidden = hidden
         self.hasExactPath = hasExactPath
-        self.searchKey =
-            FuzzyMatch.isASCII(path) ? path : path.precomposedStringWithCanonicalMapping
+        self.searchKey = FuzzyMatch.searchKey(path)
     }
 
     /// The file name after the last `/`.
@@ -221,6 +220,12 @@ public enum FuzzyMatch {
         }
         return score(
             path: candidate.unicodeScalars.map(\.value), needle: query.unicodeScalars.map(\.value))
+    }
+
+    /// `text` in the form `score` compares: as is when ASCII, else precomposed (NFC), so a
+    /// typed query and a stored path meet in one normalization.
+    public static func searchKey(_ text: String) -> String {
+        isASCII(text) ? text : text.precomposedStringWithCanonicalMapping
     }
 
     /// Whether every byte of `text` is ASCII.
