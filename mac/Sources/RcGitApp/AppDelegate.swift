@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let openTabs = OpenTabs()
     private var closedTabs = ClosedTabs()
     private let recentMenu = NSMenu(title: "Open Recent")
+    private let recentPicker = RecentRepositoryPicker()
     private let build = AppBuild.current
     private var updateController: UpdateWindowController?
     private var settingsController: SettingsWindowController?
@@ -89,6 +90,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func openRecent(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
         open(path: path)
+    }
+
+    /// Opens the ⌘R picker over the front window, listing the same recents as the Open Recent
+    /// menu; a pick goes through `open(path:)` like every other arrival.
+    @objc func openRecentRepository(_ sender: Any?) {
+        recentPicker.onOpen = { [weak self] path in self?.open(path: path) }
+        recentPicker.show(recents.paths, over: NSApp.mainWindow ?? NSApp.keyWindow)
     }
 
     @objc func clearRecents(_ sender: Any?) {
@@ -424,7 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         recentMenu.removeAllItems()
         for path in recents.paths {
             let item = NSMenuItem(
-                title: (path as NSString).abbreviatingWithTildeInPath,
+                title: RecentRepositories.displayPath(path),
                 action: #selector(openRecent(_:)), keyEquivalent: "")
             item.representedObject = path
             item.target = self

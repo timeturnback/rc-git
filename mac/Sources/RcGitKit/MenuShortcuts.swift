@@ -51,12 +51,12 @@ public struct MenuShortcuts: Sendable {
     public let hideApp = MenuShortcut("Hide", "h")
     public let hideOthers = MenuShortcut("Hide Others", "h", [.command, .option])
     public let quit = MenuShortcut("Quit", "q")
-    public let rebuild = MenuShortcut("Rebuild and Relaunch…", "r")
     public let rebuildNow = MenuShortcut("Rebuild and Relaunch Now", "r", [.command, .option])
 
     public let newTab = MenuShortcut("New Tab", "t")
     public let reopenClosedTab = MenuShortcut("Reopen Closed Tab", "t", [.command, .shift])
     public let openRepository = MenuShortcut("Open Repository…", "o")
+    public let openRecentRepository = MenuShortcut("Open Recent Repository…", "r")
     public let goToFile = MenuShortcut("Go to File…", "o", [.command, .shift])
     public let goToBranch = MenuShortcut("Go to Branch…", "b")
     public let closeTab = MenuShortcut("Close Tab", "w")

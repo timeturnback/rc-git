@@ -61,14 +61,15 @@ enum MainMenu {
         menu.addItem(item(keys.settings, #selector(AppDelegate.showSettings(_:))))
         if let updateMode {
             menu.addItem(.separator())
-            // The dev bundle earns key equivalents: rebuilding is the edit-run loop, not
-            // an occasional errand. Cmd-R opens the window, Cmd-Option-R starts the rebuild
-            // without asking; the Repository menu's Sync is Cmd-Shift-R.
+            // The dev bundle earns a key equivalent: rebuilding is the edit-run loop, not
+            // an occasional errand. Cmd-Option-R starts the rebuild without asking; Cmd-R is
+            // Open Recent Repository and the Repository menu's Sync is Cmd-Shift-R.
             switch updateMode {
             case .update:
                 menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:))))
             case .rebuild:
-                menu.addItem(item(keys.rebuild, #selector(AppDelegate.showUpdate(_:))))
+                menu.addItem(
+                    item("Rebuild and Relaunch…", #selector(AppDelegate.showUpdate(_:))))
                 menu.addItem(item(keys.rebuildNow, #selector(AppDelegate.rebuildNow(_:))))
             }
         }
@@ -91,6 +92,8 @@ enum MainMenu {
         let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recent.submenu = recentMenu
         menu.addItem(recent)
+        menu.addItem(
+            item(keys.openRecentRepository, #selector(AppDelegate.openRecentRepository(_:))))
         menu.addItem(.separator())
         menu.addItem(item(keys.goToFile, #selector(MainWindowController.goToFile(_:))))
         menu.addItem(item(keys.goToBranch, #selector(MainWindowController.chooseRef(_:))))

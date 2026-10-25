@@ -28,8 +28,9 @@ without disturbing the installed app.
 
 ## Use
 
-Open a repository with ⌘O, from the Open Recent menu, by dragging its folder onto the window,
-by passing a path on the command line, or with `open -a RCGit <path>`. The ref list holds the
+Open a repository with ⌘O, from the Open Recent menu, by typing part of a recent one's name
+after ⌘R, by dragging its folder onto the window, by passing a path on the command line, or
+with `open -a RCGit <path>`. The ref list holds the
 working tree, branches, remote branches, and tags; selecting one shows its tree, and the app
 follows along when refs change on disk. History shows the list in the sidebar. Files puts a
 banner there instead, naming what you browse: click it or press ⌘B to pick from the list in a

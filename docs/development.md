@@ -47,7 +47,8 @@ mac/.build/debug/RcGitApp ~/code/repo      # without a bundle
 ```
 
 Build the dev bundle from the terminal once; after that ⌥⌘R inside it rebuilds and relaunches
-without losing tabs (⌘R opens the Rebuild window first; see below).
+without losing tabs (the app menu's Rebuild and Relaunch… opens the Rebuild window first; see
+below).
 
 | | release | dev |
 |---|---|---|
@@ -89,7 +90,7 @@ an app-menu item that rebuilds themselves from there. They differ in what they b
 When the checkout is already at the commit the running bundle was built from, the window
 says so and the button becomes "Rebuild Anyway" rather than spending minutes on a rebuild.
 
-**Dev — "Rebuild and Relaunch…" (⌘R opens the window; ⌥⌘R, "Rebuild and Relaunch Now",
+**Dev — "Rebuild and Relaunch…" (opens the window; ⌥⌘R, "Rebuild and Relaunch Now",
 starts it without the button):** preflight, then `scripts/build-app.sh --dev`, then relaunch. No fetch, no network, no credentials, and no dirty check — it builds the working
 tree exactly as it stands, because putting work in progress into the running app is the
 point. It never reports "up to date": the tree moves without the commit. The log names the

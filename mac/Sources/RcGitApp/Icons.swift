@@ -39,6 +39,9 @@ enum Icons {
     /// A ref whose target could not be read, in the ref list's Unreadable section.
     static var unreadableRef: NSImage? { symbol(named: "exclamationmark.triangle") }
 
+    /// A repository, in the Open Recent Repository picker.
+    static var repository: NSImage? { symbol(named: "folder.fill") }
+
     /// The working tree, in the ref list and on the branch banner.
     static var workingTree: NSImage? { symbol(named: "internaldrive") }
 
