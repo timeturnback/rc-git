@@ -14,8 +14,9 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitFilter, CommitPage, CommitSummary,
-    DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, LineEnd, Oid, RefKind,
-    Repository, TreeEntry, UnreadableEntry, WorktreeStatus,
+    ContentQuery, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, DiffLineKind, EntryKind, FileSearch,
+    LineEnd, Oid, RefKind, Repository, SearchLimits, TreeEntry, UnreadableEntry, WorktreeFileList,
+    WorktreeStatus,
 };
 use rc_git_guard::actions::{ActionError, Cancel};
 
@@ -43,6 +44,11 @@ usage: rc-git [--time] <command> <repo> [args]
   status  <repo> [-z] [dir]               one working-tree directory against HEAD
   changes <repo> [-z] [--max-scan N]      every changed working-tree path against HEAD
   files   <repo> [-z] [--max-scan N]      every file on disk, ignored folders skipped
+  grep    <repo> <text> [rev] [--worktree]  lines holding <text> in every file at rev
+                                          (default HEAD), or on disk with --worktree:
+                                          path<TAB>line<TAB>excerpt, line counted from 1;
+                                          lowercase <text> ignores ASCII case, files over
+                                          1 MiB and binary files are skipped
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
@@ -300,6 +306,7 @@ enum Verb {
     Status,
     Changes,
     Files,
+    Grep,
     Stash,
     Resolve,
     DefaultBranch,
@@ -340,6 +347,7 @@ impl Verb {
             "status" => Some(Self::Status),
             "changes" => Some(Self::Changes),
             "files" => Some(Self::Files),
+            "grep" => Some(Self::Grep),
             "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
             "default-branch" => Some(Self::DefaultBranch),
@@ -381,6 +389,7 @@ impl Verb {
             Self::Status => "status",
             Self::Changes => "changes",
             Self::Files => "files",
+            Self::Grep => "grep",
             Self::Stash => "stash",
             Self::Resolve => "resolve",
             Self::DefaultBranch => "default-branch",
@@ -636,6 +645,7 @@ fn dispatch(repo: &Repository, invocation: &Invocation, out: &mut Vec<u8>) -> Re
         Verb::Status => status(repo, &invocation.args, out),
         Verb::Changes => changes(repo, &invocation.args, out),
         Verb::Files => files(repo, &invocation.args, out),
+        Verb::Grep => grep(repo, &invocation.args, out),
         Verb::Stash => stash(repo, &invocation.args, out),
         Verb::Resolve => resolve(repo, &invocation.args, out),
         Verb::DefaultBranch => default_branch(repo, &invocation.args, out),
@@ -1256,6 +1266,12 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
     for file in &list.files {
         records.end_with_path(out, &file.path);
     }
+    print_list_warnings(&list)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What a working-tree file list skipped or left out, one `warning:` line each on stderr.
+fn print_list_warnings(list: &WorktreeFileList) -> Result<()> {
     print_warnings(&list.warnings)?;
     print_unreadable(&list.unreadable)?;
     if list.truncated {
@@ -1265,7 +1281,131 @@ fn files(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCo
             list.scanned
         )?;
     }
+    Ok(())
+}
+
+fn grep(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let args = split_args("grep", args, &[], &["--worktree"])?;
+    args.expect(1, 2, "<text> [rev]")?;
+    let Some(text) = args.positional(0) else {
+        bail!("grep needs <text>\n\n{USAGE}");
+    };
+    let Some(query) = ContentQuery::new(text.as_bytes()) else {
+        return Err(usage_error(format!(
+            "grep needs a non-empty <text>\n\n{USAGE}"
+        )));
+    };
+    let mut skipped = SkippedFiles::default();
+    if args.has("--worktree") {
+        if args.positional(1).is_some() {
+            return Err(usage_error(format!(
+                "grep --worktree takes no [rev]\n\n{USAGE}"
+            )));
+        }
+        let list = repo.worktree_files(head_tree(repo)?, 200_000)?;
+        print_list_warnings(&list)?;
+        let mut paths = Vec::new();
+        for file in &list.files {
+            match file.kind {
+                EntryKind::Blob | EntryKind::ExecutableBlob => {
+                    paths.push(String::from_utf8_lossy(&file.path).into_owned());
+                }
+                EntryKind::Symlink | EntryKind::Tree | EntryKind::Submodule => {}
+            }
+        }
+        let mut done = 0;
+        while done < paths.len() {
+            let batch =
+                repo.search_worktree_files(&paths[done..], &query, SearchLimits::default())?;
+            for (path, found) in paths[done..].iter().zip(&batch) {
+                write_file_search(out, path.as_bytes(), found, &mut skipped);
+            }
+            done += batch.len();
+        }
+    } else {
+        let rev = args.positional(1).unwrap_or("HEAD");
+        let files = tree_files(repo, repo.resolve_tree(rev)?)?;
+        let oids: Vec<Oid> = files.iter().map(|(_, oid)| *oid).collect();
+        let mut done = 0;
+        while done < files.len() {
+            let batch = repo.search_blobs(&oids[done..], &query, SearchLimits::default())?;
+            for ((path, _), found) in files[done..].iter().zip(&batch) {
+                write_file_search(out, path, found, &mut skipped);
+            }
+            done += batch.len();
+        }
+    }
+    skipped.warn()?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Every regular file below `root` as `(path, blob)`, sorted by path, one tree object per
+/// directory. Symlinks and submodules are left out: neither holds text to search.
+fn tree_files(repo: &Repository, root: Oid) -> Result<Vec<(Vec<u8>, Oid)>> {
+    let mut files = Vec::new();
+    let mut pending = vec![(Vec::new(), root)];
+    while let Some((prefix, tree)) = pending.pop() {
+        for entry in repo.tree_entries(tree)? {
+            let mut path = prefix.clone();
+            if !path.is_empty() {
+                path.push(b'/');
+            }
+            path.extend_from_slice(&entry.name);
+            match entry.kind {
+                EntryKind::Tree => pending.push((path, entry.oid)),
+                EntryKind::Blob | EntryKind::ExecutableBlob => files.push((path, entry.oid)),
+                EntryKind::Symlink | EntryKind::Submodule => {}
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Files `grep` could not search, counted for one warning at the end.
+#[derive(Default)]
+struct SkippedFiles {
+    binary: usize,
+    too_large: usize,
+    unreadable: usize,
+}
+
+impl SkippedFiles {
+    fn warn(&self) -> Result<()> {
+        if self.binary + self.too_large + self.unreadable == 0 {
+            return Ok(());
+        }
+        writeln!(
+            io::stderr().lock(),
+            "warning: skipped {} binary, {} over 1 MiB, {} unreadable",
+            self.binary,
+            self.too_large,
+            self.unreadable
+        )?;
+        Ok(())
+    }
+}
+
+fn write_file_search(
+    out: &mut Vec<u8>,
+    path: &[u8],
+    found: &FileSearch,
+    skipped: &mut SkippedFiles,
+) {
+    match found {
+        FileSearch::Searched { lines, .. } => {
+            for line in lines {
+                write_path(out, path);
+                let excerpt = String::from_utf8_lossy(&line.excerpt);
+                out.extend_from_slice(
+                    format!("\t{}\t{}\n", line.line + 1, field(&excerpt)).as_bytes(),
+                );
+            }
+        }
+        FileSearch::Binary => skipped.binary += 1,
+        FileSearch::TooLarge { .. } => skipped.too_large += 1,
+        FileSearch::Unreadable { .. } => skipped.unreadable += 1,
+    }
 }
 
 fn stash(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {

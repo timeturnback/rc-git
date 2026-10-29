@@ -43,6 +43,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The strip `showRestoreNotice` added, until its Dismiss button removes it.
     private var restoreNotice: NSTitlebarAccessoryViewController?
     private let goToFileController = GoToFileController()
+    private let findController = FindInRepositoryController()
     private let blamePanel = BlamePanelController()
     /// The ref picker the branch banner opens, and the popover showing it, while it is open.
     private var refPicker: RefPickerController?
@@ -496,10 +497,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Task { [model] in await model.requestBlame() }
     }
 
+    /// ⇧⌘F: finds text in every file while Files is showing, searches commits otherwise.
     @objc func searchCommits(_ sender: Any?) {
         guard !isEmpty else { return }
+        if mode == .files {
+            findInRepository()
+            return
+        }
         switchMode(.history)
         historyController.focusSearch()
+    }
+
+    private func findInRepository() {
+        if model.browsingWorkingTree { model.forgetWorktreePaths() }
+        let root = model.rootTree?.hex ?? ""
+        findController.show(
+            over: window, scope: model.browsingWorkingTree ? "worktree \(root)" : root)
     }
 
     @objc func showFileHistory(_ sender: Any?) {
@@ -523,6 +536,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(searchCommits(_:)) {
+            menuItem.title = MenuShortcuts().searchTitle(for: mode)
+        }
         if let action = menuItem.action, let enabled = menuEnablement[action] {
             return enabled
         }
@@ -613,6 +629,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         syncModel?.cancelRunning()
         syncModel = nil
         goToFileController.close()
+        findController.discard()
         model.cancelBlame()
         blamePanel.close()
         closeRefPicker()
@@ -982,6 +999,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let self else { return PathSearchResult(entries: [], truncated: false) }
             return try await model.searchPaths(query)
         }
+        findController.provider = { [weak self] query, report in
+            guard let self else { throw CancellationError() }
+            return try await model.searchContent(query, report: report)
+        }
+        findController.onOpen = { [weak self] entry, match in
+            guard let self else { return }
+            setMode(.files)
+            Task {
+                await self.model.openContentMatch(entry, match: match)
+                self.recordStop()
+            }
+        }
         goToFileController.onOpen = { [weak self] entry in
             guard let self else { return }
             setMode(.files)
@@ -1001,8 +1030,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             treeController.showOpenFile(
                 model.openedFilePath, pathIsExact: model.openedPathIsExact)
         }
-        fileController.takePendingFragment = { [weak self] in
-            self?.model.takePendingFragment()
+        fileController.pendingReveal = { [weak self] in
+            self?.model.pendingReveal
+        }
+        fileController.takePendingReveal = { [weak self] in
+            self?.model.takePendingReveal()
         }
         fileController.onLoadAnyway = { [weak self] limit in
             guard let self else { return }

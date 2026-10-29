@@ -43,6 +43,13 @@ import Testing
         #expect(keys.fileHistory.chord != keys.hideOthers.chord)
     }
 
+    @Test func searchTitleFollowsTheMode() {
+        let keys = MenuShortcuts()
+        #expect(keys.searchTitle(for: .files) == "Find in Repository…")
+        #expect(keys.searchTitle(for: .history) == "Search Commits")
+        #expect(keys.searchTitle(for: .changes) == "Search Commits")
+    }
+
     @Test func uppercaseLetterIsTheLowercaseLetterWithShift() {
         #expect(
             MenuChord(key: "G", modifiers: .command)

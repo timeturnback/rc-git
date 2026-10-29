@@ -502,6 +502,60 @@ import Testing
         #expect(capped.truncated)
     }
 
+    @Test func searchesBlobsForMatchingLines() async throws {
+        let fixture = try await GitFixture.standard()
+        defer { fixture.remove() }
+        let repo = try Repository(path: fixture.path)
+        let blobs = try ["HEAD:src/main.rs", "HEAD:bin.dat", "HEAD:README.md"].map {
+            try repo.resolve($0)
+        }
+
+        let results = try repo.searchBlobs(blobs, query: "fn")
+        let main = ContentLineMatch(
+            line: 0, column: 0, matchLength: 2, excerptBytes: Array("fn main() {".utf8),
+            ranges: [0..<2])
+        #expect(
+            results == [
+                .searched(lines: [main], truncated: false), .binary,
+                .searched(lines: [], truncated: false),
+            ])
+        #expect(main.highlights == [0..<2])
+
+        let small = ContentSearchLimits(fileLimit: 3, batchBytes: 1)
+        let tooLarge = try repo.searchBlobs([blobs[0], blobs[2]], query: "fn", limits: small)
+        guard tooLarge.count == 2, case let .tooLarge(_, limit) = tooLarge[0] else {
+            Issue.record("expected two blobs over the limit, got \(tooLarge)")
+            return
+        }
+        #expect(limit == 3, "a blob over the limit spends none of the byte budget")
+        #expect(throws: RepositoryError.self) { try repo.searchBlobs(blobs, query: "") }
+        #expect(throws: RepositoryError.self) {
+            try repo.searchBlobs([try repo.resolveTree("HEAD")], query: "fn")
+        }
+    }
+
+    @Test func searchesWorkingTreeFilesAndReportsOnesItCannotRead() async throws {
+        let fixture = try await GitFixture.standard()
+        defer { fixture.remove() }
+        try fixture.write("notes.txt", "one\n  Needle here\n")
+        let repo = try Repository(path: fixture.path)
+
+        let results = try repo.searchWorktreeFiles(["notes.txt", "gone.txt"], query: "needle")
+        #expect(results.count == 2)
+        guard case let .searched(lines, false) = results[0], let line = lines.first else {
+            Issue.record("expected a match, got \(results[0])")
+            return
+        }
+        #expect(line.line == 1)
+        #expect(line.column == 2)
+        #expect(line.excerpt == "Needle here")
+        guard case let .unreadable(message) = results[1] else {
+            Issue.record("expected unreadable, got \(results[1])")
+            return
+        }
+        #expect(message.contains("gone.txt"))
+    }
+
     @Test func scansAnUnbornBranchWithNoTree() async throws {
         let fixture = try GitFixture.emptyDirectory()
         defer { fixture.remove() }

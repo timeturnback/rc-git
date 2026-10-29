@@ -58,21 +58,25 @@ impl Repository {
     /// # Errors
     /// [`Error::Object`] when missing, [`Error::WrongKind`] when the id is not a blob.
     pub fn read_blob(&self, oid: Oid, limit: u64) -> Result<BlobContent> {
-        self.with(|repo| {
-            let header = repo
-                .find_header(*oid.as_gix())
-                .map_err(object("read blob header", oid))?;
-            expect_blob("read blob", oid, header.kind())?;
-            let size = header.size();
-            if size > limit {
-                return Ok(BlobContent::TooLarge { size, limit });
-            }
-            let mut blob = repo
-                .find_blob(*oid.as_gix())
-                .map_err(object("read blob", oid))?;
-            Ok(classify(blob.take_data()))
-        })
+        self.with(|repo| read_blob_in(repo, oid, limit))
     }
+}
+
+/// [`Repository::read_blob`] on a handle the caller already borrowed, so a batch of reads
+/// takes one handle from the pool rather than one per blob.
+pub(crate) fn read_blob_in(repo: &gix::Repository, oid: Oid, limit: u64) -> Result<BlobContent> {
+    let header = repo
+        .find_header(*oid.as_gix())
+        .map_err(object("read blob header", oid))?;
+    expect_blob("read blob", oid, header.kind())?;
+    let size = header.size();
+    if size > limit {
+        return Ok(BlobContent::TooLarge { size, limit });
+    }
+    let mut blob = repo
+        .find_blob(*oid.as_gix())
+        .map_err(object("read blob", oid))?;
+    Ok(classify(blob.take_data()))
 }
 
 fn expect_blob(op: &'static str, oid: Oid, kind: gix::objs::Kind) -> Result<()> {

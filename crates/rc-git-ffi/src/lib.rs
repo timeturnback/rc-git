@@ -23,8 +23,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, ChangeKind, CommitDetail, CommitFilter, CommitPage,
-    CommitSummary, DiffHunk, DiffLineKind, EntryKind, HistoryWalk, LineEnd, LogCursor, Oid,
-    RefKind, Repository, TreeChange, TreeEntry, WorktreeStatus,
+    CommitSummary, ContentQuery, DiffHunk, DiffLineKind, EntryKind, FileSearch, HistoryWalk,
+    LineEnd, LineMatch, LogCursor, Oid, RefKind, Repository, SearchBatch, SearchLimits, TreeChange,
+    TreeEntry, WorktreeStatus,
 };
 use rc_git_guard::actions::{
     ActionError, ActionResult, Author, Cancel, CommitRequest, Credentials, Deleted, FileSelection,
@@ -999,6 +1000,105 @@ impl Drop for RcGitWorktreeFileList {
     }
 }
 
+/// What searching one file found.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RcGitFileSearchKind {
+    /// Text that was searched; `lines` holds the matching lines, possibly none.
+    Searched = 0,
+    /// Binary; not searched.
+    Binary = 1,
+    /// Over the limit; `size` and `limit` are filled, nothing was read.
+    TooLarge = 2,
+    /// A working-tree file that could not be read; `error` says why.
+    Unreadable = 3,
+}
+
+/// A half-open byte range of one match inside an excerpt.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RcGitMatchRange {
+    /// First byte of the match.
+    pub start: u32,
+    /// One past the last byte of the match.
+    pub end: u32,
+}
+
+/// One line that holds the query.
+#[repr(C)]
+pub struct RcGitLineMatch {
+    /// Zero-based line number.
+    pub line: usize,
+    /// Byte offset of the first match from the start of the line.
+    pub column: usize,
+    /// `excerpt_len` bytes of the line, or a window of a long one, without indentation or
+    /// line ending; not NUL-terminated. Cut only between UTF-8 characters.
+    pub excerpt: *mut u8,
+    /// Length of `excerpt`.
+    pub excerpt_len: usize,
+    /// `range_count` matches inside `excerpt`, in order and not overlapping.
+    pub ranges: *mut RcGitMatchRange,
+    /// Length of `ranges`.
+    pub range_count: usize,
+}
+
+impl Drop for RcGitLineMatch {
+    fn drop(&mut self) {
+        // SAFETY: both arrays were produced by `export_vec` with these lengths.
+        unsafe {
+            release_vec(self.excerpt, self.excerpt_len);
+            release_vec(self.ranges, self.range_count);
+        }
+    }
+}
+
+/// What one file's search found.
+#[repr(C)]
+pub struct RcGitFileSearch {
+    /// Which fields are meaningful.
+    pub kind: RcGitFileSearchKind,
+    /// `line_count` matching lines in file order. Searched only.
+    pub lines: *mut RcGitLineMatch,
+    /// Length of `lines`.
+    pub line_count: usize,
+    /// Whether more lines matched than `lines` holds. Searched only.
+    pub truncated: bool,
+    /// Size in bytes. Too large only.
+    pub size: u64,
+    /// The limit that was exceeded. Too large only.
+    pub limit: u64,
+    /// Which read failed and why. Unreadable only; NULL otherwise.
+    pub error: *mut c_char,
+}
+
+impl Drop for RcGitFileSearch {
+    fn drop(&mut self) {
+        // SAFETY: `lines` came from `export_vec` with this length and `error` from
+        // `export_string`; each is released once here.
+        unsafe {
+            release_vec(self.lines, self.line_count);
+            release_string(self.error);
+        }
+    }
+}
+
+/// One search call's results: one entry per file it reached, in the order asked. Fewer
+/// entries than files asked for means the call stopped at its byte budget.
+#[repr(C)]
+pub struct RcGitSearchBatch {
+    /// `len` results.
+    pub files: *mut RcGitFileSearch,
+    /// Number of results.
+    pub len: usize,
+}
+
+impl Drop for RcGitSearchBatch {
+    fn drop(&mut self) {
+        // SAFETY: the array was produced by `export_vec` with this length.
+        unsafe { release_vec(self.files, self.len) };
+    }
+}
+
 /// One stashed change set, as `git stash list` shows it.
 #[repr(C)]
 pub struct RcGitStashEntry {
@@ -1423,6 +1523,27 @@ unsafe fn optional_oid_arg(oid: *const RcGitOid) -> Result<Option<Oid>, Fault> {
     }
     // SAFETY: forwarded from this function's contract.
     unsafe { oid_arg(oid) }.map(Some)
+}
+
+/// Reads a caller-owned array of `RcGitOid`. `arg` names the array in the error: `oids` NULL
+/// with a nonzero `len`, or `oids[2]` malformed.
+///
+/// # Safety
+/// `ptr` is NULL or points to `len` readable `RcGitOid`s.
+unsafe fn oid_array_arg(arg: &str, ptr: *const RcGitOid, len: usize) -> Result<Vec<Oid>, BadArg> {
+    // SAFETY: forwarded from this function's contract.
+    let raw = unsafe { slice_arg(ptr, len) }.ok_or_else(|| BadArg::new(arg, Fault::Null))?;
+    let mut oids = Vec::with_capacity(len);
+    for (index, oid) in raw.iter().enumerate() {
+        let Some(parsed) = oid.to_oid() else {
+            let fault = Fault::Malformed {
+                len: usize::from(oid.len),
+            };
+            return Err(BadArg::new(format!("{arg}[{index}]"), fault));
+        };
+        oids.push(parsed);
+    }
+    Ok(oids)
 }
 
 fn export_string(bytes: impl Into<Vec<u8>>) -> *mut c_char {
@@ -2648,6 +2769,207 @@ pub unsafe extern "C" fn rcgit_worktree_files(
 pub unsafe extern "C" fn rcgit_worktree_file_list_free(list: *mut RcGitWorktreeFileList) {
     // SAFETY: forwarded from this function's contract.
     unsafe { release(list) };
+}
+
+/// Searches the blobs `oids`, in order, for the literal `query` with smart case (ASCII
+/// letters match either case unless `query` holds an uppercase one), until `max_bytes` have
+/// been read. A blob over `file_limit`, capped at 4 GiB, costs a header read and is reported
+/// too large. Fewer results than `oid_count` means the call stopped at `max_bytes`; ask again
+/// for the rest. Release with `rcgit_search_batch_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oids` is NULL with `oid_count` 0 or points to
+/// `oid_count` readable `RcGitOid`s. `query` is a NUL-terminated string. `error` is NULL or
+/// valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_search_blobs(
+    repo: *const RcGitRepo,
+    oids: *const RcGitOid,
+    oid_count: usize,
+    query: *const c_char,
+    file_limit: u64,
+    max_bytes: u64,
+    error: *mut *mut c_char,
+) -> *mut RcGitSearchBatch {
+    const OP: &str = "rcgit_search_blobs";
+    // SAFETY: forwarded from this function's contract.
+    let (repo, oids, query, error) = unsafe {
+        (
+            repo_arg(repo),
+            oid_array_arg("oids", oids, oid_count),
+            bytes_arg(query),
+            Out::new(error),
+        )
+    };
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(oids) = error.read(OP, oids) else {
+        return ptr::null_mut();
+    };
+    let Some(query) = content_query_arg(OP, query, &error) else {
+        return ptr::null_mut();
+    };
+    let limits = search_limits(file_limit, max_bytes);
+    finish_search(repo.search_blobs(&oids, &query, limits), &error)
+}
+
+/// Searches the working-tree files at the repository-relative `paths`, in order, as
+/// `rcgit_search_blobs` searches blobs. A file that cannot be read is reported
+/// `Unreadable` and does not stop the search. Release with `rcgit_search_batch_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `paths` is NULL with `path_count` 0 or points to
+/// `path_count` NUL-terminated strings. `query` is a NUL-terminated string. `error` is NULL
+/// or valid for writing a `char *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_search_worktree_files(
+    repo: *const RcGitRepo,
+    paths: *const *const c_char,
+    path_count: usize,
+    query: *const c_char,
+    file_limit: u64,
+    max_bytes: u64,
+    error: *mut *mut c_char,
+) -> *mut RcGitSearchBatch {
+    const OP: &str = "rcgit_search_worktree_files";
+    // SAFETY: forwarded from this function's contract.
+    let (repo, paths, query, error) = unsafe {
+        (
+            repo_arg(repo),
+            read_string_array("paths", paths, path_count),
+            bytes_arg(query),
+            Out::new(error),
+        )
+    };
+    let Some(repo) = error.required(OP, "repo", repo) else {
+        return ptr::null_mut();
+    };
+    let Some(paths) = error.read(OP, paths) else {
+        return ptr::null_mut();
+    };
+    let Some(query) = content_query_arg(OP, query, &error) else {
+        return ptr::null_mut();
+    };
+    let limits = search_limits(file_limit, max_bytes);
+    finish_search(repo.search_worktree_files(&paths, &query, limits), &error)
+}
+
+/// Releases a value from `rcgit_search_blobs` or `rcgit_search_worktree_files`.
+///
+/// # Safety
+/// `batch` is NULL or came from one of those functions and is not freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcgit_search_batch_free(batch: *mut RcGitSearchBatch) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { release(batch) };
+}
+
+/// The query `op` was given, or `None` after reporting it NULL or empty.
+fn content_query_arg(
+    op: &str,
+    query: Option<&[u8]>,
+    error: &Out<*mut c_char>,
+) -> Option<ContentQuery> {
+    let query = error.required(op, "query", query)?;
+    let parsed = ContentQuery::new(query);
+    if parsed.is_none() {
+        error.report(bad_arg(op, "query", &Fault::Empty));
+    }
+    parsed
+}
+
+/// The caller's limits, with the file limit capped at 4 GiB so offsets fit in 32 bits.
+fn search_limits(file_limit: u64, max_bytes: u64) -> SearchLimits {
+    SearchLimits {
+        file_limit: file_limit.min(u64::from(u32::MAX)),
+        max_bytes,
+    }
+}
+
+/// The exported batch of a search, or NULL after reporting its error.
+fn finish_search(
+    result: rc_git_core::Result<SearchBatch>,
+    error: &Out<*mut c_char>,
+) -> *mut RcGitSearchBatch {
+    match result {
+        Ok(batch) => export(export_search_batch(batch)),
+        Err(err) => {
+            error.report(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+fn export_search_batch(batch: SearchBatch) -> RcGitSearchBatch {
+    let mut files = Vec::with_capacity(batch.len());
+    for found in batch {
+        files.push(export_file_search(found));
+    }
+    let (files, len) = export_vec(files);
+    RcGitSearchBatch { files, len }
+}
+
+fn export_file_search(found: FileSearch) -> RcGitFileSearch {
+    let empty = RcGitFileSearch {
+        kind: RcGitFileSearchKind::Searched,
+        lines: ptr::null_mut(),
+        line_count: 0,
+        truncated: false,
+        size: 0,
+        limit: 0,
+        error: ptr::null_mut(),
+    };
+    match found {
+        FileSearch::Searched { lines, truncated } => {
+            let mut exported = Vec::with_capacity(lines.len());
+            for line in lines {
+                exported.push(export_line_match(line));
+            }
+            let (lines, line_count) = export_vec(exported);
+            RcGitFileSearch {
+                lines,
+                line_count,
+                truncated,
+                ..empty
+            }
+        }
+        FileSearch::Binary => RcGitFileSearch {
+            kind: RcGitFileSearchKind::Binary,
+            ..empty
+        },
+        FileSearch::TooLarge { size, limit } => RcGitFileSearch {
+            kind: RcGitFileSearchKind::TooLarge,
+            size,
+            limit,
+            ..empty
+        },
+        FileSearch::Unreadable { error } => RcGitFileSearch {
+            kind: RcGitFileSearchKind::Unreadable,
+            error: export_string(error),
+            ..empty
+        },
+    }
+}
+
+fn export_line_match(found: LineMatch) -> RcGitLineMatch {
+    let mut ranges = Vec::with_capacity(found.ranges.len());
+    for range in found.ranges {
+        ranges.push(RcGitMatchRange {
+            start: u32::try_from(range.start).unwrap_or(u32::MAX),
+            end: u32::try_from(range.end).unwrap_or(u32::MAX),
+        });
+    }
+    let (excerpt, excerpt_len) = export_vec(found.excerpt);
+    let (ranges, range_count) = export_vec(ranges);
+    RcGitLineMatch {
+        line: found.line,
+        column: found.column,
+        excerpt,
+        excerpt_len,
+        ranges,
+        range_count,
+    }
 }
 
 /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
@@ -5673,6 +5995,7 @@ mod tests {
             rcgit_ref_list_free,
             rcgit_remote_status_free,
             rcgit_repo_free,
+            rcgit_search_batch_free,
             rcgit_stash_list_free,
             rcgit_status_list_free,
             rcgit_string_free,
@@ -6197,6 +6520,235 @@ mod tests {
         let stashes = unsafe { rcgit_stash_list(ptr::null(), &raw mut error) };
         assert!(stashes.is_null());
         assert_eq!(take_error(&mut error), "rcgit_stash_list: repo is NULL");
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    /// One matching line as `(line, column, excerpt, ranges)`.
+    type SearchedLine = (usize, usize, String, Vec<(u32, u32)>);
+
+    fn searched_lines(found: &RcGitFileSearch) -> Vec<SearchedLine> {
+        assert_eq!(found.kind, RcGitFileSearchKind::Searched);
+        let lines = unsafe { std::slice::from_raw_parts(found.lines, found.line_count) };
+        lines
+            .iter()
+            .map(|line| {
+                let excerpt = unsafe { std::slice::from_raw_parts(line.excerpt, line.excerpt_len) };
+                let ranges = unsafe { std::slice::from_raw_parts(line.ranges, line.range_count) };
+                (
+                    line.line,
+                    line.column,
+                    String::from_utf8_lossy(excerpt).into_owned(),
+                    ranges
+                        .iter()
+                        .map(|range| (range.start, range.end))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_blobs_crosses_the_boundary() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let oids = [
+            resolve(repo, "HEAD:src/main.rs"),
+            resolve(repo, "HEAD:bin.dat"),
+            resolve(repo, "HEAD:README.md"),
+        ];
+        let query = CString::new("fn").unwrap();
+        let batch = unsafe {
+            rcgit_search_blobs(
+                repo,
+                oids.as_ptr(),
+                oids.len(),
+                query.as_ptr(),
+                1024,
+                u64::MAX,
+                &raw mut error,
+            )
+        };
+        assert!(!batch.is_null(), "{}", take_error(&mut error));
+        assert!(error.is_null(), "success must leave error untouched");
+        let batch_ref = unsafe { &*batch };
+        let files = unsafe { std::slice::from_raw_parts(batch_ref.files, batch_ref.len) };
+        assert_eq!(files.len(), 3);
+        assert_eq!(
+            searched_lines(&files[0]),
+            [(0, 0, "fn main() {".to_owned(), vec![(0, 2)])]
+        );
+        assert_eq!(files[1].kind, RcGitFileSearchKind::Binary);
+        assert!(searched_lines(&files[2]).is_empty());
+        unsafe { rcgit_search_batch_free(batch) };
+
+        let batch = unsafe {
+            rcgit_search_blobs(repo, oids.as_ptr(), 1, query.as_ptr(), 4, 0, &raw mut error)
+        };
+        assert!(!batch.is_null(), "{}", take_error(&mut error));
+        let batch_ref = unsafe { &*batch };
+        assert_eq!(batch_ref.len, 0, "a zero budget reads nothing");
+        unsafe { rcgit_search_batch_free(batch) };
+
+        let batch = unsafe {
+            rcgit_search_blobs(repo, oids.as_ptr(), 1, query.as_ptr(), 4, 1, &raw mut error)
+        };
+        assert!(!batch.is_null(), "{}", take_error(&mut error));
+        let found = unsafe { &*(*batch).files };
+        assert_eq!(found.kind, RcGitFileSearchKind::TooLarge);
+        assert_eq!((found.size, found.limit), (MAIN_RS.len() as u64, 4));
+        unsafe { rcgit_search_batch_free(batch) };
+
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn search_blobs_refuses_bad_arguments() {
+        let fx = Fixture::standard();
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let oids = [resolve(repo, "HEAD:src/main.rs")];
+        let query = CString::new("fn").unwrap();
+        let empty = CString::new("").unwrap();
+        let cases = [
+            (
+                ptr::null(),
+                oids.as_ptr(),
+                1,
+                query.as_ptr(),
+                "repo is NULL",
+            ),
+            (
+                repo.cast_const(),
+                ptr::null(),
+                1,
+                query.as_ptr(),
+                "oids is NULL",
+            ),
+            (
+                repo.cast_const(),
+                oids.as_ptr(),
+                1,
+                ptr::null(),
+                "query is NULL",
+            ),
+            (
+                repo.cast_const(),
+                oids.as_ptr(),
+                1,
+                empty.as_ptr(),
+                "query is empty",
+            ),
+        ];
+        for (repo_arg, oids_arg, count, query_arg, message) in cases {
+            let batch = unsafe {
+                rcgit_search_blobs(repo_arg, oids_arg, count, query_arg, 4, 1, &raw mut error)
+            };
+            assert!(batch.is_null());
+            assert_eq!(
+                take_error(&mut error),
+                format!("rcgit_search_blobs: {message}")
+            );
+        }
+        let malformed = [RcGitOid { len: 3, ..oids[0] }];
+        let batch = unsafe {
+            rcgit_search_blobs(
+                repo,
+                malformed.as_ptr(),
+                1,
+                query.as_ptr(),
+                4,
+                1,
+                &raw mut error,
+            )
+        };
+        assert!(batch.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_search_blobs: oids[0] is malformed (len 3)"
+        );
+        let tree = resolve(repo, "HEAD^{tree}");
+        let batch = unsafe {
+            rcgit_search_blobs(
+                repo,
+                &raw const tree,
+                1,
+                query.as_ptr(),
+                4,
+                1,
+                &raw mut error,
+            )
+        };
+        assert!(batch.is_null());
+        assert!(take_error(&mut error).contains("blob"));
+        unsafe { rcgit_repo_free(repo) };
+    }
+
+    #[test]
+    fn search_worktree_files_crosses_the_boundary() {
+        let fx = Fixture::standard();
+        fx.write("notes.txt", b"one\n  needle here\n");
+        let repo = open(&fx);
+        let mut error = ptr::null_mut();
+        let notes = CString::new("notes.txt").unwrap();
+        let gone = CString::new("gone.txt").unwrap();
+        let paths = [notes.as_ptr(), gone.as_ptr()];
+        let query = CString::new("needle").unwrap();
+        let batch = unsafe {
+            rcgit_search_worktree_files(
+                repo,
+                paths.as_ptr(),
+                paths.len(),
+                query.as_ptr(),
+                1024,
+                u64::MAX,
+                &raw mut error,
+            )
+        };
+        assert!(!batch.is_null(), "{}", take_error(&mut error));
+        let batch_ref = unsafe { &*batch };
+        let files = unsafe { std::slice::from_raw_parts(batch_ref.files, batch_ref.len) };
+        assert_eq!(
+            searched_lines(&files[0]),
+            [(1, 2, "needle here".to_owned(), vec![(0, 6)])]
+        );
+        assert_eq!(files[1].kind, RcGitFileSearchKind::Unreadable);
+        assert!(text(files[1].error).contains("gone.txt"));
+        unsafe { rcgit_search_batch_free(batch) };
+
+        let missing = [notes.as_ptr(), ptr::null()];
+        let batch = unsafe {
+            rcgit_search_worktree_files(
+                repo,
+                missing.as_ptr(),
+                missing.len(),
+                query.as_ptr(),
+                1024,
+                u64::MAX,
+                &raw mut error,
+            )
+        };
+        assert!(batch.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_search_worktree_files: paths[1] is NULL"
+        );
+        let batch = unsafe {
+            rcgit_search_worktree_files(
+                repo,
+                paths.as_ptr(),
+                paths.len(),
+                ptr::null(),
+                1024,
+                u64::MAX,
+                &raw mut error,
+            )
+        };
+        assert!(batch.is_null());
+        assert_eq!(
+            take_error(&mut error),
+            "rcgit_search_worktree_files: query is NULL"
+        );
         unsafe { rcgit_repo_free(repo) };
     }
 

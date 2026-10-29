@@ -1475,3 +1475,90 @@ fn an_index_shorter_than_its_trailer_is_read_as_unavailable() {
         );
     }
 }
+
+#[test]
+fn search_blobs_reports_matching_lines_per_blob_in_order() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let root = repo.resolve_tree("main").unwrap();
+    let blob = |path: &str| repo.entry_at_path(root, path).unwrap().unwrap().oid;
+    let query = rc_git_core::ContentQuery::new(b"fn").unwrap();
+    let batch = repo
+        .search_blobs(
+            &[blob("src/main.rs"), blob("README.md"), blob("bin.dat")],
+            &query,
+            rc_git_core::SearchLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        batch,
+        [
+            rc_git_core::FileSearch::Searched {
+                lines: vec![rc_git_core::LineMatch {
+                    line: 0,
+                    column: 0,
+                    excerpt: b"fn main() {".to_vec(),
+                    ranges: vec![std::ops::Range { start: 0, end: 2 }],
+                }],
+                truncated: false,
+            },
+            rc_git_core::FileSearch::Searched {
+                lines: vec![],
+                truncated: false,
+            },
+            rc_git_core::FileSearch::Binary,
+        ]
+    );
+}
+
+#[test]
+fn search_blobs_stops_after_the_file_that_crosses_the_byte_budget() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let root = repo.resolve_tree("main").unwrap();
+    let readme = repo.entry_at_path(root, "README.md").unwrap().unwrap().oid;
+    let query = rc_git_core::ContentQuery::new(b"hello").unwrap();
+    let limits = rc_git_core::SearchLimits {
+        file_limit: rc_git_core::DEFAULT_SEARCH_FILE_LIMIT,
+        max_bytes: 1,
+    };
+    let batch = repo
+        .search_blobs(&[readme, readme], &query, limits)
+        .unwrap();
+    assert_eq!(batch.len(), 1, "the second blob waits for the next call");
+
+    let small = rc_git_core::SearchLimits {
+        file_limit: 3,
+        max_bytes: 1,
+    };
+    let batch = repo.search_blobs(&[readme, readme], &query, small).unwrap();
+    assert_eq!(
+        batch,
+        [
+            rc_git_core::FileSearch::TooLarge {
+                size: README.len() as u64,
+                limit: 3
+            },
+            rc_git_core::FileSearch::TooLarge {
+                size: README.len() as u64,
+                limit: 3
+            },
+        ],
+        "a blob over the limit is never read, so it spends no budget"
+    );
+}
+
+#[test]
+fn search_blobs_fails_on_an_id_that_is_not_a_blob() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let root = repo.resolve_tree("main").unwrap();
+    let query = rc_git_core::ContentQuery::new(b"x").unwrap();
+    let err = repo
+        .search_blobs(&[root], &query, rc_git_core::SearchLimits::default())
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::WrongKind { .. }),
+        "unexpected error: {err}"
+    );
+}

@@ -112,6 +112,46 @@ public struct TextDocument: Sendable, Hashable {
     private static let otherSeparators: Set<UInt16> = [0x0B, 0x0C, 0x85, 0x2028, 0x2029]
 }
 
+extension TextDocument {
+    /// The UTF-16 range of a match the core found at byte `byteColumn` of zero-based `line`,
+    /// `byteLength` bytes long. Lossy text maps to the start of the line, empty: a replacement
+    /// character shifts every later offset, so the bytes no longer map. `nil` when the line is
+    /// past the end.
+    public func utf16Range(line: Int, byteColumn: Int, byteLength: Int) -> Range<Int>? {
+        guard line >= 0, line < utf16LineStarts.count else { return nil }
+        let lineStart = utf16LineStarts[line]
+        let empty = lineStart..<lineStart
+        guard !isLossy, byteColumn >= 0, byteLength >= 0 else { return empty }
+        let utf16 = text.utf16
+        let start = utf16.index(utf16.startIndex, offsetBy: lineStart)
+        let utf8 = text.utf8
+        guard
+            let matchStart = utf8.index(start, offsetBy: byteColumn, limitedBy: utf8.endIndex),
+            let matchEnd = utf8.index(matchStart, offsetBy: byteLength, limitedBy: utf8.endIndex)
+        else { return empty }
+        let lower = utf16.distance(from: utf16.startIndex, to: matchStart)
+        return lower..<(lower + utf16.distance(from: matchStart, to: matchEnd))
+    }
+}
+
+/// Where the file pane scrolls once the file it was asked for has painted.
+public enum FileReveal: Sendable, Hashable {
+    /// A markdown heading, named the way a `#fragment` link names it.
+    case fragment(String)
+    /// A content-search match: zero-based `line`, the match's first byte `byteColumn` bytes
+    /// into it, `byteLength` bytes long.
+    case match(line: Int, byteColumn: Int, byteLength: Int)
+
+    /// Whether the file must paint as source even when the markdown preview is preferred: a
+    /// match is selected in the text, which the preview does not show.
+    public var needsSource: Bool {
+        switch self {
+        case .fragment: false
+        case .match: true
+        }
+    }
+}
+
 /// Which line number the gutter draws beside a row of text.
 public enum LineNumbering {
     /// The 1-based line whose start is exactly `utf16Offset`, or `nil` when the row begins

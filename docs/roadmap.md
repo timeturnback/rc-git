@@ -78,6 +78,15 @@ constraints are clear.
   history, `max_scan` commits per page; a since-bound uses gix's commit-time cutoff so the walk
   terminates at the window instead of scanning to the root. Under a path scope the search applies
   the path history's path-change test too. No index is ever built. The CLI gained `search`.
+- **Find in repository.** In Files, ⇧⌘F opens a panel that finds a literal string in every
+  file below the browsed root: blobs, or the files on disk while browsing the working tree.
+  Smart case: a query with no uppercase letter ignores ASCII case. Return searches; hits land
+  per batch, grouped by file with each line's excerpt, and Return on a line opens the file in
+  source mode with the match selected. It reads the path-search file list, so nothing new walks
+  the tree, then asks the core for one batch at a time (`search_blobs`,
+  `search_worktree_files`), each capped at 8 MiB read and cancellable between batches. A blob
+  shared by several paths is read once; files over 1 MiB and binary files are skipped, and the
+  search stops at 2,000 matching lines. No index is built. The CLI gained `grep`.
 - **Per-file history.** "Show File History" on tree rows and ⌥⌘Y for the open file scope the History
   pane to the commits that changed one path, with a chip to clear. A history walk filtered by path
   compares the entry at the path against every parent (clean merges hide, root commits count,

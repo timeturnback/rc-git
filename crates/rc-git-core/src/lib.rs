@@ -15,6 +15,7 @@ mod log;
 mod oid;
 mod refs;
 mod repo;
+mod search;
 mod stash;
 mod tree;
 mod walk;
@@ -33,6 +34,10 @@ pub use log::{CommitDetail, CommitSummary, LogCursor};
 pub use oid::Oid;
 pub use refs::{BrokenRef, DefaultBranch, Head, RefEntry, RefKind, RefListing};
 pub use repo::{Repository, require_files_ref_storage, require_work_tree_at};
+pub use search::{
+    ContentQuery, DEFAULT_SEARCH_BATCH_BYTES, DEFAULT_SEARCH_FILE_LIMIT, EXCERPT_BYTES, FileSearch,
+    LineMatch, MAX_LINES_PER_FILE, SearchBatch, SearchLimits,
+};
 pub use stash::{StashEntry, StashReflogLine, stash_reflog_lines};
 pub use tree::{EntryKind, TreeEntry};
 pub use worktree::{

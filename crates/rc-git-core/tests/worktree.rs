@@ -1609,3 +1609,50 @@ fn a_core_excludes_file_under_tilde_keeps_the_gitignore_rules() {
     );
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 }
+
+#[test]
+fn search_worktree_files_reads_disk_and_reports_a_missing_file_without_failing() {
+    let fx = Fixture::standard();
+    fx.write("README.md", b"edited Hello\n");
+    let repo = Repository::open(fx.path()).unwrap();
+    let query = rc_git_core::ContentQuery::new(b"hello").unwrap();
+    let batch = repo
+        .search_worktree_files(
+            &["README.md", "gone.txt"],
+            &query,
+            rc_git_core::SearchLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(batch.len(), 2);
+    assert_eq!(
+        batch[0],
+        rc_git_core::FileSearch::Searched {
+            lines: vec![rc_git_core::LineMatch {
+                line: 0,
+                column: 7,
+                excerpt: b"edited Hello".to_vec(),
+                ranges: vec![std::ops::Range { start: 7, end: 12 }],
+            }],
+            truncated: false,
+        }
+    );
+    let rc_git_core::FileSearch::Unreadable { error } = &batch[1] else {
+        panic!("expected unreadable, got {:?}", batch[1]);
+    };
+    assert!(error.contains("gone.txt"), "{error}");
+}
+
+#[test]
+fn search_worktree_files_refuses_a_bare_repository() {
+    let fx = Fixture::standard();
+    let (_bare, bare_path) = fx.bare_copy();
+    let repo = Repository::open(&bare_path).unwrap();
+    let query = rc_git_core::ContentQuery::new(b"x").unwrap();
+    let err = repo
+        .search_worktree_files(&["README.md"], &query, rc_git_core::SearchLimits::default())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("search working tree files"),
+        "{err}"
+    );
+}

@@ -881,6 +881,45 @@ fn an_unreadable_directory_is_a_warning_and_the_rest_is_listed() {
 }
 
 #[test]
+fn grep_lists_matching_lines_at_a_revision_or_on_disk() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+
+    let out = rc_git(&["grep", path, "fn"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "src/lib.rs\t1\tpub fn one() -> u32 {\nsrc/main.rs\t1\tfn main() {\n"
+    );
+    assert!(stderr(&out).contains("warning: skipped 1 binary, 0 over 1 MiB, 0 unreadable"));
+
+    let out = rc_git(&["grep", path, "fn", "v0.9"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "src/main.rs\t1\tfn main() {\n");
+
+    let out = rc_git(&["grep", path, "Hello"]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout(&out),
+        "",
+        "an uppercase letter makes the match exact"
+    );
+
+    fx.write("notes.txt", b"a\n\tHello\tthere\n");
+    let out = rc_git(&["grep", path, "hello", "--worktree"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "README.md\t3\thello\nnotes.txt\t2\tHello there\n"
+    );
+
+    let out = rc_git(&["grep", path, ""]);
+    assert_eq!(out.status.code(), Some(2));
+    let out = rc_git(&["grep", path, "x", "HEAD", "--worktree"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn files_lists_every_file_on_disk_including_ignored_ones() {
     let fx = Fixture::standard();
     let path = fx.path().to_str().unwrap();

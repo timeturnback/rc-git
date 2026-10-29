@@ -24,6 +24,10 @@ public protocol RepositoryReading: Sendable {
     func diffWorktreeFile(path: String, old: Oid?, limit: UInt64, context: UInt32) throws
         -> BlobDiff
     func stashList() throws -> [StashEntry]
+    func searchBlobs(_ oids: [Oid], query: String, limits: ContentSearchLimits) throws
+        -> [FileSearchResult]
+    func searchWorktreeFiles(_ paths: [String], query: String, limits: ContentSearchLimits)
+        throws -> [FileSearchResult]
 }
 
 /// A walk over the commits reachable from one tip, newest first. Each call resumes where the

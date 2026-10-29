@@ -178,6 +178,20 @@ fn every_operation_leaves_the_repository_untouched() {
     assert_ne!(listing.entries.len(), 0);
     repo.worktree_entries(Some(root), "src").unwrap();
     repo.worktree_file("README.md", DEFAULT_BLOB_LIMIT).unwrap();
+    let query = rc_git_core::ContentQuery::new(b"fn").unwrap();
+    let main_rs = repo
+        .entry_at_path(root, "src/main.rs")
+        .unwrap()
+        .unwrap()
+        .oid;
+    repo.search_blobs(&[main_rs], &query, rc_git_core::SearchLimits::default())
+        .unwrap();
+    repo.search_worktree_files(
+        &["src/main.rs"],
+        &query,
+        rc_git_core::SearchLimits::default(),
+    )
+    .unwrap();
     let status = repo.worktree_status(Some(root), 100_000).unwrap();
     assert!(!status.truncated);
     assert!(

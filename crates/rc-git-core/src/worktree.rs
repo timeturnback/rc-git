@@ -369,7 +369,7 @@ impl Repository {
         Ok((full, meta))
     }
 
-    fn require_work_dir(&self, op: &'static str, path: &str) -> Result<PathBuf> {
+    pub(crate) fn require_work_dir(&self, op: &'static str, path: &str) -> Result<PathBuf> {
         self.work_dir().map(PathBuf::from).ok_or_else(|| {
             worktree_error(
                 op,

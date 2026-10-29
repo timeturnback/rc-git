@@ -15,9 +15,12 @@ final class FileViewController: NSViewController {
     /// A markdown link that pointed inside the repository was clicked; the arguments are the
     /// repository-relative path it resolved to and the `#fragment` it carried, if any.
     var onOpenRepositoryPath: ((String, String?) -> Void)?
-    /// Asked once a file has painted for the heading a repository link wants it scrolled to;
-    /// the model owns the request and forgets it on answering.
-    var takePendingFragment: (() -> String?)?
+    /// Asked before a file paints where it will be scrolled to, without forgetting it: a
+    /// content-search match shows the source even when the markdown preview is preferred.
+    var pendingReveal: (() -> FileReveal?)?
+    /// Asked once a file has painted for the heading or match to scroll to; the model owns the
+    /// request and forgets it on answering.
+    var takePendingReveal: (() -> FileReveal?)?
     /// Asked for the import links of a source file; `nil` means it has none to follow.
     var importLinkProvider: ((TreeEntry, TextDocument) async -> [ImportLink]?)?
     /// An import link was clicked; the arguments are the module specifier as written and the
@@ -289,7 +292,8 @@ final class FileViewController: NSViewController {
         let previewable = MarkdownDocument.isPreviewable(
             name: entry.name, byteCount: document.byteCount)
         modePicker.isHidden = !previewable
-        let preview = previewable && markdownPrefersPreview
+        let preview =
+            previewable && markdownPrefersPreview && pendingReveal?()?.needsSource != true
         modePicker.selectedSegment = preview ? 0 : 1
         if preview,
             let message = MarkdownDocument.buildingPlaceholder(
@@ -325,8 +329,15 @@ final class FileViewController: NSViewController {
             if !preview {
                 self.fetchHighlights(entry: entry, document: document, generation: generation)
             }
-            if let name = self.takePendingFragment?() {
+            switch self.takePendingReveal?() {
+            case let .fragment(name):
                 self.scroll(toAnchor: name)
+            case let .match(line, byteColumn, byteLength):
+                let range = document.utf16Range(
+                    line: line, byteColumn: byteColumn, byteLength: byteLength)
+                if let range { self.select(NSRange(range)) }
+            case nil:
+                break
             }
         }
     }
@@ -657,6 +668,14 @@ extension FileViewController: NSTextViewDelegate {
         if let text = link as? String { return text }
         if let url = link as? URL { return url.absoluteString }
         return ""
+    }
+
+    /// Selects `range` of the source on screen, scrolls it into view and flashes it.
+    private func select(_ range: NSRange) {
+        guard NSMaxRange(range) <= textStorage.length else { return }
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        if range.length > 0 { textView.showFindIndicator(for: range) }
     }
 
     /// Scrolls to the heading a `#fragment` names in the file on screen; a name with no

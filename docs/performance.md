@@ -26,6 +26,7 @@ import is an estimate from its design, with no timing test.
 | working-tree listing | one `read_dir` + one tree object | content hashed only when sizes match and the index cannot vouch for the file |
 | working-tree status | under 150 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` per directory, ignored directories pruned unopened, one `lstat` per tracked file through the index's stat cache and a hash only for what it cannot settle; the cap bounds the walk and how long it holds a pool handle, and truncation is reported |
 | working-tree file list | under 60 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` and one `lstat` per entry, one tree object per tracked directory, ignored directories the tree does not track pruned unopened, nothing hashed; runs once per opening of path search in the working tree |
+| content search | about 2 ms per MiB of text read, warm cache, in batches of 8 MiB, background | on request only, never per keystroke; reads the path-search file list, one header read before each blob and one `stat` before each disk file, nothing over 1 MiB decoded, a blob shared by several paths read once; stops at 2,000 matching lines; cancellable between batches. 1,270 files and 19 MB took 28-40 ms (measured 2026-10-28) |
 | blame | grows with the history between tip and the commit that introduced the oldest surviving line, down to a `since` floor: the app stops two years before the tip's commit and shows older lines as "older than" the floor; the CLI walks the whole ancestry unless given `--since` | on demand for the open file, never in bulk; a file over the limit at tip costs one header read. The walk cannot be cancelled once started — gix-blame takes no interrupt flag — so the floor is its only bound. Renames are followed: only a commit that adds or deletes the path pays for a rename-tracking tree diff, which measured 6 ms against 5 ms untracked for a renamed file in a 500-commit repository |
 | markdown preview | parse about 20-30 ms per MiB, build 70-250 ms per MiB depending on run density, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; the wait is parse plus build (`MarkdownRenderer.render`), and building the attributed string dominates: 2 MiB of this repository's docs took 44-56 ms to parse and 186-230 ms in all, a 1 MiB bullet list 30 ms and 260-290 ms. Capped at 8 MiB, above which the file opens in source mode. At the cap parse takes 0.27-0.32 s and the whole build 0.7-0.76 s for this repository's docs and 1.9-2.0 s for a bullet list with bold runs (measured 2026-10-15); above `MarkdownDocument.buildingPlaceholderThreshold` (512 KiB) the pane clears the previous file for a "Building the preview" placeholder at once, and below it the previous file stays up for the build, under about 150 ms |
 | highlight | after first paint, cached per blob and file extension | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
@@ -69,7 +70,8 @@ refs. Everything else is on demand.
   searched roots keep their index; the walk reads through `TreeStore` without storing in it,
   so rebuilding an evicted one reads its directories again. In the working tree it walks
   disk instead, once per opening of the panel, capped the same way, with ignored folders the
-  tree does not track pruned unopened.
+  tree does not track pruned unopened. Content search reads that same list and builds
+  nothing of its own: each search reads the files it lists, a batch at a time.
 - **Decorate after painting.** Syntax highlighting and blame load after the content is on
   screen and never block it; a stale result is dropped by generation, like every other load.
 - **Parse for a feature when the user reaches for it.** Import links need a second parse of
@@ -86,6 +88,7 @@ target/release/rc-git --time cat  <repo> HEAD path/to/file
 target/release/rc-git --time log  <repo> -n 100
 target/release/rc-git --time changes <repo>         # the full working-tree status walk
 target/release/rc-git --time files <repo>           # the working-tree walk path search uses
+target/release/rc-git --time grep <repo> <text>     # content search over every blob at HEAD
 target/release/rc-git --time highlight <repo> HEAD path/to/file   # one highlight pass
 target/release/rc-git --time links <repo> HEAD path/to/file.ts    # one import-link pass
 ```

@@ -84,13 +84,15 @@ public final class BrowserModel {
     /// is not, the path carries U+FFFD replacements and the core would resolve it to whatever
     /// has that spelling, so blame and file history refuse it.
     public private(set) var openedPathIsExact = true
-    /// The `#fragment` of the repository link that opened the file loading or on screen, for
-    /// the pane to scroll to once it paints. Every other open, a dead link included, clears it,
-    /// so a fragment never lands on a file it was not asked for.
-    public private(set) var pendingFragment: String?
-    /// The fragment `openPath` hands to the load it is about to start; `loadFile` moves it to
-    /// `pendingFragment`, so a load started any other way clears that instead.
-    private var fragmentForNextLoad: String?
+    /// Where the pane scrolls once the file loading or on screen has painted: the `#fragment`
+    /// of the repository link that opened it, or the content-search match that did. Every
+    /// other open, a dead link included, clears it, so a reveal never lands on a file it was
+    /// not asked for.
+    public private(set) var pendingReveal: FileReveal?
+    /// The reveal `openPath` or `openContentMatch` hands to the load it is about to start;
+    /// `loadFile` moves it to `pendingReveal`, so a load started any other way clears that
+    /// instead.
+    private var revealForNextLoad: FileReveal?
     /// The size limit the file pane last read with, which blame honors too.
     private var openedFileLimit = Repository.defaultBlobLimit
     /// Where the file in the file pane was read from, so `loadAnyway` re-reads the same place.
@@ -252,6 +254,8 @@ public final class BrowserModel {
     private var worktreeIndexGeneration = 0
     /// Bumped by every `searchPaths` call, so only the newest query scores the index.
     private var pathSearchGeneration = 0
+    /// Bumped by every content search, so a superseded one stops reporting.
+    private var contentSearchGeneration = 0
     /// The scan of the newest query; a newer query cancels it.
     private var pathSearchTask: Task<[PathIndexEntry], any Error>?
     /// Index scans `searchPaths` started, for tests.
@@ -309,7 +313,7 @@ public final class BrowserModel {
         browsingWorkingTree = false
         resetHistory(anchor: nil)
         fileState = .empty
-        pendingFragment = nil
+        pendingReveal = nil
         openedFilePath = nil
         openedFileSource = nil
         onFileChanged?()
@@ -598,8 +602,8 @@ public final class BrowserModel {
         guard let repository else { return }
         fileGeneration += 1
         let generation = fileGeneration
-        pendingFragment = fragmentForNextLoad
-        fragmentForNextLoad = nil
+        pendingReveal = revealForNextLoad
+        revealForNextLoad = nil
         fileState = .loading(entry)
         onFileChanged?()
         noteLocation()
@@ -612,7 +616,7 @@ public final class BrowserModel {
         case let .success(state):
             fileState = state
         case let .failure(error):
-            pendingFragment = nil
+            pendingReveal = nil
             fileState = .failed(entry, error.message)
         }
         onFileChanged?()
@@ -651,7 +655,7 @@ public final class BrowserModel {
         case let .success(tree):
             rootTree = tree
             fileState = .empty
-            pendingFragment = nil
+            pendingReveal = nil
             openedFilePath = nil
             openedFileSource = nil
             onFileChanged?()
@@ -724,15 +728,15 @@ public final class BrowserModel {
     /// Opens the file at a repository-relative path, the way a markdown link in the file pane
     /// asks for one. Answers `.missing` when the path names nothing openable, so the caller can
     /// say the link is dead, and `.failed` when a read on the way failed; either way the pane
-    /// and `location` stay on the previous file. `fragment` becomes `pendingFragment` only once
-    /// the file load starts; a dead or failed link leaves `pendingFragment` empty.
+    /// and `location` stay on the previous file. `fragment` becomes `pendingReveal` only once
+    /// the file load starts; a dead or failed link leaves `pendingReveal` empty.
     ///
     /// Resolution reads one tree object, or one working-tree directory, per path component, so
     /// a deep link costs its depth and not the size of the tree; every tree object it reads
     /// lands in the shared cache.
     @discardableResult
     public func openPath(_ path: String, fragment: String? = nil) async -> OpenPathOutcome {
-        pendingFragment = nil
+        pendingReveal = nil
         guard let repository, let root = rootTree, !path.isEmpty else { return .missing }
         if browsingWorkingTree {
             return await openWorktreePath(
@@ -745,17 +749,17 @@ public final class BrowserModel {
             return .failed(RepositoryError(wrapping: error).message)
         }
         guard let entry = found else { return .missing }
-        fragmentForNextLoad = fragment
+        revealForNextLoad = fragment.map(FileReveal.fragment)
         await openFile(entry, path: path)
-        fragmentForNextLoad = nil
+        revealForNextLoad = nil
         return .opened
     }
 
-    /// Hands the pane the fragment to scroll to once the file it was asked for has painted, and
+    /// Hands the pane the place to scroll to once the file it was asked for has painted, and
     /// forgets it, so a repaint of the same file does not jump back.
-    public func takePendingFragment() -> String? {
-        defer { pendingFragment = nil }
-        return pendingFragment
+    public func takePendingReveal() -> FileReveal? {
+        defer { pendingReveal = nil }
+        return pendingReveal
     }
 
     /// `openPath` over the working directory: confirms on disk that `path` names a file
@@ -777,9 +781,9 @@ public final class BrowserModel {
             status = found
         }
         let name = path.split(separator: "/").last.map(String.init) ?? path
-        fragmentForNextLoad = fragment
+        revealForNextLoad = fragment.map(FileReveal.fragment)
         await openWorktreeFile(name: name, path: path, status: status)
-        fragmentForNextLoad = nil
+        revealForNextLoad = nil
         if case let .failed(_, message) = fileState { return .failed(message) }
         return .opened
     }
@@ -1550,7 +1554,7 @@ public final class BrowserModel {
     private func closeFile() {
         fileGeneration += 1
         fileState = .empty
-        pendingFragment = nil
+        pendingReveal = nil
         openedFilePath = nil
         openedFileSource = nil
         onFileChanged?()
@@ -1829,9 +1833,7 @@ public final class BrowserModel {
         pathSearchTask?.cancel()
         pathSearchTask = nil
         guard let root = rootTree else { return PathSearchResult(entries: [], truncated: false) }
-        let index =
-            browsingWorkingTree
-            ? try await worktreePathIndex(comparedTo: root) : try await pathIndex(for: root)
+        let index = try await currentPathIndex(root: root)
         guard generation == pathSearchGeneration else { throw CancellationError() }
         let includeHidden = showsHiddenFiles
         // pool-safe: a CPU-bound scan of the index in memory, cancelled between strides.
@@ -1856,6 +1858,13 @@ public final class BrowserModel {
         worktreeIndexGeneration += 1
         worktreeIndex = nil
         worktreeIndexBuild = nil
+    }
+
+    /// The index searches read: the files on disk while browsing the working tree, else
+    /// `root`'s tree.
+    private func currentPathIndex(root: Oid) async throws -> PathIndex {
+        if browsingWorkingTree { return try await worktreePathIndex(comparedTo: root) }
+        return try await pathIndex(for: root)
     }
 
     /// Every file on disk, walked once per path-search session. Queries during a walk share
@@ -1919,6 +1928,61 @@ public final class BrowserModel {
                 "no status for \(path, privacy: .public): \(message, privacy: .public)")
             return nil
         }
+    }
+
+    // MARK: Content search
+
+    /// Searches the contents of every file below the current root for the literal `query`,
+    /// with smart case (see `Repository.searchBlobs`): on disk while browsing the working tree,
+    /// else the blobs, each blob read once however many paths share it. It reads the file list
+    /// path search uses, building it on first use, so nothing new walks the tree. Hidden files
+    /// are searched only while `showsHiddenFiles` is on.
+    ///
+    /// Hits reach `report` a batch at a time, in file order, while this search is the newest;
+    /// a newer call makes this one stop reporting and throw `CancellationError`.
+    ///
+    /// - Throws: `CancellationError` when superseded or cancelled; the index build's error;
+    ///   a core error from a read.
+    public func searchContent(
+        _ query: String, report: @escaping ContentSearchSession.Report
+    ) async throws -> ContentSearchProgress {
+        contentSearchGeneration += 1
+        let generation = contentSearchGeneration
+        guard let repository, let root = rootTree else {
+            throw RepositoryError("no repository is open")
+        }
+        let worktree = browsingWorkingTree
+        let index = try await currentPathIndex(root: root)
+        guard generation == contentSearchGeneration else { throw CancellationError() }
+        let files = ContentSearch.searchable(index.entries, includeHidden: showsHiddenFiles)
+        let current: ContentSearchSession.Report = { [weak self] hits, progress in
+            guard let self, generation == self.contentSearchGeneration else { return }
+            report(hits, progress)
+        }
+        let progress: ContentSearchProgress
+        if worktree {
+            progress = try await ContentSearch.run(
+                files: files, indexTruncated: index.truncated, key: \.path,
+                search: { try repository.searchWorktreeFiles($0, query: query, limits: .init()) },
+                report: current)
+        } else {
+            progress = try await ContentSearch.run(
+                files: files, indexTruncated: index.truncated, key: \.oid,
+                search: { try repository.searchBlobs($0, query: query, limits: .init()) },
+                report: current)
+        }
+        guard generation == contentSearchGeneration else { throw CancellationError() }
+        return progress
+    }
+
+    /// Opens a content-search hit as path search opens a pick, and has the pane select
+    /// `match` once it paints; `nil` opens the file at the top.
+    public func openContentMatch(_ entry: PathIndexEntry, match: ContentLineMatch?) async {
+        revealForNextLoad = match.map {
+            .match(line: $0.line, byteColumn: $0.column, byteLength: $0.matchLength)
+        }
+        await openSearchResult(entry)
+        revealForNextLoad = nil
     }
 
     // MARK: Helpers

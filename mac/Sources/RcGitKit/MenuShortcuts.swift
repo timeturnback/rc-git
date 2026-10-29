@@ -47,6 +47,18 @@ public struct MenuShortcut: Hashable, Sendable {
 public struct MenuShortcuts: Sendable {
     public init() {}
 
+    /// The title `searchCommits` takes while Files is showing.
+    public static let findInRepositoryTitle = "Find in Repository…"
+
+    /// The ⇧⌘F item's title while `mode` is showing: Files finds text in every file, the other
+    /// modes search commits.
+    public func searchTitle(for mode: ContentMode) -> String {
+        switch mode {
+        case .files: Self.findInRepositoryTitle
+        case .history, .changes: searchCommits.title
+        }
+    }
+
     public let settings = MenuShortcut("Settings…", ",")
     public let hideApp = MenuShortcut("Hide", "h")
     public let hideOthers = MenuShortcut("Hide Others", "h", [.command, .option])
@@ -83,6 +95,8 @@ public struct MenuShortcuts: Sendable {
     public let showHiddenFiles = MenuShortcut("Show Hidden Files", ".", [.command, .shift])
     public let showBlame = MenuShortcut("Show Blame", "b", [.command, .option])
     public let fileHistory = MenuShortcut("History of This File", "y", [.command, .option])
+    /// Searches commits in History and Changes; in Files the same item and chord find text in
+    /// every file instead, titled `findInRepositoryTitle`.
     public let searchCommits = MenuShortcut("Search Commits", "F", [.command, .shift])
     public let toggleSidebar = MenuShortcut("Toggle Sidebar", "s", [.command, .control])
     public let enterFullScreen = MenuShortcut("Enter Full Screen", "f", [.command, .control])

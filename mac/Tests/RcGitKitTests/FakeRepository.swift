@@ -137,6 +137,19 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
     /// Holds the next `refs` call, then clears itself.
     var refsGate: CallGate?
     var refsCalls = 0
+    /// Per blob, what a content search finds in it; any other blob holds no match.
+    var blobSearches: [Oid: FileSearchResult] = [:]
+    /// Per working-tree path, what a content search finds in it; any other path holds none.
+    var worktreeSearches: [String: FileSearchResult] = [:]
+    /// The oids each `searchBlobs` call asked for, in call order.
+    var searchBlobCalls: [[Oid]] = []
+    /// The paths each `searchWorktreeFiles` call asked for, in call order.
+    var searchWorktreeCalls: [[String]] = []
+    /// When set, a content-search call answers at most this many files, as the core does once
+    /// it reaches its byte budget.
+    var contentFilesPerCall: Int?
+    /// Holds the next content-search call, then clears itself.
+    var contentSearchGate: CallGate?
 
     var workingDirectory: String? { lock.withLock { workDir } }
 
@@ -443,6 +456,39 @@ final class FakeRepository: RepositoryReading, @unchecked Sendable {
             throw RepositoryError("read working tree file: '\(path)': missing")
         }
         return found
+    }
+
+    func searchBlobs(_ oids: [Oid], query: String, limits: ContentSearchLimits) throws
+        -> [FileSearchResult]
+    {
+        let (results, gate) = lock.withLock { () -> ([FileSearchResult], CallGate?) in
+            searchBlobCalls.append(oids)
+            let answered = oids.prefix(contentFilesPerCall ?? oids.count)
+            let gate = contentSearchGate
+            contentSearchGate = nil
+            return (
+                answered.map { blobSearches[$0] ?? .searched(lines: [], truncated: false) }, gate
+            )
+        }
+        gate?.pass()
+        return results
+    }
+
+    func searchWorktreeFiles(_ paths: [String], query: String, limits: ContentSearchLimits)
+        throws -> [FileSearchResult]
+    {
+        let (results, gate) = lock.withLock { () -> ([FileSearchResult], CallGate?) in
+            searchWorktreeCalls.append(paths)
+            let answered = paths.prefix(contentFilesPerCall ?? paths.count)
+            let gate = contentSearchGate
+            contentSearchGate = nil
+            return (
+                answered.map { worktreeSearches[$0] ?? .searched(lines: [], truncated: false) },
+                gate
+            )
+        }
+        gate?.pass()
+        return results
     }
 
     func stashList() throws -> [StashEntry] {

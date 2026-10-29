@@ -428,6 +428,60 @@ public final class Repository: RepositoryReading, @unchecked Sendable {
             files: files, scanned: list.pointee.scanned, truncated: list.pointee.truncated)
     }
 
+    /// Searches the blobs `oids`, in order, for the literal `query` with smart case: ASCII
+    /// letters match either case unless `query` holds an uppercase one. Returns one result per
+    /// blob read, in order; fewer than `oids.count` means the call stopped at
+    /// `limits.batchBytes`, so ask again for the rest.
+    public func searchBlobs(
+        _ oids: [Oid], query: String, limits: ContentSearchLimits = ContentSearchLimits()
+    ) throws -> [FileSearchResult] {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let cOids = oids.map { oid in oid.withC { $0.pointee } }
+        let batch = cOids.withUnsafeBufferPointer { buffer in
+            rcgit_search_blobs(
+                handle, buffer.baseAddress, oids.count, query, limits.fileLimit,
+                limits.batchBytes, &error)
+        }
+        guard let batch else {
+            throw RepositoryError.take(error, fallback: "cannot search \(oids.count) blobs")
+        }
+        defer { rcgit_search_batch_free(batch) }
+        return Self.results(of: batch.pointee, matchLength: query.utf8.count)
+    }
+
+    /// Searches the working-tree files at the repository-relative `paths`, in order, as
+    /// `searchBlobs` searches blobs. A file that cannot be read is `.unreadable` and does not
+    /// stop the search.
+    public func searchWorktreeFiles(
+        _ paths: [String], query: String, limits: ContentSearchLimits = ContentSearchLimits()
+    ) throws -> [FileSearchResult] {
+        var error: UnsafeMutablePointer<CChar>? = nil
+        let batch = RepositoryGuard.withOwnedCStrings(paths) { pointers in
+            pointers.withUnsafeBufferPointer { buffer in
+                rcgit_search_worktree_files(
+                    handle, buffer.baseAddress, paths.count, query, limits.fileLimit,
+                    limits.batchBytes, &error)
+            }
+        }
+        guard let batch else {
+            throw RepositoryError.take(
+                error, fallback: "cannot search \(paths.count) working tree files")
+        }
+        defer { rcgit_search_batch_free(batch) }
+        return Self.results(of: batch.pointee, matchLength: query.utf8.count)
+    }
+
+    private static func results(of batch: RcGitSearchBatch, matchLength: Int)
+        -> [FileSearchResult]
+    {
+        var results: [FileSearchResult] = []
+        results.reserveCapacity(batch.len)
+        for index in 0..<batch.len {
+            results.append(FileSearchResult(c: batch.files[index], matchLength: matchLength))
+        }
+        return results
+    }
+
     /// Every stash entry, newest first; empty when the repository has no stash.
     public func stashList() throws -> [StashEntry] {
         var error: UnsafeMutablePointer<CChar>? = nil
@@ -509,6 +563,41 @@ extension TreeEntry {
         self.init(
             name: name.text, oid: Oid(c: c.oid), kind: EntryKind(c: c.kind),
             hasExactName: name.exact)
+    }
+}
+
+extension FileSearchResult {
+    init(c: RcGitFileSearch, matchLength: Int) {
+        switch c.kind {
+        case RcGitFileSearchKind_Searched:
+            var lines: [ContentLineMatch] = []
+            lines.reserveCapacity(c.line_count)
+            for index in 0..<c.line_count {
+                lines.append(ContentLineMatch(c: c.lines[index], matchLength: matchLength))
+            }
+            self = .searched(lines: lines, truncated: c.truncated)
+        case RcGitFileSearchKind_Binary:
+            self = .binary
+        case RcGitFileSearchKind_TooLarge:
+            self = .tooLarge(size: c.size, limit: c.limit)
+        default:
+            self = .unreadable(c.error.map { String(cString: $0) } ?? "cannot read the file")
+        }
+    }
+}
+
+extension ContentLineMatch {
+    init(c: RcGitLineMatch, matchLength: Int) {
+        let bytes = Array(UnsafeBufferPointer(start: c.excerpt, count: c.excerpt_len))
+        var ranges: [Range<Int>] = []
+        ranges.reserveCapacity(c.range_count)
+        for index in 0..<c.range_count {
+            let range = c.ranges[index]
+            ranges.append(Int(range.start)..<Int(range.end))
+        }
+        self.init(
+            line: c.line, column: c.column, matchLength: matchLength, excerptBytes: bytes,
+            ranges: ranges)
     }
 }
 

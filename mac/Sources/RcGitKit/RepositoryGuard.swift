@@ -456,7 +456,7 @@ public enum RepositoryGuard {
 
     /// Runs `body` with each optional string duplicated as a C string (`nil` stays NULL),
     /// freeing them afterwards, so a call with several optional parameters stays flat.
-    private static func withOwnedCStrings<T>(
+    static func withOwnedCStrings<T>(
         _ strings: [String?], _ body: ([UnsafePointer<CChar>?]) -> T
     ) -> T {
         let owned = strings.map { $0.map { strdup($0) } ?? nil }

@@ -149,6 +149,18 @@ typedef enum RcGitWorktreeStatus {
   RcGitWorktreeStatus_Deleted = 4,
 } RcGitWorktreeStatus;
 
+/// What searching one file found.
+typedef enum RcGitFileSearchKind {
+  /// Text that was searched; `lines` holds the matching lines, possibly none.
+  RcGitFileSearchKind_Searched = 0,
+  /// Binary; not searched.
+  RcGitFileSearchKind_Binary = 1,
+  /// Over the limit; `size` and `limit` are filled, nothing was read.
+  RcGitFileSearchKind_TooLarge = 2,
+  /// A working-tree file that could not be read; `error` says why.
+  RcGitFileSearchKind_Unreadable = 3,
+} RcGitFileSearchKind;
+
 /// What a highlighted region means, for the view to color.
 typedef enum RcGitHighlightClass {
   /// `@attribute`, decorators, derives.
@@ -612,6 +624,58 @@ typedef struct RcGitWorktreeFileList {
   /// True when the walk stopped at the cap before covering the whole tree.
   bool truncated;
 } RcGitWorktreeFileList;
+
+/// A half-open byte range of one match inside an excerpt.
+typedef struct RcGitMatchRange {
+  /// First byte of the match.
+  uint32_t start;
+  /// One past the last byte of the match.
+  uint32_t end;
+} RcGitMatchRange;
+
+/// One line that holds the query.
+typedef struct RcGitLineMatch {
+  /// Zero-based line number.
+  size_t line;
+  /// Byte offset of the first match from the start of the line.
+  size_t column;
+  /// `excerpt_len` bytes of the line, or a window of a long one, without indentation or
+  /// line ending; not NUL-terminated. Cut only between UTF-8 characters.
+  uint8_t *excerpt;
+  /// Length of `excerpt`.
+  size_t excerpt_len;
+  /// `range_count` matches inside `excerpt`, in order and not overlapping.
+  struct RcGitMatchRange *ranges;
+  /// Length of `ranges`.
+  size_t range_count;
+} RcGitLineMatch;
+
+/// What one file's search found.
+typedef struct RcGitFileSearch {
+  /// Which fields are meaningful.
+  enum RcGitFileSearchKind kind;
+  /// `line_count` matching lines in file order. Searched only.
+  struct RcGitLineMatch *lines;
+  /// Length of `lines`.
+  size_t line_count;
+  /// Whether more lines matched than `lines` holds. Searched only.
+  bool truncated;
+  /// Size in bytes. Too large only.
+  uint64_t size;
+  /// The limit that was exceeded. Too large only.
+  uint64_t limit;
+  /// Which read failed and why. Unreadable only; NULL otherwise.
+  char *error;
+} RcGitFileSearch;
+
+/// One search call's results: one entry per file it reached, in the order asked. Fewer
+/// entries than files asked for means the call stopped at its byte budget.
+typedef struct RcGitSearchBatch {
+  /// `len` results.
+  struct RcGitFileSearch *files;
+  /// Number of results.
+  size_t len;
+} RcGitSearchBatch;
 
 /// One stashed change set, as `git stash list` shows it.
 typedef struct RcGitStashEntry {
@@ -1216,6 +1280,46 @@ struct RcGitWorktreeFileList *rcgit_worktree_files(const struct RcGitRepo *repo,
 /// # Safety
 /// `list` is NULL or came from `rcgit_worktree_files` and is not freed twice.
 void rcgit_worktree_file_list_free(struct RcGitWorktreeFileList *list);
+
+/// Searches the blobs `oids`, in order, for the literal `query` with smart case (ASCII
+/// letters match either case unless `query` holds an uppercase one), until `max_bytes` have
+/// been read. A blob over `file_limit`, capped at 4 GiB, costs a header read and is reported
+/// too large. Fewer results than `oid_count` means the call stopped at `max_bytes`; ask again
+/// for the rest. Release with `rcgit_search_batch_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `oids` is NULL with `oid_count` 0 or points to
+/// `oid_count` readable `RcGitOid`s. `query` is a NUL-terminated string. `error` is NULL or
+/// valid for writing a `char *`.
+struct RcGitSearchBatch *rcgit_search_blobs(const struct RcGitRepo *repo,
+                                            const struct RcGitOid *oids,
+                                            size_t oid_count,
+                                            const char *query,
+                                            uint64_t file_limit,
+                                            uint64_t max_bytes,
+                                            char **error);
+
+/// Searches the working-tree files at the repository-relative `paths`, in order, as
+/// `rcgit_search_blobs` searches blobs. A file that cannot be read is reported
+/// `Unreadable` and does not stop the search. Release with `rcgit_search_batch_free`.
+///
+/// # Safety
+/// `repo` came from `rcgit_repo_open`. `paths` is NULL with `path_count` 0 or points to
+/// `path_count` NUL-terminated strings. `query` is a NUL-terminated string. `error` is NULL
+/// or valid for writing a `char *`.
+struct RcGitSearchBatch *rcgit_search_worktree_files(const struct RcGitRepo *repo,
+                                                     const char *const *paths,
+                                                     size_t path_count,
+                                                     const char *query,
+                                                     uint64_t file_limit,
+                                                     uint64_t max_bytes,
+                                                     char **error);
+
+/// Releases a value from `rcgit_search_blobs` or `rcgit_search_worktree_files`.
+///
+/// # Safety
+/// `batch` is NULL or came from one of those functions and is not freed twice.
+void rcgit_search_batch_free(struct RcGitSearchBatch *batch);
 
 /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
 /// bytes. `old` is NULL for an untracked file, which makes the diff pure additions. Each
