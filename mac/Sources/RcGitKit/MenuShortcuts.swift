@@ -68,7 +68,7 @@ public struct MenuShortcuts: Sendable {
     public let newTab = MenuShortcut("New Tab", "t")
     public let reopenClosedTab = MenuShortcut("Reopen Closed Tab", "t", [.command, .shift])
     public let openRepository = MenuShortcut("Open Repository…", "o")
-    public let openRecentRepository = MenuShortcut("Open Recent Repository…", "r")
+    public let openRecentRepository = MenuShortcut("Open Recent Repository…", "r", .control)
     public let goToFile = MenuShortcut("Go to File…", "o", [.command, .shift])
     public let goToBranch = MenuShortcut("Go to Branch…", "b")
     public let closeTab = MenuShortcut("Close Tab", "w")

@@ -62,8 +62,8 @@ enum MainMenu {
         if let updateMode {
             menu.addItem(.separator())
             // The dev bundle earns a key equivalent: rebuilding is the edit-run loop, not
-            // an occasional errand. Cmd-Option-R starts the rebuild without asking; Cmd-R is
-            // Open Recent Repository and the Repository menu's Sync is Cmd-Shift-R.
+            // an occasional errand. Cmd-Option-R starts the rebuild without asking; the
+            // Repository menu's Sync is Cmd-Shift-R.
             switch updateMode {
             case .update:
                 menu.addItem(item("Update \(appName)…", #selector(AppDelegate.showUpdate(_:))))

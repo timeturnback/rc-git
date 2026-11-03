@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         open(path: path)
     }
 
-    /// Opens the ⌘R picker over the front window, listing the same recents as the Open Recent
+    /// Opens the ⌃R picker over the front window, listing the same recents as the Open Recent
     /// menu; a pick goes through `open(path:)` like every other arrival.
     @objc func openRecentRepository(_ sender: Any?) {
         recentPicker.onOpen = { [weak self] path in self?.open(path: path) }

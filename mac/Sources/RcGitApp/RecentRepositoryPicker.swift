@@ -1,7 +1,7 @@
 import AppKit
 import RcGitKit
 
-/// The Open Recent Repository panel (⌘R): the recents newest first, narrowed by fuzzy match
+/// The Open Recent Repository panel (⌃R): the recents newest first, narrowed by fuzzy match
 /// as you type. The arrow keys move the highlight, Return or a double-click opens the pick,
 /// and Escape closes. What to list comes from `RecentRepositories.matching`; the app delegate
 /// decides what opening does.
