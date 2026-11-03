@@ -50,6 +50,22 @@ final class FindInRepositoryController: NSObject, NSTextFieldDelegate, NSTableVi
         field.isBezeled = false
         field.drawsBackground = false
         field.delegate = self
+        field.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+
+        let closeButton = NSButton()
+        closeButton.title = "✕"
+        closeButton.bezelStyle = .accessoryBarAction
+        closeButton.controlSize = .small
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked(_:))
+        closeButton.toolTip = "Close"
+        closeButton.setAccessibilityLabel("Close")
+        closeButton.refusesFirstResponder = true
+
+        let fieldRow = NSStackView(views: [field, closeButton])
+        fieldRow.orientation = .horizontal
+        fieldRow.alignment = .centerY
+        fieldRow.spacing = 6
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit"))
         column.resizingMask = .autoresizingMask
@@ -76,11 +92,14 @@ final class FindInRepositoryController: NSObject, NSTextFieldDelegate, NSTableVi
         status.lineBreakMode = .byTruncatingTail
         status.isHidden = true
 
-        let stack = NSStackView(views: [field, separator, scroll, status])
+        let stack = NSStackView(views: [fieldRow, separator, scroll, status])
         stack.orientation = .vertical
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 8, right: 12)
         panel.contentView = stack
+        fieldRow.widthAnchor.constraint(
+            equalTo: stack.widthAnchor, constant: -(stack.edgeInsets.left + stack.edgeInsets.right)
+        ).isActive = true
     }
 
     /// Shows the panel centered over `window` with the last query selected. `scope` names the
@@ -135,6 +154,10 @@ final class FindInRepositoryController: NSObject, NSTextFieldDelegate, NSTableVi
         } else if session.rows.count > 1 {
             table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         }
+    }
+
+    @objc private func closeClicked(_ sender: Any?) {
+        close()
     }
 
     @objc private func openClicked(_ sender: Any?) {
