@@ -7017,6 +7017,7 @@ dependencies = [
  "rc-git-core",
  "rc-git-guard",
  "rc-git-highlight",
+ "rc-git-kit",
  "rc-git-testkit",
  "tempfile",
  "thiserror 2.0.20",

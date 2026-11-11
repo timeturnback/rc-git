@@ -7,6 +7,10 @@ rust-version.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The fakes in `fake`, for this crate's integration tests and the crates above it.
+test-support = []
+
 [dependencies]
 rc-git-core.workspace = true
 rc-git-guard.workspace = true
@@ -17,6 +21,8 @@ jsonc-parser.workspace = true
 gpui.workspace = true
 
 [dev-dependencies]
+# Itself with the fakes on, so `cargo test -p rc-git-kit` builds them for tests/.
+rc-git-kit = { path = ".", features = ["test-support"] }
 rc-git-testkit.workspace = true
 tempfile.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
