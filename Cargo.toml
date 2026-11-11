@@ -7,6 +7,7 @@ members = [
     "crates/rc-git-ffi",
     "crates/rc-git-cli",
     "crates/rc-git-testkit",
+    "crates/rc-git-kit",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ rc-git-core = { path = "crates/rc-git-core" }
 rc-git-guard = { path = "crates/rc-git-guard" }
 rc-git-highlight = { path = "crates/rc-git-highlight" }
 rc-git-testkit = { path = "crates/rc-git-testkit" }
+rc-git-kit = { path = "crates/rc-git-kit" }
 gix = { version = "=0.87.1", default-features = false, features = ["max-performance", "revision", "sha1", "auto-chain-error", "blob-diff", "blame", "excludes", "index"] }
 # Must equal the gix-transport that gix resolves to; used only as a dev-dependency.
 gix-transport = { version = "=0.59.2", default-features = false }
@@ -35,6 +37,10 @@ hmac = { version = "=0.13.0", default-features = false }
 sha1 = { version = "=0.11.0", default-features = false }
 # Safe SIGINT/SIGTERM registration for the CLI's remote verbs; the CLI forbids `unsafe`.
 signal-hook = { version = "=0.4.5", default-features = false }
+# NFC folding for search keys (Swift precomposedStringWithCanonicalMapping); already in gix's tree.
+unicode-normalization = { version = "=0.1.25", default-features = false, features = ["std"] }
+# tsconfig.json reading: comments and trailing commas (Swift JSONSerialization .json5Allowed).
+jsonc-parser = { version = "=0.34.0", default-features = false }
 tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 [workspace.lints.rust]
