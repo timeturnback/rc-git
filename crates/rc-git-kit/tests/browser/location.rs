@@ -714,3 +714,32 @@ async fn a_refresh_asked_for_during_a_restore_runs_after_it(cx: &mut TestAppCont
         "the refresh ran once the restore was done"
     );
 }
+
+#[gpui::test]
+async fn a_running_refresh_yields_to_a_restore_waiting_on_it(cx: &mut TestAppContext) {
+    let model = model(cx);
+    let repo = repo();
+    attach(cx, &model, &repo).await;
+    open(cx, &model, "README.md").await;
+    let on_main = location(cx, &model);
+    select_feature(cx, &model).await;
+    let first = gate();
+    repo.state().refs_gate = Some(Arc::clone(&first));
+    let refresh = model.update(cx, BrowserModel::refresh_refs);
+    arrived(cx, &first).await;
+    let restoring = model.update(cx, |m, cx| m.restore(on_main.clone(), cx));
+    let second = gate();
+    repo.state().refs_gate = Some(Arc::clone(&second));
+    model.update(cx, BrowserModel::refresh_refs).await;
+    first.open();
+    arrived(cx, &second).await;
+    cx.run_until_parked();
+    assert_eq!(
+        location(cx, &model),
+        on_main,
+        "the restore ran before the listing it held back"
+    );
+    second.open();
+    restoring.await;
+    refresh.await;
+}

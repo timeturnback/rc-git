@@ -1082,25 +1082,28 @@ async fn a_burst_of_refreshes_costs_two_listings(cx: &mut TestAppContext) {
     let model = model(cx);
     let repo = repo();
     attach(cx, &model, &repo).await;
+    let held = gate();
     {
         let mut state = repo.state();
         state.refs_calls = 0;
-        state.refs_delay = Duration::from_millis(300);
+        state.refs_gate = Some(Arc::clone(&held));
     }
-    let slow = model.update(cx, rc_git_kit::browser::BrowserModel::refresh_refs);
-    let watched = repo.clone();
-    until(cx, move || watched.state().refs_calls >= 1).await;
-    {
-        let mut state = repo.state();
-        state
-            .listing
-            .refs
-            .push(branch("v2", oid(MAIN_COMMIT), RefKind::Tag));
-        state.refs_delay = Duration::ZERO;
-    }
+    let slow = model.update(cx, BrowserModel::refresh_refs);
+    arrived(cx, &held).await;
+    repo.state()
+        .listing
+        .refs
+        .push(branch("v2", oid(MAIN_COMMIT), RefKind::Tag));
     let burst: Vec<_> = (0..5)
-        .map(|_| model.update(cx, rc_git_kit::browser::BrowserModel::refresh_refs))
+        .map(|_| model.update(cx, BrowserModel::refresh_refs))
         .collect();
+    cx.run_until_parked();
+    assert_eq!(
+        repo.state().refs_calls,
+        1,
+        "no listing starts while one is in flight"
+    );
+    held.open();
     slow.await;
     for refresh in burst {
         refresh.await;
