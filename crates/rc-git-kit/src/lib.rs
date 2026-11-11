@@ -39,6 +39,7 @@ pub mod repository;
 pub mod repository_actions;
 pub mod restore_notice;
 pub mod shell_word;
+pub mod sync;
 pub mod tabs;
 pub mod text_document;
 pub mod tree_placeholder;
