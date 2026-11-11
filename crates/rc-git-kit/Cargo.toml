@@ -14,10 +14,12 @@ rc-git-highlight.workspace = true
 thiserror.workspace = true
 unicode-normalization.workspace = true
 jsonc-parser.workspace = true
+gpui.workspace = true
 
 [dev-dependencies]
 rc-git-testkit.workspace = true
 tempfile.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

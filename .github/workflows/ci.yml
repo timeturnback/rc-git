@@ -30,8 +30,8 @@ jobs:
       - name: cargo clippy   # same check as check.sh: a ban path resolving to nothing only warns
         run: |
           set -o pipefail
-          cargo clippy --locked --workspace --all-targets --all-features -- -D warnings \
-            2>&1 | tee "$RUNNER_TEMP/clippy.log"
+          cargo clippy --locked --workspace --exclude rc-git-kit --all-targets --all-features \
+            -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
           if grep -q 'does not refer to a reachable' "$RUNNER_TEMP/clippy.log"; then
             echo 'error: clippy.toml names a path that resolves to nothing;' \
               'fix it or mark it allow-invalid with a reason' >&2
@@ -39,8 +39,8 @@ jobs:
           fi
       - name: core standalone   # same check as check.sh: no guard transport features unified in
         run: cargo check --locked -p rc-git-core --all-targets
-      - run: cargo test --locked --workspace
-      - run: cargo doc --locked --workspace --no-deps --document-private-items
+      - run: cargo test --locked --workspace --exclude rc-git-kit   # GPUI crates: macOS job
+      - run: cargo doc --locked --workspace --exclude rc-git-kit --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
       - run: scripts/gen-header.sh --verify
@@ -74,6 +74,12 @@ jobs:
           tool: cbindgen@0.29.4   # build-app.sh regenerates the header through build.sh
       - run: scripts/rust-lib.sh release --locked   # into target/app, where Package.swift links
       - run: cargo test --locked --workspace   # fixtures under macOS git config and APFS
+      - name: GPUI crates   # macOS only; excluded from the Linux job
+        run: |
+          cargo clippy --locked -p rc-git-kit --all-targets --all-features -- -D warnings
+          cargo doc --locked -p rc-git-kit --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
       - run: |
           xcrun swift-format lint --strict --recursive \
             mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift

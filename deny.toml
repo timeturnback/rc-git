@@ -2,6 +2,8 @@
 
 [graph]
 all-features = true
+# rc-git ships for macOS only. GPUI's Linux, Windows and wasm backends never build here.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 [advisories]
 version = 2
@@ -11,6 +13,12 @@ ignore = [
     # A timing side channel needing many observed private-key operations; rc-git performs
     # one interactive ssh signature per sync on a desktop, so the oracle is not exposed.
     "RUSTSEC-2023-0071",
+    # Unmaintained, no vulnerability; reached only through GPUI and gpui-component, which pin
+    # them. Re-check on each GPUI bump.
+    "RUSTSEC-2024-0384", # instant (gpui-component, gpui-base)
+    "RUSTSEC-2024-0436", # paste (gpui-component)
+    "RUSTSEC-2026-0206", # rustybuzz (usvg, SVG icons)
+    "RUSTSEC-2026-0192", # ttf-parser (fontdb, usvg)
 ]
 
 [licenses]
@@ -29,6 +37,10 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "ISC",
+    # GPUI's tree: arrayref (tiny-skia), enum-iterator (gpui-component), notify (gpui-component).
+    "BSD-2-Clause",
+    "0BSD",
+    "CC0-1.0",
 ]
 
 [licenses.private]
