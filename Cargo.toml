@@ -9,6 +9,7 @@ members = [
     "crates/rc-git-testkit",
     "crates/rc-git-kit",
     "crates/rc-git-app",
+    "crates/rc-git-mac",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ rc-git-guard = { path = "crates/rc-git-guard" }
 rc-git-highlight = { path = "crates/rc-git-highlight" }
 rc-git-testkit = { path = "crates/rc-git-testkit" }
 rc-git-kit = { path = "crates/rc-git-kit" }
+rc-git-mac = { path = "crates/rc-git-mac" }
 gix = { version = "=0.87.1", default-features = false, features = ["max-performance", "revision", "sha1", "auto-chain-error", "blob-diff", "blame", "excludes", "index"] }
 # Must equal the gix-transport that gix resolves to; used only as a dev-dependency.
 gix-transport = { version = "=0.59.2", default-features = false }

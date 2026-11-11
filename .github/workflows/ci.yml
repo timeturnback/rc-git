@@ -30,7 +30,7 @@ jobs:
       - name: cargo clippy   # same check as check.sh: a ban path resolving to nothing only warns
         run: |
           set -o pipefail
-          cargo clippy --locked --workspace --exclude rc-git-kit --exclude rc-git-app \
+          cargo clippy --locked --workspace --exclude rc-git-kit --exclude rc-git-app --exclude rc-git-mac \
             --all-targets --all-features -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
           if grep -q 'does not refer to a reachable' "$RUNNER_TEMP/clippy.log"; then
             echo 'error: clippy.toml names a path that resolves to nothing;' \
@@ -39,9 +39,9 @@ jobs:
           fi
       - name: core standalone   # same check as check.sh: no guard transport features unified in
         run: cargo check --locked -p rc-git-core --all-targets
-      - run: cargo test --locked --workspace --exclude rc-git-kit --exclude rc-git-app   # GPUI crates: macOS job
+      - run: cargo test --locked --workspace --exclude rc-git-kit --exclude rc-git-app --exclude rc-git-mac   # GPUI crates: macOS job
       - run: |
-          cargo doc --locked --workspace --exclude rc-git-kit --exclude rc-git-app \
+          cargo doc --locked --workspace --exclude rc-git-kit --exclude rc-git-app --exclude rc-git-mac \
             --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
@@ -78,8 +78,8 @@ jobs:
       - run: cargo test --locked --workspace   # fixtures under macOS git config and APFS
       - name: GPUI crates   # macOS only; excluded from the Linux job
         run: |
-          cargo clippy --locked -p rc-git-kit -p rc-git-app --all-targets --all-features -- -D warnings
-          cargo doc --locked -p rc-git-kit -p rc-git-app --no-deps --document-private-items
+          cargo clippy --locked -p rc-git-kit -p rc-git-app -p rc-git-mac --all-targets --all-features -- -D warnings
+          cargo doc --locked -p rc-git-kit -p rc-git-app -p rc-git-mac --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
       - run: |

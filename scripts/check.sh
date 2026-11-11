@@ -46,7 +46,8 @@ cargo fmt --all -- --check
 step "ffi header"
 scripts/gen-header.sh --verify
 step "lint tables"
-# rc-git-ffi and rc-git-testkit hand-copy the workspace lint tables; each Cargo.toml says why.
+# rc-git-ffi, rc-git-mac and rc-git-testkit hand-copy the workspace lint tables; each
+# Cargo.toml says why.
 lint_table() {
   awk -v section="[$2]" '$0 == section { f = 1; next } /^\[/ { f = 0 } f && /^[a-z_]+ =/' "$1" |
     sort
@@ -56,6 +57,7 @@ lint_drift() {
   exit 1
 }
 ffi=crates/rc-git-ffi/Cargo.toml
+mac=crates/rc-git-mac/Cargo.toml
 testkit=crates/rc-git-testkit/Cargo.toml
 panic_lints='^(unwrap_used|expect_used|panic|panic_in_result_fn|unimplemented) ='
 diff <(lint_table Cargo.toml workspace.lints.clippy) \
@@ -64,6 +66,12 @@ diff <(lint_table Cargo.toml workspace.lints.clippy) \
 diff <(lint_table Cargo.toml workspace.lints.rust | grep -v '^unsafe_code =') \
   <(lint_table "$ffi" lints.rust | grep -v '^unsafe_op_in_unsafe_fn =') ||
   lint_drift "$ffi [lints.rust]"
+diff <(lint_table Cargo.toml workspace.lints.clippy) \
+  <(lint_table "$mac" lints.clippy | grep -v '^undocumented_unsafe_blocks =') ||
+  lint_drift "$mac [lints.clippy]"
+diff <(lint_table Cargo.toml workspace.lints.rust | grep -v '^unsafe_code =') \
+  <(lint_table "$mac" lints.rust | grep -v '^unsafe_op_in_unsafe_fn =') ||
+  lint_drift "$mac [lints.rust]"
 diff <(lint_table Cargo.toml workspace.lints.clippy | grep -Ev "$panic_lints") \
   <(lint_table "$testkit" lints.clippy) ||
   lint_drift "$testkit [lints.clippy]"

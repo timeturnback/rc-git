@@ -7024,6 +7024,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rc-git-mac"
+version = "0.1.0"
+dependencies = [
+ "rc-git-core",
+ "rc-git-kit",
+ "rc-git-testkit",
+ "tempfile",
+]
+
+[[package]]
 name = "rc-git-testkit"
 version = "0.1.0"
 dependencies = [
