@@ -27,13 +27,17 @@ use rc_git_kit::restore_notice::RestoreNotice;
 use rc_git_kit::sync::{SyncEvent, SyncModel};
 
 use crate::app::OpenedRepository;
+use crate::blame::BlamePanel;
 use crate::files::pane::FilePane;
 use crate::files::tree::FileTreeView;
+use crate::history::search::Clock;
+use crate::history::{HistoryEvent, HistoryPane};
 use crate::inbox::Inbox;
 use crate::menus::{
     CloseTab, GoToBranch, MergeAllWindows, Minimize, MoveTabToNewWindow, NextTab, PreviousTab,
     ShowChanges, ShowFiles, ShowHistory, ToggleFullScreen, ToggleSidebar, Zoom,
 };
+use crate::menus::{SearchCommits, ShowBlame, ShowFileHistory};
 use crate::sidebar::refs::{RefListEvent, RefListView};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::style;
@@ -75,6 +79,8 @@ pub struct RepoWindow {
     sidebar: Entity<Sidebar>,
     refs: Entity<RefListView>,
     pane: Entity<FilePane>,
+    history: Entity<HistoryPane>,
+    blame: BlamePanel,
     picker: Option<Entity<RefListView>>,
     split: Entity<ResizableState>,
     layout: SidebarLayout,
@@ -101,6 +107,8 @@ impl RepoWindow {
         let refs = cx.new(|cx| RefListView::new(model.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(model.clone(), tree.clone(), refs.clone(), cx));
         let pane = cx.new(|cx| FilePane::new(model.clone(), window, cx));
+        let (history, history_events, blame_events) =
+            Self::history_parts(&model, &settings, window, cx);
         let split = cx.new(|_| ResizableState::default());
         let layout = SidebarLayout::load(settings);
         let focus = cx.focus_handle();
@@ -141,6 +149,8 @@ impl RepoWindow {
             cx.observe_window_appearance(window, |_, window, cx| {
                 gpui_component::Theme::sync_system_appearance(Some(window), cx);
             }),
+            history_events,
+            blame_events,
         ];
         Self {
             model,
@@ -149,6 +159,8 @@ impl RepoWindow {
             sidebar,
             refs,
             pane,
+            history,
+            blame: BlamePanel::new(rc_git_mac::local_utc_offset),
             picker: None,
             split,
             layout,
@@ -435,6 +447,126 @@ impl RepoWindow {
         }
     }
 
+    /// The History pane, its events, and the blame window following the model.
+    fn history_parts(
+        model: &Entity<BrowserModel>,
+        settings: &SharedSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<HistoryPane>, Subscription, Subscription) {
+        let history = cx.new(|cx| {
+            let clock = Clock {
+                offset_at: rc_git_mac::local_utc_offset,
+                now: crate::history::now(),
+            };
+            HistoryPane::new(model.clone(), Arc::clone(settings), clock, window, cx)
+        });
+        let history_events = cx.subscribe(&history, |this, _, event: &HistoryEvent, cx| {
+            this.history_event(event, cx);
+        });
+        let blame_events = cx.subscribe_in(model, window, |this, _, event, window, cx| {
+            if *event == BrowserEvent::BlameChanged {
+                this.blame_changed(window, cx);
+            }
+        });
+        cx.on_release(|this: &mut Self, cx| {
+            this.model.update(cx, BrowserModel::cancel_blame);
+            this.blame.close(cx);
+        })
+        .detach();
+        (history, history_events, blame_events)
+    }
+
+    /// The History pane.
+    #[cfg(test)]
+    pub(crate) fn history(&self) -> &Entity<HistoryPane> {
+        &self.history
+    }
+
+    /// The blame window's controller.
+    #[cfg(test)]
+    pub(crate) fn blame(&self) -> &BlamePanel {
+        &self.blame
+    }
+
+    /// Shows the detail's Back button while stepping back returns to another commit.
+    pub fn set_detail_can_go_back(&mut self, can: bool, cx: &mut Context<Self>) {
+        self.history
+            .update(cx, |history, cx| history.set_detail_can_go_back(can, cx));
+    }
+
+    fn history_event(&mut self, event: &HistoryEvent, cx: &mut Context<Self>) {
+        match event {
+            HistoryEvent::BrowseCommit(commit) => {
+                self.set_mode(ContentMode::Files, cx);
+                let commit = commit.clone();
+                let browse = self
+                    .model
+                    .update(cx, |model, cx| model.browse_commit(commit, cx));
+                Self::record_stop_after(browse, cx);
+            }
+            HistoryEvent::DetailBack => cx.emit(WindowEvent::Navigate(Direction::Back)),
+        }
+    }
+
+    /// Records where the window is once `task` ends: an action that changed the pane on its
+    /// way somewhere is one stop, where it ended.
+    fn record_stop_after(task: Task<()>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            task.await;
+            this.update(cx, Self::record_stop).ok();
+        })
+        .detach();
+    }
+
+    /// Follows the model's blame: the second window shows, fills or closes; a failure is
+    /// presented here.
+    fn blame_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.model.read(cx).blame().clone();
+        if let Some(message) = self.blame.render(&state, cx) {
+            drop(window.prompt(
+                gpui::PromptLevel::Warning,
+                "Cannot show blame",
+                Some(&message),
+                &["OK"],
+                cx,
+            ));
+        }
+    }
+
+    /// Show Blame (⌥⌘B): blames the open file at the browsed revision.
+    fn show_blame(&mut self, cx: &mut Context<Self>) {
+        self.model.update(cx, BrowserModel::request_blame).detach();
+    }
+
+    /// History of This File (⌥⌘Y): scopes History to the open file and shows it. An inexact
+    /// path is refused by the model and leaves the pane where it is.
+    fn show_file_history(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let Some(path) = model.opened_file_path().map(str::to_owned) else {
+            return;
+        };
+        let exact = model.opened_path_is_exact();
+        if !exact {
+            self.model
+                .update(cx, |model, cx| model.show_path_history(&path, false, cx))
+                .detach();
+            return;
+        }
+        self.set_mode(ContentMode::History, cx);
+        let scope = self
+            .model
+            .update(cx, |model, cx| model.show_path_history(&path, true, cx));
+        Self::record_stop_after(scope, cx);
+    }
+
+    /// Search Commits (⇧⌘F) outside Files: shows History and puts the keyboard in its search.
+    fn search_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_mode(ContentMode::History, cx);
+        self.history
+            .update(cx, |history, cx| history.focus_search(window, cx));
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.layout.toggle_by_user();
         cx.notify();
@@ -443,7 +575,8 @@ impl RepoWindow {
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match self.mode {
             ContentMode::Files => self.pane.clone().into_any_element(),
-            ContentMode::History | ContentMode::Changes => div()
+            ContentMode::History => self.history.clone().into_any_element(),
+            ContentMode::Changes => div()
                 .size_full()
                 .flex()
                 .items_center()
@@ -516,6 +649,46 @@ impl RepoWindow {
     }
 }
 
+/// Which History commands can run now; a command that cannot has no handler, so GPUI shows
+/// it disabled (`validateMenuItem` in Swift).
+#[derive(Debug, Clone, Copy)]
+struct HistoryCommands {
+    blame: bool,
+    file_history: bool,
+    search_commits: bool,
+}
+
+impl HistoryCommands {
+    fn of(window: &RepoWindow, cx: &gpui::App) -> Self {
+        let model = window.model.read(cx);
+        Self {
+            blame: model.can_blame_opened_file(),
+            file_history: model.opened_file_path().is_some(),
+            search_commits: window.shown.is_some() && window.mode != ContentMode::Files,
+        }
+    }
+}
+
+fn history_actions(
+    root: gpui::Stateful<gpui::Div>,
+    commands: HistoryCommands,
+    cx: &mut Context<RepoWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    root.when(commands.blame, |root| {
+        root.on_action(cx.listener(|this, _: &ShowBlame, _, cx| this.show_blame(cx)))
+    })
+    .when(commands.file_history, |root| {
+        root.on_action(cx.listener(|this, _: &ShowFileHistory, _, cx| {
+            this.show_file_history(cx);
+        }))
+    })
+    .when(commands.search_commits, |root| {
+        root.on_action(cx.listener(|this, _: &SearchCommits, window, cx| {
+            this.search_commits(window, cx);
+        }))
+    })
+}
+
 impl Render for RepoWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let toolbar = self.render_toolbar(window, cx);
@@ -525,6 +698,7 @@ impl Render for RepoWindow {
         let collapsed = self.layout.collapsed();
         let sidebar_width = self.layout.width_pixels();
         let (background, foreground) = (cx.theme().background, cx.theme().foreground);
+        let commands = HistoryCommands::of(self, cx);
         div()
             .id("repo-window")
             .key_context("RepoWindow")
@@ -546,6 +720,7 @@ impl Render for RepoWindow {
             }))
             .on_action(cx.listener(|this, _: &GoToBranch, window, cx| this.choose_ref(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .map(|root| history_actions(root, commands, cx))
             .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &Zoom, window, _| window.zoom_window()))

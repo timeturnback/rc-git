@@ -1,14 +1,18 @@
-//! rc-git on GPUI: the app shell, one window per repository grouped as native tabs, and Files
-//! mode. History, Changes and the sync dialogs land in later phases.
+//! rc-git on GPUI: the app shell, one window per repository grouped as native tabs, Files and
+//! History. Changes and the sync dialogs land in later phases.
 
 mod app;
+mod blame;
+mod diff;
 mod files;
+mod history;
 mod icons;
 mod inbox;
 mod log;
 mod menus;
 mod palette;
 mod sidebar;
+mod status;
 mod style;
 mod window;
 

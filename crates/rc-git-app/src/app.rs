@@ -479,6 +479,10 @@ impl Shell {
         for tab in &self.windows {
             tab.view.update(cx, |view, cx| {
                 view.render_navigation(can_back, can_forward, cx);
+                let path = view.shown().map(|shown| shown.path.clone());
+                let to_commit =
+                    path.is_some_and(|path| self.navigator.list().back_returns_to_commit(&path));
+                view.set_detail_can_go_back(to_commit, cx);
             });
         }
     }
