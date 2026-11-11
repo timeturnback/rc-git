@@ -1,0 +1,23 @@
+[package]
+name = "rc-git-kit"
+description = "App state and pure text logic for the rc-git UI: models, markdown, search, layout policy. No widgets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rc-git-core.workspace = true
+rc-git-guard.workspace = true
+rc-git-highlight.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+jsonc-parser.workspace = true
+
+[dev-dependencies]
+rc-git-testkit.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
