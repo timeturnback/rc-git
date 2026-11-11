@@ -4,6 +4,10 @@
 //! a bounded process runner. The pure halves of the Swift platform files (watch filters, line
 //! splitting, every persisted key and its shape) live here and are tested here.
 
+pub mod credentials;
+pub mod host_keys;
 pub mod keys;
+pub mod process;
 pub mod settings;
 pub mod stores;
+pub mod watch;
