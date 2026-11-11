@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use gix::ObjectId;
 use gix::objs::{Find, FindHeader};
 
+use crate::blob::clamp_read_limit;
 use crate::error::{Error, ObjectKind, Result, git, object};
 use crate::log::peel_to_commit;
 use crate::oid::Oid;
@@ -68,9 +69,10 @@ impl Repository {
     ///
     /// An annotated tag `tip` is followed to its commit.
     ///
-    /// The file at `tip` is sized from its object header first: over `limit`, the result is
-    /// [`Blame::TooLarge`] and nothing is decoded. Only the tip is checked; the versions the
-    /// walk reaches in history are decoded whole, however large.
+    /// The file at `tip` is sized from its object header first: over `limit` (clamped to
+    /// [`crate::MAX_READ_LIMIT`]), the result is [`Blame::TooLarge`] and nothing is decoded.
+    /// Only the tip is checked; the versions the walk reaches in history are decoded whole,
+    /// however large.
     ///
     /// # Errors
     /// [`Error::WrongKind`] when `tip` is, or tags, a tree or blob,
@@ -90,6 +92,7 @@ impl Repository {
                 .find_header(*blob.as_gix())
                 .map_err(object("read blob header", blob))?
                 .size();
+            let limit = clamp_read_limit(limit);
             if size > limit {
                 return Ok(Blame::TooLarge { size, limit });
             }

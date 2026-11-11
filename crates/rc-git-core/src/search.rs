@@ -61,7 +61,8 @@ impl ContentQuery {
 /// Bounds for one search call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchLimits {
-    /// Largest file read; a bigger one is [`FileSearch::TooLarge`].
+    /// Largest file read, clamped to [`crate::MAX_READ_LIMIT`]; a bigger one is
+    /// [`FileSearch::TooLarge`].
     pub file_limit: u64,
     /// Bytes read before the call stops; the file that crosses it is finished.
     pub max_bytes: u64,

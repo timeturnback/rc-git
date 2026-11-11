@@ -1887,7 +1887,7 @@ pub unsafe extern "C" fn rcgit_blob_read(
     let Some(oid) = error.valid(OP, "oid", oid) else {
         return ptr::null_mut();
     };
-    let limit = limit.min(u64::from(u32::MAX));
+    let limit = rc_git_core::clamp_read_limit(limit);
     let content = match repo.read_blob(oid, limit) {
         Ok(content) => content,
         Err(err) => {
@@ -2377,7 +2377,7 @@ pub unsafe extern "C" fn rcgit_diff_blobs(
     let Some(new) = error.valid(OP, "new", new) else {
         return ptr::null_mut();
     };
-    let limit = limit.min(u64::from(u32::MAX));
+    let limit = rc_git_core::clamp_read_limit(limit);
     match repo.diff_blobs(old, new, limit, context) {
         Ok(diff) => export_blob_diff(diff, limit),
         Err(err) => {
@@ -2480,7 +2480,7 @@ pub unsafe extern "C" fn rcgit_blame(
         return ptr::null_mut();
     };
     let since = (since != i64::MIN).then_some(since);
-    let limit = limit.min(u64::from(u32::MAX));
+    let limit = rc_git_core::clamp_read_limit(limit);
     match repo.blame(tip, &String::from_utf8_lossy(path), limit, since) {
         Ok(Blame::TooLarge { size, limit }) => export(RcGitBlameList {
             kind: RcGitBlameKind::TooLarge,
@@ -2623,7 +2623,7 @@ pub unsafe extern "C" fn rcgit_worktree_read(
     let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
-    let limit = limit.min(u64::from(u32::MAX));
+    let limit = rc_git_core::clamp_read_limit(limit);
     match repo.worktree_file(&String::from_utf8_lossy(path), limit) {
         Ok(content) => export(export_blob(content, limit)),
         Err(err) => {
@@ -2882,7 +2882,7 @@ fn content_query_arg(
 /// The caller's limits, with the file limit capped at 4 GiB so offsets fit in 32 bits.
 fn search_limits(file_limit: u64, max_bytes: u64) -> SearchLimits {
     SearchLimits {
-        file_limit: file_limit.min(u64::from(u32::MAX)),
+        file_limit: rc_git_core::clamp_read_limit(file_limit),
         max_bytes,
     }
 }
@@ -3008,7 +3008,7 @@ pub unsafe extern "C" fn rcgit_diff_worktree_file(
     let Some(path) = error.required(OP, "path", path) else {
         return ptr::null_mut();
     };
-    let limit = limit.min(u64::from(u32::MAX));
+    let limit = rc_git_core::clamp_read_limit(limit);
     match repo.diff_worktree_file(old, &String::from_utf8_lossy(path), limit, context) {
         Ok(diff) => export_blob_diff(diff, limit),
         Err(err) => {

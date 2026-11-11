@@ -5,7 +5,7 @@ use gix::diff::blob::unified_diff::{ConsumeHunk, ContextSize, HunkHeader};
 use gix::diff::blob::{Algorithm, Diff, InternedInput, UnifiedDiff};
 use gix::object::tree::diff::{Action, Change};
 
-use crate::blob::BlobContent;
+use crate::blob::{BlobContent, clamp_read_limit};
 use crate::error::{Result, git, object};
 use crate::oid::Oid;
 use crate::repo::Repository;
@@ -194,9 +194,9 @@ impl Repository {
     }
 
     /// Line diff between two blobs, either of which may be absent for an added or deleted
-    /// file. Both sizes are read from the object headers and checked against `limit` before
-    /// either side is decoded, and a binary old side settles the result without decoding the
-    /// new one.
+    /// file. Both sizes are read from the object headers and checked against `limit` (clamped
+    /// to [`crate::MAX_READ_LIMIT`]) before either side is decoded, and a binary old side
+    /// settles the result without decoding the new one.
     ///
     /// A side of a [`TreeChange`] whose kind (`old_entry` for `old`, `entry` for `new`) is
     /// [`EntryKind::Submodule`] carries a gitlink id: a commit in the submodule's repository,
@@ -212,6 +212,7 @@ impl Repository {
         limit: u64,
         context: u32,
     ) -> Result<BlobDiff> {
+        let limit = clamp_read_limit(limit);
         let old_size = self.side_size(old)?;
         let new_size = self.side_size(new)?;
         if let Some(too_large) = too_large(old_size, new_size, limit) {
@@ -231,7 +232,8 @@ impl Repository {
     /// Line diff between the blob at `old` and the working-tree file at `path`, both as raw
     /// bytes: gitattributes filters and eol conversion are not applied. `old` is absent for
     /// an untracked file, which makes the diff pure additions. The blob header and the file's
-    /// metadata are checked against `limit` before either side is decoded.
+    /// metadata are checked against `limit` (clamped to [`crate::MAX_READ_LIMIT`]) before
+    /// either side is decoded.
     ///
     /// # Errors
     /// [`Error::Object`](crate::Error::Object) when `old` is missing,
@@ -244,6 +246,7 @@ impl Repository {
         limit: u64,
         context: u32,
     ) -> Result<BlobDiff> {
+        let limit = clamp_read_limit(limit);
         let old_size = self.side_size(old)?;
         let new_size = self.worktree_file_size(path)?;
         if let Some(too_large) = too_large(old_size, new_size, limit) {

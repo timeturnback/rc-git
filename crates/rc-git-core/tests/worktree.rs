@@ -1656,3 +1656,73 @@ fn search_worktree_files_refuses_a_bare_repository() {
         "{err}"
     );
 }
+
+#[test]
+fn read_limits_clamp_to_the_32_bit_boundary() {
+    use rc_git_core::{MAX_READ_LIMIT, clamp_read_limit};
+    assert_eq!(MAX_READ_LIMIT, u64::from(u32::MAX));
+    assert_eq!(clamp_read_limit(0), 0);
+    assert_eq!(clamp_read_limit(MAX_READ_LIMIT - 1), MAX_READ_LIMIT - 1);
+    assert_eq!(clamp_read_limit(MAX_READ_LIMIT), MAX_READ_LIMIT);
+    assert_eq!(clamp_read_limit(MAX_READ_LIMIT + 1), MAX_READ_LIMIT);
+    assert_eq!(clamp_read_limit(u64::MAX), MAX_READ_LIMIT);
+}
+
+/// Grows `relative` to `len` bytes without writing them: a sparse file costs no disk.
+#[expect(
+    clippy::disallowed_methods,
+    clippy::panic,
+    reason = "the test sizes its own fixture file, and fails on a fixture it cannot build; \
+              the core under test only reads it"
+)]
+fn grow_sparse(fx: &Fixture, relative: &str, len: u64) {
+    fx.write(relative, b"");
+    let file = std::fs::File::options()
+        .write(true)
+        .open(fx.path().join(relative))
+        .unwrap_or_else(|err| panic!("open {relative} for growing: {err}"));
+    file.set_len(len)
+        .unwrap_or_else(|err| panic!("grow {relative}: {err}"));
+}
+
+/// A limit past 4 GiB is clamped by the core itself, so a file one byte over the clamp is
+/// too large for every caller, whatever limit it asked for. The file is unreadable, so a
+/// read that skipped the clamp would fail on `open` instead of answering from the stat.
+#[test]
+fn a_limit_past_4_gib_is_clamped_before_any_read() {
+    use rc_git_core::{BlobDiff, ContentQuery, FileSearch, MAX_READ_LIMIT, SearchLimits};
+    let fx = Fixture::standard();
+    let size = MAX_READ_LIMIT + 1;
+    grow_sparse(&fx, "huge.bin", size);
+    fx.set_mode("huge.bin", 0o000);
+    let repo = Repository::open(fx.path()).unwrap();
+
+    assert_eq!(
+        repo.worktree_file("huge.bin", u64::MAX).unwrap(),
+        BlobContent::TooLarge {
+            size,
+            limit: MAX_READ_LIMIT
+        }
+    );
+    assert_eq!(
+        repo.diff_worktree_file(None, "huge.bin", u64::MAX, 3)
+            .unwrap(),
+        BlobDiff::TooLarge {
+            size,
+            limit: MAX_READ_LIMIT
+        }
+    );
+    let query = ContentQuery::new(b"x").unwrap();
+    let limits = SearchLimits {
+        file_limit: u64::MAX,
+        max_bytes: u64::MAX,
+    };
+    assert_eq!(
+        repo.search_worktree_files(&["huge.bin"], &query, limits)
+            .unwrap(),
+        vec![FileSearch::TooLarge {
+            size,
+            limit: MAX_READ_LIMIT
+        }]
+    );
+}

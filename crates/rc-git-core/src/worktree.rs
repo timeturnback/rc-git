@@ -11,7 +11,7 @@ use gix::bstr::{BString, ByteSlice};
 use gix::index::entry::{Flags, Stage};
 use gix::worktree::stack::state::ignore::Source;
 
-use crate::blob::{BlobContent, classify};
+use crate::blob::{BlobContent, clamp_read_limit, classify};
 use crate::error::{BoxError, Error, Result, git, object};
 use crate::oid::Oid;
 use crate::repo::Repository;
@@ -307,8 +307,8 @@ impl Repository {
         })
     }
 
-    /// Reads one working-tree file for display, with the same size cap and binary probe as
-    /// [`Repository::read_blob`]. A symlink yields its target as text.
+    /// Reads one working-tree file for display, with the same size cap (clamped to
+    /// [`crate::MAX_READ_LIMIT`]) and binary probe as [`Repository::read_blob`]. A symlink yields its target as text.
     ///
     /// # Errors
     /// [`Error::Worktree`] for a bare repository, a missing file, a directory, a FIFO, socket
@@ -329,6 +329,7 @@ impl Repository {
                 "is not a regular file".into(),
             ));
         }
+        let limit = clamp_read_limit(limit);
         let size = meta.len();
         if size > limit {
             return Ok(BlobContent::TooLarge { size, limit });

@@ -22,7 +22,7 @@ mod walk;
 mod worktree;
 
 pub use blame::{Blame, BlameRange};
-pub use blob::{BlobContent, DEFAULT_BLOB_LIMIT};
+pub use blob::{BlobContent, DEFAULT_BLOB_LIMIT, MAX_READ_LIMIT, clamp_read_limit};
 pub use diff::{
     BlobDiff, ChangeKind, DEFAULT_DIFF_CONTEXT, DiffHunk, DiffLine, DiffLineKind, LineEnd,
     TreeChange,

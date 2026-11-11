@@ -10,6 +10,18 @@ const GIT_BINARY_PROBE_BYTES: usize = 8000;
 /// Default size cap for [`Repository::read_blob`]: 8 MiB.
 pub const DEFAULT_BLOB_LIMIT: u64 = 8 * 1024 * 1024;
 
+/// The largest size limit any read honours: 4 GiB less one byte, so every offset into the
+/// content it returns fits in 32 bits. Every read that takes a limit (blob and working-tree
+/// reads, diffs, blame, content search) clamps a larger one to this first, and
+/// [`BlobContent::TooLarge`] and its siblings report the clamped value.
+pub const MAX_READ_LIMIT: u64 = 0xFFFF_FFFF;
+
+/// `limit`, or [`MAX_READ_LIMIT`] when it is larger.
+#[must_use]
+pub fn clamp_read_limit(limit: u64) -> u64 {
+    limit.min(MAX_READ_LIMIT)
+}
+
 /// What a blob read produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobContent {
@@ -52,8 +64,9 @@ impl Repository {
         })
     }
 
-    /// Reads a blob for display. Checks the size against `limit` before decoding, so a huge
-    /// blob costs one header read and nothing more.
+    /// Reads a blob for display. Checks the size against `limit` (clamped to
+    /// [`MAX_READ_LIMIT`]) before decoding, so a huge blob costs one header read and nothing
+    /// more.
     ///
     /// # Errors
     /// [`Error::Object`] when missing, [`Error::WrongKind`] when the id is not a blob.
@@ -69,6 +82,7 @@ pub(crate) fn read_blob_in(repo: &gix::Repository, oid: Oid, limit: u64) -> Resu
         .find_header(*oid.as_gix())
         .map_err(object("read blob header", oid))?;
     expect_blob("read blob", oid, header.kind())?;
+    let limit = clamp_read_limit(limit);
     let size = header.size();
     if size > limit {
         return Ok(BlobContent::TooLarge { size, limit });
