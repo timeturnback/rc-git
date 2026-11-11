@@ -8,6 +8,7 @@ members = [
     "crates/rc-git-cli",
     "crates/rc-git-testkit",
     "crates/rc-git-kit",
+    "crates/rc-git-app",
 ]
 
 [workspace.package]
