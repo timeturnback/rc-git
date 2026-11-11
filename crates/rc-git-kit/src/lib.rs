@@ -42,4 +42,5 @@ pub mod tabs;
 pub mod text_document;
 pub mod tree_placeholder;
 pub mod tree_store;
+pub mod update;
 pub mod update_copy;
