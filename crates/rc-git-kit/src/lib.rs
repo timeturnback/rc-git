@@ -14,6 +14,8 @@ pub mod changes;
 pub mod commit_graph;
 pub mod commit_identity;
 pub mod content_search;
+pub mod dates;
+pub mod diff_rows;
 pub mod diff_text;
 #[cfg(feature = "test-support")]
 pub mod fake;
@@ -25,6 +27,7 @@ pub mod hidden_files;
 pub mod highlight_store;
 pub mod highlighting;
 pub mod history_paging;
+pub mod history_text;
 pub mod import_links;
 pub mod import_resolver;
 pub mod layout_policy;

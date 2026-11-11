@@ -11,10 +11,12 @@ pub mod fsevents;
 pub mod keychain;
 pub mod process;
 pub mod settings;
+pub mod time_zone;
 pub mod update;
 
 pub use fsevents::{FsEventsWatcher, FsEventsWatchers};
 pub use keychain::KeychainCredentialStore;
 pub use process::ShellRunner;
 pub use settings::Preferences;
+pub use time_zone::local_utc_offset;
 pub use update::{LiveUpdateEnvironment, TabSession};

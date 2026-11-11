@@ -131,3 +131,89 @@ pub fn sidebar_frames(
         },
     ]
 }
+
+/// How a two-pane split lays its panes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAxis {
+    /// Side by side: History's left column and diff (`rc-git.history.v5`).
+    SideBySide,
+    /// One over the other: History's commit list and detail (`rc-git.history-column.v1`).
+    Stacked,
+}
+
+/// The thickness of a thin split divider, which `AppKit` counted between the saved frames.
+pub const THIN_DIVIDER: f64 = 1.0;
+
+/// The second pane's saved extent along `axis` (the diff's width, the detail's height), or
+/// `None` when nothing usable is saved: no second frame, a non-finite or non-positive extent,
+/// or a pane `AppKit` saved collapsed. The caller hands it to `LayoutPolicy`, which keeps it
+/// only while both floors fit.
+#[must_use]
+pub fn saved_second_pane(frames: &[SubviewFrame], axis: SplitAxis) -> Option<f64> {
+    let second = frames.get(1)?;
+    let extent = match axis {
+        SplitAxis::SideBySide => second.frame.width,
+        SplitAxis::Stacked => second.frame.height,
+    };
+    (extent.is_finite() && extent > 0.0 && !second.hidden).then_some(extent)
+}
+
+/// The two subview frames a split saves: the first pane `first` long along `axis`, a thin
+/// divider, then the second `second` long, both `cross` across.
+#[must_use]
+pub fn split_frames(axis: SplitAxis, first: f64, second: f64, cross: f64) -> [SubviewFrame; 2] {
+    let frame = |offset: f64, extent: f64| SubviewFrame {
+        frame: match axis {
+            SplitAxis::SideBySide => Rect {
+                x: offset,
+                y: 0.0,
+                width: extent,
+                height: cross,
+            },
+            SplitAxis::Stacked => Rect {
+                x: 0.0,
+                y: offset,
+                width: cross,
+                height: extent,
+            },
+        },
+        hidden: false,
+        flag: false,
+    };
+    [frame(0.0, first), frame(first + THIN_DIVIDER, second)]
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    #[test]
+    fn a_split_round_trips_its_second_pane() {
+        for axis in [SplitAxis::SideBySide, SplitAxis::Stacked] {
+            let frames = split_frames(axis, 400.0, 360.0, 700.0);
+            assert_eq!(saved_second_pane(&frames, axis), Some(360.0), "{axis:?}");
+        }
+        let side = split_frames(SplitAxis::SideBySide, 400.0, 360.0, 700.0);
+        assert_eq!(side[1].frame.x.to_bits(), 401.0_f64.to_bits());
+        assert_eq!(side[1].frame.height.to_bits(), 700.0_f64.to_bits());
+        let stacked = split_frames(SplitAxis::Stacked, 300.0, 200.0, 500.0);
+        assert_eq!(stacked[1].frame.y.to_bits(), 301.0_f64.to_bits());
+        assert_eq!(stacked[1].frame.width.to_bits(), 500.0_f64.to_bits());
+    }
+
+    #[test]
+    fn an_unusable_saved_pane_is_none() {
+        let axis = SplitAxis::SideBySide;
+        assert_eq!(saved_second_pane(&[], axis), None);
+        let one = split_frames(axis, 400.0, 360.0, 700.0);
+        assert_eq!(saved_second_pane(&one[..1], axis), None);
+        for width in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            let mut frames = split_frames(axis, 400.0, 360.0, 700.0);
+            frames[1].frame.width = width;
+            assert_eq!(saved_second_pane(&frames, axis), None, "{width}");
+        }
+        let mut hidden = split_frames(axis, 400.0, 360.0, 700.0);
+        hidden[1].hidden = true;
+        assert_eq!(saved_second_pane(&hidden, axis), None);
+    }
+}
