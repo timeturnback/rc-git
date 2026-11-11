@@ -11,8 +11,10 @@ pub mod fsevents;
 pub mod keychain;
 pub mod process;
 pub mod settings;
+pub mod update;
 
 pub use fsevents::{FsEventsWatcher, FsEventsWatchers};
 pub use keychain::KeychainCredentialStore;
 pub use process::ShellRunner;
 pub use settings::Preferences;
+pub use update::{LiveUpdateEnvironment, TabSession};

@@ -7028,6 +7028,7 @@ dependencies = [
 name = "rc-git-mac"
 version = "0.1.0"
 dependencies = [
+ "gpui-pre",
  "rc-git-core",
  "rc-git-kit",
  "rc-git-testkit",

@@ -9,11 +9,15 @@ publish = false
 
 [dependencies]
 rc-git-kit.workspace = true
+# Already in the build through rc-git-kit; the live update environment implements a kit trait
+# whose calls take `App` and return `Task`.
+gpui.workspace = true
 
 [dev-dependencies]
 rc-git-core.workspace = true
 rc-git-testkit.workspace = true
 tempfile.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 
 # Not `workspace = true`: the workspace forbids unsafe_code and this crate binds the system
 # frameworks, so it is a hand copy of the workspace lint table to keep in sync. It drops
