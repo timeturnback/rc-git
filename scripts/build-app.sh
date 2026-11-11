@@ -4,23 +4,27 @@
 #
 #   scripts/build-app.sh              release bundle -> RCGit.app
 #   scripts/build-app.sh --dev        dev bundle     -> RCGit-dev.app
+#   scripts/build-app.sh --gpui       GPUI bundle    -> RCGit-gpui.app (--dev: app-dev profile)
 #
-# The two bundles carry different identifiers, so they keep separate tabs, recents, and
-# window state, and different icons, so the Dock never confuses them. Both are stamped with
-# the commit and the checkout they were built from; that stamp is what the app's update
-# window reads — "Update rc-git" in the release app, "Rebuild and Relaunch" in the dev one,
-# which runs this script with --dev.
+# The bundles carry different identifiers, so they keep separate tabs, recents, and window
+# state, and different icons, so the Dock never confuses them. All are stamped with the
+# commit and the checkout they were built from; that stamp is what the app's update window
+# reads — "Update rc-git" in the release app, "Rebuild and Relaunch" in the dev one, which
+# runs this script with --dev. The GPUI bundle is the Rust app the migration builds: its own
+# identifier keeps it off the Swift app's tabs, and it wears the dev icon.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VARIANT=release
 CONFIG=""
+GPUI=false
 
-usage() { echo "usage: build-app.sh [--dev] [--config release|debug]"; }
+usage() { echo "usage: build-app.sh [--dev] [--gpui] [--config release|debug]"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
   --dev) VARIANT=dev ;;
+  --gpui) GPUI=true ;;
   --config)
     case "${2:-}" in
     release | debug) CONFIG="$2" ;;
@@ -59,9 +63,19 @@ dev)
   ;;
 esac
 
-ICON="$ROOT/build/icons/rcgit-$VARIANT.icns"
+ICON_VARIANT="$VARIANT"
+STAMP_VARIANT="$VARIANT"
+if [ "$GPUI" = true ]; then
+  APP="$ROOT/RCGit-gpui.app"
+  BUNDLE_ID="com.timeturnback.rcgit.gpui"
+  NAME="rc-git (gpui)"
+  ICON_VARIANT=dev
+  STAMP_VARIANT=gpui
+fi
+
+ICON="$ROOT/build/icons/rcgit-$ICON_VARIANT.icns"
 if [ ! -f "$ICON" ] || [ "$ROOT/scripts/make-icon.swift" -nt "$ICON" ]; then
-  swift "$ROOT/scripts/make-icon.swift" --variant "$VARIANT" --output "$ICON" >/dev/null
+  swift "$ROOT/scripts/make-icon.swift" --variant "$ICON_VARIANT" --output "$ICON" >/dev/null
 fi
 
 # Read before the build, so a checkout, commit or stash made while it runs cannot land in the
@@ -82,8 +96,18 @@ else
 fi
 rm -f "$git_err"
 
-"$ROOT/scripts/build.sh" "$CONFIG"
-BIN="$(swift build --package-path "$ROOT/mac" -c "$CONFIG" --show-bin-path)/RcGitApp"
+if [ "$GPUI" = true ]; then
+  # debug maps to app-dev, as scripts/rust-lib.sh does: release minus fat LTO.
+  case "$CONFIG" in
+  release) PROFILE=release ;;
+  debug) PROFILE=app-dev ;;
+  esac
+  cargo build --manifest-path "$ROOT/Cargo.toml" -p rc-git-app --profile "$PROFILE"
+  BIN="$ROOT/target/$PROFILE/RCGit"
+else
+  "$ROOT/scripts/build.sh" "$CONFIG"
+  BIN="$(swift build --package-path "$ROOT/mac" -c "$CONFIG" --show-bin-path)/RcGitApp"
+fi
 [ -x "$BIN" ] || {
   echo "error: binary not found at $BIN" >&2
   exit 1
@@ -136,7 +160,7 @@ stamp CFBundleName "$NAME"
 stamp CFBundleDisplayName "$NAME"
 stamp CFBundleShortVersionString "${series%.*}.$count"
 stamp CFBundleVersion "$count"
-stamp RCGitVariant "$VARIANT"
+stamp RCGitVariant "$STAMP_VARIANT"
 stamp RCGitSourceRoot "$ROOT"
 stamp RCGitSourceCommit "$commit"
 stamp RCGitSourceDirty "$dirty"
