@@ -1,0 +1,6552 @@
+{
+  "corpus" : [
+    ".cargo/config.toml",
+    ".claude/rules/core.md",
+    ".claude/rules/ffi.md",
+    ".claude/rules/guard.md",
+    ".claude/rules/highlight.md",
+    ".claude/rules/swift.md",
+    ".claude/rules/testing.md",
+    ".editorconfig",
+    ".github/actionlint.yaml",
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    ".pre-commit-config.yaml",
+    ".swift-format",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONCEPTS.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "README.md",
+    "clippy.toml",
+    "crates/rc-git-cli/Cargo.toml",
+    "crates/rc-git-cli/src/main.rs",
+    "crates/rc-git-cli/tests/cli.rs",
+    "crates/rc-git-core/Cargo.toml",
+    "crates/rc-git-core/src/blame.rs",
+    "crates/rc-git-core/src/blob.rs",
+    "crates/rc-git-core/src/diff.rs",
+    "crates/rc-git-core/src/error.rs",
+    "crates/rc-git-core/src/history.rs",
+    "crates/rc-git-core/src/lib.rs",
+    "crates/rc-git-core/src/log.rs",
+    "crates/rc-git-core/src/oid.rs",
+    "crates/rc-git-core/src/refs.rs",
+    "crates/rc-git-core/src/repo.rs",
+    "crates/rc-git-core/src/search.rs",
+    "crates/rc-git-core/src/stash.rs",
+    "crates/rc-git-core/src/tree.rs",
+    "crates/rc-git-core/src/walk.rs",
+    "crates/rc-git-core/src/worktree.rs",
+    "crates/rc-git-core/tests/diff_blame.rs",
+    "crates/rc-git-core/tests/history.rs",
+    "crates/rc-git-core/tests/read_only.rs",
+    "crates/rc-git-core/tests/repository.rs",
+    "crates/rc-git-core/tests/stash.rs",
+    "crates/rc-git-core/tests/worktree.rs",
+    "crates/rc-git-ffi/Cargo.toml",
+    "crates/rc-git-ffi/cbindgen.toml",
+    "crates/rc-git-ffi/src/lib.rs",
+    "crates/rc-git-guard/Cargo.toml",
+    "crates/rc-git-guard/src/actions.rs",
+    "crates/rc-git-guard/src/actions/checkout.rs",
+    "crates/rc-git-guard/src/actions/commit.rs",
+    "crates/rc-git-guard/src/actions/discard.rs",
+    "crates/rc-git-guard/src/actions/remote.rs",
+    "crates/rc-git-guard/src/actions/remote/fetch.rs",
+    "crates/rc-git-guard/src/actions/remote/pack.rs",
+    "crates/rc-git-guard/src/actions/remote/pull.rs",
+    "crates/rc-git-guard/src/actions/remote/push.rs",
+    "crates/rc-git-guard/src/actions/remote/report.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+    "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+    "crates/rc-git-guard/src/actions/stash.rs",
+    "crates/rc-git-guard/src/actions/treeapply.rs",
+    "crates/rc-git-guard/src/actions/treebuild.rs",
+    "crates/rc-git-guard/src/actions/workfile.rs",
+    "crates/rc-git-guard/src/actions/write.rs",
+    "crates/rc-git-guard/src/lib.rs",
+    "crates/rc-git-guard/src/policy.rs",
+    "crates/rc-git-guard/tests/actions.rs",
+    "crates/rc-git-guard/tests/remote.rs",
+    "crates/rc-git-highlight/Cargo.toml",
+    "crates/rc-git-highlight/src/imports.rs",
+    "crates/rc-git-highlight/src/lib.rs",
+    "crates/rc-git-kit/Cargo.toml",
+    "crates/rc-git-kit/src/app_build.rs",
+    "crates/rc-git-kit/src/back_forward.rs",
+    "crates/rc-git-kit/src/branch_banner.rs",
+    "crates/rc-git-kit/src/canonical_path.rs",
+    "crates/rc-git-kit/src/change_tree.rs",
+    "crates/rc-git-kit/src/commit_graph.rs",
+    "crates/rc-git-kit/src/commit_identity.rs",
+    "crates/rc-git-kit/src/diff_text.rs",
+    "crates/rc-git-kit/src/guard_bridge.rs",
+    "crates/rc-git-kit/src/hidden_files.rs",
+    "crates/rc-git-kit/src/import_resolver.rs",
+    "crates/rc-git-kit/src/layout_policy.rs",
+    "crates/rc-git-kit/src/lib.rs",
+    "crates/rc-git-kit/src/markdown.rs",
+    "crates/rc-git-kit/src/menu_shortcuts.rs",
+    "crates/rc-git-kit/src/natural_sort.rs",
+    "crates/rc-git-kit/src/path_search.rs",
+    "crates/rc-git-kit/src/recent_repositories.rs",
+    "crates/rc-git-kit/src/ref_filter.rs",
+    "crates/rc-git-kit/src/repo_path.rs",
+    "crates/rc-git-kit/src/restore_notice.rs",
+    "crates/rc-git-kit/src/shell_word.rs",
+    "crates/rc-git-kit/src/tabs.rs",
+    "crates/rc-git-kit/src/text_document.rs",
+    "crates/rc-git-kit/src/tree_placeholder.rs",
+    "crates/rc-git-kit/src/update_copy.rs",
+    "crates/rc-git-kit/tests/app_build.rs",
+    "crates/rc-git-kit/tests/canonical_path.rs",
+    "crates/rc-git-kit/tests/commit_identity.rs",
+    "crates/rc-git-kit/tests/guard_bridge.rs",
+    "crates/rc-git-kit/tests/hidden_files.rs",
+    "crates/rc-git-kit/tests/recent_repositories.rs",
+    "crates/rc-git-kit/tests/restore_notice.rs",
+    "crates/rc-git-kit/tests/shell_word.rs",
+    "crates/rc-git-kit/tests/tabs.rs",
+    "crates/rc-git-kit/tests/tree_placeholder.rs",
+    "crates/rc-git-kit/tests/update_copy.rs",
+    "crates/rc-git-testkit/Cargo.toml",
+    "crates/rc-git-testkit/src/agent.rs",
+    "crates/rc-git-testkit/src/http.rs",
+    "crates/rc-git-testkit/src/lib.rs",
+    "crates/rc-git-testkit/src/ssh.rs",
+    "crates/rc-git-testkit/tests/fixture.rs",
+    "crates/rc-git-testkit/tests/http.rs",
+    "crates/rc-git-testkit/tests/ssh.rs",
+    "deny.toml",
+    "docs/architecture.md",
+    "docs/development.md",
+    "docs/ffi.md",
+    "docs/performance.md",
+    "docs/roadmap.md",
+    "docs/safety.md",
+    "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+    "docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md",
+    "docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md",
+    "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+    "docs/solutions/integration-issues/foundation-markdown-parser-cannot-back-a-preview.md",
+    "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+    "docs/solutions/integration-issues/russh-config-ssh-alias-resolution-divergence.md",
+    "docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md",
+    "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+    "docs/solutions/integration-issues/tree-sitter-highlight-injection-merge-misordered-missing-events.md",
+    "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+    "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+    "docs/solutions/runtime-errors/task-per-watch-event-backlog.md",
+    "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+    "docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md",
+    "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+    "docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md",
+    "docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md",
+    "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+    "docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md",
+    "docs/testing.md",
+    "mac/Info.plist",
+    "mac/Package.swift",
+    "mac/Sources/CRcGit/include/rc_git.h",
+    "mac/Sources/CRcGit/module.modulemap",
+    "mac/Sources/RcGitApp/AppDelegate.swift",
+    "mac/Sources/RcGitApp/BlamePanelController.swift",
+    "mac/Sources/RcGitApp/ChangesViewController.swift",
+    "mac/Sources/RcGitApp/DiffRendering.swift",
+    "mac/Sources/RcGitApp/FileViewController.swift",
+    "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+    "mac/Sources/RcGitApp/GoToFileController.swift",
+    "mac/Sources/RcGitApp/GraphCellView.swift",
+    "mac/Sources/RcGitApp/HighlightPalette.swift",
+    "mac/Sources/RcGitApp/HistoryViewController.swift",
+    "mac/Sources/RcGitApp/Icons.swift",
+    "mac/Sources/RcGitApp/IdentitySheet.swift",
+    "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+    "mac/Sources/RcGitApp/LinkTextView.swift",
+    "mac/Sources/RcGitApp/MainMenu.swift",
+    "mac/Sources/RcGitApp/MainWindowController.swift",
+    "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+    "mac/Sources/RcGitApp/RecentRepositoryPicker.swift",
+    "mac/Sources/RcGitApp/RefBannerView.swift",
+    "mac/Sources/RcGitApp/RefPickerController.swift",
+    "mac/Sources/RcGitApp/RefsViewController.swift",
+    "mac/Sources/RcGitApp/RepositoryDropView.swift",
+    "mac/Sources/RcGitApp/SettingsWindowController.swift",
+    "mac/Sources/RcGitApp/SidebarViewController.swift",
+    "mac/Sources/RcGitApp/StatusPalette.swift",
+    "mac/Sources/RcGitApp/Style.swift",
+    "mac/Sources/RcGitApp/SyncPrompts.swift",
+    "mac/Sources/RcGitApp/TreeViewController.swift",
+    "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+    "mac/Sources/RcGitApp/UpdateWindowController.swift",
+    "mac/Sources/RcGitApp/main.swift",
+    "mac/Sources/RcGitKit/AppBuild.swift",
+    "mac/Sources/RcGitKit/BackForwardList.swift",
+    "mac/Sources/RcGitKit/BlockingWork.swift",
+    "mac/Sources/RcGitKit/BranchBanner.swift",
+    "mac/Sources/RcGitKit/BrowserModel.swift",
+    "mac/Sources/RcGitKit/CanonicalPath.swift",
+    "mac/Sources/RcGitKit/ChangeTree.swift",
+    "mac/Sources/RcGitKit/ChangesModel.swift",
+    "mac/Sources/RcGitKit/ClosedTabs.swift",
+    "mac/Sources/RcGitKit/CommitGraph.swift",
+    "mac/Sources/RcGitKit/CommitIdentity.swift",
+    "mac/Sources/RcGitKit/ContentSearch.swift",
+    "mac/Sources/RcGitKit/CredentialStore.swift",
+    "mac/Sources/RcGitKit/DiffModels.swift",
+    "mac/Sources/RcGitKit/FileLimits.swift",
+    "mac/Sources/RcGitKit/HiddenFiles.swift",
+    "mac/Sources/RcGitKit/Highlighting.swift",
+    "mac/Sources/RcGitKit/HistoryPaging.swift",
+    "mac/Sources/RcGitKit/HostKeyStore.swift",
+    "mac/Sources/RcGitKit/ImportLinks.swift",
+    "mac/Sources/RcGitKit/ImportResolver.swift",
+    "mac/Sources/RcGitKit/LayoutPolicy.swift",
+    "mac/Sources/RcGitKit/Markdown.swift",
+    "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+    "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+    "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+    "mac/Sources/RcGitKit/MenuShortcuts.swift",
+    "mac/Sources/RcGitKit/Models.swift",
+    "mac/Sources/RcGitKit/Navigator.swift",
+    "mac/Sources/RcGitKit/Oid.swift",
+    "mac/Sources/RcGitKit/OpenTabs.swift",
+    "mac/Sources/RcGitKit/PathSearch.swift",
+    "mac/Sources/RcGitKit/PathSearchSession.swift",
+    "mac/Sources/RcGitKit/RecentRepositories.swift",
+    "mac/Sources/RcGitKit/RefFilter.swift",
+    "mac/Sources/RcGitKit/RefWatcher.swift",
+    "mac/Sources/RcGitKit/RepoPath.swift",
+    "mac/Sources/RcGitKit/Repository.swift",
+    "mac/Sources/RcGitKit/RepositoryError.swift",
+    "mac/Sources/RcGitKit/RepositoryGuard.swift",
+    "mac/Sources/RcGitKit/RepositoryReading.swift",
+    "mac/Sources/RcGitKit/RestoreNotice.swift",
+    "mac/Sources/RcGitKit/Shell.swift",
+    "mac/Sources/RcGitKit/ShellWord.swift",
+    "mac/Sources/RcGitKit/SyncModel.swift",
+    "mac/Sources/RcGitKit/TextDocument.swift",
+    "mac/Sources/RcGitKit/TreePlaceholder.swift",
+    "mac/Sources/RcGitKit/TreeStore.swift",
+    "mac/Sources/RcGitKit/UpdateCopy.swift",
+    "mac/Sources/RcGitKit/UpdateModel.swift",
+    "mac/Sources/RcGitKit/WorktreeModels.swift",
+    "mac/Sources/RcGitKit/WorktreeWatcher.swift",
+    "mac/Tests/RcGitAppTests/DiffRenderingTests.swift",
+    "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+    "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+    "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+    "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+    "mac/Tests/RcGitKitTests/BackForwardListTests.swift",
+    "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+    "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+    "mac/Tests/RcGitKitTests/BrowserHistoryTests.swift",
+    "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+    "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+    "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+    "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+    "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+    "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+    "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+    "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+    "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+    "mac/Tests/RcGitKitTests/CommitGraphTests.swift",
+    "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+    "mac/Tests/RcGitKitTests/CommitListedTimeTests.swift",
+    "mac/Tests/RcGitKitTests/CommitSearchQueryTests.swift",
+    "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+    "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+    "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+    "mac/Tests/RcGitKitTests/FakeRepository.swift",
+    "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+    "mac/Tests/RcGitKitTests/GitFixture.swift",
+    "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+    "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+    "mac/Tests/RcGitKitTests/HostKeyStoreTests.swift",
+    "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+    "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+    "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+    "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+    "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+    "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+    "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+    "mac/Tests/RcGitKitTests/OidTests.swift",
+    "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+    "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+    "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+    "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+    "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+    "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+    "mac/Tests/RcGitKitTests/RefWatchFilterTests.swift",
+    "mac/Tests/RcGitKitTests/RefWatcherTests.swift",
+    "mac/Tests/RcGitKitTests/RepoPathTests.swift",
+    "mac/Tests/RcGitKitTests/RepositoryGuardTests.swift",
+    "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+    "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+    "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+    "mac/Tests/RcGitKitTests/ShellTests.swift",
+    "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+    "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+    "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+    "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+    "mac/Tests/RcGitKitTests/TreePlaceholderTests.swift",
+    "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+    "mac/Tests/RcGitKitTests/UpdateCopyTests.swift",
+    "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+    "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+    "mac/Tests/RcGitKitTests/WorktreeWatchFilterTests.swift",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "scripts/bounded.sh",
+    "scripts/build-app.sh",
+    "scripts/build.sh",
+    "scripts/check.sh",
+    "scripts/gen-header.sh",
+    "scripts/install-app.sh",
+    "scripts/make-icon.swift",
+    "scripts/rust-lib.sh",
+    "scripts/tests/bounded.test.sh",
+    "scripts/tests/install-app.test.sh",
+    "docs/café.md",
+    "docs/café-notes.md",
+    "tiếng/bạn.md",
+    "tiếng/bạn.md",
+    "assets/è©.txt",
+    "assets/emoji-😀.png",
+    "日本/語.txt",
+    "Nähe/Grüße.swift",
+    "src/Ü/über.rs"
+  ],
+  "limit" : 100,
+  "queries" : [
+    {
+      "query" : "",
+      "results" : [
+        {
+          "path" : ".cargo/config.toml",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/core.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/ffi.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/guard.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/highlight.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/swift.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/testing.md",
+          "score" : 0
+        },
+        {
+          "path" : ".editorconfig",
+          "score" : 0
+        },
+        {
+          "path" : ".github/actionlint.yaml",
+          "score" : 0
+        },
+        {
+          "path" : ".github/dependabot.yml",
+          "score" : 0
+        },
+        {
+          "path" : ".github/workflows/ci.yml",
+          "score" : 0
+        },
+        {
+          "path" : ".gitignore",
+          "score" : 0
+        },
+        {
+          "path" : ".pre-commit-config.yaml",
+          "score" : 0
+        },
+        {
+          "path" : ".swift-format",
+          "score" : 0
+        },
+        {
+          "path" : "AGENTS.md",
+          "score" : 0
+        },
+        {
+          "path" : "CLAUDE.md",
+          "score" : 0
+        },
+        {
+          "path" : "CONCEPTS.md",
+          "score" : 0
+        },
+        {
+          "path" : "Cargo.lock",
+          "score" : 0
+        },
+        {
+          "path" : "Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "README.md",
+          "score" : 0
+        },
+        {
+          "path" : "clippy.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-cli/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-cli/tests/cli.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/blob.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/diff.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/error.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/history.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/log.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/oid.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/refs.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/repo.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/search.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/stash.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/tree.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/walk.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/worktree.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/diff_blame.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/history.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/read_only.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/repository.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/stash.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/worktree.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-ffi/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-ffi/cbindgen.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/checkout.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/commit.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/discard.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/fetch.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/report.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/stash.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treeapply.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treebuild.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/workfile.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/write.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/policy.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/actions.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-highlight/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/imports.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/back_forward.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/branch_banner.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/canonical_path.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/change_tree.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_graph.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_identity.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/guard_bridge.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/hidden_files.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/layout_policy.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/menu_shortcuts.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/natural_sort.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/recent_repositories.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 0
+        }
+      ]
+    },
+    {
+      "query" : "main",
+      "results" : [
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 58
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/main.swift",
+          "score" : 57
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainMenu.swift",
+          "score" : 57
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainWindowController.swift",
+          "score" : 55
+        },
+        {
+          "path" : "scripts/make-icon.swift",
+          "score" : 45
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Info.plist",
+          "score" : 36
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 25
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 24
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Icons.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/CRcGit/include/rc_git.h",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SyncPrompts.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/DiffRendering.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/IdentitySheet.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefBannerView.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryReading.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GoToFileController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefsViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/TreeViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RecentRepositories.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefPickerController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/ChangesViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HistoryViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/DiffRenderingTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RecentRepositoryPicker.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SettingsWindowController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : -1
+        }
+      ]
+    },
+    {
+      "query" : "mainrs",
+      "results" : [
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 75
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainWindowController.swift",
+          "score" : 61
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+          "score" : 50
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 40
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 31
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+          "score" : 31
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/DiffRendering.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefBannerView.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GoToFileController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefsViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/TreeViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefPickerController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/ChangesViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HistoryViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SettingsWindowController.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SyncPrompts.swift",
+          "score" : 10
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 10
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 10
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 10
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 10
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RecentRepositories.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/DiffRenderingTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RecentRepositoryPicker.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 8
+        }
+      ]
+    },
+    {
+      "query" : "model",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 66
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 56
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeModels.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Sources/CRcGit/module.modulemap",
+          "score" : 43
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/AppDelegate.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 11
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 1
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : -3
+        }
+      ]
+    },
+    {
+      "query" : "Model",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 66
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 56
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeModels.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Sources/CRcGit/module.modulemap",
+          "score" : 43
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/AppDelegate.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 11
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 1
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : -3
+        }
+      ]
+    },
+    {
+      "query" : "readme",
+      "results" : [
+        {
+          "path" : "README.md",
+          "score" : 75
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+          "score" : 6
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : -1
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : -2
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/fetch.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/report.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+          "score" : -10
+        }
+      ]
+    },
+    {
+      "query" : "README",
+      "results" : [
+        {
+          "path" : "README.md",
+          "score" : 75
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+          "score" : 6
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : -1
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : -2
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : -9
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/fetch.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/report.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+          "score" : -10
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+          "score" : -10
+        }
+      ]
+    },
+    {
+      "query" : "cargo",
+      "results" : [
+        {
+          "path" : "Cargo.lock",
+          "score" : 66
+        },
+        {
+          "path" : "Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-cli/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-ffi/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-kit/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-core/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-guard/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-testkit/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : "crates/rc-git-highlight/Cargo.toml",
+          "score" : 66
+        },
+        {
+          "path" : ".cargo/config.toml",
+          "score" : 46
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md",
+          "score" : 30
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/log.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/oid.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/blob.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/diff.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/refs.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/repo.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/tree.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/walk.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/error.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/stash.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-ffi/cbindgen.toml",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/search.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/history.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/stash.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/policy.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/worktree.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/history.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/worktree.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/actions.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/update_copy.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/read_only.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/back_forward.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_graph.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/natural_sort.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/shell_word.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/diff_blame.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/tests/repository.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/imports.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/update_copy.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/stash.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/write.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/commit.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/discard.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/checkout.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/workfile.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treeapply.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treebuild.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/fetch.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/report.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/layout_policy.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/text_document.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/canonical_path.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/menu_shortcuts.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/restore_notice.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_identity.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tree_placeholder.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/canonical_path.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/restore_notice.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/commit_identity.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tree_placeholder.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/src/recent_repositories.rs",
+          "score" : 21
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/recent_repositories.rs",
+          "score" : 21
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md",
+          "score" : 8
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/integration-issues/russh-config-ssh-alias-resolution-divergence.md",
+          "score" : -2
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+          "score" : -3
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : -4
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md",
+          "score" : -13
+        },
+        {
+          "path" : "docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md",
+          "score" : -14
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tree-sitter-highlight-injection-merge-misordered-missing-events.md",
+          "score" : -15
+        }
+      ]
+    },
+    {
+      "query" : "lib",
+      "results" : [
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 49
+        },
+        {
+          "path" : "scripts/rust-lib.sh",
+          "score" : 48
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 35
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+          "score" : 31
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : 22
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : 20
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/task-per-watch-event-backlog.md",
+          "score" : 4
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md",
+          "score" : 2
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md",
+          "score" : 1
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 1
+        },
+        {
+          "path" : "docs/solutions/integration-issues/foundation-markdown-parser-cannot-back-a-preview.md",
+          "score" : 1
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : 1
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : -8
+        }
+      ]
+    },
+    {
+      "query" : "lib.rs",
+      "results" : [
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 76
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 76
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 76
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 76
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 76
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 76
+        }
+      ]
+    },
+    {
+      "query" : "src/lib",
+      "results" : [
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 42
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 28
+        }
+      ]
+    },
+    {
+      "query" : "kit/src",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 65
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 65
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/change_tree.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/update_copy.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/back_forward.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_graph.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/guard_bridge.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/hidden_files.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/natural_sort.rs",
+          "score" : 64
+        },
+        {
+          "path" : "crates/rc-git-kit/src/branch_banner.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/layout_policy.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/text_document.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/canonical_path.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/menu_shortcuts.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/restore_notice.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_identity.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tree_placeholder.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-kit/src/recent_repositories.rs",
+          "score" : 63
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 55
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/ssh.rs",
+          "score" : 55
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/http.rs",
+          "score" : 55
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/agent.rs",
+          "score" : 54
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/restore_notice.rs",
+          "score" : 40
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/recent_repositories.rs",
+          "score" : 40
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 31
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 31
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 31
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tree_placeholder.rs",
+          "score" : 30
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitSearchQueryTests.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 8
+        }
+      ]
+    },
+    {
+      "query" : "crates/kit",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 91
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 91
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tabs.rs",
+          "score" : 91
+        },
+        {
+          "path" : "crates/rc-git-kit/Cargo.toml",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/change_tree.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/update_copy.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/app_build.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/back_forward.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_graph.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/guard_bridge.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/hidden_files.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/natural_sort.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/shell_word.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/update_copy.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/guard_bridge.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/hidden_files.rs",
+          "score" : 90
+        },
+        {
+          "path" : "crates/rc-git-kit/src/branch_banner.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/layout_policy.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/text_document.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/canonical_path.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/menu_shortcuts.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/restore_notice.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_identity.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tree_placeholder.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/canonical_path.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/restore_notice.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/commit_identity.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tree_placeholder.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/src/recent_repositories.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/recent_repositories.rs",
+          "score" : 89
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 81
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/ssh.rs",
+          "score" : 81
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/http.rs",
+          "score" : 81
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/ssh.rs",
+          "score" : 81
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/http.rs",
+          "score" : 81
+        },
+        {
+          "path" : "crates/rc-git-testkit/Cargo.toml",
+          "score" : 80
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/agent.rs",
+          "score" : 80
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/fixture.rs",
+          "score" : 80
+        },
+        {
+          "path" : "docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md",
+          "score" : 40
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : 31
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 20
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : -1
+        }
+      ]
+    },
+    {
+      "query" : "BrowserModel",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 128
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 128
+        }
+      ]
+    },
+    {
+      "query" : "brMod",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+          "score" : 29
+        }
+      ]
+    },
+    {
+      "query" : "bm",
+      "results" : [
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 38
+        },
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 38
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/task-per-watch-event-backlog.md",
+          "score" : 36
+        },
+        {
+          "path" : "docs/solutions/integration-issues/foundation-markdown-parser-cannot-back-a-preview.md",
+          "score" : 33
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : 33
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 28
+        },
+        {
+          "path" : "crates/rc-git-core/tests/diff_blame.rs",
+          "score" : 28
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 27
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 27
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 26
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md",
+          "score" : 24
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : 24
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 23
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : 23
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+          "score" : 22
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : 22
+        },
+        {
+          "path" : ".github/dependabot.yml",
+          "score" : 18
+        },
+        {
+          "path" : "crates/rc-git-ffi/cbindgen.toml",
+          "score" : 18
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+          "score" : 13
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md",
+          "score" : 13
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md",
+          "score" : 2
+        },
+        {
+          "path" : ".github/workflows/ci.yml",
+          "score" : -1
+        },
+        {
+          "path" : ".github/actionlint.yaml",
+          "score" : -2
+        }
+      ]
+    },
+    {
+      "query" : "pathsearch",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 109
+        }
+      ]
+    },
+    {
+      "query" : "PathSearch",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 110
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 109
+        }
+      ]
+    },
+    {
+      "query" : "path_search",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 120
+        }
+      ]
+    },
+    {
+      "query" : "ImpRes",
+      "results" : [
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportResolver.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 51
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : 27
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 8
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : -2
+        }
+      ]
+    },
+    {
+      "query" : "importresolver",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/ImportResolver.swift",
+          "score" : 146
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 145
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 145
+        }
+      ]
+    },
+    {
+      "query" : "Tests/",
+      "results" : [
+        {
+          "path" : "mac/Tests/RcGitKitTests/OidTests.swift",
+          "score" : 55
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/GitFixture.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepoPathTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FakeRepository.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatcherTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateCopyTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitGraphTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HostKeyStoreTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 54
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/DiffRenderingTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserHistoryTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatchFilterTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BackForwardListTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryGuardTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TreePlaceholderTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitListedTimeTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitSearchQueryTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeWatchFilterTests.swift",
+          "score" : 53
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 52
+        },
+        {
+          "path" : "scripts/tests/bounded.test.sh",
+          "score" : 34
+        },
+        {
+          "path" : "scripts/tests/install-app.test.sh",
+          "score" : 33
+        },
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/log.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/oid.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/blob.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/diff.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/refs.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/repo.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/tree.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/walk.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : 23
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/error.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/stash.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/search.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/history.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/policy.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-core/src/worktree.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 22
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 22
+        }
+      ]
+    },
+    {
+      "query" : "/",
+      "results" : [
+        {
+          "path" : "docs/ffi.md",
+          "score" : 1
+        },
+        {
+          "path" : "日本/語.txt",
+          "score" : 1
+        },
+        {
+          "path" : ".claude/rules/ffi.md",
+          "score" : 1
+        },
+        {
+          "path" : ".claude/rules/core.md",
+          "score" : 1
+        },
+        {
+          "path" : ".github/workflows/ci.yml",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/log.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/oid.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-cli/tests/cli.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/blob.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/diff.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/refs.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/repo.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/tree.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-core/src/walk.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tabs.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/ssh.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/http.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/ssh.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/http.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : 1
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : 1
+        },
+        {
+          "path" : "docs/café.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/safety.md",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Info.plist",
+          "score" : 0
+        },
+        {
+          "path" : "assets/è©.txt",
+          "score" : 0
+        },
+        {
+          "path" : "docs/roadmap.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/testing.md",
+          "score" : 0
+        },
+        {
+          "path" : "src/Ü/über.rs",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/build.sh",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/check.sh",
+          "score" : 0
+        },
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Package.swift",
+          "score" : 0
+        },
+        {
+          "path" : ".cargo/config.toml",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/bounded.sh",
+          "score" : 0
+        },
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/café-notes.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/development.md",
+          "score" : 0
+        },
+        {
+          "path" : "docs/performance.md",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/rust-lib.sh",
+          "score" : 0
+        },
+        {
+          "path" : "Nähe/Grüße.swift",
+          "score" : 0
+        },
+        {
+          "path" : "docs/architecture.md",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/build-app.sh",
+          "score" : 0
+        },
+        {
+          "path" : "assets/emoji-😀.png",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/gen-header.sh",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/guard.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/swift.md",
+          "score" : 0
+        },
+        {
+          "path" : ".github/dependabot.yml",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/install-app.sh",
+          "score" : 0
+        },
+        {
+          "path" : ".github/actionlint.yaml",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/make-icon.swift",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/testing.md",
+          "score" : 0
+        },
+        {
+          "path" : ".claude/rules/highlight.md",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-cli/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-ffi/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "scripts/tests/bounded.test.sh",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Oid.swift",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/error.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/stash.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-ffi/cbindgen.toml",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/main.swift",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/search.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-testkit/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Icons.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Style.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Shell.swift",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/history.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/stash.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/policy.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/src/worktree.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-highlight/Cargo.toml",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/agent.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-core/tests/history.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 0
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/CRcGit/include/rc_git.h",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainMenu.swift",
+          "score" : 0
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/AppBuild.swift",
+          "score" : 0
+        }
+      ]
+    },
+    {
+      "query" : ".rs",
+      "results" : [
+        {
+          "path" : "crates/rc-git-ffi/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/log.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/oid.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-cli/tests/cli.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/blob.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/diff.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/refs.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/repo.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/tree.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-core/src/walk.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tabs.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/ssh.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/http.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/lib.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/ssh.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/http.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pack.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/pull.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/push.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/auth.rs",
+          "score" : 39
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/dial.rs",
+          "score" : 39
+        },
+        {
+          "path" : "src/Ü/über.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/blame.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/error.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/stash.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/search.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/history.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/stash.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/policy.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/markdown.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/src/worktree.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/app_build.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/repo_path.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-testkit/src/agent.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/history.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/remote.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/ref_filter.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/shell_word.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/worktree.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/tests/actions.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/change_tree.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/path_search.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/update_copy.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/app_build.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/read_only.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/back_forward.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_graph.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/guard_bridge.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/hidden_files.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/natural_sort.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/shell_word.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/diff_blame.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-core/tests/repository.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-highlight/src/imports.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/update_copy.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/fixture.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/guard_bridge.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/hidden_files.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/stash.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/write.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/commit.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/discard.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/checkout.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/workfile.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treeapply.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/treebuild.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/fetch.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/report.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/output.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/target.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/hostkey.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-guard/src/actions/remote/ssh/session.rs",
+          "score" : 38
+        },
+        {
+          "path" : "crates/rc-git-kit/src/branch_banner.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/layout_policy.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/text_document.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/canonical_path.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/menu_shortcuts.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/restore_notice.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/commit_identity.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/import_resolver.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tree_placeholder.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/canonical_path.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/restore_notice.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/commit_identity.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tree_placeholder.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/src/recent_repositories.rs",
+          "score" : 37
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/recent_repositories.rs",
+          "score" : 37
+        },
+        {
+          "path" : ".claude/rules/ffi.md",
+          "score" : 17
+        },
+        {
+          "path" : ".claude/rules/core.md",
+          "score" : 17
+        },
+        {
+          "path" : ".claude/rules/guard.md",
+          "score" : 16
+        }
+      ]
+    },
+    {
+      "query" : ".swift",
+      "results" : [
+        {
+          "path" : ".swift-format",
+          "score" : 75
+        },
+        {
+          "path" : "mac/Package.swift",
+          "score" : 65
+        },
+        {
+          "path" : "Nähe/Grüße.swift",
+          "score" : 65
+        },
+        {
+          "path" : "scripts/make-icon.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Oid.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/main.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Icons.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Style.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Shell.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainMenu.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/AppBuild.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepoPath.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefFilter.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ShellWord.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreeStore.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OidTests.swift",
+          "score" : 65
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ClosedTabs.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/FileLimits.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefWatcher.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Repository.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateCopy.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/AppDelegate.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SyncPrompts.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitGraph.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HostKeyStore.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/LayoutPolicy.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/DiffRendering.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GraphCellView.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/IdentitySheet.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefBannerView.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/StatusPalette.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/GitFixture.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportResolver.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeModels.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BackForwardList.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryError.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryGuard.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreePlaceholder.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeWatcher.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HighlightPalette.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepoPathTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryReading.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FakeRepository.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatcherTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateCopyTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitGraphTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HostKeyStoreTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 64
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 63
+        }
+      ]
+    },
+    {
+      "query" : "rcgitkit",
+      "results" : [
+        {
+          "path" : "mac/Tests/RcGitKitTests/OidTests.swift",
+          "score" : 73
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/GitFixture.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepoPathTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FakeRepository.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatcherTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateCopyTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitGraphTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HostKeyStoreTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserHistoryTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatchFilterTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BackForwardListTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryGuardTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TreePlaceholderTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitListedTimeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitSearchQueryTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeWatchFilterTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Oid.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Shell.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/AppBuild.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepoPath.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefFilter.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ShellWord.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreeStore.swift",
+          "score" : 52
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 51
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 51
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tabs.rs",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ClosedTabs.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/FileLimits.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefWatcher.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Repository.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateCopy.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitGraph.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HostKeyStore.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/LayoutPolicy.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 51
+        }
+      ]
+    },
+    {
+      "query" : "RcGitKit",
+      "results" : [
+        {
+          "path" : "mac/Tests/RcGitKitTests/OidTests.swift",
+          "score" : 73
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/GitFixture.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepoPathTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FakeRepository.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatcherTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ScratchDefaults.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateCopyTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitGraphTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HostKeyStoreTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 72
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserHistoryTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatchFilterTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BackForwardListTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryGuardTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TreePlaceholderTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitListedTimeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitSearchQueryTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeWatchFilterTests.swift",
+          "score" : 71
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 70
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Oid.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Shell.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/AppBuild.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepoPath.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefFilter.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ShellWord.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 52
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreeStore.swift",
+          "score" : 52
+        },
+        {
+          "path" : "crates/rc-git-kit/src/lib.rs",
+          "score" : 51
+        },
+        {
+          "path" : "crates/rc-git-kit/src/tabs.rs",
+          "score" : 51
+        },
+        {
+          "path" : "crates/rc-git-kit/tests/tabs.rs",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ClosedTabs.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/FileLimits.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefWatcher.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Repository.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateCopy.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitGraph.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HostKeyStore.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/LayoutPolicy.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 51
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 51
+        }
+      ]
+    },
+    {
+      "query" : "fsfi",
+      "results" : [
+        {
+          "path" : "docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md",
+          "score" : 29
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : 28
+        }
+      ]
+    },
+    {
+      "query" : "mac/Sources",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitKit/Oid.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/main.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Icons.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Style.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Shell.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Models.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/CRcGit/include/rc_git.h",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainMenu.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/AppBuild.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepoPath.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefFilter.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ShellWord.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreeStore.swift",
+          "score" : 100
+        },
+        {
+          "path" : "mac/Sources/CRcGit/module.modulemap",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ClosedTabs.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/DiffModels.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/FileLimits.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearch.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefWatcher.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Repository.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateCopy.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/AppDelegate.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SyncPrompts.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitGraph.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/UpdateModel.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BrowserModel.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HostKeyStore.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/LayoutPolicy.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/DiffRendering.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GraphCellView.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/IdentitySheet.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefBannerView.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/StatusPalette.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportResolver.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeModels.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BackForwardList.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryError.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryGuard.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreePlaceholder.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/WorktreeWatcher.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HighlightPalette.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryReading.swift",
+          "score" : 99
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GoToFileController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefsViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RepositoryDropView.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/TreeViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RecentRepositories.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefPickerController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainWindowController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/ChangesViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HistoryViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RecentRepositoryPicker.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SettingsWindowController.swift",
+          "score" : 98
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : 97
+        }
+      ]
+    },
+    {
+      "query" : "docs/sol",
+      "results" : [
+        {
+          "path" : "docs/solutions/runtime-errors/task-per-watch-event-backlog.md",
+          "score" : 71
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md",
+          "score" : 70
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md",
+          "score" : 69
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : 69
+        },
+        {
+          "path" : "docs/solutions/integration-issues/russh-config-ssh-alias-resolution-divergence.md",
+          "score" : 69
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/attributed-string-label-ignores-cell-linebreakmode.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-zero-height-collapse-splitview-autosave.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/integration-issues/foundation-markdown-parser-cannot-back-a-preview.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : 68
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+          "score" : 67
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nsstackview-hidden-at-attach-never-gets-width-alignment.md",
+          "score" : 67
+        },
+        {
+          "path" : "docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md",
+          "score" : 67
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : 67
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tree-sitter-highlight-injection-merge-misordered-missing-events.md",
+          "score" : 66
+        }
+      ]
+    },
+    {
+      "query" : "clippy",
+      "results" : [
+        {
+          "path" : "clippy.toml",
+          "score" : 75
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 5
+        }
+      ]
+    },
+    {
+      "query" : "chekc",
+      "results" : [
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : 7
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : -13
+        }
+      ]
+    },
+    {
+      "query" : "slef",
+      "results" : [
+        {
+          "path" : "mac/Sources/RcGitApp/Style.swift",
+          "score" : 35
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/StatusPalette.swift",
+          "score" : 34
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/StatusLetterTests.swift",
+          "score" : 34
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : 31
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellTests.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ShellWordTests.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 23
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 22
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SettingsWindowController.swift",
+          "score" : 22
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/FileLimits.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/AppDelegate.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportResolver.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GoToFileController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserModelTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefsViewController.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/ChangesViewController.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HistoryViewController.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportResolverTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : 11
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+          "score" : 11
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/userdefaults-handover-race-self-update-relaunch.md",
+          "score" : 9
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RefFilter.swift",
+          "score" : 4
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/FileLimitsTests.swift",
+          "score" : 4
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 4
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ClosedTabs.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GraphCellView.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TreePlaceholder.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HighlightPalette.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/LayoutPolicyTests.swift",
+          "score" : 3
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/TreeViewController.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefPickerController.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainWindowController.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 2
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 2
+        },
+        {
+          "path" : "docs/solutions/integration-issues/foundation-markdown-parser-cannot-back-a-preview.md",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/back-forward-list-record-on-change-never-reassert.md",
+          "score" : -1
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/AppBuildTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefFilterTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ClosedTabsTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UpdateModelTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : -7
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeModelTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RefWatchFilterTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BackForwardListTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TreePlaceholderTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitListedTimeTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BlobDiffPlaceholderTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/WorktreeWatchFilterTests.swift",
+          "score" : -8
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : -9
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : -9
+        },
+        {
+          "path" : "docs/solutions/integration-issues/russh-config-ssh-alias-resolution-divergence.md",
+          "score" : -10
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : -11
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/unbounded-preflight-probe-spins-with-no-step-log.md",
+          "score" : -11
+        },
+        {
+          "path" : "docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md",
+          "score" : -12
+        },
+        {
+          "path" : "docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md",
+          "score" : -12
+        }
+      ]
+    },
+    {
+      "query" : "ptahsearch",
+      "results" : [
+
+      ]
+    },
+    {
+      "query" : "rsuolver",
+      "results" : [
+        {
+          "path" : "docs/solutions/integration-issues/russh-config-ssh-alias-resolution-divergence.md",
+          "score" : 4
+        },
+        {
+          "path" : "docs/solutions/best-practices/shifted-punctuation-key-equivalent-cgevent-probe.md",
+          "score" : -8
+        }
+      ]
+    },
+    {
+      "query" : "café",
+      "results" : [
+        {
+          "path" : "docs/café.md",
+          "score" : 58
+        },
+        {
+          "path" : "docs/café-notes.md",
+          "score" : 57
+        }
+      ]
+    },
+    {
+      "query" : "café",
+      "results" : [
+        {
+          "path" : "docs/café.md",
+          "score" : 58
+        },
+        {
+          "path" : "docs/café-notes.md",
+          "score" : 57
+        }
+      ]
+    },
+    {
+      "query" : "é",
+      "results" : [
+        {
+          "path" : "docs/café.md",
+          "score" : 21
+        },
+        {
+          "path" : "docs/café-notes.md",
+          "score" : 20
+        }
+      ]
+    },
+    {
+      "query" : "ạ",
+      "results" : [
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 21
+        },
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 21
+        }
+      ]
+    },
+    {
+      "query" : "bạn",
+      "results" : [
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 49
+        },
+        {
+          "path" : "tiếng/bạn.md",
+          "score" : 49
+        }
+      ]
+    },
+    {
+      "query" : "grüß",
+      "results" : [
+        {
+          "path" : "Nähe/Grüße.swift",
+          "score" : 57
+        }
+      ]
+    },
+    {
+      "query" : "über",
+      "results" : [
+        {
+          "path" : "src/Ü/über.rs",
+          "score" : 58
+        }
+      ]
+    },
+    {
+      "query" : "語",
+      "results" : [
+        {
+          "path" : "日本/語.txt",
+          "score" : 31
+        }
+      ]
+    },
+    {
+      "query" : "  main  ",
+      "results" : [
+        {
+          "path" : "crates/rc-git-cli/src/main.rs",
+          "score" : 58
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/main.swift",
+          "score" : 57
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainMenu.swift",
+          "score" : 57
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MainWindowController.swift",
+          "score" : 55
+        },
+        {
+          "path" : "scripts/make-icon.swift",
+          "score" : 45
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownLinkTarget.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownInlineParser.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownLinkTargetTests.swift",
+          "score" : 44
+        },
+        {
+          "path" : "mac/Info.plist",
+          "score" : 36
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Navigator.swift",
+          "score" : 25
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/NavigatorTests.swift",
+          "score" : 24
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/Icons.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/CRcGit/include/rc_git.h",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Markdown.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/OpenTabs.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/SyncModel.swift",
+          "score" : 15
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangeTree.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SyncPrompts.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HiddenFiles.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ImportLinks.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BlockingWork.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/BranchBanner.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ChangesModel.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/Highlighting.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/DiffRendering.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/IdentitySheet.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefBannerView.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CanonicalPath.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/ContentSearch.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/HistoryPaging.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MenuShortcuts.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RestoreNotice.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/UnifiedLog.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CommitIdentity.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/CredentialStore.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/MarkdownRenderer.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MarkdownTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/OpenTabsTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/PathSearchSession.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RepositoryReading.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/SyncModelTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangeTreeTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/DiffHunkRowTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HiddenFilesTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ImportLinksTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BranchBannerTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesModelTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/HighlightingTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 14
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FileViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/GoToFileController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefsViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/TreeViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/RecentRepositories.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LineNumberRulerView.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RefPickerController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/MarkdownBlockParser.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/BlamePanelController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/ChangesViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/HistoryViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SidebarViewController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateEnvironmentLive.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/DiffRenderingTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CanonicalPathTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ContentSearchTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/MenuShortcutsTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RestoreNoticeTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/RecentRepositoryPicker.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/UpdateWindowController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitIdentityTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/BrowserLocationTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CredentialStoreTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/SettingsWindowController.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/MarkdownRendererTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/ChangesListNoticeTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathSearchSessionTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/RefsViewControllerTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RecentRepositoriesTests.swift",
+          "score" : 13
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/FindInRepositoryController.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitAppTests/HistoryViewControllerTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CommitFilterDayBoundsTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/RepositoryIntegrationTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/CachingCredentialStoreTests.swift",
+          "score" : 12
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/sync-hangs-with-no-cancel-and-no-idle-timeout.md",
+          "score" : -1
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : -1
+        }
+      ]
+    },
+    {
+      "query" : "x",
+      "results" : [
+        {
+          "path" : "日本/語.txt",
+          "score" : 21
+        },
+        {
+          "path" : "assets/è©.txt",
+          "score" : 20
+        },
+        {
+          "path" : "crates/rc-git-kit/src/diff_text.rs",
+          "score" : 20
+        },
+        {
+          "path" : "crates/rc-git-testkit/tests/fixture.rs",
+          "score" : 20
+        },
+        {
+          "path" : "crates/rc-git-kit/src/text_document.rs",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitApp/LinkTextView.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Sources/RcGitKit/TextDocument.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/GitFixture.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/TextDocumentTests.swift",
+          "score" : 19
+        },
+        {
+          "path" : "mac/Tests/RcGitKitTests/PathIndexModelTests.swift",
+          "score" : 18
+        },
+        {
+          "path" : "docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md",
+          "score" : 17
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md",
+          "score" : 16
+        },
+        {
+          "path" : "docs/solutions/integration-issues/gix-no-reflog-for-symbolic-ref-update.md",
+          "score" : 16
+        },
+        {
+          "path" : "docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md",
+          "score" : 15
+        },
+        {
+          "path" : "docs/solutions/ui-bugs/nstablecellview-textfield-outlet-font-reset-at-layout.md",
+          "score" : 14
+        }
+      ]
+    },
+    {
+      "query" : "zzzz",
+      "results" : [
+
+      ]
+    },
+    {
+      "query" : "nähe",
+      "results" : [
+        {
+          "path" : "Nähe/Grüße.swift",
+          "score" : 37
+        }
+      ]
+    }
+  ]
+}
