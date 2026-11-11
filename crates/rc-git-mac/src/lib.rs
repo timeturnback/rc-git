@@ -7,8 +7,12 @@
 //! every `CoreFoundation` object it creates is owned by [`cf::Owned`], which releases it once.
 
 pub mod cf;
+pub mod fsevents;
 pub mod keychain;
+pub mod process;
 pub mod settings;
 
+pub use fsevents::{FsEventsWatcher, FsEventsWatchers};
 pub use keychain::KeychainCredentialStore;
+pub use process::ShellRunner;
 pub use settings::Preferences;
