@@ -1027,6 +1027,7 @@ mod tests {
         assert_eq!(Language::from_fence("h"), Some(Language::C));
         assert_eq!(Language::from_fence("mjs"), Some(Language::JavaScript));
         assert_eq!(Language::from_fence("cts"), Some(Language::TypeScript));
+        assert_eq!(Language::from_fence("main.rs"), None);
         assert_eq!(Language::from_file_name("noext"), None);
         for name in ["c", "sh", "json", "rs", "md"] {
             assert_eq!(Language::from_file_name(name), None, "{name}");
