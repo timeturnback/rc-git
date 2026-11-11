@@ -24,7 +24,7 @@ use rc_git_kit::browser::{BrowserEvent, BrowserModel, can_open_ref_picker};
 use rc_git_kit::platform::stores::SharedSettings;
 use rc_git_kit::platform::watch::{Watcher, WatcherFactory};
 use rc_git_kit::restore_notice::RestoreNotice;
-use rc_git_kit::sync::SyncModel;
+use rc_git_kit::sync::{SyncEvent, SyncModel};
 
 use crate::app::OpenedRepository;
 use crate::files::pane::FilePane;
@@ -54,6 +54,8 @@ pub enum WindowEvent {
     OpenPaths(Vec<PathBuf>),
     /// The window became the main one.
     BecameFront,
+    /// Something a menu title names changed: the default branch.
+    MenusStale,
 }
 
 /// The repository a window shows.
@@ -199,6 +201,14 @@ impl RepoWindow {
         self.shown.as_ref()
     }
 
+    /// The repository's mainline branch as the last sync status read it, which titles Back to
+    /// Default in the menu.
+    #[must_use]
+    pub fn default_branch(&self, cx: &gpui::App) -> Option<String> {
+        let sync = self.sync.as_ref()?;
+        sync.read(cx).default_branch().map(str::to_owned)
+    }
+
     /// The pane on show.
     #[must_use]
     pub fn mode(&self) -> ContentMode {
@@ -242,6 +252,12 @@ impl RepoWindow {
         self.sync = repository.sync;
         if let Some(sync) = &self.sync {
             cx.observe(sync, |_, _, cx| cx.notify()).detach();
+            cx.subscribe(sync, |_, _, event: &SyncEvent, cx| {
+                if *event == SyncEvent::StatusChanged {
+                    cx.emit(WindowEvent::MenusStale);
+                }
+            })
+            .detach();
             sync.update(cx, rc_git_kit::sync::SyncModel::refresh_status)
                 .detach();
         }

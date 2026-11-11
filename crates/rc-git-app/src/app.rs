@@ -207,7 +207,7 @@ impl Shell {
             home: self.services.home.clone(),
             shows_hidden_files: self.hidden.shows(),
             mode: front.map_or(ContentMode::Files, |tab| tab.view.read(cx).mode()),
-            default_branch: None,
+            default_branch: front.and_then(|tab| tab.view.read(cx).default_branch(cx)),
         }
     }
 
@@ -439,6 +439,7 @@ impl Shell {
                         this.open(&path.to_string_lossy(), cx);
                     }
                 }
+                WindowEvent::MenusStale => this.rebuild_menus(cx),
                 WindowEvent::BecameFront => {
                     let stop = view.read(cx).current_stop(cx);
                     if this.navigator.tab_came_to_front(&id, stop) {
