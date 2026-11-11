@@ -9,6 +9,7 @@ pub mod blocking;
 pub mod branch_banner;
 pub mod canonical_path;
 pub mod change_tree;
+pub mod changes;
 pub mod commit_graph;
 pub mod commit_identity;
 pub mod content_search;
