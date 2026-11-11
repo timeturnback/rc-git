@@ -11,6 +11,7 @@ pub mod canonical_path;
 pub mod change_tree;
 pub mod commit_graph;
 pub mod commit_identity;
+pub mod content_search;
 pub mod diff_text;
 #[cfg(feature = "test-support")]
 pub mod fake;
@@ -28,6 +29,7 @@ pub mod models;
 pub mod natural_sort;
 pub mod oneshot;
 pub mod path_search;
+pub mod path_search_session;
 pub mod platform;
 pub mod recent_repositories;
 pub mod ref_filter;

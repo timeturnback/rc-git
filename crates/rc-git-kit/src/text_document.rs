@@ -202,7 +202,7 @@ pub fn format_over_limit(size: u64, limit: u64) -> (String, String) {
 }
 
 /// Digits in groups of three separated by commas, independent of the user's locale.
-fn grouped(value: u64) -> String {
+pub(crate) fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
