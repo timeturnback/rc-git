@@ -19,6 +19,7 @@ pub mod diff_text;
 pub mod fake;
 pub mod file_pane;
 pub mod file_tree;
+pub mod file_url;
 pub mod guard_bridge;
 pub mod hidden_files;
 pub mod highlight_store;

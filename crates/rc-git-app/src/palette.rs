@@ -17,6 +17,7 @@ pub struct Palette {
     blue: Hsla,
     magenta: Hsla,
     cyan: Hsla,
+    selection: Hsla,
 }
 
 impl Palette {
@@ -33,6 +34,7 @@ impl Palette {
             blue: theme.blue,
             magenta: theme.magenta,
             cyan: theme.cyan,
+            selection: theme.selection,
         }
     }
 
@@ -63,5 +65,23 @@ impl Palette {
     #[must_use]
     pub fn muted(&self) -> Hsla {
         self.muted
+    }
+
+    /// A link: an import's hover underline.
+    #[must_use]
+    pub fn link(&self) -> Hsla {
+        self.link
+    }
+
+    /// The selection's background, drawn translucent over the text.
+    #[must_use]
+    pub fn selection(&self) -> Hsla {
+        self.selection
+    }
+
+    /// A find match's background, drawn translucent over the text.
+    #[must_use]
+    pub fn find(&self) -> Hsla {
+        self.yellow
     }
 }

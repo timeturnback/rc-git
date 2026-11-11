@@ -51,6 +51,8 @@ gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
 gpui_apple = { package = "gpui-pre-apple", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
 gpui-component = "=0.9.0"
+# Lucide icons; gpui-component already depends on it at this version, so it adds no crate.
+gpui-kit-assets = "=0.9.0"
 tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 [workspace.lints.rust]

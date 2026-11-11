@@ -6931,11 +6931,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-apple",
  "gpui-pre-platform",
+ "rc-git-core",
  "rc-git-highlight",
  "rc-git-kit",
+ "rc-git-mac",
+ "rc-git-testkit",
 ]
 
 [[package]]
