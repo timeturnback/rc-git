@@ -5,7 +5,7 @@
 use rc_git_core::bstr::ByteSlice;
 use rc_git_core::{CommitDetail, CommitSummary, Oid, TreeChange};
 
-use crate::dates::format_date_time;
+use crate::dates::{format_date, format_date_time};
 
 /// How many rows before the end of the loaded list the next page is asked for: about the
 /// 600 points of the Swift pane's prefetch margin at its row height.
@@ -160,6 +160,21 @@ pub fn blame_lines(start_line: u32, line_count: u32) -> String {
     format!("{start_line}\u{2013}{last}")
 }
 
+/// The blame window's Date column: the commit's author date, or for a range the walk stopped
+/// short of tracing, `older than` the floor it stopped at. Dates read in the zone `offset_at`
+/// gives at each instant.
+#[must_use]
+pub fn blame_date(
+    older_than: Option<i64>,
+    author_time: i64,
+    offset_at: impl Fn(i64) -> i32,
+) -> String {
+    match older_than {
+        Some(floor) => format!("older than {}", format_date(floor, offset_at(floor))),
+        None => format_date(author_time, offset_at(author_time)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rc_git_core::{ChangeKind, EntryKind};
@@ -299,5 +314,14 @@ mod tests {
         assert_eq!(blame_lines(12, 1), "12");
         assert_eq!(blame_lines(12, 4), "12\u{2013}15");
         assert_eq!(blame_lines(12, 0), "12");
+    }
+
+    #[test]
+    fn a_blame_date_names_the_floor_of_an_untraced_range() {
+        assert_eq!(blame_date(None, 0, |_| 0), "Jan 1, 1970");
+        assert_eq!(
+            blame_date(Some(86_400 * 365), 0, |_| 0),
+            "older than Jan 1, 1971"
+        );
     }
 }

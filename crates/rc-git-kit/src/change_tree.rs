@@ -165,6 +165,45 @@ pub fn discard_paths<E>(
     paths.into_iter().collect()
 }
 
+/// One row a change list draws: a node, how deep it sits, and whether a folder shows its
+/// children.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleRow<'a, E> {
+    /// The node.
+    pub node: &'a ChangeNode<E>,
+    /// How many folders it sits in; 0 at the top.
+    pub depth: usize,
+    /// Whether a folder row is open; `false` on a file row.
+    pub expanded: bool,
+}
+
+/// The rows a list draws for `nodes`, top to bottom: every folder open except those whose
+/// [`ChangeNode::key`] is in `collapsed`, whose children are left out. A list keeps the keys a
+/// user closed, never the open ones, so a new commit's folders all open, as Swift's did.
+#[must_use]
+pub fn visible_rows<'a, E, S: std::hash::BuildHasher>(
+    nodes: &'a [ChangeNode<E>],
+    collapsed: &std::collections::HashSet<String, S>,
+) -> Vec<VisibleRow<'a, E>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<(&ChangeNode<E>, usize)> =
+        nodes.iter().rev().map(|node| (node, 0)).collect();
+    while let Some((node, depth)) = stack.pop() {
+        let expanded = node.is_folder() && !collapsed.contains(&node.key());
+        out.push(VisibleRow {
+            node,
+            depth,
+            expanded,
+        });
+        if expanded {
+            for child in node.children.iter().rev() {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    out
+}
+
 /// A folder's files, and the folders under it, while the tree is being built.
 struct Level<E> {
     folders: HashMap<String, Level<E>>,
@@ -254,4 +293,65 @@ fn last_component(path: &str) -> &str {
     path.rsplit('/')
         .find(|part| !part.is_empty())
         .unwrap_or(path)
+}
+
+#[cfg(test)]
+mod visible_tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Path(&'static str);
+
+    impl ChangeListEntry for Path {
+        fn path(&self) -> Cow<'_, str> {
+            Cow::Borrowed(self.0)
+        }
+    }
+
+    fn labels(rows: &[VisibleRow<'_, Path>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| format!("{}{}", "  ".repeat(row.depth), row.node.name))
+            .collect()
+    }
+
+    #[test]
+    fn every_folder_opens_until_a_user_closes_it() {
+        let entries = [
+            Path("a/x.rs"),
+            Path("a/y.rs"),
+            Path("b/c/z.rs"),
+            Path("top.rs"),
+        ];
+        let nodes = nodes(&entries, ChangeGrouping::Folders);
+        let open = visible_rows(&nodes, &HashSet::new());
+        assert_eq!(
+            labels(&open),
+            ["a", "  x.rs", "  y.rs", "b/c", "  z.rs", "top.rs"]
+        );
+        assert!(open[0].expanded);
+        assert!(!open[1].expanded, "a file row is never expanded");
+        let closed = visible_rows(&nodes, &HashSet::from(["a/".to_owned()]));
+        assert_eq!(labels(&closed), ["a", "b/c", "  z.rs", "top.rs"]);
+        assert!(!closed[0].expanded);
+    }
+
+    #[test]
+    fn a_file_key_never_closes_a_folder_of_the_same_path() {
+        let entries = [Path("a"), Path("a/x.rs")];
+        let nodes = nodes(&entries, ChangeGrouping::Folders);
+        let rows = visible_rows(&nodes, &HashSet::from(["a".to_owned()]));
+        assert_eq!(labels(&rows), ["a", "  x.rs", "a"]);
+    }
+
+    #[test]
+    fn a_flat_list_is_its_rows() {
+        let entries = [Path("a/x.rs"), Path("b.rs")];
+        let nodes = nodes(&entries, ChangeGrouping::Flat);
+        assert_eq!(
+            labels(&visible_rows(&nodes, &HashSet::new())),
+            ["a/x.rs", "b.rs"]
+        );
+    }
 }
