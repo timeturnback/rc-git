@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"Visit ","style":[],"link":null,"image":false},{"text":"WWW.Example.com","style":[],"link":{"destination":"https://WWW.Example.com","title":null},"image":false},{"text":" today","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://WWW.Example.com","target":{"web":"https://WWW.Example.com"}}
+]
+}

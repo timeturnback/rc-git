@@ -1,0 +1,90 @@
+---
+description: how any future mutating action must be gated, and what rc-git-guard already decides
+paths: crates/rc-git-guard/**
+---
+
+# rc-git-guard
+
+The policy for every mutating action, and — in the `actions` module (`actions.rs` plus
+`actions/`) — the only code in rc-git that performs one. Branch and tag management go through
+here; so does everything that comes later.
+
+- Every entry point calls `authorize` (actions.rs), which runs `Policy::authorize`: the policy
+  evaluates the `Action` itself and returns a `Confirmation` for an `Allow`, through
+  `Challenge::verify` for a `Confirm`, or the refusal. Every write is a method on
+  `actions/write.rs`'s `Writer`, built only by `Writer::new(repo, &confirmation)`, so the type
+  system forces a verified challenge, and the typed phrase only where the policy names one. A
+  confirm with no phrase verifies for any input: its button lives in the front end (the GUI's
+  confirm step, the CLI's `--yes`). `Challenge` and `Confirmation` have fields private to
+  `policy.rs`; nothing else in the crate can build either one.
+- The front end renders decisions; it never classifies an action itself and never offers a
+  one-click path around a challenge. The FFI passes the user's typed input through; the
+  verification lives here.
+- `Deny` is final. Force-pushing, deleting, or rewriting published history on a protected
+  branch is not confirmable inside rc-git; the message tells the user to use git directly.
+- A challenge with `backup_ref` writes a ref under `refs/rc-git/backup/<kind>/<name>` before
+  the action runs. `<name>` escapes `%` as `%25`, `/` as `%2F` and `-` as `%2D`, so no backup
+  nests under another or reads as another name's slot; a repeat takes one past the highest
+  existing slot (`-2`, `-3`, …, read once, not probed), so nothing is overwritten, and a slot
+  of the same name already holding the object is reused. `Writer::write_backup_ref`
+  is that one implementation, gated on `Writer::backup_required`; new destructive actions
+  reuse it.
+- Ref edits go through `Writer::apply_edit` (synthetic `rc-git` committer for the reflog).
+  Object, index, working-tree and reflog writes live beside it on the `Writer`, each behind its
+  own `#[expect(clippy::disallowed_methods, reason = ...)]`; nothing outside the `actions`
+  module writes, and `scripts/check.sh` fails on a write opt-out outside `actions/write.rs`.
+  A new write is a new `Writer` method.
+- Two hard rules live in the write path itself: never delete the checked-out branch, never
+  create over an existing ref (`PreviousValue::MustNotExist`).
+- Anything that moves the working tree to another commit goes through `actions/treeapply.rs`:
+  `plan` the tree diff, `verify_clean` every touched path (a dirty one refuses the whole
+  operation by name, before a byte is written), `apply`, then move the ref *last*. The
+  fast-forward pull and the branch switch are both that sequence; a new one reuses it rather
+  than walking a tree itself.
+- Pull stays fast-forward only: a divergence returns `ActionError::Diverged` and the app hands
+  the user a quoted `git pull --rebase` for the checkout. Settle signing before adding anything
+  that rewrites commits (rebase or merge pull, amend, squash): guard commits carry no signature
+  and the user's signing config sits outside the isolated open
+  (`docs/solutions/architecture-patterns/fast-forward-only-pull-hands-divergence-to-git.md`).
+- A gix ref transaction writes no reflog for a symbolic update — it has no object id to log —
+  and a direct branch edit logs only the branch, so checkout, commit and pull append their
+  line to `logs/HEAD` themselves through `Writer::open_head_reflog` (before the first write)
+  and `Writer::append_head_reflog`, only when the log already exists. Without it
+  `git checkout -` and `HEAD@{1}` would silently point at the wrong commit.
+- Protected patterns default to `main`, `master`, `release/*`, and are fixed: every caller
+  uses `Policy::default()` and no setting changes them yet.
+- Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
+- Every remote entry point takes a `Cancel` and must stay interruptible: no new blocking
+  call without a cancel poll and an idle budget (`CANCEL_POLL`, `IDLE_TIMEOUT` in
+  `actions/remote.rs`). A blocking read with neither is how a sync gets stuck forever.
+  Build a tokio timer inside the `async` block, never as an argument to `block_on`: a
+  `Sleep` needs the runtime context that `block_on` has not entered yet.
+- The policy settles rows ahead of their write paths on purpose ("settled policy waiting for
+  its feature", `docs/safety.md`): force push, remote branch delete, reset --hard, history
+  rewrite and prune each have a `docs/roadmap.md` Planned entry and are tested only in
+  `lib.rs`'s tests. Delete such a variant only with its roadmap entry, together with its
+  `risk` and `Policy::evaluate` arms, its tests and its `docs/safety.md` row.
+- Every rule change updates the table in `docs/safety.md`, the tests in `lib.rs`, and the
+  tests in `tests/actions.rs` together.
+- Remote I/O lives in `actions/remote/` only; the network entry points (`find_remote`,
+  `Remote::connect`, `handshake`, …) are clippy-banned everywhere else. HTTPS and SSH —
+  `vet_remote_url` routes the scheme, allowing plain http for loopback hosts so tests
+  run end to end. The ssh transport (`actions/remote/ssh/`) is in-process russh:
+  `known_hosts` is never written (approvals arrive as `RemoteAuth::accepted_hostkey`),
+  channel streams must drop inside the transport's runtime, and the passphrase rides
+  `Credentials::token`. The key ladder in `ssh/auth.rs` keeps OpenSSH's offer order and
+  honors `IdentitiesOnly`: on GitHub the first accepted key picks the account
+  (`docs/solutions/integration-issues/ssh-auth-offers-wrong-agent-key-ignoring-identitiesonly.md`).
+  On the HTTPS side always install the credential closure; never let gix's helper
+  cascade run (it spawns). Fetch and push take their HTTP options only from `http_options`
+  in `actions/remote.rs`: repo-local `http.*`, `remote.<name>.proxy` and `credential.*`
+  keys are ignored, and a connection left without options would load them from config.
+  `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
+  push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
+  `http-client-insecure-credentials`).
+- Resolve a branch's remote and tracking ref only through `configured_remote_name` and
+  `tracking_ref_name` in `actions/remote.rs`, never gix's `branch_remote*` helpers directly
+  (clippy-banned in `clippy.toml`; those two wrappers carry the only `#[expect]`):
+  those return `None` for a branch with no `[branch]` config and skip the `origin` fallback,
+  so status reads 0/0 while push still works. Test a new remote action on an `untrack`ed
+  clone (`docs/solutions/integration-issues/tracking-ref-skips-origin-fallback-without-branch-merge.md`).

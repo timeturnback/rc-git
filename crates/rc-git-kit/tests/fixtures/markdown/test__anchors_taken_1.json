@@ -1,0 +1,11 @@
+{
+"blocks": [
+{"kind":{"type":"heading","level":1},"runs":[{"text":"Foo","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"heading","level":1},"runs":[{"text":"Foo-1","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"heading","level":1},"runs":[{"text":"Foo","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": ["foo","foo-1","foo-2"],
+"links": [
+
+]
+}

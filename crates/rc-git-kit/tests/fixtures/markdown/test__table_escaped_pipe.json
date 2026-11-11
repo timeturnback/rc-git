@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"table","alignments":["natural","natural"],"header":[[{"text":"a","style":[],"link":null,"image":false}],[{"text":"b","style":[],"link":null,"image":false}]],"rows":[[[{"text":"x | y","style":[],"link":null,"image":false}],[{"text":"z","style":[],"link":null,"image":false}]]]},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+
+]
+}

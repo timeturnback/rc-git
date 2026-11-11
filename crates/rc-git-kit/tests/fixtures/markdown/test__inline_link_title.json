@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"docs","style":[],"link":{"destination":"docs/x.md","title":"Title"},"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"docs/x.md","target":{"repositoryPath":"docs/guide/docs/x.md","fragment":null}}
+]
+}

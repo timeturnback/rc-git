@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"a.b-c+d://x","style":[],"link":{"destination":"a.b-c+d://x","title":null},"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"a.b-c+d://x","target":{"otherScheme":"a.b-c+d://x"}}
+]
+}

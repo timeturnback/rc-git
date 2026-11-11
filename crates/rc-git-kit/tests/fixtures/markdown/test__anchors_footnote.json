@@ -1,0 +1,11 @@
+{
+"blocks": [
+{"kind":{"type":"heading","level":1},"runs":[{"text":"fn-a","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"See","style":[],"link":null,"image":false},{"text":"a","style":["footnoteMarker"],"link":{"destination":"#fn-a","title":null},"image":false},{"text":".","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"footnote","label":"a"},"runs":[{"text":"Note.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": ["fn-a-1"],
+"links": [
+{"destination":"#fn-a","target":{"fragment":"fn-a"}}
+]
+}

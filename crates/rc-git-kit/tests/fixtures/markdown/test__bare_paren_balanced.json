@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"See ","style":[],"link":null,"image":false},{"text":"https://en.wikipedia.org/wiki/Rust_(programming_language)","style":[],"link":{"destination":"https://en.wikipedia.org/wiki/Rust_(programming_language)","title":null},"image":false},{"text":" now","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://en.wikipedia.org/wiki/Rust_(programming_language)","target":{"web":"https://en.wikipedia.org/wiki/Rust_(programming_language)"}}
+]
+}

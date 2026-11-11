@@ -1,0 +1,14 @@
+{
+"blocks": [
+{"kind":{"type":"frontMatter","text":"description: how the highlighter's queries and capture table fit together, and what import links cost\u000apaths: crates/rc-git-highlight/**"},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"heading","level":1},"runs":[{"text":"rc-git-highlight","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"A capture name a query uses must resolve to a ","style":[],"link":null,"image":false},{"text":"CAPTURES","style":["code"],"link":null,"image":false},{"text":" entry, name and class in one row. tree-sitter-highlight lets the last pattern on a node win and emits nothing when that winner is not configured, so a query added without its names strips color from nodes that had it; ","style":[],"link":null,"image":false},{"text":"every_query_capture_name_resolves","style":["code"],"link":null,"image":false},{"text":" fails on it. Strip a capture that is no color from the query instead (","style":[],"link":null,"image":false},{"text":"swift_query","style":["code"],"link":null,"image":false},{"text":" drops ","style":[],"link":null,"image":false},{"text":"@spell","style":["code"],"link":null,"image":false},{"text":"); mapping it to ","style":[],"link":null,"image":false},{"text":"None","style":["code"],"link":null,"image":false},{"text":" still hides the node. ","style":[],"link":null,"image":false},{"text":"tree_sitter_javascript::JSX_HIGHLIGHT_QUERY","style":["code"],"link":null,"image":false},{"text":" needs ","style":[],"link":null,"image":false},{"text":"tag","style":["code"],"link":null,"image":false},{"text":" before it is appended.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":1,"marker":"bullet"},
+{"kind":{"type":"paragraph"},"runs":[{"text":"A query built from two grammars' files puts the one that should win last. TypeScript's goes before JavaScript's (","style":[],"link":null,"image":false},{"text":"typescript_query","style":["code"],"link":null,"image":false},{"text":").","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":1,"marker":"bullet"},
+{"kind":{"type":"paragraph"},"runs":[{"text":"import_links","style":["code"],"link":null,"image":false},{"text":" parses on its own, because ","style":[],"link":null,"image":false},{"text":"Highlighter","style":["code"],"link":null,"image":false},{"text":" keeps its tree. Do not call it from the highlight path or on file open: the app asks on the first pointer move over a file.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":1,"marker":"bullet"},
+{"kind":{"type":"paragraph"},"runs":[{"text":"Links stay byte ranges of the input. A new kind of link adds a range, never a string.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":1,"marker":"bullet"}
+],
+"headingAnchors": ["rc-git-highlight"],
+"links": [
+
+]
+}

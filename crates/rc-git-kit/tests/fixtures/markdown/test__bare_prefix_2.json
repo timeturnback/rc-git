@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"go ","style":[],"link":null,"image":false},{"text":"https://x.com","style":[],"link":{"destination":"https://x.com","title":null},"image":false},{"text":" now","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://x.com","target":{"web":"https://x.com"}}
+]
+}

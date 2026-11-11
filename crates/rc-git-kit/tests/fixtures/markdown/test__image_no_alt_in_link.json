@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"a.png","style":[],"link":{"destination":"https://x","title":null},"image":true}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://x","target":{"web":"https://x"}}
+]
+}

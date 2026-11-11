@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"code","language":null,"text":"```js\u000a[a]: https://example.com"},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"See [a].","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+
+]
+}

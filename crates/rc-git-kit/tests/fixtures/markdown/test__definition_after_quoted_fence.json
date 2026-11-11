@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"code","language":null,"text":"code"},"runs":[],"quoteDepth":1,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"See ","style":[],"link":null,"image":false},{"text":"a","style":[],"link":{"destination":"/real","title":null},"image":false},{"text":".","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"/real","target":{"repositoryPath":"real","fragment":null}}
+]
+}

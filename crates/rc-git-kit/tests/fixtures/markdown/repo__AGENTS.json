@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"heading","level":1},"runs":[{"text":"Agent notes","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"CLAUDE.md","style":["code"],"link":null,"image":false},{"text":" is the entry point for any coding agent working here; area rules live in ","style":[],"link":null,"image":false},{"text":".claude/rules/","style":["code"],"link":null,"image":false},{"text":" and the long-form references in ","style":[],"link":null,"image":false},{"text":"docs/","style":["code"],"link":null,"image":false},{"text":". Run ","style":[],"link":null,"image":false},{"text":"scripts/check.sh","style":["code"],"link":null,"image":false},{"text":" before handing work back.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": ["agent-notes"],
+"links": [
+
+]
+}

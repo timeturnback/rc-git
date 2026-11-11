@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"See","style":[],"link":null,"image":false},{"text":"Note","style":["footnoteMarker"],"link":{"destination":"#fn-note","title":null},"image":false},{"text":".","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"footnote","label":"Note"},"runs":[{"text":"text","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"#fn-note","target":{"fragment":"fn-note"}}
+]
+}

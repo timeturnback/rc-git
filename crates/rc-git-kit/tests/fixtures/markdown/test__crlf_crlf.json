@@ -1,0 +1,13 @@
+{
+"blocks": [
+{"kind":{"type":"frontMatter","text":"module: core"},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"heading","level":3},"runs":[{"text":"Three","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"three\u000afour","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"code","language":"rust","text":"fn main() {}"},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"table","alignments":["natural","natural"],"header":[[{"text":"a","style":[],"link":null,"image":false}],[{"text":"b","style":[],"link":null,"image":false}]],"rows":[[[{"text":"1","style":[],"link":null,"image":false}],[{"text":"2","style":[],"link":null,"image":false}]]]},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": ["three"],
+"links": [
+
+]
+}

@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"a ","style":[],"link":null,"image":false},{"text":"x","style":[],"link":{"destination":"y","title":null},"image":false},{"text":"\u000ab","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"y","target":{"repositoryPath":"docs/guide/y","fragment":null}}
+]
+}

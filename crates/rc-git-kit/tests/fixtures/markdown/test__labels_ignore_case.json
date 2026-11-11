@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"a","style":[],"link":{"destination":"https://example.com","title":null},"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://example.com","target":{"web":"https://example.com"}}
+]
+}

@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"(see ","style":[],"link":null,"image":false},{"text":"https://example.com/x","style":[],"link":{"destination":"https://example.com/x","title":null},"image":false},{"text":")","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"https://example.com/x","target":{"web":"https://example.com/x"}}
+]
+}

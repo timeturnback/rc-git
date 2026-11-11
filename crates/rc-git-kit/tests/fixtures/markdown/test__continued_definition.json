@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"Text [a]: /x","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"paragraph"},"runs":[{"text":"See [a].","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+
+]
+}

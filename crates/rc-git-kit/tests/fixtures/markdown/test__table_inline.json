@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"table","alignments":["natural"],"header":[[{"text":"a","style":[],"link":null,"image":false}]],"rows":[[[{"text":"doc","style":[],"link":{"destination":"x.md","title":null},"image":false}]]]},"runs":[],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"x.md","target":{"repositoryPath":"docs/guide/x.md","fragment":null}}
+]
+}

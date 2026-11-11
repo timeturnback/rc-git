@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"a@b.com","style":[],"link":{"destination":"mailto:a@b.com","title":null},"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"mailto:a@b.com","target":{"web":"mailto:a@b.com"}}
+]
+}

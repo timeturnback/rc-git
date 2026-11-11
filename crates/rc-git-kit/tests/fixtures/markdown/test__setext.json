@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"heading","level":1},"runs":[{"text":"Title","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"heading","level":2},"runs":[{"text":"Other","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": ["title","other"],
+"links": [
+
+]
+}

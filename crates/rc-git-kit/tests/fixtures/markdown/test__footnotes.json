@@ -1,0 +1,10 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"See it","style":[],"link":null,"image":false},{"text":"a","style":["footnoteMarker"],"link":{"destination":"#fn-a","title":null},"image":false},{"text":".","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null},
+{"kind":{"type":"footnote","label":"a"},"runs":[{"text":"Because.","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"#fn-a","target":{"fragment":"fn-a"}}
+]
+}

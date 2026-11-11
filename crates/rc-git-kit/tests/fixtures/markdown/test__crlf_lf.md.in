@@ -1,0 +1,16 @@
+---
+module: core
+---
+
+### Three ###
+
+three  
+four
+
+```rust
+fn main() {}
+```
+
+| a | b |
+|---|---|
+| 1 | 2 |

@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"get ","style":[],"link":null,"image":false},{"text":"s3://bucket/key","style":[],"link":{"destination":"s3://bucket/key","title":null},"image":false},{"text":" now","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"s3://bucket/key","target":{"otherScheme":"s3://bucket/key"}}
+]
+}

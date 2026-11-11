@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"Run ","style":[],"link":null,"image":false},{"text":"make","style":["code"],"link":null,"image":false},{"text":" then read ","style":[],"link":null,"image":false},{"text":"the docs","style":[],"link":{"destination":"docs/a.md","title":null},"image":false},{"text":" next ","style":[],"link":null,"image":false},{"text":"line","style":["emphasis"],"link":null,"image":false},{"text":" end","style":[],"link":null,"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"docs/a.md","target":{"repositoryPath":"docs/guide/docs/a.md","fragment":null}}
+]
+}

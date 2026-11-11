@@ -1,0 +1,9 @@
+{
+"blocks": [
+{"kind":{"type":"paragraph"},"runs":[{"text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa://x","style":[],"link":{"destination":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa://x","title":null},"image":false}],"quoteDepth":0,"listDepth":0,"marker":null}
+],
+"headingAnchors": [],
+"links": [
+{"destination":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa://x","target":{"otherScheme":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa://x"}}
+]
+}
