@@ -2464,9 +2464,18 @@ fn ssh_encrypted_key_requires_a_passphrase_and_opens_with_it() {
         &Cancel::new(),
     )
     .expect_err("encrypted key without passphrase");
-    assert!(
-        matches!(&err, ActionError::PassphraseRequired { .. }),
-        "{err}"
+    let ActionError::PassphraseRequired { key, .. } = &err else {
+        panic!("expected PassphraseRequired, got {err}");
+    };
+    assert_eq!(
+        key,
+        &remoted
+            .ssh_home
+            .path()
+            .join("id_ed25519")
+            .display()
+            .to_string(),
+        "the prompt names the locked key file"
     );
 
     let creds = Credentials {

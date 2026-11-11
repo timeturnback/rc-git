@@ -700,6 +700,55 @@ fn checkout_refuses_a_branch_another_worktree_has_checked_out() {
     assert_eq!(wt_head, "feature");
 }
 
+/// The pure planners the Changes tab and the ref sheets ask before acting. Moved from the
+/// FFI's `guard_plans_carry_the_changes_tab_policy`.
+#[test]
+fn the_planners_carry_the_changes_tab_policy() {
+    use rc_git_guard::actions::{
+        plan_commit, plan_discard, plan_stash_apply, plan_stash_drop, plan_stash_pop,
+        plan_stash_push, plan_tag_delete,
+    };
+    let policy = Policy::default();
+    let confirm = |decision: Decision| match decision {
+        Decision::Confirm(challenge) => challenge,
+        Decision::Allow | Decision::Deny { .. } => panic!("expected Confirm, got {decision:?}"),
+    };
+    assert_eq!(plan_commit(&policy, 2), Decision::Allow);
+    assert_eq!(plan_stash_apply(&policy), Decision::Allow);
+
+    let discard = confirm(plan_discard(&policy, 3));
+    assert_eq!(
+        discard.typed_phrase(),
+        None,
+        "a plain confirm answers a discard"
+    );
+    assert_eq!(discard.risk(), Risk::Destructive);
+
+    let push = confirm(plan_stash_push(&policy, 2));
+    assert_eq!(push.typed_phrase(), None);
+
+    let drop = confirm(plan_stash_drop(&policy, 1, "On main: wip"));
+    assert_eq!(drop.typed_phrase(), Some("drop"));
+    assert!(drop.backup_ref());
+    assert!(
+        drop.summary().contains("stash@{1} \"On main: wip\""),
+        "the challenge names the entry: {}",
+        drop.summary()
+    );
+
+    let pop = confirm(plan_stash_pop(&policy, 0, "On main: wip"));
+    assert!(pop.backup_ref());
+    assert!(
+        pop.summary().contains("stash@{0} \"On main: wip\""),
+        "{}",
+        pop.summary()
+    );
+
+    let tag = confirm(plan_tag_delete(&policy, "v1.0"));
+    assert_eq!(tag.typed_phrase(), Some("v1.0"));
+    assert!(tag.backup_ref());
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

@@ -1658,6 +1658,21 @@ fn search_worktree_files_refuses_a_bare_repository() {
 }
 
 #[test]
+fn search_worktree_files_with_no_byte_budget_reads_nothing() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let query = rc_git_core::ContentQuery::new(b"hello").unwrap();
+    let limits = rc_git_core::SearchLimits {
+        file_limit: DEFAULT_BLOB_LIMIT,
+        max_bytes: 0,
+    };
+    let batch = repo
+        .search_worktree_files(&["README.md"], &query, limits)
+        .unwrap();
+    assert!(batch.is_empty(), "a zero budget reads nothing: {batch:?}");
+}
+
+#[test]
 fn read_limits_clamp_to_the_32_bit_boundary() {
     use rc_git_core::{MAX_READ_LIMIT, clamp_read_limit};
     assert_eq!(MAX_READ_LIMIT, u64::from(u32::MAX));

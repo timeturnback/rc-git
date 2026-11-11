@@ -49,6 +49,20 @@ fn opens_from_work_dir_and_from_git_dir() {
     assert_eq!(from_git.work_dir(), from_work.work_dir());
     assert_eq!(from_git.git_dir(), from_work.git_dir());
     assert!(format!("{from_work:?}").contains(&from_work.git_dir().display().to_string()));
+    assert_eq!(
+        std::fs::canonicalize(from_work.work_dir().unwrap()).unwrap(),
+        std::fs::canonicalize(fx.path()).unwrap(),
+        "the working directory is the checkout itself"
+    );
+}
+
+/// Moved from the FFI's `a_bare_repository_has_no_work_dir`.
+#[test]
+fn a_bare_repository_has_no_work_dir() {
+    let fx = Fixture::standard();
+    let (_bare, bare_path) = fx.bare_copy();
+    let repo = Repository::open(&bare_path).unwrap();
+    assert_eq!(repo.work_dir(), None);
 }
 
 #[test]
@@ -1509,6 +1523,46 @@ fn search_blobs_reports_matching_lines_per_blob_in_order() {
             rc_git_core::FileSearch::Binary,
         ]
     );
+}
+
+#[test]
+fn search_blobs_with_no_byte_budget_reads_nothing() {
+    let fx = Fixture::standard();
+    let repo = Repository::open(fx.path()).unwrap();
+    let root = repo.resolve_tree("main").unwrap();
+    let main_rs = repo
+        .entry_at_path(root, "src/main.rs")
+        .unwrap()
+        .unwrap()
+        .oid;
+    let query = rc_git_core::ContentQuery::new(b"fn").unwrap();
+    let limits = rc_git_core::SearchLimits {
+        file_limit: 4,
+        max_bytes: 0,
+    };
+    assert!(
+        repo.search_blobs(&[main_rs], &query, limits)
+            .unwrap()
+            .is_empty(),
+        "a zero budget reads nothing"
+    );
+}
+
+/// Moved from the FFI's `a_non_utf8_tree_entry_name_crosses_byte_exact`: a name that is not
+/// UTF-8 comes back as its stored bytes, never repaired to U+FFFD.
+#[test]
+fn a_non_utf8_tree_entry_name_is_kept_byte_exact() {
+    let fx = Fixture::standard();
+    let blob = fx.hash_blob(b"raw\n");
+    let mut listing = format!("100644 blob {blob}\t").into_bytes();
+    listing.extend_from_slice(b"f\xffo\n");
+    let tree = fx.mktree(&listing);
+    let repo = Repository::open(fx.path()).unwrap();
+    let entries = repo.tree_entries(repo.resolve(&tree).unwrap()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name.as_bytes(), b"f\xffo");
+    assert_eq!(entries[0].name_lossy(), "f\u{fffd}o");
+    assert_eq!(entries[0].oid.to_hex(), blob);
 }
 
 #[test]
