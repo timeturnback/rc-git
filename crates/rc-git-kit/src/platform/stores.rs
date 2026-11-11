@@ -764,6 +764,23 @@ mod tests {
     }
 
     #[test]
+    fn clearing_forgets_an_identity_saved_only_without_private() {
+        let settings = scratch();
+        let value = stored_identities(&[(
+            "/tmp/repo",
+            &[("name", "Old Me"), ("email", "old@example.com")],
+        )]);
+        settings
+            .set_value(keys::COMMIT_IDENTITIES, Some(value))
+            .unwrap();
+        let store = CommitIdentityStore::new(settings);
+        assert!(store.identity("/private/tmp/repo").is_some());
+        store.clear("/private/tmp/repo").unwrap();
+        assert_eq!(store.identity("/private/tmp/repo"), None);
+        assert!(store.load().entries.is_empty());
+    }
+
+    #[test]
     fn the_legacy_spelling_needs_a_whole_private_component() {
         assert_eq!(legacy_spelling("/private/var/x"), Some("/var/x".to_owned()));
         assert_eq!(legacy_spelling("/private"), None);
