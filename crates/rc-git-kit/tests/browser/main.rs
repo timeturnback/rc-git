@@ -8,5 +8,8 @@
 
 mod diff;
 mod history;
+mod location;
 mod model;
+mod paths;
 mod support;
+mod worktree;
