@@ -399,25 +399,31 @@ async fn a_superseded_highlight_resolves_to_nothing_and_caches_nothing(cx: &mut 
 #[gpui::test]
 async fn a_parse_that_finished_before_the_cancel_is_cached_but_not_shown(cx: &mut TestAppContext) {
     let store = store(cx, DEFAULT_ENTRY_LIMIT, 1_500_000);
-    let pending = store.update(cx, |store, cx| {
-        store.highlights("f.rs", Some(oid(0x71)), &document(PLAIN_A), cx)
-    });
-    // The parse of one line takes microseconds on its own thread; the test thread has not
-    // driven the scheduler, so its result waits to be applied when the cancel lands.
-    std::thread::sleep(Duration::from_millis(500));
-    store.update(cx, |store, _| store.cancel_running());
-    assert_eq!(pending.await, None, "another file opened meanwhile");
-    let cached = spans_of(&store, cx, "f.rs", Some(oid(0x71)), &document(PLAIN_B)).await;
-    assert_eq!(
-        cached.as_deref(),
-        Some(
-            highlight("f.rs", PLAIN_A.as_bytes(), None)
-                .unwrap()
-                .as_slice()
-        ),
-        "the finished parse was cached for the next open"
-    );
-    assert_eq!(parses(&store, cx), 1);
+    let expected = highlight("f.rs", PLAIN_A.as_bytes(), None).unwrap();
+    // The parse runs on its own thread and nothing can gate it from here, so whether it
+    // finishes before the cancel is a race. Each attempt uses a fresh blob; an attempt whose
+    // parse the cancel caught mid-flight caches nothing and is retried. Whatever the timing,
+    // a cancelled parse is never shown.
+    for attempt in 0..50u8 {
+        let blob = oid(0x40 + attempt);
+        let pending = store.update(cx, |store, cx| {
+            store.highlights("f.rs", Some(blob), &document(PLAIN_A), cx)
+        });
+        std::thread::sleep(Duration::from_millis(20 * u64::from(attempt + 1)));
+        store.update(cx, |store, _| store.cancel_running());
+        assert_eq!(pending.await, None, "another file opened meanwhile");
+        let before = parses(&store, cx);
+        let cached = spans_of(&store, cx, "f.rs", Some(blob), &document(PLAIN_B)).await;
+        if parses(&store, cx) == before {
+            assert_eq!(
+                cached.as_deref(),
+                Some(expected.as_slice()),
+                "the finished parse was cached for the next open"
+            );
+            return;
+        }
+    }
+    panic!("no parse finished before its cancel in 50 attempts");
 }
 
 #[gpui::test]
