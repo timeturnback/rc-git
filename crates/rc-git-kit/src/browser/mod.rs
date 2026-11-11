@@ -59,7 +59,7 @@ pub use files::{
     BlobOpen, FileEntry, FileState, OpenPathOutcome, WorktreeFileOpen, rows, state_for,
 };
 pub use paths::DEFAULT_PATH_SEARCH_LIMIT;
-pub use refs::initial_ref;
+pub use refs::{can_open_ref_picker, initial_ref};
 
 /// How many commits one history page fetches.
 pub const HISTORY_PAGE_SIZE: usize = 100;

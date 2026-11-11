@@ -159,6 +159,26 @@ fn initial_ref_falls_back_from_detached_head() {
     );
 }
 
+#[test]
+fn the_ref_picker_opens_on_a_repository_outside_changes_when_closed() {
+    use rc_git_kit::back_forward::ContentMode;
+    use rc_git_kit::browser::can_open_ref_picker;
+    assert!(can_open_ref_picker(true, ContentMode::Files, false));
+    assert!(can_open_ref_picker(true, ContentMode::History, false));
+    assert!(
+        !can_open_ref_picker(true, ContentMode::Changes, false),
+        "Changes always compares with HEAD"
+    );
+    assert!(
+        !can_open_ref_picker(false, ContentMode::Files, false),
+        "no repository"
+    );
+    assert!(
+        !can_open_ref_picker(true, ContentMode::Files, true),
+        "already open"
+    );
+}
+
 #[gpui::test]
 async fn children_are_cached_by_tree_id_across_refs(cx: &mut TestAppContext) {
     let model = model(cx);

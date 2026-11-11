@@ -7,6 +7,7 @@ use gpui::{Context, Task};
 use rc_git_core::{CommitSummary, Head, Oid, RefEntry, RefKind, RefListing};
 
 use super::{BrowserEvent, BrowserModel, FileState, Selection, call, with};
+use crate::back_forward::ContentMode;
 use crate::blocking::blocking;
 use crate::oneshot;
 use crate::repository::{ReadResult, RepositoryReading};
@@ -31,6 +32,14 @@ pub fn initial_ref(listing: &RefListing, head: &Head) -> Option<RefEntry> {
         .find(|entry| entry.kind == RefKind::LocalBranch)
         .or_else(|| listing.refs.first())
         .cloned()
+}
+
+/// Whether the ref picker (⌘B) may open: on a repository, outside Changes, which always
+/// compares the working tree with `HEAD`, and not while it is already open. Ported from
+/// `MainWindowController.canOpenRefPicker`, so the menu and the banner ask one function.
+#[must_use]
+pub fn can_open_ref_picker(has_repository: bool, mode: ContentMode, picker_open: bool) -> bool {
+    has_repository && mode != ContentMode::Changes && !picker_open
 }
 
 fn load_listing(repository: &dyn RepositoryReading) -> ReadResult<(RefListing, Head)> {
