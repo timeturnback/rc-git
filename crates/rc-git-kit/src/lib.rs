@@ -19,6 +19,7 @@ pub mod markdown;
 pub mod menu_shortcuts;
 pub mod natural_sort;
 pub mod path_search;
+pub mod platform;
 pub mod recent_repositories;
 pub mod ref_filter;
 pub mod repo_path;
