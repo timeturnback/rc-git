@@ -280,3 +280,158 @@ fn settings_opens_one_window_and_reuses_it(cx: &mut TestAppContext) {
         "Settings is not a repository tab"
     );
 }
+
+fn selected_ref(window: &Entity<RepoWindow>, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        let model = window.read(cx).model().read(cx);
+        model.selected_ref().map(|entry| entry.short_name.clone())
+    })
+}
+
+/// Opens the ⌘B picker on `/repo/a` (rows: `# Branches`, feature, main, `# Tags`, v1).
+fn open_picker(
+    cx: &mut TestAppContext,
+) -> (
+    Entity<RepoWindow>,
+    Entity<crate::sidebar::refs::RefListView>,
+    Tab,
+) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    let window = open_settled(&harness, cx, "/repo/a");
+    let tab = front(&harness, cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.update(|window_ref, cx| {
+        window.update(cx, |view, cx| view.choose_ref(window_ref, cx));
+    });
+    let picker = cx.read(|cx| window.read(cx).picker().cloned());
+    let picker = picker.unwrap_or_else(|| panic!("⌘B opens the picker in Files"));
+    (window, picker, tab)
+}
+
+#[gpui::test]
+fn the_picker_arrows_step_over_headers_and_return_picks(cx: &mut TestAppContext) {
+    let (window, picker, tab) = open_picker(cx);
+    assert_eq!(
+        cx.read(|cx| picker.read(cx).highlight()),
+        Some(2),
+        "the browsed ref starts highlighted"
+    );
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.simulate_keystrokes("down");
+    assert_eq!(
+        cx.read(|cx| picker.read(cx).highlight()),
+        Some(4),
+        "over # Tags"
+    );
+    visual.simulate_keystrokes("down");
+    assert_eq!(
+        cx.read(|cx| picker.read(cx).highlight()),
+        Some(4),
+        "the last row holds"
+    );
+    assert_eq!(
+        selected_ref(&window, cx).as_deref(),
+        Some("main"),
+        "arrows only highlight"
+    );
+    visual.simulate_keystrokes("enter");
+    wait_until(cx, |cx| selected_ref(&window, cx).as_deref() == Some("v1"));
+    assert!(cx.read(|cx| window.read(cx).picker().is_none()));
+}
+
+#[gpui::test]
+fn a_filter_highlights_its_best_match_for_return(cx: &mut TestAppContext) {
+    let (window, picker, tab) = open_picker(cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.simulate_input("feat");
+    assert_eq!(cx.read(|cx| picker.read(cx).highlight()), Some(1));
+    visual.simulate_keystrokes("enter");
+    wait_until(cx, |cx| {
+        selected_ref(&window, cx).as_deref() == Some("feature")
+    });
+}
+
+#[gpui::test]
+fn return_on_the_browsed_ref_closes_the_picker_with_nothing_to_load(cx: &mut TestAppContext) {
+    let (window, _picker, tab) = open_picker(cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.simulate_keystrokes("enter");
+    assert!(cx.read(|cx| window.read(cx).picker().is_none()));
+    assert_eq!(selected_ref(&window, cx).as_deref(), Some("main"));
+}
+
+#[gpui::test]
+fn the_sidebar_arrows_browse_as_they_move(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    let window = open_settled(&harness, cx, "/repo/a");
+    let tab = front(&harness, cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.update(|window_ref, cx| {
+        window.update(cx, |view, cx| {
+            view.switch_mode(ContentMode::History, cx);
+            view.choose_ref(window_ref, cx);
+        });
+    });
+    visual.simulate_keystrokes("up");
+    wait_until(cx, |cx| {
+        selected_ref(&window, cx).as_deref() == Some("feature")
+    });
+}
+
+fn tree_selection(window: &Entity<RepoWindow>, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        let tree = window.read(cx).sidebar().read(cx).tree().clone();
+        let state = tree.read(cx).tree_state().clone();
+        state
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.to_string())
+    })
+}
+
+#[gpui::test]
+fn the_tree_selection_follows_a_file_opened_elsewhere(cx: &mut TestAppContext) {
+    let fake = repo();
+    let harness = harness(cx, &[("/repo/a", fake.clone())]);
+    let window = open_settled(&harness, cx, "/repo/a");
+    let model = cx.read(|cx| window.read(cx).model().clone());
+    let reads = fake.state().read_blob_calls;
+    model
+        .update(cx, |model, cx| model.open_path("README.md", None, cx))
+        .detach();
+    wait_until(cx, |cx| tree_selection(&window, cx).as_deref() == Some("2"));
+    cx.run_until_parked();
+    assert_eq!(
+        fake.state().read_blob_calls,
+        reads + 1,
+        "selecting the row opened nothing again"
+    );
+    model
+        .update(cx, |model, cx| model.open_path("src/main.rs", None, cx))
+        .detach();
+    wait_until(cx, |cx| {
+        opened(&window, cx).as_deref() == Some("src/main.rs")
+    });
+    assert_eq!(
+        tree_selection(&window, cx),
+        None,
+        "a file inside a collapsed folder has no row to select"
+    );
+}
+
+#[gpui::test]
+fn the_tree_menu_copies_a_path_and_shows_its_history(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    let window = open_settled(&harness, cx, "/repo/a");
+    let tree = cx.read(|cx| window.read(cx).sidebar().read(cx).tree().clone());
+    tree.update(cx, |tree, cx| tree.copy_path("2", cx));
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some("README.md"));
+    tree.update(cx, |tree, cx| tree.show_history("1", cx));
+    assert_eq!(cx.read(|cx| window.read(cx).mode()), ContentMode::History);
+    let scope = cx.read(|cx| window.read(cx).model().read(cx).history_scope().clone());
+    assert_eq!(
+        scope,
+        rc_git_kit::back_forward::HistoryScope::Path("src".to_owned())
+    );
+}

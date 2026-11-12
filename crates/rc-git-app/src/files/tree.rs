@@ -6,15 +6,16 @@
 use std::rc::Rc;
 
 use gpui::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div,
+    AppContext, ClipboardItem, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window, div,
 };
 use gpui_component::list::ListItem;
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::tree::{TreeEvent, TreeItem, TreeState, tree};
 use gpui_component::{ActiveTheme, Icon};
 use rc_git_core::{EntryKind, TreeEntry};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel};
-use rc_git_kit::file_tree::{ChildLoad, FileTree, ViewKind, ViewNode};
+use rc_git_kit::file_tree::{ChildLoad, FileTree, SelectionFollow, ViewKind, ViewNode};
 use rc_git_kit::models::BrowseRow;
 use rc_git_kit::repository::ReadResult;
 
@@ -26,6 +27,18 @@ use crate::style;
 struct RowLook {
     glyph: Option<Glyph>,
     dimmed: bool,
+}
+
+/// What a row's context menu asks of the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeAction {
+    /// Show File History: scope History to this path.
+    ShowHistory {
+        /// The node's repository path.
+        path: String,
+        /// Whether that path names this node alone.
+        path_is_exact: bool,
+    },
 }
 
 /// The Files tree of one window.
@@ -44,6 +57,8 @@ pub struct FileTreeView {
     _subscriptions: Vec<Subscription>,
 }
 
+impl EventEmitter<TreeAction> for FileTreeView {}
+
 impl FileTreeView {
     /// A tree following `model`'s root.
     pub fn new(model: Entity<BrowserModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -52,6 +67,9 @@ impl FileTreeView {
             cx.subscribe_in(&model, window, |this, _, event: &BrowserEvent, _, cx| {
                 if *event == BrowserEvent::RootChanged {
                     this.load_root(cx);
+                }
+                if *event == BrowserEvent::FileChanged {
+                    this.follow_open_file(cx);
                 }
             }),
             cx.observe(&model, |this, model, cx| {
@@ -208,6 +226,73 @@ impl FileTreeView {
         cx.notify();
     }
 
+    /// Moves the selection to the file the pane opened some other way (a link, a search pick,
+    /// a step back), or off a file row it no longer names, by [`FileTree::follow_open_file`].
+    /// The row it selects is marked open, so selecting it opens nothing again.
+    fn follow_open_file(&mut self, cx: &mut Context<Self>) {
+        let (path, exact) = {
+            let model = self.model.read(cx);
+            (
+                model.opened_file_path().map(str::to_owned),
+                model.opened_path_is_exact(),
+            )
+        };
+        let selected = self
+            .state
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.to_string());
+        let follow = {
+            let model = self.model.read(cx);
+            self.tree.follow_open_file(
+                selected.as_deref(),
+                path.as_deref(),
+                exact,
+                &|row: &BrowseRow| model.is_visible(row),
+            )
+        };
+        match follow {
+            SelectionFollow::Keep => {}
+            SelectionFollow::Select(id) => {
+                let id = SharedString::from(id);
+                self.opened = Some(id.clone());
+                self.state.update(cx, |state, cx| {
+                    let index = state.index_of(&id);
+                    state.set_selected_index(index, cx);
+                });
+            }
+            SelectionFollow::Clear => {
+                self.opened = None;
+                self.state
+                    .update(cx, |state, cx| state.set_selected_index(None, cx));
+            }
+        }
+    }
+
+    /// Copy Path: the node's repository path, once the model allows it (an inexact one is
+    /// refused there).
+    pub fn copy_path(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(info) = self.tree.info(id) else {
+            return;
+        };
+        let text = self.model.update(cx, |model, cx| {
+            model.copyable_path(&info.path, info.path_is_exact, cx)
+        });
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Show File History: hands the node's path to the window, which scopes History to it.
+    pub fn show_history(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(info) = self.tree.info(id) {
+            cx.emit(TreeAction::ShowHistory {
+                path: info.path,
+                path_is_exact: info.path_is_exact,
+            });
+        }
+    }
+
     /// Opens the selected row when it is a file and not the one already open.
     fn selection_changed(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self
@@ -234,6 +319,26 @@ impl FileTreeView {
             })
             .detach();
     }
+}
+
+/// A row's context menu (`TreeViewController.buildMenu`): Show File History and Copy Path.
+/// A placeholder row (`id` ending in `/-`) gets none.
+fn row_menu(popup: PopupMenu, weak: &WeakEntity<FileTreeView>, id: &str) -> PopupMenu {
+    if id.ends_with("/-") {
+        return popup;
+    }
+    let (history, copy) = ((weak.clone(), id.to_owned()), (weak.clone(), id.to_owned()));
+    popup
+        .item(
+            PopupMenuItem::new("Show File History").on_click(move |_, _, cx| {
+                let (weak, id) = &history;
+                weak.update(cx, |this, cx| this.show_history(id, cx)).ok();
+            }),
+        )
+        .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
+            let (weak, id) = &copy;
+            weak.update(cx, |this, cx| this.copy_path(id, cx)).ok();
+        }))
 }
 
 fn items(
@@ -295,6 +400,7 @@ impl Render for FileTreeView {
                 .into_any_element();
         }
         let looks = Rc::clone(&self.looks);
+        let weak = cx.weak_entity();
         tree(&self.state, move |index, entry, _selected, _window, _cx| {
             let id = entry.item().id.to_string();
             let look = looks.get(&id).copied().unwrap_or(RowLook {
@@ -332,9 +438,12 @@ impl Render for FileTreeView {
                         .text_color(tint),
                 );
             }
-            ListItem::new(index)
-                .px(style::MARGIN)
-                .child(row.child(entry.item().label.clone()))
+            let menu = (weak.clone(), entry.item().id.to_string());
+            ListItem::new(index).px(style::MARGIN).child(
+                row.id(("tree-row", index))
+                    .child(entry.item().label.clone())
+                    .context_menu(move |popup, _, _| row_menu(popup, &menu.0, &menu.1)),
+            )
         })
         .size_full()
         .into_any_element()

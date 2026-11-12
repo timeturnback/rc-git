@@ -11,6 +11,7 @@ pub mod panels;
 mod ref_actions;
 mod sync;
 mod toolbar;
+mod tree_actions;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -171,6 +172,12 @@ impl RepoWindow {
                 this.visibility = visibility;
                 this.sync_changes_visibility(cx);
             }),
+            cx.subscribe(
+                &tree,
+                |this, _, action: &crate::files::tree::TreeAction, cx| {
+                    this.tree_action(action, cx);
+                },
+            ),
         ];
         Self {
             model,
@@ -459,6 +466,7 @@ impl RepoWindow {
             self.layout.toggle_by_user();
         }
         let picker = cx.new(|cx| RefListView::new(self.model.clone(), window, cx));
+        picker.update(cx, RefListView::set_picker);
         self.picker_events = Some(cx.subscribe(&picker, |this, _, event: &RefListEvent, cx| {
             this.picked(event, cx);
         }));

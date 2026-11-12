@@ -8,18 +8,20 @@ use std::ops::Range;
 use gpui::MouseButton;
 use gpui::{
     AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, uniform_list,
+    IntoElement, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, Sizable};
 use rc_git_core::{BrokenRef, RefEntry};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel};
-use rc_git_kit::ref_filter::{RefList, UNREADABLE_TITLE, working_tree_matches};
+use rc_git_kit::picker;
+use rc_git_kit::ref_filter::{RefList, UNREADABLE_TITLE, query, working_tree_matches};
 use rc_git_kit::ref_menu::{RefMenu, RefMenuAction, ref_menu};
 
 use crate::icons::{Glyph, icon, is_accented};
+use crate::search::{PanelKey, keys};
 use crate::style;
 
 /// The label of the Working Tree row; also what its filter matches.
@@ -54,6 +56,12 @@ pub struct RefListView {
     rows: Vec<Row>,
     /// The ref the context menu was opened on.
     menu_target: Option<RefEntry>,
+    /// The row the arrows moved to: in the picker it only highlights, and Return picks it; in
+    /// the sidebar it is the row browsed.
+    highlight: Option<usize>,
+    /// Whether this list is the ⌘B picker rather than the History sidebar.
+    picker: bool,
+    scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -75,21 +83,20 @@ impl RefListView {
                     this.reload(cx);
                 }
             }),
-            cx.subscribe_in(
-                &filter,
-                window,
-                |this, _, event: &InputEvent, _, cx| match event {
-                    InputEvent::Change => this.reload(cx),
-                    InputEvent::PressEnter { .. } => this.pick_best(cx),
-                    InputEvent::Focus | InputEvent::Blur => {}
-                },
-            ),
+            cx.subscribe_in(&filter, window, |this, _, event: &InputEvent, _, cx| {
+                if let InputEvent::Change = event {
+                    this.reload(cx);
+                }
+            }),
         ];
         let mut view = Self {
             model,
             filter,
             rows: Vec::new(),
             menu_target: None,
+            highlight: None,
+            picker: false,
+            scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
         view.reload(cx);
@@ -140,11 +147,108 @@ impl RefListView {
             rows.extend(unreadable.into_iter().map(Row::Unreadable));
         }
         self.rows = rows;
+        self.highlight = self.initial_highlight(&list, &filter, cx);
+        if let Some(row) = self.highlight {
+            self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
+        }
         cx.notify();
     }
 
-    /// Return in the filter: the best match by [`RefList::best_match`], else the Working Tree
-    /// row when it is the only one left.
+    /// Makes this list the ⌘B picker: the arrows only highlight, Return picks the highlighted
+    /// row, and Escape closes it.
+    pub fn set_picker(&mut self, cx: &mut Context<Self>) {
+        self.picker = true;
+        self.reload(cx);
+    }
+
+    /// The highlighted row.
+    #[cfg(test)]
+    pub(crate) fn highlight(&self) -> Option<usize> {
+        self.highlight
+    }
+
+    /// Where the highlight starts: in the picker with a filter typed, the best match, or the
+    /// Working Tree row when only it matches; otherwise the row browsed now.
+    fn initial_highlight(&self, list: &RefList, filter: &str, cx: &Context<Self>) -> Option<usize> {
+        if self.picker && query(filter).is_some() {
+            let best = list.best_match(filter).and_then(|entry| {
+                self.rows.iter().position(
+                    |row| matches!(row, Row::Ref(found) if found.full_name == entry.full_name),
+                )
+            });
+            return best.or_else(|| self.rows.iter().position(|row| *row == Row::WorkingTree));
+        }
+        self.rows.iter().position(|row| self.is_current(row, cx))
+    }
+
+    fn is_pickable(&self, index: usize) -> bool {
+        match self.rows.get(index) {
+            Some(Row::WorkingTree | Row::Ref(_)) => true,
+            Some(Row::Header(_) | Row::Unreadable(_)) | None => false,
+        }
+    }
+
+    /// The arrows, Return and Escape from the filter.
+    fn key(&mut self, key: PanelKey, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            PanelKey::Up | PanelKey::Down => {
+                let step = if key == PanelKey::Up { -1 } else { 1 };
+                let next = picker::next_pickable(self.highlight, step, self.rows.len(), |row| {
+                    self.is_pickable(row)
+                });
+                let Some(row) = next else {
+                    return;
+                };
+                self.highlight = Some(row);
+                self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
+                if !self.picker {
+                    self.pick(row, cx);
+                }
+                cx.notify();
+            }
+            PanelKey::Enter if self.picker => {
+                let filtered = query(&self.filter.read(cx).value()).is_some();
+                let first = (0..self.rows.len()).find(|row| self.is_pickable(*row));
+                if let Some(row) = picker::ref_picker_return(self.highlight, filtered, first) {
+                    self.pick_or_close(row, cx);
+                }
+            }
+            PanelKey::Enter => self.pick_best(cx),
+            PanelKey::Escape if self.picker => cx.emit(RefListEvent::Dismissed),
+            PanelKey::Escape => {
+                self.filter
+                    .update(cx, |filter, cx| filter.set_value("", window, cx));
+                self.reload(cx);
+            }
+        }
+    }
+
+    fn clicked(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.highlight = Some(index);
+        if self.picker {
+            self.pick_or_close(index, cx);
+        } else {
+            self.pick(index, cx);
+        }
+        cx.notify();
+    }
+
+    /// The picker's pick: the row browsed now closes it with nothing to reload, so the tree
+    /// keeps its expanded folders.
+    fn pick_or_close(&mut self, index: usize, cx: &mut Context<Self>) {
+        let current = self
+            .rows
+            .get(index)
+            .is_some_and(|row| self.is_current(row, cx));
+        if current {
+            cx.emit(RefListEvent::Dismissed);
+        } else {
+            self.pick(index, cx);
+        }
+    }
+
+    /// Return in the sidebar's filter: the best match by [`RefList::best_match`], else the
+    /// Working Tree row when it is the only one left.
     fn pick_best(&mut self, cx: &mut Context<Self>) {
         let filter = self.filter.read(cx).value().to_string();
         let list = RefList::new(self.model.read(cx).refs().clone());
@@ -173,6 +277,9 @@ impl RefListView {
         let theme = cx.theme();
         let row = self.rows.get(index).cloned();
         let current = row.as_ref().is_some_and(|row| self.is_current(row, cx));
+        let lit = self
+            .highlight
+            .map_or(current, |highlight| highlight == index);
         let (glyph, label, heading): (Option<Glyph>, String, bool) = match row {
             Some(Row::WorkingTree) => (Some(Glyph::WorkingTree), WORKING_TREE.to_owned(), false),
             Some(Row::Header(title)) => (None, title.to_owned(), true),
@@ -197,7 +304,7 @@ impl RefListView {
                 .text_size(style::TEXT_BODY)
                 .text_color(theme.foreground)
                 .hover(|style| style.bg(theme.list_hover))
-                .on_click(cx.listener(move |this, _, _, cx| this.pick(index, cx)));
+                .on_click(cx.listener(move |this, _, _, cx| this.clicked(index, cx)));
             element = element.on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _, _, _| {
@@ -208,7 +315,7 @@ impl RefListView {
                 }),
             );
         }
-        if current {
+        if lit {
             element = element.bg(theme.list_active);
         }
         if let Some(glyph) = glyph {
@@ -229,18 +336,13 @@ impl RefListView {
 
 impl Render for RefListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let root = div()
             .id("ref-list")
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.menu_target = None))
             .size_full()
             .flex()
             .flex_col()
             .gap(style::ROW_GAP)
-            .capture_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    cx.emit(RefListEvent::Dismissed);
-                }
-            }))
             .child(
                 div()
                     .px(style::MARGIN)
@@ -259,17 +361,18 @@ impl Render for RefListView {
                         rows
                     }),
                 )
+                .track_scroll(&self.scroll)
                 .flex_1(),
-            )
-            .context_menu({
-                let weak = cx.entity().downgrade();
-                move |menu, _, cx| {
-                    let target = weak
-                        .upgrade()
-                        .and_then(|list| list.read(cx).menu_target.clone());
-                    ref_context_menu(menu, target, &weak)
-                }
-            })
+            );
+        keys(root, cx, Self::key).context_menu({
+            let weak = cx.entity().downgrade();
+            move |menu, _, cx| {
+                let target = weak
+                    .upgrade()
+                    .and_then(|list| list.read(cx).menu_target.clone());
+                ref_context_menu(menu, target, &weak)
+            }
+        })
     }
 }
 

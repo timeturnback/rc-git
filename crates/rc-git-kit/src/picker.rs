@@ -49,8 +49,29 @@ pub fn kept_highlight(previous: Option<usize>, count: usize) -> Option<usize> {
     }
 }
 
+/// The row Return picks in the ref picker: the highlighted one, else the first pickable row
+/// when no filter is typed. A filter that highlights nothing matched nothing, so Return picks
+/// nothing.
+#[must_use]
+pub fn ref_picker_return(
+    highlight: Option<usize>,
+    filtered: bool,
+    first_pickable: Option<usize>,
+) -> Option<usize> {
+    highlight.or(if filtered { None } else { first_pickable })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ref_picker_return_takes_the_highlight_or_the_first_row_unfiltered() {
+        assert_eq!(super::ref_picker_return(Some(3), true, Some(1)), Some(3));
+        assert_eq!(super::ref_picker_return(Some(3), false, Some(1)), Some(3));
+        assert_eq!(super::ref_picker_return(None, false, Some(1)), Some(1));
+        assert_eq!(super::ref_picker_return(None, true, Some(1)), None);
+        assert_eq!(super::ref_picker_return(None, false, None), None);
+    }
+
     use super::*;
 
     #[test]
