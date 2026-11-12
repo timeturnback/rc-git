@@ -308,7 +308,8 @@ impl Repository {
     }
 
     /// Reads one working-tree file for display, with the same size cap (clamped to
-    /// [`crate::MAX_READ_LIMIT`]) and binary probe as [`Repository::read_blob`]. A symlink yields its target as text.
+    /// [`crate::MAX_READ_LIMIT`]) and binary probe as [`Repository::read_blob`]. A symlink
+    /// yields its target as text.
     ///
     /// # Errors
     /// [`Error::Worktree`] for a bare repository, a missing file, a directory, a FIFO, socket

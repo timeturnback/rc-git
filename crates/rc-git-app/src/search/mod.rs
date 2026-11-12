@@ -104,7 +104,8 @@ pub fn overlay(panel: impl IntoElement) -> AnyElement {
     .into_any_element()
 }
 
-/// One result row: an icon, the name, and a dimmed detail (`(name, detail)`), highlighted when it is the pick.
+/// One result row: an icon, the name, and a dimmed detail (`(name, detail)`), highlighted
+/// when it is the pick.
 pub fn row(
     id: impl Into<ElementId>,
     glyph: Option<Glyph>,
