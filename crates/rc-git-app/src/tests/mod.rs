@@ -11,4 +11,6 @@ mod panels;
 mod panels_ink;
 mod shell;
 mod support;
+mod update;
+mod update_ink;
 mod viewer;

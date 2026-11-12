@@ -77,7 +77,8 @@ impl SidebarLayout {
     }
 
     /// Applies the layout for the window's new size: a window too narrow for the sidebar
-    /// collapses it, and widening re-opens only a sidebar the policy closed. Saves the frame.
+    /// collapses it, and widening re-opens only a sidebar the policy closed. Saves the frame,
+    /// except in full screen and after the tabs were handed to a relaunching build.
     pub fn window_resized(&mut self, window: &Window, cx: &App) {
         let size = window.viewport_size();
         self.window = Size {
@@ -90,7 +91,8 @@ impl SidebarLayout {
             self.save_split();
         }
         self.current = Some(next);
-        if !window.is_fullscreen() {
+        // Once the tabs went to a relaunching build, the frame is that build's to write too.
+        if !window.is_fullscreen() && !crate::app::SessionGlobal::handed_off(cx) {
             save_frame(&*self.settings, window, cx);
         }
     }

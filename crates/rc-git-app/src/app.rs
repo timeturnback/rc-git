@@ -2,7 +2,7 @@
 //! [`Shell::open`]; it owns the windows, the saved tabs and their restore, the recents, the
 //! ⇧⌘T stack, the app-wide hidden-files setting and the one back/forward [`Navigator`].
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
@@ -32,8 +32,10 @@ use rc_git_kit::tab_routing::{Route, TabIdentity, by_path, route};
 use rc_git_kit::tabs::{
     ClosedTabs, OpenTabs, directory_exists, restored_paths, restored_selection,
 };
+use rc_git_kit::update::UpdateModel;
 use rc_git_kit::window_geometry::{DEFAULT_HEIGHT, DEFAULT_WIDTH, restorable};
 use rc_git_mac::TabSession;
+use rc_git_mac::update::{LiveTabs, UpdateHooks};
 
 use crate::log;
 use crate::menus::MenuState;
@@ -145,15 +147,40 @@ pub struct ShellGlobal(pub Entity<Shell>);
 
 impl Global for ShellGlobal {}
 
+/// The open-tab session, as a global, so a window can tell it was handed to a relaunching
+/// build and stop saving its frame too.
+pub struct SessionGlobal(pub Rc<RefCell<TabSession>>);
+
+impl Global for SessionGlobal {}
+
+impl SessionGlobal {
+    /// Whether the tabs went to a relaunching build, after which this process saves no state
+    /// the new one reads. `false` without a shell.
+    #[must_use]
+    pub fn handed_off(cx: &App) -> bool {
+        cx.try_global::<Self>().is_some_and(|session| {
+            session
+                .0
+                .try_borrow()
+                .is_ok_and(|session| session.is_handed_off())
+        })
+    }
+}
+
 /// The app shell. See the module documentation.
 pub struct Shell {
     services: Services,
-    tabs: TabSession,
+    tabs: Rc<RefCell<TabSession>>,
+    /// The self-update, once its window was first asked for.
+    updater: Option<crate::update::Updater>,
     recents: RecentRepositories,
     hidden: HiddenFilesPreference,
     closed: ClosedTabs,
     navigator: Navigator<WindowId>,
     windows: Vec<Tab>,
+    /// The tab that last became the active window: the selected tab while a window that is
+    /// not a tab (update, Settings, blame) is in front.
+    last_front: Option<WindowId>,
     /// Set while ⇧⌘W closes a window group and once the app is quitting: tabs closed then
     /// stay in the saved list. A tab closed on its own leaves it.
     keeping_closed_tabs: bool,
@@ -175,13 +202,17 @@ impl Shell {
             this.save_tabs(None, cx);
             async {}
         });
+        let tabs = Rc::new(RefCell::new(TabSession::new(Arc::clone(&settings))));
+        cx.set_global(SessionGlobal(Rc::clone(&tabs)));
         Self {
-            tabs: TabSession::new(Arc::clone(&settings)),
+            tabs,
+            updater: None,
             recents: RecentRepositories::new(Arc::clone(&settings)),
             hidden: HiddenFilesPreference::new(settings),
             closed: ClosedTabs::new(),
             navigator: Navigator::new(),
             windows: Vec::new(),
+            last_front: None,
             keeping_closed_tabs: false,
             launching: true,
             launch_document: None,
@@ -215,6 +246,7 @@ impl Shell {
             mode: front.map_or(ContentMode::Files, |tab| tab.view.read(cx).mode()),
             default_branch: front.and_then(|tab| tab.view.read(cx).default_branch(cx)),
             sync_titles: front.map(|tab| tab.view.read(cx).sync_titles(cx)),
+            update_mode: crate::update::BuildInfo::update_mode(cx),
         }
     }
 
@@ -450,6 +482,7 @@ impl Shell {
                 }
                 WindowEvent::MenusStale => this.rebuild_menus(cx),
                 WindowEvent::BecameFront => {
+                    this.last_front = Some(id);
                     let stop = view.read(cx).current_stop(cx);
                     if this.navigator.tab_came_to_front(&id, stop) {
                         this.render_navigation(cx);
@@ -662,6 +695,54 @@ impl Shell {
         }
     }
 
+    /// Rebuild and Relaunch… or Update rc-git…: brings the update window forward, opening it
+    /// (and the update model, on first use) when needed. Answers the model, or `None` for a
+    /// build that cannot update itself, which has no handler to reach this.
+    pub fn show_update(&mut self, cx: &mut Context<Self>) -> Option<Entity<UpdateModel>> {
+        let build = crate::update::BuildInfo::updatable(cx)?;
+        if self.updater.is_none() {
+            let window = crate::update::WindowSlot::default();
+            let hooks = self.update_hooks(Rc::clone(&window), cx);
+            self.updater = crate::update::Updater::new(build, hooks, window, cx);
+        }
+        let updater = self.updater.as_ref()?;
+        updater.show(cx);
+        Some(updater.model())
+    }
+
+    /// Rebuild Now (⌥⌘R): opens the update window and starts without waiting for its button,
+    /// as its shortcut does. A failure stops in the window, with the log.
+    pub fn rebuild_now(&mut self, cx: &mut Context<Self>) {
+        if let Some(model) = self.show_update(cx) {
+            model.update(cx, UpdateModel::proceed).detach();
+        }
+    }
+
+    /// The self-update, once its window was first asked for.
+    #[cfg(test)]
+    pub(crate) fn updater(&self) -> Option<&crate::update::Updater> {
+        self.updater.as_ref()
+    }
+
+    pub(crate) fn update_hooks(
+        &self,
+        window: crate::update::WindowSlot,
+        cx: &mut Context<Self>,
+    ) -> UpdateHooks {
+        let shell = cx.entity().downgrade();
+        let live_tabs: LiveTabs = Rc::new(move |cx: &App| {
+            shell
+                .upgrade()
+                .map(|shell| shell.read(cx).tab_state(cx))
+                .unwrap_or_default()
+        });
+        UpdateHooks {
+            tabs: self.tab_session(),
+            live_tabs,
+            sync: crate::update::sync_runner(&self.services, window),
+        }
+    }
+
     /// Empties Open Recent.
     pub fn clear_recents(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.recents.clear() {
@@ -674,8 +755,14 @@ impl Shell {
     /// the launch document's. Falls back to one empty tab. A repository that no longer opens
     /// is logged, dropped or kept by [`restored_paths`], and named in a notice.
     pub fn restore_tabs(&mut self, cx: &mut Context<Self>) {
-        let saved = self.tabs.tabs().paths();
-        let saved_selection = i64::try_from(self.tabs.tabs().selected_index()).unwrap_or(0);
+        let (saved, saved_selection) = {
+            let session = self.tabs.borrow();
+            let tabs = session.tabs();
+            (
+                tabs.paths(),
+                i64::try_from(tabs.selected_index()).unwrap_or(0),
+            )
+        };
         let mut failed = Vec::new();
         for path in &saved {
             if let Err(error) = self.open_tab(path, cx) {
@@ -728,7 +815,7 @@ impl Shell {
     /// Replaces the saved list: only the launch restore writes this way, to drop a
     /// repository that no longer opens.
     fn save_selected(&self, kept: &[String], selected: usize) {
-        if self.tabs.is_handed_off() {
+        if self.tabs.borrow().is_handed_off() {
             return;
         }
         let store = SettingsTabStore::new(Arc::clone(&self.services.settings));
@@ -736,10 +823,17 @@ impl Shell {
     }
 
     /// Records the open repositories in on-screen tab order plus the selected tab. `dropping`
-    /// names the repository of a tab closed with ⌘W, the one close that removes it.
+    /// names the repository of a tab closed with ⌘W, the one close that removes it. Writes
+    /// nothing once the tabs went to a relaunching build ([`TabSession::record`]).
     pub fn save_tabs(&mut self, dropping: Option<&str>, cx: &App) {
         let (live, selected) = self.tab_state(cx);
-        self.tabs.record(&live, selected, dropping);
+        self.tabs.borrow_mut().record(&live, selected, dropping);
+    }
+
+    /// The open-tab session the updater hands off and reclaims, shared with this shell.
+    #[must_use]
+    pub fn tab_session(&self) -> Rc<RefCell<TabSession>> {
+        Rc::clone(&self.tabs)
     }
 
     /// The repositories in tab order and the selected tab's index among them.
@@ -762,7 +856,7 @@ impl Shell {
                 ordered.push(tab);
             }
         }
-        let active = cx.active_window().map(|window| window.window_id());
+        let active = self.front_tab_id(cx);
         let mut paths = Vec::new();
         let mut selected = 0;
         for tab in ordered {
@@ -775,6 +869,14 @@ impl Shell {
             paths.push(shown.path.clone());
         }
         (paths, selected)
+    }
+
+    /// The tab in front: the active window when it is a tab, otherwise the tab that was last
+    /// active, so the update or Settings window being key does not move the saved selection.
+    fn front_tab_id(&self, cx: &App) -> Option<WindowId> {
+        let is_tab = |id: &WindowId| self.windows.iter().any(|tab| tab.id() == *id);
+        let active = cx.active_window().map(|window| window.window_id());
+        active.filter(is_tab).or(self.last_front.filter(is_tab))
     }
 }
 

@@ -174,3 +174,17 @@ pub const SETTINGS_WIDTH: Pixels = px(560.);
 pub const SETTINGS_HEIGHT: Pixels = px(320.);
 /// The Settings host column's width.
 pub const SETTINGS_HOST_WIDTH: Pixels = px(180.);
+/// The update window's size when it first opens (`UpdateWindowController`).
+pub const UPDATE_WIDTH: Pixels = px(620.);
+/// See [`UPDATE_WIDTH`].
+pub const UPDATE_HEIGHT: Pixels = px(440.);
+/// The smallest the update window gets.
+pub const UPDATE_MIN_WIDTH: Pixels = px(460.);
+/// See [`UPDATE_MIN_WIDTH`].
+pub const UPDATE_MIN_HEIGHT: Pixels = px(320.);
+/// The update log's floor, so the header and footer never squeeze it shut.
+pub const UPDATE_LOG_MIN_HEIGHT: Pixels = px(120.);
+/// The About window's size.
+pub const ABOUT_WIDTH: Pixels = px(340.);
+/// See [`ABOUT_WIDTH`].
+pub const ABOUT_HEIGHT: Pixels = px(200.);

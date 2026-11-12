@@ -4,10 +4,11 @@
 //! the way to cancel it and stays on screen.
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
+    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, Selectable, Sizable};
 use rc_git_kit::back_forward::{ContentMode, Direction};
 use rc_git_kit::guard_copy::{back_to_default_tooltip, sync_tooltip};
@@ -60,6 +61,7 @@ impl RepoWindow {
                     window.titlebar_double_click();
                 }
             })
+            .children(version_badge(cx))
             .child(
                 Button::new("toggle-sidebar")
                     .small()
@@ -153,4 +155,20 @@ impl RepoWindow {
                     })),
             )
     }
+}
+
+/// The version the bundle was stamped with, right of the traffic lights
+/// (`MainWindowController.buildVersionBadge`): the short version, with the full version line
+/// as its tooltip. `None` before the stamp was read (tests).
+fn version_badge(cx: &gpui::App) -> Option<impl IntoElement + use<>> {
+    let build = crate::update::BuildInfo::build(cx)?;
+    let line = SharedString::from(build.version_line());
+    Some(
+        div()
+            .id("version-badge")
+            .text_size(style::TEXT_CAPTION)
+            .text_color(cx.theme().muted_foreground)
+            .child(SharedString::from(build.short_version()))
+            .tooltip(move |window, cx| Tooltip::new(line.clone()).build(window, cx)),
+    )
 }

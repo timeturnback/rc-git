@@ -1,6 +1,7 @@
 //! rc-git on GPUI: the app shell, one window per repository grouped as native tabs, Files and
 //! History. Changes and the sync dialogs land in later phases.
 
+mod about;
 mod app;
 mod blame;
 mod changes;
@@ -18,11 +19,13 @@ mod sheets;
 mod sidebar;
 mod status;
 mod style;
+mod update;
 mod window;
 
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Entity};
+use rc_git_kit::app_build::{AppBuild, UpdateMode, update_targets_this_bundle};
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
 use rc_git_kit::platform::credentials::CachingCredentialStore;
@@ -91,11 +94,48 @@ fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
     });
     let on = shell.clone();
     cx.on_action(move |_: &menus::Settings, cx| on.update(cx, Shell::show_settings));
+    register_update_actions(shell, cx);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &HideApp, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &BringAllToFront, cx| cx.activate(true));
+}
+
+/// About, and the update commands the bundle's mode offers (`AppDelegate.showUpdate`,
+/// `rebuildNow`): none for a build that cannot update itself, so GPUI shows them disabled;
+/// Rebuild Now (⌥⌘R) only on the dev bundle, whose menu carries it.
+fn register_update_actions(shell: &Entity<Shell>, cx: &mut App) {
+    cx.on_action(|_: &menus::ShowAbout, cx| {
+        let build = update::BuildInfo::build(cx).cloned();
+        if let Some(build) = build {
+            about::show(&build, cx);
+        }
+    });
+    let Some(build) = update::BuildInfo::updatable(cx) else {
+        return;
+    };
+    let on = shell.clone();
+    cx.on_action(move |_: &menus::ShowUpdate, cx| {
+        on.update(cx, |shell, cx| {
+            shell.show_update(cx);
+        });
+    });
+    if build.update_mode() == Some(UpdateMode::Rebuild) {
+        let on = shell.clone();
+        cx.on_action(move |_: &menus::RebuildNow, cx| on.update(cx, Shell::rebuild_now));
+    }
+}
+
+/// Reads the bundle's stamp; a bundle whose update would build another one gets none.
+fn read_build() -> update::BuildInfo {
+    let info = rc_git_mac::bundle::main_bundle_info();
+    let build = AppBuild::from_info(&info);
+    let updatable = update_targets_this_bundle(&info);
+    if build.update_mode().is_some() && !updatable {
+        log::notice("update: this bundle's update would build another bundle; disabled");
+    }
+    update::BuildInfo { build, updatable }
 }
 
 /// Builds the shell, opens what launched the app, restores the saved tabs, and keeps opening
@@ -107,6 +147,7 @@ fn start(services: Services, launch: &[String], urls: Inbox<String>, cx: &mut Ap
         Ok(bindings) => cx.bind_keys(bindings),
         Err(error) => log::error(&format!("{error:#}")),
     }
+    cx.set_global(read_build());
     let shell = cx.new(|cx| Shell::new(services, cx));
     cx.set_global(ShellGlobal(shell.clone()));
     register_actions(&shell, cx);
