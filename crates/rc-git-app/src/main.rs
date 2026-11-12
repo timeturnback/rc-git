@@ -25,7 +25,7 @@ mod window;
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Entity};
-use rc_git_kit::app_build::{AppBuild, UpdateMode, update_targets_this_bundle};
+use rc_git_kit::app_build::{AppBuild, UpdateMode};
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
 use rc_git_kit::platform::credentials::CachingCredentialStore;
@@ -127,15 +127,12 @@ fn register_update_actions(shell: &Entity<Shell>, cx: &mut App) {
     }
 }
 
-/// Reads the bundle's stamp; a bundle whose update would build another one gets none.
+/// Reads the bundle's stamp.
 fn read_build() -> update::BuildInfo {
     let info = rc_git_mac::bundle::main_bundle_info();
-    let build = AppBuild::from_info(&info);
-    let updatable = update_targets_this_bundle(&info);
-    if build.update_mode().is_some() && !updatable {
-        log::notice("update: this bundle's update would build another bundle; disabled");
+    update::BuildInfo {
+        build: AppBuild::from_info(&info),
     }
-    update::BuildInfo { build, updatable }
 }
 
 /// Builds the shell, opens what launched the app, restores the saved tabs, and keeps opening

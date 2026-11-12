@@ -164,23 +164,27 @@ fn a_build_date_counts_seconds_from_the_epoch() {
 }
 
 #[test]
-fn only_the_gpui_stamp_updates_another_bundle() {
-    use rc_git_kit::app_build::update_targets_this_bundle;
-    assert!(!update_targets_this_bundle(&stamped(&[(
-        "RCGitVariant",
-        "gpui"
-    )])));
-    assert!(update_targets_this_bundle(&stamped(&[(
-        "RCGitVariant",
-        "dev"
-    )])));
-    assert!(update_targets_this_bundle(&stamped(&[(
-        "RCGitVariant",
-        "release"
-    )])));
-    assert!(update_targets_this_bundle(&stamped(&[(
-        "RCGitVariant",
-        "gpui2"
-    )])));
-    assert!(update_targets_this_bundle(&HashMap::new()));
+fn the_gpui_bundle_rebuilds_and_relaunches_itself() {
+    let build = AppBuild::from_info(&stamped(&[
+        ("RCGitVariant", "gpui"),
+        ("RCGitSourceRoot", "/src/rc-git"),
+    ]));
+    assert_eq!(build.variant, AppVariant::Gpui);
+    assert_eq!(build.update_mode(), Some(UpdateMode::Rebuild));
+    assert_eq!(
+        build.relaunch_path().as_deref(),
+        Some("/src/rc-git/RCGit-gpui.app")
+    );
+    assert_eq!(
+        build.variant.build_script(),
+        ("scripts/build-app.sh", " --gpui --dev")
+    );
+    assert_eq!(
+        AppVariant::Dev.build_script(),
+        ("scripts/build-app.sh", " --dev")
+    );
+    assert_eq!(
+        AppVariant::Release.build_script(),
+        ("scripts/install-app.sh", "")
+    );
 }

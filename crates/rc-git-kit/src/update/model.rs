@@ -369,9 +369,6 @@ fn step_name(step: UpdateStep) -> &'static str {
 /// Why a bundle with no source checkout stamp cannot update: it names the script that stamps
 /// the variant it claims to be.
 pub(super) fn unstamped_message(variant: AppVariant) -> String {
-    let script = match variant {
-        AppVariant::Dev => "scripts/build-app.sh --dev",
-        AppVariant::Release => "scripts/install-app.sh",
-    };
-    format!("this bundle carries no source checkout; rebuild it with {script}")
+    let (script, arguments) = variant.build_script();
+    format!("this bundle carries no source checkout; rebuild it with {script}{arguments}")
 }

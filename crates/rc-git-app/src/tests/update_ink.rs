@@ -29,10 +29,7 @@ fn build() -> AppBuild {
 fn the_update_window_puts_ink_on_the_page() {
     let (mut cx, shell) = headless(markdown_repo(), Arc::new(MemoryHostKeyStore::new()));
     cx.update(|cx| {
-        cx.set_global(BuildInfo {
-            build: build(),
-            updatable: true,
-        });
+        cx.set_global(BuildInfo { build: build() });
     });
     cx.update(|cx| shell.update(cx, Shell::rebuild_now));
     let model = cx.update(|cx| shell.read(cx).updater().map(crate::update::Updater::model));

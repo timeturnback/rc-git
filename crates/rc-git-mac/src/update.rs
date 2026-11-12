@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, Task};
-use rc_git_kit::app_build::{AppBuild, UpdateMode};
+use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::blocking::blocking;
 use rc_git_kit::guard_bridge::CancelToken;
 use rc_git_kit::platform::process::{CommandSpec, Outcome, ProcessRunner, Stop};
@@ -102,7 +102,7 @@ pub struct UpdateHooks {
 /// The real [`UpdateEnvironment`].
 pub struct LiveUpdateEnvironment {
     source_root: String,
-    mode: UpdateMode,
+    script: (&'static str, &'static str),
     relaunch_path: String,
     hooks: UpdateHooks,
     runner: Arc<dyn ProcessRunner>,
@@ -117,7 +117,7 @@ impl LiveUpdateEnvironment {
     pub fn new(build: &AppBuild, hooks: UpdateHooks) -> Option<Self> {
         Some(Self {
             source_root: build.source_root.clone()?,
-            mode: build.update_mode()?,
+            script: build.update_mode().map(|_| build.variant.build_script())?,
             relaunch_path: build.relaunch_path()?,
             hooks,
             runner: Arc::new(ShellRunner),
@@ -150,7 +150,7 @@ impl LiveUpdateEnvironment {
     fn steps(&self) -> Steps {
         Steps {
             source_root: self.source_root.clone(),
-            mode: self.mode,
+            script: self.script,
             relaunch_path: self.relaunch_path.clone(),
             runner: Arc::clone(&self.runner),
             shell: self.shell.clone(),
@@ -219,8 +219,8 @@ pub const QUIT_DELAY: Duration = Duration::from_millis(250);
 pub(crate) struct Steps {
     /// The checkout the bundle was built from.
     pub(crate) source_root: String,
-    /// What the update builds.
-    pub(crate) mode: UpdateMode,
+    /// The script the update runs, relative to the checkout, and its arguments.
+    pub(crate) script: (&'static str, &'static str),
     /// The bundle to launch once the build finishes.
     pub(crate) relaunch_path: String,
     /// What runs every outside step.
@@ -270,20 +270,11 @@ impl Steps {
         toolchain_check(&outcome, self.limits.toolchain)
     }
 
-    /// The script this mode runs, relative to the checkout, and the argument it takes.
-    #[must_use]
-    pub(crate) fn build_script(&self) -> (&'static str, &'static str) {
-        match self.mode {
-            UpdateMode::Update => ("scripts/install-app.sh", ""),
-            UpdateMode::Rebuild => ("scripts/build-app.sh", " --dev"),
-        }
-    }
-
     /// Builds and installs the bundle, streaming its output to `on_output`. `None` on
     /// success. Blocks; bounded by the idle clock, the wall clock and `cancel`.
     #[must_use]
     pub(crate) fn install(&self, cancel: &CancelToken, on_output: &OutputSink) -> Option<String> {
-        let (script, argument) = self.build_script();
+        let (script, argument) = self.script;
         let path = shell_word::quote(&format!("{}/{script}", self.source_root));
         let command = self.shell_command(
             &format!("exec {path}{argument}"),

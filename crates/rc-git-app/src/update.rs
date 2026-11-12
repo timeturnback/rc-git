@@ -44,14 +44,10 @@ use crate::style;
 /// How often a running pull looks at the update's cancel: the token has no wake-up of its own.
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 
-/// The running bundle's stamp, read once at launch, and whether it may update itself.
+/// The running bundle's stamp, read once at launch.
 pub struct BuildInfo {
     /// What `scripts/build-app.sh` stamped.
     pub build: AppBuild,
-    /// Whether the update rebuilds and relaunches this same bundle
-    /// ([`rc_git_kit::app_build::update_targets_this_bundle`]). A stamped bundle that cannot
-    /// shows its update items disabled.
-    pub updatable: bool,
 }
 
 impl Global for BuildInfo {}
@@ -63,13 +59,14 @@ impl BuildInfo {
         cx.try_global::<Self>().map(|info| &info.build)
     }
 
-    /// The stamp of a bundle that can update itself, `None` otherwise: unstamped, or a bundle
-    /// whose update would build another one.
+    /// The stamp of a bundle that can update itself, `None` for an unstamped one.
     #[must_use]
     pub fn updatable(cx: &App) -> Option<AppBuild> {
         let info = cx.try_global::<Self>()?;
-        let can = info.updatable && info.build.update_mode().is_some();
-        can.then(|| info.build.clone())
+        info.build
+            .update_mode()
+            .is_some()
+            .then(|| info.build.clone())
     }
 
     /// What the menus offer: the stamped mode, whether or not it can run here.

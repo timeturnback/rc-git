@@ -11,6 +11,23 @@ pub enum AppVariant {
     Release,
     /// `RCGit-dev.app`, built into the checkout by `scripts/build-app.sh --dev`.
     Dev,
+    /// `RCGit-gpui.app`, the Rust app the migration builds, built into the checkout by
+    /// `scripts/build-app.sh --gpui`. It rebuilds itself like the dev bundle, under its own
+    /// bundle identifier.
+    Gpui,
+}
+
+impl AppVariant {
+    /// The script that builds this variant, relative to the checkout, and the arguments it
+    /// takes, each with its leading space.
+    #[must_use]
+    pub fn build_script(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Release => ("scripts/install-app.sh", ""),
+            Self::Dev => ("scripts/build-app.sh", " --dev"),
+            Self::Gpui => ("scripts/build-app.sh", " --gpui --dev"),
+        }
+    }
 }
 
 /// What an update does, which is decided by the bundle running it.
@@ -127,6 +144,8 @@ impl AppBuild {
     pub const INSTALLED_PATH: &'static str = "/Applications/RCGit.app";
     /// What `scripts/build-app.sh --dev` names the dev bundle inside its own checkout.
     pub const DEV_BUNDLE_NAME: &'static str = "RCGit-dev.app";
+    /// What `scripts/build-app.sh --gpui` names the GPUI bundle inside its own checkout.
+    pub const GPUI_BUNDLE_NAME: &'static str = "RCGit-gpui.app";
 
     /// Reads the stamp out of an `Info.plist`'s string keys. Missing or empty keys degrade:
     /// an unstamped bundle is a dev build that cannot update itself.
@@ -135,6 +154,7 @@ impl AppBuild {
         let string = |key: &str| info.get(key).filter(|value| !value.is_empty()).cloned();
         let variant = match string("RCGitVariant").as_deref() {
             Some("release") => AppVariant::Release,
+            Some("gpui") => AppVariant::Gpui,
             Some(_) | None => AppVariant::Dev,
         };
         Self {
@@ -162,7 +182,7 @@ impl AppBuild {
         self.source_root.as_ref()?;
         Some(match self.variant {
             AppVariant::Release => UpdateMode::Update,
-            AppVariant::Dev => UpdateMode::Rebuild,
+            AppVariant::Dev | AppVariant::Gpui => UpdateMode::Rebuild,
         })
     }
 
@@ -176,6 +196,10 @@ impl AppBuild {
                 .source_root
                 .as_ref()
                 .map(|root| format!("{root}/{}", Self::DEV_BUNDLE_NAME)),
+            AppVariant::Gpui => self
+                .source_root
+                .as_ref()
+                .map(|root| format!("{root}/{}", Self::GPUI_BUNDLE_NAME)),
         }
     }
 
@@ -221,20 +245,4 @@ impl BuildDate {
             + i64::from(self.minute) * 60
             + i64::from(self.second)
     }
-}
-
-/// The `RCGitVariant` stamp `scripts/build-app.sh --gpui` writes on the interim GPUI bundle.
-pub const GPUI_STAMP: &str = "gpui";
-
-/// Whether this bundle's self-update rebuilds and relaunches this same bundle. The interim
-/// GPUI bundle (`RCGit-gpui.app`) is stamped [`GPUI_STAMP`], which [`AppBuild::from_info`]
-/// reads as [`AppVariant::Dev`], and a dev update runs `scripts/build-app.sh --dev` and
-/// launches `RCGit-dev.app`: another bundle, under another bundle identifier, so the tabs
-/// would not carry over. Until the build script makes the dev bundle the GPUI build, such a
-/// bundle offers no update.
-#[must_use]
-pub fn update_targets_this_bundle<S: std::hash::BuildHasher>(
-    info: &HashMap<String, String, S>,
-) -> bool {
-    info.get("RCGitVariant").map(String::as_str) != Some(GPUI_STAMP)
 }

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::TestAppContext;
-use rc_git_kit::app_build::AppVariant;
+use rc_git_kit::app_build::{AppVariant, UpdateMode};
 use rc_git_kit::platform::process::{ScriptedRunner, Termination};
 use rc_git_kit::platform::settings::MemorySettings;
 use rc_git_kit::platform::stores::SharedSettings;
@@ -60,7 +60,10 @@ impl Checkout {
     fn steps(&self, mode: UpdateMode, prefix: &str, limits: Limits) -> Steps {
         Steps {
             source_root: self.root.clone(),
-            mode,
+            script: match mode {
+                UpdateMode::Update => AppVariant::Release.build_script(),
+                UpdateMode::Rebuild => AppVariant::Dev.build_script(),
+            },
             relaunch_path: format!("{}/RCGit-dev.app", self.root),
             runner: Arc::new(ShellRunner),
             shell: self.shell(prefix),
@@ -270,7 +273,7 @@ fn scripted(outcome: Outcome) -> (Steps, Arc<ScriptedRunner>) {
     runner.push(outcome);
     let steps = Steps {
         source_root: "/checkout".to_owned(),
-        mode: UpdateMode::Update,
+        script: AppVariant::Release.build_script(),
         relaunch_path: "/Applications/RCGit.app".to_owned(),
         runner: Arc::clone(&runner) as Arc<dyn ProcessRunner>,
         shell: LOGIN_SHELL.iter().map(|word| (*word).to_owned()).collect(),
@@ -449,8 +452,24 @@ fn an_unstamped_bundle_has_no_environment() {
     build.variant = AppVariant::Dev;
     let environment = LiveUpdateEnvironment::new(&build, hooks(tabs, Vec::new())).unwrap();
     assert_eq!(environment.relaunch_path, "/checkout/RCGit-dev.app");
-    assert_eq!(environment.mode, UpdateMode::Rebuild);
+    assert_eq!(environment.script, ("scripts/build-app.sh", " --dev"));
     assert_eq!(environment.shell, LOGIN_SHELL);
+}
+
+#[test]
+fn the_gpui_bundle_rebuilds_and_relaunches_itself() {
+    let (session, _) = session();
+    let mut build = AppBuild::from_info(&std::collections::HashMap::new());
+    build.source_root = Some("/checkout".to_owned());
+    build.variant = AppVariant::Gpui;
+    let environment =
+        LiveUpdateEnvironment::new(&build, hooks(Rc::new(RefCell::new(session)), Vec::new()))
+            .unwrap();
+    assert_eq!(environment.relaunch_path, "/checkout/RCGit-gpui.app");
+    assert_eq!(
+        environment.script,
+        ("scripts/build-app.sh", " --gpui --dev")
+    );
 }
 
 /// The environment hands over the tabs on screen through the session, and takes them back.

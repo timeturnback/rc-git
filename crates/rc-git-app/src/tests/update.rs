@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::TestAppContext;
-use rc_git_kit::app_build::{AppBuild, AppVariant, UpdateMode};
+use rc_git_kit::app_build::{AppBuild, AppVariant};
 use rc_git_kit::fake::{ActionKind, CallGate, FakeActions};
 use rc_git_kit::guard_actions::{ActionError, FetchOutcome, UpstreamStatus};
 use rc_git_kit::guard_bridge::CancelToken;
@@ -41,27 +41,21 @@ fn dev_build(source_root: Option<&str>) -> AppBuild {
     }
 }
 
-fn stamp(cx: &mut TestAppContext, build: AppBuild, updatable: bool) {
-    cx.update(|cx| cx.set_global(BuildInfo { build, updatable }));
+fn stamp(cx: &mut TestAppContext, build: AppBuild) {
+    cx.update(|cx| cx.set_global(BuildInfo { build }));
 }
 
 #[gpui::test]
-fn an_unstamped_or_foreign_build_has_no_update(cx: &mut TestAppContext) {
+fn an_unstamped_build_has_no_update(cx: &mut TestAppContext) {
     let settings = Arc::new(MemorySettings::new());
     let harness = harness_with(cx, &[], &settings);
     let shown = harness.shell.update(cx, Shell::show_update);
     assert!(shown.is_none(), "no stamp, no update");
 
-    stamp(cx, dev_build(None), true);
+    stamp(cx, dev_build(None));
     assert!(harness.shell.update(cx, Shell::show_update).is_none());
-
-    stamp(cx, dev_build(Some(GONE)), false);
-    assert!(
-        harness.shell.update(cx, Shell::show_update).is_none(),
-        "the gpui bundle's update would build another bundle"
-    );
     let mode = cx.read(|cx| harness.shell.read(cx).menu_state(cx).update_mode);
-    assert_eq!(mode, Some(UpdateMode::Rebuild), "its items still show");
+    assert_eq!(mode, None, "an unstamped build offers no update");
     assert!(
         harness
             .shell
@@ -73,7 +67,7 @@ fn an_unstamped_or_foreign_build_has_no_update(cx: &mut TestAppContext) {
 fn rebuild_now_opens_the_window_and_its_log_follows_the_model(cx: &mut TestAppContext) {
     let settings = Arc::new(MemorySettings::new());
     let harness = harness_with(cx, &[], &settings);
-    stamp(cx, dev_build(Some(GONE)), true);
+    stamp(cx, dev_build(Some(GONE)));
     harness.shell.update(cx, Shell::rebuild_now);
     let model = harness
         .shell
@@ -210,7 +204,7 @@ fn the_saved_selection_ignores_a_window_that_is_not_a_tab(cx: &mut TestAppContex
     open_settled(&harness, cx, "/repo/b");
     let selected = |cx: &TestAppContext| cx.read(|cx| harness.shell.read(cx).tab_state(cx).1);
     assert_eq!(selected(cx), 1, "the tab opened last is in front");
-    stamp(cx, dev_build(Some(GONE)), true);
+    stamp(cx, dev_build(Some(GONE)));
     harness.shell.update(cx, |shell, cx| {
         shell.show_update(cx);
     });
