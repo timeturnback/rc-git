@@ -39,6 +39,8 @@ pub struct SidebarLayout {
     collapse: SidebarCollapse,
     current: Option<Layout>,
     window: Size,
+    /// Set while the split resizes to a width the fit applied, so that resize is no drag.
+    fit_echo: bool,
 }
 
 impl SidebarLayout {
@@ -58,6 +60,7 @@ impl SidebarLayout {
                 width: 0.0,
                 height: 0.0,
             },
+            fit_echo: false,
         }
     }
 
@@ -99,6 +102,31 @@ impl SidebarLayout {
             log::error(&error.to_string());
         }
         self.save_split();
+    }
+
+    /// The sidebar's width in points.
+    #[must_use]
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+
+    /// Whether the user dragged the divider, which makes the width the user's: the fit stops.
+    #[must_use]
+    pub fn is_pinned(&self) -> bool {
+        SidebarWidthPin::new(std::sync::Arc::clone(&self.settings)).is_pinned()
+    }
+
+    /// The fit sized the sidebar to `width`. `resizes` says the split resizes to it now, and
+    /// that resize is the fit's, not a drag.
+    pub fn fit(&mut self, width: f64, resizes: bool) {
+        self.width = width.clamp(SIDEBAR_MINIMUM_WIDTH, SIDEBAR_MAXIMUM_WIDTH);
+        self.fit_echo = resizes;
+        self.save_split();
+    }
+
+    /// Whether the split's resize now is the fit's own; answers once per fit.
+    pub fn take_fit_echo(&mut self) -> bool {
+        std::mem::take(&mut self.fit_echo)
     }
 
     /// The user opened or closed the sidebar by hand.

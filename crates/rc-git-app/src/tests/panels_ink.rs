@@ -224,3 +224,47 @@ fn the_find_panel_puts_ink_on_the_page() {
         "only {added} more dark pixels: the panel is blank"
     );
 }
+
+/// A fake whose root holds a file named far wider than the sidebar's floor.
+fn long_named_repo() -> FakeRepository {
+    let repo = markdown_repo();
+    {
+        let mut state = repo.state();
+        let root = rc_git_kit::fake::oid(crate::tests::support::MAIN_TREE);
+        if let Some(entries) = state.trees.get_mut(&root) {
+            entries.push(rc_git_core::TreeEntry {
+                name: "a-file-name-long-enough-to-push-the-sidebar-wider.txt".into(),
+                oid: rc_git_kit::fake::oid(crate::tests::support::README),
+                kind: rc_git_core::EntryKind::Blob,
+            });
+        }
+    }
+    repo
+}
+
+#[test]
+fn the_sidebar_fits_the_widest_tree_row_shaped_once() {
+    let (mut cx, shell) = headless(long_named_repo(), Arc::new(MemoryHostKeyStore::new()));
+    let tab = open_window(&mut cx, &shell);
+    let view = tab.view.clone();
+    settle(&mut cx, |cx| {
+        view.read(cx).layout().width() > rc_git_kit::layout_policy::SIDEBAR_MINIMUM_WIDTH
+    });
+    let width = cx.update(|cx| view.read(cx).layout().width());
+    assert!(width <= rc_git_kit::layout_policy::SIDEBAR_MAXIMUM_WIDTH);
+    assert!(
+        !cx.update(|cx| view.read(cx).layout().is_pinned()),
+        "the fit's own resize is not a drag"
+    );
+    let tree = cx.update(|cx| view.read(cx).sidebar().read(cx).tree().clone());
+    let shaped = cx.update(|cx| tree.read(cx).shaped_labels());
+    for _ in 0..3 {
+        cx.run_until_parked();
+        let _ = cx.capture_screenshot(tab.handle.into());
+    }
+    assert_eq!(
+        cx.update(|cx| tree.read(cx).shaped_labels()),
+        shaped,
+        "a repaint shapes no label again"
+    );
+}

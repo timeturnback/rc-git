@@ -435,3 +435,47 @@ fn the_tree_menu_copies_a_path_and_shows_its_history(cx: &mut TestAppContext) {
         rc_git_kit::back_forward::HistoryScope::Path("src".to_owned())
     );
 }
+
+#[test]
+fn only_rows_on_screen_count_toward_the_fit() {
+    use rc_git_kit::file_tree::{ViewKind, ViewNode};
+    let node = |label: &str, kind: ViewKind| ViewNode {
+        id: label.to_owned(),
+        label: label.to_owned(),
+        kind,
+    };
+    let hidden = node("hidden-inside-collapsed", ViewKind::Placeholder);
+    let shown = node("shown", ViewKind::Placeholder);
+    let view = vec![
+        node(
+            "closed",
+            ViewKind::Folder {
+                expanded: false,
+                children: vec![hidden],
+            },
+        ),
+        node(
+            "open",
+            ViewKind::Folder {
+                expanded: true,
+                children: vec![shown],
+            },
+        ),
+    ];
+    let rows = crate::files::fit::extents(&view);
+    let labels: Vec<(usize, &str, bool)> = rows
+        .iter()
+        .map(|row| (row.depth, row.label.as_str(), row.glyph))
+        .collect();
+    assert_eq!(
+        labels,
+        [(0, "closed", true), (0, "open", true), (1, "shown", false)]
+    );
+    let deeper = crate::files::fit::row_width(&rows[2], gpui::px(10.));
+    let top = crate::files::fit::row_width(&rows[0], gpui::px(10.));
+    assert_eq!(
+        deeper - top,
+        crate::style::FOLDER_INDENT - crate::style::ICON_SIZE - crate::style::ROW_GAP,
+        "a level indents, a placeholder draws no glyph"
+    );
+}

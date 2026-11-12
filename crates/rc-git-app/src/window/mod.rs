@@ -102,6 +102,8 @@ pub struct RepoWindow {
     watch_task: Option<Task<()>>,
     picker_events: Option<Subscription>,
     panels: panels::Panels,
+    /// The width the Files tree last said shows its rows in full.
+    content_width: Option<f64>,
     /// Where the menu commands land when nothing inside the window has the keyboard.
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -149,6 +151,9 @@ impl RepoWindow {
             }),
             cx.subscribe(&split, |this, split, event: &ResizablePanelEvent, cx| {
                 let ResizablePanelEvent::Resized = event;
+                if this.layout.take_fit_echo() {
+                    return;
+                }
                 let width = split.read(cx).sizes().first().copied();
                 if let Some(width) = width {
                     this.layout.dragged(f64::from(f32::from(width)));
@@ -172,10 +177,11 @@ impl RepoWindow {
                 this.visibility = visibility;
                 this.sync_changes_visibility(cx);
             }),
-            cx.subscribe(
+            cx.subscribe_in(
                 &tree,
-                |this, _, action: &crate::files::tree::TreeAction, cx| {
-                    this.tree_action(action, cx);
+                window,
+                |this, _, action: &crate::files::tree::TreeAction, window, cx| {
+                    this.tree_action(action, window, cx);
                 },
             ),
         ];
@@ -200,6 +206,7 @@ impl RepoWindow {
             watch_task: None,
             picker_events: None,
             panels: panels::Panels::default(),
+            content_width: None,
             focus,
             _subscriptions: subscriptions,
             settings,
@@ -759,6 +766,7 @@ fn history_actions(
 
 impl Render for RepoWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_fit(window, cx);
         let toolbar = self.render_toolbar(window, cx);
         let notice = self.render_notice(cx);
         let content = self.render_content(cx);

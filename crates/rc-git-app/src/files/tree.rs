@@ -19,6 +19,7 @@ use rc_git_kit::file_tree::{ChildLoad, FileTree, SelectionFollow, ViewKind, View
 use rc_git_kit::models::BrowseRow;
 use rc_git_kit::repository::ReadResult;
 
+use crate::files::fit::{self, RowExtent, WidthCache};
 use crate::icons::{Glyph, icon, is_accented};
 use crate::style;
 
@@ -30,7 +31,7 @@ struct RowLook {
 }
 
 /// What a row's context menu asks of the window.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TreeAction {
     /// Show File History: scope History to this path.
     ShowHistory {
@@ -39,6 +40,8 @@ pub enum TreeAction {
         /// Whether that path names this node alone.
         path_is_exact: bool,
     },
+    /// The width that shows every row on screen in full changed.
+    ContentWidth(f64),
 }
 
 /// The Files tree of one window.
@@ -54,6 +57,12 @@ pub struct FileTreeView {
     shows_hidden: bool,
     /// The node id opened last, so re-selecting it after a rebuild does not open it again.
     opened: Option<SharedString>,
+    /// The rows on screen, for the sidebar fit; re-measured when `width_stale`.
+    extents: Vec<RowExtent>,
+    widths: WidthCache,
+    width_stale: bool,
+    /// The content width last reported.
+    reported: Option<f64>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -94,6 +103,10 @@ impl FileTreeView {
             root_generation: 0,
             shows_hidden,
             opened: None,
+            extents: Vec::new(),
+            widths: WidthCache::default(),
+            width_stale: false,
+            reported: None,
             _subscriptions: subscriptions,
         };
         view.load_root(cx);
@@ -210,6 +223,8 @@ impl FileTreeView {
         let mut looks = std::collections::HashMap::new();
         let items = items(&view, &mut looks);
         self.looks = Rc::new(looks);
+        self.extents = fit::extents(&view);
+        self.width_stale = true;
         let selected = self
             .state
             .read(cx)
@@ -224,6 +239,25 @@ impl FileTreeView {
             }
         });
         cx.notify();
+    }
+
+    /// Measures the rows on screen once they changed and tells the window when the width that
+    /// shows them all in full moved.
+    fn report_width(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.width_stale) {
+            return;
+        }
+        let width = self.widths.widest(&self.extents, window, cx);
+        if self.reported != Some(width) {
+            self.reported = Some(width);
+            cx.emit(TreeAction::ContentWidth(width));
+        }
+    }
+
+    /// The labels shaped so far, for tests that count measuring.
+    #[cfg(test)]
+    pub(crate) fn shaped_labels(&self) -> usize {
+        self.widths.len()
     }
 
     /// Moves the selection to the file the pane opened some other way (a link, a search pick,
@@ -386,7 +420,8 @@ fn items(
 }
 
 impl Render for FileTreeView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.report_width(window, cx);
         let theme = cx.theme();
         let (accent, muted, foreground) = (theme.blue, theme.muted_foreground, theme.foreground);
         if self.model.read(cx).root_tree().is_none() && self.tree.node_count() == 0 {
