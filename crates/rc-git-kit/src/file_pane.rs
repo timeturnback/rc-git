@@ -4,7 +4,8 @@
 
 use crate::browser::FileState;
 use crate::diff_text::too_large_placeholder;
-use crate::text_document::{can_force_load, format_bytes};
+use crate::markdown::MarkdownDocument;
+use crate::text_document::{FileReveal, can_force_load, format_bytes};
 
 /// What the pane shows with no file open.
 pub const NO_FILE_TEXT: &str = "Select a file";
@@ -81,4 +82,19 @@ pub fn load_anyway_size(state: &FileState) -> Option<u64> {
         | FileState::TooLarge { .. }
         | FileState::Failed(..) => None,
     }
+}
+
+/// Whether the text of `name`, `byte_count` bytes long, paints as the markdown preview: the
+/// file offers one, the reader prefers it, and the place the pane is about to reveal does not
+/// need the source (a content-search match is selected in the text the preview hides).
+#[must_use]
+pub fn shows_preview(
+    name: &str,
+    byte_count: usize,
+    prefers_preview: bool,
+    pending: Option<&FileReveal>,
+) -> bool {
+    MarkdownDocument::is_previewable(name, byte_count)
+        && prefers_preview
+        && !pending.is_some_and(FileReveal::needs_source)
 }

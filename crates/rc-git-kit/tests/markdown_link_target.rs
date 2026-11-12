@@ -166,6 +166,35 @@ fn a_path_that_does_not_decode_stays_as_written() {
 }
 
 #[test]
+fn copy_link_copies_what_the_link_means() {
+    let copied = |destination: &str| resolve(destination).map(|target| target.copy_text());
+    assert_eq!(
+        copied("https://example.com/a"),
+        Some("https://example.com/a".to_owned())
+    );
+    assert_eq!(
+        copied("//example.com"),
+        Some("https://example.com".to_owned())
+    );
+    assert_eq!(copied("ssh://host/x"), Some("ssh://host/x".to_owned()));
+    assert_eq!(copied("../setup.md"), Some("docs/setup.md".to_owned()));
+    assert_eq!(
+        copied("../setup.md#ti%E1%BA%BFng"),
+        Some("docs/setup.md#tiếng".to_owned())
+    );
+    assert_eq!(copied("#usage"), Some("#usage".to_owned()));
+}
+
+#[test]
+fn each_kind_of_link_titles_its_open_command() {
+    let title = |destination: &str| resolve(destination).map(|target| target.open_title());
+    assert_eq!(title("../setup.md"), Some("Open File"));
+    assert_eq!(title("#usage"), Some("Go to Section"));
+    assert_eq!(title("mailto:a@b.com"), Some("Open in Browser"));
+    assert_eq!(title("vnc://host"), Some("Open Link\u{2026}"));
+}
+
+#[test]
 fn climbing_above_the_repository_is_refused() {
     assert_eq!(resolve("../../../outside.md"), None);
     assert_eq!(MarkdownLinkTarget::resolve("", Some("README.md")), None);

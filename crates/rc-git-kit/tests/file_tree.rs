@@ -3,7 +3,7 @@
 use rc_git_core::{EntryKind, TreeEntry};
 use rc_git_kit::fake::oid;
 use rc_git_kit::file_tree::{
-    EMPTY_TEXT, FileTree, LOADING_TEXT, UNREADABLE_TEXT, ViewKind, ViewNode,
+    EMPTY_TEXT, FileTree, LOADING_TEXT, SelectionFollow, UNREADABLE_TEXT, ViewKind, ViewNode,
 };
 use rc_git_kit::hidden_files::is_hidden_name;
 use rc_git_kit::models::BrowseRow;
@@ -175,4 +175,80 @@ fn nested_paths_and_their_exactness_follow_the_parents() {
     let lossy = tree.info("1/1").unwrap_or_else(|| panic!("found"));
     assert_eq!(lossy.path, "src/bad\u{fffd}.rs");
     assert!(!lossy.path_is_exact);
+}
+
+/// `sample` with `src` expanded onto `main.rs` and a lossy `bad\xff.rs`.
+fn expanded_sample() -> FileTree {
+    let mut tree = sample();
+    let Some(load) = tree.expand("1") else {
+        return tree;
+    };
+    tree.finish(
+        &load,
+        Ok(vec![
+            row(b"main.rs", EntryKind::Blob, 4),
+            row(b"bad\xff.rs", EntryKind::Blob, 7),
+        ]),
+    );
+    tree
+}
+
+#[test]
+fn the_selection_follows_a_file_opened_elsewhere_to_its_row() {
+    let tree = expanded_sample();
+    assert_eq!(
+        tree.follow_open_file(Some("2"), Some("src/main.rs"), true, &everything),
+        SelectionFollow::Select("1/0".to_owned())
+    );
+    assert_eq!(
+        tree.follow_open_file(None, Some("README.md"), true, &everything),
+        SelectionFollow::Select("2".to_owned())
+    );
+    assert_eq!(
+        tree.follow_open_file(Some("1/0"), Some("src/main.rs"), true, &everything),
+        SelectionFollow::Keep,
+        "the row already selected stays"
+    );
+}
+
+#[test]
+fn a_file_with_no_row_on_screen_clears_a_file_selection_but_not_a_folder() {
+    let mut tree = expanded_sample();
+    assert_eq!(
+        tree.follow_open_file(Some("2"), Some("docs/guide.md"), true, &everything),
+        SelectionFollow::Clear
+    );
+    assert_eq!(
+        tree.follow_open_file(Some("1"), Some("docs/guide.md"), true, &everything),
+        SelectionFollow::Keep
+    );
+    assert_eq!(
+        tree.follow_open_file(Some("2"), None, true, &everything),
+        SelectionFollow::Clear,
+        "a closed file leaves no file row selected"
+    );
+    tree.collapse("1");
+    assert_eq!(
+        tree.follow_open_file(Some("2"), Some("src/main.rs"), true, &everything),
+        SelectionFollow::Clear,
+        "a row inside a collapsed folder is not on screen"
+    );
+}
+
+#[test]
+fn an_inexact_or_hidden_path_is_never_matched() {
+    let tree = expanded_sample();
+    assert_eq!(
+        tree.follow_open_file(Some("2"), Some("src/bad\u{fffd}.rs"), false, &everything),
+        SelectionFollow::Keep
+    );
+    assert_eq!(
+        tree.follow_open_file(Some("1/1"), Some("src/bad\u{fffd}.rs"), true, &everything),
+        SelectionFollow::Clear,
+        "a lossy row never answers to a spelling"
+    );
+    assert_eq!(
+        tree.follow_open_file(None, Some(".git"), true, &not_hidden),
+        SelectionFollow::Keep
+    );
 }

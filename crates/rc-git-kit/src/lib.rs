@@ -42,6 +42,7 @@ pub mod navigator;
 pub mod oneshot;
 pub mod path_search;
 pub mod path_search_session;
+pub mod picker;
 pub mod platform;
 pub mod recent_cache;
 pub mod recent_repositories;

@@ -2,6 +2,7 @@
 //! search; these tests drive `matching` with a stand-in scorer that rewards a match inside
 //! the last path component, which is the behaviour the picker relies on.
 
+use rc_git_kit::path_search;
 use rc_git_kit::recent_repositories::{CAPACITY, display_path, empty_note, inserting, matching};
 
 const HOME: &str = "/Users/me";
@@ -125,6 +126,53 @@ fn only_the_home_directory_itself_or_below_gets_a_tilde() {
     assert_eq!(display_path("/Users/meg/x", HOME), "/Users/meg/x");
     assert_eq!(display_path("/Users/me/x", "/Users/me/"), "~/x");
     assert_eq!(display_path("/x", ""), "/x");
+}
+
+/// The picker passes the path search's own scorer; these pin what that pairing ranks.
+#[test]
+fn the_real_scorer_ranks_a_name_match_over_a_directory_match() {
+    let list = paths(&["/src/notes-rcgit-tools", "/rc/git/web", "/src/rcgit"]);
+    let found = matching(&list, "rcgit", HOME, path_search::score);
+    assert_eq!(
+        found.first().map(String::as_str),
+        Some("/src/rcgit"),
+        "the whole match inside the last component wins: {found:?}"
+    );
+    assert!(found.contains(&"/rc/git/web".to_owned()));
+    assert!(matching(&list, "zzz", HOME, path_search::score).is_empty());
+}
+
+#[test]
+fn the_real_scorer_ignores_case_and_matches_the_displayed_home() {
+    let inside = format!("{HOME}/Code/App");
+    let list = vec!["/opt/other".to_owned(), inside.clone()];
+    assert_eq!(
+        matching(&list, "app", HOME, path_search::score),
+        vec![inside.clone()]
+    );
+    assert_eq!(
+        matching(&list, "~/code", HOME, path_search::score),
+        vec![inside]
+    );
+    assert_eq!(
+        matching(&list, "", HOME, path_search::score),
+        list,
+        "a blank query keeps recency order"
+    );
+}
+
+#[test]
+fn the_real_scorer_matches_a_decomposed_query() {
+    let precomposed = "/src/caf\u{e9}".to_owned();
+    assert_eq!(
+        matching(
+            std::slice::from_ref(&precomposed),
+            "cafe\u{301}",
+            HOME,
+            path_search::score
+        ),
+        vec![precomposed]
+    );
 }
 
 #[test]

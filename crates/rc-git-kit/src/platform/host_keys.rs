@@ -42,6 +42,26 @@ pub trait HostKeyStore: Send + Sync {
     fn approvals(&self) -> Vec<HostKeyApproval>;
 }
 
+/// A shared store is a store: the app holds one behind an `Arc` for every window, and
+/// Settings lists the same one.
+impl<T: HostKeyStore + ?Sized> HostKeyStore for std::sync::Arc<T> {
+    fn fingerprint(&self, host: &str) -> Option<String> {
+        (**self).fingerprint(host)
+    }
+
+    fn store(&self, fingerprint: &str, host: &str) -> Result<(), SettingsError> {
+        (**self).store(fingerprint, host)
+    }
+
+    fn forget(&self, host: &str) -> Result<(), SettingsError> {
+        (**self).forget(host)
+    }
+
+    fn approvals(&self) -> Vec<HostKeyApproval> {
+        (**self).approvals()
+    }
+}
+
 /// The approvals as one host-to-fingerprint map under [`keys::ACCEPTED_HOST_KEYS`]. Entries
 /// are read one by one, so a value that is not a string under one host neither hides nor
 /// wipes the approvals stored for the others.

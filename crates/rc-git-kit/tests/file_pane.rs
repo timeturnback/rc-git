@@ -4,8 +4,11 @@ use std::sync::Arc;
 
 use rc_git_core::EntryKind;
 use rc_git_kit::browser::{FileEntry, FileState};
-use rc_git_kit::file_pane::{LOADING_DETAIL, NO_FILE_TEXT, header, load_anyway_size, placeholder};
-use rc_git_kit::text_document::{HARD_LIMIT, TextDocument};
+use rc_git_kit::file_pane::{
+    LOADING_DETAIL, NO_FILE_TEXT, header, load_anyway_size, placeholder, shows_preview,
+};
+use rc_git_kit::markdown::MarkdownDocument;
+use rc_git_kit::text_document::{FileReveal, HARD_LIMIT, TextDocument};
 
 fn entry() -> FileEntry {
     FileEntry {
@@ -95,4 +98,25 @@ fn load_anyway_is_offered_only_under_the_hard_limit() {
     };
     assert_eq!(load_anyway_size(&at_limit), Some(HARD_LIMIT));
     assert_eq!(load_anyway_size(&FileState::Empty), None);
+}
+
+#[test]
+fn markdown_previews_unless_the_reader_or_a_match_wants_the_source() {
+    let fragment = FileReveal::Fragment("usage".to_owned());
+    let found = FileReveal::Match {
+        line: 3,
+        byte_column: 0,
+        byte_length: 2,
+    };
+    assert!(shows_preview("README.md", 10, true, None));
+    assert!(shows_preview("README.md", 10, true, Some(&fragment)));
+    assert!(!shows_preview("README.md", 10, true, Some(&found)));
+    assert!(!shows_preview("README.md", 10, false, None));
+    assert!(!shows_preview("notes.txt", 10, true, None));
+    assert!(!shows_preview(
+        "README.md",
+        MarkdownDocument::PREVIEW_LIMIT + 1,
+        true,
+        None
+    ));
 }

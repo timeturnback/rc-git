@@ -61,6 +61,37 @@ impl MarkdownLinkTarget {
         }
         repository_target(trimmed, source_path)
     }
+
+    /// What Copy Link puts on the pasteboard: the URL as written for a web or other-scheme
+    /// link, the repository-relative path (with `#fragment`) for a file in the repository, and
+    /// `#name` for a jump inside the file on screen.
+    #[must_use]
+    pub fn copy_text(&self) -> String {
+        match self {
+            Self::Web(url) | Self::OtherScheme(url) => url.clone(),
+            Self::RepositoryPath {
+                path,
+                fragment: Some(fragment),
+            } => format!("{path}#{fragment}"),
+            Self::RepositoryPath {
+                path,
+                fragment: None,
+            } => path.clone(),
+            Self::Fragment(name) => format!("#{name}"),
+        }
+    }
+
+    /// The title of the link's open command in its context menu. A link outside the web asks
+    /// before it opens, so its title ends in an ellipsis.
+    #[must_use]
+    pub fn open_title(&self) -> &'static str {
+        match self {
+            Self::RepositoryPath { .. } => "Open File",
+            Self::Fragment(_) => "Go to Section",
+            Self::Web(_) => "Open in Browser",
+            Self::OtherScheme(_) => "Open Link\u{2026}",
+        }
+    }
 }
 
 fn repository_target(destination: &str, source_path: Option<&str>) -> Option<MarkdownLinkTarget> {

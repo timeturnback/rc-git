@@ -317,3 +317,79 @@ fn folder_children(node: &Node, id: &str, visible: &dyn Fn(&BrowseRow) -> bool) 
         kind: ViewKind::Placeholder,
     }]
 }
+
+/// How the tree's selection follows the file the pane opened some other way — a link, a
+/// search pick, a step back — so a row still selected never names a file the pane has left,
+/// which would leave that row unclickable to reopen it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionFollow {
+    /// Leave the selection alone.
+    Keep,
+    /// Select this node: the open file's row, on screen.
+    Select(String),
+    /// Clear the selection: a file row is selected and the open file has no row on screen.
+    Clear,
+}
+
+impl FileTree {
+    /// Where the selection goes for the open file at `path` (`None` when no file is open),
+    /// with `selected` the node selected now. An inexact path is never matched, since its
+    /// spelling may be another row's. Only rows on screen count: inside expanded folders and
+    /// passing `visible`. Nothing is read or expanded, and a selected folder stays unless the
+    /// open file has a row to move to.
+    #[must_use]
+    pub fn follow_open_file(
+        &self,
+        selected: Option<&str>,
+        path: Option<&str>,
+        path_is_exact: bool,
+        visible: &dyn Fn(&BrowseRow) -> bool,
+    ) -> SelectionFollow {
+        if !path_is_exact {
+            return SelectionFollow::Keep;
+        }
+        let selected_node = selected.and_then(|id| self.node(id));
+        if let (Some(node), Some(path)) = (selected_node, path)
+            && node.path_is_exact
+            && node.path == path
+        {
+            return SelectionFollow::Keep;
+        }
+        if let Some(id) = path.and_then(|path| shown_id(&self.roots, "", path, visible)) {
+            return SelectionFollow::Select(id);
+        }
+        match selected_node {
+            Some(node) if !node.is_folder() => SelectionFollow::Clear,
+            Some(_) | None => SelectionFollow::Keep,
+        }
+    }
+}
+
+/// The id of the exact row at `path` among `nodes` and the expanded folders below them.
+fn shown_id(
+    nodes: &[Node],
+    parent: &str,
+    path: &str,
+    visible: &dyn Fn(&BrowseRow) -> bool,
+) -> Option<String> {
+    for (index, node) in nodes.iter().enumerate() {
+        if !visible(&node.row) {
+            continue;
+        }
+        let id = child_id(parent, index);
+        if node.path_is_exact && node.path == path {
+            return Some(id);
+        }
+        let inside = path
+            .strip_prefix(node.path.as_str())
+            .is_some_and(|rest| rest.starts_with('/'));
+        if inside
+            && node.expanded
+            && let Children::Loaded(children) = &node.children
+            && let Some(found) = shown_id(children, &id, path, visible)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
