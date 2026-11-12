@@ -1,12 +1,14 @@
 //! The stash group in the Changes sidebar: the heading, the list (or the failed read's message
 //! in its place) and Apply, Pop and Drop for the picked stash. The pick lives in the model, by
 //! stash commit, so a push from elsewhere that shifts every row keeps it on the same stash.
+//! A row's tooltip is its stash commit, as in the Swift list.
 
 use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
 use gpui_component::button::Button;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Sizable};
 use rc_git_core::StashEntry;
 use rc_git_kit::changes::StashListState;
@@ -50,6 +52,7 @@ impl ChangeListView {
         let theme = cx.theme();
         let mut rows = div().flex().flex_col();
         for (index, entry) in model.stashes().iter().enumerate() {
+            let oid = SharedString::from(entry.oid.to_hex());
             rows = rows.child(
                 div()
                     .id(("stash", index))
@@ -62,6 +65,7 @@ impl ChangeListView {
                     .when(picked == Some(index), |row| row.bg(theme.list_active))
                     .hover(|style| style.bg(theme.list_hover))
                     .child(SharedString::from(stash_label(entry)))
+                    .tooltip(move |window, cx| Tooltip::new(oid.clone()).build(window, cx))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.pick_stash(index, cx)),

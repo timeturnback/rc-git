@@ -9,7 +9,7 @@ mod guarded;
 pub mod layout;
 pub mod panels;
 mod ref_actions;
-mod sync;
+pub(crate) mod sync;
 mod toolbar;
 mod tree_actions;
 

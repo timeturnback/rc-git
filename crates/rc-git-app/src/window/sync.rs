@@ -4,19 +4,25 @@
 //! toolbar and the Changes sync row never disagree.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     AppContext, ClipboardItem, Context, Div, InteractiveElement, PromptLevel, Stateful, Window,
     prelude::FluentBuilder,
 };
+use rc_git_kit::blocking::blocking;
 use rc_git_kit::guard_copy::{DIVERGED_TITLE, SYNC_FAILURE_TITLE, diverged_message};
 use rc_git_kit::oneshot;
+use rc_git_kit::platform::process::ProcessRunner;
 use rc_git_kit::sync::{
     CredentialReply, CredentialRequest, HostKeyReply, HostKeyRequest, SyncAvailability, SyncModel,
     SyncState, pull_title, push_title, reconcile_command,
 };
+use rc_git_mac::ShellRunner;
+use rc_git_mac::open_with::{TERMINAL, open_with};
 
 use crate::changes::ChangesRequest;
+use crate::log;
 use crate::menus::{BackToDefault, CancelSync, CommitIdentity, Fetch, Pull, Push, Sync};
 use crate::sheets::credentials::{self, CredentialSheet};
 use crate::sheets::host_key::HostKeySheet;
@@ -199,7 +205,8 @@ impl RepoWindow {
     }
 
     /// rc-git only fast-forwards, so a diverged branch is reconciled in git: the sheet names
-    /// the command and copies it. A bare repository gets the message alone.
+    /// the command and copies it, or copies it and opens Terminal in the checkout. A bare
+    /// repository gets the message alone.
     fn present_diverged(
         &self,
         message: &str,
@@ -214,15 +221,19 @@ impl RepoWindow {
             PromptLevel::Info,
             DIVERGED_TITLE,
             Some(&text),
-            &["Copy Command", "Close"],
+            &[COPY_COMMAND, OPEN_IN_TERMINAL, "Close"],
             cx,
         );
-        cx.spawn(async move |_, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let answer = answer.await.ok();
-            if answer == Some(0) {
-                cx.update(|cx| {
+            if matches!(answer, Some(0 | 1)) {
+                cx.update(|_, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(reconcile_command(&work_dir)));
-                });
+                })
+                .ok();
+            }
+            if answer == Some(1) {
+                open_terminal(this, work_dir, cx).await;
             }
             answer
         })
@@ -257,6 +268,53 @@ impl RepoWindow {
         })
         .detach();
     }
+}
+
+/// The diverged sheet's first button.
+pub(crate) const COPY_COMMAND: &str = "Copy Command";
+/// The diverged sheet's button that copies the command and opens Terminal in the checkout.
+pub(crate) const OPEN_IN_TERMINAL: &str = "Open in Terminal";
+/// The alert's title when Terminal does not open.
+pub(crate) const TERMINAL_FAILURE_TITLE: &str = "rc-git could not open Terminal";
+
+/// What opens a folder in another application: the live runner, or a test's.
+pub struct OpenRunner(pub Arc<dyn ProcessRunner>);
+
+impl gpui::Global for OpenRunner {}
+
+/// Opens Terminal in `work_dir` off the main thread, and says so in an alert when it cannot.
+async fn open_terminal(
+    this: gpui::WeakEntity<RepoWindow>,
+    work_dir: String,
+    cx: &mut gpui::AsyncWindowContext,
+) {
+    let runner: Arc<dyn ProcessRunner> = cx
+        .update(|_, cx| {
+            cx.try_global::<OpenRunner>()
+                .map(|runner| Arc::clone(&runner.0))
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| Arc::new(ShellRunner));
+    let failure = blocking(cx.background_executor(), move || {
+        open_with(&*runner, TERMINAL, &work_dir)
+    })
+    .await;
+    let Some(failure) = failure else {
+        return;
+    };
+    log::error(&failure);
+    this.update_in(cx, |_, window, cx| {
+        alert(
+            PromptLevel::Warning,
+            TERMINAL_FAILURE_TITLE,
+            &failure,
+            window,
+            cx,
+        )
+        .detach();
+    })
+    .ok();
 }
 
 /// The sync and identity commands on the window root, each only while it can run, so GPUI

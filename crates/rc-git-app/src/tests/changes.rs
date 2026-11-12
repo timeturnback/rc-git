@@ -21,9 +21,10 @@ use rc_git_kit::guard_actions::{
 use rc_git_kit::guard_bridge::{CommitSelection, Credentials, HunkStamp};
 use rc_git_kit::platform::credentials::{CredentialStore, MemoryCredentialStore};
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
+use rc_git_kit::platform::process::{Outcome, ScriptedRunner, Termination};
 use rc_git_kit::platform::settings::MemorySettings;
 use rc_git_kit::platform::watch::ManualWatchers;
-use rc_git_kit::sync::{SyncModel, SyncState};
+use rc_git_kit::sync::{SyncModel, SyncState, reconcile_command};
 
 use crate::app::{Opened, Services, Shell};
 use crate::changes::list::ChangeListView;
@@ -33,6 +34,7 @@ use crate::sheets::credentials::CredentialSheet;
 use crate::sheets::host_key::HostKeySheet;
 use crate::tests::support::{MAIN_COMMIT, repo, wait_until};
 use crate::window::RepoWindow;
+use crate::window::sync::{COPY_COMMAND, OPEN_IN_TERMINAL, OpenRunner, TERMINAL_FAILURE_TITLE};
 use rc_git_kit::changes::CommitAuthorModel;
 
 const PATH: &str = "/nonexistent-rc-git-changes";
@@ -750,4 +752,83 @@ fn a_trusted_host_key_retries_with_it(cx: &mut TestAppContext) {
         panic!("a retried fetch");
     };
     assert_eq!(remote.accepted_host_key.as_deref(), Some("SHA256:abc"));
+}
+
+/// Pulls into a diverged branch and waits for the sheet that names the rebase.
+fn pull_until_diverged(opened: &Opened1, cx: &mut TestAppContext) {
+    opened.actions.state().fail_next.insert(
+        ActionKind::PullFastForward,
+        ActionError::Diverged {
+            branch: "main".to_owned(),
+            ahead: 1,
+            behind: 1,
+        },
+    );
+    let sync = opened.sync(cx);
+    cx.update(|cx| sync.update(cx, SyncModel::pull).detach());
+    wait_until(cx, |cx| cx.has_pending_prompt());
+    let (title, _) = cx
+        .pending_prompt()
+        .unwrap_or_else(|| panic!("the diverged sheet is shown"));
+    assert_eq!(title, rc_git_kit::guard_copy::DIVERGED_TITLE);
+}
+
+fn exited(status: i32, lines: &[&str]) -> Outcome {
+    Outcome {
+        status,
+        termination: Termination::Exit,
+        lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+        stopped: None,
+    }
+}
+
+fn open_runner(cx: &mut TestAppContext) -> Arc<ScriptedRunner> {
+    let runner = Arc::new(ScriptedRunner::new());
+    let global = OpenRunner(runner.clone());
+    cx.update(|cx| cx.set_global(global));
+    runner
+}
+
+#[gpui::test]
+fn open_in_terminal_copies_the_rebase_and_opens_the_checkout(cx: &mut TestAppContext) {
+    let opened = open_changes(cx);
+    let runner = open_runner(cx);
+    runner.push(exited(0, &[]));
+    pull_until_diverged(&opened, cx);
+    cx.simulate_prompt_answer(OPEN_IN_TERMINAL);
+    wait_until(cx, |_| !runner.commands().is_empty());
+    let commands = runner.commands();
+    assert_eq!(commands[0].executable, "/usr/bin/open");
+    assert_eq!(commands[0].arguments, ["-a", "Terminal", PATH]);
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some(reconcile_command(PATH).as_str()));
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt(), "an open that worked says nothing");
+}
+
+#[gpui::test]
+fn a_terminal_that_does_not_open_is_reported(cx: &mut TestAppContext) {
+    let opened = open_changes(cx);
+    let runner = open_runner(cx);
+    runner.push(exited(1, &["Unable to find application named 'Terminal'"]));
+    pull_until_diverged(&opened, cx);
+    cx.simulate_prompt_answer(OPEN_IN_TERMINAL);
+    wait_until(cx, |cx| cx.has_pending_prompt());
+    let (title, detail) = cx
+        .pending_prompt()
+        .unwrap_or_else(|| panic!("the failure is shown"));
+    assert_eq!(title, TERMINAL_FAILURE_TITLE);
+    assert!(detail.contains("Unable to find application"), "{detail}");
+}
+
+#[gpui::test]
+fn copy_command_opens_nothing(cx: &mut TestAppContext) {
+    let opened = open_changes(cx);
+    let runner = open_runner(cx);
+    pull_until_diverged(&opened, cx);
+    cx.simulate_prompt_answer(COPY_COMMAND);
+    cx.run_until_parked();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some(reconcile_command(PATH).as_str()));
+    assert!(runner.commands().is_empty());
 }
