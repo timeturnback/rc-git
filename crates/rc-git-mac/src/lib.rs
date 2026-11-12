@@ -15,6 +15,7 @@ pub mod process;
 pub mod settings;
 pub mod time_zone;
 pub mod update;
+pub mod window_tabs;
 
 pub use fsevents::{FsEventsWatcher, FsEventsWatchers};
 pub use keychain::KeychainCredentialStore;

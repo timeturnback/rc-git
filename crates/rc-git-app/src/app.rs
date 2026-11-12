@@ -403,6 +403,7 @@ impl Shell {
         let shows_hidden = self.hidden.shows();
         let made: Rc<Cell<Option<Entity<RepoWindow>>>> = Rc::default();
         let slot = Rc::clone(&made);
+        let group = rc_git_mac::window_tabs::TabHost::before_open(TABBING_IDENTIFIER);
         let handle = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| RepoWindow::new(settings, window, cx));
             view.update(cx, |view, cx| view.set_shows_hidden_files(shows_hidden, cx));
@@ -416,6 +417,7 @@ impl Shell {
                 return None;
             }
         };
+        group.join(TABBING_IDENTIFIER);
         let view = made.take()?;
         let tab = Tab { handle, view };
         self.watch(&tab, cx);
