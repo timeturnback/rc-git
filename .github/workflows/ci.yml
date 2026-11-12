@@ -23,9 +23,6 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
-        with:
-          tool: cbindgen@0.29.4
       - run: cargo fmt --all -- --check
       - name: cargo clippy   # same check as check.sh: a ban path resolving to nothing only warns
         run: |
@@ -45,7 +42,6 @@ jobs:
             --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: scripts/gen-header.sh --verify
 
   deny:
     name: cargo deny
@@ -71,10 +67,6 @@ jobs:
       - run: sudo xcode-select -s /Applications/Xcode_27.0.app
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
-        with:
-          tool: cbindgen@0.29.4   # build-app.sh regenerates the header through build.sh
-      - run: scripts/rust-lib.sh release --locked   # into target/app, where Package.swift links
       - run: cargo test --locked --workspace   # fixtures under macOS git config and APFS
       - name: GPUI crates   # macOS only; excluded from the Linux job
         run: |
@@ -82,11 +74,6 @@ jobs:
           cargo doc --locked -p rc-git-kit -p rc-git-app -p rc-git-mac --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: |
-          xcrun swift-format lint --strict --recursive \
-            mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
-      - run: swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
-      - run: swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
       - run: scripts/build-app.sh
 
   scripts:
@@ -116,17 +103,3 @@ jobs:
       - run: shfmt -d scripts/*.sh scripts/tests/*.sh
       - run: actionlint
       - run: zizmor --offline .github
-      - name: RcGitKit imports no UI framework   # same check as check.sh's "kit layering"
-        run: |
-          if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI)\b' \
-            mac/Sources/RcGitKit; then
-            echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
-            exit 1
-          fi
-      - name: Swift lines fit 100 columns   # same check as check.sh's "swift line length"
-        run: |
-          if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
-            mac/Sources mac/Tests mac/Package.swift scripts; then
-            echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
-            exit 1
-          fi

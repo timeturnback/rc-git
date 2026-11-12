@@ -246,7 +246,6 @@ impl Shell {
             mode: front.map_or(ContentMode::Files, |tab| tab.view.read(cx).mode()),
             default_branch: front.and_then(|tab| tab.view.read(cx).default_branch(cx)),
             sync_titles: front.map(|tab| tab.view.read(cx).sync_titles(cx)),
-            update_mode: crate::update::BuildInfo::update_mode(cx),
         }
     }
 
@@ -702,14 +701,14 @@ impl Shell {
         }
     }
 
-    /// Rebuild and Relaunch… or Update rc-git…: brings the update window forward, opening it
+    /// Rebuild and Relaunch…: brings the update window forward, opening it
     /// (and the update model, on first use) when needed. Answers the model, or `None` for a
     /// build that cannot update itself, which has no handler to reach this.
     pub fn show_update(&mut self, cx: &mut Context<Self>) -> Option<Entity<UpdateModel>> {
         let build = crate::update::BuildInfo::updatable(cx)?;
         if self.updater.is_none() {
             let window = crate::update::WindowSlot::default();
-            let hooks = self.update_hooks(Rc::clone(&window), cx);
+            let hooks = self.update_hooks(cx);
             self.updater = crate::update::Updater::new(build, hooks, window, cx);
         }
         let updater = self.updater.as_ref()?;
@@ -731,11 +730,7 @@ impl Shell {
         self.updater.as_ref()
     }
 
-    pub(crate) fn update_hooks(
-        &self,
-        window: crate::update::WindowSlot,
-        cx: &mut Context<Self>,
-    ) -> UpdateHooks {
+    pub(crate) fn update_hooks(&self, cx: &mut Context<Self>) -> UpdateHooks {
         let shell = cx.entity().downgrade();
         let live_tabs: LiveTabs = Rc::new(move |cx: &App| {
             shell
@@ -746,7 +741,6 @@ impl Shell {
         UpdateHooks {
             tabs: self.tab_session(),
             live_tabs,
-            sync: crate::update::sync_runner(&self.services, window),
         }
     }
 

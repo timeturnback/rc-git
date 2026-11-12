@@ -1,5 +1,0 @@
-module CRcGit {
-    header "include/rc_git.h"
-    link "rc_git_ffi"
-    export *
-}

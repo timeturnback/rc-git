@@ -1,12 +1,10 @@
 //! The live [`UpdateEnvironment`] (`UpdateEnvironmentLive.swift`): a login shell for the
-//! toolchain probe and the build, the core for the checkout's state, a sync runner the app
-//! supplies for the fetch and fast-forward (the same guarded pull the Changes tab runs), the
-//! open-tab store for the hand-off, and `open -n` for the relaunch.
+//! toolchain probe and the build, the core for the checkout's state, the open-tab store for
+//! the hand-off, and `open -n` for the relaunch.
 //!
-//! The checkout and the script are rc-git's own: `scripts/install-app.sh` (release) or
-//! `scripts/build-app.sh --dev` (dev) under the source root the bundle was stamped with, never
-//! a browsed repository. A rebuild never reaches `sync`, so the dev loop needs no network and
-//! no credentials.
+//! The checkout and the script are rc-git's own: `scripts/build-app.sh` under the source root
+//! the bundle was stamped with, never a browsed repository. A rebuild never fetches, so it
+//! needs no network and no credentials.
 //!
 //! Every outside step goes through the bounded [`ProcessRunner`]: the probe has a timeout,
 //! the build an idle clock, a wall-clock limit and a cancel, the relaunch a timeout, and each
@@ -27,7 +25,7 @@ use rc_git_kit::platform::process::{CommandSpec, Outcome, ProcessRunner, Stop};
 use rc_git_kit::repository::{DEFAULT_STATUS_SCAN_CAP, LiveRepository, RepositoryReading};
 use rc_git_kit::shell_word;
 use rc_git_kit::update::{
-    OutputSink, SourceState, SourceStateResult, ToolchainCheck, UpdateEnvironment, UpdateSyncResult,
+    OutputSink, SourceState, SourceStateResult, ToolchainCheck, UpdateEnvironment,
 };
 
 use crate::process::ShellRunner;
@@ -80,29 +78,22 @@ impl Default for Limits {
     }
 }
 
-/// Fetches and fast-forwards the checkout at the given root: the app wires it to `SyncModel`
-/// with its credential and host-key prompts. It stops early once the token is signalled.
-pub type SyncRunner = Rc<dyn Fn(String, Arc<CancelToken>, &mut App) -> Task<UpdateSyncResult>>;
-
 /// The repositories open in tabs now, in tab order, and the selected tab's index.
 pub type LiveTabs = Rc<dyn Fn(&App) -> (Vec<String>, usize)>;
 
-/// What the app hands the environment: the tab session it records through, the tabs on
-/// screen, and the fetch.
+/// What the app hands the environment: the tab session it records through, and the tabs on
+/// screen.
 #[derive(Clone)]
 pub struct UpdateHooks {
     /// The open-tab session whose latch the hand-off sets and the reclaim lifts.
     pub tabs: Rc<RefCell<TabSession>>,
     /// The tabs on screen.
     pub live_tabs: LiveTabs,
-    /// The fetch and fast-forward.
-    pub sync: SyncRunner,
 }
 
 /// The real [`UpdateEnvironment`].
 pub struct LiveUpdateEnvironment {
     source_root: String,
-    script: (&'static str, &'static str),
     relaunch_path: String,
     hooks: UpdateHooks,
     runner: Arc<dyn ProcessRunner>,
@@ -117,7 +108,6 @@ impl LiveUpdateEnvironment {
     pub fn new(build: &AppBuild, hooks: UpdateHooks) -> Option<Self> {
         Some(Self {
             source_root: build.source_root.clone()?,
-            script: build.update_mode().map(|_| build.variant.build_script())?,
             relaunch_path: build.relaunch_path()?,
             hooks,
             runner: Arc::new(ShellRunner),
@@ -150,7 +140,6 @@ impl LiveUpdateEnvironment {
     fn steps(&self) -> Steps {
         Steps {
             source_root: self.source_root.clone(),
-            script: self.script,
             relaunch_path: self.relaunch_path.clone(),
             runner: Arc::clone(&self.runner),
             shell: self.shell.clone(),
@@ -168,10 +157,6 @@ impl UpdateEnvironment for LiveUpdateEnvironment {
     fn source_state(&self, cx: &mut App) -> Task<SourceStateResult> {
         let root = self.source_root.clone();
         blocking(cx.background_executor(), move || source_state(&root))
-    }
-
-    fn sync(&self, cancel: Arc<CancelToken>, cx: &mut App) -> Task<UpdateSyncResult> {
-        (self.hooks.sync)(self.source_root.clone(), cancel, cx)
     }
 
     fn install(
@@ -219,8 +204,6 @@ pub const QUIT_DELAY: Duration = Duration::from_millis(250);
 pub(crate) struct Steps {
     /// The checkout the bundle was built from.
     pub(crate) source_root: String,
-    /// The script the update runs, relative to the checkout, and its arguments.
-    pub(crate) script: (&'static str, &'static str),
     /// The bundle to launch once the build finishes.
     pub(crate) relaunch_path: String,
     /// What runs every outside step.
@@ -261,7 +244,7 @@ impl Steps {
         if !std::path::Path::new(&self.source_root).is_dir() {
             return ToolchainCheck::Failure(format!(
                 "the checkout this bundle was built from is gone: {}; rebuild from its new \
-                 location with scripts/install-app.sh",
+                 location with scripts/build-app.sh",
                 self.source_root
             ));
         }
@@ -270,23 +253,23 @@ impl Steps {
         toolchain_check(&outcome, self.limits.toolchain)
     }
 
-    /// Builds and installs the bundle, streaming its output to `on_output`. `None` on
-    /// success. Blocks; bounded by the idle clock, the wall clock and `cancel`.
+    /// Rebuilds the bundle, streaming its output to `on_output`. `None` on success. Blocks;
+    /// bounded by the idle clock, the wall clock and `cancel`.
     #[must_use]
     pub(crate) fn install(&self, cancel: &CancelToken, on_output: &OutputSink) -> Option<String> {
-        let (script, argument) = self.script;
+        let script = AppBuild::BUILD_SCRIPT;
         let path = shell_word::quote(&format!("{}/{script}", self.source_root));
         let command = self.shell_command(
-            &format!("exec {path}{argument}"),
+            &format!("exec {path}"),
             self.limits.build,
             Some(self.limits.build_idle),
         );
         let forward = |lines: &[String]| on_output(lines.to_vec());
         let outcome = self.runner.run(&command, cancel, Some(&forward));
-        install_failure(&outcome, &format!("{script}{argument}"), self.limits)
+        install_failure(&outcome, script, self.limits)
     }
 
-    /// Launches the installed bundle as a new instance. `None` on success. Blocks; bounded by
+    /// Launches the rebuilt bundle as a new instance. `None` on success. Blocks; bounded by
     /// the relaunch limit.
     #[must_use]
     pub(crate) fn relaunch(&self) -> Option<String> {
@@ -400,7 +383,6 @@ pub fn source_state(root: &str) -> SourceStateResult {
             .worktree_status(Some(tree), DEFAULT_STATUS_SCAN_CAP)
             .map_err(|error| error.to_string())?;
         Ok(SourceStateResult::State(SourceState::from_report(
-            &commit.to_hex(),
             short_branch(head.ref_name.as_deref()),
             &report,
         )))

@@ -60,12 +60,18 @@ mod tests {
     #[test]
     fn only_string_entries_are_kept() {
         let mut entries = BTreeMap::new();
-        entries.insert("RCGitVariant".to_owned(), Value::String("dev".to_owned()));
+        entries.insert(
+            "RCGitSourceRoot".to_owned(),
+            Value::String("/src".to_owned()),
+        );
         entries.insert("LSUIElement".to_owned(), Value::Bool(true));
         entries.insert("CFBundleVersion".to_owned(), Value::String("42".to_owned()));
         let found = strings(Some(Value::Dict(entries)));
         assert_eq!(found.len(), 2);
-        assert_eq!(found.get("RCGitVariant").map(String::as_str), Some("dev"));
+        assert_eq!(
+            found.get("RCGitSourceRoot").map(String::as_str),
+            Some("/src")
+        );
         assert_eq!(found.get("CFBundleVersion").map(String::as_str), Some("42"));
     }
 

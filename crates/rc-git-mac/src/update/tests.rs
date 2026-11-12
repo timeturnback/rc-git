@@ -11,7 +11,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::TestAppContext;
-use rc_git_kit::app_build::{AppVariant, UpdateMode};
 use rc_git_kit::platform::process::{ScriptedRunner, Termination};
 use rc_git_kit::platform::settings::MemorySettings;
 use rc_git_kit::platform::stores::SharedSettings;
@@ -57,14 +56,10 @@ impl Checkout {
         ]
     }
 
-    fn steps(&self, mode: UpdateMode, prefix: &str, limits: Limits) -> Steps {
+    fn steps(&self, prefix: &str, limits: Limits) -> Steps {
         Steps {
             source_root: self.root.clone(),
-            script: match mode {
-                UpdateMode::Update => AppVariant::Release.build_script(),
-                UpdateMode::Rebuild => AppVariant::Dev.build_script(),
-            },
-            relaunch_path: format!("{}/RCGit-dev.app", self.root),
+            relaunch_path: format!("{}/RCGit.app", self.root),
             runner: Arc::new(ShellRunner),
             shell: self.shell(prefix),
             limits,
@@ -85,14 +80,14 @@ fn limits() -> Limits {
 fn a_cargo_that_answers_is_ready() {
     let checkout = Checkout::new();
     checkout.write_executable("bin/cargo", "echo 'cargo 1.98.0'");
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    let steps = checkout.steps("", limits());
     assert_eq!(steps.toolchain(), ToolchainCheck::Ready);
 }
 
 #[test]
 fn a_missing_cargo_is_named() {
     let checkout = Checkout::new();
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    let steps = checkout.steps("", limits());
     assert_eq!(
         steps.toolchain(),
         ToolchainCheck::Missing(vec!["cargo".to_owned()])
@@ -104,7 +99,7 @@ fn a_missing_cargo_is_named() {
 fn a_cargo_proxy_with_no_toolchain_is_missing() {
     let checkout = Checkout::new();
     checkout.write_executable("bin/cargo", "echo 'error: no toolchain' >&2; exit 1");
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    let steps = checkout.steps("", limits());
     assert_eq!(
         steps.toolchain(),
         ToolchainCheck::Missing(vec!["cargo".to_owned()])
@@ -119,7 +114,7 @@ fn a_hanging_login_shell_fails_the_probe_at_its_limit() {
         toolchain: Duration::from_secs(2),
         ..limits()
     };
-    let steps = checkout.steps(UpdateMode::Update, "exec sleep 30;", short);
+    let steps = checkout.steps("exec sleep 30;", short);
     let ToolchainCheck::Failure(message) = steps.toolchain() else {
         panic!("expected the probe to fail");
     };
@@ -132,11 +127,7 @@ fn a_hanging_login_shell_fails_the_probe_at_its_limit() {
 #[test]
 fn a_login_shell_that_fails_is_a_failure_with_its_last_line() {
     let checkout = Checkout::new();
-    let steps = checkout.steps(
-        UpdateMode::Update,
-        "echo 'bad .zprofile'; exit 3;",
-        limits(),
-    );
+    let steps = checkout.steps("echo 'bad .zprofile'; exit 3;", limits());
     assert_eq!(
         steps.toolchain(),
         ToolchainCheck::Failure(
@@ -149,7 +140,7 @@ fn a_login_shell_that_fails_is_a_failure_with_its_last_line() {
 #[test]
 fn a_checkout_that_is_gone_fails_before_the_probe() {
     let checkout = Checkout::new();
-    let mut steps = checkout.steps(UpdateMode::Update, "", limits());
+    let mut steps = checkout.steps("", limits());
     steps.source_root = format!("{}/gone", checkout.root);
     let ToolchainCheck::Failure(message) = steps.toolchain() else {
         panic!("expected a failure");
@@ -168,13 +159,13 @@ fn install(steps: &Steps, cancel: &CancelToken) -> (Option<String>, Vec<String>)
 }
 
 #[test]
-fn the_release_build_runs_install_app_and_streams_its_output() {
+fn the_build_runs_build_app_with_no_arguments_and_streams_its_output() {
     let checkout = Checkout::new();
     checkout.write_executable(
-        "scripts/install-app.sh",
+        "scripts/build-app.sh",
         "echo \"==> building in $(pwd)\"; echo \"args: $#\"; echo built",
     );
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    let steps = checkout.steps("", limits());
     let (result, lines) = install(&steps, &CancelToken::new());
     assert_eq!(result, None);
     assert_eq!(
@@ -191,28 +182,17 @@ fn the_release_build_runs_install_app_and_streams_its_output() {
 }
 
 #[test]
-fn the_dev_build_runs_build_app_with_dev() {
-    let checkout = Checkout::new();
-    checkout.write_executable("scripts/build-app.sh", "echo \"args: $*\"");
-    checkout.write_executable("scripts/install-app.sh", "echo wrong script; exit 1");
-    let steps = checkout.steps(UpdateMode::Rebuild, "", limits());
-    let (result, lines) = install(&steps, &CancelToken::new());
-    assert_eq!(result, None);
-    assert_eq!(lines, ["args: --dev"]);
-}
-
-#[test]
 fn a_failed_build_names_the_script_and_its_last_line() {
     let checkout = Checkout::new();
     checkout.write_executable(
-        "scripts/install-app.sh",
+        "scripts/build-app.sh",
         "echo '==> building'; echo 'error: linker error' >&2; echo; exit 1",
     );
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    let steps = checkout.steps("", limits());
     let (result, _) = install(&steps, &CancelToken::new());
     assert_eq!(
         result.as_deref(),
-        Some("scripts/install-app.sh failed (status 1): error: linker error")
+        Some("scripts/build-app.sh failed (status 1): error: linker error")
     );
 }
 
@@ -220,14 +200,14 @@ fn a_failed_build_names_the_script_and_its_last_line() {
 fn a_build_that_goes_quiet_is_stopped_by_the_idle_clock() {
     let checkout = Checkout::new();
     checkout.write_executable(
-        "scripts/install-app.sh",
+        "scripts/build-app.sh",
         "echo 'waiting for the build lock'; exec sleep 60",
     );
     let quiet = Limits {
         build_idle: Duration::from_secs(3),
         ..limits()
     };
-    let steps = checkout.steps(UpdateMode::Update, "", quiet);
+    let steps = checkout.steps("", quiet);
     let (result, _) = install(&steps, &CancelToken::new());
     assert_eq!(
         result.as_deref(),
@@ -239,14 +219,14 @@ fn a_build_that_goes_quiet_is_stopped_by_the_idle_clock() {
 fn a_build_that_keeps_printing_is_stopped_by_the_wall_clock() {
     let checkout = Checkout::new();
     checkout.write_executable(
-        "scripts/install-app.sh",
+        "scripts/build-app.sh",
         "exec perl -e '$| = 1; while (1) { print \"tick\\n\"; select(undef, undef, undef, 0.2) }'",
     );
     let busy = Limits {
         build: Duration::from_secs(4),
         ..limits()
     };
-    let steps = checkout.steps(UpdateMode::Update, "", busy);
+    let steps = checkout.steps("", busy);
     let (result, _) = install(&steps, &CancelToken::new());
     assert_eq!(
         result.as_deref(),
@@ -258,8 +238,8 @@ fn a_build_that_keeps_printing_is_stopped_by_the_wall_clock() {
 #[test]
 fn a_cancelled_build_is_killed_and_says_cancelled() {
     let checkout = Checkout::new();
-    checkout.write_executable("scripts/install-app.sh", "echo started; exec sleep 60");
-    let steps = checkout.steps(UpdateMode::Update, "", limits());
+    checkout.write_executable("scripts/build-app.sh", "echo started; exec sleep 60");
+    let steps = checkout.steps("", limits());
     let cancel = Arc::new(CancelToken::new());
     let from_output = Arc::clone(&cancel);
     let sink: OutputSink = Arc::new(move |_| from_output.signal());
@@ -273,8 +253,7 @@ fn scripted(outcome: Outcome) -> (Steps, Arc<ScriptedRunner>) {
     runner.push(outcome);
     let steps = Steps {
         source_root: "/checkout".to_owned(),
-        script: AppVariant::Release.build_script(),
-        relaunch_path: "/Applications/RCGit.app".to_owned(),
+        relaunch_path: "/checkout/RCGit.app".to_owned(),
         runner: Arc::clone(&runner) as Arc<dyn ProcessRunner>,
         shell: LOGIN_SHELL.iter().map(|word| (*word).to_owned()).collect(),
         limits: limits(),
@@ -298,7 +277,7 @@ fn relaunch_opens_a_new_instance_of_the_bundle() {
     let commands = runner.commands();
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].executable, "/usr/bin/open");
-    assert_eq!(commands[0].arguments, ["-n", "/Applications/RCGit.app"]);
+    assert_eq!(commands[0].arguments, ["-n", "/checkout/RCGit.app"]);
     assert_eq!(commands[0].timeout, Some(limits().relaunch));
 }
 
@@ -311,7 +290,7 @@ fn a_launch_that_fails_says_the_bundle_is_built_but_not_running() {
     assert_eq!(
         steps.relaunch().as_deref(),
         Some(
-            "built, but could not launch /Applications/RCGit.app: open failed (status 1): \
+            "built, but could not launch /checkout/RCGit.app: open failed (status 1): \
              LSOpenURLsWithRole() failed with error -10810"
         )
     );
@@ -326,7 +305,7 @@ fn a_launch_that_hangs_is_a_failure() {
     assert_eq!(
         steps.relaunch().as_deref(),
         Some(
-            "built, but could not launch /Applications/RCGit.app: open did not answer in 5s: no output"
+            "built, but could not launch /checkout/RCGit.app: open did not answer in 5s: no output"
         )
     );
 }
@@ -335,10 +314,9 @@ fn a_launch_that_hangs_is_a_failure() {
 fn the_checkout_is_read_through_the_core() {
     let fixture = Fixture::standard();
     let root = fixture.path().to_string_lossy().into_owned();
-    let head = fixture.rev_parse("HEAD");
     assert_eq!(
         source_state(&root),
-        SourceStateResult::State(SourceState::new(&head, Some("main"), &[]))
+        SourceStateResult::State(SourceState::new(Some("main"), &[]))
     );
     fixture.write("README.md", b"changed\n");
     fixture.write("RCGit.app/Contents/Info.plist", b"build output\n");
@@ -346,7 +324,6 @@ fn the_checkout_is_read_through_the_core() {
         panic!("expected a state");
     };
     assert_eq!(state.dirty_paths, ["README.md"]);
-    assert!(!state.is_clean());
 }
 
 #[test]
@@ -436,9 +413,6 @@ fn hooks(tabs: Rc<RefCell<TabSession>>, live: Vec<String>) -> UpdateHooks {
     UpdateHooks {
         tabs,
         live_tabs: Rc::new(move |_| (live.clone(), 0)),
-        sync: Rc::new(|_, _, _| {
-            Task::ready(UpdateSyncResult::Failure("no sync in this test".to_owned()))
-        }),
     }
 }
 
@@ -449,27 +423,9 @@ fn an_unstamped_bundle_has_no_environment() {
     let mut build = AppBuild::from_info(&std::collections::HashMap::new());
     assert!(LiveUpdateEnvironment::new(&build, hooks(Rc::clone(&tabs), Vec::new())).is_none());
     build.source_root = Some("/checkout".to_owned());
-    build.variant = AppVariant::Dev;
     let environment = LiveUpdateEnvironment::new(&build, hooks(tabs, Vec::new())).unwrap();
-    assert_eq!(environment.relaunch_path, "/checkout/RCGit-dev.app");
-    assert_eq!(environment.script, ("scripts/build-app.sh", " --dev"));
+    assert_eq!(environment.relaunch_path, "/checkout/RCGit.app");
     assert_eq!(environment.shell, LOGIN_SHELL);
-}
-
-#[test]
-fn the_gpui_bundle_rebuilds_and_relaunches_itself() {
-    let (session, _) = session();
-    let mut build = AppBuild::from_info(&std::collections::HashMap::new());
-    build.source_root = Some("/checkout".to_owned());
-    build.variant = AppVariant::Gpui;
-    let environment =
-        LiveUpdateEnvironment::new(&build, hooks(Rc::new(RefCell::new(session)), Vec::new()))
-            .unwrap();
-    assert_eq!(environment.relaunch_path, "/checkout/RCGit-gpui.app");
-    assert_eq!(
-        environment.script,
-        ("scripts/build-app.sh", " --gpui --dev")
-    );
 }
 
 /// The environment hands over the tabs on screen through the session, and takes them back.
@@ -486,27 +442,6 @@ fn the_environment_hands_off_and_reclaims_the_live_tabs(cx: &mut TestAppContext)
     assert_eq!(tabs.borrow().tabs().paths(), ["/x", "/y"]);
     cx.update(|cx| environment.reclaim(cx));
     assert!(!tabs.borrow().is_handed_off());
-}
-
-/// The fetch goes to the app's sync runner, for the checkout the bundle was built from.
-#[gpui::test]
-async fn the_fetch_goes_to_the_sync_runner_for_the_checkout(cx: &mut TestAppContext) {
-    let (session, _) = session();
-    let seen: Rc<RefCell<Vec<String>>> = Rc::default();
-    let record = Rc::clone(&seen);
-    let mut build = AppBuild::from_info(&std::collections::HashMap::new());
-    build.source_root = Some("/checkout".to_owned());
-    let mut hooks = hooks(Rc::new(RefCell::new(session)), Vec::new());
-    hooks.sync = Rc::new(move |root, _, _| {
-        record.borrow_mut().push(root);
-        Task::ready(UpdateSyncResult::Synced { notice: None })
-    });
-    let environment = LiveUpdateEnvironment::new(&build, hooks).unwrap();
-    let result = cx
-        .update(|cx| environment.sync(Arc::new(CancelToken::new()), cx))
-        .await;
-    assert_eq!(result, UpdateSyncResult::Synced { notice: None });
-    assert_eq!(*seen.borrow(), ["/checkout"]);
 }
 
 #[test]

@@ -5,7 +5,6 @@
 
 use gpui::{Action, App, KeyBinding, Menu, MenuItem, OsAction, SharedString, actions};
 use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use rc_git_kit::app_build::UpdateMode;
 use rc_git_kit::back_forward::ContentMode;
 use rc_git_kit::menu_shortcuts::{SHORTCUTS, search_title};
 use rc_git_kit::recent_repositories::display_path;
@@ -24,7 +23,7 @@ actions!(
         ShowAll,
         /// Quits.
         Quit,
-        /// Rebuilds and relaunches the dev bundle (updater, phase 7).
+        /// Rebuilds and relaunches the bundle (updater, phase 7).
         RebuildNow,
         /// Opens the update window (updater, phase 7).
         ShowUpdate,
@@ -221,9 +220,6 @@ pub struct MenuState {
     pub default_branch: Option<String>,
     /// The front tab's Pull and Push titles, with the counts of its last status.
     pub sync_titles: Option<(String, String)>,
-    /// What the bundle's self-update does: `Update rc-git…` for the release bundle, the
-    /// rebuild pair otherwise. The items stay disabled for a build that cannot update.
-    pub update_mode: Option<UpdateMode>,
 }
 
 fn title_of(id: &str) -> &'static str {
@@ -263,24 +259,16 @@ pub fn menus(state: &MenuState) -> Vec<Menu> {
 
 fn app_menu(state: &MenuState) -> Menu {
     let name = &state.app_name;
-    // `MainMenu.appMenu`: the release bundle updates from upstream; the dev bundle rebuilds
-    // the working tree and earns ⌥⌘R, its edit-run loop. A build with no checkout shows the
-    // dev pair disabled, since it has no handler.
-    let (update, rebuild_now) = match state.update_mode {
-        Some(UpdateMode::Update) => (titled(format!("Update {name}\u{2026}"), ShowUpdate), None),
-        Some(UpdateMode::Rebuild) | None => (
-            titled("Rebuild and Relaunch\u{2026}", ShowUpdate),
-            item("rebuild_now"),
-        ),
-    };
+    // `MainMenu.appMenu`: the bundle rebuilds the working tree and earns ⌥⌘R, its edit-run
+    // loop. A build with no checkout shows the pair disabled, since it has no handler.
     Menu::new(name.clone()).items(
         [
             Some(titled(format!("About {name}"), ShowAbout)),
             Some(MenuItem::separator()),
             item("settings"),
             Some(MenuItem::separator()),
-            Some(update),
-            rebuild_now,
+            Some(titled("Rebuild and Relaunch\u{2026}", ShowUpdate)),
+            item("rebuild_now"),
             Some(MenuItem::separator()),
             Some(titled(format!("Hide {name}"), HideApp)),
             item("hide_others"),
@@ -500,7 +488,6 @@ mod tests {
             mode: ContentMode::Files,
             default_branch: None,
             sync_titles: None,
-            update_mode: Some(UpdateMode::Rebuild),
         };
         let mut shown = Vec::new();
         for menu in menus(&state) {
@@ -519,7 +506,7 @@ mod tests {
         }
     }
 
-    fn app_items(update_mode: Option<UpdateMode>) -> Vec<String> {
+    fn app_items() -> Vec<String> {
         let state = MenuState {
             app_name: "rc-git".to_owned(),
             recents: Vec::new(),
@@ -528,7 +515,6 @@ mod tests {
             mode: ContentMode::Files,
             default_branch: None,
             sync_titles: None,
-            update_mode,
         };
         let mut titles = Vec::new();
         for item in app_menu(&state).items {
@@ -540,23 +526,17 @@ mod tests {
     }
 
     #[test]
-    fn the_update_items_follow_the_build_mode() {
-        let release = app_items(Some(UpdateMode::Update));
+    fn the_app_menu_offers_the_rebuild_pair() {
+        let items = app_items();
         assert!(
-            release.contains(&"Update rc-git\u{2026}".to_owned()),
-            "{release:?}"
+            items.contains(&"Rebuild and Relaunch\u{2026}".to_owned()),
+            "{items:?}"
         );
-        assert!(!release.contains(&"Rebuild Now".to_owned()), "{release:?}");
-        assert!(!release.iter().any(|title| title.starts_with("Rebuild and")));
-        for mode in [Some(UpdateMode::Rebuild), None] {
-            let dev = app_items(mode);
-            assert!(
-                dev.contains(&"Rebuild and Relaunch\u{2026}".to_owned()),
-                "{dev:?}"
-            );
-            assert!(dev.contains(&title_of("rebuild_now").to_owned()), "{dev:?}");
-            assert!(!dev.iter().any(|title| title.starts_with("Update ")));
-        }
-        assert_eq!(release.first().map(String::as_str), Some("About rc-git"));
+        assert!(
+            items.contains(&title_of("rebuild_now").to_owned()),
+            "{items:?}"
+        );
+        assert!(!items.iter().any(|title| title.starts_with("Update ")));
+        assert_eq!(items.first().map(String::as_str), Some("About rc-git"));
     }
 }

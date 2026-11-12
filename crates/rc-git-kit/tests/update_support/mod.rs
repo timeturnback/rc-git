@@ -1,6 +1,6 @@
 //! Environments for the update model's tests, ported from `UpdateModelTests.swift`: a
-//! scripted stub that records every call, a probe held at a gate, and a fetch or build that
-//! never returns on its own.
+//! scripted stub that records every call, a probe held at a gate, and a build that never
+//! returns on its own.
 
 #![expect(
     dead_code,
@@ -14,22 +14,20 @@ use std::thread;
 use std::time::Duration;
 
 use gpui::{App, AppContext as _, Entity, Task, TestAppContext, WeakEntity};
-use rc_git_kit::app_build::{AppBuild, AppVariant};
+use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::blocking::blocking;
 use rc_git_kit::guard_bridge::CancelToken;
 use rc_git_kit::oneshot;
 use rc_git_kit::update::{
     LogMark, OutputSink, SourceState, SourceStateResult, ToolchainCheck, UpdateEnvironment,
-    UpdateEvent, UpdateModel, UpdateState, UpdateStep, UpdateSyncResult,
+    UpdateEvent, UpdateModel, UpdateState,
 };
 
 pub const HEAD: &str = "a3f91c2d4e5f60718293a4b5c6d7e8f901234567";
-pub const UPSTREAM: &str = "b7d21ff0112233445566778899aabbccddeeff00";
 
 /// A bundle stamped like `scripts/build-app.sh` stamps one.
-pub fn build(variant: AppVariant, source_root: Option<&str>, commit: Option<&str>) -> AppBuild {
+pub fn build(source_root: Option<&str>, commit: Option<&str>) -> AppBuild {
     AppBuild {
-        variant,
         name: "rc-git".to_owned(),
         version: "0.1.0".to_owned(),
         build: "42".to_owned(),
@@ -40,25 +38,23 @@ pub fn build(variant: AppVariant, source_root: Option<&str>, commit: Option<&str
     }
 }
 
-/// The release bundle built clean at [`HEAD`] from `/checkout`.
-pub fn release() -> AppBuild {
-    build(AppVariant::Release, Some("/checkout"), Some(HEAD))
+/// A bundle built clean at [`HEAD`] from `/checkout`.
+pub fn stamped() -> AppBuild {
+    build(Some("/checkout"), Some(HEAD))
 }
 
 /// A clean checkout at `commit` on master.
-pub fn clean(commit: &str) -> SourceStateResult {
-    SourceStateResult::State(SourceState::new(commit, Some("master"), &[]))
+pub fn clean() -> SourceStateResult {
+    SourceStateResult::State(SourceState::new(Some("master"), &[]))
 }
 
 /// What the stub answers.
 #[derive(Debug, Clone)]
 pub struct Script {
     pub toolchain: ToolchainCheck,
-    /// One entry per `source_state` call: preflight reads it, then the sync step does.
+    /// One entry per `source_state` call: each preflight reads the next. A clean checkout at
+    /// [`HEAD`] unless a test says otherwise.
     pub source_states: Vec<SourceStateResult>,
-    pub sync_failure: Option<String>,
-    /// A problem the pull survived, reported with a successful sync.
-    pub sync_notice: Option<String>,
     pub install_failure: Option<String>,
     /// Printed by the build in one read.
     pub install_output: Vec<String>,
@@ -71,23 +67,11 @@ impl Default for Script {
     fn default() -> Self {
         Self {
             toolchain: ToolchainCheck::Ready,
-            source_states: Vec::new(),
-            sync_failure: None,
-            sync_notice: None,
+            source_states: vec![clean()],
             install_failure: None,
             install_output: Vec::new(),
             install_batches: Vec::new(),
             relaunch_failure: None,
-        }
-    }
-}
-
-impl Script {
-    /// A release update whose fetch moves the checkout from [`HEAD`] to [`UPSTREAM`].
-    pub fn synced() -> Self {
-        Self {
-            source_states: vec![clean(HEAD), clean(UPSTREAM)],
-            ..Self::default()
         }
     }
 }
@@ -152,17 +136,6 @@ impl UpdateEnvironment for Stub {
         Task::ready(answer)
     }
 
-    fn sync(&self, _cancel: Arc<CancelToken>, cx: &mut App) -> Task<UpdateSyncResult> {
-        self.call("sync", cx);
-        let script = self.script.borrow();
-        Task::ready(match &script.sync_failure {
-            Some(failure) => UpdateSyncResult::Failure(failure.clone()),
-            None => UpdateSyncResult::Synced {
-                notice: script.sync_notice.clone(),
-            },
-        })
-    }
-
     fn install(
         &self,
         _cancel: Arc<CancelToken>,
@@ -217,8 +190,8 @@ pub fn model(
 }
 
 /// Starts an update and waits for it to settle.
-pub async fn start(model: &Entity<UpdateModel>, force: bool, cx: &mut TestAppContext) {
-    model.update(cx, |model, cx| model.start(force, cx)).await;
+pub async fn start(model: &Entity<UpdateModel>, cx: &mut TestAppContext) {
+    model.update(cx, UpdateModel::start).await;
     cx.run_until_parked();
 }
 
@@ -313,10 +286,6 @@ impl UpdateEnvironment for GatedToolchain {
         Task::ready(SourceStateResult::Failure("unused".to_owned()))
     }
 
-    fn sync(&self, _cancel: Arc<CancelToken>, _cx: &mut App) -> Task<UpdateSyncResult> {
-        Task::ready(UpdateSyncResult::Failure("unused".to_owned()))
-    }
-
     fn install(
         &self,
         _cancel: Arc<CancelToken>,
@@ -337,23 +306,19 @@ impl UpdateEnvironment for GatedToolchain {
     fn quit(&self, _cx: &mut App) {}
 }
 
-/// A fetch or a build that never returns on its own: the first call to the `hanging` step
-/// waits on a thread until its cancel is signalled, like a build waiting on another build's
-/// lock. Every later call succeeds at once, so a second attempt runs clean.
-pub struct HangingStep {
-    hanging: UpdateStep,
+/// A build that never returns on its own: the first build waits on a thread until its cancel
+/// is signalled, like a build waiting on another build's lock. Every later build succeeds at
+/// once, so a second attempt runs clean.
+#[derive(Default)]
+pub struct HangingBuild {
     calls: RefCell<Vec<&'static str>>,
     /// The first build's output sink, kept so a test can print a line late.
     first_output: RefCell<Option<OutputSink>>,
 }
 
-impl HangingStep {
-    pub fn new(hanging: UpdateStep) -> Rc<Self> {
-        Rc::new(Self {
-            hanging,
-            calls: RefCell::default(),
-            first_output: RefCell::default(),
-        })
+impl HangingBuild {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self::default())
     }
 
     pub fn calls(&self) -> Vec<&'static str> {
@@ -371,35 +336,9 @@ impl HangingStep {
     pub fn first_output(&self) -> Option<OutputSink> {
         self.first_output.borrow().clone()
     }
-
-    /// Waits on a thread until `cancel` is signalled when `step` is the hanging one and this
-    /// is its first call; answers `answer(hung)`.
-    fn hang_once<T: Send + 'static>(
-        &self,
-        step: UpdateStep,
-        cancel: Arc<CancelToken>,
-        answer: impl FnOnce(bool) -> T + Send + 'static,
-        cx: &mut App,
-    ) -> Task<T> {
-        let name = if step == UpdateStep::Sync {
-            "sync"
-        } else {
-            "install"
-        };
-        self.calls.borrow_mut().push(name);
-        if step != self.hanging || self.count(name) != 1 {
-            return Task::ready(answer(false));
-        }
-        blocking(cx.background_executor(), move || {
-            while !cancel.is_signalled() {
-                thread::sleep(Duration::from_millis(2));
-            }
-            answer(true)
-        })
-    }
 }
 
-impl UpdateEnvironment for HangingStep {
+impl UpdateEnvironment for HangingBuild {
     fn toolchain(&self, _cx: &mut App) -> Task<ToolchainCheck> {
         self.calls.borrow_mut().push("toolchain");
         Task::ready(ToolchainCheck::Ready)
@@ -407,23 +346,7 @@ impl UpdateEnvironment for HangingStep {
 
     fn source_state(&self, _cx: &mut App) -> Task<SourceStateResult> {
         self.calls.borrow_mut().push("sourceState");
-        let commit = if self.count("sourceState") == 1 {
-            HEAD
-        } else {
-            UPSTREAM
-        };
-        Task::ready(clean(commit))
-    }
-
-    fn sync(&self, cancel: Arc<CancelToken>, cx: &mut App) -> Task<UpdateSyncResult> {
-        let answer = |hung| {
-            if hung {
-                UpdateSyncResult::Failure("the pull was cancelled".to_owned())
-            } else {
-                UpdateSyncResult::Synced { notice: None }
-            }
-        };
-        self.hang_once(UpdateStep::Sync, cancel, answer, cx)
+        Task::ready(clean())
     }
 
     /// Reports success even when cancelled, like a build that finished at the moment of the
@@ -435,7 +358,16 @@ impl UpdateEnvironment for HangingStep {
         cx: &mut App,
     ) -> Task<Option<String>> {
         self.first_output.borrow_mut().get_or_insert(on_output);
-        self.hang_once(UpdateStep::Install, cancel, |_| None, cx)
+        self.calls.borrow_mut().push("install");
+        if self.count("install") != 1 {
+            return Task::ready(None);
+        }
+        blocking(cx.background_executor(), move || {
+            while !cancel.is_signalled() {
+                thread::sleep(Duration::from_millis(2));
+            }
+            None
+        })
     }
 
     fn hand_off(&self, _cx: &mut App) {}
@@ -452,10 +384,10 @@ impl UpdateEnvironment for HangingStep {
     }
 }
 
-/// A model over `environment` for the release bundle.
+/// A model over `environment` for a stamped bundle.
 pub fn model_over(
     cx: &mut TestAppContext,
     environment: Rc<dyn UpdateEnvironment>,
 ) -> Entity<UpdateModel> {
-    cx.new(|cx| UpdateModel::new(release(), environment, cx))
+    cx.new(|cx| UpdateModel::new(stamped(), environment, cx))
 }

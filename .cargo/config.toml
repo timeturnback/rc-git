@@ -1,8 +1,8 @@
 # The macOS platform floor for every cargo invocation: scripts, CI, `cargo test`, rust-analyzer.
-# Without it ring's assembly objects are built for the host SDK and the Swift link warns on
+# Without it ring's assembly objects are built for the host SDK and the app link warns on
 # every one of them, and cc-based build scripts rebuild whenever the variable changes.
 # `force = true` keeps a value exported in the shell from overriding it.
-# Must equal `.macOS("15.0")` in mac/Package.swift and `LSMinimumSystemVersion` in mac/Info.plist;
-# scripts/check.sh fails when the three differ.
+# Must equal `LSMinimumSystemVersion` in crates/rc-git-app/Info.plist; scripts/check.sh fails
+# when the two differ.
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "15.0", force = true }

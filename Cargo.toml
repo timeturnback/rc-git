@@ -4,7 +4,6 @@ members = [
     "crates/rc-git-core",
     "crates/rc-git-guard",
     "crates/rc-git-highlight",
-    "crates/rc-git-ffi",
     "crates/rc-git-cli",
     "crates/rc-git-testkit",
     "crates/rc-git-kit",
