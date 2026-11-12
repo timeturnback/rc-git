@@ -14,8 +14,12 @@ use rc_git_core::{
 use rc_git_kit::back_forward::{ContentMode, HistoryScope};
 use rc_git_kit::browser::{BrowserModel, FileState, HISTORY_PAGE_SIZE};
 use rc_git_kit::fake::{FakeRepository, commit_summary, oid};
-use rc_git_kit::platform::keys::{HISTORY_COLUMN_SPLIT, HISTORY_SPLIT};
+use rc_git_kit::layout_policy::{HISTORY_AUTHOR_WIDTH, HISTORY_DATE_MIN_WIDTH};
+use rc_git_kit::platform::keys::{
+    HISTORY_AUTHOR_COLUMN, HISTORY_COLUMN_SPLIT, HISTORY_DATE_COLUMN, HISTORY_SPLIT,
+};
 use rc_git_kit::platform::settings::MemorySettings;
+use rc_git_kit::platform::settings::SettingsStore;
 use rc_git_kit::platform::stores::SubviewFrame;
 use rc_git_kit::window_geometry::{SplitAxis, split_frames};
 
@@ -402,4 +406,81 @@ fn the_splits_open_at_the_saved_sizes_and_save_a_drag(cx: &mut TestAppContext) {
     );
     let column = visual.read(|cx| f64::from(f32::from(outer.read(cx).sizes()[0])));
     assert_eq!(saved[0].frame.width.to_bits(), column.to_bits());
+}
+
+fn width_of(visual: &mut VisualTestContext, selector: &'static str) -> f64 {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    f64::from(f32::from(bounds.size.width))
+}
+
+#[gpui::test]
+fn the_date_column_opens_fitted_and_a_drag_widens_and_saves_it(cx: &mut TestAppContext) {
+    let settings = Arc::new(MemorySettings::new());
+    let harness = harness_with(cx, &[("/repo/a", history_repo(3))], &settings);
+    open_settled(&harness, cx, "/repo/a");
+    let tab = only_tab(&harness, cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.dispatch_action(ShowHistory);
+    visual.run_until_parked();
+    let fitted = width_of(&mut visual, "date-column");
+    assert!(
+        fitted > HISTORY_DATE_MIN_WIDTH,
+        "fitted to a date: {fitted}"
+    );
+    assert_eq!(
+        width_of(&mut visual, "author-column").to_bits(),
+        HISTORY_AUTHOR_WIDTH.to_bits()
+    );
+    let handle = visual.debug_bounds("date-column-handle").unwrap().center();
+    let to = handle - gpui::point(gpui::px(40.), gpui::px(0.));
+    let none = gpui::Modifiers::none();
+    visual.simulate_mouse_down(handle, gpui::MouseButton::Left, none);
+    visual.simulate_mouse_move(
+        handle - gpui::point(gpui::px(10.), gpui::px(0.)),
+        gpui::MouseButton::Left,
+        none,
+    );
+    visual.simulate_mouse_move(to, gpui::MouseButton::Left, none);
+    visual.simulate_mouse_up(to, gpui::MouseButton::Left, none);
+    visual.run_until_parked();
+    let dragged = width_of(&mut visual, "date-column");
+    assert_eq!(dragged.to_bits(), (fitted + 40.0).to_bits());
+    assert_eq!(
+        settings.double(HISTORY_DATE_COLUMN).to_bits(),
+        dragged.to_bits(),
+        "the drag is saved"
+    );
+    assert_eq!(
+        settings.value(HISTORY_AUTHOR_COLUMN),
+        None,
+        "the author column was not dragged, so it keeps no width"
+    );
+}
+
+#[gpui::test]
+fn a_click_on_a_column_handle_saves_no_width(cx: &mut TestAppContext) {
+    let settings = Arc::new(MemorySettings::new());
+    let harness = harness_with(cx, &[("/repo/a", history_repo(3))], &settings);
+    open_settled(&harness, cx, "/repo/a");
+    let tab = only_tab(&harness, cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.dispatch_action(ShowHistory);
+    visual.run_until_parked();
+    let fitted = width_of(&mut visual, "date-column");
+    let handle = visual.debug_bounds("date-column-handle").unwrap().center();
+    let none = gpui::Modifiers::none();
+    visual.simulate_mouse_down(handle, gpui::MouseButton::Left, none);
+    visual.simulate_mouse_up(handle, gpui::MouseButton::Left, none);
+    visual.run_until_parked();
+    assert_eq!(
+        width_of(&mut visual, "date-column").to_bits(),
+        fitted.to_bits()
+    );
+    assert_eq!(
+        settings.value(HISTORY_DATE_COLUMN),
+        None,
+        "a click is not a drag, so the column keeps following its fitted width"
+    );
 }

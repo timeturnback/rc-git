@@ -13,6 +13,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Icon, Sizable};
 use rc_git_core::{BrokenRef, RefEntry};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel};
@@ -350,19 +351,26 @@ impl Render for RefListView {
                     .child(Input::new(&self.filter).small()),
             )
             .child(
-                uniform_list(
-                    "refs",
-                    self.rows.len(),
-                    cx.processor(|this, range: Range<usize>, _window, cx| {
-                        let mut rows = Vec::with_capacity(range.len());
-                        for index in range {
-                            rows.push(this.render_row(index, cx));
-                        }
-                        rows
-                    }),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        uniform_list(
+                            "refs",
+                            self.rows.len(),
+                            cx.processor(|this, range: Range<usize>, _window, cx| {
+                                let mut rows = Vec::with_capacity(range.len());
+                                for index in range {
+                                    rows.push(this.render_row(index, cx));
+                                }
+                                rows
+                            }),
+                        )
+                        .track_scroll(&self.scroll)
+                        .size_full(),
+                    )
+                    .child(Scrollbar::vertical(&self.scroll)),
             );
         keys(root, cx, Self::key).context_menu({
             let weak = cx.entity().downgrade();

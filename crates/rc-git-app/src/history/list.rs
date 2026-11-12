@@ -12,14 +12,16 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::Input;
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Selectable, Sizable};
 use rc_git_core::CommitSummary;
 use rc_git_kit::back_forward::HistoryScope;
 use rc_git_kit::browser::BrowserModel;
-use rc_git_kit::dates::format_date_time;
+use rc_git_kit::dates::format_list_date_time;
 use rc_git_kit::history_text::{
     ListSource, history_error_label, list_placeholder, scope_label, search_progress, short_hash,
 };
+use rc_git_kit::layout_policy::HistoryColumns;
 use rc_git_kit::ref_filter::{CommitSearchScope, listed_time};
 
 use super::search::SearchControls;
@@ -288,7 +290,8 @@ impl HistoryPane {
                 .into_any_element();
         }
         let count = self.displayed(cx).len();
-        div()
+        let header = self.render_column_header(cx);
+        let list = div()
             .id("commit-list")
             .key_context("CommitList")
             .track_focus(&self.list_focus)
@@ -301,15 +304,29 @@ impl HistoryPane {
                     cx.processor(|this, range: Range<usize>, _window, cx| {
                         this.built_rows.set(this.built_rows.get() + range.len());
                         this.page_if_near_end(range.end, cx);
+                        let columns = this.columns.current();
                         let mut rows = Vec::with_capacity(range.len());
                         for index in range {
-                            rows.push(this.render_row(index, cx));
+                            rows.push(this.render_row(index, columns, cx));
                         }
                         rows
                     }),
                 )
                 .track_scroll(&self.list_scroll)
                 .size_full(),
+            );
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(list)
+                    .child(Scrollbar::vertical(&self.list_scroll)),
             )
             .into_any_element()
     }
@@ -350,7 +367,12 @@ impl HistoryPane {
         self.select_commit(commit.clone(), cx);
     }
 
-    fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &self,
+        index: usize,
+        columns: HistoryColumns,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(commit) = self.displayed(cx).get(index).cloned() else {
             return div().into_any_element();
         };
@@ -360,7 +382,7 @@ impl HistoryPane {
         let graphed = !model.graph_rows().is_empty();
         let lanes = model.graph_max_lane_count();
         let time = listed_time(&commit, model.search_filter());
-        let date = format_date_time(time, (self.offset_at)(time));
+        let date = format_list_date_time(time, (self.offset_at)(time));
         let theme = cx.theme();
         let width = graph::width(lanes);
         let weak = cx.entity().downgrade();
@@ -403,7 +425,7 @@ impl HistoryPane {
             )
             .child(
                 div()
-                    .w(style::AUTHOR_COLUMN_WIDTH)
+                    .w(style::points(columns.author))
                     .flex_none()
                     .overflow_hidden()
                     .text_ellipsis()
@@ -411,7 +433,7 @@ impl HistoryPane {
             )
             .child(
                 div()
-                    .w(style::DATE_COLUMN_WIDTH)
+                    .w(style::points(columns.date))
                     .flex_none()
                     .overflow_hidden()
                     .text_ellipsis()

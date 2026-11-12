@@ -30,6 +30,8 @@ pub struct TextDocument {
     /// count them as line breaks, so the view draws them as visible markers to keep its rows
     /// on these lines.
     pub non_lf_breaks: Vec<usize>,
+    /// What [`TextDocument::widest_line`] answers, found in the same walk as the breaks.
+    widest_line: Option<usize>,
 }
 
 impl TextDocument {
@@ -42,7 +44,11 @@ impl TextDocument {
             Ok(text) => text,
             Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
         };
-        let (line_starts, non_lf_breaks) = breaks(&text);
+        let Walk {
+            line_starts,
+            non_lf_breaks,
+            widest_line,
+        } = breaks(&text);
         Self {
             text,
             line_count: core_line_starts.len(),
@@ -50,7 +56,16 @@ impl TextDocument {
             is_lossy: !valid_utf8,
             line_starts,
             non_lf_breaks,
+            widest_line,
         }
+    }
+
+    /// The line with the most characters, line break left out: the one a viewer that does
+    /// not wrap measures to know how far it scrolls sideways. The first of equals wins;
+    /// `None` for an empty document.
+    #[must_use]
+    pub fn widest_line(&self) -> Option<usize> {
+        self.widest_line
     }
 
     /// The byte range in `text` of a match the core found at byte `byte_column` of zero-based
@@ -86,16 +101,68 @@ impl TextDocument {
     }
 }
 
-/// One walk over the decoded text's bytes: line starts and the non-LF row breaks.
-fn breaks(text: &str) -> (Vec<usize>, Vec<usize>) {
+/// What one walk over the decoded text finds.
+struct Walk {
+    line_starts: Vec<usize>,
+    non_lf_breaks: Vec<usize>,
+    widest_line: Option<usize>,
+}
+
+/// The widest line so far, by characters with the line's trailing CRs left out.
+#[derive(Default)]
+struct Widest {
+    /// Characters on the line being walked, its CRs so far included.
+    width: usize,
+    /// How many CRs end the line being walked so far.
+    trailing_cr: usize,
+    line: usize,
+    best: Option<(usize, usize)>,
+}
+
+impl Widest {
+    fn byte(&mut self, byte: u8) {
+        if byte & 0xC0 != 0x80 {
+            self.width += 1;
+        }
+        if byte == b'\r' {
+            self.trailing_cr += 1;
+        } else {
+            self.trailing_cr = 0;
+        }
+    }
+
+    fn end_line(&mut self) {
+        let width = self.width - self.trailing_cr;
+        if self.best.is_none_or(|(_, most)| width > most) {
+            self.best = Some((self.line, width));
+        }
+        self.line += 1;
+        self.width = 0;
+        self.trailing_cr = 0;
+    }
+}
+
+/// One walk over the decoded text's bytes: line starts, the non-LF row breaks, and the widest
+/// line.
+fn breaks(text: &str) -> Walk {
     let bytes = text.as_bytes();
     if bytes.is_empty() {
-        return (Vec::new(), Vec::new());
+        return Walk {
+            line_starts: Vec::new(),
+            non_lf_breaks: Vec::new(),
+            widest_line: None,
+        };
     }
     let mut starts = vec![0];
     let mut non_lf = Vec::new();
+    let mut widest = Widest::default();
     for (index, byte) in bytes.iter().enumerate() {
         let next = bytes.get(index + 1).copied();
+        if *byte == b'\n' {
+            widest.end_line();
+        } else {
+            widest.byte(*byte);
+        }
         match *byte {
             b'\n' => starts.push(index + 1),
             b'\r' if next != Some(b'\n') => non_lf.push(index),
@@ -108,7 +175,14 @@ fn breaks(text: &str) -> (Vec<usize>, Vec<usize>) {
     if starts.len() > 1 && starts.last() == Some(&bytes.len()) {
         starts.pop();
     }
-    (starts, non_lf)
+    if bytes.last() != Some(&b'\n') {
+        widest.end_line();
+    }
+    Walk {
+        line_starts: starts,
+        non_lf_breaks: non_lf,
+        widest_line: widest.best.map(|(line, _)| line),
+    }
 }
 
 /// Whether the bytes at `index` (an `E2` lead) encode U+2028 (`E2 80 A8`) or U+2029

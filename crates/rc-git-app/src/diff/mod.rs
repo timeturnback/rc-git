@@ -33,6 +33,22 @@
 //! - **Selection and copy.** Rows select by press, shift-press and drag; ⌘C copies the selected
 //!   rows as unified-diff text (header lines and signed lines) and ⌘A selects every row.
 //!
+//! # Long lines
+//!
+//! [`WrapLines`], set app-wide from View > Wrap Lines or the path bar, picks how a line wider
+//! than the pane draws; it is on until turned off. On, rows wrap to the pane's width in a
+//! variable-height `list`, which still lays out only the rows on screen. Off, rows stay one
+//! line high in the `uniform_list`, which scrolls sideways as far as the widest row
+//! ([`rc_git_kit::diff_rows::widest_row`] names the one it measures), with a scrollbar on each
+//! axis for a pointer that has no sideways wheel. Switching keeps the top row in view.
+//!
+//! # The path bar
+//!
+//! [`DiffView::path_bar`] is the bar an owner draws over the view: the file's path, then the
+//! wrap toggle and the expand toggle. Both dispatch their menu action from the view's focus,
+//! so the window's handler for [`ToggleDiffExpanded`] and the app's for [`ToggleWrapLines`]
+//! answer them as they answer the View menu.
+//!
 //! Syntax colors are not drawn: the Swift diff had none either.
 
 use std::cell::Cell;
@@ -41,19 +57,26 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    Render, ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window, div,
-    prelude::FluentBuilder, uniform_list,
+    AnyElement, App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, HighlightStyle,
+    Hsla, InteractiveElement, IntoElement, ListHorizontalSizingBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString, Styled, StyledText,
+    Window, div, list, prelude::FluentBuilder, uniform_list,
 };
-use gpui_component::ActiveTheme;
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
 use rc_git_core::bstr::ByteSlice;
 use rc_git_core::{BlobDiff, DiffHunk, DiffLine, DiffLineKind};
-use rc_git_kit::diff_rows::{DiffRow, header, rows, sign};
+use rc_git_kit::diff_rows::{DiffRow, header, rows, sign, widest_row};
 use rc_git_kit::diff_text::{owning_hunk, placeholder};
 use rc_git_kit::models::line_end_marker;
 
+use crate::icons::{Glyph, icon};
+use crate::list_rows::{RowScroll, WrapLines};
+use crate::menus::{EXPAND_DIFF_TITLE, ToggleDiffExpanded, ToggleWrapLines, WRAP_LINES_TITLE};
 use crate::style;
+
+/// The expand toggle's tooltip while the diff fills the window.
+const RESTORE_DIFF_TOOLTIP: &str = "Show the Panes Beside the Diff";
 
 /// What a diff view shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -115,9 +138,11 @@ pub type RowPrefix = Rc<dyn Fn(RowContext, &mut Window, &mut App) -> AnyElement>
 pub struct DiffView {
     content: DiffContent,
     rows: Arc<[DiffRow]>,
+    /// The row the one-line list measures for its scroll width.
+    widest: Option<usize>,
     prefix: Option<RowPrefix>,
     focus: FocusHandle,
-    scroll: UniformListScrollHandle,
+    scroll: RowScroll,
     /// The selected rows: where the press began, and where it is now.
     selection: Option<(usize, usize)>,
     dragging: bool,
@@ -139,9 +164,10 @@ impl DiffView {
         Self {
             content: DiffContent::Empty,
             rows: Arc::new([]),
+            widest: None,
             prefix: None,
             focus: cx.focus_handle(),
-            scroll: UniformListScrollHandle::new(),
+            scroll: RowScroll::new(0, cx),
             selection: None,
             dragging: false,
             built_rows: Rc::default(),
@@ -159,9 +185,10 @@ impl DiffView {
             DiffContent::Empty | DiffContent::Placeholder(_) => Arc::new([]),
         };
         self.content = content;
+        self.widest = widest_row(self.hunks(), &self.rows);
         self.selection = None;
         self.dragging = false;
-        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.scroll.reset(self.rows.len());
         cx.notify();
     }
 
@@ -248,6 +275,12 @@ impl DiffView {
         self.built_rows.get()
     }
 
+    /// Both lists' scroll, for the tests that read where the rows are.
+    #[cfg(test)]
+    pub(crate) fn row_scroll(&self) -> &RowScroll {
+        &self.scroll
+    }
+
     fn hunks(&self) -> &[DiffHunk] {
         match &self.content {
             DiffContent::Hunks(hunks) => hunks,
@@ -332,10 +365,11 @@ impl DiffView {
             .prefix
             .as_ref()
             .map(|prefix| prefix(RowContext { row, info }, window, cx));
+        let wraps = self.scroll.wraps();
         let (old, new, body, tint) = match info {
             DiffRow::Header { hunk } => {
                 let text = self.hunks().get(hunk).map(header).unwrap_or_default();
-                (None, None, header_body(text, colors.muted), None)
+                (None, None, header_body(text, colors.muted, wraps), None)
             }
             DiffRow::Line {
                 hunk,
@@ -348,7 +382,7 @@ impl DiffView {
                 };
                 let color = colors.of(line.kind);
                 let tint = (line.kind != DiffLineKind::Context).then_some(color);
-                (old, new, line_body(line, color, colors.muted), tint)
+                (old, new, line_body(line, color, colors.muted, wraps), tint)
             }
         };
         div()
@@ -356,8 +390,7 @@ impl DiffView {
             .flex()
             .flex_none()
             .w_full()
-            .overflow_hidden()
-            .whitespace_nowrap()
+            .when(!wraps, Styled::whitespace_nowrap)
             .font_family(style::MONOSPACE_FONT)
             .text_size(style::TEXT_MONOSPACE)
             .when_some(tint, |div, tint| {
@@ -379,6 +412,65 @@ impl DiffView {
                 cx.listener(move |this, _, _, cx| this.context_press(row, cx)),
             )
             .on_mouse_move(cx.listener(move |this, event, _, cx| this.dragged(row, event, cx)))
+            .into_any_element()
+    }
+
+    /// The bar an owner draws over the view: `path`, then the wrap and expand toggles.
+    /// `expanded` is whether the owner shows the diff across the whole window.
+    pub fn path_bar(&self, path: Option<SharedString>, expanded: bool, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let wraps = WrapLines::on(cx);
+        let wrap_focus = self.focus.clone();
+        let expand_focus = self.focus.clone();
+        let (expand_glyph, expand_tip) = if expanded {
+            (Glyph::RestoreDiff, RESTORE_DIFF_TOOLTIP)
+        } else {
+            (Glyph::ExpandDiff, EXPAND_DIFF_TITLE)
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(style::ROW_GAP)
+            .pl(style::MARGIN)
+            .pr(style::BAR_PADDING)
+            .h(style::LIST_ROW_HEIGHT + style::BAR_PADDING * 2.)
+            .border_b(style::HAIRLINE)
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(style::TEXT_CAPTION)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.foreground)
+                    .children(path),
+            )
+            .child(
+                Button::new("diff-wrap-lines")
+                    .xsmall()
+                    .ghost()
+                    .icon(Icon::new(icon(Glyph::WrapLines)))
+                    .selected(wraps)
+                    .tooltip(WRAP_LINES_TITLE)
+                    .on_click(move |_, window, cx| {
+                        wrap_focus.dispatch_action(&ToggleWrapLines, window, cx);
+                    }),
+            )
+            .child(
+                Button::new("diff-expand")
+                    .xsmall()
+                    .ghost()
+                    .icon(Icon::new(icon(expand_glyph)))
+                    .selected(expanded)
+                    .tooltip(expand_tip)
+                    .on_click(move |_, window, cx| {
+                        expand_focus.dispatch_action(&ToggleDiffExpanded, window, cx);
+                    }),
+            )
             .into_any_element()
     }
 
@@ -438,32 +530,59 @@ fn number(value: Option<u32>, color: Hsla) -> impl IntoElement {
         .children(value.map(|value| SharedString::from(value.to_string())))
 }
 
-fn header_body(text: String, color: Hsla) -> AnyElement {
+/// The text cell after the gutters. Wrapping, it takes the rest of the row and may shrink to
+/// it; one-line, it is as wide as its text, which the list scrolls to.
+fn body_cell(wraps: bool) -> gpui::Div {
     div()
         .pl(style::ROW_GAP)
+        .when(wraps, |div| div.flex_1().min_w_0())
+        .when(!wraps, Styled::flex_none)
+}
+
+fn header_body(text: String, color: Hsla, wraps: bool) -> AnyElement {
+    body_cell(wraps)
         .text_color(color)
         .child(SharedString::from(text))
         .into_any_element()
 }
 
-fn line_body(line: &DiffLine, color: Hsla, muted: Hsla) -> AnyElement {
-    let text = format!("{}{}", sign(line.kind), line.text.to_str_lossy());
-    div()
-        .flex()
-        .pl(style::ROW_GAP)
-        .child(div().text_color(color).child(SharedString::from(text)))
-        .children(
-            line_end_marker(line.eol)
-                .map(|marker| div().text_color(muted).child(SharedString::from(marker))),
-        )
+/// The sign and text in the line's color, then its line-end marker in `muted`: one run of
+/// text, so a wrapped line breaks through the marker like any other word.
+fn line_body(line: &DiffLine, color: Hsla, muted: Hsla, wraps: bool) -> AnyElement {
+    let mut text = format!("{}{}", sign(line.kind), line.text.to_str_lossy());
+    let mut highlights = Vec::new();
+    if let Some(marker) = line_end_marker(line.eol) {
+        let start = text.len();
+        text.push_str(marker);
+        highlights.push((
+            start..text.len(),
+            HighlightStyle {
+                color: Some(muted),
+                ..HighlightStyle::default()
+            },
+        ));
+    }
+    body_cell(wraps)
+        .text_color(color)
+        .child(StyledText::new(text).with_highlights(highlights))
         .into_any_element()
 }
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.scroll.follow(WrapLines::on(cx));
         let body = match &self.content {
             DiffContent::Empty => div().into_any_element(),
             DiffContent::Placeholder(text) => Self::render_placeholder(text.clone(), cx),
+            DiffContent::Hunks(_) if self.scroll.wraps() => list(
+                self.scroll.wrapped().clone(),
+                cx.processor(move |this, row: usize, window, cx| {
+                    this.built_rows.set(this.built_rows.get() + 1);
+                    this.render_row(row, window, cx)
+                }),
+            )
+            .size_full()
+            .into_any_element(),
             DiffContent::Hunks(_) => uniform_list(
                 "diff-rows",
                 self.rows.len(),
@@ -476,14 +595,21 @@ impl Render for DiffView {
                     rows
                 }),
             )
-            .track_scroll(&self.scroll)
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+            .with_width_from_item(self.widest)
+            .track_scroll(self.scroll.one_line())
             .size_full()
             .into_any_element(),
+        };
+        let scrollbar = match &self.content {
+            DiffContent::Hunks(_) => Some(self.scroll.scrollbar()),
+            DiffContent::Empty | DiffContent::Placeholder(_) => None,
         };
         div()
             .id("diff-view")
             .key_context("DiffView")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .on_action(cx.listener(|this, _: &gpui_component::input::Copy, _, cx| this.copy(cx)))
             .on_action(
@@ -500,5 +626,6 @@ impl Render for DiffView {
                 cx.listener(|this, _, _, _| this.dragging = false),
             )
             .child(body)
+            .children(scrollbar)
     }
 }

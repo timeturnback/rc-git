@@ -22,6 +22,7 @@ use rc_git_kit::platform::host_keys::HostKeyStore;
 use rc_git_kit::platform::keys::MAIN_WINDOW_FRAME;
 use rc_git_kit::platform::stores::{
     HiddenFilesPreference, RecentRepositories, SettingsTabStore, SharedSettings, WindowFrame,
+    WrapLinesPreference,
 };
 use rc_git_kit::platform::watch::WatcherFactory;
 use rc_git_kit::repository::{LiveRepository, RepositoryReading};
@@ -37,6 +38,7 @@ use rc_git_kit::window_geometry::{DEFAULT_HEIGHT, DEFAULT_WIDTH, restorable};
 use rc_git_mac::TabSession;
 use rc_git_mac::update::{LiveTabs, UpdateHooks};
 
+use crate::list_rows::WrapLines;
 use crate::log;
 use crate::menus::MenuState;
 use crate::style;
@@ -175,6 +177,7 @@ pub struct Shell {
     updater: Option<crate::update::Updater>,
     recents: RecentRepositories,
     hidden: HiddenFilesPreference,
+    wrap: WrapLinesPreference,
     closed: ClosedTabs,
     navigator: Navigator<WindowId>,
     windows: Vec<Tab>,
@@ -209,11 +212,14 @@ impl Shell {
         });
         let tabs = Rc::new(RefCell::new(TabSession::new(Arc::clone(&settings))));
         cx.set_global(SessionGlobal(Rc::clone(&tabs)));
+        let wrap = WrapLinesPreference::new(Arc::clone(&settings));
+        cx.set_global(WrapLines(wrap.wraps()));
         Self {
             tabs,
             updater: None,
             recents: RecentRepositories::new(Arc::clone(&settings)),
             hidden: HiddenFilesPreference::new(settings),
+            wrap,
             closed: ClosedTabs::new(),
             navigator: Navigator::new(),
             windows: Vec::new(),
@@ -248,6 +254,8 @@ impl Shell {
             recents: self.recents.paths(),
             home: self.services.home.clone(),
             shows_hidden_files: self.hidden.shows(),
+            wraps_lines: WrapLines::on(cx),
+            diff_expanded: front.is_some_and(|tab| tab.view.read(cx).diff_expanded(cx)),
             mode: front.map_or(ContentMode::Files, |tab| tab.view.read(cx).mode()),
             default_branch: front.and_then(|tab| tab.view.read(cx).default_branch(cx)),
             sync_titles: front.map(|tab| tab.view.read(cx).sync_titles(cx)),
@@ -586,6 +594,21 @@ impl Shell {
             tab.view
                 .update(cx, |view, cx| view.set_shows_hidden_files(shows, cx));
         }
+        self.rebuild_menus(cx);
+    }
+
+    /// Wraps long diff and file lines in every tab, or lets them scroll sideways again, and remembers
+    /// the choice for next launch.
+    pub fn toggle_wrap_lines(&mut self, cx: &mut Context<Self>) {
+        let wraps = match self.wrap.toggle() {
+            Ok(wraps) => wraps,
+            Err(error) => {
+                log::error(&error.to_string());
+                !self.wrap.wraps()
+            }
+        };
+        cx.set_global(WrapLines(wraps));
+        cx.refresh_windows();
         self.rebuild_menus(cx);
     }
 

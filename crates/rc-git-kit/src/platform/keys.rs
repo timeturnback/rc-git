@@ -23,6 +23,10 @@ pub const CHANGES_GROUPING: &str = "rc-git.changesGrouping";
 /// A History commit's changed-files grouping (`ChangeTree.swift`).
 pub const COMMIT_CHANGES_GROUPING: &str = "rc-git.commitChangesGrouping";
 
+/// Whether diff panes and the file viewer wrap long lines; rc-git's own key, which the Swift
+/// app never had.
+pub const WRAP_DIFF_LINES: &str = "rc-git.wrapDiffLines";
+
 /// The main window's frame autosave name (`MainWindowController.swift`).
 pub const MAIN_WINDOW_FRAME: &str = "rc-git.window";
 /// The update window's frame autosave name (`UpdateWindowController.swift`).
@@ -35,6 +39,10 @@ pub const MAIN_SPLIT: &str = "rc-git.main.v2";
 pub const HISTORY_SPLIT: &str = "rc-git.history.v5";
 /// History's commit list over detail split's autosave name (`HistoryViewController.swift`).
 pub const HISTORY_COLUMN_SPLIT: &str = "rc-git.history-column.v1";
+/// The History commit list's dragged author column width; rc-git's own key.
+pub const HISTORY_AUTHOR_COLUMN: &str = "rc-git.history-author-width.v1";
+/// The History commit list's dragged date column width; rc-git's own key.
+pub const HISTORY_DATE_COLUMN: &str = "rc-git.history-date-width.v1";
 
 /// The defaults key `AppKit` stores a window frame under for `name`.
 #[must_use]
@@ -49,7 +57,7 @@ pub fn split_view_key(name: &str) -> String {
 }
 
 /// Every plain key, for a test or a migration that walks them all.
-pub const ALL: [&str; 9] = [
+pub const ALL: [&str; 12] = [
     OPEN_TABS,
     OPEN_TABS_SELECTED,
     RECENT_REPOSITORIES,
@@ -59,6 +67,9 @@ pub const ALL: [&str; 9] = [
     SIDEBAR_WIDTH_PINNED,
     CHANGES_GROUPING,
     COMMIT_CHANGES_GROUPING,
+    WRAP_DIFF_LINES,
+    HISTORY_AUTHOR_COLUMN,
+    HISTORY_DATE_COLUMN,
 ];
 
 #[cfg(test)]
@@ -79,6 +90,9 @@ mod tests {
                 "rc-git.sidebar-width-pinned.v2",
                 "rc-git.changesGrouping",
                 "rc-git.commitChangesGrouping",
+                "rc-git.wrapDiffLines",
+                "rc-git.history-author-width.v1",
+                "rc-git.history-date-width.v1",
             ]
         );
     }

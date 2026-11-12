@@ -2,6 +2,9 @@
 //! `LinkTextView`): one row per git line, shaped only while on screen, colored from
 //! `rc-git-highlight`'s byte spans, with selection, copy, find matches and import links drawn
 //! as overlays on the rows they touch.
+//!
+//! Long lines follow [`WrapLines`], as the diff view's do (see [`crate::list_rows`]); one-line
+//! rows scroll sideways as far as [`TextDocument::widest_line`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -10,16 +13,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Styled, StyledText,
-    TextLayout, UnderlineStyle, UniformListScrollHandle, Window, div, uniform_list,
+    AnyElement, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable,
+    HighlightStyle, Hsla, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    SharedString, Styled, StyledText, TextLayout, UnderlineStyle, Window, div, list,
+    prelude::FluentBuilder, uniform_list,
 };
 use rc_git_highlight::Span;
 use rc_git_kit::import_links::ImportLinkMap;
 use rc_git_kit::text_document::TextDocument;
 use rc_git_kit::text_find::{Selection, line_of, selected_text};
 
+use crate::list_rows::{RowScroll, WrapLines};
 use crate::palette::Palette;
 use crate::style;
 
@@ -40,7 +45,9 @@ pub struct FileViewer {
     /// Rows handed to the list since creation: the "shape only what is on screen" budget.
     shaped_rows: Rc<Cell<usize>>,
     focus: FocusHandle,
-    scroll: UniformListScrollHandle,
+    scroll: RowScroll,
+    /// The line the one-line list measures for its sideways scroll.
+    widest: Option<usize>,
     selection: Selection,
     dragging: bool,
     /// The laid-out text of each row painted last frame, for hit-testing the pointer.
@@ -64,11 +71,12 @@ impl FileViewer {
     /// A viewer over `document`, uncolored until [`FileViewer::set_spans`].
     pub fn new(document: Arc<TextDocument>, cx: &mut Context<Self>) -> Self {
         Self {
+            widest: document.widest_line(),
+            scroll: RowScroll::new(document.line_starts.len(), cx),
             document,
             spans: Arc::new([]),
             shaped_rows: Rc::default(),
             focus: cx.focus_handle(),
-            scroll: UniformListScrollHandle::new(),
             selection: Selection::default(),
             dragging: false,
             layouts: Rc::default(),
@@ -172,9 +180,15 @@ impl FileViewer {
         self.spans.len()
     }
 
+    /// Both lists' scroll, for the tests that read where the rows are.
+    #[cfg(test)]
+    pub(crate) fn row_scroll(&self) -> &RowScroll {
+        &self.scroll
+    }
+
     fn scroll_to_offset(&self, offset: usize) {
-        let line = line_of(&self.document.line_starts, offset);
-        self.scroll.scroll_to_item(line, ScrollStrategy::Center);
+        self.scroll
+            .reveal(line_of(&self.document.line_starts, offset));
     }
 
     /// The document offset under `position` on row `index`.
@@ -232,12 +246,7 @@ impl FileViewer {
         }
     }
 
-    fn row(
-        &self,
-        index: usize,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn row(&self, index: usize, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let line = display_line(&self.document, index);
         let mut overlays = Vec::new();
         for (match_index, range) in self.matches.iter().enumerate() {
@@ -270,9 +279,12 @@ impl FileViewer {
             .borrow_mut()
             .insert(index, text.layout().clone());
         let over_link = self.hovered_link.is_some();
+        let wraps = self.scroll.wraps();
         div()
             .id(index)
             .flex()
+            .when(wraps, Styled::w_full)
+            .when(!wraps, Styled::whitespace_nowrap)
             .font_family(style::MONOSPACE_FONT)
             .text_size(style::TEXT_MONOSPACE)
             .text_color(palette.foreground())
@@ -287,12 +299,18 @@ impl FileViewer {
                     .text_color(palette.muted())
                     .child(SharedString::from((index + 1).to_string())),
             )
-            .child(div().flex_1().child(text))
+            .child(
+                div()
+                    .when(wraps, |cell| cell.flex_1().min_w_0())
+                    .when(!wraps, Styled::flex_none)
+                    .child(text),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event, _, cx| this.press(index, event, cx)),
             )
             .on_mouse_move(cx.listener(move |this, event, _, cx| this.moved(index, event, cx)))
+            .into_any_element()
     }
 }
 
@@ -314,11 +332,42 @@ impl<E: Styled> WhenCursor for E {
 impl Render for FileViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::current(cx);
+        self.scroll.follow(WrapLines::on(cx));
         self.layouts.borrow_mut().clear();
+        let body = if self.scroll.wraps() {
+            list(
+                self.scroll.wrapped().clone(),
+                cx.processor(move |this, index: usize, _window, cx| {
+                    this.shaped_rows.set(this.shaped_rows.get() + 1);
+                    this.row(index, palette, cx)
+                }),
+            )
+            .size_full()
+            .into_any_element()
+        } else {
+            uniform_list(
+                "file-lines",
+                self.document.line_starts.len(),
+                cx.processor(move |this, range: Range<usize>, _window, cx| {
+                    this.shaped_rows.set(this.shaped_rows.get() + range.len());
+                    let mut rows = Vec::with_capacity(range.len());
+                    for index in range {
+                        rows.push(this.row(index, palette, cx));
+                    }
+                    rows
+                }),
+            )
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+            .with_width_from_item(self.widest)
+            .track_scroll(self.scroll.one_line())
+            .size_full()
+            .into_any_element()
+        };
         div()
             .id("file-viewer")
             .key_context("FileViewer")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .on_action(cx.listener(|this, _: &gpui_component::input::Copy, _, cx| this.copy(cx)))
             .on_action(
@@ -336,22 +385,8 @@ impl Render for FileViewer {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.dragging = false),
             )
-            .child(
-                uniform_list(
-                    "file-lines",
-                    self.document.line_starts.len(),
-                    cx.processor(move |this, range: Range<usize>, _window, cx| {
-                        this.shaped_rows.set(this.shaped_rows.get() + range.len());
-                        let mut rows = Vec::with_capacity(range.len());
-                        for index in range {
-                            rows.push(this.row(index, palette, cx));
-                        }
-                        rows
-                    }),
-                )
-                .track_scroll(&self.scroll)
-                .size_full(),
-            )
+            .child(body)
+            .child(self.scroll.scrollbar())
     }
 }
 

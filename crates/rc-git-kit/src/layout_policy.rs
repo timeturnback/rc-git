@@ -40,6 +40,16 @@ pub const HISTORY_LIST_MIN_WIDTH: f64 = 320.0;
 pub const HISTORY_DIFF_MIN_WIDTH: f64 = 340.0;
 /// The share of History's width the diff pane opens at when it has no width of its own.
 pub const HISTORY_DIFF_SHARE: f64 = 0.5;
+/// The narrowest a drag leaves the History commit list's author column.
+pub const HISTORY_AUTHOR_MIN_WIDTH: f64 = 48.0;
+/// The History author column's width until a drag sizes it: names are short, so it gives way
+/// to the message.
+pub const HISTORY_AUTHOR_WIDTH: f64 = 100.0;
+/// The narrowest a drag leaves the History commit list's date column; below the fitted width
+/// the date ends in an ellipsis.
+pub const HISTORY_DATE_MIN_WIDTH: f64 = 64.0;
+/// The width the History message column keeps when a drag widens the author or date column.
+pub const HISTORY_MESSAGE_MIN_WIDTH: f64 = 120.0;
 /// The height the Changes tab's file list keeps while the sidebar has room for it. It yields
 /// before the commit box does, since it shares the sidebar with the ref list.
 pub const CHANGES_FILES_FLOOR: f64 = 150.0;
@@ -133,6 +143,82 @@ pub fn history_list_width(available: f64, diff_width: f64) -> f64 {
         HISTORY_LIST_MIN_WIDTH,
         HISTORY_DIFF_MIN_WIDTH,
     )
+}
+
+/// A History commit list column a drag can size. The message column takes what they leave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryColumn {
+    /// The author's name.
+    Author,
+    /// The commit's date and time.
+    Date,
+}
+
+/// The History column widths a drag has set; a column never dragged has none.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SavedHistoryColumns {
+    /// The author column's dragged width.
+    pub author: Option<f64>,
+    /// The date column's dragged width.
+    pub date: Option<f64>,
+}
+
+/// The widths the History author and date columns are drawn at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistoryColumns {
+    /// The author column's width.
+    pub author: f64,
+    /// The date column's width.
+    pub date: f64,
+}
+
+impl HistoryColumns {
+    /// `column`'s width.
+    #[must_use]
+    pub fn width(&self, column: HistoryColumn) -> f64 {
+        match column {
+            HistoryColumn::Author => self.author,
+            HistoryColumn::Date => self.date,
+        }
+    }
+}
+
+/// The History author and date columns' widths: each as `saved` by a drag, else its default,
+/// never under its floor.
+///
+/// The author column defaults to [`HISTORY_AUTHOR_WIDTH`]. The date column defaults to
+/// `date_fit`, the widest date the list can show, so it is no wider than its text and the
+/// message gets the rest.
+#[must_use]
+pub fn history_columns(saved: SavedHistoryColumns, date_fit: f64) -> HistoryColumns {
+    HistoryColumns {
+        author: saved
+            .author
+            .unwrap_or(HISTORY_AUTHOR_WIDTH)
+            .max(HISTORY_AUTHOR_MIN_WIDTH),
+        date: saved.date.unwrap_or(date_fit).max(HISTORY_DATE_MIN_WIDTH),
+    }
+}
+
+/// The width `column` takes when a drag asks for `width`, out of the `room` the message,
+/// author and date columns share.
+///
+/// The other column keeps its width and the message keeps [`HISTORY_MESSAGE_MIN_WIDTH`]; the
+/// dragged column never goes under its own floor, even when the room is too small for all
+/// three.
+#[must_use]
+pub fn dragged_history_column(
+    columns: HistoryColumns,
+    column: HistoryColumn,
+    width: f64,
+    room: f64,
+) -> f64 {
+    let (floor, other) = match column {
+        HistoryColumn::Author => (HISTORY_AUTHOR_MIN_WIDTH, columns.date),
+        HistoryColumn::Date => (HISTORY_DATE_MIN_WIDTH, columns.author),
+    };
+    let ceiling = room - HISTORY_MESSAGE_MIN_WIDTH - other;
+    width.min(ceiling).max(floor)
 }
 
 /// Whether the window collapsed the sidebar itself, so that widening the window re-opens only

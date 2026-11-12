@@ -259,3 +259,25 @@ fn load_anyway_stops_at_the_hard_limit() {
     assert!(!can_force_load(HARD_LIMIT + 1));
     assert!(!can_force_load(u64::MAX));
 }
+
+#[test]
+fn the_widest_line_counts_characters_not_bytes_or_line_breaks() {
+    assert_eq!(document("").widest_line(), None);
+    assert_eq!(document("one").widest_line(), Some(0));
+    assert_eq!(document("ab\nabcd\nabc").widest_line(), Some(1));
+    assert_eq!(
+        document("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\nabcdef\nab").widest_line(),
+        Some(1),
+        "six one-byte characters outrun five that take ten bytes"
+    );
+    assert_eq!(
+        document("abcd\r\nabcde").widest_line(),
+        Some(1),
+        "a CRLF is a line break, not width"
+    );
+    assert_eq!(
+        document("abc\nxyz\nab").widest_line(),
+        Some(0),
+        "the first of equals"
+    );
+}

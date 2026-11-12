@@ -83,6 +83,8 @@ impl RepoWindow {
         };
         let list = cx.new(|cx| ChangeListView::new(model.clone(), sources, window, cx));
         let pane = cx.new(|cx| WorktreeDiffPane::new(model.clone(), cx));
+        let expanded = self.diff_expanded(cx);
+        pane.update(cx, |pane, cx| pane.set_expanded(expanded, cx));
         let subscriptions = Self::changes_subscriptions(&model, &list, &pane, window, cx);
         self.changes = Some(ChangesParts {
             model: model.clone(),

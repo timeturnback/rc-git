@@ -10,6 +10,7 @@ mod files;
 mod history;
 mod icons;
 mod inbox;
+mod list_rows;
 mod log;
 mod menus;
 mod palette;
@@ -38,7 +39,7 @@ use crate::app::{Services, Shell, ShellGlobal, live_opener};
 use crate::inbox::Inbox;
 use crate::menus::{
     BringAllToFront, ClearRecents, CloseWindow, GoBack, GoForward, HideApp, HideOthers, NewTab,
-    OpenRecent, OpenRepository, Quit, ReopenClosedTab, ShowAll, ToggleHiddenFiles,
+    OpenRecent, OpenRepository, Quit, ReopenClosedTab, ShowAll, ToggleHiddenFiles, ToggleWrapLines,
 };
 
 /// The live services: the app's own preferences domain, the core, `FSEvents`, the keychain.
@@ -98,6 +99,9 @@ fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
     on_shell(shell, cx, |shell, _: &ToggleHiddenFiles, cx| {
         shell.toggle_hidden_files(cx);
     });
+    on_shell(shell, cx, |shell, _: &ToggleWrapLines, cx| {
+        shell.toggle_wrap_lines(cx);
+    });
     on_shell(shell, cx, |shell, _: &CloseWindow, cx| {
         shell.close_window_group(cx);
     });
@@ -148,6 +152,7 @@ fn read_build() -> update::BuildInfo {
 fn start(services: Services, launch: &[String], urls: Inbox<String>, cx: &mut App) {
     gpui_component::init(cx);
     gpui_component::Theme::sync_system_appearance(None, cx);
+    gpui_component::Theme::set_scrollbar_mode(gpui_component::scroll::ScrollbarMode::Always, cx);
     match menus::key_bindings(cx) {
         Ok(bindings) => cx.bind_keys(bindings),
         Err(error) => log::error(&format!("{error:#}")),

@@ -8,6 +8,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
 use rc_git_core::{CommitDetail, CommitSummary, RefEntry, TreeChange};
 use rc_git_kit::browser::{BrowserModel, CommitDetailState};
@@ -272,18 +273,25 @@ impl HistoryPane {
     }
 
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        uniform_list(
-            "changed-files",
-            self.files.rows.len(),
-            cx.processor(|this, range: Range<usize>, _window, cx| {
-                let mut rows = Vec::with_capacity(range.len());
-                for index in range {
-                    rows.push(this.render_file_row(index, cx));
-                }
-                rows
-            }),
-        )
-        .size_full()
+        div()
+            .relative()
+            .size_full()
+            .child(
+                uniform_list(
+                    "changed-files",
+                    self.files.rows.len(),
+                    cx.processor(|this, range: Range<usize>, _window, cx| {
+                        let mut rows = Vec::with_capacity(range.len());
+                        for index in range {
+                            rows.push(this.render_file_row(index, cx));
+                        }
+                        rows
+                    }),
+                )
+                .track_scroll(&self.files_scroll)
+                .size_full(),
+            )
+            .child(Scrollbar::vertical(&self.files_scroll))
     }
 
     fn render_file_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -366,29 +374,17 @@ impl HistoryPane {
             .into_any_element()
     }
 
-    /// The picked file's path over its diff.
+    /// The picked file's path bar over its diff.
     pub(super) fn render_diff(&self, cx: &mut Context<Self>) -> AnyElement {
-        let path = shown_change(self.model.read(cx).file_diff()).map(change_path_label);
-        let theme = cx.theme();
+        let path = shown_change(self.model.read(cx).file_diff())
+            .map(change_path_label)
+            .map(SharedString::from);
+        let bar = self.diff.read(cx).path_bar(path, self.diff_expanded, cx);
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .px(style::MARGIN)
-                    .py(style::BAR_PADDING)
-                    .h(style::LIST_ROW_HEIGHT + style::BAR_PADDING * 2.)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_size(style::TEXT_CAPTION)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.foreground)
-                    .border_b(style::HAIRLINE)
-                    .border_color(theme.border)
-                    .children(path.map(SharedString::from)),
-            )
+            .child(bar)
             .child(div().flex_1().min_h_0().child(self.diff.clone()))
             .into_any_element()
     }

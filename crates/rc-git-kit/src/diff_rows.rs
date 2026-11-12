@@ -8,6 +8,8 @@
 
 use rc_git_core::{DiffHunk, DiffLineKind};
 
+use crate::models::line_end_marker;
+
 /// One row of a diff pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffRow {
@@ -69,6 +71,30 @@ pub fn rows(hunks: &[DiffHunk]) -> Vec<DiffRow> {
         }
     }
     rows
+}
+
+/// The index of the widest of `rows` (laid out from `hunks`), which a pane measures to size
+/// its horizontal scroll; `None` for no rows. Width is the byte length of the drawn text:
+/// the font is monospaced and a multi-byte character is usually a wide one, so bytes rank
+/// rows without decoding a line. The first of equally wide rows wins.
+#[must_use]
+pub fn widest_row(hunks: &[DiffHunk], rows: &[DiffRow]) -> Option<usize> {
+    let mut widest: Option<(usize, usize)> = None;
+    for (index, row) in rows.iter().enumerate() {
+        let width = match *row {
+            DiffRow::Header { hunk } => hunks.get(hunk).map_or(0, |hunk| header(hunk).len()),
+            DiffRow::Line { hunk, line, .. } => hunks
+                .get(hunk)
+                .and_then(|hunk| hunk.lines.get(line))
+                .map_or(0, |line| {
+                    1 + line.text.len() + line_end_marker(line.eol).map_or(0, str::len)
+                }),
+        };
+        if widest.is_none_or(|(_, most)| width > most) {
+            widest = Some((index, width));
+        }
+    }
+    widest.map(|(index, _)| index)
 }
 
 /// The header text of `hunk`: `@@ -a,b +c,d @@`.
@@ -185,6 +211,30 @@ mod tests {
     #[test]
     fn no_hunks_is_no_rows() {
         assert!(rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_widest_row_counts_the_sign_and_the_line_end_marker() {
+        let mut hunks = hunks();
+        assert_eq!(
+            widest_row(&hunks, &rows(&hunks)),
+            Some(5),
+            "`@@ -0,0 +20,1 @@` outruns the other header and the one-letter lines"
+        );
+        hunks[1].lines[0].text = "a line longer than the header".into();
+        assert_eq!(widest_row(&hunks, &rows(&hunks)), Some(6));
+        hunks[0].lines[1].text = "a line shorter than that one".into();
+        hunks[0].lines[1].eol = LineEnd::None;
+        assert_eq!(
+            widest_row(&hunks, &rows(&hunks)),
+            Some(2),
+            "the no-newline marker is drawn, so it counts"
+        );
+    }
+
+    #[test]
+    fn no_rows_has_no_widest() {
+        assert_eq!(widest_row(&[], &[]), None);
     }
 
     #[test]

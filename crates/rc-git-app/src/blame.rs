@@ -8,8 +8,10 @@ use std::rc::Rc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render,
-    SharedString, Styled, TitlebarOptions, Window, WindowBounds, WindowOptions, div, uniform_list,
+    SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
+    WindowOptions, div, uniform_list,
 };
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Root};
 use rc_git_kit::history_text::{blame_date, blame_lines, short_hash};
 use rc_git_kit::models::{BlameSpan, BlameState};
@@ -22,6 +24,7 @@ use crate::style;
 pub struct BlameView {
     spans: Rc<[BlameSpan]>,
     offset_at: OffsetAt,
+    scroll: UniformListScrollHandle,
 }
 
 impl BlameView {
@@ -29,6 +32,7 @@ impl BlameView {
         Self {
             spans: Rc::new([]),
             offset_at,
+            scroll: UniformListScrollHandle::new(),
         }
     }
 
@@ -131,20 +135,26 @@ impl Render for BlameView {
             .bg(theme.background)
             .child(Self::render_header(cx))
             .child(
-                div().flex_1().min_h_0().child(
-                    uniform_list(
-                        "blame-rows",
-                        self.spans.len(),
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
-                            let mut rows = Vec::with_capacity(range.len());
-                            for index in range {
-                                rows.push(this.render_row(index, cx));
-                            }
-                            rows
-                        }),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        uniform_list(
+                            "blame-rows",
+                            self.spans.len(),
+                            cx.processor(|this, range: Range<usize>, _window, cx| {
+                                let mut rows = Vec::with_capacity(range.len());
+                                for index in range {
+                                    rows.push(this.render_row(index, cx));
+                                }
+                                rows
+                            }),
+                        )
+                        .track_scroll(&self.scroll)
+                        .size_full(),
                     )
-                    .size_full(),
-                ),
+                    .child(Scrollbar::vertical(&self.scroll)),
             )
     }
 }

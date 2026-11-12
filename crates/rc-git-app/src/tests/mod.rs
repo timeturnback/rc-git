@@ -3,6 +3,7 @@
 
 mod changes;
 mod changes_ink;
+mod diff_ink;
 mod history;
 mod history_ink;
 mod ink;
@@ -14,4 +15,5 @@ mod support;
 mod update;
 mod update_ink;
 mod viewer;
+mod viewer_wrap_ink;
 mod window_tabs;

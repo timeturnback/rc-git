@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 use gpui::{
     AppContext, Context, Entity, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Window, div, prelude::FluentBuilder,
+    ParentElement, Render, SharedString, Styled, Subscription, UniformListScrollHandle, Window,
+    div, prelude::FluentBuilder,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
@@ -66,6 +67,7 @@ pub struct ChangeListView {
     truncation: Option<String>,
     message: Entity<TextareaState>,
     pub(super) focus: FocusHandle,
+    pub(super) scroll: UniformListScrollHandle,
     /// How many times the rows were rebuilt, for the tests that count them.
     rebuilds: usize,
     _subscriptions: Vec<Subscription>,
@@ -124,6 +126,7 @@ impl ChangeListView {
             truncation: None,
             message,
             focus: cx.focus_handle(),
+            scroll: UniformListScrollHandle::new(),
             rebuilds: 0,
             _subscriptions: subscriptions,
         };

@@ -23,6 +23,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::tooltip::Tooltip;
 use rc_git_highlight::Span;
 use rc_git_kit::highlighting::highlight_fence;
@@ -754,6 +755,7 @@ impl Render for MarkdownPreview {
             .id("markdown-preview")
             .key_context("MarkdownPreview")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .bg(background)
             .text_size(style::MARKDOWN_BODY)
@@ -770,6 +772,7 @@ impl Render for MarkdownPreview {
                 )
                 .size_full(),
             )
+            .child(Scrollbar::vertical(&self.list))
     }
 }
 

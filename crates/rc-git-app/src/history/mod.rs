@@ -5,11 +5,14 @@
 //! Commits load a page at a time as the list nears its end (`history_text::wants_next_page`),
 //! and only the rows on screen are built, so nothing scales with history length. Everything
 //! the pane shows is the model's state; the pane keeps only what the model has no word for:
-//! the search controls, the folders a user closed in the file list, and the split sizes.
+//! the search controls, the folders a user closed in the file list, the split sizes and the
+//! column widths.
 //!
-//! `list` draws the commit list and its bars, `detail` the commit's header, files and diff,
-//! `graph` the lane cells, `search` holds the search controls, `splits` the two saved splits.
+//! `list` draws the commit list and its bars, `columns` the list's header and column widths,
+//! `detail` the commit's header, files and diff, `graph` the lane cells, `search` holds the
+//! search controls, `splits` the two saved splits.
 
+mod columns;
 mod detail;
 mod graph;
 mod list;
@@ -40,6 +43,7 @@ use rc_git_kit::ref_filter::{filter_is_empty, revision};
 
 use crate::diff::{DiffContent, DiffView};
 use crate::log;
+use columns::ColumnWidths;
 use search::{Clock, OffsetAt, SearchControls};
 use splits::HistorySplits;
 
@@ -140,10 +144,14 @@ pub struct HistoryPane {
     list_focus: FocusHandle,
     list_scroll: UniformListScrollHandle,
     files: FileList,
+    files_scroll: UniformListScrollHandle,
     diff: Entity<DiffView>,
     /// The file diff the diff view was last handed, so an unrelated detail change keeps it.
     shown_diff: Option<FileDiffState>,
     splits: HistorySplits,
+    columns: ColumnWidths,
+    /// Whether the diff fills the pane, the commit list and detail out of the way.
+    diff_expanded: bool,
     detail_can_go_back: bool,
     /// Commit rows handed to the list since creation: the "build only what is on screen"
     /// budget.
@@ -188,16 +196,39 @@ impl HistoryPane {
             typed: None,
             list_focus: cx.focus_handle(),
             list_scroll: UniformListScrollHandle::new(),
+            columns: ColumnWidths::load(settings.clone()),
             files: FileList::new(settings),
+            files_scroll: UniformListScrollHandle::new(),
             diff,
             shown_diff: None,
             splits,
+            diff_expanded: false,
             detail_can_go_back: false,
             built_rows: Rc::default(),
             _subscriptions: subscriptions,
         };
         pane.detail_changed(cx);
         pane
+    }
+
+    /// Shows the diff across the whole pane, or puts the commit list and detail back beside it.
+    pub fn set_diff_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.diff_expanded != expanded {
+            self.diff_expanded = expanded;
+            cx.notify();
+        }
+    }
+
+    /// Whether the diff fills the pane.
+    #[must_use]
+    pub fn diff_expanded(&self) -> bool {
+        self.diff_expanded
+    }
+
+    /// Whether the pane draws only the diff now: expanded, with a commit open to show one.
+    #[must_use]
+    pub fn fills_with_diff(&self, cx: &gpui::App) -> bool {
+        self.diff_expanded && *self.model.read(cx).commit_detail() != CommitDetailState::Empty
     }
 
     /// Whether the detail's Back button shows: stepping back returns to another commit.
@@ -397,7 +428,10 @@ impl HistoryPane {
         cx.write_to_clipboard(ClipboardItem::new_string(commit.oid.to_hex()));
     }
 
-    fn render_splits(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_splits(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.fills_with_diff(cx) {
+            return self.render_diff(cx);
+        }
         let open = *self.model.read(cx).commit_detail() != CommitDetailState::Empty;
         let commits = self.render_commits(cx);
         let detail = open.then(|| self.render_detail(cx));
@@ -431,6 +465,7 @@ impl HistoryPane {
                     .size_range(splits::diff_range())
                     .children(diff),
             )
+            .into_any_element()
     }
 }
 
@@ -459,6 +494,7 @@ impl Render for HistoryPane {
         if self.displayed(cx).is_empty() {
             self.page_if_near_end(0, cx);
         }
+        self.columns.fit_date(window, cx);
         div()
             .id("history-pane")
             .key_context("HistoryPane")

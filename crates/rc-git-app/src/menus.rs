@@ -71,6 +71,10 @@ actions!(
         GoForward,
         /// Shows or hides hidden files in every tab.
         ToggleHiddenFiles,
+        /// Wraps long diff and file lines, or lets them scroll sideways, in every tab.
+        ToggleWrapLines,
+        /// Shows the diff across the whole window, or puts the panes beside it back.
+        ToggleDiffExpanded,
         /// Blame (History, phase 4).
         ShowBlame,
         /// History of this file (phase 4).
@@ -214,6 +218,10 @@ pub struct MenuState {
     pub home: String,
     /// Whether hidden files show, for the checkmark.
     pub shows_hidden_files: bool,
+    /// Whether long lines wrap, for the checkmark.
+    pub wraps_lines: bool,
+    /// Whether the front tab shows its diff across the whole window, for the checkmark.
+    pub diff_expanded: bool,
     /// The front tab's mode, which titles the search command.
     pub mode: ContentMode,
     /// The front tab's default branch, which titles Back to Default.
@@ -239,6 +247,11 @@ fn item(id: &str) -> Option<MenuItem> {
         disabled: false,
     })
 }
+
+/// View > Wrap Lines, which has no shortcut row.
+pub const WRAP_LINES_TITLE: &str = "Wrap Lines";
+/// View > Expand Diff, which has no shortcut row.
+pub const EXPAND_DIFF_TITLE: &str = "Expand Diff";
 
 fn titled(title: impl Into<SharedString>, action: impl Action) -> MenuItem {
     MenuItem::action(title, action)
@@ -358,6 +371,8 @@ fn edit_menu() -> Menu {
 
 fn view_menu(state: &MenuState) -> Menu {
     let hidden = item("show_hidden_files").map(|item| item.checked(state.shows_hidden_files));
+    let wrap = titled(WRAP_LINES_TITLE, ToggleWrapLines).checked(state.wraps_lines);
+    let expand = titled(EXPAND_DIFF_TITLE, ToggleDiffExpanded).checked(state.diff_expanded);
     Menu::new("View").items(
         [
             item("files"),
@@ -368,6 +383,8 @@ fn view_menu(state: &MenuState) -> Menu {
             item("forward"),
             Some(MenuItem::separator()),
             hidden,
+            Some(wrap),
+            Some(expand),
             Some(MenuItem::separator()),
             item("show_blame"),
             item("file_history"),
@@ -485,6 +502,8 @@ mod tests {
             recents: vec!["/tmp/a".to_owned()],
             home: "/Users/me".to_owned(),
             shows_hidden_files: false,
+            wraps_lines: false,
+            diff_expanded: false,
             mode: ContentMode::Files,
             default_branch: None,
             sync_titles: None,
@@ -512,6 +531,8 @@ mod tests {
             recents: Vec::new(),
             home: "/Users/me".to_owned(),
             shows_hidden_files: false,
+            wraps_lines: false,
+            diff_expanded: false,
             mode: ContentMode::Files,
             default_branch: None,
             sync_titles: None,

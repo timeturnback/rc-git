@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use gpui::{App, AppContext, Context, Entity, Pixels, Subscription, Window, px};
+use gpui::{App, AppContext, Context, Entity, Pixels, Subscription, Window};
 use gpui_component::resizable::{ResizablePanelEvent, ResizableState};
 use rc_git_kit::layout_policy::{
     HISTORY_COMMITS_FLOOR, HISTORY_DETAIL_FLOOR, HISTORY_DIFF_MIN_WIDTH, HISTORY_LIST_MIN_WIDTH,
@@ -18,18 +18,7 @@ use rc_git_kit::platform::stores::{SharedSettings, SubviewFrame};
 use rc_git_kit::window_geometry::{SplitAxis, THIN_DIVIDER, saved_second_pane, split_frames};
 
 use crate::log;
-
-fn value(pixels: Pixels) -> f64 {
-    f64::from(f32::from(pixels))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "pane sizes in points, far inside f32's range"
-)]
-fn points(value: f64) -> Pixels {
-    px(value as f32)
-}
+use crate::style::{points, value};
 
 /// One saved split.
 struct Split {

@@ -75,10 +75,10 @@ pub const GRAPH_DOT: Pixels = px(3.);
 pub const GRAPH_MERGE_DOT: Pixels = px(4.);
 /// The History list's short-hash column.
 pub const HASH_COLUMN_WIDTH: Pixels = px(72.);
-/// The History list's author column.
-pub const AUTHOR_COLUMN_WIDTH: Pixels = px(140.);
-/// The History list's date column.
-pub const DATE_COLUMN_WIDTH: Pixels = px(170.);
+/// The grab band straddling a History column edge.
+pub const COLUMN_HANDLE_WIDTH: Pixels = px(6.);
+/// Added to the widest date's shaped width so rounding never clips it.
+pub const COLUMN_FIT_SLACK: Pixels = px(2.);
 /// The History search field's narrowest width.
 pub const SEARCH_FIELD_MIN_WIDTH: Pixels = px(160.);
 /// The width of a History date filter field.
@@ -100,12 +100,18 @@ pub const BLAME_DATE_WIDTH: Pixels = px(130.);
 /// The height of a History commit row and a changed-file row.
 pub const LIST_ROW_HEIGHT: Pixels = px(24.);
 
+/// A kit size in points as GPUI pixels.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "layout heights in points, far inside f32's range"
+    reason = "layout sizes in points, far inside f32's range"
 )]
-const fn points(value: f64) -> Pixels {
+pub const fn points(value: f64) -> Pixels {
     px(value as f32)
+}
+
+/// GPUI pixels as a kit size in points.
+pub fn value(pixels: Pixels) -> f64 {
+    f64::from(f32::from(pixels))
 }
 
 /// The Changes list's floor: it keeps a usable height but yields before the sidebar breaks.

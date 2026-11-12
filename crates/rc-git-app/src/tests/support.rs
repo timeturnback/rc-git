@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext, Entity, TestAppContext};
+use gpui::{AppContext, Entity, HeadlessAppContext, TestAppContext};
 use rc_git_core::{EntryKind, Head, RefKind, RefListing, TreeEntry};
 use rc_git_kit::fake::{FakeRepository, branch, oid, text_blob};
 use rc_git_kit::platform::credentials::MemoryCredentialStore;
@@ -17,6 +17,17 @@ use rc_git_kit::text_document::TextDocument;
 use crate::app::{Opened, Services, Shell};
 use crate::palette::Palette;
 use crate::window::RepoWindow;
+
+/// An app that lays text out through real CoreText and draws off screen, with the app's icons.
+pub fn headless_app() -> HeadlessAppContext {
+    let text_system = Arc::new(gpui_apple::AppleTextSystem::new());
+    let mut cx =
+        HeadlessAppContext::with_platform(text_system, Arc::new(crate::icons::Assets), || {
+            gpui_platform::current_headless_renderer()
+        });
+    cx.update(gpui_component::init);
+    cx
+}
 
 /// Byte offsets where lines start, by the core's rule: none for empty input, and a trailing
 /// newline does not start a line.

@@ -92,6 +92,40 @@ pub fn format_date_time(instant: i64, offset: i32) -> String {
     )
 }
 
+/// A commit list's date and time, 24-hour, in the date filter's day format:
+/// `2026-11-11 15:04`.
+#[must_use]
+pub fn format_list_date_time(instant: i64, offset: i32) -> String {
+    let seconds = (instant + i64::from(offset)).rem_euclid(DAY);
+    format!(
+        "{} {:02}:{:02}",
+        format_day(local_day(instant, offset)),
+        seconds / 3_600,
+        seconds % 3_600 / 60
+    )
+}
+
+/// [`format_list_date_time`]'s output with every digit replaced by each digit in turn. Every
+/// list date has that shape, so the widest of these, as shaped, is the widest a list column
+/// has to fit.
+#[must_use]
+pub fn list_date_time_samples() -> Vec<String> {
+    let shape = format_list_date_time(0, 0);
+    let mut samples = Vec::with_capacity(10);
+    for digit in '0'..='9' {
+        let mut sample = String::with_capacity(shape.len());
+        for character in shape.chars() {
+            sample.push(if character.is_ascii_digit() {
+                digit
+            } else {
+                character
+            });
+        }
+        samples.push(sample);
+    }
+    samples
+}
+
 /// A day as the date filter's field shows it: `2026-11-11`.
 #[must_use]
 pub fn format_day(day: i64) -> String {
@@ -139,6 +173,34 @@ pub fn instant_in_day(day: i64, offset_at: impl Fn(i64) -> i32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_date_is_the_day_and_a_24_hour_time() {
+        let instant = 1_794_409_445;
+        assert_eq!(format_list_date_time(instant, 0), "2026-11-11 15:04");
+        assert_eq!(
+            format_list_date_time(instant, 9 * 3_600),
+            "2026-11-12 00:04"
+        );
+        assert_eq!(
+            format_list_date_time(instant, -15 * 3_600),
+            "2026-11-11 00:04"
+        );
+        assert_eq!(format_list_date_time(0, 0), "1970-01-01 00:00");
+        assert_eq!(format_list_date_time(-1, 0), "1969-12-31 23:59");
+    }
+
+    #[test]
+    fn the_list_date_samples_cover_every_digit_in_the_list_shape() {
+        let samples = list_date_time_samples();
+        assert_eq!(samples.len(), 10);
+        assert_eq!(samples[0], "0000-00-00 00:00");
+        assert_eq!(samples[9], "9999-99-99 99:99");
+        let shape = format_list_date_time(0, 0);
+        for sample in &samples {
+            assert_eq!(sample.len(), shape.len(), "{sample}");
+        }
+    }
 
     #[test]
     fn days_round_trip_through_the_calendar() {

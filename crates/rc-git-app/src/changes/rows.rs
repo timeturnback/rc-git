@@ -10,6 +10,7 @@ use gpui::{
     SharedString, Styled, div, prelude::FluentBuilder, uniform_list,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Icon};
 use rc_git_core::StatusEntry;
 use rc_git_kit::change_tree::{ChangeNode, discard_paths};
@@ -247,8 +248,10 @@ impl ChangeListView {
                         rows
                     }),
                 )
+                .track_scroll(&self.scroll)
                 .size_full(),
             )
+            .child(Scrollbar::vertical(&self.scroll))
             .when_some(notice, |list, notice| {
                 list.child(div().absolute().inset_0().child(placeholder(notice, cx)))
             })

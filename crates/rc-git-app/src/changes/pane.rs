@@ -30,6 +30,8 @@ pub struct WorktreeDiffPane {
     hunks: Arc<[DiffHunk]>,
     /// The hunk of the row last pressed, which the context menu acts on.
     context_hunk: Option<usize>,
+    /// Whether the window shows this pane across its whole width, for the path bar's toggle.
+    expanded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -61,6 +63,7 @@ impl WorktreeDiffPane {
             path: None,
             hunks: Arc::new([]),
             context_hunk: None,
+            expanded: false,
             _subscriptions: subscriptions,
         };
         pane.show_diff(cx);
@@ -121,6 +124,14 @@ impl WorktreeDiffPane {
         cx.notify();
     }
 
+    /// Whether the window shows the pane across its whole width; the path bar's toggle shows it.
+    pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.expanded != expanded {
+            self.expanded = expanded;
+            cx.notify();
+        }
+    }
+
     fn stamps(&self) -> Vec<HunkStamp> {
         self.hunks.iter().map(HunkStamp::from).collect()
     }
@@ -154,11 +165,16 @@ impl WorktreeDiffPane {
 impl Render for WorktreeDiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
+        let path = self.path.clone().map(gpui::SharedString::from);
+        let bar = self.diff.read(cx).path_bar(path, self.expanded, cx);
         div()
             .id("worktree-diff")
             .size_full()
             .min_h(style::CHANGES_DIFF_FLOOR)
-            .child(self.diff.clone())
+            .flex()
+            .flex_col()
+            .child(bar)
+            .child(div().flex_1().min_h_0().child(self.diff.clone()))
             .context_menu(move |menu, _, cx| {
                 let has_hunk = weak
                     .upgrade()

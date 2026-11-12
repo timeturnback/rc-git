@@ -43,7 +43,7 @@ use crate::history::{HistoryEvent, HistoryPane};
 use crate::inbox::Inbox;
 use crate::menus::{
     CloseTab, GoToBranch, MergeAllWindows, Minimize, MoveTabToNewWindow, NextTab, PreviousTab,
-    ShowChanges, ShowFiles, ShowHistory, ToggleFullScreen, ToggleSidebar, Zoom,
+    ShowChanges, ShowFiles, ShowHistory, ToggleDiffExpanded, ToggleFullScreen, ToggleSidebar, Zoom,
 };
 use crate::menus::{SearchCommits, ShowBlame, ShowFileHistory};
 use crate::sheets::OpenSheet;
@@ -661,6 +661,42 @@ impl RepoWindow {
             .update(cx, |history, cx| history.focus_search(window, cx));
     }
 
+    /// Whether History and Changes show their diff across the whole window, the sidebar and
+    /// History's left column out of the way. Files has no diff and keeps its layout. The
+    /// History pane holds the flag; the Changes pane is told it.
+    #[must_use]
+    pub fn diff_expanded(&self, cx: &gpui::App) -> bool {
+        self.history.read(cx).diff_expanded()
+    }
+
+    /// Whether the content pane draws only its diff now, so the sidebar steps aside: History
+    /// with a commit open, or Changes, while expanded.
+    fn diff_fills_window(&self, cx: &gpui::App) -> bool {
+        match self.mode {
+            ContentMode::Files => false,
+            ContentMode::History => self.history.read(cx).fills_with_diff(cx),
+            ContentMode::Changes => self.diff_expanded(cx),
+        }
+    }
+
+    /// Shows the diff across the whole window, or puts the sidebar and History's left column
+    /// back. Files has no diff, so the toggle does nothing there.
+    pub fn toggle_diff_expanded(&mut self, cx: &mut Context<Self>) {
+        if self.mode == ContentMode::Files {
+            return;
+        }
+        let expanded = !self.diff_expanded(cx);
+        self.history
+            .update(cx, |history, cx| history.set_diff_expanded(expanded, cx));
+        if let Some(parts) = &self.changes {
+            parts
+                .pane
+                .update(cx, |pane, cx| pane.set_expanded(expanded, cx));
+        }
+        cx.emit(WindowEvent::MenusStale);
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.layout.toggle_by_user();
         cx.notify();
@@ -796,7 +832,7 @@ impl Render for RepoWindow {
         let notice = self.render_notice(cx);
         let content = self.render_content(cx);
         let picker = self.render_picker(cx);
-        let collapsed = self.layout.collapsed();
+        let collapsed = self.layout.collapsed() || self.diff_fills_window(cx);
         let sidebar_width = self.layout.width_pixels();
         let (background, foreground) = (cx.theme().background, cx.theme().foreground);
         let commands = HistoryCommands::of(self, cx);
@@ -828,6 +864,9 @@ impl Render for RepoWindow {
             }))
             .on_action(cx.listener(|this, _: &GoToBranch, window, cx| this.choose_ref(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &ToggleDiffExpanded, _, cx| {
+                this.toggle_diff_expanded(cx);
+            }))
             .map(|root| history_actions(root, commands, cx))
             .map(|root| sync::sync_actions(root, availability, has_author, cx))
             .map(|root| panels::panel_actions(root, shown, mode, cx))

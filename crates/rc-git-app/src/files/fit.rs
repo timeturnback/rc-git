@@ -87,7 +87,7 @@ impl WidthCache {
             let label = if let Some(width) = self.widths.get(&row.label) {
                 *width
             } else {
-                let width = shaped_width(&row.label, &family, window, cx);
+                let width = shaped_width(&row.label, &family, style::TEXT_BODY, window, cx);
                 self.widths.insert(row.label.clone(), width);
                 width
             };
@@ -97,8 +97,14 @@ impl WidthCache {
     }
 }
 
-/// `label`'s width in the tree's font and size.
-fn shaped_width(label: &str, family: &SharedString, window: &Window, cx: &App) -> Pixels {
+/// `label`'s width in `family` at `size`.
+pub(crate) fn shaped_width(
+    label: &str,
+    family: &SharedString,
+    size: Pixels,
+    window: &Window,
+    cx: &App,
+) -> Pixels {
     let text = SharedString::from(label.to_owned());
     let run = TextRun {
         len: text.len(),
@@ -110,6 +116,6 @@ fn shaped_width(label: &str, family: &SharedString, window: &Window, cx: &App) -
     };
     window
         .text_system()
-        .shape_line(text, style::TEXT_BODY, &[run], None)
+        .shape_line(text, size, &[run], None)
         .width
 }

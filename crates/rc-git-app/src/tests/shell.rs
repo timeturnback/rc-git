@@ -1,5 +1,5 @@
 //! The shell's wiring against the fakes: opening, the ref list and picker, the lazy tree, the
-//! hidden-files toggle, modes, back and forward, and the tab restore.
+//! hidden-files and wrap-lines toggles, modes, back and forward, and the tab restore.
 
 use std::sync::Arc;
 
@@ -11,10 +11,11 @@ use rc_git_kit::browser::FileState;
 use rc_git_kit::fake::{branch, oid};
 use rc_git_kit::file_tree::ViewKind;
 use rc_git_kit::platform::settings::MemorySettings;
-use rc_git_kit::platform::stores::SettingsTabStore;
+use rc_git_kit::platform::stores::{SettingsTabStore, WrapLinesPreference};
 use rc_git_kit::tabs::OpenTabs;
 
 use crate::app::{Shell, Tab};
+use crate::list_rows::WrapLines;
 use crate::menus::ShowHistory;
 use crate::sidebar::refs::RefListEvent;
 use crate::tests::support::{
@@ -178,6 +179,45 @@ fn the_hidden_files_toggle_refilters_without_a_read(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(root_labels(&window, cx), ["src", "README.md"]);
     assert_eq!(repo.state().tree_entry_calls, reads);
+}
+
+#[gpui::test]
+fn the_wrap_lines_toggle_starts_from_the_saved_choice_and_flips_every_diff(
+    cx: &mut TestAppContext,
+) {
+    let settings = Arc::new(MemorySettings::new());
+    WrapLinesPreference::new(settings.clone()).toggle().unwrap();
+    let harness = harness_with(cx, &[], &settings);
+    let wraps = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            (
+                WrapLines::on(cx),
+                harness.shell.read(cx).menu_state(cx).wraps_lines,
+            )
+        })
+    };
+    assert_eq!(
+        wraps(cx),
+        (false, false),
+        "the saved choice turned the default off, before any toggle"
+    );
+    harness.shell.update(cx, Shell::toggle_wrap_lines);
+    assert_eq!(wraps(cx), (true, true));
+    assert!(WrapLinesPreference::new(settings.clone()).wraps(), "saved");
+    harness.shell.update(cx, Shell::toggle_wrap_lines);
+    assert_eq!(wraps(cx), (false, false));
+}
+
+#[gpui::test]
+fn diff_lines_wrap_until_the_user_turns_it_off(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[]);
+    let wraps = cx.read(|cx| {
+        (
+            WrapLines::on(cx),
+            harness.shell.read(cx).menu_state(cx).wraps_lines,
+        )
+    });
+    assert_eq!(wraps, (true, true));
 }
 
 #[gpui::test]
@@ -386,4 +426,33 @@ fn reopen_closed_tab_brings_back_a_closed_window(cx: &mut TestAppContext) {
     });
     assert_eq!(paths, ["/repo/a", "/repo/b"]);
     assert_ne!(reopened, closing.id(), "a new window, not the closed one");
+}
+
+#[gpui::test]
+fn a_wrap_lines_toggle_that_cannot_save_still_checks_what_the_diffs_show(cx: &mut TestAppContext) {
+    let settings = Arc::new(MemorySettings::new());
+    let harness = harness_with(cx, &[], &settings);
+    settings.fail_writes(true);
+    harness.shell.update(cx, Shell::toggle_wrap_lines);
+    let wraps = cx.read(|cx| {
+        (
+            WrapLines::on(cx),
+            harness.shell.read(cx).menu_state(cx).wraps_lines,
+        )
+    });
+    assert_eq!(wraps, (false, false), "the checkmark follows the diffs");
+}
+
+#[gpui::test]
+fn expand_diff_does_nothing_in_files(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    let window = open_settled(&harness, cx, "/repo/a");
+    assert_eq!(cx.read(|cx| window.read(cx).mode()), ContentMode::Files);
+    window.update(cx, RepoWindow::toggle_diff_expanded);
+    assert!(!cx.read(|cx| window.read(cx).diff_expanded(cx)));
+    window.update(cx, |window, cx| window.set_mode(ContentMode::History, cx));
+    assert!(
+        !cx.read(|cx| window.read(cx).diff_expanded(cx)),
+        "History opens with its panes, as the user left them"
+    );
 }

@@ -7,10 +7,12 @@
 
 use rc_git_kit::layout_policy::{
     CHANGES_DIFF_FLOOR, CHANGES_FILES_FLOOR, CHANGES_MESSAGE_HEIGHT, CHANGES_STASH_HEIGHT,
-    CONTENT_MINIMUM_WIDTH, HISTORY_COMMITS_FLOOR, HISTORY_DETAIL_FLOOR, HISTORY_DETAIL_SHARE,
-    HISTORY_DIFF_MIN_WIDTH, HISTORY_DIFF_SHARE, HISTORY_LIST_MIN_WIDTH, Layout,
-    SIDEBAR_MAXIMUM_WIDTH, SIDEBAR_MINIMUM_WIDTH, SIDEBAR_WINDOW_WIDTH, SidebarCollapse,
-    SidebarFit, Size, WINDOW_MINIMUM_HEIGHT, WINDOW_MINIMUM_WIDTH, history_commits_height,
+    CONTENT_MINIMUM_WIDTH, HISTORY_AUTHOR_MIN_WIDTH, HISTORY_AUTHOR_WIDTH, HISTORY_COMMITS_FLOOR,
+    HISTORY_DATE_MIN_WIDTH, HISTORY_DETAIL_FLOOR, HISTORY_DETAIL_SHARE, HISTORY_DIFF_MIN_WIDTH,
+    HISTORY_DIFF_SHARE, HISTORY_LIST_MIN_WIDTH, HISTORY_MESSAGE_MIN_WIDTH, HistoryColumn,
+    HistoryColumns, Layout, SIDEBAR_MAXIMUM_WIDTH, SIDEBAR_MINIMUM_WIDTH, SIDEBAR_WINDOW_WIDTH,
+    SavedHistoryColumns, SidebarCollapse, SidebarFit, Size, WINDOW_MINIMUM_HEIGHT,
+    WINDOW_MINIMUM_WIDTH, dragged_history_column, history_columns, history_commits_height,
     history_list_width, is_user_drag, layout, sidebar_width, split_pane,
 };
 
@@ -302,4 +304,100 @@ fn the_fit_remembers_whether_it_applied() {
     assert!(fit.is_applied());
     fit.update(false, false, false);
     assert!(!fit.is_applied());
+}
+
+#[test]
+fn history_columns_open_with_a_narrow_author_and_a_date_fitted_to_its_text() {
+    let columns = history_columns(SavedHistoryColumns::default(), 131.5);
+    assert_eq!(
+        columns,
+        HistoryColumns {
+            author: HISTORY_AUTHOR_WIDTH,
+            date: 131.5
+        }
+    );
+    assert!(HISTORY_AUTHOR_WIDTH < columns.date);
+}
+
+#[test]
+fn history_columns_keep_each_dragged_width_and_default_the_rest() {
+    let saved = SavedHistoryColumns {
+        author: Some(160.0),
+        date: None,
+    };
+    assert_eq!(
+        history_columns(saved, 131.5),
+        HistoryColumns {
+            author: 160.0,
+            date: 131.5
+        }
+    );
+    let saved = SavedHistoryColumns {
+        author: None,
+        date: Some(200.0),
+    };
+    assert_eq!(history_columns(saved, 131.5).date, 200.0);
+}
+
+#[test]
+fn history_columns_never_open_under_their_floors() {
+    let saved = SavedHistoryColumns {
+        author: Some(1.0),
+        date: None,
+    };
+    assert_eq!(
+        history_columns(saved, 0.0),
+        HistoryColumns {
+            author: HISTORY_AUTHOR_MIN_WIDTH,
+            date: HISTORY_DATE_MIN_WIDTH
+        }
+    );
+}
+
+#[test]
+fn a_dragged_history_column_takes_the_width_asked_for_inside_its_bounds() {
+    let columns = HistoryColumns {
+        author: 100.0,
+        date: 130.0,
+    };
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Author, 150.0, 600.0),
+        150.0
+    );
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Author, 10.0, 600.0),
+        HISTORY_AUTHOR_MIN_WIDTH
+    );
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Date, 10.0, 600.0),
+        HISTORY_DATE_MIN_WIDTH
+    );
+}
+
+#[test]
+fn a_dragged_history_column_leaves_the_message_its_floor() {
+    let columns = HistoryColumns {
+        author: 100.0,
+        date: 130.0,
+    };
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Author, 900.0, 600.0),
+        600.0 - HISTORY_MESSAGE_MIN_WIDTH - 130.0
+    );
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Date, 900.0, 600.0),
+        600.0 - HISTORY_MESSAGE_MIN_WIDTH - 100.0
+    );
+}
+
+#[test]
+fn a_dragged_history_column_keeps_its_floor_when_the_room_is_too_small() {
+    let columns = HistoryColumns {
+        author: 100.0,
+        date: 130.0,
+    };
+    assert_eq!(
+        dragged_history_column(columns, HistoryColumn::Author, 200.0, 100.0),
+        HISTORY_AUTHOR_MIN_WIDTH
+    );
 }

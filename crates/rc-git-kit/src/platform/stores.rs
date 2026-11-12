@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::change_tree::ChangeGrouping;
 use crate::commit_identity::{CommitIdentity, SavedIdentities, SavedIdentity, standardized_path};
+use crate::layout_policy::{HistoryColumn, SavedHistoryColumns};
 use crate::recent_repositories;
 use crate::tabs::TabStore;
 
@@ -152,6 +153,84 @@ impl HiddenFilesPreference {
         self.settings
             .set_value(keys::SHOW_HIDDEN_FILES, Some(Value::Bool(flipped)))?;
         Ok(flipped)
+    }
+}
+
+/// Whether diff panes and the file viewer wrap long lines instead of scrolling sideways,
+/// remembered between launches. Wrapping is the default: text reads without sideways scrolling.
+pub struct WrapLinesPreference {
+    settings: SharedSettings,
+}
+
+impl WrapLinesPreference {
+    /// The preference kept in `settings`.
+    #[must_use]
+    pub fn new(settings: SharedSettings) -> Self {
+        Self { settings }
+    }
+
+    /// Whether long lines wrap; on until set.
+    #[must_use]
+    pub fn wraps(&self) -> bool {
+        self.settings.value(keys::WRAP_DIFF_LINES).is_none()
+            || self.settings.bool(keys::WRAP_DIFF_LINES)
+    }
+
+    /// Flips the preference and returns the new value.
+    ///
+    /// # Errors
+    /// [`SettingsError`] naming [`keys::WRAP_DIFF_LINES`] when it could not be saved.
+    pub fn toggle(&self) -> Result<bool, SettingsError> {
+        let flipped = !self.wraps();
+        self.settings
+            .set_value(keys::WRAP_DIFF_LINES, Some(Value::Bool(flipped)))?;
+        Ok(flipped)
+    }
+}
+
+/// The History commit list's column widths a drag set, remembered between launches. A column
+/// never dragged keeps no width, so its default can change under it.
+pub struct HistoryColumnsStore {
+    settings: SharedSettings,
+}
+
+impl HistoryColumnsStore {
+    /// The widths kept in `settings`.
+    #[must_use]
+    pub fn new(settings: SharedSettings) -> Self {
+        Self { settings }
+    }
+
+    fn key(column: HistoryColumn) -> &'static str {
+        match column {
+            HistoryColumn::Author => keys::HISTORY_AUTHOR_COLUMN,
+            HistoryColumn::Date => keys::HISTORY_DATE_COLUMN,
+        }
+    }
+
+    fn width(&self, column: HistoryColumn) -> Option<f64> {
+        let key = Self::key(column);
+        self.settings.value(key)?;
+        let width = self.settings.double(key);
+        (width.is_finite() && width > 0.0).then_some(width)
+    }
+
+    /// The widths saved so far; a missing or unreadable one is `None`.
+    #[must_use]
+    pub fn load(&self) -> SavedHistoryColumns {
+        SavedHistoryColumns {
+            author: self.width(HistoryColumn::Author),
+            date: self.width(HistoryColumn::Date),
+        }
+    }
+
+    /// Saves `column`'s dragged width.
+    ///
+    /// # Errors
+    /// [`SettingsError`] naming the column's key when it could not be saved.
+    pub fn save(&self, column: HistoryColumn, width: f64) -> Result<(), SettingsError> {
+        self.settings
+            .set_value(Self::key(column), Some(Value::Double(width)))
     }
 }
 
@@ -656,6 +735,73 @@ mod tests {
         assert!(HiddenFilesPreference::new(settings.clone()).shows());
         assert!(!preference.toggle().unwrap());
         assert!(!HiddenFilesPreference::new(settings).shows());
+    }
+
+    #[test]
+    fn wrap_lines_starts_on_and_each_toggle_flips_and_remembers() {
+        let settings = scratch();
+        let preference = WrapLinesPreference::new(settings.clone());
+        assert!(preference.wraps());
+        assert!(!preference.toggle().unwrap());
+        assert!(!WrapLinesPreference::new(settings.clone()).wraps());
+        assert!(preference.toggle().unwrap());
+        assert!(WrapLinesPreference::new(settings).wraps());
+    }
+
+    #[test]
+    fn a_failed_wrap_lines_write_names_the_key() {
+        let settings = scratch();
+        settings.fail_writes(true);
+        let error = WrapLinesPreference::new(settings).toggle().unwrap_err();
+        assert_eq!(error.key, keys::WRAP_DIFF_LINES);
+    }
+
+    #[test]
+    fn history_columns_keep_only_the_widths_a_drag_saved() {
+        let settings = scratch();
+        let store = HistoryColumnsStore::new(settings.clone());
+        assert_eq!(store.load(), SavedHistoryColumns::default());
+        store.save(HistoryColumn::Date, 150.0).unwrap();
+        assert_eq!(
+            HistoryColumnsStore::new(settings.clone()).load(),
+            SavedHistoryColumns {
+                author: None,
+                date: Some(150.0)
+            }
+        );
+        store.save(HistoryColumn::Author, 80.0).unwrap();
+        assert_eq!(
+            HistoryColumnsStore::new(settings).load(),
+            SavedHistoryColumns {
+                author: Some(80.0),
+                date: Some(150.0)
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_history_column_width_reads_as_never_dragged() {
+        let settings = scratch();
+        for (key, value) in [
+            (keys::HISTORY_AUTHOR_COLUMN, Value::String("wide".into())),
+            (keys::HISTORY_DATE_COLUMN, Value::Double(f64::NAN)),
+        ] {
+            settings.set_value(key, Some(value)).unwrap();
+        }
+        assert_eq!(
+            HistoryColumnsStore::new(settings).load(),
+            SavedHistoryColumns::default()
+        );
+    }
+
+    #[test]
+    fn a_failed_history_column_write_names_the_key() {
+        let settings = scratch();
+        settings.fail_writes(true);
+        let error = HistoryColumnsStore::new(settings)
+            .save(HistoryColumn::Author, 90.0)
+            .unwrap_err();
+        assert_eq!(error.key, keys::HISTORY_AUTHOR_COLUMN);
     }
 
     fn work() -> CommitIdentity {

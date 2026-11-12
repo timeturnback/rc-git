@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use gpui::{App, Pixels, Window, px};
+use gpui::{App, Pixels, Window};
 use rc_git_kit::layout_policy::{
     Layout, SIDEBAR_MAXIMUM_WIDTH, SIDEBAR_MINIMUM_WIDTH, SidebarCollapse, Size, layout,
 };
@@ -12,23 +12,12 @@ use rc_git_kit::platform::stores::{SharedSettings, SidebarWidthPin, SubviewFrame
 use rc_git_kit::window_geometry::{TopLeftRect, saved_sidebar, sidebar_frames, to_appkit};
 
 use crate::log;
+use crate::style::{points, value};
 
 /// The range a drag may move the sidebar's edge through.
 #[must_use]
 pub fn sidebar_range() -> Range<Pixels> {
     points(SIDEBAR_MINIMUM_WIDTH)..points(SIDEBAR_MAXIMUM_WIDTH)
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "window geometry in points, far inside f32's range"
-)]
-fn points(value: f64) -> Pixels {
-    px(value as f32)
-}
-
-fn value(pixels: Pixels) -> f64 {
-    f64::from(f32::from(pixels))
 }
 
 /// The sidebar of one window.

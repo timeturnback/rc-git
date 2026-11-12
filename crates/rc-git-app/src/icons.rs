@@ -11,7 +11,9 @@ use rc_git_kit::branch_banner::Symbol;
 
 icon_assets!(
     ExtraIcons,
-    [GitBranch, Cloud, Tag, Circle, CircleDot, FolderCog, Link]
+    [
+        GitBranch, Cloud, Tag, Circle, CircleDot, FolderCog, Link, TextWrap, Maximize2, Minimize2
+    ]
 );
 
 /// What an icon stands for. Each view names the meaning; [`icon`] picks the symbol.
@@ -53,6 +55,12 @@ pub enum Glyph {
     CloseTab,
     /// The tab strip's button that opens a repository in a new tab.
     OpenTab,
+    /// A diff's path bar: wrap long lines.
+    WrapLines,
+    /// A diff's path bar: show the diff across the whole window.
+    ExpandDiff,
+    /// A diff's path bar: put the panes beside the diff back.
+    RestoreDiff,
 }
 
 /// The Lucide icon for `glyph`.
@@ -82,6 +90,9 @@ pub fn icon(glyph: Glyph) -> IconName {
         Glyph::TickMixed => IconName::Minus,
         Glyph::CloseTab => IconName::Close,
         Glyph::OpenTab => IconName::Plus,
+        Glyph::WrapLines => IconName::TextWrap,
+        Glyph::ExpandDiff => IconName::Maximize2,
+        Glyph::RestoreDiff => IconName::Minimize2,
     }
 }
 
@@ -119,7 +130,10 @@ pub fn is_accented(glyph: Glyph) -> bool {
         | Glyph::TickOn
         | Glyph::TickMixed
         | Glyph::CloseTab
-        | Glyph::OpenTab => false,
+        | Glyph::OpenTab
+        | Glyph::WrapLines
+        | Glyph::ExpandDiff
+        | Glyph::RestoreDiff => false,
     }
 }
 
@@ -147,7 +161,7 @@ impl AssetSource for Assets {
 mod tests {
     use super::*;
 
-    const EVERY: [Glyph; 25] = [
+    const EVERY: [Glyph; 28] = [
         Glyph::Entry(EntryKind::Tree),
         Glyph::Entry(EntryKind::Submodule),
         Glyph::Entry(EntryKind::Symlink),
@@ -173,6 +187,9 @@ mod tests {
         Glyph::Ref(RefKind::Tag),
         Glyph::TickOn,
         Glyph::TickMixed,
+        Glyph::WrapLines,
+        Glyph::ExpandDiff,
+        Glyph::RestoreDiff,
     ];
 
     /// An icon the asset source cannot load draws nothing, so a missing one would ship as a
