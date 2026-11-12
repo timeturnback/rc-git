@@ -202,6 +202,11 @@ impl Shell {
             this.save_tabs(None, cx);
             async {}
         });
+        let shell = cx.weak_entity();
+        let closed = cx.on_window_closed(move |cx, id| {
+            // The shell outlives every tab, so a failed update means the app is tearing down.
+            shell.update(cx, |this, cx| this.window_closed(id, cx)).ok();
+        });
         let tabs = Rc::new(RefCell::new(TabSession::new(Arc::clone(&settings))));
         cx.set_global(SessionGlobal(Rc::clone(&tabs)));
         Self {
@@ -217,7 +222,7 @@ impl Shell {
             launching: true,
             launch_document: None,
             services,
-            subscriptions: vec![quit],
+            subscriptions: vec![quit, closed],
             settings_window: None,
         }
     }
@@ -498,18 +503,21 @@ impl Shell {
                 }
             },
         ));
-        self.subscriptions
-            .push(cx.observe_release(&tab.view, move |this, view, cx| {
-                let path = view.shown().map(|shown| shown.path.clone());
-                this.window_closed(id, path.as_deref(), cx);
-            }));
     }
 
-    fn window_closed(&mut self, id: WindowId, path: Option<&str>, cx: &mut Context<Self>) {
+    /// Drops the tab whose window closed. The shell holds every tab's view, so the view is
+    /// not released while it is listed: the window's own closing is the signal. A window that
+    /// is not a tab (Settings, update, blame) is ignored.
+    fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        let Some(index) = self.windows.iter().position(|tab| tab.id() == id) else {
+            return;
+        };
+        let tab = self.windows.remove(index);
+        let shown = tab.view.read(cx).shown().map(|shown| shown.path.clone());
+        let path = shown.as_deref();
         if let Some(path) = path {
             self.closed.push(path);
         }
-        self.windows.retain(|tab| tab.id() != id);
         let dropping = if self.keeping_closed_tabs { None } else { path };
         self.save_tabs(dropping, cx);
         self.navigator.tab_closed(&id, path);

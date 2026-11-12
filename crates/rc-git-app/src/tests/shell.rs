@@ -326,3 +326,64 @@ fn a_moved_ref_reloads_through_the_watcher(cx: &mut TestAppContext) {
     assert_eq!(fired, 1);
     wait_until(cx, |_| repo.state().refs_calls == before + 1);
 }
+
+/// A shell showing a and b, with b's window closed; answers the shell, b's closed tab, and
+/// the settings the shell saves its tabs to.
+fn with_b_closed(cx: &mut TestAppContext) -> (Harness, Tab, Arc<MemorySettings>) {
+    let settings = Arc::new(MemorySettings::new());
+    let harness = harness_with(cx, &[("/repo/a", repo()), ("/repo/b", repo())], &settings);
+    open_settled(&harness, cx, "/repo/a");
+    open_settled(&harness, cx, "/repo/b");
+    let closing = harness
+        .shell
+        .read_with(cx, |shell, _| shell.windows()[1].clone());
+    closing
+        .handle
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap_or_else(|error| panic!("closing /repo/b: {error:#}"));
+    cx.run_until_parked();
+    (harness, closing, settings)
+}
+
+#[gpui::test]
+fn a_closed_window_leaves_the_shell_and_its_repository_reopens(cx: &mut TestAppContext) {
+    let (harness, closing, settings) = with_b_closed(cx);
+    only_window(&harness, cx);
+    let saved = OpenTabs::new(SettingsTabStore::new(settings)).paths();
+    assert_eq!(
+        saved,
+        ["/repo/a"],
+        "a tab closed on its own leaves the saved tabs"
+    );
+
+    let reopened = harness
+        .shell
+        .update(cx, |shell, cx| shell.open("/repo/b", cx));
+    cx.run_until_parked();
+    let reopened = reopened.expect("/repo/b reopens");
+    assert_ne!(reopened, closing.id(), "a new window, not the closed one");
+    let live = cx.update(|cx| {
+        cx.windows()
+            .iter()
+            .any(|window| window.window_id() == reopened)
+    });
+    assert!(live, "the reopened window is open");
+}
+
+#[gpui::test]
+fn reopen_closed_tab_brings_back_a_closed_window(cx: &mut TestAppContext) {
+    let (harness, closing, _) = with_b_closed(cx);
+
+    harness.shell.update(cx, Shell::reopen_closed_tab);
+    cx.run_until_parked();
+    let (paths, reopened) = harness.shell.read_with(cx, |shell, cx| {
+        let paths: Vec<String> = shell
+            .windows()
+            .iter()
+            .filter_map(|tab| tab.view.read(cx).shown().map(|shown| shown.path.clone()))
+            .collect();
+        (paths, shell.windows()[1].id())
+    });
+    assert_eq!(paths, ["/repo/a", "/repo/b"]);
+    assert_ne!(reopened, closing.id(), "a new window, not the closed one");
+}
