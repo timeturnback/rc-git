@@ -154,3 +154,33 @@ fn a_short_commit_is_kept_whole() {
     let build = AppBuild::from_info(&stamped(&[("RCGitSourceCommit", "a3f9")]));
     assert_eq!(build.short_commit(), Some("a3f9"));
 }
+
+#[test]
+fn a_build_date_counts_seconds_from_the_epoch() {
+    let date = BuildDate::parse("1970-01-02T00:00:01Z");
+    assert_eq!(date.map(|date| date.instant()), Some(86_401));
+    let date = BuildDate::parse("2026-09-19T11:02:03Z");
+    assert_eq!(date.map(|date| date.instant()), Some(1_789_815_723));
+}
+
+#[test]
+fn only_the_gpui_stamp_updates_another_bundle() {
+    use rc_git_kit::app_build::update_targets_this_bundle;
+    assert!(!update_targets_this_bundle(&stamped(&[(
+        "RCGitVariant",
+        "gpui"
+    )])));
+    assert!(update_targets_this_bundle(&stamped(&[(
+        "RCGitVariant",
+        "dev"
+    )])));
+    assert!(update_targets_this_bundle(&stamped(&[(
+        "RCGitVariant",
+        "release"
+    )])));
+    assert!(update_targets_this_bundle(&stamped(&[(
+        "RCGitVariant",
+        "gpui2"
+    )])));
+    assert!(update_targets_this_bundle(&HashMap::new()));
+}

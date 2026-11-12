@@ -206,3 +206,35 @@ impl AppBuild {
         line
     }
 }
+
+impl BuildDate {
+    /// The stamp as seconds since the Unix epoch.
+    #[must_use]
+    pub fn instant(&self) -> i64 {
+        let days = crate::dates::days_from_civil(crate::dates::CivilDate {
+            year: i64::from(self.year),
+            month: u32::from(self.month),
+            day: u32::from(self.day),
+        });
+        days * 86_400
+            + i64::from(self.hour) * 3_600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second)
+    }
+}
+
+/// The `RCGitVariant` stamp `scripts/build-app.sh --gpui` writes on the interim GPUI bundle.
+pub const GPUI_STAMP: &str = "gpui";
+
+/// Whether this bundle's self-update rebuilds and relaunches this same bundle. The interim
+/// GPUI bundle (`RCGit-gpui.app`) is stamped [`GPUI_STAMP`], which [`AppBuild::from_info`]
+/// reads as [`AppVariant::Dev`], and a dev update runs `scripts/build-app.sh --dev` and
+/// launches `RCGit-dev.app`: another bundle, under another bundle identifier, so the tabs
+/// would not carry over. Until the build script makes the dev bundle the GPUI build, such a
+/// bundle offers no update.
+#[must_use]
+pub fn update_targets_this_bundle<S: std::hash::BuildHasher>(
+    info: &HashMap<String, String, S>,
+) -> bool {
+    info.get("RCGitVariant").map(String::as_str) != Some(GPUI_STAMP)
+}

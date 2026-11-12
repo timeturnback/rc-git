@@ -191,3 +191,17 @@ fn step_name(step: UpdateStep, rebuild: bool) -> &'static str {
         UpdateStep::Relaunch => "Relaunch",
     }
 }
+
+/// The update window's header line: `Installed: 0.1.42 · a3f91c2 · built Nov 11, 2026 at
+/// 3:04 PM`, the build date shown in the zone `offset_at` gives for that instant (seconds
+/// east of UTC). A bundle with no readable build date leaves the date off.
+#[must_use]
+pub fn installed_line(build: &AppBuild, heading: &str, offset_at: impl Fn(i64) -> i32) -> String {
+    let line = format!("{heading}: {}", build.version_line());
+    let Some(date) = &build.build_date else {
+        return line;
+    };
+    let instant = date.instant();
+    let built = crate::dates::format_date_time(instant, offset_at(instant));
+    format!("{line} · built {built}")
+}

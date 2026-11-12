@@ -29,6 +29,28 @@ fn unstamped() -> AppBuild {
     build(AppVariant::Release, "rc-git", None)
 }
 
+#[test]
+fn the_installed_line_carries_the_local_build_date() {
+    use rc_git_kit::app_build::BuildDate;
+    use rc_git_kit::update_copy::installed_line;
+    let mut stamped = release();
+    assert_eq!(
+        installed_line(&stamped, "Installed", |_| 0),
+        "Installed: 0.1.0 (42) · a3f9"
+    );
+    stamped.build_date = BuildDate::parse("2026-09-19T11:02:03Z");
+    let asked = std::cell::Cell::new(None);
+    let line = installed_line(&stamped, "Running", |instant| {
+        asked.set(Some(instant));
+        -3_600
+    });
+    assert_eq!(
+        line,
+        "Running: 0.1.0 (42) · a3f9 · built Sep 19, 2026 at 10:02 AM"
+    );
+    assert_eq!(asked.get(), Some(1_789_815_723));
+}
+
 fn failed(step: UpdateStep, message: &str) -> UpdateState {
     UpdateState::Failed {
         step,

@@ -9,6 +9,7 @@
 
 mod inbox;
 mod model;
+mod pull;
 mod run;
 
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub use crate::update_copy::{UpdateState, UpdateStep, can_proceed, is_cancellabl
 pub use model::{
     DiagnosticLevel, FAILURE_TAIL_LINES, MAX_LOG_LINES, UpdateDiagnostic, UpdateEvent, UpdateModel,
 };
+pub use pull::sync_result;
 
 /// The commit a checkout is on, the branch it is on, and the tracked paths that differ from
 /// it.

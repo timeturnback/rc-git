@@ -6,9 +6,11 @@
 //! binding crates. This is the one crate allowed `unsafe`: every block says why it holds, and
 //! every `CoreFoundation` object it creates is owned by [`cf::Owned`], which releases it once.
 
+pub mod bundle;
 pub mod cf;
 pub mod fsevents;
 pub mod keychain;
+pub mod open_with;
 pub mod process;
 pub mod settings;
 pub mod time_zone;
