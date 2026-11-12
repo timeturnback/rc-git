@@ -32,7 +32,7 @@ memchr = "=2.8.3"
 thiserror = "=2.0.20"
 anyhow = "=1.0.104"
 tempfile = "=3.27.0"
-russh = { version = "=0.63.3", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh = { version = "=0.65.1", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-config = "=0.58.0"
 # HMAC-SHA1 for hashed `|1|` known_hosts entries: the versions russh already pulls in.
 hmac = { version = "=0.13.0", default-features = false }

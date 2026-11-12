@@ -374,8 +374,9 @@ impl russh::server::Handler for GitSshHandler {
     fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        public_key: &ssh_key::PublicKey,
+        offer: russh::server::PublicKeyOffer<'_>,
     ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        let public_key = offer.public_key;
         self.offered
             .lock()
             .expect("record the offered key")
@@ -391,8 +392,9 @@ impl russh::server::Handler for GitSshHandler {
     fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &ssh_key::PublicKey,
+        key: russh::server::VerifiedPublicKey<'_>,
     ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        let public_key = key.public_key;
         let auth = if self.allowed.iter().any(|key| key == public_key) {
             *self
                 .last_user
