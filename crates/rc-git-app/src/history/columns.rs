@@ -133,16 +133,17 @@ impl ColumnWidths {
 }
 
 impl HistoryPane {
-    /// The width of the row before the message column: the graph (or the left margin), the
-    /// hash, the gaps between the five cells, and the right margin.
+    /// The width of the row outside the message, author and date cells: the graph cell and its
+    /// gap (or the left margin, with no graph), the hash, the three gaps between the hash and
+    /// the date, and the right margin.
     fn leading_width(&self, cx: &App) -> Pixels {
         let model = self.model.read(cx);
         let lead = if model.graph_rows().is_empty() {
             style::MARGIN
         } else {
-            graph::width(model.graph_max_lane_count())
+            graph::width(model.graph_max_lane_count()) + style::ROW_GAP
         };
-        lead + style::HASH_COLUMN_WIDTH + style::ROW_GAP * 4. + style::MARGIN
+        lead + style::HASH_COLUMN_WIDTH + style::ROW_GAP * 3. + style::MARGIN
     }
 
     /// The header over the commit rows: a label per column, with a drag handle on the left
