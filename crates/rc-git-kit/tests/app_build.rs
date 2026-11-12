@@ -2,14 +2,13 @@
 
 use std::collections::HashMap;
 
-use rc_git_kit::app_build::{AppBuild, AppVariant, BuildDate, UpdateMode};
+use rc_git_kit::app_build::{AppBuild, BuildDate};
 
 fn stamped(overrides: &[(&str, &str)]) -> HashMap<String, String> {
     let mut info: HashMap<String, String> = [
         ("CFBundleName", "rc-git"),
         ("CFBundleShortVersionString", "0.1.0"),
         ("CFBundleVersion", "42"),
-        ("RCGitVariant", "release"),
         ("RCGitSourceRoot", "/Users/dev/rc-git"),
         (
             "RCGitSourceCommit",
@@ -28,17 +27,16 @@ fn stamped(overrides: &[(&str, &str)]) -> HashMap<String, String> {
 }
 
 #[test]
-fn reads_a_release_stamp() {
+fn reads_a_stamp() {
     let build = AppBuild::from_info(&stamped(&[]));
-    assert_eq!(build.variant, AppVariant::Release);
     assert_eq!(build.name, "rc-git");
     assert_eq!(build.source_root.as_deref(), Some("/Users/dev/rc-git"));
     assert_eq!(build.short_commit(), Some("a3f91c2"));
     assert!(!build.dirty);
-    assert_eq!(build.update_mode(), Some(UpdateMode::Update));
+    assert!(build.can_update());
     assert_eq!(
         build.relaunch_path().as_deref(),
-        Some("/Applications/RCGit.app")
+        Some("/Users/dev/rc-git/RCGit.app")
     );
     assert_eq!(build.version_line(), "0.1.0 (42) · a3f91c2");
     let date = build.build_date.unwrap();
@@ -102,42 +100,23 @@ fn a_different_build_number_stays() {
 }
 
 #[test]
-fn the_dev_bundle_rebuilds_itself_in_place() {
-    let build = AppBuild::from_info(&stamped(&[
-        ("RCGitVariant", "dev"),
-        ("CFBundleName", "rc-git (dev)"),
-    ]));
-    assert_eq!(build.variant, AppVariant::Dev);
-    assert_eq!(build.name, "rc-git (dev)");
-    assert_eq!(build.update_mode(), Some(UpdateMode::Rebuild));
-    assert_eq!(
-        build.relaunch_path().as_deref(),
-        Some("/Users/dev/rc-git/RCGit-dev.app")
-    );
-}
-
-#[test]
-fn an_unstamped_bundle_degrades_to_dev() {
+fn an_unstamped_bundle_cannot_update() {
     let build = AppBuild::from_info(&HashMap::new());
-    assert_eq!(build.variant, AppVariant::Dev);
     assert_eq!(build.source_root, None);
     assert_eq!(build.commit, None);
     assert_eq!(build.short_commit(), None);
     assert_eq!(build.build_date, None);
-    assert_eq!(build.update_mode(), None);
+    assert!(!build.can_update());
     assert_eq!(build.relaunch_path(), None);
     assert_eq!(build.version_line(), "0 (0)");
 }
 
 #[test]
-fn empty_values_and_an_unknown_variant_read_as_unstamped() {
-    let build = AppBuild::from_info(&stamped(&[
-        ("RCGitVariant", "nightly"),
-        ("RCGitSourceRoot", ""),
-        ("CFBundleName", ""),
-    ]));
-    assert_eq!(build.variant, AppVariant::Dev);
+fn empty_values_read_as_unstamped() {
+    let build = AppBuild::from_info(&stamped(&[("RCGitSourceRoot", ""), ("CFBundleName", "")]));
     assert_eq!(build.source_root, None);
+    assert!(!build.can_update());
+    assert_eq!(build.relaunch_path(), None);
     assert_eq!(build.name, "rc-git");
 }
 
@@ -146,7 +125,7 @@ fn an_unknown_commit_is_no_commit() {
     let build = AppBuild::from_info(&stamped(&[("RCGitSourceCommit", "unknown")]));
     assert_eq!(build.commit, None);
     assert_eq!(build.version_line(), "0.1.0 (42)");
-    assert_eq!(build.update_mode(), Some(UpdateMode::Update));
+    assert!(build.can_update());
 }
 
 #[test]
@@ -161,30 +140,4 @@ fn a_build_date_counts_seconds_from_the_epoch() {
     assert_eq!(date.map(|date| date.instant()), Some(86_401));
     let date = BuildDate::parse("2026-09-19T11:02:03Z");
     assert_eq!(date.map(|date| date.instant()), Some(1_789_815_723));
-}
-
-#[test]
-fn the_gpui_bundle_rebuilds_and_relaunches_itself() {
-    let build = AppBuild::from_info(&stamped(&[
-        ("RCGitVariant", "gpui"),
-        ("RCGitSourceRoot", "/src/rc-git"),
-    ]));
-    assert_eq!(build.variant, AppVariant::Gpui);
-    assert_eq!(build.update_mode(), Some(UpdateMode::Rebuild));
-    assert_eq!(
-        build.relaunch_path().as_deref(),
-        Some("/src/rc-git/RCGit-gpui.app")
-    );
-    assert_eq!(
-        build.variant.build_script(),
-        ("scripts/build-app.sh", " --gpui --dev")
-    );
-    assert_eq!(
-        AppVariant::Dev.build_script(),
-        ("scripts/build-app.sh", " --dev")
-    );
-    assert_eq!(
-        AppVariant::Release.build_script(),
-        ("scripts/install-app.sh", "")
-    );
 }

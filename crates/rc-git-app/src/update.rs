@@ -8,41 +8,29 @@
 //! lives in the shell, so closing the window neither stops an update nor loses its log; the
 //! next Show Update opens a window over the same model.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
-    App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Global, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, UniformListScrollHandle,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::FluentBuilder, uniform_list,
+    App, AppContext, Bounds, Context, Entity, FocusHandle, Global, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, prelude::FluentBuilder, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Root, Sizable, h_flex, v_flex};
-use rc_git_kit::app_build::{AppBuild, UpdateMode};
-use rc_git_kit::guard_bridge::CancelToken;
-use rc_git_kit::sync::{SyncModel, SyncState};
-use rc_git_kit::update::{
-    DiagnosticLevel, LogChange, LogMark, UpdateEvent, UpdateModel, UpdateSyncResult, sync_result,
-};
+use rc_git_kit::app_build::AppBuild;
+use rc_git_kit::update::{DiagnosticLevel, LogChange, LogMark, UpdateEvent, UpdateModel};
 use rc_git_kit::update_copy::{UpdateCopy, installed_line};
-use rc_git_mac::update::{LiveUpdateEnvironment, SyncRunner, UpdateHooks};
+use rc_git_mac::update::{LiveUpdateEnvironment, UpdateHooks};
 
-use crate::app::{Services, Shell};
+use crate::app::Shell;
 use crate::log;
-use crate::sheets;
-use crate::sheets::credentials::{self, CredentialSheet};
-use crate::sheets::host_key::HostKeySheet;
 use crate::style;
-
-/// How often a running pull looks at the update's cancel: the token has no wake-up of its own.
-const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 /// The running bundle's stamp, read once at launch.
 pub struct BuildInfo {
@@ -63,21 +51,11 @@ impl BuildInfo {
     #[must_use]
     pub fn updatable(cx: &App) -> Option<AppBuild> {
         let info = cx.try_global::<Self>()?;
-        info.build
-            .update_mode()
-            .is_some()
-            .then(|| info.build.clone())
-    }
-
-    /// What the menus offer: the stamped mode, whether or not it can run here.
-    #[must_use]
-    pub fn update_mode(cx: &App) -> Option<UpdateMode> {
-        Self::build(cx).and_then(AppBuild::update_mode)
+        info.build.can_update().then(|| info.build.clone())
     }
 }
 
-/// The update window, once open: the credential and host-key sheets of the update's pull go
-/// on it.
+/// The update window, once open.
 pub type WindowSlot = Rc<RefCell<Option<WindowHandle<Root>>>>;
 
 /// The update model the shell keeps, and the window showing it.
@@ -184,107 +162,6 @@ fn write_diagnostic(level: DiagnosticLevel, message: &str) {
     }
 }
 
-/// The update's fetch and fast-forward: a [`SyncModel`] over the checkout the shell's opener
-/// opens, its credential and host-key sheets on the update window, and the update's cancel
-/// passed on to it. Runs `refresh_status` then `pull`, the guarded pull the Changes tab runs.
-#[must_use]
-pub fn sync_runner(services: &Services, window: WindowSlot) -> SyncRunner {
-    let opener = Rc::clone(&services.opener);
-    let credentials = Arc::clone(&services.credentials);
-    let host_keys = Arc::clone(&services.host_keys);
-    Rc::new(
-        move |root: String, cancel: Arc<CancelToken>, cx: &mut App| {
-            let actions = match opener(&root) {
-                Ok(opened) => opened.actions,
-                Err(error) => {
-                    return gpui::Task::ready(UpdateSyncResult::Failure(format!(
-                        "cannot open the checkout at {root}: {error}"
-                    )));
-                }
-            };
-            let Some(actions) = actions else {
-                return gpui::Task::ready(UpdateSyncResult::Failure(format!(
-                    "the checkout at {root} cannot be written to"
-                )));
-            };
-            let (credentials, host_keys) = (Arc::clone(&credentials), Arc::clone(&host_keys));
-            let sync = cx.new(|_| SyncModel::new(actions, credentials, host_keys));
-            set_prompters(&sync, &window, cx);
-            cx.spawn(async move |cx| pull(sync, cancel, &root, cx).await)
-        },
-    )
-}
-
-async fn pull(
-    sync: Entity<SyncModel>,
-    cancel: Arc<CancelToken>,
-    root: &str,
-    cx: &mut AsyncApp,
-) -> UpdateSyncResult {
-    let finished = Rc::new(Cell::new(false));
-    watch_cancel(&sync, &cancel, &finished, cx);
-    sync.update(cx, SyncModel::refresh_status).await;
-    if !cancel.is_signalled() {
-        sync.update(cx, SyncModel::pull).await;
-    }
-    finished.set(true);
-    let state: SyncState = sync.read_with(cx, |sync, _| sync.state().clone());
-    sync_result(&state, root)
-}
-
-/// Passes a signalled `cancel` on to the pull, the same stop the Changes tab's Cancel uses,
-/// until `finished`.
-fn watch_cancel(
-    sync: &Entity<SyncModel>,
-    cancel: &Arc<CancelToken>,
-    finished: &Rc<Cell<bool>>,
-    cx: &mut AsyncApp,
-) {
-    let (sync, cancel, finished) = (sync.downgrade(), Arc::clone(cancel), Rc::clone(finished));
-    cx.spawn(async move |cx| {
-        while !finished.get() {
-            if cancel.is_signalled() {
-                sync.update(cx, SyncModel::cancel_running).ok();
-                return;
-            }
-            cx.background_executor().timer(CANCEL_POLL).await;
-        }
-    })
-    .detach();
-}
-
-/// Puts the pull's prompts on the update window. With no window open the sender is dropped,
-/// which the model reads as nobody to ask.
-fn set_prompters(sync: &Entity<SyncModel>, window: &WindowSlot, cx: &mut App) {
-    let (credential_window, host_window) = (Rc::clone(window), Rc::clone(window));
-    sync.update(cx, |sync, _| {
-        sync.set_credential_prompter(Rc::new(move |request, sender, cx| {
-            let Some(handle) = *credential_window.borrow() else {
-                return;
-            };
-            handle
-                .update(cx, |_, window, cx| {
-                    let title = credentials::title(&request);
-                    let sheet = cx.new(|cx| CredentialSheet::new(request, sender, window, cx));
-                    sheets::open(title.into(), &sheet, window, cx);
-                })
-                .ok();
-        }));
-        sync.set_host_key_prompter(Rc::new(move |request, sender, cx| {
-            let Some(handle) = *host_window.borrow() else {
-                return;
-            };
-            handle
-                .update(cx, |_, window, cx| {
-                    let sheet = cx.new(|_| HostKeySheet::new(request, sender));
-                    let title = sheet.read(cx).title();
-                    sheets::open(title.into(), &sheet, window, cx);
-                })
-                .ok();
-        }));
-    });
-}
-
 /// Applies one [`LogChange`] to the lines a view shows.
 pub fn apply_log(lines: &mut VecDeque<SharedString>, change: LogChange) {
     match change {
@@ -320,8 +197,7 @@ pub struct UpdateWindow {
 impl UpdateWindow {
     /// The window over `model`, showing its log as it stands.
     pub fn new(build: AppBuild, model: Entity<UpdateModel>, cx: &mut Context<Self>) -> Self {
-        let copy = UpdateCopy::new(&build, model.read(cx).state());
-        let installed = installed_line(&build, copy.heading, rc_git_mac::local_utc_offset);
+        let installed = installed_line(&build, "Running", rc_git_mac::local_utc_offset);
         let changes = cx.subscribe(&model, |this, _, event: &UpdateEvent, cx| {
             if let UpdateEvent::Changed { .. } = event {
                 this.catch_up(cx);
@@ -362,14 +238,14 @@ impl UpdateWindow {
         cx.notify();
     }
 
-    /// The button: cancels the running fetch or build, otherwise starts, rebuilds anyway, or
-    /// tries again, as the model decides.
+    /// The button: cancels the running build, otherwise starts or tries again, as the model
+    /// decides.
     pub fn press(&mut self, cx: &mut Context<Self>) {
         self.model.update(cx, UpdateModel::press_action).detach();
     }
 
-    /// Return: starts as the button does, but never cancels; Escape cancels while the fetch
-    /// or the build runs, as the button's key equivalent did.
+    /// Return: starts as the button does, but never cancels; Escape cancels while the build
+    /// runs, as the button's key equivalent did.
     fn key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let cancels = UpdateCopy::new(&self.build, self.model.read(cx).state()).action_cancels;
         match event.keystroke.key.as_str() {

@@ -4,27 +4,26 @@ A fast git browser for macOS. Open a repository, pick a branch, tag, or commit, 
 tree, read files, page through history, diff, blame, and see the working tree's status. It
 runs no `git` process for repository operations: a Rust core built on
 [gitoxide](https://github.com/GitoxideLabs/gitoxide) reads the object database directly and a
-native AppKit window shows the result. Reading never writes a byte; every mutation — refs,
+native GPUI window shows the result. Reading never writes a byte; every mutation — refs,
 the index, the working tree, or a remote — passes through a policy that decides what you must
 confirm first.
 
 ## Build
 
 ```sh
-cargo install cbindgen --version 0.29.4 --locked
 brew install cargo-deny
-scripts/install-app.sh    # builds and installs /Applications/RCGit.app
+scripts/build-app.sh      # builds RCGit.app in the checkout
+ln -s "$PWD/RCGit.app" /Applications/RCGit.app
 open -a RCGit ~/code/some-repo
 ```
 
 Requires macOS 15 or newer, `rustup` (the Rust version is pinned in `rust-toolchain.toml`),
 and Xcode 27 or newer.
 
-Afterwards the app updates itself: **Update rc-git** in the app menu fetches and
-fast-forwards the checkout it was built from, rebuilds, reinstalls, and relaunches into the
-new version with the same tabs open. `scripts/build-app.sh --dev` builds a separate
-`RCGit-dev.app` — its own identifier, its own tabs, an orange icon — for trying changes
-without disturbing the installed app.
+Afterwards the app rebuilds itself: **Rebuild and Relaunch** in the app menu (⌥⌘R starts it
+at once) rebuilds the checkout it was built from as it stands, uncommitted work included, and
+relaunches into the new build with the same tabs open. It does not fetch; pull the checkout
+first to update. `scripts/build-app.sh --profile release` builds with fat LTO.
 
 ## Use
 
@@ -68,14 +67,14 @@ cargo run --release -p rc-git-cli -- status ~/code/some-repo
 ## Safety
 
 The core cannot write. The workspace's `clippy.toml` rejects the gix and std write, spawn and
-network entry points it lists at lint time, a test compares `.git` byte for byte before and after every
-operation, and repositories open in isolated mode so an untrusted checkout cannot pull in
-configuration from anywhere else. Every mutation — refs, the index, the working tree, or a
-remote — passes through `rc-git-guard`, a policy that denies deletions on protected branches
-outright and decides, per action, whether it runs, needs a confirm, or needs a typed phrase
-and a backup ref. Deleting a merged branch takes a plain confirm and writes no backup;
-discarding working changes takes a plain confirm and cannot be undone; dropping a stash takes
-the word `drop` and writes a backup ref. `docs/safety.md` has the full table.
+network entry points it lists at lint time, a test compares `.git` byte for byte before and after
+every operation, and repositories open in isolated mode so an untrusted checkout cannot pull in
+configuration from anywhere else. Every mutation — refs, the index, the working tree, or a remote —
+passes through `rc-git-guard`, a policy that denies deletions on protected branches outright and
+decides, per action, whether it runs, needs a confirm, or needs a typed phrase and a backup ref.
+Deleting a merged branch takes a plain confirm and writes no backup; discarding working changes
+takes a plain confirm and cannot be undone; dropping a stash takes the word `drop` and writes a
+backup ref. `docs/safety.md` has the full table.
 
 ## Layout
 
@@ -83,11 +82,12 @@ the word `drop` and writes a backup ref. `docs/safety.md` has the full table.
 crates/rc-git-core       read-only gix wrapper, keyed by object id
 crates/rc-git-guard      policy for destructive actions, and the one write path
 crates/rc-git-highlight  tree-sitter syntax highlighting and import links
-crates/rc-git-ffi        C ABI for the Swift app
+crates/rc-git-kit        app state and pure text logic, no widgets
+crates/rc-git-mac        macOS implementations of the kit's platform traits
+crates/rc-git-app        the GPUI app: windows, views, menus
 crates/rc-git-cli        rc-git binary
 crates/rc-git-testkit    fixture repositories for tests
-mac/                     Swift package: RcGitKit (logic, tested) and RcGitApp (AppKit)
-docs/                    architecture, performance, safety, ffi, testing, development, roadmap
+docs/                    architecture, performance, safety, testing, development, roadmap
 ```
 
 `scripts/check.sh` runs the checks CI runs; CI also assembles the app with `scripts/build-app.sh`.

@@ -3,43 +3,6 @@
 
 use std::collections::HashMap;
 
-/// Which bundle is running. The two carry different bundle identifiers, so their tabs,
-/// recents, window frames, and trusted host keys never mix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AppVariant {
-    /// `RCGit.app`, installed in `/Applications` by `scripts/install-app.sh`.
-    Release,
-    /// `RCGit-dev.app`, built into the checkout by `scripts/build-app.sh --dev`.
-    Dev,
-    /// `RCGit-gpui.app`, the Rust app the migration builds, built into the checkout by
-    /// `scripts/build-app.sh --gpui`. It rebuilds itself like the dev bundle, under its own
-    /// bundle identifier.
-    Gpui,
-}
-
-impl AppVariant {
-    /// The script that builds this variant, relative to the checkout, and the arguments it
-    /// takes, each with its leading space.
-    #[must_use]
-    pub fn build_script(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Release => ("scripts/install-app.sh", ""),
-            Self::Dev => ("scripts/build-app.sh", " --dev"),
-            Self::Gpui => ("scripts/build-app.sh", " --gpui --dev"),
-        }
-    }
-}
-
-/// What an update does, which is decided by the bundle running it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UpdateMode {
-    /// The release bundle: fetch, fast-forward, rebuild, install into `/Applications`,
-    /// relaunch.
-    Update,
-    /// The dev bundle: rebuild from the working tree as it stands and relaunch.
-    Rebuild,
-}
-
 /// A UTC instant stamped as `RCGitBuildDate`, kept as its RFC 3339 text and the fields read
 /// from it. Only the `YYYY-MM-DDTHH:MM:SSZ` form `scripts/build-app.sh` writes parses.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -114,15 +77,12 @@ fn digits(text: &str, start: usize, len: usize) -> Option<u32> {
     Some(value)
 }
 
-/// What `scripts/build-app.sh` stamped into the bundle: which variant it is, the checkout it
-/// was built from, and the commit it was built at. An unstamped bundle — a bare `cargo run`,
-/// or a bundle assembled by hand — reports [`AppVariant::Dev`] with no source root, which is
-/// what keeps the self-update path off.
+/// What `scripts/build-app.sh` stamped into the bundle: the checkout it was built from and
+/// the commit it was built at. An unstamped bundle — a bare `cargo run`, or a bundle assembled
+/// by hand — has no source root, which is what keeps the self-update path off.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AppBuild {
-    /// Release or dev.
-    pub variant: AppVariant,
-    /// `CFBundleName`: `rc-git`, or `rc-git (dev)` for the dev bundle.
+    /// `CFBundleName`, e.g. `rc-git`.
     pub name: String,
     /// `CFBundleShortVersionString`, e.g. `0.1.42`.
     pub version: String,
@@ -139,26 +99,18 @@ pub struct AppBuild {
 }
 
 impl AppBuild {
-    /// Where `scripts/install-app.sh` puts the release bundle, and what a self-update
-    /// replaces and relaunches.
-    pub const INSTALLED_PATH: &'static str = "/Applications/RCGit.app";
-    /// What `scripts/build-app.sh --dev` names the dev bundle inside its own checkout.
-    pub const DEV_BUNDLE_NAME: &'static str = "RCGit-dev.app";
-    /// What `scripts/build-app.sh --gpui` names the GPUI bundle inside its own checkout.
-    pub const GPUI_BUNDLE_NAME: &'static str = "RCGit-gpui.app";
+    /// What `scripts/build-app.sh` names the bundle inside its own checkout, and what a
+    /// rebuild relaunches.
+    pub const BUNDLE_NAME: &'static str = "RCGit.app";
+    /// The script that rebuilds the bundle, relative to the checkout. It takes no arguments.
+    pub const BUILD_SCRIPT: &'static str = "scripts/build-app.sh";
 
     /// Reads the stamp out of an `Info.plist`'s string keys. Missing or empty keys degrade:
-    /// an unstamped bundle is a dev build that cannot update itself.
+    /// a bundle with no source root cannot rebuild itself.
     #[must_use]
     pub fn from_info(info: &HashMap<String, String>) -> Self {
         let string = |key: &str| info.get(key).filter(|value| !value.is_empty()).cloned();
-        let variant = match string("RCGitVariant").as_deref() {
-            Some("release") => AppVariant::Release,
-            Some("gpui") => AppVariant::Gpui,
-            Some(_) | None => AppVariant::Dev,
-        };
         Self {
-            variant,
             name: string("CFBundleName").unwrap_or_else(|| "rc-git".to_owned()),
             version: string("CFBundleShortVersionString").unwrap_or_else(|| "0".to_owned()),
             build: string("CFBundleVersion").unwrap_or_else(|| "0".to_owned()),
@@ -176,31 +128,18 @@ impl AppBuild {
         Some(commit.get(..7).unwrap_or(commit))
     }
 
-    /// What this bundle's update does, or `None` when it carries no checkout to build from.
+    /// Whether this bundle can rebuild itself: it carries the checkout it was built from.
     #[must_use]
-    pub fn update_mode(&self) -> Option<UpdateMode> {
-        self.source_root.as_ref()?;
-        Some(match self.variant {
-            AppVariant::Release => UpdateMode::Update,
-            AppVariant::Dev | AppVariant::Gpui => UpdateMode::Rebuild,
-        })
+    pub fn can_update(&self) -> bool {
+        self.source_root.is_some()
     }
 
-    /// The bundle an update launches when the build finishes: the installed release app, or
-    /// the dev bundle in the checkout that built it.
+    /// The bundle a rebuild launches when the build finishes: [`Self::BUNDLE_NAME`] in the
+    /// checkout that built it. `None` for a bundle with no source root.
     #[must_use]
     pub fn relaunch_path(&self) -> Option<String> {
-        match self.variant {
-            AppVariant::Release => Some(Self::INSTALLED_PATH.to_owned()),
-            AppVariant::Dev => self
-                .source_root
-                .as_ref()
-                .map(|root| format!("{root}/{}", Self::DEV_BUNDLE_NAME)),
-            AppVariant::Gpui => self
-                .source_root
-                .as_ref()
-                .map(|root| format!("{root}/{}", Self::GPUI_BUNDLE_NAME)),
-        }
+        let root = self.source_root.as_ref()?;
+        Some(format!("{root}/{}", Self::BUNDLE_NAME))
     }
 
     /// What the window titlebar shows beside its title: `0.1.42`, with a `+` when the

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gpui::{Context, EventEmitter, Task};
 
-use crate::app_build::{AppBuild, AppVariant};
+use crate::app_build::AppBuild;
 use crate::guard_bridge::CancelToken;
 use crate::oneshot;
 
@@ -60,9 +60,8 @@ pub enum UpdateEvent {
     Diagnostic(UpdateDiagnostic),
 }
 
-/// Drives one update: preflight, fetch and fast-forward, build, install, relaunch. The
-/// bundle's [`crate::app_build::UpdateMode`] decides whether the fetch happens at all. Stops at
-/// the first failure and keeps the log, so the window can show what happened.
+/// Drives one update: preflight, rebuild of the working tree as it stands, relaunch. Stops
+/// at the first failure and keeps the log, so the window can show what happened.
 ///
 /// Open tabs are not this model's concern: the environment hands them over before launching
 /// the new bundle. The model only decides when they are handed over and when a failed
@@ -182,10 +181,7 @@ impl UpdateModel {
     pub fn is_busy(&self) -> bool {
         match self.state {
             UpdateState::Running(_) => true,
-            UpdateState::Idle
-            | UpdateState::UpToDate
-            | UpdateState::Installed
-            | UpdateState::Failed { .. } => false,
+            UpdateState::Idle | UpdateState::Installed | UpdateState::Failed { .. } => false,
         }
     }
 
@@ -196,10 +192,9 @@ impl UpdateModel {
         can_proceed(&self.build, &self.state)
     }
 
-    /// Runs the whole update; the task resolves once it has settled. `force` builds even when
-    /// the checkout is already at the commit this bundle was built from; it means nothing in
-    /// a rebuild, which always builds. Does nothing while an attempt runs.
-    pub fn start(&mut self, force: bool, cx: &mut Context<Self>) -> Task<()> {
+    /// Runs the whole update; the task resolves once it has settled. Does nothing while an
+    /// attempt runs.
+    pub fn start(&mut self, cx: &mut Context<Self>) -> Task<()> {
         if self.is_busy() || self.running {
             return Task::ready(());
         }
@@ -211,7 +206,7 @@ impl UpdateModel {
         self.cancel = Some(Arc::clone(&cancel));
         let (done, finished) = oneshot::channel();
         cx.spawn(async move |this, cx| {
-            run::run(&this, force, cancel, cx).await;
+            run::run(&this, cancel, cx).await;
             // The same turn that settled the state, so the model is never idle while still
             // holding a finished attempt.
             let _ = this.update(cx, |model, _| {
@@ -226,7 +221,7 @@ impl UpdateModel {
         })
     }
 
-    /// Stops the attempt under way: the fetch or the build is killed, and the update ends
+    /// Stops the attempt under way: the build is killed, and the update ends
     /// failed with "cancelled", so Try Again starts clean. A no-op when nothing runs.
     pub fn cancel(&self) {
         if let Some(cancel) = &self.cancel {
@@ -234,7 +229,7 @@ impl UpdateModel {
         }
     }
 
-    /// What the window's button does: cancel while the fetch or the build runs, otherwise
+    /// What the window's button does: cancel while the build runs, otherwise
     /// [`Self::proceed`]. The shortcut calls `proceed` alone, so it never cancels.
     pub fn press_action(&mut self, cx: &mut Context<Self>) -> Task<()> {
         if is_cancellable(&self.state) {
@@ -253,19 +248,18 @@ impl UpdateModel {
         self.changed(cx);
     }
 
-    /// What the window's button and its shortcut do: start from idle, rebuild anyway from
-    /// up to date, start over from a failure, and nothing otherwise.
+    /// What the window's button and its shortcut do: start from idle, start over from a
+    /// failure, and nothing otherwise.
     pub fn proceed(&mut self, cx: &mut Context<Self>) -> Task<()> {
         if !self.can_proceed() {
             return Task::ready(());
         }
         match self.state {
-            UpdateState::UpToDate => self.start(true, cx),
             UpdateState::Failed { .. } => {
                 self.reset(cx);
-                self.start(false, cx)
+                self.start(cx)
             }
-            UpdateState::Idle => self.start(false, cx),
+            UpdateState::Idle => self.start(cx),
             UpdateState::Running(_) | UpdateState::Installed => Task::ready(()),
         }
     }
@@ -360,15 +354,16 @@ impl UpdateModel {
 fn step_name(step: UpdateStep) -> &'static str {
     match step {
         UpdateStep::Preflight => "preflight",
-        UpdateStep::Sync => "sync",
         UpdateStep::Install => "install",
         UpdateStep::Relaunch => "relaunch",
     }
 }
 
-/// Why a bundle with no source checkout stamp cannot update: it names the script that stamps
-/// the variant it claims to be.
-pub(super) fn unstamped_message(variant: AppVariant) -> String {
-    let (script, arguments) = variant.build_script();
-    format!("this bundle carries no source checkout; rebuild it with {script}{arguments}")
+/// Why a bundle with no source checkout stamp cannot update: it names the script that
+/// stamps one.
+pub(super) fn unstamped_message() -> String {
+    format!(
+        "this bundle carries no source checkout; rebuild it with {}",
+        AppBuild::BUILD_SCRIPT
+    )
 }

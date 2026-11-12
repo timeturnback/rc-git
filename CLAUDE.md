@@ -2,17 +2,17 @@
 
 Native macOS git browser built for speed: open a repository, pick a branch or tag, walk the
 tree, read files, page history, diff, blame, browse the working tree. A Rust core on
-`gitoxide` reads the object database directly; a thin AppKit app renders it. The core spawns
-no process (no `git` process for repository operations) and never writes; every write — refs,
+`gitoxide` reads the object database directly; a GPUI app renders it. The core spawns no
+process (no `git` process for repository operations) and never writes; every write — refs,
 objects, the index, working-tree files, stash, fetch/pull/push — goes through `rc-git-guard`.
-The in-app updater runs `scripts/install-app.sh` or `build-app.sh`, which call `git` on
-rc-git's own checkout, never on a browsed repository.
+The in-app rebuild runs `scripts/build-app.sh`, which calls `git` on rc-git's own checkout,
+never on a browsed repository.
 
 Two rules define the project. A change that breaks either is wrong even when it works:
 
 - **The core never writes.** `clippy.toml` bans the gix and std write, spawn and network entry
-  points it lists; `crates/rc-git-core/tests/read_only.rs` proves `.git` is byte-identical after every
-  operation. The one write path is `rc-git-guard`'s `actions` module (see
+  points it lists; `crates/rc-git-core/tests/read_only.rs` proves `.git` is byte-identical
+  after every operation. The one write path is `rc-git-guard`'s `actions` module (see
   `.claude/rules/guard.md`); every mutation goes through it. Say so rather than bypassing it.
 - **Nothing scales with repository size except what is on screen.** One tree object per folder
   expand, one blob per file view, a header read before any decode, one log page at a time.
@@ -21,18 +21,14 @@ Two rules define the project. A change that breaks either is wrong even when it 
 ## Commands
 
 ```sh
-scripts/check.sh                  # CI's checks minus build-app.sh; --fast skips the Swift half
+scripts/check.sh                  # CI's checks minus build-app.sh
 cargo test --workspace            # Rust tests; fixtures are built with the git CLI
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-scripts/build.sh [debug]          # Rust lib + header + swift build (debug: app-dev profile)
-swift test --package-path mac     # RcGitKit tests; run scripts/build.sh once first
-scripts/build-app.sh [--dev]      # assemble RCGit.app, or RCGit-dev.app, ad-hoc signed
-scripts/install-app.sh            # build the release bundle into /Applications
+scripts/build-app.sh [--profile release]  # assemble RCGit.app in the checkout, ad-hoc signed
 cargo run -p rc-git-cli -- --time ls <repo> [rev] [path]   # CLI and benchmark tool
 ```
 
 Needs `rustup` (Rust is pinned in `rust-toolchain.toml`),
-`cargo install cbindgen --version 0.29.4 --locked`,
 `brew install cargo-deny prek shellcheck shfmt actionlint zizmor`, and Xcode 27 or newer.
 `docs/development.md` has the rest.
 
@@ -43,36 +39,33 @@ Needs `rustup` (Rust is pinned in `rust-toolchain.toml`),
 | `crates/rc-git-core` | gix wrapper: open, refs, trees, blobs, log, diff, blame, worktree. Keyed by `Oid`. No gix types in the public API. | yes |
 | `crates/rc-git-guard` | policy for every mutating action, and the one write and network path (`docs/safety.md`, "Guarding mutations"). | yes |
 | `crates/rc-git-highlight` | tree-sitter highlighting and import links: bytes in, spans out. Pure. | yes |
-| `crates/rc-git-ffi` | C ABI over core, guard, and highlight. The only crate allowed `unsafe`. | yes |
 | `crates/rc-git-cli` | `rc-git` binary: scriptable access plus `--time`. | yes |
-| `crates/rc-git-testkit` | fixture repositories built with the git CLI. The only crate that shells out. | — |
-| `mac/Sources/RcGitKit` | Swift wrapper, `BrowserModel`, layout policy, the markdown parser, link and import resolution. **No AppKit.** | yes |
-| `mac/Sources/RcGitApp` | AppKit windows and views. Marshals events to the model, nothing else. | no |
+| `crates/rc-git-testkit` | fixture repositories built with the git CLI. The only crate that runs `git`. | — |
+| `crates/rc-git-kit` | app state and pure text logic: `BrowserModel` and the other models, layout policy, markdown, search, link and import resolution, platform traits. **No widgets.** | yes |
+| `crates/rc-git-mac` | live macOS impls of the kit's platform traits: CFPreferences, keychain, FSEvents, process runner, bundle info, window tabs, update environment. The only crate allowed `unsafe`. | yes |
+| `crates/rc-git-app` | GPUI windows, views, menus and key bindings. Marshals events to the kit models, nothing else. | yes |
 
-New logic goes in `rc-git-core` when it reads git data and in `RcGitKit` when it is app state
-or pure text logic the views need decided once. `RcGitApp` only wires views to the model. The
-FFI layer only marshals; `docs/ffi.md` has the checklist for adding a function, and
-`scripts/gen-header.sh --verify` fails when the committed header drifts.
+New logic goes in `rc-git-core` when it reads git data and in `rc-git-kit` when it is app
+state or pure text logic the views need decided once. `rc-git-app` only wires views to the
+models; a macOS system call goes in `rc-git-mac` behind a kit trait.
 
 ## Working agreement
 
 - Never launch the app to verify a change. Build, lint, and tests are the scope; the user runs
   `RCGit.app` and reports what breaks. Reproduce and measure with the CLI instead.
-- The release and dev bundles differ only by `CFBundleIdentifier`, name, icon, and build config.
-  That identifier scopes `UserDefaults`, so it is what keeps their tabs apart and what carries
-  tabs through a self-update — never make it depend on a version or build number.
-- Both bundles rebuild themselves by running `scripts/build-app.sh`, so that script assembles
-  into `build/stage/` and deletes the old bundle last. Never delete it before the build: the
-  dev bundle is the process running the script.
-- Ask before adding a dependency on either side. Rust versions are pinned exactly and pass
-  `cargo deny`; the Swift package has none.
-- rc-note is the sister app: same shape, with a Swift core instead of Rust. Read it with
+- `RCGit.app`'s `CFBundleIdentifier` scopes `UserDefaults`, so it is what carries tabs through
+  a rebuild — never make it depend on a version or build number.
+- The app rebuilds itself by running `scripts/build-app.sh`, so that script assembles into
+  `build/stage/` and deletes the old bundle last. Never delete it before the build: the
+  running app is the process running the script.
+- Ask before adding a dependency. Versions are pinned exactly and pass `cargo deny`.
+- rc-note is the sister app: same features, a different stack. Read it with
   `xref`, never its working tree. The file map, the parity table of what each app has, and how
   to port live in `~/.claude/docs/native-app.md`, "Sister apps". A port ends its commit with a
   `Ported-from: rc-note@<sha>` trailer.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.
 - `docs/` is the long-form reference: `architecture.md`, `performance.md`, `safety.md`,
-  `ffi.md`, `testing.md`, `development.md`, `roadmap.md`.
+  `testing.md`, `development.md`, `roadmap.md`.
 - `docs/solutions/` holds documented solutions to past problems (YAML frontmatter: `module`,
   `tags`, `problem_type`), organized by category — relevant when debugging in a documented area.
 - `CONCEPTS.md` defines the words that mean something specific here (guard, challenge, dirty
@@ -85,7 +78,7 @@ FFI layer only marshals; `docs/ffi.md` has the checklist for adding a function, 
 - Repositories open with `gix::open::Options::isolated()`: only the repository's own config is
   read, no global or system config, no environment, no `include` directives.
 - Every cache keys on `Oid`. Only refs are re-read when the repository changes.
-- Every async load in `BrowserModel` carries a generation number; a stale result is dropped.
-- FFI: the caller owns every returned pointer and releases it with the matching `_free`;
-  errors arrive through `char **error` and are released with `rcgit_string_free`.
-- Layout follows `LayoutPolicy` (RcGitKit) and nothing else. Change thresholds there, with tests.
+- Every async load in `BrowserModel` (rc-git-kit) carries a generation number; a stale result
+  is dropped.
+- Layout follows `rc_git_kit::layout_policy` and nothing else. Change thresholds there, with
+  tests.

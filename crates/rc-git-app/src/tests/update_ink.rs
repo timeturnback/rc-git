@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rc_git_kit::app_build::{AppBuild, AppVariant};
+use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::update::UpdateState;
 
@@ -14,8 +14,7 @@ use crate::update::BuildInfo;
 
 fn build() -> AppBuild {
     AppBuild {
-        variant: AppVariant::Dev,
-        name: "rc-git (dev)".to_owned(),
+        name: "rc-git".to_owned(),
         version: "0.1.42".to_owned(),
         build: "42".to_owned(),
         source_root: Some("/nonexistent-rc-git-update-ink".to_owned()),
@@ -65,7 +64,7 @@ fn the_about_window_puts_ink_on_the_page() {
 fn about_names_the_build() {
     let view = crate::about::AboutView::new(&build());
     let (name, version) = view.text();
-    assert_eq!(name, "rc-git (dev)");
+    assert_eq!(name, "rc-git");
     assert!(
         version.starts_with("Version: 0.1.42 · a3f91c2+ · built Sep 19, 2026"),
         "{version}"

@@ -17,20 +17,6 @@ repos:
         language: system
         files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^(clippy|rustfmt)\.toml$)
         pass_filenames: false
-      - id: ffi-header
-        name: FFI header in sync
-        entry: scripts/gen-header.sh --verify
-        language: system
-        files: ^(crates/rc-git-ffi/|mac/Sources/CRcGit/)
-        pass_filenames: false
-      - id: swift-format
-        name: swift-format lint
-        entry: >-
-          xcrun swift-format lint --strict --recursive
-          mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
-        language: system
-        files: (\.swift$|^\.swift-format$)
-        pass_filenames: false
       - id: shellcheck
         name: shellcheck
         entry: shellcheck

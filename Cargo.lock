@@ -6966,16 +6966,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rc-git-ffi"
-version = "0.1.0"
-dependencies = [
- "rc-git-core",
- "rc-git-guard",
- "rc-git-highlight",
- "rc-git-testkit",
-]
-
-[[package]]
 name = "rc-git-guard"
 version = "0.1.0"
 dependencies = [

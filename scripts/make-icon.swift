@@ -1,11 +1,10 @@
 // Draws the app icon and writes an .icns. Run through `swift scripts/make-icon.swift`;
 // scripts/build-app.sh caches the result and only re-runs when this file is newer.
 //
-// Usage: make-icon.swift --variant release|dev --output <path.icns>
+// Usage: make-icon.swift --output <path.icns>
 //
-// The mark is a commit graph: a trunk of three commits with one branch that forks out and
-// merges back. Release is blue, dev is orange with diagonal stripes so the two are never
-// confused in the Dock.
+// The mark is a commit graph on a blue squircle: a trunk of three commits with one branch
+// that forks out and merges back.
 
 import AppKit
 import Foundation
@@ -15,24 +14,8 @@ let canvas = 1024.0
 let inset = 100.0
 let side = canvas - inset * 2
 
-struct Palette {
-    let top: NSColor
-    let bottom: NSColor
-    let striped: Bool
-}
-
-let palettes: [String: Palette] = [
-    "release": Palette(
-        top: NSColor(srgbRed: 0.31, green: 0.55, blue: 0.98, alpha: 1),
-        bottom: NSColor(srgbRed: 0.09, green: 0.28, blue: 0.78, alpha: 1),
-        striped: false
-    ),
-    "dev": Palette(
-        top: NSColor(srgbRed: 1.00, green: 0.66, blue: 0.16, alpha: 1),
-        bottom: NSColor(srgbRed: 0.80, green: 0.38, blue: 0.03, alpha: 1),
-        striped: true
-    ),
-]
+let gradientTop = NSColor(srgbRed: 0.31, green: 0.55, blue: 0.98, alpha: 1)
+let gradientBottom = NSColor(srgbRed: 0.09, green: 0.28, blue: 0.78, alpha: 1)
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
@@ -47,9 +30,6 @@ func option(_ name: String) -> String? {
     return arguments[index + 1]
 }
 
-guard let variant = option("--variant"), let palette = palettes[variant] else {
-    fail("--variant must be one of: \(palettes.keys.sorted().joined(separator: ", "))")
-}
 guard let output = option("--output") else { fail("--output <path.icns> is required") }
 
 /// A superellipse, which is what the macOS icon shape is: rounder corners than an arc.
@@ -73,22 +53,6 @@ func squircle(in rect: NSRect, exponent: Double = 5) -> NSBezierPath {
     }
     path.close()
     return path
-}
-
-func drawStripes(in shape: NSBezierPath, bounds: NSRect) {
-    NSGraphicsContext.saveGraphicsState()
-    shape.addClip()
-    NSColor(white: 1, alpha: 0.10).setStroke()
-    let stripe = NSBezierPath()
-    stripe.lineWidth = side * 0.055
-    var offset = -bounds.height
-    while offset < bounds.width {
-        stripe.move(to: NSPoint(x: bounds.minX + offset, y: bounds.minY))
-        stripe.line(to: NSPoint(x: bounds.minX + offset + bounds.height, y: bounds.maxY))
-        offset += side * 0.145
-    }
-    stripe.stroke()
-    NSGraphicsContext.restoreGraphicsState()
 }
 
 /// Trunk of three commits at `trunkX`, one branch node at `branchX` forking off the top
@@ -145,8 +109,7 @@ func render(size: Int) -> Data {
 
     let bounds = NSRect(x: inset, y: inset, width: side, height: side)
     let shape = squircle(in: bounds)
-    NSGradient(starting: palette.top, ending: palette.bottom)?.draw(in: shape, angle: -90)
-    if palette.striped { drawStripes(in: shape, bounds: bounds) }
+    NSGradient(starting: gradientTop, ending: gradientBottom)?.draw(in: shape, angle: -90)
     drawCommitGraph(in: bounds.insetBy(dx: side * 0.16, dy: side * 0.16))
 
     NSGraphicsContext.restoreGraphicsState()
@@ -165,7 +128,7 @@ do {
 }
 
 let iconset = URL(fileURLWithPath: NSTemporaryDirectory())
-    .appendingPathComponent("rc-git-icon-\(variant)-\(getpid()).iconset")
+    .appendingPathComponent("rc-git-icon-\(getpid()).iconset")
 try? FileManager.default.removeItem(at: iconset)
 do {
     try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)

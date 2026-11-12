@@ -14,21 +14,19 @@ root_cause: api_misuse
 resolution_type: code_fix
 severity: high
 related_components:
-  - rc-git-ffi
-  - RcGitKit
-  - RcGitApp
-tags: [gix, russh, tokio, cancellation, timeout, ffi, blocking-io, sync-io-bridge]
+  - rc-git-kit
+  - rc-git-app
+tags: [gix, russh, tokio, cancellation, timeout, blocking-io, sync-io-bridge]
 ---
 
 # Sync spins forever: a cancel flag nobody could set and a transport with no idle budget
 
 ## Problem
 
-`rc-git-guard`'s remote operations already took a `cancel: &AtomicBool`, and gix polls it
-while receiving a pack. Nothing could ever set it: the FFI built a fresh
-`AtomicBool::new(false)` inside each call. Underneath that, the ssh transport's blocking
-reads had no time limit at all. A transfer that stopped moving had exactly two outcomes,
-success and forever.
+`rc-git-guard`'s remote operations already took a `cancel: &AtomicBool`, and gix polls it while
+receiving a pack. Nothing could ever set it: the C bridge the app then called through built a fresh
+`AtomicBool::new(false)` inside each call. Underneath that, the ssh transport's blocking reads had
+no time limit at all. A transfer that stopped moving had exactly two outcomes, success and forever.
 
 ## Symptoms
 
@@ -42,8 +40,8 @@ success and forever.
 
 - **Reading the cancel parameter as if it were wired up.** `fetch_upstream` and
   `push_upstream` take a cancel flag and check it at every step boundary; `receive()` gets it
-  as gix's `should_interrupt`. All of that was live code. The break was one layer up, at
-  `crates/rc-git-ffi/src/lib.rs`, where each function created its own flag and dropped it on
+  as gix's `should_interrupt`. All of that was live code. The break was one layer up, in the
+  app's C bridge (since removed), where each function created its own flag and dropped it on
   return. A parameter that exists is not a cancel path.
 - **Expecting git config to supply the timeouts.** gix reads `http.lowSpeedLimit`,
   `http.lowSpeedTime` and `gitoxide.http.connectTimeout` into its curl options — but
@@ -102,14 +100,14 @@ than one byte moves for two minutes", which never punishes a slow link. Fetch ap
 repository's own `http.proxy` survives; push, which builds its transport by hand, applies it
 with `transport.configure(&options)` because `connect::Options` carries no HTTP settings.
 
-**A handle across the ABI.** `RcGitCancel` (opaque, `rcgit_cancel_new` / `_signal` / `_free`)
-is the one FFI handle meant to be touched from a second thread — the thread inside a transfer
-cannot ask itself to stop. `RCGIT_CANCELLED` (-5) keeps a cancel from being reported as a
-failure. Swift's `CancelToken` frees it in `deinit`, and `SyncModel` mints one per workflow so
-a signalled token is never reused.
+**A token a second thread can set.** `CancelToken` (`crates/rc-git-kit/src/guard_bridge.rs`)
+is shared as an `Arc` between the model and the thread inside a transfer — that thread cannot
+ask itself to stop — and hands the guard its flag. `FailureKind::Cancelled` keeps a cancel from
+being reported as a failure, and `SyncModel` mints one token per workflow so a signalled token
+is never reused.
 
-**A control that stays on screen.** While busy the toolbar button becomes `stop.circle` wired
-to `cancelSync`, with the spinner beside it rather than in place of it, plus
+**A control that stays on screen.** While busy the toolbar's Sync button turns into a busy
+glyph that calls `cancel_sync` on a click (`crates/rc-git-app/src/window/toolbar.rs`), plus
 Repository ▸ Cancel Sync on ⌘.
 
 ## Why This Works
@@ -146,8 +144,8 @@ this while receiving a pack), and a timer only while the socket is silent.
 
 ## Related
 
-- [Rebuild and Relaunch spins forever at preflight](unbounded-preflight-probe-spins-with-no-step-log.md)
-  — the same class of bug one layer up: an unbounded out-of-process wait with no way to see or
-  stop it. That one bounded a probe; this one bounds a socket.
+- `crates/rc-git-mac/src/process.rs` — the same rule one layer up: the updater's toolchain
+  probe and build run through a bounded process runner with a timeout, an idle clock and a
+  cancel, so an out-of-process wait cannot spin forever either.
 - [Push over HTTPS with gix that has no push](../architecture-patterns/hand-rolled-git-push-over-gix-https.md)
   — the push transport this work threads `Cancel` and the curl timeouts through.

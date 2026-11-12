@@ -1,21 +1,14 @@
 #!/usr/bin/env bash
 # The checks CI runs, minus assembling the app bundle, which only CI does.
-# Pass --fast to skip the Swift build and tests.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-usage() { echo "usage: check.sh [--fast]"; }
-(($# <= 1)) || {
-  usage >&2
-  exit 2
-}
-fast=0
-case "${1:-}" in
-"") ;;
---fast) fast=1 ;;
--h | --help)
+usage() { echo "usage: check.sh"; }
+case "$#:${1:-}" in
+0:) ;;
+1:-h | 1:--help)
   usage
   exit 0
   ;;
@@ -35,7 +28,6 @@ require() {
 
 require cargo "rustup (https://rustup.rs)"
 require cargo-deny "brew install cargo-deny"
-require cbindgen "cargo install cbindgen --version 0.29.4 --locked"
 require shellcheck "brew install shellcheck"
 require shfmt "brew install shfmt"
 require actionlint "brew install actionlint"
@@ -43,10 +35,8 @@ require zizmor "brew install zizmor"
 
 step "cargo fmt"
 cargo fmt --all -- --check
-step "ffi header"
-scripts/gen-header.sh --verify
 step "lint tables"
-# rc-git-ffi, rc-git-mac and rc-git-testkit hand-copy the workspace lint tables; each
+# rc-git-mac and rc-git-testkit hand-copy the workspace lint tables; each
 # Cargo.toml says why.
 lint_table() {
   awk -v section="[$2]" '$0 == section { f = 1; next } /^\[/ { f = 0 } f && /^[a-z_]+ =/' "$1" |
@@ -56,16 +46,9 @@ lint_drift() {
   echo "error: $1 drifted from the workspace lint table in Cargo.toml (diff above)" >&2
   exit 1
 }
-ffi=crates/rc-git-ffi/Cargo.toml
 mac=crates/rc-git-mac/Cargo.toml
 testkit=crates/rc-git-testkit/Cargo.toml
 panic_lints='^(unwrap_used|expect_used|panic|panic_in_result_fn|unimplemented) ='
-diff <(lint_table Cargo.toml workspace.lints.clippy) \
-  <(lint_table "$ffi" lints.clippy | grep -v '^undocumented_unsafe_blocks =') ||
-  lint_drift "$ffi [lints.clippy]"
-diff <(lint_table Cargo.toml workspace.lints.rust | grep -v '^unsafe_code =') \
-  <(lint_table "$ffi" lints.rust | grep -v '^unsafe_op_in_unsafe_fn =') ||
-  lint_drift "$ffi [lints.rust]"
 diff <(lint_table Cargo.toml workspace.lints.clippy) \
   <(lint_table "$mac" lints.clippy | grep -v '^undocumented_unsafe_blocks =') ||
   lint_drift "$mac [lints.clippy]"
@@ -80,79 +63,11 @@ diff <(lint_table Cargo.toml workspace.lints.rust) <(lint_table "$testkit" lints
 step "shell scripts"
 shellcheck scripts/*.sh scripts/tests/*.sh
 shfmt -d scripts/*.sh scripts/tests/*.sh
-step "install-app rollback"
-scripts/tests/install-app.test.sh
 step "bounded runner"
 scripts/tests/bounded.test.sh
 step "github actions"
 actionlint
 zizmor --offline .github
-step "kit layering"
-if grep -rnE '\bimport[[:space:]]+([A-Za-z_]+[[:space:]]+)?(AppKit|Cocoa|SwiftUI)\b' \
-  mac/Sources/RcGitKit; then
-  echo 'error: RcGitKit must not import a UI framework (see .claude/rules/swift.md)' >&2
-  exit 1
-fi
-step "blocking work off the pool"
-# A Task.detached runs on the cooperative pool, one thread per core: a blocking call there
-# starves every task. Blocking work goes through BlockingWork; a detached task that never
-# blocks says why in a `// pool-safe:` comment directly above it.
-# shellcheck disable=SC2016 # awk's own $0
-unmarked="$(find mac/Sources/RcGitKit -name '*.swift' -print0 | xargs -0 awk '
-  FNR == 1 { safe = 0 }
-  /^[[:space:]]*\/\// { if ($0 ~ /pool-safe:/) safe = 1; next }
-  /Task\.detached/ && !safe { print FILENAME ":" FNR ": " $0 }
-  { safe = 0 }')"
-if [[ -n $unmarked ]]; then
-  printf '%s\n' "$unmarked"
-  echo 'error: Task.detached in RcGitKit without a // pool-safe: reason above it;' \
-    'run blocking work through BlockingWork.run (.claude/rules/swift.md)' >&2
-  exit 1
-fi
-step "suite time limits"
-# A suite's .timeLimit reaches every test and nested suite inside it; a struct holding only
-# @Test functions is a suite too. Without one, a hung test stalls the gate until bounded.sh.
-# shellcheck disable=SC2016 # awk's own $0
-unlimited="$(find mac/Tests -name '*.swift' -print0 | xargs -0 awk '
-  FNR == 1 { pending = ""; limited = 0 }
-  /^[A-Za-z@]/ {
-    if ($0 ~ /^@Test/) {
-      if ($0 !~ /\.timeLimit\(/) print FILENAME ":" FNR ": top-level @Test"
-      pending = ""
-      next
-    }
-    if ($0 ~ /(^|[[:space:]])(struct|class|enum|actor|extension)[[:space:]]+[A-Za-z_]/) {
-      limited = ((pending " " $0) ~ /\.timeLimit\(/)
-      pending = ""
-      next
-    }
-    if ($0 ~ /^@/) { pending = pending " " $0; next }
-    pending = ""
-  }
-  /^[[:space:]]+@Test/ && !limited && $0 !~ /\.timeLimit\(/ { print FILENAME ":" FNR ": " $0 }')"
-if [[ -n $unlimited ]]; then
-  printf '%s\n' "$unlimited"
-  echo 'error: @Test outside a .timeLimit; give its top-level suite' \
-    '@Suite(.timeLimit(.minutes(1)))' >&2
-  exit 1
-fi
-step "table cell fonts"
-# NSTableCellView resets its textField outlet's font at layout; see .claude/rules/swift.md.
-if grep -rnE --include='*.swift' 'textField[?!]?\.font[[:space:]]*=' mac/Sources/RcGitApp; then
-  echo 'error: style the label, not the textField outlet (.claude/rules/swift.md)' >&2
-  exit 1
-fi
-step "preview text blocks"
-# A bare NSTextBlock lays out one glyph per line; MarkdownRenderer.Theme.fullWidthBlock() is
-# the one place allowed to build one.
-# grep finding none exits 1, which pipefail would turn into a silent exit; zero is a count here.
-text_blocks="$({ grep -rF 'NSTextBlock()' mac/Sources || true; } | wc -l | tr -d ' ')"
-if [[ $text_blocks != 1 ]]; then
-  echo "error: found $text_blocks NSTextBlock() calls in mac/Sources, expected 1;" \
-    'build every NSTextBlock through MarkdownRenderer.Theme.fullWidthBlock()' \
-    '(docs/solutions/ui-bugs/nstextblock-without-content-width-collapses.md)' >&2
-  exit 1
-fi
 step "guard write funnel"
 # Writes live on the guard's Writer (built only from a Confirmation); network I/O in remote/.
 if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |
@@ -161,18 +76,12 @@ if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |
     'make the write a Writer method (see .claude/rules/guard.md)' >&2
   exit 1
 fi
-step "swift line length"
-# swift-format's lineLength skips unbreakable string literals; C.UTF-8 counts characters, not bytes.
-if LC_ALL=C.UTF-8 grep -rnE --include='*.swift' '^.{101,}$' \
-  mac/Sources mac/Tests mac/Package.swift scripts; then
-  echo 'error: Swift lines over 100 columns; split long string literals with +' >&2
-  exit 1
-fi
 step "rust doc comment width"
 # rustfmt never wraps comments, so a doc line over max_width passes cargo fmt --check.
-# shellcheck disable=SC2016 # the single-quoted $0 is awk's, run through xargs
-long_docs="$(git ls-files -z 'crates/*.rs' | LC_ALL=C.UTF-8 xargs -0 awk \
-  'length($0) > 100 && /^[[:space:]]*\/\/[\/!]/ { print FILENAME ":" FNR ": " $0 }')"
+# perl -CSD counts characters; macOS awk counts bytes, so a line holding ⌘ read as too long.
+# shellcheck disable=SC2016 # the single-quoted $ARGV and $_ are perl's, run through xargs
+long_docs="$(git ls-files -z 'crates/*.rs' | xargs -0 perl -CSD -ne \
+  'chomp; print "$ARGV:$.: $_\n" if length($_) > 100 && m{^\s*//[/!]}; close ARGV if eof')"
 if [[ -n $long_docs ]]; then
   printf '%s\n' "$long_docs"
   echo 'error: Rust doc comment lines over 100 columns; rewrap them' >&2
@@ -202,7 +111,7 @@ step "cargo deny"
 cargo deny --locked check
 step "dev-only features"
 # Captured first: grep -q closing the pipe early would fail cargo tree under pipefail.
-for pkg in rc-git-ffi rc-git-cli; do
+for pkg in rc-git-app rc-git-cli; do
   features="$(cargo tree --locked -e features,normal -i gix-transport -p "$pkg")"
   if [[ $features == *http-client-insecure-credentials* ]]; then
     echo "error: dev-only gix-transport/http-client-insecure-credentials reached the $pkg" \
@@ -210,67 +119,37 @@ for pkg in rc-git-ffi rc-git-cli; do
     exit 1
   fi
 done
-step "bundle paths"
-# AppBuild relaunches these paths after a self-update, so they must match what the scripts build.
-app_build=mac/Sources/RcGitKit/AppBuild.swift
-swift_const() { sed -n "s/.*static let $1 = \"\([^\"]*\)\".*/\1/p" "$app_build"; }
-script_app() { sed -n "s|^ *APP=\"\$ROOT/\([^\"]*\)\"$|\1|p" "$1"; }
-installedPath="$(swift_const installedPath)"
-devBundleName="$(swift_const devBundleName)"
-install_apps="$(sed -n 's|^APPS=.*:-\([^}]*\)}"|\1|p' scripts/install-app.sh)"
-install_name="$(sed -n "s|^TARGET=\"\\\$APPS/\([^\"]*\)\"\$|\1|p" scripts/install-app.sh)"
-install_target="$install_apps/$install_name"
-install_app="$(script_app scripts/install-app.sh)"
-build_apps="$(script_app scripts/build-app.sh)"
-release_app="$(sed -n 1p <<<"$build_apps")"
-dev_app="$(sed -n 2p <<<"$build_apps")"
-if [[ -z "$installedPath" || -z "$install_apps" || -z "$install_name" ||
-  "$install_target" != "$installedPath" ||
-  -z "$devBundleName" || "$dev_app" != "$devBundleName" ||
-  -z "$install_app" || "$install_app" != "$release_app" ]]; then
-  echo "error: bundle paths differ: $app_build installedPath '$installedPath'," \
-    "devBundleName '$devBundleName'; scripts/install-app.sh TARGET '$install_target'," \
-    "APP '$install_app'; scripts/build-app.sh release APP '$release_app'," \
-    "dev APP '$dev_app'; set them alike" >&2
+step "bundle stamp"
+# AppBuild relaunches BUNDLE_NAME after a rebuild and reads the keys build-app.sh stamps.
+app_build=crates/rc-git-kit/src/app_build.rs
+bundle_name="$(sed -n 's/.*const BUNDLE_NAME: &.static str = "\([^"]*\)".*/\1/p' "$app_build")"
+# shellcheck disable=SC2016 # a literal $ROOT, matched in the script text
+script_app="$(sed -n 's|^APP="\$ROOT/\([^"]*\)"$|\1|p' scripts/build-app.sh)"
+if [[ -z $bundle_name || $bundle_name != "$script_app" ]]; then
+  echo "error: $app_build BUNDLE_NAME '$bundle_name' differs from" \
+    "scripts/build-app.sh APP '$script_app'; set them alike" >&2
   exit 1
 fi
 plist_keys="$(sed -n 's/.*string("\(RCGit[A-Za-z]*\)").*/\1/p' "$app_build")"
-[[ -n "$plist_keys" ]] || {
+[[ -n $plist_keys ]] || {
   echo "error: found no string(\"RCGit...\") Info.plist reads in $app_build" >&2
   exit 1
 }
 for key in $plist_keys; do
-  grep -q "^stamp $key " scripts/build-app.sh || {
+  grep "^stamp $key " scripts/build-app.sh >/dev/null || {
     echo "error: $app_build reads Info.plist key $key," \
       "but scripts/build-app.sh never stamps it" >&2
     exit 1
   }
 done
-
-if ((fast == 0)); then
-  step "macOS platform floor"
-  cargo_floor="$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET = { value = "\([0-9.]*\)".*/\1/p' \
-    .cargo/config.toml)"
-  package_floor="$(sed -n 's/.*\.macOS("\([0-9.]*\)").*/\1/p' mac/Package.swift)"
-  plist_floor="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' mac/Info.plist)"
-  if [[ -z "$cargo_floor" || "$cargo_floor" != "$package_floor" ||
-    "$cargo_floor" != "$plist_floor" ]]; then
-    echo "error: macOS floor differs: .cargo/config.toml '$cargo_floor'," \
-      "mac/Package.swift '$package_floor', mac/Info.plist '$plist_floor'; set all three alike" >&2
-    exit 1
-  fi
-  step "swift-format"
-  xcrun swift-format lint --strict --recursive \
-    mac/Sources mac/Tests mac/Package.swift scripts/make-icon.swift
-  step "rust release library"
-  scripts/rust-lib.sh release --locked
-  # Same flags on both, so swift test reuses the build; kept out of Package.swift and build.sh.
-  step "swift build"
-  swift build --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
-  step "swift test"
-  # Bounded: a test that blocks a thread ignores its .timeLimit and would stall the gate.
-  scripts/bounded.sh 1200 \
-    swift test --package-path mac -Xswiftc -warnings-as-errors -Xlinker -fatal_warnings
+step "macOS platform floor"
+cargo_floor="$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET = { value = "\([0-9.]*\)".*/\1/p' \
+  .cargo/config.toml)"
+plist_floor="$(plutil -extract LSMinimumSystemVersion raw crates/rc-git-app/Info.plist)"
+if [[ -z $cargo_floor || $cargo_floor != "$plist_floor" ]]; then
+  echo "error: macOS floor differs: .cargo/config.toml '$cargo_floor'," \
+    "crates/rc-git-app/Info.plist '$plist_floor'; set both alike" >&2
+  exit 1
 fi
 
 printf '\nall checks passed\n'

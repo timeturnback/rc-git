@@ -26,7 +26,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity};
-use rc_git_kit::app_build::{AppBuild, UpdateMode};
+use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
 use rc_git_kit::platform::credentials::CachingCredentialStore;
@@ -115,9 +115,8 @@ fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
     cx.on_action(|_: &BringAllToFront, cx| cx.activate(true));
 }
 
-/// About, and the update commands the bundle's mode offers (`AppDelegate.showUpdate`,
-/// `rebuildNow`): none for a build that cannot update itself, so GPUI shows them disabled;
-/// Rebuild Now (⌥⌘R) only on the dev bundle, whose menu carries it.
+/// About, and the rebuild commands (`AppDelegate.showUpdate`, `rebuildNow`): none for a build
+/// that cannot update itself, so GPUI shows them disabled.
 fn register_update_actions(shell: &Entity<Shell>, cx: &mut App) {
     cx.on_action(|_: &menus::ShowAbout, cx| {
         let build = update::BuildInfo::build(cx).cloned();
@@ -125,17 +124,15 @@ fn register_update_actions(shell: &Entity<Shell>, cx: &mut App) {
             about::show(&build, cx);
         }
     });
-    let Some(build) = update::BuildInfo::updatable(cx) else {
+    if update::BuildInfo::updatable(cx).is_none() {
         return;
-    };
+    }
     on_shell(shell, cx, |shell, _: &menus::ShowUpdate, cx| {
         shell.show_update(cx);
     });
-    if build.update_mode() == Some(UpdateMode::Rebuild) {
-        on_shell(shell, cx, |shell, _: &menus::RebuildNow, cx| {
-            shell.rebuild_now(cx);
-        });
-    }
+    on_shell(shell, cx, |shell, _: &menus::RebuildNow, cx| {
+        shell.rebuild_now(cx);
+    });
 }
 
 /// Reads the bundle's stamp.

@@ -169,11 +169,11 @@ when only some are, and one click moves the whole set.
 
 ## Preflight
 
-The checks a self-update runs before it touches anything: the login shell must find the
-build's tools, and the checkout must be readable — plus, for a release update, free of
-uncommitted tracked changes. Both halves run outside the process, so both are bounded and
-both are logged before they run: a preflight that cannot answer fails with a reason rather
-than leaving the window spinning on one line.
+The checks a self-update runs before it touches anything: the login shell must find the build's
+tools, and the checkout must be readable. Uncommitted tracked changes are logged, not refused: the
+rebuild ships the working tree as it stands. Both halves run outside the process, so both are
+bounded and both are logged before they run: a preflight that cannot answer fails with a reason
+rather than leaving the window spinning on one line.
 
 ## Session handover
 

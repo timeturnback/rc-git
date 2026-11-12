@@ -15,9 +15,8 @@ resolution_type: code_fix
 severity: high
 framework_version: gix 0.87.1
 related_components:
-  - rc-git-ffi
-  - RcGitKit
-  - RcGitApp
+  - rc-git-kit
+  - rc-git-app
 tags: [gix, upstream, remote-tracking-ref, ahead-behind, branch-merge-config, origin-fallback, push, pull]
 ---
 
@@ -29,7 +28,7 @@ A branch with no `[branch "<name>"]` section in `.git/config` got its remote fro
 
 ## Symptoms
 
-- The Changes tab's Push button read "Push", with no commit count, while `git rev-list --count origin/master..master` printed 46 at the time. `SyncTitles.push` shows the bare verb whenever `ahead` is 0 (`mac/Sources/RcGitKit/SyncModel.swift`).
+- The Changes tab's Push button read "Push", with no commit count, while `git rev-list --count origin/master..master` printed 46 at the time. `push_title` shows the bare verb whenever `ahead` is 0 (`crates/rc-git-kit/src/sync/values.rs`).
 - It depended on the branch. Counts showed on branches and repositories whose config names an upstream (a clone, or a branch pushed with `-u`) and never on the affected branch, so it looked like a timing problem.
 - The affected repository's `.git/config` had `[remote "origin"]` and no `[branch "master"]` section. This repository's own checkout had that shape when this was written.
 - Nothing reported an error. `upstream_status` returned `has_upstream: true` with `upstream_ref: ""` and `(ahead, behind) = (0, 0)` (`crates/rc-git-guard/src/actions/remote.rs`). The sync preflight only blocks when `hasUpstream` is false (`SyncModel.adoptFreshUpstream`), so the app treated the branch as tracked.

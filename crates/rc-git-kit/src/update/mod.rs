@@ -1,5 +1,5 @@
-//! Port of `UpdateModel.swift`: the self-update. [`UpdateModel`] drives one update —
-//! preflight, fetch and fast-forward, build, install, relaunch — and keeps a bounded log of it.
+//! Port of `UpdateModel.swift`: the self-update. [`UpdateModel`] drives one rebuild of the
+//! working tree as it stands — preflight, build, relaunch — and keeps a bounded log of it.
 //! Everything it does outside the process goes through an [`UpdateEnvironment`]: the app
 //! supplies the live one (`rc-git-mac`), tests a stub, so the state machine is tested without
 //! building anything.
@@ -9,7 +9,6 @@
 
 mod inbox;
 mod model;
-mod pull;
 mod run;
 
 use std::sync::Arc;
@@ -19,36 +18,30 @@ use rc_git_core::{StatusReport, WorktreeStatus};
 
 use crate::guard_bridge::CancelToken;
 
-pub use crate::app_build::UpdateMode;
 pub use crate::update_copy::{UpdateState, UpdateStep, can_proceed, is_cancellable};
 pub use model::{
     DiagnosticLevel, FAILURE_TAIL_LINES, MAX_LOG_LINES, UpdateDiagnostic, UpdateEvent, UpdateModel,
 };
-pub use pull::sync_result;
 
-/// The commit a checkout is on, the branch it is on, and the tracked paths that differ from
-/// it.
+/// The branch a checkout is on and the tracked paths that differ from its commit.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceState {
-    /// Full hex of the checked-out commit.
-    pub commit: String,
     /// Short branch name, or `None` on a detached HEAD. Logged before the build, because the
-    /// update ships whatever the checkout has checked out.
+    /// rebuild ships whatever the checkout has checked out.
     pub branch: Option<String>,
-    /// Modified or deleted tracked files. Untracked and ignored files are not listed:
-    /// `RCGit.app` and `build/` are build output and must not block an update.
+    /// Modified or deleted tracked files, which go into the rebuild and are logged before it.
+    /// Untracked and ignored files are not listed: `RCGit.app` and `build/` are build output.
     pub dirty_paths: Vec<String>,
     /// Whether the status scan covered the whole working tree. A scan stopped at its cap may
-    /// have missed a dirty path, so it never counts as clean.
+    /// have missed a dirty path, which the log says.
     pub scan_complete: bool,
 }
 
 impl SourceState {
     /// A state whose scan covered the whole tree.
     #[must_use]
-    pub fn new(commit: &str, branch: Option<&str>, dirty_paths: &[&str]) -> Self {
+    pub fn new(branch: Option<&str>, dirty_paths: &[&str]) -> Self {
         Self {
-            commit: commit.to_owned(),
             branch: branch.map(str::to_owned),
             dirty_paths: dirty_paths.iter().map(|path| (*path).to_owned()).collect(),
             scan_complete: true,
@@ -58,23 +51,16 @@ impl SourceState {
     /// The state a working-tree status scan describes: its dirty paths, and whether it
     /// finished.
     #[must_use]
-    pub fn from_report(commit: &str, branch: Option<&str>, report: &StatusReport) -> Self {
+    pub fn from_report(branch: Option<&str>, report: &StatusReport) -> Self {
         Self {
-            commit: commit.to_owned(),
             branch: branch.map(str::to_owned),
             dirty_paths: dirty_paths(report),
             scan_complete: !report.truncated,
         }
     }
-
-    /// No uncommitted work, and a scan that covered the whole tree to say so.
-    #[must_use]
-    pub fn is_clean(&self) -> bool {
-        self.dirty_paths.is_empty() && self.scan_complete
-    }
 }
 
-/// The paths an update treats as uncommitted work: modified or deleted tracked files.
+/// The paths a rebuild treats as uncommitted work: modified or deleted tracked files.
 #[must_use]
 pub fn dirty_paths(report: &StatusReport) -> Vec<String> {
     let mut paths = Vec::new();
@@ -98,19 +84,6 @@ pub enum SourceStateResult {
     Failure(String),
 }
 
-/// What fetching and fast-forwarding the checkout produced.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum UpdateSyncResult {
-    /// The checkout is up to date with its upstream. `notice` is a problem the pull survived
-    /// (saved credentials unreadable, new ones not saved), for the update window to show.
-    Synced {
-        /// The problem the pull survived, if any.
-        notice: Option<String>,
-    },
-    /// The fetch or the fast-forward failed, or could not answer.
-    Failure(String),
-}
-
 /// What probing the toolchain produced.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolchainCheck {
@@ -127,7 +100,7 @@ pub enum ToolchainCheck {
 pub type OutputSink = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// Everything a self-update touches outside the model: the toolchain, the checkout, the
-/// fetch, the build script, the tab hand-off and the relaunch.
+/// build script, the tab hand-off and the relaunch.
 ///
 /// Every call is made on the main thread and reports failure as a value rather than an
 /// error: the model turns it into [`UpdateState::Failed`] with the step it belongs to. The
@@ -138,11 +111,9 @@ pub trait UpdateEnvironment {
     fn toolchain(&self, cx: &mut App) -> Task<ToolchainCheck>;
     /// The checkout's commit and dirty paths, or why they could not be read.
     fn source_state(&self, cx: &mut App) -> Task<SourceStateResult>;
-    /// Fetches and fast-forwards the checkout. Stops early once `cancel` is signalled.
-    fn sync(&self, cancel: Arc<CancelToken>, cx: &mut App) -> Task<UpdateSyncResult>;
-    /// Builds the bundle this mode produces and puts it in place (`install-app.sh` for
-    /// [`UpdateMode::Update`], `build-app.sh --dev` for [`UpdateMode::Rebuild`]), streaming
-    /// the script's output to `on_output`. `None` on success. Stops — killing the build — once
+    /// Rebuilds the bundle in the checkout with
+    /// [`AppBuild::BUILD_SCRIPT`](crate::app_build::AppBuild::BUILD_SCRIPT), streaming the
+    /// script's output to `on_output`. `None` on success. Stops — killing the build — once
     /// `cancel` is signalled.
     fn install(
         &self,

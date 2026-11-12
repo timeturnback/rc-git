@@ -2,7 +2,7 @@
 title: "A self-update relaunch loses the open tabs: UserDefaults is not flushed before the new process reads it"
 date: 2026-09-20
 category: runtime-errors
-module: RcGitApp
+module: rc-git-mac
 problem_type: runtime_error
 component: frontend
 symptoms:
@@ -22,10 +22,9 @@ tags: [userdefaults, cfprefsd, synchronize, nsworkspace, openapplication, relaun
 
 ## Problem
 
-`Rebuild and Relaunch` (dev bundle) and `Update rc-git` (release bundle) save the open tabs,
-launch the new build, and terminate. The relaunched build came up with one empty window even
-though the tab list was in `UserDefaults` — because it read the list before the old process's
-write reached disk.
+`Rebuild and Relaunch` saves the open tabs, launches the new build, and terminates. The
+relaunched build came up with one empty window even though the tab list was in `UserDefaults`
+— because it read the list before the old process's write reached disk.
 
 ## Symptoms
 
@@ -44,7 +43,7 @@ started stamping `CFBundleShortVersionString` with the commit count, so the bund
 string differed between the old and new build.
 
 That was ruled out by reading the domain rather than the code. `UserDefaults` is scoped by
-`CFBundleIdentifier`, which `scripts/build-app.sh` stamps per variant and which no version
+`CFBundleIdentifier`, which `scripts/build-app.sh` stamps and which no version
 change touches — and the dump proved the point directly: the tab list was *present* in the
 domain while the running app showed no tabs. A persistence bug cannot leave the value on disk.
 The failure was on the read side, not the write side.
@@ -52,88 +51,75 @@ The failure was on the read side, not the write side.
 ## Solution
 
 Flush the write before the replacement process launches, and stop writing once the state has
-been handed over.
+been handed over. The bug and its first fix (commit `ea73c00`) were in the Swift app; the GPUI
+app carries the same fix, named below.
 
-`OpenTabs.handOff(live:selectedIndex:)` (`mac/Sources/RcGitKit/OpenTabs.swift`), as it reads
-today (it also logs whether the flush succeeded):
+`OpenTabs::hand_off` (`crates/rc-git-kit/src/tabs.rs`) records and forces the write out:
 
-```swift
-public func handOff(live: [String], selectedIndex: Int) {
-    record(live: live, selectedIndex: selectedIndex)
-    defaults.synchronize()
+```rust
+pub fn hand_off(&mut self, live: &[String], selected_index: usize) -> HandOff {
+    self.record(live, selected_index, None);
+    let count = live.len();
+    if self.store.flush() {
+        HandOff::Flushed { count }
+    } else {
+        HandOff::NotFlushed { count }
+    }
 }
 ```
 
-`AppDelegate.saveTabs(dropping:)` and `AppDelegate.handOffTabs()`
-(`mac/Sources/RcGitApp/AppDelegate.swift`):
+The live store's `flush` is `CFPreferencesAppSynchronize` (`crates/rc-git-mac/src/settings.rs`).
+`TabSession` (`crates/rc-git-mac/src/update/tabs.rs`) holds the latch: `hand_off` sets
+`handed_off`, after which `record` writes nothing, and `reclaim` lifts it again after a launch
+that failed.
 
-```swift
-func saveTabs(dropping: String? = nil) {
-    guard !tabsHandedOff else { return }
-    let state = tabState()
-    openTabs.record(
-        live: state.paths, selectedIndex: state.selectedIndex, dropping: dropping)
-}
+`OpenTabs::record` merges the live tabs into the saved list, so a tab closed with ⇧⌘W or at ⌘Q
+stays in it; `OpenTabs::save` replaces the list and only the launch restore
+(`Shell::restore_tabs`, `crates/rc-git-app/src/app.rs`) calls it. Do not swap `record` back to
+`save` in the hand-off.
 
-func handOffTabs() {
-    let state = tabState()
-    openTabs.handOff(live: state.paths, selectedIndex: state.selectedIndex)
-    tabsHandedOff = true
-}
-```
-
-Both go through `OpenTabs.record`, which merges the live tabs into the saved list, so a tab
-closed with ⇧⌘W or at ⌘Q stays in it; `OpenTabs.save` replaces the list and only
-`restoreTabs` calls it (`.claude/rules/swift.md`). Do not swap `record` back to `save` here.
-
-Fixed in commit `ea73c00` on `master`, where the update window's `willRelaunch` closure called
-`handOffTabs()` instead of `saveTabs()`. Today `UpdateModel` calls
-`UpdateEnvironment.handOff()`, which `AppDelegate` wires to `handOffTabs()`; when the launch
-fails it calls `UpdateEnvironment.reclaim()`, which runs `AppDelegate.reclaimTabs()` to lift
-the latch and record the tabs again.
+`UpdateModel` calls `UpdateEnvironment::hand_off`, which the live environment
+(`crates/rc-git-mac/src/update.rs`) wires to `TabSession::hand_off`; when the launch fails it
+calls `UpdateEnvironment::reclaim`, which records the tabs again.
 
 ## Why This Works
 
-`UpdateModel` relaunches in this order (`UpdateEnvironmentLive` in
-`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift` implements each step):
+`UpdateModel` relaunches in this order (the live `UpdateEnvironment` in
+`crates/rc-git-mac/src/update.rs` implements each step):
 
-1. `handOff()` — save the tabs.
-2. `relaunch()` — `NSWorkspace.shared.openApplication` with
-   `createsNewApplicationInstance = true`.
-3. `quit()` — `NSApp.terminate(nil)`.
+1. `hand_off` — save and flush the tabs.
+2. `relaunch` — `open -n` on the rebuilt bundle, a new instance.
+3. `quit` — the app quits a moment later.
 
 Between 2 and 3 **two processes of the same bundle identifier are alive at once**, and the new
-one reads `rc-git.openTabs` during `applicationDidFinishLaunching`, milliseconds after step 1.
-A `UserDefaults` write is handed to `cfprefsd` asynchronously and committed to the domain's
-plist lazily; a process that starts fresh reads what was last committed. The new process
-therefore read a pre-save snapshot of the domain, found no tabs, and opened an empty window.
-`synchronize()` forces the commit before the launch, which is exactly the cross-process
-handover case the method still exists for.
+one reads `rc-git.openTabs` as it launches, milliseconds after step 1. A preferences write is
+handed to `cfprefsd` asynchronously and committed to the domain's plist lazily; a process that
+starts fresh reads what was last committed. The new process therefore read a pre-save snapshot
+of the domain, found no tabs, and opened an empty window. Synchronizing forces the commit before
+the launch, which is exactly the cross-process handover case the call still exists for.
 
-Why the value was nonetheless on disk afterwards, at the time of ea73c00: `restoreTabs()`
-returned without saving when it restored nothing, so the new process never clobbered the list;
-the old process then wrote it again from `applicationWillTerminate`. The symptom was a lost
-session, never a lost list — which is why the next manual launch looked fine and hid the bug.
+Why the value was nonetheless on disk afterwards, at the time of ea73c00: the restore returned
+without saving when it restored nothing, so the new process never clobbered the list; the old
+process then wrote it again as it terminated. The symptom was a lost session, never a lost
+list — which is why the next manual launch looked fine and hid the bug.
 
-That no longer holds. `restoreTabs()` (`mac/Sources/RcGitApp/AppDelegate.swift`) now always
-saves the list that `OpenTabs.restoredPaths` decides, also when nothing opened: the tabs that
-opened, then each repository that failed to open while its parent folder was unreachable (a
-volume not mounted yet). It drops a repository gone from a folder that exists and logs every
-failure under the `tabs` category. And the old process's `saveTabs` returns at
-`guard !tabsHandedOff` after the handover. So if the new process ever reads a stale list again,
-it writes that stale list (often empty) back and nothing rewrites the real one: the list is
-lost, not just the session.
+That no longer holds. `Shell::restore_tabs` always saves the list `restored_paths` decides,
+also when nothing opened: the tabs that opened, then each repository that failed to open while
+its parent folder was unreachable (a volume not mounted yet). It drops a repository gone from
+a folder that exists and logs every failure. And the old process writes nothing after the
+handover. So if the new process ever reads a stale list again, it writes that stale list
+(often empty) back and nothing rewrites the real one: the list is lost, not just the session.
 
-`tabsHandedOff` closes the mirror image of the same window: the old process outlives the new
-one's launch, and its termination write would otherwise land on top of whatever the new process
-had already recorded.
+The latch closes the mirror image of the same window: the old process outlives the new one's
+launch, and its termination write would otherwise land on top of whatever the new process had
+already recorded.
 
 ## Prevention
 
-- **State handed to another process needs an explicit flush.** Any `UserDefaults` value a
-  second process reads while this one is still alive — a relaunch, a helper, an XPC service —
-  must be `synchronize()`d at the handover. `synchronize()` is discouraged for ordinary saves
-  and correct here; that is the distinction, not "never call it".
+- **State handed to another process needs an explicit flush.** Any preferences value a second
+  process reads while this one is still alive — a relaunch, a helper, an XPC service — must be
+  synchronized at the handover. Synchronizing is discouraged for ordinary saves and correct
+  here; that is the distinction, not "never call it".
 - **A handover is one-way.** After handing state over, stop writing it. Two live processes
   writing one defaults domain is last-writer-wins, and the departing one usually writes last.
 - **Read the domain before reading the code.** `defaults read <bundle-id>` separates a write
@@ -141,10 +127,8 @@ had already recorded.
   reader raced, not that persistence broke.
 - **Under the current code a reader race does not leave the value behind.** Right after a
   self-update, an empty or older `rc-git.openTabs` is also consistent with the new process
-  reading a stale domain: `restoreTabs` saves what it restored even when nothing opened, and
-  the old process stops writing after the handover. Check the `tabs` log category for the
-  `hand-off: flushed` line and the `restore tabs:` counts before blaming the write side.
+  reading a stale domain: the restore saves what it restored even when nothing opened, and the
+  old process stops writing after the handover. Check the `restore tabs:` log line's counts
+  before blaming the write side.
 - Related: the bundle identifier is what scopes this state, which is why it must never depend
-  on a version or build number (`CLAUDE.md`, and
-  `docs/solutions/runtime-errors/appkit-swallowed-launch-exception-windowless-app.md` for the
-  other launch-time failure in this app that also left no log trail).
+  on a version or build number (`CLAUDE.md`).

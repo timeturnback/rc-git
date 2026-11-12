@@ -7,10 +7,10 @@ what appears on screen. These are the rules the code follows and the numbers it 
 
 Release build, warm page cache, Apple silicon. Every row except markdown preview and follow an
 import is a CLI row, measured with `rc-git --time` (`highlight` and `links` time the highlight
-and import-link rows). Those two run in RcGitKit and the app, out of reach of the CLI: the
-markdown preview figures come from `swift -O` runs of `MarkdownDocument.parse` and
-`MarkdownRenderer.render` with the highlighter stubbed out (measured 2026-10-14), and follow an
-import is an estimate from its design, with no timing test.
+and import-link rows). Those two run in rc-git-kit and the app, out of reach of the CLI: the
+markdown preview figures were measured on the Swift implementation that `rc_git_kit::markdown`
+ports, with the highlighter stubbed out (2026-10-14), and are not yet re-measured on the Rust
+port; follow an import is an estimate from its design, with no timing test.
 
 | Operation | Budget | Why it fits |
 |---|---|---|
@@ -18,7 +18,7 @@ import is an estimate from its design, with no timing test.
 | list refs | under 1 ms per 1 000 refs | one `packed-refs` scan plus loose files |
 | switch ref | under 1 ms | one object read to peel to a tree |
 | expand folder | under 1 ms per 1 000 entries | one tree object decode plus sort |
-| open text file | header read plus inflate | 1 MiB inflates in a few ms; no decode above the limit; UTF-8 validity and line starts computed once in the core, decode and line-start mapping run off the main actor |
+| open text file | header read plus inflate | 1 MiB inflates in a few ms; no decode above the limit; UTF-8 validity and line starts computed once in the core, decode and line-start mapping run off the main thread |
 | log page | under 2 ms per 100 commits, at any depth | a `LogCursor` resumes where the last page stopped, so a page costs its own 100 commits however deep it is: paging a 200 000-commit history in pages of 100 took 0.86 s against 0.77 s in one pass; commit-graph speeds ancestry |
 | path history, commit search | one pass over the history scanned, whatever the chunking | a `HistoryWalk` examines each commit once across all its pages: `rare.txt` touched only by the root of a 200 000-commit history took 0.85 s in 5 000-commit chunks against 0.87 s in one pass (30 s in chunks before the walk resumed); each page is capped at `max_scan` commits so it never holds a pool handle through a long scan |
 | tree diff | scales with the difference | unchanged subtrees share an id and are skipped whole |
@@ -28,9 +28,9 @@ import is an estimate from its design, with no timing test.
 | working-tree file list | under 60 ms per 10 000 files; capped at 200 000 scanned entries, background | one `read_dir` and one `lstat` per entry, one tree object per tracked directory, ignored directories the tree does not track pruned unopened, nothing hashed; runs once per opening of path search in the working tree |
 | content search | about 2 ms per MiB of text read, warm cache, in batches of 8 MiB, background | on request only, never per keystroke; reads the path-search file list, one header read before each blob and one `stat` before each disk file, nothing over 1 MiB decoded, a blob shared by several paths read once; stops at 2,000 matching lines; cancellable between batches. 1,270 files and 19 MB took 28-40 ms (measured 2026-10-28) |
 | blame | grows with the history between tip and the commit that introduced the oldest surviving line, down to a `since` floor: the app stops two years before the tip's commit and shows older lines as "older than" the floor; the CLI walks the whole ancestry unless given `--since` | on demand for the open file, never in bulk; a file over the limit at tip costs one header read. The walk cannot be cancelled once started — gix-blame takes no interrupt flag — so the floor is its only bound. Renames are followed: only a commit that adds or deletes the path pays for a rename-tracking tree diff, which measured 6 ms against 5 ms untracked for a renamed file in a 500-commit repository |
-| markdown preview | parse about 20-30 ms per MiB, build 70-250 ms per MiB depending on run density, off the main actor | one byte scan of the source, no grapheme walk and no intermediate tree; the wait is parse plus build (`MarkdownRenderer.render`), and building the attributed string dominates: 2 MiB of this repository's docs took 44-56 ms to parse and 186-230 ms in all, a 1 MiB bullet list 30 ms and 260-290 ms. Capped at 8 MiB, above which the file opens in source mode. At the cap parse takes 0.27-0.32 s and the whole build 0.7-0.76 s for this repository's docs and 1.9-2.0 s for a bullet list with bold runs (measured 2026-10-15); above `MarkdownDocument.buildingPlaceholderThreshold` (512 KiB) the pane clears the previous file for a "Building the preview" placeholder at once, and below it the previous file stays up for the build, under about 150 ms |
-| highlight | after first paint, cached per blob and file extension | capped at 2 MiB; plain text never waits; colors land as temporary attributes per visible chunk on scroll, never a whole-file pass on the main actor; the span cache is LRU-bounded |
-| import links | about 100 ms per MiB, on the first pointer move over a file, off the main actor | one parse of its own, skipped when the bytes hold no `import`, `require` or `from`; 16 bytes a link, cached with the blob's highlight spans; hover is a binary search and one temporary attribute |
+| markdown preview | parse about 20-30 ms per MiB, build 70-250 ms per MiB depending on run density, off the main thread | one byte scan of the source, no grapheme walk and no intermediate tree; the wait is parse plus build (`Rendered::build`, rc-git-app), and in the Swift measurement the build dominated: 2 MiB of this repository's docs took 44-56 ms to parse and 186-230 ms in all, a 1 MiB bullet list 30 ms and 260-290 ms. Capped at 8 MiB, above which the file opens in source mode. At the cap parse takes 0.27-0.32 s and the whole build 0.7-0.76 s for this repository's docs and 1.9-2.0 s for a bullet list with bold runs (measured 2026-10-15); above `MarkdownDocument::BUILDING_PLACEHOLDER_THRESHOLD` (512 KiB) the pane clears the previous file for a "Building the preview" placeholder at once, and below it the previous file stays up for the build, under about 150 ms |
+| highlight | after first paint, cached per blob and file extension | capped at 2 MiB; plain text never waits; colors apply only to the rows on screen, never a whole-file pass on the main thread; the span cache is LRU-bounded |
+| import links | about 100 ms per MiB, on the first pointer move over a file, off the main thread | one parse of its own, skipped when the bytes hold no `import`, `require` or `from`; 16 bytes a link, cached with the blob's highlight spans; hover is a binary search and one overlay on the rows it touches |
 | follow an import | one tree object per directory on the way, plus the config files above the importing file when the specifier is not relative | resolved on click, through the shared tree cache; nothing is indexed and nothing is kept |
 
 First paint after choosing a repository should land under 30 ms: open, `HEAD`, root tree,
@@ -47,10 +47,10 @@ refs. Everything else is on demand.
   lost its place (a dropped stale page) is replaced, and the new one re-walks the pages
   already shown once.
 - **Key every cache on an object id.** Content addressing makes invalidation unnecessary.
-- **Render only the viewport.** The text view lays out lazily; the ruler draws visible
-  fragments from line starts precomputed with the document; syntax colors apply per visible
-  chunk as the user scrolls. Do not build per-line views, and do not walk the whole document
-  on the main actor.
+- **Render only the viewport.** The text view is a `uniform_list`: rows are shaped only while
+  on screen, from line starts precomputed with the document, and syntax colors apply to those
+  rows only. Do not build per-line views, and do not walk the whole document
+  on the main thread.
 - **Let the index answer for the working tree.** A status walk hashes a file only when the
   blob header's size matches *and* the index cannot vouch for it: an entry whose recorded
   `lstat` still matches disk, whose id is the tree's, and that is not racy means the file was

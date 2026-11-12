@@ -14,15 +14,16 @@
 | `crates/rc-git-guard/tests/actions.rs` | `cargo test` | every write path with its policy and backup refs, against fixtures |
 | `crates/rc-git-guard/tests/remote.rs` | `cargo test` | fetch, pull and push end to end over `HttpGitServer`/`SshGitServer` on loopback, serving a bare clone in a sibling temp dir |
 | `crates/rc-git-testkit/tests/fixture.rs`, `http.rs`, `ssh.rs` | `cargo test` | the fixture builder and the test servers, proved against the git CLI and OpenSSH |
-| `crates/rc-git-ffi` tests | `cargo test` | every C function, including `NULL` and malformed input |
 | `crates/rc-git-cli/tests/cli.rs` | `cargo test` | output shape and exit codes of the binary |
-| `mac/Tests/RcGitKitTests` | `scripts/build.sh && swift test` | model, policy and parser units against `FakeRepository` or per-model stubs, plus `RepositoryIntegrationTests` and `RepositoryGuardTests` against the real bridge |
+| `crates/rc-git-kit/tests` | `cargo test` | models, layout policy, markdown and search units against `FakeRepository` or per-model stubs, plus `repository_live.rs`, `repository_actions.rs` and `guard_bridge.rs` against the real core and guard |
+| `crates/rc-git-mac/src/*/tests.rs` | `cargo test` | the live platform implementations against the real system: preferences, keychain, FSEvents, the process runner, the update environment |
+| `crates/rc-git-app/src/tests` | `cargo test` | views driven through GPUI's test context; the `*_ink` suites check what is drawn |
 
 `scripts/check.sh` runs all of them plus the linters.
 
 ## The standard fixture
 
-Both `rc-git-testkit` (Rust) and `GitFixture.swift` build this repository with the git CLI:
+`rc-git-testkit` builds this repository with the git CLI:
 
 ```
 commit 1 (main)     "Initial import"         README.md, src/main.rs, bin.dat      tag v0.9
@@ -40,30 +41,28 @@ hard-coded hash.
 Every git invocation is hermetic: `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
 `HOME` inside the fixture, fixed author and committer, `commit.gpgsign=false`,
 `GIT_TERMINAL_PROMPT=0`. A developer's signing or template configuration cannot leak into a test,
-and a git that wants a credential fails instead of waiting on the terminal. The Swift fixture
-also nulls stdin, drains both pipes at once, and fails a git that runs past 60 s.
+and a git that wants a credential fails instead of waiting on the terminal.
 
 ## What a change needs
 
 - A new core operation: a case in the matching `crates/rc-git-core/tests/<area>.rs`
-  (repository, diff_blame, history, worktree, stash), a call in `read_only.rs`, an FFI test, a
-  Swift bridge case, a CLI test when there is a subcommand.
+  (repository, diff_blame, history, worktree, stash), a call in `read_only.rs`, a
+  `repository_live.rs` case for the kit's `RepositoryReading` method, a CLI test when there is
+  a subcommand.
 - A new guard action or rule: a unit test in the guard's `lib.rs`, a case in `tests/actions.rs`
   (`tests/remote.rs` for remote I/O, including the untracked-branch case), the `docs/safety.md`
-  table, an FFI test, and a `RepositoryGuardTests` case.
+  table, and a `repository_actions.rs` or `guard_bridge.rs` case in rc-git-kit.
 - A new error path: a test that triggers it and checks the message.
-- A new model behavior: a case in that model's suite: `BrowserModelTests`, `ChangesModelTests`
-  or `WorktreeModelTests` with `FakeRepository`; `SyncModelTests` and `UpdateModelTests` with
-  their stubs. Include the stale-generation case when the behavior is asynchronous.
-- A new layout threshold: a `LayoutPolicyTests` case at the boundary.
+- A new model behavior: a case in that model's suite in `crates/rc-git-kit/tests`:
+  `browser/` or `changes_model.rs` with `FakeRepository`; `sync_model.rs` and
+  `update_model.rs` with their stubs. Include the stale-generation case when the behavior is
+  asynchronous.
+- A new layout threshold: a `layout_policy.rs` case at the boundary.
 
 ## Running a subset
 
-Swift tests link `target/release/librc_git_ffi.a`. Run `scripts/build.sh` after cloning and
-after any Rust change, or `swift test` runs against the previous build.
-
 ```sh
 cargo test -p rc-git-core --test repository refs_are_classified
-cargo test -p rc-git-ffi
-swift test --package-path mac --filter BrowserModelTests
+cargo test -p rc-git-kit --test browser
+cargo test -p rc-git-app
 ```

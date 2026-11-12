@@ -9,7 +9,7 @@ paths: crates/rc-git-core/**
   what is banned; if clippy accepts something that writes, it is still banned. Add it to the
   list. `worktree.rs` reads the working directory with `std::fs` reads only; keep it that way.
 - No gix types in the public API except the `bstr` re-export. Wrap in `Oid`, `TreeEntry`,
-  `CommitSummary`, so the FFI and Swift never chase gix releases.
+  `CommitSummary`, so rc-git-kit and the app never chase gix releases.
 - Every operation runs inside `Repository::with`. Never keep a `gix::Repository` beyond one
   call: the pool lends one per call and builds a temporary handle when all are busy.
 - Every `Error` message names what failed and the thing it failed on (path, spec, oid, or op
@@ -17,9 +17,9 @@ paths: crates/rc-git-core/**
 - Read a header before decoding a blob, and honor the caller's limit. A huge blob must cost one
   header read, never a decode.
 - Adding a read operation: core fn with `# Errors` docs, a case in the matching
-  `crates/rc-git-core/tests/<area>.rs` (repository, diff_blame, history, worktree, stash), call in
-  `tests/read_only.rs`, FFI function and header, Swift wrapper and test, CLI subcommand when
-  scriptable. `docs/ffi.md` has the FFI half.
+  `crates/rc-git-core/tests/<area>.rs` (repository, diff_blame, history, worktree, stash), call
+  in `tests/read_only.rs`, a `RepositoryReading` method (rc-git-kit) with its fake and test, CLI
+  subcommand when scriptable.
 - Fixtures come from `rc-git-testkit`. Write `.git` internals by hand only to simulate
   corruption, as `a_broken_ref_is_reported_without_hiding_the_rest` does.
 - History pages resume through a walk handle (`LogCursor`, `HistoryWalk`) that owns its
