@@ -13,7 +13,7 @@ root_cause: wrong_api
 resolution_type: code_fix
 severity: medium
 framework_version: "tree-sitter-highlight 0.27.0"
-related_components: [rc-git-ffi, RcGitKit]
+related_components: [rc-git-kit]
 tags:
   [
     tree-sitter,
@@ -90,7 +90,7 @@ layer merge entirely and resolves injections by hand.
   fence stays plain.
 - `merge_overlays()` clips base spans around every overlay span they touch — interval
   subtraction, overlays win — then merge-sorts the two lists, preserving the sorted,
-  non-overlapping contract the FFI and the Swift side rely on.
+  non-overlapping contract `HighlightStore` and the file viewer rely on.
 
 Sketch of the shape:
 

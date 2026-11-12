@@ -40,8 +40,9 @@ Four layers enforce it, and each catches what the others miss.
    `known_hosts`, keys) and writes none of it; host-key approvals live in the app's own
    defaults. The `index` and `excludes` features are on so the working-tree view can
    honor ignore rules; both read.
-4. **Unsafe.** `unsafe_code` is forbidden in every crate except `rc-git-ffi`, where each block
-   carries a documented contract and clippy denies undocumented ones.
+4. **Unsafe.** `unsafe_code` is forbidden in every crate except `rc-git-mac`, which binds the
+   system frameworks; there each block carries a documented contract and clippy denies
+   undocumented ones.
 
 ## Untrusted repositories
 
@@ -75,8 +76,8 @@ Opening a repository someone else produced must be harmless.
   4 MiB: the global file and `info/exclude` by rc-git itself, each directory's `.gitignore`
   checked before gix reads it. A FIFO, device or oversized file is skipped with a warning and
   its rules do not apply, so it can neither block a scan nor grow memory.
-- File names are bytes, not strings, but paths and ref names cross the FFI back to the core
-  as UTF-8 only. Non-UTF-8 names display with replacement characters, and a file with one is
+- File names are bytes, not strings, but paths and ref names travel from the app back to the
+  core as UTF-8 only. Non-UTF-8 names display with replacement characters, and a file with one is
   still reachable by object id in tree browsing. By path it is not: blame, path history,
   worktree reads and guard actions would resolve the U+FFFD spelling, which can name a
   different object. So the app refuses blame, file history, Copy Path and reveal on such a
@@ -109,7 +110,8 @@ and tag creation and deletion from the sidebar; from the Changes tab, committing
 files or hunks, the stash lifecycle, and discarding uncommitted changes; switching `HEAD` to
 another local branch, which the Back-to-default control composes with a fetch and a
 fast-forward; and the remote operations — fetch, fast-forward pull, plain push, and their sync
-composition — all driven through the `rcgit_guard_*` FFI functions. Every other row of the table is settled policy
+composition — all driven through `rc_git_guard::actions` from rc-git-kit. Every other row of
+the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 | Action | Protected branch | Elsewhere |
@@ -249,8 +251,8 @@ The remote operations add their own guarantees:
   before connecting, a push to the upstream's remote whose `branch.<name>.merge` names
   another one. The pack is self-contained (never thin). A rejection surfaces the server's reason verbatim.
 - **Credentials** are per-host, supplied by the caller (the app reads the login keychain),
-  passed through the FFI per call, and never stored or logged by the Rust side.
-- **Every transfer ends.** Each remote call carries an `RcGitCancel` the app can signal
+  passed to the guard per call, and never stored or logged by rc-git-guard.
+- **Every transfer ends.** Each remote call carries a `Cancel` the app can signal
   from another thread; the step in flight notices it within 200 ms. The ssh transport
   wakes out of its connect and every read to look at it, and abandons a host-name lookup
   it no longer needs rather than waiting for the resolver. curl has no interrupt, so every HTTPS network step
@@ -272,19 +274,18 @@ The remote operations add their own guarantees:
 
 ## Updater
 
-**Update rc-git** in the app menu rebuilds rc-git from its own checkout, and it sits outside
-the guarantees above. Clippy's `Command::new` ban covers Rust only; the app launches Swift
-`Process`es itself. A release update fetches and fast-forwards the checkout through the
-guard's sync path, then runs `scripts/install-app.sh`; a dev rebuild skips the fetch and runs
-`scripts/build-app.sh --dev`. Both run through a login `/bin/zsh -lc`, so the user's shell
-profile runs too. Those scripts
-call `git` on rc-git's own checkout — never on a browsed repository — and `cargo build`, which
-may fetch crates when the lockfile moved. A release update therefore executes whatever the
-upstream commit it just pulled contains: trust in the update is trust in that remote.
+**Rebuild and Relaunch** in the app menu rebuilds rc-git from its own checkout, and it sits
+outside the guarantees above. Its spawns go through rc-git-mac's bounded process runner, the
+one `Command::new` exempt from the clippy ban. It does not fetch: it runs
+`scripts/build-app.sh` on the working tree as it stands, uncommitted changes included, through
+a login `/bin/zsh -lc`, so the user's shell profile runs too. That script calls `git` on
+rc-git's own checkout — never on a browsed repository — and `cargo build`, which may fetch
+crates when the lockfile moved. A rebuild therefore executes whatever the checkout holds:
+trust in the rebuild is trust in that checkout.
 
 ## Supply chain
 
-Rust dependencies are pinned to exact versions in `Cargo.toml` and checked by `cargo deny`
-for advisories, licenses, and sources on every run of `scripts/check.sh` and in CI. The Swift
-package has no dependencies. GitHub Actions are pinned to commit hashes and scanned by
-`zizmor`; Dependabot updates both ecosystems weekly with a seven-day cooldown.
+Rust dependencies are pinned to exact versions in `Cargo.toml` and checked by `cargo deny` for
+advisories, licenses, and sources on every run of `scripts/check.sh` and in CI. GitHub Actions are
+pinned to commit hashes and scanned by `zizmor`; Dependabot updates both ecosystems weekly with a
+seven-day cooldown.

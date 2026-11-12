@@ -7,8 +7,8 @@ problem_type: architecture_pattern
 component: infrastructure
 severity: medium
 related_components:
-  - RcGitKit
-  - RcGitApp
+  - rc-git-kit
+  - rc-git-app
 applies_when:
   - "A git operation works in a terminal, VS Code, or Zed but rc-git refuses it"
   - "Considering an in-app rebase or merge for a diverged pull, or any guard action that rewrites commits"
@@ -63,17 +63,17 @@ Three options were weighed:
    no-process rule. Git, not the guard, would write the working tree, so the dirty-overlap
    refusal and the ref-last ordering would no longer hold. An app launched from the Dock also
    has no login-shell `PATH` — the updater routes its own shell work through a login `zsh` for
-   that reason (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift`).
+   that reason (`crates/rc-git-mac/src/update.rs`).
 3. **Rebase in-process.** Deferred as large. It needs four things the isolated open withholds or
    gix lacks:
    - **Strategy.** `pull.rebase` and `pull.ff` live in user config, so the app cannot tell a
      user who wants rebase from one who wants merge.
    - **Identity.** Each replayed commit needs a committer. The guard takes an explicit author,
      else the repository's own `user.name`/`user.email`
-     (`resolve_identity` in `crates/rc-git-guard/src/actions/workfile.rs`). When neither is set, the app asks
-     (`MainWindowController.askForIdentity(completion:)`, called from
-     `performCommit(_:prompted:)` and `performStashPush(prompted:)`) and saves the answer for
-     that repository only, once the commit or stash succeeds; the repository's own config wins
+     (`resolve_identity` in `crates/rc-git-guard/src/actions/workfile.rs`). When neither is
+     set, the app asks (`ask_identity` in `crates/rc-git-app/src/window/guarded.rs`, called
+     from `perform_commit` and `perform_stash_push`) and saves the answer for that repository
+     only, once the commit or stash succeeds; the repository's own config wins
      whenever it sets one. It cannot reproduce a per-directory identity set through
      `includeIf`.
    - **Signing.** This checkout's commits are signed (`commit.gpgsign = true`,
@@ -102,26 +102,24 @@ Three options were weighed:
 
 What the diverged sheet does now:
 
-- `ReconcileCommand.rebase(workDir:)` (`mac/Sources/RcGitKit/SyncModel.swift`) returns
+- `reconcile_command` (`crates/rc-git-kit/src/sync/values.rs`) returns
   `cd <quoted workdir> && git pull --rebase`. The `cd` lets the line paste into any shell and
   leaves that shell in the checkout when the rebase stops on a conflict. `--rebase` is explicit
   because the app cannot read `pull.rebase`; per this session's reading, current git stops and
   asks for a strategy when a plain `git pull` meets diverged branches with none configured. A
   user who prefers merge edits the line.
-- `ShellWord.quote` (`mac/Sources/RcGitKit/ShellWord.swift`) leaves a word bare when every
+- `shell_word::quote` (`crates/rc-git-kit/src/shell_word.rs`) leaves a word bare when every
   scalar is in the set Python's `shlex.quote` leaves bare minus `=`, and otherwise single-quotes
   it with each embedded quote written as `'\''`. `=` is quoted because both consumers run the
   word in zsh (the updater's `/bin/zsh -lc`, Terminal's default shell), whose EQUALS option
-  turns `=ls` into `/bin/ls`. It replaced the updater's untested `Shell.quote`.
-- `MainWindowController.presentDiverged(_:)` shows the guard's
-  message and the command with Copy Command, Open in Terminal (copies, then opens
-  `com.apple.Terminal` in the checkout through `NSWorkspace.open(_:withApplicationAt:configuration:)`),
-  and Close on Escape. A bare repository has no checkout to pull into and keeps the plain
-  message. A diverged pull and a rejected push both reach this sheet: `finish_remote` in
-  `crates/rc-git-ffi` maps `ActionError::Diverged` and `ActionError::PushRejected` to
-  `RCGIT_DIVERGED`, matching the CLI, which exits with its diverged code for both.
-- The updater's `sync()` names the same command when the rc-git checkout diverges
-  (`mac/Sources/RcGitApp/UpdateEnvironmentLive.swift`).
+  turns `=ls` into `/bin/ls`.
+- `present_diverged` (`crates/rc-git-app/src/window/sync.rs`) shows the guard's message and
+  the command with Copy Command, Open in Terminal (copies, then opens Terminal in the checkout
+  through `rc_git_mac::open_with`), and Close on Escape. A bare repository has no checkout to
+  pull into and keeps the plain message. A diverged pull and a rejected push both reach this
+  sheet: `classify` in `crates/rc-git-kit/src/guard_bridge.rs` maps `ActionError::Diverged`
+  and `ActionError::PushRejected` to `FailureKind::Diverged`, matching the CLI, which exits
+  with its diverged code for both.
 
 ## Why This Matters
 
@@ -146,7 +144,7 @@ nothing, and the user's own config makes the decision, in a line they can read b
 - Triaging "git does X and rc-git refuses": check whether git's behavior came from user config
   before treating it as an rc-git bug.
 - Building any command for the user to paste or run: quote every variable word with
-  `ShellWord.quote`, never raw interpolation.
+  `shell_word::quote`, never raw interpolation.
 
 ## Examples
 
@@ -172,7 +170,7 @@ cd /Users/me/WorkSpace/rc-git && git pull --rebase
 [Copy Command]  [Open in Terminal]  [Close]
 ```
 
-`mac/Tests/RcGitKitTests/ShellWordTests.swift` runs adversarial words — a quote, `$HOME`,
+`crates/rc-git-kit/tests/shell_word.rs` runs adversarial words — a quote, `$HOME`,
 backticks, `;` and `&&`, globs, braces, a tilde, `#`, `!`, a leading `=`, a newline, non-ASCII
 text, the empty word, and the bare word itself — through both `/bin/sh -c` and `/bin/zsh -f -c`
 running `printf %s <word>`, and checks each shell exits 0 and prints the word back unchanged.

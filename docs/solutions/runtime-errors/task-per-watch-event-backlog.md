@@ -1,9 +1,9 @@
 ---
 title: "A Task per filesystem event: 190 000 suspended tasks, 638 MB, and ten pinned cores"
 date: 2026-09-26
-last_updated: 2026-09-26
+last_updated: 2026-11-12
 category: runtime-errors
-module: RcGitKit
+module: rc-git-kit
 problem_type: performance
 component: frontend
 symptoms:
@@ -38,6 +38,10 @@ A dev build left open for eleven hours on two repositories held 803 MB and burne
 with nothing on screen doing anything. The leak was not in the Rust core, which the process
 spends all its time inside. It was one unstructured `Task` per filesystem event, and the
 generation counter that looks like it guards against exactly this and does not.
+
+The incident happened in the Swift app the GPUI app replaced, so the traces below name Swift
+types. The rule it produced holds in the Rust port: `ChangesModel`
+(`crates/rc-git-kit/src/changes/`) coalesces every watcher-driven load through a `Coalescer`.
 
 ## Symptom
 
@@ -97,24 +101,21 @@ the core's own budgets or tests caught it.
 ## Solution
 
 **1. Coalesce in the model; never queue.** One scan in flight plus at most one queued re-run,
-however many requests arrive:
+however many requests arrive. In the Rust port, `ChangesModel::load_status`
+(`crates/rc-git-kit/src/changes/scan.rs`) opens with:
 
-```swift
-public func loadStatus() async {
-    statusPending = true
-    guard !statusScanning else { return }
-    statusScanning = true
-    while statusPending {
-        statusPending = false
-        await runStatusScan()
-    }
-    statusScanning = false
+```rust
+self.status.pending = true;
+if self.status.running {
+    return Task::ready(());
 }
+self.status.running = true;
 ```
 
-Both flags are only read and written on the main actor with no suspension between the loop's
-`statusPending` check and the assignment that follows it, so a request that arrives during a
-scan always lands in the flag the scan is about to read. Nothing is lost and nothing stacks.
+and the running loop scans again while `pending` was set behind it. Both flags are only read
+and written on the UI thread with no await between the loop's `pending` check and the
+assignment that follows it, so a request that arrives during a scan always lands in the flag
+the scan is about to read. Nothing is lost and nothing stacks.
 The cost is that returning no longer means "your scan finished" — it means the model has
 accounted for it. Say so in the doc comment; a caller that assumes otherwise is the next bug.
 
@@ -125,11 +126,11 @@ against a fresh `lstat`. Anything else falls through to the hash. It may only ev
 a cache that answers on partial evidence hides a real edit, which is far worse than a slow
 scan.
 
-**3. Cancel what can be cancelled, and say what cannot.** `cancelScans()` drops the queued
+**3. Cancel what can be cancelled, and say what cannot.** `cancel_scans` drops the queued
 re-run and bumps the generation so the in-flight result never lands, but the repository call
-is synchronous FFI and runs to completion. It also resets `.loading` to `.idle`, because a
-cancelled load that leaves the state at `.loading` gives `setMode` no reason to reload and the
-user a spinner nothing will ever fill.
+is a blocking core call and runs to completion. It also resets a running scan's state to
+`ChangesState::Idle`, because a cancelled load that leaves the state loading gives `set_mode`
+no reason to reload and the user a spinner nothing will ever fill.
 
 ## Result
 
@@ -149,7 +150,7 @@ Same binary, same command, same repository, back to back:
 - Before optimising a hot walk, check the *arrival* rate against the *service* time. A walk
   twice as fast is worth less than one that cannot be asked for twice at once, and a system
   where arrivals outpace service degrades without bound rather than gracefully.
-- `heap <pid>` names the allocation by Swift type. Reach for it before profiling the code you
+- `heap <pid>` names the allocation by type. Reach for it before profiling the code you
   assume is guilty: "Task stack ×189 367" pointed at the scheduler in one line, after `sample`
   had spent the investigation pointing at the Rust walk.
 - Benchmark the operation the app runs, not the one with the matching name. `rc-git status`

@@ -18,7 +18,7 @@ here; so does everything that comes later.
   confirm step, the CLI's `--yes`). `Challenge` and `Confirmation` have fields private to
   `policy.rs`; nothing else in the crate can build either one.
 - The front end renders decisions; it never classifies an action itself and never offers a
-  one-click path around a challenge. The FFI passes the user's typed input through; the
+  one-click path around a challenge. The front end passes the user's typed input through; the
   verification lives here.
 - `Deny` is final. Force-pushing, deleting, or rewriting published history on a protected
   branch is not confirmable inside rc-git; the message tells the user to use git directly.
@@ -53,7 +53,8 @@ here; so does everything that comes later.
   `git checkout -` and `HEAD@{1}` would silently point at the wrong commit.
 - Protected patterns default to `main`, `master`, `release/*`, and are fixed: every caller
   uses `Policy::default()` and no setting changes them yet.
-- Expose the policy to Swift over the FFI when needed; never reimplement it in Swift.
+- The app reaches the policy through rc-git-kit's guard bridge; never reimplement it in
+  rc-git-kit or rc-git-app.
 - Every remote entry point takes a `Cancel` and must stay interruptible: no new blocking
   call without a cancel poll and an idle budget (`CANCEL_POLL`, `IDLE_TIMEOUT` in
   `actions/remote.rs`). A blocking read with neither is how a sync gets stuck forever.
