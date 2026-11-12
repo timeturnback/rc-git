@@ -22,9 +22,10 @@ mod style;
 mod update;
 mod window;
 
+use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{App, AppContext, Entity};
+use gpui::{App, AppContext, Context, Entity};
 use rc_git_kit::app_build::{AppBuild, UpdateMode};
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
@@ -54,46 +55,58 @@ fn live_services() -> Services {
     }
 }
 
+/// Registers `run` for `A` app-wide, deferred to the end of the current dispatch: a key
+/// event dispatches inside its window, and a window being dispatched cannot be updated
+/// again, so a command that reaches the front window (the recent picker, back and forward)
+/// would otherwise be dropped.
+fn on_shell<A: gpui::Action + Clone>(
+    shell: &Entity<Shell>,
+    cx: &mut App,
+    run: impl Fn(&mut Shell, &A, &mut Context<Shell>) + 'static,
+) {
+    let shell = shell.clone();
+    let run = Rc::new(run);
+    cx.on_action(move |action: &A, cx| {
+        let (shell, run, action) = (shell.clone(), Rc::clone(&run), action.clone());
+        cx.defer(move |cx| shell.update(cx, |shell, cx| run(shell, &action, cx)));
+    });
+}
+
 /// Registers the commands the shell answers, app-wide.
 fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
-    let on = shell.clone();
-    cx.on_action(move |_: &NewTab, cx| {
-        on.update(cx, |shell, cx| {
-            shell.new_window(cx);
-        });
+    on_shell(shell, cx, |shell, _: &NewTab, cx| {
+        shell.new_window(cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |_: &ReopenClosedTab, cx| {
-        on.update(cx, Shell::reopen_closed_tab);
+    on_shell(shell, cx, |shell, _: &ReopenClosedTab, cx| {
+        shell.reopen_closed_tab(cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |_: &OpenRepository, cx| {
-        on.update(cx, |_, cx| Shell::choose_repository(cx));
+    on_shell(shell, cx, |_, _: &OpenRepository, cx| {
+        Shell::choose_repository(cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |action: &OpenRecent, cx| {
-        on.update(cx, |shell, cx| {
-            shell.open(&action.path, cx);
-        });
+    on_shell(shell, cx, |shell, action: &OpenRecent, cx| {
+        shell.open(&action.path, cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |_: &ClearRecents, cx| on.update(cx, Shell::clear_recents));
-    let on = shell.clone();
-    cx.on_action(move |_: &GoBack, cx| on.update(cx, |shell, cx| shell.go(Direction::Back, cx)));
-    let on = shell.clone();
-    cx.on_action(move |_: &GoForward, cx| {
-        on.update(cx, |shell, cx| shell.go(Direction::Forward, cx));
+    on_shell(shell, cx, |shell, _: &ClearRecents, cx| {
+        shell.clear_recents(cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |_: &ToggleHiddenFiles, cx| on.update(cx, Shell::toggle_hidden_files));
-    let on = shell.clone();
-    cx.on_action(move |_: &CloseWindow, cx| on.update(cx, Shell::close_window_group));
-    let on = shell.clone();
-    cx.on_action(move |_: &menus::OpenRecentRepository, cx| {
-        on.update(cx, Shell::show_recent_picker);
+    on_shell(shell, cx, |shell, _: &GoBack, cx| {
+        shell.go(Direction::Back, cx);
     });
-    let on = shell.clone();
-    cx.on_action(move |_: &menus::Settings, cx| on.update(cx, Shell::show_settings));
+    on_shell(shell, cx, |shell, _: &GoForward, cx| {
+        shell.go(Direction::Forward, cx);
+    });
+    on_shell(shell, cx, |shell, _: &ToggleHiddenFiles, cx| {
+        shell.toggle_hidden_files(cx);
+    });
+    on_shell(shell, cx, |shell, _: &CloseWindow, cx| {
+        shell.close_window_group(cx);
+    });
+    on_shell(shell, cx, |shell, _: &menus::OpenRecentRepository, cx| {
+        shell.show_recent_picker(cx);
+    });
+    on_shell(shell, cx, |shell, _: &menus::Settings, cx| {
+        shell.show_settings(cx);
+    });
     register_update_actions(shell, cx);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &HideApp, cx| cx.hide());
@@ -115,15 +128,13 @@ fn register_update_actions(shell: &Entity<Shell>, cx: &mut App) {
     let Some(build) = update::BuildInfo::updatable(cx) else {
         return;
     };
-    let on = shell.clone();
-    cx.on_action(move |_: &menus::ShowUpdate, cx| {
-        on.update(cx, |shell, cx| {
-            shell.show_update(cx);
-        });
+    on_shell(shell, cx, |shell, _: &menus::ShowUpdate, cx| {
+        shell.show_update(cx);
     });
     if build.update_mode() == Some(UpdateMode::Rebuild) {
-        let on = shell.clone();
-        cx.on_action(move |_: &menus::RebuildNow, cx| on.update(cx, Shell::rebuild_now));
+        on_shell(shell, cx, |shell, _: &menus::RebuildNow, cx| {
+            shell.rebuild_now(cx);
+        });
     }
 }
 

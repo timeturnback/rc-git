@@ -479,3 +479,18 @@ fn only_rows_on_screen_count_toward_the_fit() {
         "a level indents, a placeholder draws no glyph"
     );
 }
+
+#[gpui::test]
+fn ctrl_r_opens_the_recent_picker_over_the_front_window(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/alpha", repo())]);
+    let window = open_settled(&harness, cx, "/repo/alpha");
+    cx.update(|cx| {
+        let bindings = crate::menus::key_bindings(cx).unwrap();
+        cx.bind_keys(bindings);
+    });
+    cx.update(|cx| crate::register_actions(&harness.shell, cx));
+    let tab = front(&harness, cx);
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.simulate_keystrokes("ctrl-r");
+    assert_eq!(showing(&window, cx), Some(Showing::Recent));
+}
