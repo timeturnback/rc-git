@@ -418,6 +418,11 @@ impl Shell {
             }
         };
         group.join(TABBING_IDENTIFIER);
+        if let Err(error) = handle.update(cx, |_, window, cx| register_tab_group(window, cx)) {
+            log::error(&format!(
+                "open window: could not list its tab group: {error:#}"
+            ));
+        }
         let view = made.take()?;
         let tab = Tab { handle, view };
         self.watch(&tab, cx);
@@ -879,6 +884,17 @@ impl Shell {
         let is_tab = |id: &WindowId| self.windows.iter().any(|tab| tab.id() == *id);
         let active = cx.active_window().map(|window| window.window_id());
         active.filter(is_tab).or(self.last_front.filter(is_tab))
+    }
+}
+
+/// Records `window`'s native tab group in `SystemWindowTabController`, which the tab bar
+/// draws from. GPUI reads the group only while the window opens, before
+/// `TabHost::join` adds it to one, so without this the group would list the window alone.
+fn register_tab_group(window: &gpui::Window, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    SystemWindowTabController::remove_tab(cx, id);
+    if let Some(tabs) = window.tabbed_windows() {
+        SystemWindowTabController::add_tab(cx, id, tabs);
     }
 }
 

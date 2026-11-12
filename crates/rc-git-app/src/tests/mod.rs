@@ -14,3 +14,4 @@ mod support;
 mod update;
 mod update_ink;
 mod viewer;
+mod window_tabs;

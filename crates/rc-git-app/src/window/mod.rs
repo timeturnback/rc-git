@@ -10,6 +10,7 @@ pub mod layout;
 pub mod panels;
 mod ref_actions;
 pub(crate) mod sync;
+mod tab_bar;
 mod toolbar;
 mod tree_actions;
 
@@ -19,7 +20,8 @@ use std::sync::Arc;
 use gpui::{
     AppContext, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, NavigationDirection, ParentElement, Render,
-    SharedString, Styled, Subscription, Task, Window, deferred, div, prelude::FluentBuilder,
+    SharedString, Styled, Subscription, SystemWindowTabController, Task, Window, deferred, div,
+    prelude::FluentBuilder,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::resizable::{
@@ -132,7 +134,7 @@ impl RepoWindow {
         let layout = SidebarLayout::load(Arc::clone(&settings));
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe(&model, |this, _, event: &BrowserEvent, cx| {
                 if *event == BrowserEvent::LocationChanged {
                     this.record_stop(cx);
@@ -159,18 +161,6 @@ impl RepoWindow {
                     this.layout.dragged(f64::from(f32::from(width)));
                 }
             }),
-            cx.observe_window_bounds(window, |this, window, cx| {
-                this.layout.window_resized(window, cx);
-                cx.notify();
-            }),
-            cx.observe_window_activation(window, |_, window, cx| {
-                if window.is_window_active() {
-                    cx.emit(WindowEvent::BecameFront);
-                }
-            }),
-            cx.observe_window_appearance(window, |_, window, cx| {
-                gpui_component::Theme::sync_system_appearance(Some(window), cx);
-            }),
             history_events,
             blame_events,
             cx.observe_window_visibility(window, |this, visibility, _, cx| {
@@ -185,6 +175,7 @@ impl RepoWindow {
                 },
             ),
         ];
+        subscriptions.extend(Self::window_observers(window, cx));
         Self {
             model,
             sync: None,
@@ -301,6 +292,11 @@ impl RepoWindow {
             .unwrap_or(&repository.tab_path)
             .to_owned();
         window.set_window_title(&name);
+        SystemWindowTabController::update_tab_title(
+            cx,
+            window.window_handle().window_id(),
+            SharedString::from(name),
+        );
         self.shown = Some(Shown {
             path: repository.tab_path.clone(),
             key: repository.key.clone(),
@@ -515,6 +511,34 @@ impl RepoWindow {
             RefListEvent::Dismissed => {}
             RefListEvent::Action(action, entry) => self.ref_action(*action, entry.clone(), cx),
         }
+    }
+
+    /// The window's own changes: its size, whether it is in front, its appearance, and its
+    /// tab group, which the tab bar draws.
+    fn window_observers(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 4] {
+        let id = window.window_handle().window_id();
+        let mut shown = tab_bar::shown_tabs(id, cx);
+        [
+            cx.observe_window_bounds(window, |this, window, cx| {
+                this.layout.window_resized(window, cx);
+                cx.notify();
+            }),
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    cx.emit(WindowEvent::BecameFront);
+                }
+            }),
+            cx.observe_window_appearance(window, |_, window, cx| {
+                gpui_component::Theme::sync_system_appearance(Some(window), cx);
+            }),
+            cx.observe_global::<SystemWindowTabController>(move |_, cx| {
+                let now = tab_bar::shown_tabs(id, cx);
+                if now != shown {
+                    shown = now;
+                    cx.notify();
+                }
+            }),
+        ]
     }
 
     /// The History pane, its events, and the blame window following the model.
@@ -768,6 +792,7 @@ impl Render for RepoWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_fit(window, cx);
         let toolbar = self.render_toolbar(window, cx);
+        let tab_bar = tab_bar::render(window, cx);
         let notice = self.render_notice(cx);
         let content = self.render_content(cx);
         let picker = self.render_picker(cx);
@@ -815,13 +840,10 @@ impl Render for RepoWindow {
                 window.move_tab_to_new_window();
             }))
             .on_action(cx.listener(|_, _: &NextTab, window, cx| {
-                gpui::SystemWindowTabController::select_next_tab(
-                    cx,
-                    window.window_handle().window_id(),
-                );
+                SystemWindowTabController::select_next_tab(cx, window.window_handle().window_id());
             }))
             .on_action(cx.listener(|_, _: &PreviousTab, window, cx| {
-                gpui::SystemWindowTabController::select_previous_tab(
+                SystemWindowTabController::select_previous_tab(
                     cx,
                     window.window_handle().window_id(),
                 );
@@ -838,6 +860,7 @@ impl Render for RepoWindow {
                 cx.emit(WindowEvent::OpenPaths(paths.paths().to_vec()));
             }))
             .child(toolbar)
+            .children(tab_bar)
             .children(notice)
             .child(
                 div().flex_1().min_h_0().child(

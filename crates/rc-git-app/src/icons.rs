@@ -49,6 +49,10 @@ pub enum Glyph {
     TickOn,
     /// A tick box with only some of what is below its row ticked.
     TickMixed,
+    /// A window tab's close button.
+    CloseTab,
+    /// The tab strip's button that opens a repository in a new tab.
+    OpenTab,
 }
 
 /// The Lucide icon for `glyph`.
@@ -76,6 +80,8 @@ pub fn icon(glyph: Glyph) -> IconName {
         Glyph::Disclosure => IconName::ChevronsUpDown,
         Glyph::TickOn => IconName::Check,
         Glyph::TickMixed => IconName::Minus,
+        Glyph::CloseTab => IconName::Close,
+        Glyph::OpenTab => IconName::Plus,
     }
 }
 
@@ -111,7 +117,9 @@ pub fn is_accented(glyph: Glyph) -> bool {
         | Glyph::Expanded
         | Glyph::Disclosure
         | Glyph::TickOn
-        | Glyph::TickMixed => false,
+        | Glyph::TickMixed
+        | Glyph::CloseTab
+        | Glyph::OpenTab => false,
     }
 }
 
