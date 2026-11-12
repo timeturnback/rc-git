@@ -201,8 +201,8 @@ fn selecting_a_file_row_opens_one_blob(cx: &mut TestAppContext) {
         })
     });
     assert_eq!(repo.state().read_blob_calls, before + 1);
-    let viewer = cx.read(|cx| window.read(cx).pane().read(cx).viewer().cloned());
-    assert!(viewer.is_some(), "text shows in the viewer");
+    let preview = cx.read(|cx| window.read(cx).pane().read(cx).preview().cloned());
+    assert!(preview.is_some(), "README.md shows as the markdown preview");
 }
 
 #[gpui::test]

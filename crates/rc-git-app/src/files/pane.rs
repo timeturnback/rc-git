@@ -6,19 +6,21 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window, div,
-    prelude::FluentBuilder,
+    AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window,
+    div, prelude::FluentBuilder,
 };
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme, Icon, Sizable};
-use rc_git_kit::browser::{BrowserEvent, BrowserModel, FileEntry, FileState};
-use rc_git_kit::file_pane::{header, load_anyway_size, placeholder};
+use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
+use rc_git_kit::browser::{BrowserEvent, BrowserModel, FileEntry, FileState, OpenPathOutcome};
+use rc_git_kit::file_pane::{header, load_anyway_size, placeholder, shows_preview};
 use rc_git_kit::import_links::ImportLinkMap;
+use rc_git_kit::markdown::MarkdownDocument;
 use rc_git_kit::text_document::{FileReveal, TextDocument};
 use rc_git_kit::text_find::{find_all, first_from, step};
 
+use crate::files::markdown::{MarkdownPreview, PreviewEvent};
 use crate::files::viewer::{FileViewer, ViewerEvent};
 use crate::icons::{Glyph, icon};
 use crate::menus::{Find, FindNext, FindPrevious, UseSelectionForFind};
@@ -40,6 +42,12 @@ pub struct FilePane {
     focus: FocusHandle,
     /// The open viewer's events; replaced with the viewer.
     viewer_events: Option<Subscription>,
+    /// The markdown preview on screen, in place of the viewer.
+    preview: Option<Entity<MarkdownPreview>>,
+    /// The preview's events; replaced with the preview.
+    preview_events: Option<Subscription>,
+    /// Whether markdown shows as the preview; remembered across files.
+    prefers_preview: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -84,6 +92,9 @@ impl FilePane {
             },
             focus: cx.focus_handle(),
             viewer_events: None,
+            preview: None,
+            preview_events: None,
+            prefers_preview: true,
             _subscriptions: subscriptions,
         };
         pane.file_changed(window, cx);
@@ -170,9 +181,17 @@ impl FilePane {
         let state = self.model.read(cx).file_state().clone();
         let FileState::Text(entry, document) = state else {
             self.viewer = None;
+            self.preview = None;
             cx.notify();
             return;
         };
+        if self.shows_preview(&entry, &document, cx) {
+            self.viewer = None;
+            self.show_preview(&document, window, cx);
+            cx.notify();
+            return;
+        }
+        self.preview = None;
         let same = self
             .viewer
             .as_ref()
@@ -187,6 +206,138 @@ impl FilePane {
             self.reveal(&reveal, cx);
         }
         cx.notify();
+    }
+
+    /// The markdown preview on screen, while the open file shows as one.
+    #[cfg(test)]
+    pub(crate) fn preview(&self) -> Option<&Entity<MarkdownPreview>> {
+        self.preview.as_ref()
+    }
+
+    /// Switches markdown between the preview and its source (the header's picker); the choice
+    /// holds for the next markdown file too.
+    pub fn set_prefers_preview(
+        &mut self,
+        prefers: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if prefers == self.prefers_preview {
+            return;
+        }
+        self.prefers_preview = prefers;
+        self.viewer = None;
+        self.preview = None;
+        self.file_changed(window, cx);
+    }
+
+    fn shows_preview(
+        &self,
+        entry: &FileEntry,
+        document: &TextDocument,
+        cx: &Context<Self>,
+    ) -> bool {
+        shows_preview(
+            &entry.name_lossy(),
+            document.byte_count,
+            self.prefers_preview,
+            self.model.read(cx).pending_reveal(),
+        )
+    }
+
+    /// Shows `document` as the preview. A preview already built for it takes the pending
+    /// reveal now; a new one takes it once it is built, so a heading link scrolls only after
+    /// the blocks it names exist.
+    fn show_preview(
+        &mut self,
+        document: &Arc<TextDocument>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(preview) = &self.preview
+            && Arc::ptr_eq(preview.read(cx).document(), document)
+        {
+            if preview.read(cx).rendered().is_some() {
+                self.reveal_in_preview(cx);
+            }
+            return;
+        }
+        let path = self.model.read(cx).opened_file_path().map(str::to_owned);
+        let preview = cx.new(|cx| MarkdownPreview::new(Arc::clone(document), path, cx));
+        self.preview_events = Some(cx.subscribe_in(
+            &preview,
+            window,
+            |this, _, event: &PreviewEvent, window, cx| match event {
+                PreviewEvent::Built => this.reveal_in_preview(cx),
+                PreviewEvent::OpenPath { path, fragment } => {
+                    this.open_link(path, fragment.clone(), window, cx);
+                }
+            },
+        ));
+        self.preview = Some(preview);
+    }
+
+    fn reveal_in_preview(&mut self, cx: &mut Context<Self>) {
+        let reveal = self
+            .model
+            .update(cx, |model, _| model.take_pending_reveal());
+        if let (Some(FileReveal::Fragment(name)), Some(preview)) = (reveal, &self.preview) {
+            preview.update(cx, |preview, cx| preview.scroll_to_anchor(&name, cx));
+        }
+    }
+
+    /// Opens a repository link from the preview; a dead link leaves the file on screen and
+    /// says so.
+    fn open_link(
+        &mut self,
+        path: &str,
+        fragment: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self
+            .model
+            .update(cx, |model, cx| model.open_path(path, fragment, cx));
+        let path = path.to_owned();
+        cx.spawn_in(window, async move |_, cx| {
+            let message = match open.await {
+                OpenPathOutcome::Opened => return,
+                OpenPathOutcome::Missing => format!("{path} is not in this tree."),
+                OpenPathOutcome::Failed(message) => message,
+            };
+            cx.update(|window, cx| {
+                drop(window.prompt(
+                    gpui::PromptLevel::Warning,
+                    "rc-git could not open the link",
+                    Some(&message),
+                    &["OK"],
+                    cx,
+                ));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_mode_picker(&self, state: &FileState, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let FileState::Text(entry, document) = state else {
+            return None;
+        };
+        if !MarkdownDocument::is_previewable(&entry.name_lossy(), document.byte_count) {
+            return None;
+        }
+        let showing = self.preview.is_some();
+        Some(
+            ButtonGroup::new("markdown-mode")
+                .small()
+                .child(Button::new("preview").label("Preview").selected(showing))
+                .child(Button::new("source").label("Source").selected(!showing))
+                .on_click(cx.listener(|this, picked: &Vec<usize>, window, cx| {
+                    let prefers = picked.first() == Some(&0);
+                    this.set_prefers_preview(prefers, window, cx);
+                }))
+                .into_any_element(),
+        )
     }
 
     fn show_text(
@@ -280,7 +431,11 @@ impl FilePane {
             .detach();
     }
 
-    fn render_header(state: &FileState, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn render_header(
+        state: &FileState,
+        mode_picker: Option<AnyElement>,
+        cx: &Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
         let header = header(state)?;
         let theme = cx.theme();
         Some(
@@ -300,10 +455,12 @@ impl FilePane {
                 )
                 .child(
                     div()
+                        .flex_1()
                         .text_size(style::TEXT_CAPTION)
                         .text_color(theme.muted_foreground)
                         .child(SharedString::from(header.detail)),
-                ),
+                )
+                .children(mode_picker),
         )
     }
 
@@ -371,6 +528,13 @@ impl FilePane {
                 .child(viewer.clone())
                 .into_any_element();
         }
+        if let Some(preview) = &self.preview {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .child(preview.clone())
+                .into_any_element();
+        }
         let theme = cx.theme();
         let text = placeholder(state).unwrap_or_default();
         let load = load_anyway_size(state);
@@ -402,7 +566,8 @@ impl FilePane {
 impl Render for FilePane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.model.read(cx).file_state().clone();
-        let header = Self::render_header(&state, cx);
+        let mode_picker = self.render_mode_picker(&state, cx);
+        let header = Self::render_header(&state, mode_picker, cx);
         let find = self.find.visible.then(|| self.render_find_bar(cx));
         let body = self.render_body(&state, cx);
         div()

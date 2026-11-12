@@ -123,3 +123,31 @@ pub const CHANGE_ROW_HEIGHT: Pixels = px(22.);
 pub const TICK_SIZE: Pixels = px(14.);
 /// The width a dialog's fields take.
 pub const SHEET_FIELD_WIDTH: Pixels = px(300.);
+/// Markdown preview: the body and code text sizes (`MarkdownRenderer.Theme`).
+pub const MARKDOWN_BODY: Pixels = px(13.);
+/// See [`MARKDOWN_BODY`].
+pub const MARKDOWN_CODE: Pixels = px(12.);
+/// The heading sizes, level 1 to 4; levels 5 and 6 take the last.
+pub const MARKDOWN_HEADINGS: [Pixels; 5] = [px(22.), px(18.), px(15.), px(13.), px(12.)];
+/// How far each list level indents, and the width of the marker column.
+pub const MARKDOWN_LIST_INDENT: Pixels = px(22.);
+/// See [`MARKDOWN_LIST_INDENT`].
+pub const MARKDOWN_MARKER_WIDTH: Pixels = px(20.);
+/// The space after a block, and before a level 1 or 2 heading or any other heading.
+pub const MARKDOWN_BLOCK_SPACING: Pixels = px(10.);
+/// See [`MARKDOWN_BLOCK_SPACING`].
+pub const MARKDOWN_MAJOR_HEADING_SPACING: Pixels = px(14.);
+/// See [`MARKDOWN_BLOCK_SPACING`].
+pub const MARKDOWN_HEADING_SPACING: Pixels = px(8.);
+/// The bar down the left of a quote, and the space between it and the text.
+pub const MARKDOWN_QUOTE_BAR: Pixels = px(3.);
+/// See [`MARKDOWN_QUOTE_BAR`].
+pub const MARKDOWN_QUOTE_PADDING: Pixels = px(10.);
+/// The padding inside a code panel and a table cell.
+pub const MARKDOWN_PANEL_PADDING: Pixels = px(8.);
+/// See [`MARKDOWN_PANEL_PADDING`].
+pub const MARKDOWN_CELL_PADDING: Pixels = px(6.);
+/// The margin around the whole preview.
+pub const MARKDOWN_MARGIN: Pixels = px(16.);
+/// The opacity of a code panel or a table header over the background.
+pub const MARKDOWN_CODE_OPACITY: f32 = 0.05;
