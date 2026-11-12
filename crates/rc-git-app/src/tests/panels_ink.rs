@@ -120,3 +120,107 @@ fn the_markdown_preview_puts_ink_on_the_page() {
         "only {colored} colored pixels: no link or highlighted fence"
     );
 }
+
+/// Ink a panel adds over the window it opens on: a panel that draws nothing adds none.
+fn panel_ink(
+    cx: &mut HeadlessAppContext,
+    tab: &Tab,
+    show: impl FnOnce(
+        &mut crate::window::RepoWindow,
+        &mut gpui::Window,
+        &mut gpui::Context<crate::window::RepoWindow>,
+    ),
+    ready: impl FnMut(&App) -> bool,
+) -> usize {
+    let (before, _) = ink_right_of(cx, tab.handle.into(), 0);
+    let view = tab.view.clone();
+    cx.update(|cx| {
+        tab.handle
+            .update(cx, |_, window, cx| {
+                view.update(cx, |view, cx| show(view, window, cx));
+            })
+            .ok();
+    });
+    settle(cx, ready);
+    let (after, _) = ink_right_of(cx, tab.handle.into(), 0);
+    after.saturating_sub(before)
+}
+
+#[test]
+fn the_go_to_file_panel_puts_ink_on_the_page() {
+    let repo = crate::tests::markdown::markdown_repo();
+    repo.state().trees.insert(
+        rc_git_kit::fake::oid(crate::tests::support::GIT_DIR_TREE),
+        Vec::new(),
+    );
+    let (mut cx, shell) = headless(repo, Arc::new(MemoryHostKeyStore::new()));
+    let tab = open_window(&mut cx, &shell);
+    let view = tab.view.clone();
+    let added = panel_ink(
+        &mut cx,
+        &tab,
+        crate::window::RepoWindow::show_go_to_file,
+        move |cx| {
+            view.read(cx)
+                .panels()
+                .go_to_file()
+                .is_some_and(|panel| !panel.read(cx).results(cx).is_empty())
+        },
+    );
+    assert!(
+        added > 1_000,
+        "only {added} more dark pixels: the panel is blank"
+    );
+}
+
+#[test]
+fn the_recent_picker_puts_ink_on_the_page() {
+    let (mut cx, shell) = headless(markdown_repo(), Arc::new(MemoryHostKeyStore::new()));
+    let tab = open_window(&mut cx, &shell);
+    let added = panel_ink(
+        &mut cx,
+        &tab,
+        |view, window, cx| {
+            let recents = vec!["/Users/me/code/alpha".to_owned(), "/srv/beta".to_owned()];
+            view.show_recent_picker(recents, "/Users/me".to_owned(), window, cx);
+        },
+        |_| true,
+    );
+    assert!(
+        added > 1_000,
+        "only {added} more dark pixels: the picker is blank"
+    );
+}
+
+#[test]
+fn the_settings_window_puts_ink_on_the_page() {
+    let store = Arc::new(MemoryHostKeyStore::new());
+    let approved = rc_git_kit::platform::host_keys::HostKeyStore::store(
+        &*store,
+        "SHA256:abcdefghijklmnopqrstuvwxyz0123456789",
+        "github.com",
+    );
+    assert!(approved.is_ok());
+    let (mut cx, shell) = headless(markdown_repo(), store);
+    cx.update(|cx| shell.update(cx, Shell::show_settings));
+    let handle = cx.update(|cx| shell.read(cx).settings_window().map(|(handle, _)| *handle));
+    let handle = handle.unwrap_or_else(|| panic!("Settings opens a window"));
+    let (ink, _) = ink_right_of(&mut cx, handle.into(), 0);
+    assert!(ink > 2_000, "only {ink} dark pixels: Settings is blank");
+}
+
+#[test]
+fn the_find_panel_puts_ink_on_the_page() {
+    let (mut cx, shell) = headless(markdown_repo(), Arc::new(MemoryHostKeyStore::new()));
+    let tab = open_window(&mut cx, &shell);
+    let added = panel_ink(
+        &mut cx,
+        &tab,
+        crate::window::RepoWindow::show_find_in_repository,
+        |_| true,
+    );
+    assert!(
+        added > 1_000,
+        "only {added} more dark pixels: the panel is blank"
+    );
+}

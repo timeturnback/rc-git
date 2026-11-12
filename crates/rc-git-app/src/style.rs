@@ -151,3 +151,26 @@ pub const MARKDOWN_CELL_PADDING: Pixels = px(6.);
 pub const MARKDOWN_MARGIN: Pixels = px(16.);
 /// The opacity of a code panel or a table header over the background.
 pub const MARKDOWN_CODE_OPACITY: f32 = 0.05;
+
+/// The Go to File panel's size (`GoToFileController`).
+pub const GO_TO_FILE_WIDTH: Pixels = px(560.);
+/// See [`GO_TO_FILE_WIDTH`].
+pub const GO_TO_FILE_HEIGHT: Pixels = px(380.);
+/// The Find in Repository panel's size (`FindInRepositoryController`).
+pub const FIND_PANEL_WIDTH: Pixels = px(720.);
+/// See [`FIND_PANEL_WIDTH`].
+pub const FIND_PANEL_HEIGHT: Pixels = px(460.);
+/// The Open Recent Repository panel's size (`RecentRepositoryPicker`).
+pub const RECENT_PANEL_WIDTH: Pixels = px(560.);
+/// See [`RECENT_PANEL_WIDTH`].
+pub const RECENT_PANEL_HEIGHT: Pixels = px(320.);
+/// How far below the toolbar a quick panel hangs.
+pub const PANEL_TOP: Pixels = px(48.);
+/// A quick panel's field text, larger than the rows under it.
+pub const TEXT_PANEL_FIELD: Pixels = px(16.);
+/// The Settings window's size when it first opens (`SettingsWindowController`).
+pub const SETTINGS_WIDTH: Pixels = px(560.);
+/// See [`SETTINGS_WIDTH`].
+pub const SETTINGS_HEIGHT: Pixels = px(320.);
+/// The Settings host column's width.
+pub const SETTINGS_HOST_WIDTH: Pixels = px(180.);

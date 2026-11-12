@@ -162,6 +162,8 @@ pub struct Shell {
     launching: bool,
     launch_document: Option<String>,
     subscriptions: Vec<Subscription>,
+    /// The Settings window and its view, once opened.
+    settings_window: Option<(WindowHandle<Root>, Entity<crate::settings::SettingsView>)>,
 }
 
 impl Shell {
@@ -185,6 +187,7 @@ impl Shell {
             launch_document: None,
             services,
             subscriptions: vec![quit],
+            settings_window: None,
         }
     }
 
@@ -590,6 +593,73 @@ impl Shell {
             .ok();
         })
         .detach();
+    }
+
+    /// Open Recent Repository (⌃R): the picker over the front window, or over a new empty one
+    /// when none is open.
+    pub fn show_recent_picker(&mut self, cx: &mut Context<Self>) {
+        let front = self.front(cx).cloned();
+        let Some(tab) = front.or_else(|| self.new_window(cx)) else {
+            return;
+        };
+        let (recents, home) = (self.recents.paths(), self.services.home.clone());
+        let view = tab.view.clone();
+        tab.handle
+            .update(cx, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.show_recent_picker(recents, home, window, cx);
+                });
+                window.activate_window();
+            })
+            .ok();
+    }
+
+    /// The Settings window and its view, while it is open.
+    #[cfg(test)]
+    pub(crate) fn settings_window(
+        &self,
+    ) -> Option<&(WindowHandle<Root>, Entity<crate::settings::SettingsView>)> {
+        self.settings_window.as_ref()
+    }
+
+    /// Settings (⌘,): brings the window forward with the approvals as they stand now, or opens
+    /// it. One Settings window serves every tab, and it never joins the tab group.
+    pub fn show_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some((handle, view)) = self.settings_window.clone() {
+            let shown = handle.update(cx, |_, window, cx| {
+                view.update(cx, crate::settings::SettingsView::reload);
+                window.activate_window();
+            });
+            if shown.is_ok() {
+                return;
+            }
+        }
+        let store = Arc::clone(&self.services.host_keys);
+        let made: Rc<Cell<Option<Entity<crate::settings::SettingsView>>>> = Rc::default();
+        let slot = Rc::clone(&made);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                Size::new(style::SETTINGS_WIDTH, style::SETTINGS_HEIGHT),
+                cx,
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Settings".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(style::TRAFFIC_LIGHT_X, style::TRAFFIC_LIGHT_Y)),
+            }),
+            ..WindowOptions::default()
+        };
+        let opened = cx.open_window(options, move |window, cx| {
+            let view = cx.new(|_| crate::settings::SettingsView::new(store));
+            slot.set(Some(view.clone()));
+            cx.new(|cx| Root::new(view, window, cx))
+        });
+        match (opened, made.take()) {
+            (Ok(handle), Some(view)) => self.settings_window = Some((handle, view)),
+            (Err(error), _) => log::error(&format!("open settings: {error:#}")),
+            (Ok(_), None) => {}
+        }
     }
 
     /// Empties Open Recent.

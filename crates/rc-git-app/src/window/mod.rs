@@ -7,6 +7,7 @@
 mod changes;
 mod guarded;
 pub mod layout;
+pub mod panels;
 mod ref_actions;
 mod sync;
 mod toolbar;
@@ -99,6 +100,7 @@ pub struct RepoWindow {
     watcher: Option<Box<dyn Watcher>>,
     watch_task: Option<Task<()>>,
     picker_events: Option<Subscription>,
+    panels: panels::Panels,
     /// Where the menu commands land when nothing inside the window has the keyboard.
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -190,6 +192,7 @@ impl RepoWindow {
             watcher: None,
             watch_task: None,
             picker_events: None,
+            panels: panels::Panels::default(),
             focus,
             _subscriptions: subscriptions,
             settings,
@@ -761,6 +764,8 @@ impl Render for RepoWindow {
             .changes
             .as_ref()
             .is_some_and(|parts| parts.author.is_some());
+        let (shown, mode) = (self.shown.is_some(), self.mode);
+        let panels = self.render_panels();
         div()
             .id("repo-window")
             .key_context("RepoWindow")
@@ -784,6 +789,7 @@ impl Render for RepoWindow {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .map(|root| history_actions(root, commands, cx))
             .map(|root| sync::sync_actions(root, availability, has_author, cx))
+            .map(|root| panels::panel_actions(root, shown, mode, cx))
             .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &Zoom, window, _| window.zoom_window()))
@@ -832,5 +838,6 @@ impl Render for RepoWindow {
                 ),
             )
             .when_some(picker, gpui::ParentElement::child)
+            .children(panels)
     }
 }

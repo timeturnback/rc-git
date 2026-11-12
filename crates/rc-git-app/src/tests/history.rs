@@ -294,7 +294,10 @@ fn the_file_commands_follow_the_open_file(cx: &mut TestAppContext) {
     };
     assert!(!available(&mut visual, &ShowBlame), "no file, no blame");
     assert!(!available(&mut visual, &ShowFileHistory));
-    assert!(!available(&mut visual, &SearchCommits), "Files owns ⇧⌘F");
+    assert!(
+        available(&mut visual, &SearchCommits),
+        "⇧⌘F is Find in Repository in Files"
+    );
     model.update(&mut visual, |model, cx| {
         model.open_path("README.md", None, cx).detach();
     });

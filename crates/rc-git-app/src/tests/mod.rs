@@ -7,6 +7,7 @@ mod history;
 mod history_ink;
 mod ink;
 mod markdown;
+mod panels;
 mod panels_ink;
 mod shell;
 mod support;

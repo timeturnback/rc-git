@@ -12,6 +12,8 @@ mod inbox;
 mod log;
 mod menus;
 mod palette;
+mod search;
+mod settings;
 mod sheets;
 mod sidebar;
 mod status;
@@ -83,6 +85,12 @@ fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
     cx.on_action(move |_: &ToggleHiddenFiles, cx| on.update(cx, Shell::toggle_hidden_files));
     let on = shell.clone();
     cx.on_action(move |_: &CloseWindow, cx| on.update(cx, Shell::close_window_group));
+    let on = shell.clone();
+    cx.on_action(move |_: &menus::OpenRecentRepository, cx| {
+        on.update(cx, Shell::show_recent_picker);
+    });
+    let on = shell.clone();
+    cx.on_action(move |_: &menus::Settings, cx| on.update(cx, Shell::show_settings));
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &HideApp, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
