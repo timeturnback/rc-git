@@ -13,13 +13,14 @@ use rc_git_kit::back_forward::ContentMode;
 use rc_git_kit::branch_banner::BranchBanner;
 use rc_git_kit::browser::BrowserModel;
 
+use crate::changes::list::ChangeListView;
 use crate::files::tree::FileTreeView;
 use crate::icons::{Glyph, banner_glyph, icon};
 use crate::sidebar::refs::RefListView;
 use crate::style;
 
-/// What the Changes section says until the Changes pane lands.
-pub const CHANGES_PENDING: &str = "The change list is not in this build yet.";
+/// What the Changes section says while the window shows no repository.
+pub const CHANGES_PENDING: &str = "Open a repository to see its changes.";
 
 /// What the sidebar tells its window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct Sidebar {
     mode: ContentMode,
     tree: Entity<FileTreeView>,
     refs: Entity<RefListView>,
+    changes: Option<Entity<ChangeListView>>,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -52,6 +54,7 @@ impl Sidebar {
             mode: ContentMode::Files,
             tree,
             refs,
+            changes: None,
         }
     }
 
@@ -59,6 +62,12 @@ impl Sidebar {
     #[cfg(test)]
     pub(crate) fn tree(&self) -> &Entity<FileTreeView> {
         &self.tree
+    }
+
+    /// Puts the repository's Changes section under the banner in Changes.
+    pub fn set_changes(&mut self, changes: Option<Entity<ChangeListView>>, cx: &mut Context<Self>) {
+        self.changes = changes;
+        cx.notify();
     }
 
     /// Shows the section of `mode`.
@@ -156,13 +165,18 @@ impl Render for Sidebar {
             ContentMode::Files => column
                 .child(self.render_banner(cx))
                 .child(div().flex_1().min_h_0().child(self.tree.clone())),
-            ContentMode::Changes => column.child(self.render_banner(cx)).child(
-                div()
-                    .p(style::MARGIN)
-                    .text_size(style::TEXT_BODY)
-                    .text_color(muted)
-                    .child(CHANGES_PENDING),
-            ),
+            ContentMode::Changes => match self.changes.clone() {
+                Some(changes) => column
+                    .child(self.render_banner(cx))
+                    .child(div().flex_1().min_h_0().child(changes)),
+                None => column.child(self.render_banner(cx)).child(
+                    div()
+                        .p(style::MARGIN)
+                        .text_size(style::TEXT_BODY)
+                        .text_color(muted)
+                        .child(CHANGES_PENDING),
+                ),
+            },
         }
     }
 }

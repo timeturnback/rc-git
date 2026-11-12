@@ -99,3 +99,27 @@ pub const BLAME_AUTHOR_WIDTH: Pixels = px(130.);
 pub const BLAME_DATE_WIDTH: Pixels = px(130.);
 /// The height of a History commit row and a changed-file row.
 pub const LIST_ROW_HEIGHT: Pixels = px(24.);
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "layout heights in points, far inside f32's range"
+)]
+const fn points(value: f64) -> Pixels {
+    px(value as f32)
+}
+
+/// The Changes list's floor: it keeps a usable height but yields before the sidebar breaks.
+pub const CHANGES_FILES_FLOOR: Pixels = points(rc_git_kit::layout_policy::CHANGES_FILES_FLOOR);
+/// The stash list's height in the Changes sidebar.
+pub const CHANGES_STASH_HEIGHT: Pixels = points(rc_git_kit::layout_policy::CHANGES_STASH_HEIGHT);
+/// The commit message box's height.
+pub const CHANGES_MESSAGE_HEIGHT: Pixels =
+    points(rc_git_kit::layout_policy::CHANGES_MESSAGE_HEIGHT);
+/// The worktree diff pane's floor.
+pub const CHANGES_DIFF_FLOOR: Pixels = points(rc_git_kit::layout_policy::CHANGES_DIFF_FLOOR);
+/// The height of a Changes row, which carries a tick box beside its label.
+pub const CHANGE_ROW_HEIGHT: Pixels = px(22.);
+/// The side of a tick box.
+pub const TICK_SIZE: Pixels = px(14.);
+/// The width a dialog's fields take.
+pub const SHEET_FIELD_WIDTH: Pixels = px(300.);

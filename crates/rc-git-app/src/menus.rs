@@ -216,6 +216,8 @@ pub struct MenuState {
     pub mode: ContentMode,
     /// The front tab's default branch, which titles Back to Default.
     pub default_branch: Option<String>,
+    /// The front tab's Pull and Push titles, with the counts of its last status.
+    pub sync_titles: Option<(String, String)>,
 }
 
 fn title_of(id: &str) -> &'static str {
@@ -377,8 +379,20 @@ fn repository_menu(state: &MenuState) -> Menu {
     Menu::new("Repository").items(
         [
             item("fetch"),
-            item("pull"),
-            item("push"),
+            Some(titled(
+                state
+                    .sync_titles
+                    .as_ref()
+                    .map_or_else(|| title_of("pull").to_owned(), |titles| titles.0.clone()),
+                Pull,
+            )),
+            Some(titled(
+                state
+                    .sync_titles
+                    .as_ref()
+                    .map_or_else(|| title_of("push").to_owned(), |titles| titles.1.clone()),
+                Push,
+            )),
             Some(MenuItem::separator()),
             item("sync"),
             Some(titled(
@@ -467,6 +481,7 @@ mod tests {
             shows_hidden_files: false,
             mode: ContentMode::Files,
             default_branch: None,
+            sync_titles: None,
         };
         let mut shown = Vec::new();
         for menu in menus(&state) {

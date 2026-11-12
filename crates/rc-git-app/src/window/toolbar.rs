@@ -1,7 +1,7 @@
 //! The toolbar row drawn in the transparent titlebar: sidebar toggle, back and forward, the
 //! Files/History/Changes switch, then Back to Default and Sync at the trailing edge. The sync
-//! controls show `SyncModel`'s availability and titles; their dialogs land in phase 5, so they
-//! stay disabled here.
+//! controls follow `SyncModel`'s availability and titles; while a workflow runs, Sync becomes
+//! the way to cancel it and stays on screen.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
@@ -10,10 +10,12 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{ActiveTheme, Disableable, Icon, Selectable, Sizable};
 use rc_git_kit::back_forward::{ContentMode, Direction};
-use rc_git_kit::sync::{back_to_default_title, idle_sync_tooltip};
+use rc_git_kit::guard_copy::{back_to_default_tooltip, sync_tooltip};
+use rc_git_kit::sync::back_to_default_title;
 
 use crate::icons::{Glyph, icon};
 use crate::style;
+use crate::window::sync::SyncCommand;
 use crate::window::{RepoWindow, WindowEvent};
 
 /// The mode switch's segments, in order.
@@ -102,17 +104,20 @@ impl RepoWindow {
     }
 
     fn sync_controls(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let availability = self.sync_availability(cx);
         let (tooltip, default_title, busy) = match &self.sync {
             Some(sync) => {
                 let sync = sync.read(cx);
                 (
-                    idle_sync_tooltip(sync.remote_status(), sync.status_error()),
+                    sync_tooltip(sync.state(), sync.remote_status(), sync.status_error()),
                     back_to_default_title(sync.default_branch()),
                     sync.is_busy(),
                 )
             }
             None => ("Sync".to_owned(), back_to_default_title(None), false),
         };
+        let can_back = availability.is_some_and(|a| a.can_back_to_default);
+        let sync_enabled = availability.is_some_and(|a| a.sync_button_enabled());
         div()
             .flex()
             .items_center()
@@ -122,8 +127,11 @@ impl RepoWindow {
                     .small()
                     .ghost()
                     .icon(Icon::new(icon(Glyph::BackToDefault)))
-                    .tooltip(default_title)
-                    .disabled(true),
+                    .tooltip(back_to_default_tooltip(&default_title))
+                    .disabled(!can_back)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.run_sync(SyncCommand::BackToDefault, cx);
+                    })),
             )
             .child(
                 Button::new("sync")
@@ -135,7 +143,14 @@ impl RepoWindow {
                         Glyph::Sync
                     })))
                     .tooltip(tooltip)
-                    .disabled(true),
+                    .disabled(!sync_enabled)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if busy {
+                            this.cancel_sync(cx);
+                        } else {
+                            this.run_sync(SyncCommand::Sync, cx);
+                        }
+                    })),
             )
     }
 }

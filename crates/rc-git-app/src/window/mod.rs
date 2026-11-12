@@ -4,7 +4,11 @@
 //! tells the shell where it is through [`WindowEvent`]s; the shell owns the app-wide
 //! back/forward list.
 
+mod changes;
+mod guarded;
 pub mod layout;
+mod ref_actions;
+mod sync;
 mod toolbar;
 
 use std::path::PathBuf;
@@ -38,10 +42,13 @@ use crate::menus::{
     ShowChanges, ShowFiles, ShowHistory, ToggleFullScreen, ToggleSidebar, Zoom,
 };
 use crate::menus::{SearchCommits, ShowBlame, ShowFileHistory};
+use crate::sheets::OpenSheet;
 use crate::sidebar::refs::{RefListEvent, RefListView};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::style;
+use rc_git_kit::repository_actions::RepositoryActions;
 
+pub use changes::ChangesParts;
 pub use layout::SidebarLayout;
 
 /// What the content area says in a mode whose pane lands in a later phase.
@@ -95,6 +102,13 @@ pub struct RepoWindow {
     /// Where the menu commands land when nothing inside the window has the keyboard.
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
+    settings: SharedSettings,
+    changes: Option<ChangesParts>,
+    actions: Option<Arc<dyn RepositoryActions>>,
+    work_dir: Option<String>,
+    visibility: gpui::WindowVisibility,
+    sheet: Option<OpenSheet>,
+    handle: gpui::AnyWindowHandle,
 }
 
 impl EventEmitter<WindowEvent> for RepoWindow {}
@@ -110,7 +124,7 @@ impl RepoWindow {
         let (history, history_events, blame_events) =
             Self::history_parts(&model, &settings, window, cx);
         let split = cx.new(|_| ResizableState::default());
-        let layout = SidebarLayout::load(settings);
+        let layout = SidebarLayout::load(Arc::clone(&settings));
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let subscriptions = vec![
@@ -151,6 +165,10 @@ impl RepoWindow {
             }),
             history_events,
             blame_events,
+            cx.observe_window_visibility(window, |this, visibility, _, cx| {
+                this.visibility = visibility;
+                this.sync_changes_visibility(cx);
+            }),
         ];
         Self {
             model,
@@ -174,6 +192,17 @@ impl RepoWindow {
             picker_events: None,
             focus,
             _subscriptions: subscriptions,
+            settings,
+            changes: None,
+            actions: None,
+            work_dir: None,
+            visibility: if window.is_visible() {
+                gpui::WindowVisibility::Visible
+            } else {
+                gpui::WindowVisibility::Hidden
+            },
+            sheet: None,
+            handle: window.window_handle(),
         }
     }
 
@@ -261,6 +290,7 @@ impl RepoWindow {
         });
         self.has_work_dir = repository.reading.work_dir().is_some();
         self.watch_refs(&repository, watchers, cx);
+        let changes_source = changes::ChangesSource::of(&repository);
         self.sync = repository.sync;
         if let Some(sync) = &self.sync {
             cx.observe(sync, |_, _, cx| cx.notify()).detach();
@@ -273,6 +303,16 @@ impl RepoWindow {
             sync.update(cx, rc_git_kit::sync::SyncModel::refresh_status)
                 .detach();
         }
+        if let Some(sync) = self.sync.clone() {
+            Self::set_prompters(&sync, window, cx);
+            cx.subscribe_in(&sync, window, |this, _, event: &SyncEvent, window, cx| {
+                if let SyncEvent::StateChanged(state) = event {
+                    this.sync_state_changed(state, window, cx);
+                }
+            })
+            .detach();
+        }
+        self.show_changes(changes_source, watchers, window, cx);
         let reading = repository.reading;
         self.model.update(cx, |model, cx| model.attach(reading, cx))
     }
@@ -315,6 +355,7 @@ impl RepoWindow {
             sync.update(cx, rc_git_kit::sync::SyncModel::refresh_status)
                 .detach();
         }
+        self.changes_stale(cx);
         self.model
             .update(cx, rc_git_kit::browser::BrowserModel::refresh_refs)
     }
@@ -336,6 +377,12 @@ impl RepoWindow {
     pub fn set_shows_hidden_files(&mut self, shows: bool, cx: &mut Context<Self>) {
         self.model
             .update(cx, |model, cx| model.set_shows_hidden_files(shows, cx));
+        if let Some(parts) = &self.changes {
+            parts
+                .model
+                .update(cx, |model, _| model.set_shows_hidden_files(shows));
+        }
+        self.changes_stale(cx);
     }
 
     /// Where this tab is, or `None` while it browses nothing: no repository yet, or one still
@@ -366,6 +413,10 @@ impl RepoWindow {
         self.mode = mode;
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_mode(mode, cx));
+        self.sync_changes_visibility(cx);
+        if mode == ContentMode::Changes {
+            self.changes_shown(cx);
+        }
         cx.notify();
     }
 
@@ -444,6 +495,7 @@ impl RepoWindow {
                     .detach();
             }
             RefListEvent::Dismissed => {}
+            RefListEvent::Action(action, entry) => self.ref_action(*action, entry.clone(), cx),
         }
     }
 
@@ -573,6 +625,11 @@ impl RepoWindow {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.mode == ContentMode::Changes
+            && let Some(parts) = &self.changes
+        {
+            return parts.pane.clone().into_any_element();
+        }
         match self.mode {
             ContentMode::Files => self.pane.clone().into_any_element(),
             ContentMode::History => self.history.clone().into_any_element(),
@@ -699,6 +756,11 @@ impl Render for RepoWindow {
         let sidebar_width = self.layout.width_pixels();
         let (background, foreground) = (cx.theme().background, cx.theme().foreground);
         let commands = HistoryCommands::of(self, cx);
+        let availability = self.sync_availability(cx);
+        let has_author = self
+            .changes
+            .as_ref()
+            .is_some_and(|parts| parts.author.is_some());
         div()
             .id("repo-window")
             .key_context("RepoWindow")
@@ -721,6 +783,7 @@ impl Render for RepoWindow {
             .on_action(cx.listener(|this, _: &GoToBranch, window, cx| this.choose_ref(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .map(|root| history_actions(root, commands, cx))
+            .map(|root| sync::sync_actions(root, availability, has_author, cx))
             .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &Zoom, window, _| window.zoom_window()))

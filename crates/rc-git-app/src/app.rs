@@ -70,6 +70,9 @@ pub struct OpenedRepository {
     pub dirs: Option<(String, String)>,
     /// The window's sync workflows.
     pub sync: Option<Entity<SyncModel>>,
+    /// The guarded actions commit, stash, discard and the ref menu run, `None` where there
+    /// are none (tests).
+    pub actions: Option<Arc<dyn RepositoryActions>>,
 }
 
 /// Opens a canonical path as a repository.
@@ -208,6 +211,7 @@ impl Shell {
             shows_hidden_files: self.hidden.shows(),
             mode: front.map_or(ContentMode::Files, |tab| tab.view.read(cx).mode()),
             default_branch: front.and_then(|tab| tab.view.read(cx).default_branch(cx)),
+            sync_titles: front.map(|tab| tab.view.read(cx).sync_titles(cx)),
         }
     }
 
@@ -331,6 +335,7 @@ impl Shell {
     }
 
     fn show_in(&mut self, tab: &Tab, opened: Opened, cx: &mut Context<Self>) {
+        let actions = opened.actions.clone();
         let sync = opened.actions.map(|actions| {
             let credentials = Arc::clone(&self.services.credentials);
             let host_keys = Arc::clone(&self.services.host_keys);
@@ -342,6 +347,7 @@ impl Shell {
             tab_path: opened.tab_path,
             dirs: opened.dirs,
             sync,
+            actions,
         };
         let watchers = Arc::clone(&self.services.watchers);
         let view = tab.view.clone();

@@ -45,6 +45,10 @@ pub enum Glyph {
     Expanded,
     /// The banner's disclosure, which opens the ref picker.
     Disclosure,
+    /// A tick box with everything at or below its row ticked.
+    TickOn,
+    /// A tick box with only some of what is below its row ticked.
+    TickMixed,
 }
 
 /// The Lucide icon for `glyph`.
@@ -70,6 +74,8 @@ pub fn icon(glyph: Glyph) -> IconName {
         Glyph::Sync => IconName::RefreshCw,
         Glyph::Busy => IconName::LoaderCircle,
         Glyph::Disclosure => IconName::ChevronsUpDown,
+        Glyph::TickOn => IconName::Check,
+        Glyph::TickMixed => IconName::Minus,
     }
 }
 
@@ -103,7 +109,9 @@ pub fn is_accented(glyph: Glyph) -> bool {
         | Glyph::Busy
         | Glyph::Collapsed
         | Glyph::Expanded
-        | Glyph::Disclosure => false,
+        | Glyph::Disclosure
+        | Glyph::TickOn
+        | Glyph::TickMixed => false,
     }
 }
 
@@ -131,7 +139,7 @@ impl AssetSource for Assets {
 mod tests {
     use super::*;
 
-    const EVERY: [Glyph; 23] = [
+    const EVERY: [Glyph; 25] = [
         Glyph::Entry(EntryKind::Tree),
         Glyph::Entry(EntryKind::Submodule),
         Glyph::Entry(EntryKind::Symlink),
@@ -155,6 +163,8 @@ mod tests {
         Glyph::Disclosure,
         Glyph::Entry(EntryKind::Blob),
         Glyph::Ref(RefKind::Tag),
+        Glyph::TickOn,
+        Glyph::TickMixed,
     ];
 
     /// An icon the asset source cannot load draws nothing, so a missing one would ship as a

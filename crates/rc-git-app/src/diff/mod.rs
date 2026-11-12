@@ -1,5 +1,5 @@
 //! The one diff view every pane draws a line diff with (`DiffRendering.swift`): History's diff
-//! of a commit's file now, and the Changes pane's worktree diff next.
+//! of a commit's file and the Changes pane's worktree diff.
 //!
 //! # What it draws
 //!
@@ -28,7 +28,8 @@
 //!   on a header row also emits [`DiffViewEvent::HeaderClicked`] with the hunk index, which is
 //!   the hook for toggling a hunk. The hunk index of any row is the one
 //!   [`rc_git_kit::diff_text::owning_hunk`] names; [`DiffView::owning_hunk`] calls it, so an
-//!   action on any row of a hunk acts on that hunk.
+//!   action on any row of a hunk acts on that hunk. A secondary press selects the row and
+//!   emits only `RowClicked`, so an owner's context menu knows the row it opened on.
 //! - **Selection and copy.** Rows select by press, shift-press and drag; ⌘C copies the selected
 //!   rows as unified-diff text (header lines and signed lines) and ⌘A selects every row.
 //!
@@ -165,13 +166,6 @@ impl DiffView {
     }
 
     /// Draws `prefix` first in every row, or nothing first when `None`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the Changes pane (phase 5) builds on it; tests cover it now"
-        )
-    )]
     pub fn set_prefix(&mut self, prefix: Option<RowPrefix>, cx: &mut Context<Self>) {
         self.prefix = prefix;
         cx.notify();
@@ -181,10 +175,7 @@ impl DiffView {
     #[must_use]
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "the Changes pane (phase 5) builds on it; tests cover it now"
-        )
+        expect(dead_code, reason = "a pane may read it; tests cover it now")
     )]
     pub fn content(&self) -> &DiffContent {
         &self.content
@@ -194,10 +185,7 @@ impl DiffView {
     #[must_use]
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "the Changes pane (phase 5) builds on it; tests cover it now"
-        )
+        expect(dead_code, reason = "a pane may read it; tests cover it now")
     )]
     pub fn row_count(&self) -> usize {
         self.rows.len()
@@ -208,10 +196,7 @@ impl DiffView {
     #[must_use]
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "the Changes pane (phase 5) builds on it; tests cover it now"
-        )
+        expect(dead_code, reason = "a pane may read it; tests cover it now")
     )]
     pub fn owning_hunk(&self, row: usize) -> Option<&DiffHunk> {
         owning_hunk(row, self.hunks())
@@ -304,6 +289,25 @@ impl DiffView {
         cx.notify();
     }
 
+    /// A secondary press: selects the row unless it is already selected and names it to the
+    /// owner, whose context menu acts on its hunk. It never toggles a hunk.
+    fn context_press(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(info) = self.rows.get(row).copied() else {
+            return;
+        };
+        if !self
+            .selected_rows()
+            .is_some_and(|range| range.contains(&row))
+        {
+            self.selection = Some((row, row));
+        }
+        cx.emit(DiffViewEvent::RowClicked {
+            row,
+            hunk: info.hunk(),
+        });
+        cx.notify();
+    }
+
     fn dragged(&mut self, row: usize, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if !self.dragging || event.pressed_button != Some(MouseButton::Left) {
             return;
@@ -369,6 +373,10 @@ impl DiffView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event, _, cx| this.press(row, event, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| this.context_press(row, cx)),
             )
             .on_mouse_move(cx.listener(move |this, event, _, cx| this.dragged(row, event, cx)))
             .into_any_element()

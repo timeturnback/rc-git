@@ -3,6 +3,7 @@
 
 mod app;
 mod blame;
+mod changes;
 mod diff;
 mod files;
 mod history;
@@ -11,6 +12,7 @@ mod inbox;
 mod log;
 mod menus;
 mod palette;
+mod sheets;
 mod sidebar;
 mod status;
 mod style;

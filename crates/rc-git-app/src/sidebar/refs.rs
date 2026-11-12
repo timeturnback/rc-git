@@ -5,16 +5,19 @@
 
 use std::ops::Range;
 
+use gpui::MouseButton;
 use gpui::{
     AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, div, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, Sizable};
 use rc_git_core::{BrokenRef, RefEntry};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel};
 use rc_git_kit::ref_filter::{RefList, UNREADABLE_TITLE, working_tree_matches};
+use rc_git_kit::ref_menu::{RefMenu, RefMenuAction, ref_menu};
 
 use crate::icons::{Glyph, icon, is_accented};
 use crate::style;
@@ -31,6 +34,8 @@ pub enum RefListEvent {
     WorkingTree,
     /// Escape in the filter: the picker closes.
     Dismissed,
+    /// The context menu asked for a mutating action on a ref.
+    Action(RefMenuAction, RefEntry),
 }
 
 /// One row of the list.
@@ -47,6 +52,8 @@ pub struct RefListView {
     model: Entity<BrowserModel>,
     filter: Entity<InputState>,
     rows: Vec<Row>,
+    /// The ref the context menu was opened on.
+    menu_target: Option<RefEntry>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -82,6 +89,7 @@ impl RefListView {
             model,
             filter,
             rows: Vec::new(),
+            menu_target: None,
             _subscriptions: subscriptions,
         };
         view.reload(cx);
@@ -190,6 +198,15 @@ impl RefListView {
                 .text_color(theme.foreground)
                 .hover(|style| style.bg(theme.list_hover))
                 .on_click(cx.listener(move |this, _, _, cx| this.pick(index, cx)));
+            element = element.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, _| {
+                    this.menu_target = match this.rows.get(index) {
+                        Some(Row::Ref(entry)) => Some(entry.clone()),
+                        Some(Row::WorkingTree | Row::Header(_) | Row::Unreadable(_)) | None => None,
+                    };
+                }),
+            );
         }
         if current {
             element = element.bg(theme.list_active);
@@ -213,6 +230,8 @@ impl RefListView {
 impl Render for RefListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id("ref-list")
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.menu_target = None))
             .size_full()
             .flex()
             .flex_col()
@@ -242,5 +261,43 @@ impl Render for RefListView {
                 )
                 .flex_1(),
             )
+            .context_menu({
+                let weak = cx.entity().downgrade();
+                move |menu, _, cx| {
+                    let target = weak
+                        .upgrade()
+                        .and_then(|list| list.read(cx).menu_target.clone());
+                    ref_context_menu(menu, target, &weak)
+                }
+            })
+    }
+}
+
+/// The ref list's context menu for `target`, as kit's [`ref_menu`] lays it out.
+fn ref_context_menu(
+    mut menu: gpui_component::menu::PopupMenu,
+    target: Option<RefEntry>,
+    list: &gpui::WeakEntity<RefListView>,
+) -> gpui_component::menu::PopupMenu {
+    let Some(entry) = target else {
+        return menu;
+    };
+    match ref_menu(&entry) {
+        RefMenu::NotExact(note) => menu.item(PopupMenuItem::new(note).disabled(true)),
+        RefMenu::Items(items) => {
+            for (separated, action, title) in items {
+                if separated {
+                    menu = menu.separator();
+                }
+                let (list, entry) = (list.clone(), entry.clone());
+                menu = menu.item(PopupMenuItem::new(title).on_click(move |_, _, cx| {
+                    list.update(cx, |_, cx| {
+                        cx.emit(RefListEvent::Action(action, entry.clone()));
+                    })
+                    .ok();
+                }));
+            }
+            menu
+        }
     }
 }
