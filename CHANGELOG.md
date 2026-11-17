@@ -1,0 +1,320 @@
+# Changelog
+
+What changed in rc-git, newest first. Help ▸ Changelog shows this file in the app.
+
+## 2026-11-17
+
+### Added
+
+- Help ▸ Changelog opens this list of changes. It shows the changelog of the build you are
+  running, so a rebuild brings its new entries with it.
+
+## 2026-11-12
+
+### Added
+
+- View ▸ Wrap Lines wraps long lines in every diff and in the file viewer. Turn it off and
+  long lines scroll sideways instead, with a scrollbar on each axis. The top line stays in view
+  when you switch, and the choice is remembered. The path bar has the same toggle.
+- View ▸ Expand Diff shows the History or Changes diff across the whole window. Use it again,
+  or the path bar toggle, to bring the panes back.
+- The History commit list has a header with author and date columns you can drag wider or
+  narrower. The date column opens fitted to the widest date, and a width you drag is kept.
+- Every long list draws a scrollbar, and the scrollbars stay visible.
+- Each repository window shows its tabs in a strip under the toolbar: equal-width tabs, a close
+  button on each, and a + that opens another repository.
+- The diverged sheet has Open in Terminal. It copies the rebase command and opens Terminal in
+  the checkout.
+- A stash row shows its commit id when you hover over it.
+
+### Changed
+
+- rc-git is rebuilt on a new drawing engine. Files, History, Changes, blame, the markdown
+  preview, Go to File, Find in Repository, Open Recent, Settings, sync, About and Rebuild and
+  Relaunch all came across, and tabs, recents and the window frame carry over from the old
+  app.
+
+### Fixed
+
+- A repository opened from a window joins that window as a tab instead of opening a window of
+  its own.
+- A window you close no longer comes back as a tab at the next launch.
+- Shortcuts for commands that act on every window, such as Show Hidden Files, take effect.
+- Dragging a History column wide stops at the right place when the graph column is hidden.
+
+## 2026-11-03
+
+### Added
+
+- Control-R opens the recent repository picker.
+- The Find in Repository panel has a close button.
+
+## 2026-10-29
+
+### Added
+
+- ⇧⌘F on the Files tab finds text in every file of the repository.
+
+## 2026-10-25
+
+### Added
+
+- ⌘R opens a picker of recent repositories. Type to filter it.
+
+## 2026-10-15
+
+### Added
+
+- Settings lists the ssh hosts you approved, with Remove.
+- A banner names the saved tabs that did not reopen at launch.
+- A large markdown file shows a placeholder while its preview builds.
+- History shows the committer time while you filter by date.
+
+### Fixed
+
+- A markdown preview no longer flashes the previous file's content when you switch files
+  quickly, and emphasis, links and block quotes render the way CommonMark does.
+- A linked worktree's Changes refresh when its exclude file changes, and a repository opened
+  through its `.git` folder is named after its working folder.
+- rc-git refuses to delete a tag that moved since you looked at it, and refuses stash actions
+  when the stash list and its log disagree.
+- Push, pull and sync report a rejected push, a credential redirect to another host and a
+  local upstream branch correctly.
+- Blame marks lines at a shallow clone's boundary, and diffs show a path that changes between
+  a file and a submodule.
+
+## 2026-10-14
+
+### Fixed
+
+- Go to File shortens long rows in the middle, shows listing failures in the panel, and no
+  longer reopens the open file on a double-click.
+- An empty tree says why it is empty instead of asking you to open a repository.
+- Sheets with a text field put the cursor in it.
+- Branch, tag, stash, discard and switch actions check every path before they write, refuse a
+  name that already exists, and say how far a failed step got.
+
+## 2026-10-13
+
+### Fixed
+
+- History: the ref filter takes arrows and Return, unreadable refs are listed instead of
+  dropped, date filters cover whole local days, search stays within the file you are looking
+  at, and graph lanes stay visible on the selected row.
+- Changes: the list stays on screen while it rescans, long rows keep their status letter, a
+  click on any row of a hunk discards that hunk, and the commit box no longer turns quotes and
+  dashes into typographic ones.
+- The Edit menu has Undo, Redo, Cut and Paste.
+- History of This File no longer shares a shortcut with Hide Others.
+- Tabs on a disk that is not mounted at launch stay in the tab list, and the same repository
+  never opens in two tabs.
+- Closing a tab cancels its running sync.
+- Sheet buttons stay disabled until their fields are filled.
+- Markdown previews follow CommonMark more closely: lists, quotes, fenced code, HTML blocks,
+  bare URLs and heading anchors. A link to another app asks before it opens.
+- Syntax colors for Swift comments and keywords, booleans, and markdown table cells.
+- ssh remotes read your ssh config the way OpenSSH does (HostName, Include, IdentityAgent,
+  HostKeyAlias, quoted values) and check every known_hosts file. A changed key for a host you
+  approved is refused.
+- Rebuild and Relaunch can be cancelled, reports a build killed by a signal, and keeps your
+  tabs when the relaunch fails.
+- Credentials are stored in rc-git's own keychain items and read once per sync.
+
+## 2026-10-12
+
+### Fixed
+
+- Push goes to the push URL and remote git would use, keeps hook output, and counts a push as
+  done even when the tracking ref could not be updated.
+- Sync can publish a branch the remote does not have yet, and fetch works on a detached HEAD.
+- Cancel ends a stuck HTTPS or ssh fetch or push.
+- An ssh connection that times out names the step that timed out.
+
+## 2026-10-08
+
+### Fixed
+
+- Blame follows renames, and stops at a size limit instead of reading a huge file.
+- Diff line numbers for an empty side match git's.
+- rc-git refuses to delete a branch that moved, or one checked out in another worktree.
+- Stash apply and pop act on the entry you picked, not on whatever sits at its position.
+- Commit, discard and switch refuse paths inside a submodule, special files, and changes made
+  during a merge.
+
+## 2026-10-07
+
+### Fixed
+
+- The working tree status matches git's: the exec bit, files inside nested repositories,
+  checked-out submodules, a folder that replaced a file, and names that differ only in case or
+  Unicode form.
+- Untracked files show on a branch with no commits yet, and your global ignore file applies.
+- File history and blame work in shallow clones, and a wrapped commit title reads as one line.
+- Annotated tags show their commit in History and blame.
+- rc-git refuses paths through a symbolic link, `.git` paths, and names that differ from an
+  existing one only in case.
+- Repositories under `/tmp` or reached through a symbolic link refresh when their files change.
+
+## 2026-10-06
+
+### Added
+
+- ⌥⌘R rebuilds and relaunches without opening the update window first.
+- ⇧⌘T reopens the last tab you closed.
+
+### Changed
+
+- In History, the commit list sits over the open commit's details and the picked file's diff
+  fills the right pane. Changed files show as a folder tree by default, with a switch to a
+  flat list.
+
+### Fixed
+
+- A tab you close with ⌘W does not come back at the next launch.
+
+## 2026-09-30
+
+### Added
+
+- Back and forward step through the files, commits and tabs you visited.
+- TypeScript files are highlighted, and you can follow an import to the file it names.
+
+### Fixed
+
+- The file pane empties when you step back to a file that no longer exists.
+
+## 2026-09-29
+
+### Added
+
+- The ref list opens from a popover, and the sidebar has one native look.
+- When a sync finds the branch has diverged, rc-git hands over the `git pull --rebase` command
+  to run yourself.
+
+### Fixed
+
+- Ahead and behind counts compare against origin when a branch has no upstream.
+
+## 2026-09-28
+
+### Added
+
+- Files and Changes show a banner naming the branch, commit or ref you browse. Click it, or
+  press ⌘B, to pick another.
+- View ▸ Show Hidden Files (⇧⌘.) shows the clutter rc-git hides by default, such as
+  `.DS_Store`. Repositories with a checkout open on the working tree.
+
+### Fixed
+
+- Code blocks in the markdown preview no longer collapse to one character a line.
+
+## 2026-09-27
+
+### Added
+
+- The markdown preview shows tables, task lists, footnotes and images, and its links work: a
+  link to a file in the repository opens that file.
+- Repository ▸ Back to Default switches back to the default branch.
+
+## 2026-09-26
+
+### Fixed
+
+- The change list no longer rescans once for every file event.
+
+## 2026-09-25
+
+### Added
+
+- Closed tabs stay in the list a launch can restore.
+
+### Fixed
+
+- A stuck sync can be cancelled, and it times out on its own.
+- The history drawer keeps its layout when you drag its divider.
+
+## 2026-09-21
+
+### Changed
+
+- Discarding working changes no longer asks you to type a phrase.
+
+### Fixed
+
+- The rebuild check no longer spins forever.
+- The history drawer's diff pane no longer shrinks to nothing.
+
+## 2026-09-20
+
+### Added
+
+- The change list groups files by folder.
+- Each mode's navigation sits in one left panel, and the tree pane fits its rows.
+- The window title shows the build's version.
+- The app rebuilds and relaunches itself from its own menu.
+
+### Fixed
+
+- Tabs are saved before a rebuild relaunches the app.
+
+## 2026-09-19
+
+### Added
+
+- The file viewer is faster and highlights only what is on screen, and markdown files have a
+  preview.
+- The Changes tab has Fetch, Pull and Push buttons.
+
+### Fixed
+
+- ssh config Host patterns match regardless of case.
+
+## 2026-09-18
+
+### Added
+
+- ssh remotes: rc-git asks before trusting a new host key, asks for a key's passphrase, and
+  keeps credentials per kind.
+
+### Fixed
+
+- ssh config HostName, User and Port apply to alias remotes.
+
+## 2026-09-17
+
+### Added
+
+- Fetch, pull, push and sync over ssh and HTTPS, from the Repository menu and the toolbar's
+  Sync button. rc-git asks for credentials when a remote needs them.
+
+## 2026-09-11
+
+### Added
+
+- History shows the commit's details in a drawer on the right, and the commit list takes the
+  full height.
+
+## 2026-09-10
+
+### Added
+
+- Each repository opens in a native window tab, and the tabs come back after a relaunch.
+
+## 2026-09-08
+
+### Added
+
+- The Changes tab: see what changed in the working tree, commit it, stash it or discard it.
+
+## 2026-09-07
+
+### Added
+
+- rc-git: browse a repository's branches, tags, files and history, read files, and diff and
+  blame them.
+- History has a lane graph, a commit search by message, author and date, history of a single
+  file, and commit details with body, committer, refs and parent links.
+
+### Fixed
+
+- The History commit list no longer collapses to zero height.

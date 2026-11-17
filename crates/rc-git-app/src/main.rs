@@ -4,6 +4,7 @@
 mod about;
 mod app;
 mod blame;
+mod changelog;
 mod changes;
 mod diff;
 mod files;
@@ -117,6 +118,7 @@ fn register_actions(shell: &Entity<Shell>, cx: &mut App) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &BringAllToFront, cx| cx.activate(true));
+    cx.on_action(|_: &menus::ShowChangelog, cx| changelog::show(cx));
 }
 
 /// About, and the rebuild commands (`AppDelegate.showUpdate`, `rebuildNow`): none for a build

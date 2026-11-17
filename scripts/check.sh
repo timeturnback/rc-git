@@ -65,6 +65,8 @@ shellcheck scripts/*.sh scripts/tests/*.sh
 shfmt -d scripts/*.sh scripts/tests/*.sh
 step "bounded runner"
 scripts/tests/bounded.test.sh
+step "changelog check"
+scripts/tests/changelog-check.test.sh
 step "github actions"
 actionlint
 zizmor --offline .github

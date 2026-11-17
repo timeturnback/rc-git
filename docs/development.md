@@ -84,6 +84,26 @@ re-prompts for each remote host's stored token ("Always Allow" makes it once per
 A stable signing identity in `scripts/build-app.sh` is the real fix; until then the prompt
 churn is expected during development.
 
+## Changelog
+
+`CHANGELOG.md` at the root lists user-visible changes, newest first: one `## YYYY-MM-DD`
+heading per day with `### Added`, `### Changed` and `### Fixed` under it. Help ▸ Changelog shows
+it in a read-only window that draws it with the file pane's markdown preview.
+
+`rc_git_kit::changelog` embeds the file with `include_str!`, so the app shows the changelog of
+the build it is, `cargo run` included, and `scripts/build-app.sh` copies nothing. Cargo
+rebuilds when the file changes. An uncommitted edit to it makes the checkout dirty like any
+other tracked file, so the build is stamped with a `+` and never passes for the commit it
+names. The same module's `problems` checks the file's shape, and a kit test runs it on the
+shipped file.
+
+`scripts/changelog-check.sh` refuses a `feat` or `fix` commit that leaves `CHANGELOG.md`
+alone; commits from before the file existed are skipped. With no argument it checks the commits
+no remote-tracking ref has, which is what the pre-push hook runs. CI runs it on the pushed or
+pull-request range, and `scripts/tests/changelog-check.test.sh` (run by `scripts/check.sh`)
+tests it against scratch repositories. Amend the entry into the offending commit, or add it in
+a fixup and rebase.
+
 ## Lint configuration
 
 | File | Governs |
@@ -93,14 +113,14 @@ churn is expected during development.
 | `rustfmt.toml` | 100 columns, 2024 edition style |
 | `deny.toml` | advisories, license allowlist, sources |
 | `.editorconfig` | 2-space shell and YAML, so `shfmt` agrees with the editor |
-| `.pre-commit-config.yaml` | what runs before each commit |
+| `.pre-commit-config.yaml` | what runs before each commit, and the changelog check before each push |
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs four jobs: Rust on Linux (fmt, clippy, core standalone, test,
 doc, all but the GPUI crates), cargo deny, macOS (`cargo test --workspace`, clippy and doc for
 rc-git-kit, rc-git-app and rc-git-mac, then `scripts/build-app.sh`), and scripts (shellcheck,
-shfmt, actionlint, zizmor). Actions are pinned to commit hashes; Dependabot bumps
+shfmt, actionlint, zizmor, the changelog check). Actions are pinned to commit hashes; Dependabot bumps
 them and Cargo dependencies weekly.
 
 ## Versions

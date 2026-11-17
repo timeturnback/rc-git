@@ -597,8 +597,8 @@ impl Shell {
         self.rebuild_menus(cx);
     }
 
-    /// Wraps long diff and file lines in every tab, or lets them scroll sideways again, and remembers
-    /// the choice for next launch.
+    /// Wraps long diff and file lines in every tab, or lets them scroll sideways again, and
+    /// remembers the choice for next launch.
     pub fn toggle_wrap_lines(&mut self, cx: &mut Context<Self>) {
         let wraps = match self.wrap.toggle() {
             Ok(wraps) => wraps,

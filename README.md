@@ -25,6 +25,8 @@ at once) rebuilds the checkout it was built from as it stands, uncommitted work 
 relaunches into the new build with the same tabs open. It does not fetch; pull the checkout
 first to update. `scripts/build-app.sh --profile release` builds with fat LTO.
 
+Help ▸ Changelog lists what changed in the build you are running, from `CHANGELOG.md`.
+
 ## Use
 
 Open a repository with ⌘O, from the Open Recent menu, by typing part of a recent one's name

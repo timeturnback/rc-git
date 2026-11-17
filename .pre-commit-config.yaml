@@ -38,3 +38,10 @@ repos:
         entry: zizmor
         language: system
         files: ^\.github/(workflows/|dependabot\.yml$)
+      - id: changelog
+        name: feat and fix commits update CHANGELOG.md
+        entry: scripts/changelog-check.sh
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

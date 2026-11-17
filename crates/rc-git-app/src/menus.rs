@@ -29,6 +29,8 @@ actions!(
         ShowUpdate,
         /// The About window: the bundle's name and the build it was stamped with.
         ShowAbout,
+        /// The Changelog window: what changed in each build, from `CHANGELOG.md`.
+        ShowChangelog,
         /// Adds an empty tab.
         NewTab,
         /// Reopens the most recently closed tab's repository.
@@ -267,6 +269,7 @@ pub fn menus(state: &MenuState) -> Vec<Menu> {
         view_menu(state),
         repository_menu(state),
         window_menu(),
+        help_menu(),
     ]
 }
 
@@ -449,6 +452,10 @@ fn window_menu() -> Menu {
     )
 }
 
+fn help_menu() -> Menu {
+    Menu::new("Help").items([titled("Changelog", ShowChangelog)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +551,15 @@ mod tests {
             }
         }
         titles
+    }
+
+    #[test]
+    fn the_help_menu_offers_the_changelog() {
+        let menu = help_menu();
+        assert_eq!(menu.name.as_ref(), "Help");
+        let mut shown = Vec::new();
+        names(&menu, &mut shown);
+        assert_eq!(shown, vec![ShowChangelog.name().to_owned()]);
     }
 
     #[test]

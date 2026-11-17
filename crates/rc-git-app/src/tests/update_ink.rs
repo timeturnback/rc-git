@@ -1,5 +1,5 @@
-//! The update and About windows drawn through real CoreText and Metal off screen, so a blank
-//! one cannot ship.
+//! The update, About and Changelog windows drawn through real CoreText and Metal off screen, so
+//! a blank one cannot ship.
 
 use std::sync::Arc;
 
@@ -68,5 +68,21 @@ fn about_names_the_build() {
     assert!(
         version.starts_with("Version: 0.1.42 · a3f91c2+ · built Sep 19, 2026"),
         "{version}"
+    );
+}
+
+#[test]
+fn the_changelog_window_puts_ink_on_the_page() {
+    let (mut cx, _shell) = headless(markdown_repo(), Arc::new(MemoryHostKeyStore::new()));
+    cx.update(crate::changelog::show);
+    cx.update(crate::changelog::show);
+    let windows = cx.update(|cx| cx.windows());
+    assert_eq!(windows.len(), 1, "a second ask reuses the open window");
+    let handle = windows.first().copied();
+    let handle = handle.unwrap_or_else(|| panic!("Changelog opens a window"));
+    let (ink, _) = ink_right_of(&mut cx, handle, 0);
+    assert!(
+        ink > 2_000,
+        "only {ink} dark pixels: the changelog is blank"
     );
 }

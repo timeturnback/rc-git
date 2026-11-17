@@ -194,3 +194,11 @@ pub const UPDATE_LOG_MIN_HEIGHT: Pixels = px(120.);
 pub const ABOUT_WIDTH: Pixels = px(340.);
 /// See [`ABOUT_WIDTH`].
 pub const ABOUT_HEIGHT: Pixels = px(200.);
+/// The Changelog window's opening size.
+pub const CHANGELOG_WIDTH: Pixels = px(620.);
+/// See [`CHANGELOG_WIDTH`].
+pub const CHANGELOG_HEIGHT: Pixels = px(680.);
+/// The smallest the Changelog window gets.
+pub const CHANGELOG_MIN_WIDTH: Pixels = px(360.);
+/// See [`CHANGELOG_MIN_WIDTH`].
+pub const CHANGELOG_MIN_HEIGHT: Pixels = px(240.);

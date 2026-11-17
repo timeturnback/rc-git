@@ -10,6 +10,7 @@ pub mod branch_banner;
 pub mod browser;
 pub mod canonical_path;
 pub mod change_tree;
+pub mod changelog;
 pub mod changes;
 pub mod changes_view;
 pub mod commit_graph;
