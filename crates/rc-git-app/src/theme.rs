@@ -1,12 +1,13 @@
 //! The app's own light and dark themes, embedded from `assets/theme.json` and installed over
 //! gpui-component's defaults at launch. Views still read every color from `cx.theme()`; this
-//! module only decides which colors the theme holds.
+//! module only decides which colors the theme holds, plus the one text tone the theme has no
+//! field of its own for.
 
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use gpui::App;
-use gpui_component::{Theme, ThemeConfig, ThemeRegistry};
+use gpui::{App, Hsla};
+use gpui_component::{ActiveTheme, Theme, ThemeConfig, ThemeRegistry};
 
 /// The embedded theme file: one light and one dark `ThemeConfig`.
 const THEME_JSON: &str = include_str!("../assets/theme.json");
@@ -79,6 +80,13 @@ fn with_highlight(config: &Rc<ThemeConfig>, fallback: &Rc<ThemeConfig>) -> Rc<Th
     let mut config = ThemeConfig::clone(config);
     config.highlight.clone_from(&fallback.highlight);
     Rc::new(config)
+}
+
+/// The third text tone, below `foreground` and `muted_foreground`: section headings, file
+/// glyphs and other quiet labels. The theme keeps it in the table-header slot.
+#[must_use]
+pub fn tertiary(cx: &App) -> Hsla {
+    cx.theme().table_head_foreground
 }
 
 #[cfg(test)]

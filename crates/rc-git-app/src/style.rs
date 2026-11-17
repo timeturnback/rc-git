@@ -134,6 +134,10 @@ pub const CHANGES_DIFF_FLOOR: Pixels = points(rc_git_kit::layout_policy::CHANGES
 pub const CHANGE_ROW_HEIGHT: Pixels = px(26.);
 /// The side of a tick box.
 pub const TICK_SIZE: Pixels = px(14.);
+/// The corner radius of a tick box.
+pub const TICK_RADIUS: Pixels = px(4.);
+/// A Changes row's status letter, smaller than the name beside it.
+pub const TEXT_STATUS_MARK: Pixels = px(10.);
 /// The width a dialog's fields take.
 pub const SHEET_FIELD_WIDTH: Pixels = px(300.);
 /// Markdown preview: the body and code text sizes (`MarkdownRenderer.Theme`).

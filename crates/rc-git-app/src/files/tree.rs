@@ -423,7 +423,11 @@ impl Render for FileTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.report_width(window, cx);
         let theme = cx.theme();
-        let (accent, muted, foreground) = (theme.blue, theme.muted_foreground, theme.foreground);
+        let (secondary, muted, foreground) = (
+            theme.muted_foreground,
+            crate::theme::tertiary(cx),
+            theme.foreground,
+        );
         if self.model.read(cx).root_tree().is_none() && self.tree.node_count() == 0 {
             let text = self.model.read(cx).tree_placeholder();
             return div()
@@ -466,7 +470,7 @@ impl Render for FileTreeView {
                 .text_color(color)
                 .child(disclosure);
             if let Some(glyph) = look.glyph {
-                let tint = if is_accented(glyph) { accent } else { muted };
+                let tint = if is_accented(glyph) { secondary } else { muted };
                 row = row.child(
                     Icon::new(icon(glyph))
                         .size(style::ICON_SIZE)

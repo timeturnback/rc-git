@@ -7,9 +7,10 @@ use std::ops::Range;
 
 use gpui::MouseButton;
 use gpui::{
-    AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, UniformListScrollHandle, Window, div, uniform_list,
+    AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, div,
+    uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
@@ -275,6 +276,7 @@ impl RefListView {
     }
 
     fn render_row(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tertiary = crate::theme::tertiary(cx);
         let theme = cx.theme();
         let row = self.rows.get(index).cloned();
         let current = row.as_ref().is_some_and(|row| self.is_current(row, cx));
@@ -299,7 +301,8 @@ impl RefListView {
         if heading {
             element = element
                 .text_size(style::TEXT_CAPTION)
-                .text_color(theme.muted_foreground);
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(tertiary);
         } else {
             element = element
                 .text_size(style::TEXT_BODY)
@@ -321,7 +324,7 @@ impl RefListView {
         }
         if let Some(glyph) = glyph {
             let tint = if is_accented(glyph) {
-                theme.primary
+                theme.muted_foreground
             } else {
                 theme.warning
             };

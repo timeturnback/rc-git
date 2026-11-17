@@ -107,8 +107,8 @@ pub fn banner_glyph(symbol: Symbol) -> Option<Glyph> {
     }
 }
 
-/// Whether `glyph` takes the accent color rather than the muted one: folders and refs do,
-/// files and controls do not.
+/// Whether `glyph` takes the secondary text tone rather than the tertiary one: folders and
+/// refs do, files and controls do not.
 #[must_use]
 pub fn is_accented(glyph: Glyph) -> bool {
     match glyph {

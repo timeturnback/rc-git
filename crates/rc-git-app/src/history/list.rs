@@ -399,9 +399,11 @@ impl HistoryPane {
             .overflow_hidden()
             .whitespace_nowrap()
             .text_size(style::TEXT_CAPTION)
-            .text_color(theme.foreground)
-            .when(index % 2 == 1, |row| row.bg(theme.table_even))
+            .text_color(theme.muted_foreground)
             .when(selected, |row| row.bg(theme.list_active))
+            .when(!selected, |row| {
+                row.hover(|style| style.bg(theme.list_hover))
+            })
             .when(graphed, |row| match graph_row {
                 Some(graph_row) => row.child(graph::cell(graph_row, width)),
                 None => row.child(graph::empty(width)),
@@ -412,7 +414,6 @@ impl HistoryPane {
                     .w(style::HASH_COLUMN_WIDTH)
                     .flex_none()
                     .font_family(style::MONOSPACE_FONT)
-                    .text_color(theme.muted_foreground)
                     .child(SharedString::from(short_hash(&commit.oid))),
             )
             .child(
@@ -421,6 +422,8 @@ impl HistoryPane {
                     .min_w_0()
                     .overflow_hidden()
                     .text_ellipsis()
+                    .text_size(style::TEXT_BODY)
+                    .text_color(theme.foreground)
                     .child(SharedString::from(commit.title.clone())),
             )
             .child(
@@ -437,7 +440,6 @@ impl HistoryPane {
                     .flex_none()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .text_color(theme.muted_foreground)
                     .child(SharedString::from(date)),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {

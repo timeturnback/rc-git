@@ -12,7 +12,7 @@ pub mod pane;
 mod rows;
 mod stash;
 
-use gpui::{App, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, div};
+use gpui::{App, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, div};
 use gpui_component::{ActiveTheme, Icon};
 use rc_git_core::StashEntry;
 use rc_git_kit::changes::TickState;
@@ -56,8 +56,8 @@ pub fn tick_box(state: TickState, enabled: bool, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     let (fill, glyph): (Option<Hsla>, Option<Glyph>) = match state {
         TickState::Off => (None, None),
-        TickState::Mixed => (Some(theme.primary), Some(Glyph::TickMixed)),
-        TickState::On => (Some(theme.primary), Some(Glyph::TickOn)),
+        TickState::Mixed => (Some(theme.muted_foreground), Some(Glyph::TickMixed)),
+        TickState::On => (Some(theme.muted_foreground), Some(Glyph::TickOn)),
     };
     let mut tick = div()
         .flex_none()
@@ -65,9 +65,9 @@ pub fn tick_box(state: TickState, enabled: bool, cx: &App) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(style::HAIRLINE * 3.)
+        .rounded(style::TICK_RADIUS)
         .border(style::HAIRLINE)
-        .border_color(fill.unwrap_or(theme.border));
+        .border_color(fill.unwrap_or(crate::theme::tertiary(cx)));
     if let Some(fill) = fill {
         tick = tick.bg(fill);
     }
@@ -75,7 +75,7 @@ pub fn tick_box(state: TickState, enabled: bool, cx: &App) -> gpui::Div {
         tick = tick.child(
             Icon::new(icon(glyph))
                 .size(style::TICK_SIZE - style::HAIRLINE * 4.)
-                .text_color(theme.primary_foreground),
+                .text_color(theme.background),
         );
     }
     if !enabled {
@@ -105,6 +105,7 @@ fn heading(text: &'static str, cx: &App) -> impl IntoElement {
     div()
         .id(text)
         .text_size(style::TEXT_CAPTION)
-        .text_color(cx.theme().muted_foreground)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(crate::theme::tertiary(cx))
         .child(text)
 }

@@ -19,6 +19,10 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 - The toolbar shares the sidebar's color, and Files, History and Changes sit in one switch with
   the current mode filled in. The branch name at the top of the sidebar no longer sits in a
   gray box; it highlights when you point at it.
+- History commit titles are larger, with the hash, author and date in a quieter tone, and a
+  commit row highlights under the pointer. Sidebar section headings, folder and branch icons
+  take quieter tones too. In Changes the tick boxes are gray instead of blue, and each file's
+  status letter is a small colored mark.
 
 ## 2026-11-12
 

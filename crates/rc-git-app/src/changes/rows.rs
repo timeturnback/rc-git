@@ -6,8 +6,8 @@
 use std::ops::Range;
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    SharedString, Styled, div, prelude::FluentBuilder, uniform_list,
+    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, SharedString, Styled, div, prelude::FluentBuilder, uniform_list,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
@@ -153,7 +153,10 @@ impl ChangeListView {
             div()
                 .w(style::ICON_SIZE)
                 .flex_none()
-                .font_family(style::MONOSPACE_FONT)
+                .flex()
+                .justify_center()
+                .text_size(style::TEXT_STATUS_MARK)
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(worktree_color(entry.status, cx))
                 .child(worktree_letter(entry.status).unwrap_or(" "))
         });
