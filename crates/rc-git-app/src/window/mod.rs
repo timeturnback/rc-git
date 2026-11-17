@@ -773,7 +773,7 @@ impl RepoWindow {
                 .left(style::MARGIN)
                 .w(style::PICKER_WIDTH)
                 .h(style::PICKER_HEIGHT)
-                .rounded(style::RADIUS)
+                .rounded(style::RADIUS_LG)
                 .border(style::HAIRLINE)
                 .border_color(theme.border)
                 .bg(theme.popover)

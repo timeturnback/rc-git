@@ -14,6 +14,8 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 - New colors in light and dark: quiet near-neutral surfaces, faint dividers, and an indigo
   accent on focus rings, links and the main button. Lists drop the alternating row shading,
   and hovered and selected rows take a soft neutral fill.
+- Rows are taller and icons a little larger, captions are easier to read, and the quick panels
+  and the branch picker have rounder corners.
 
 ## 2026-11-12
 

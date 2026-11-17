@@ -6,7 +6,7 @@ use gpui::{Pixels, px};
 
 /// The horizontal margin inside the sidebar and in the bars across the top of a pane; a
 /// list's selection is inset by the same amount, so a banner above it lines up.
-pub const MARGIN: Pixels = px(10.);
+pub const MARGIN: Pixels = px(12.);
 /// The space above and below the controls of a bar across the top of a pane.
 pub const BAR_PADDING: Pixels = px(8.);
 /// The gap between a row's icon and its label, and between neighboring controls.
@@ -16,7 +16,7 @@ pub const GROUP_GAP: Pixels = px(16.);
 /// How far each folder level of the tree indents.
 pub const FOLDER_INDENT: Pixels = px(12.);
 /// The size of a row or toolbar icon.
-pub const ICON_SIZE: Pixels = px(14.);
+pub const ICON_SIZE: Pixels = px(16.);
 /// The height of the app-drawn toolbar row in the transparent titlebar.
 pub const TOOLBAR_HEIGHT: Pixels = px(38.);
 /// Where the toolbar's controls start, past the window's close, minimize and zoom buttons.
@@ -27,8 +27,11 @@ pub const TRAFFIC_LIGHT_X: Pixels = px(12.);
 pub const TRAFFIC_LIGHT_Y: Pixels = px(12.);
 /// The thickness of a separator line.
 pub const HAIRLINE: Pixels = px(1.);
-/// The corner radius of a banner, a find bar, a popover.
+/// The corner radius of a row, a banner, a find bar.
 pub const RADIUS: Pixels = px(6.);
+/// The corner radius of a floating panel: Go to File, Find in Repository, Open Recent, the
+/// ref picker.
+pub const RADIUS_LG: Pixels = px(10.);
 
 /// The width of the source viewer's line-number gutter.
 pub const GUTTER_WIDTH: Pixels = px(56.);
@@ -48,7 +51,7 @@ pub const PICKER_OFFSET: Pixels = px(4.);
 /// Monospaced text: the source viewer and its gutter.
 pub const TEXT_MONOSPACE: Pixels = px(12.);
 /// Captions: a header's detail, a section heading, a banner's second line.
-pub const TEXT_CAPTION: Pixels = px(11.);
+pub const TEXT_CAPTION: Pixels = px(12.);
 /// Body text: rows, labels, buttons.
 pub const TEXT_BODY: Pixels = px(13.);
 
@@ -98,7 +101,7 @@ pub const BLAME_AUTHOR_WIDTH: Pixels = px(130.);
 /// See [`BLAME_LINES_WIDTH`].
 pub const BLAME_DATE_WIDTH: Pixels = px(130.);
 /// The height of a History commit row and a changed-file row.
-pub const LIST_ROW_HEIGHT: Pixels = px(24.);
+pub const LIST_ROW_HEIGHT: Pixels = px(28.);
 
 /// A kit size in points as GPUI pixels.
 #[expect(
@@ -124,7 +127,7 @@ pub const CHANGES_MESSAGE_HEIGHT: Pixels =
 /// The worktree diff pane's floor.
 pub const CHANGES_DIFF_FLOOR: Pixels = points(rc_git_kit::layout_policy::CHANGES_DIFF_FLOOR);
 /// The height of a Changes row, which carries a tick box beside its label.
-pub const CHANGE_ROW_HEIGHT: Pixels = px(22.);
+pub const CHANGE_ROW_HEIGHT: Pixels = px(26.);
 /// The side of a tick box.
 pub const TICK_SIZE: Pixels = px(14.);
 /// The width a dialog's fields take.

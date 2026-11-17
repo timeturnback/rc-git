@@ -78,7 +78,7 @@ pub fn frame(
         .flex_col()
         .gap(style::ROW_GAP)
         .p(style::MARGIN)
-        .rounded(style::RADIUS)
+        .rounded(style::RADIUS_LG)
         .border(style::HAIRLINE)
         .border_color(theme.border)
         .bg(theme.popover)
