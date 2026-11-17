@@ -21,6 +21,7 @@ mod sheets;
 mod sidebar;
 mod status;
 mod style;
+mod theme;
 mod update;
 mod window;
 
@@ -153,6 +154,7 @@ fn read_build() -> update::BuildInfo {
 /// whatever the system hands over afterwards.
 fn start(services: Services, launch: &[String], urls: Inbox<String>, cx: &mut App) {
     gpui_component::init(cx);
+    theme::install(cx);
     gpui_component::Theme::sync_system_appearance(None, cx);
     gpui_component::Theme::set_scrollbar_mode(gpui_component::scroll::ScrollbarMode::Always, cx);
     match menus::key_bindings(cx) {

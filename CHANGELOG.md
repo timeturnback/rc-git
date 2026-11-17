@@ -9,6 +9,12 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 - Help ▸ Changelog opens this list of changes. It shows the changelog of the build you are
   running, so a rebuild brings its new entries with it.
 
+### Changed
+
+- New colors in light and dark: quiet near-neutral surfaces, faint dividers, and an indigo
+  accent on focus rings, links and the main button. Lists drop the alternating row shading,
+  and hovered and selected rows take a soft neutral fill.
+
 ## 2026-11-12
 
 ### Added
