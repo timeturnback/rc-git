@@ -17,6 +17,10 @@ pub const GROUP_GAP: Pixels = px(16.);
 pub const FOLDER_INDENT: Pixels = px(12.);
 /// The size of a row or toolbar icon.
 pub const ICON_SIZE: Pixels = px(16.);
+/// The height of a segment in the toolbar's mode switch.
+pub const SEGMENT_HEIGHT: Pixels = px(24.);
+/// The track around and between the mode switch's segments.
+pub const SEGMENT_INSET: Pixels = px(2.);
 /// The height of the app-drawn toolbar row in the transparent titlebar.
 pub const TOOLBAR_HEIGHT: Pixels = px(38.);
 /// Where the toolbar's controls start, past the window's close, minimize and zoom buttons.

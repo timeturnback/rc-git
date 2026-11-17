@@ -4,12 +4,12 @@
 //! the way to cancel it and stays on screen.
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, Disableable, Icon, Selectable, Sizable};
+use gpui_component::{ActiveTheme, Disableable, Icon, Sizable};
 use rc_git_kit::back_forward::{ContentMode, Direction};
 use rc_git_kit::guard_copy::{back_to_default_tooltip, sync_tooltip};
 use rc_git_kit::sync::back_to_default_title;
@@ -32,18 +32,8 @@ impl RepoWindow {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let modes = self.mode_switch(cx);
         let theme = cx.theme();
-        let mut modes = div().flex().items_center();
-        for (mode, label) in MODES {
-            modes = modes.child(
-                Button::new(label)
-                    .small()
-                    .ghost()
-                    .label(label)
-                    .selected(self.mode == mode)
-                    .on_click(cx.listener(move |this, _, _, cx| this.switch_mode(mode, cx))),
-            );
-        }
         div()
             .id("toolbar")
             .h(style::TOOLBAR_HEIGHT)
@@ -55,7 +45,7 @@ impl RepoWindow {
             .pr(style::MARGIN)
             .border_b(style::HAIRLINE)
             .border_color(theme.title_bar_border)
-            .bg(theme.title_bar)
+            .bg(theme.sidebar)
             .on_click(|event: &ClickEvent, window, _| {
                 if event.click_count() == 2 {
                     window.titlebar_double_click();
@@ -75,6 +65,49 @@ impl RepoWindow {
             .child(modes)
             .child(div().flex_1())
             .child(self.sync_controls(cx))
+    }
+
+    /// The Files/History/Changes switch: one segmented control, the current mode's segment
+    /// filled.
+    fn mode_switch(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (fill, track) = (theme.tab_active, theme.tab_bar_segmented);
+        let (current, other) = (theme.foreground, theme.muted_foreground);
+        let mut segments = div()
+            .id("mode-switch")
+            .flex()
+            .items_center()
+            .gap(style::SEGMENT_INSET)
+            .p(style::SEGMENT_INSET)
+            .rounded(style::RADIUS)
+            .bg(track)
+            .text_size(style::TEXT_BODY);
+        for (mode, label) in MODES {
+            let selected = self.mode == mode;
+            segments = segments.child(
+                div()
+                    .id(label)
+                    .h(style::SEGMENT_HEIGHT)
+                    .px(style::MARGIN)
+                    .flex()
+                    .items_center()
+                    .rounded(style::RADIUS - style::SEGMENT_INSET)
+                    .when(selected, |segment| {
+                        segment
+                            .bg(fill)
+                            .text_color(current)
+                            .font_weight(FontWeight::MEDIUM)
+                    })
+                    .when(!selected, |segment| {
+                        segment
+                            .text_color(other)
+                            .hover(move |segment| segment.text_color(current))
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_mode(mode, cx))),
+            );
+        }
+        segments
     }
 
     fn navigation(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {

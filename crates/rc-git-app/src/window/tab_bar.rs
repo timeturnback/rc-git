@@ -84,7 +84,7 @@ pub(super) fn render(window: &Window, cx: &App) -> Option<impl IntoElement + use
             .debug_selector(|| "window-tabs".to_owned())
             .flex_none()
             .w_full()
-            .bg(cx.theme().title_bar)
+            .bg(cx.theme().sidebar)
             .child(bar),
     )
 }

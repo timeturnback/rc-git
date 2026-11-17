@@ -5,8 +5,8 @@
 pub mod refs;
 
 use gpui::{
-    Context, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    Context, Entity, EventEmitter, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_component::{ActiveTheme, Icon};
 use rc_git_kit::back_forward::ContentMode;
@@ -108,12 +108,11 @@ impl Sidebar {
             .px(style::MARGIN)
             .py(style::BAR_PADDING)
             .rounded(style::RADIUS)
-            .bg(theme.secondary)
             .when_some(glyph, |row, glyph| {
                 row.child(
                     Icon::new(icon(glyph))
                         .size(style::ICON_SIZE)
-                        .text_color(theme.primary),
+                        .text_color(theme.muted_foreground),
                 )
             })
             .child(
@@ -125,6 +124,7 @@ impl Sidebar {
                     .child(
                         div()
                             .text_size(style::TEXT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.foreground)
                             .child(SharedString::from(banner.title.clone())),
                     )
@@ -139,7 +139,7 @@ impl Sidebar {
             )
             .when(pickable, |row| {
                 row.cursor_pointer()
-                    .hover(|style| style.bg(theme.secondary_hover))
+                    .hover(|style| style.bg(theme.list_hover))
                     .child(
                         Icon::new(icon(Glyph::Disclosure))
                             .size(style::ICON_SIZE)

@@ -16,6 +16,9 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   and hovered and selected rows take a soft neutral fill.
 - Rows are taller and icons a little larger, captions are easier to read, and the quick panels
   and the branch picker have rounder corners.
+- The toolbar shares the sidebar's color, and Files, History and Changes sit in one switch with
+  the current mode filled in. The branch name at the top of the sidebar no longer sits in a
+  gray box; it highlights when you point at it.
 
 ## 2026-11-12
 
