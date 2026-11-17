@@ -10,7 +10,7 @@ use gpui::{
     AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, div,
-    uniform_list,
+    prelude::FluentBuilder as _, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
@@ -296,8 +296,12 @@ impl RefListView {
             .items_center()
             .gap(style::ROW_GAP)
             .px(style::MARGIN)
-            .py(style::HAIRLINE)
             .rounded(style::RADIUS);
+        element = if self.picker {
+            element.h(style::PANEL_ROW_HEIGHT)
+        } else {
+            element.py(style::HAIRLINE)
+        };
         if heading {
             element = element
                 .text_size(style::TEXT_CAPTION)
@@ -340,24 +344,29 @@ impl RefListView {
 
 impl Render for RefListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let filter = if self.picker {
+            crate::search::field(Input::new(&self.filter).appearance(false), cx)
+        } else {
+            div()
+                .px(style::MARGIN)
+                .pt(style::BAR_PADDING)
+                .child(Input::new(&self.filter).small())
+        };
+        let list = if self.picker {
+            crate::search::body()
+        } else {
+            div().flex_1().min_h_0()
+        };
         let root = div()
             .id("ref-list")
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.menu_target = None))
             .size_full()
             .flex()
             .flex_col()
-            .gap(style::ROW_GAP)
+            .when(!self.picker, |root| root.gap(style::ROW_GAP))
+            .child(filter)
             .child(
-                div()
-                    .px(style::MARGIN)
-                    .pt(style::BAR_PADDING)
-                    .child(Input::new(&self.filter).small()),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
+                list.relative()
                     .child(
                         uniform_list(
                             "refs",

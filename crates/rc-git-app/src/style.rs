@@ -185,6 +185,10 @@ pub const RECENT_PANEL_HEIGHT: Pixels = px(320.);
 pub const PANEL_TOP: Pixels = px(48.);
 /// A quick panel's field text, larger than the rows under it.
 pub const TEXT_PANEL_FIELD: Pixels = px(16.);
+/// The height of a floating panel's field row.
+pub const PANEL_FIELD_HEIGHT: Pixels = px(44.);
+/// The height of a floating panel's result row.
+pub const PANEL_ROW_HEIGHT: Pixels = px(32.);
 /// The Settings window's size when it first opens (`SettingsWindowController`).
 pub const SETTINGS_WIDTH: Pixels = px(560.);
 /// See [`SETTINGS_WIDTH`].

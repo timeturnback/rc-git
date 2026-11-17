@@ -19,7 +19,7 @@ use rc_git_kit::path_search_session::{PathSearchEvent, PathSearchProvider, PathS
 use rc_git_kit::picker;
 
 use crate::icons::Glyph;
-use crate::search::{PanelKey, frame, keys, note, row};
+use crate::search::{PanelKey, body, field, frame, keys, note, row};
 use crate::style;
 
 /// What the panel tells its window.
@@ -198,21 +198,17 @@ impl Render for GoToFilePanel {
             .size_full()
             .flex()
             .flex_col()
-            .gap(style::ROW_GAP)
+            .child(field(Input::new(&self.input).appearance(false), cx))
             .child(
-                div()
-                    .text_size(style::TEXT_PANEL_FIELD)
-                    .child(Input::new(&self.input).appearance(false)),
-            )
-            .children(note)
-            .child(
-                uniform_list(
-                    "go-to-file-results",
-                    count,
-                    cx.processor(|this, range: Range<usize>, _window, cx| this.rows(range, cx)),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                body().children(note).child(
+                    uniform_list(
+                        "go-to-file-results",
+                        count,
+                        cx.processor(|this, range: Range<usize>, _window, cx| this.rows(range, cx)),
+                    )
+                    .track_scroll(&self.scroll)
+                    .flex_1(),
+                ),
             );
         let root = frame(
             "go-to-file",

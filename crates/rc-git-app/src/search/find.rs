@@ -15,6 +15,7 @@ use gpui::{
     UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::ActiveTheme;
+use gpui_component::button::ButtonVariants as _;
 use gpui_component::input::{Input, InputState};
 use rc_git_kit::browser::{BrowserModel, ContentSearchError};
 use rc_git_kit::content_search::{
@@ -26,7 +27,7 @@ use rc_git_kit::picker;
 use rc_git_kit::repository::RepositoryError;
 
 use crate::icons::Glyph;
-use crate::search::{PanelKey, frame, keys, note, row};
+use crate::search::{PanelKey, body, field, frame, keys, note, row};
 use crate::style;
 
 /// What the panel tells its window.
@@ -258,7 +259,7 @@ fn line_row(
     let excerpt = StyledText::new(found.excerpt.clone()).with_highlights(marks);
     let mut element = div()
         .id(("hit", index))
-        .h(style::LIST_ROW_HEIGHT)
+        .h(style::PANEL_ROW_HEIGHT)
         .flex()
         .items_center()
         .gap(style::ROW_GAP)
@@ -293,38 +294,38 @@ impl Render for FindPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.session.read(cx).rows().len();
         let status = self.status(cx).map(|text| note(text, cx));
+        let close = gpui_component::button::Button::new("find-close")
+            .ghost()
+            .label("\u{2715}")
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(FindEvent::Dismissed)));
         let content = div()
             .size_full()
             .flex()
             .flex_col()
-            .gap(style::ROW_GAP)
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(style::ROW_GAP)
-                    .text_size(style::TEXT_PANEL_FIELD)
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.input).appearance(false)),
-                    )
-                    .child(
-                        gpui_component::button::Button::new("find-close")
-                            .label("\u{2715}")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(FindEvent::Dismissed))),
-                    ),
-            )
-            .child(
-                uniform_list(
-                    "find-results",
-                    count,
-                    cx.processor(|this, range: Range<usize>, _window, cx| this.rows(range, cx)),
+                field(
+                    div()
+                        .flex_1()
+                        .child(Input::new(&self.input).appearance(false)),
+                    cx,
                 )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                .child(close),
             )
-            .children(status);
+            .child(
+                body()
+                    .child(
+                        uniform_list(
+                            "find-results",
+                            count,
+                            cx.processor(|this, range: Range<usize>, _window, cx| {
+                                this.rows(range, cx)
+                            }),
+                        )
+                        .track_scroll(&self.scroll)
+                        .flex_1(),
+                    )
+                    .children(status),
+            );
         let root = frame(
             "find-in-repository",
             (style::FIND_PANEL_WIDTH, style::FIND_PANEL_HEIGHT),

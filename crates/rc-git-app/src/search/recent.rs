@@ -18,7 +18,7 @@ use rc_git_kit::picker;
 use rc_git_kit::recent_repositories::{display_path, empty_note, matching};
 
 use crate::icons::Glyph;
-use crate::search::{PanelKey, frame, keys, note, row};
+use crate::search::{PanelKey, body, field, frame, keys, note, row};
 use crate::style;
 
 /// What the panel tells its window.
@@ -171,21 +171,17 @@ impl Render for RecentPanel {
             .size_full()
             .flex()
             .flex_col()
-            .gap(style::ROW_GAP)
+            .child(field(Input::new(&self.input).appearance(false), cx))
             .child(
-                div()
-                    .text_size(style::TEXT_PANEL_FIELD)
-                    .child(Input::new(&self.input).appearance(false)),
-            )
-            .children(empty)
-            .child(
-                uniform_list(
-                    "recent-results",
-                    self.results.len(),
-                    cx.processor(|this, range: Range<usize>, _window, cx| this.rows(range, cx)),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                body().children(empty).child(
+                    uniform_list(
+                        "recent-results",
+                        self.results.len(),
+                        cx.processor(|this, range: Range<usize>, _window, cx| this.rows(range, cx)),
+                    )
+                    .track_scroll(&self.scroll)
+                    .flex_1(),
+                ),
             );
         let root = frame(
             "open-recent",

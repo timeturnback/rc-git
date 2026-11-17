@@ -763,23 +763,17 @@ impl RepoWindow {
 
     fn render_picker(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let picker = self.picker.clone()?;
-        let theme = cx.theme();
         Some(deferred(
-            div()
-                .id("ref-picker")
-                .occlude()
-                .absolute()
-                .top(style::TOOLBAR_HEIGHT + style::PICKER_OFFSET)
-                .left(style::MARGIN)
-                .w(style::PICKER_WIDTH)
-                .h(style::PICKER_HEIGHT)
-                .rounded(style::RADIUS_LG)
-                .border(style::HAIRLINE)
-                .border_color(theme.border)
-                .bg(theme.popover)
-                .shadow_lg()
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_picker(cx)))
-                .child(picker),
+            crate::search::frame(
+                "ref-picker",
+                (style::PICKER_WIDTH, style::PICKER_HEIGHT),
+                picker,
+                cx,
+            )
+            .absolute()
+            .top(style::TOOLBAR_HEIGHT + style::PICKER_OFFSET)
+            .left(style::MARGIN)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_picker(cx))),
         ))
     }
 }

@@ -18,6 +18,7 @@ use gpui_component::{ActiveTheme, Icon};
 
 use crate::icons::{Glyph, icon, is_accented};
 use crate::style;
+use crate::theme::tertiary;
 
 /// A key a panel answers from its field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +62,9 @@ pub fn keys<V: 'static>(
     }))
 }
 
-/// The box a panel draws in: centered under the toolbar, over the window, with a shadow.
+/// The shell every floating panel draws in (Go to File, Find in Repository, Open Recent and
+/// the ref picker): a rounded box over the window with a shadow. Fill it with a [`field`] over
+/// a [`body`].
 pub fn frame(
     id: impl Into<ElementId>,
     size: (Pixels, Pixels),
@@ -76,8 +79,7 @@ pub fn frame(
         .h(size.1)
         .flex()
         .flex_col()
-        .gap(style::ROW_GAP)
-        .p(style::MARGIN)
+        .overflow_hidden()
         .rounded(style::RADIUS_LG)
         .border(style::HAIRLINE)
         .border_color(theme.border)
@@ -85,6 +87,33 @@ pub fn frame(
         .text_color(theme.popover_foreground)
         .shadow_lg()
         .child(content)
+}
+
+/// A panel's field row across the top: borderless text at the panel field size over a
+/// hairline. `input` is the field, built with no appearance of its own.
+pub fn field(input: impl IntoElement, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .h(style::PANEL_FIELD_HEIGHT)
+        .flex()
+        .items_center()
+        .gap(style::ROW_GAP)
+        .px(style::MARGIN)
+        .text_size(style::TEXT_PANEL_FIELD)
+        .border_b(style::HAIRLINE)
+        .border_color(cx.theme().border)
+        .child(input)
+}
+
+/// The space under a panel's [`field`]: the result list and its notes.
+pub fn body() -> Div {
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap(style::ROW_GAP)
+        .p(style::ROW_GAP)
 }
 
 /// Lays a panel over the window: centered across it, hanging under the toolbar. The layer has
@@ -116,7 +145,7 @@ pub fn row(
     let theme = cx.theme();
     let mut element = div()
         .id(id)
-        .h(style::LIST_ROW_HEIGHT)
+        .h(style::PANEL_ROW_HEIGHT)
         .flex()
         .items_center()
         .gap(style::ROW_GAP)
@@ -129,7 +158,7 @@ pub fn row(
         element = element.bg(theme.list_active);
     }
     if let Some(glyph) = glyph {
-        element = element.child(glyph_icon(glyph, theme.primary, theme.muted_foreground));
+        element = element.child(glyph_icon(glyph, theme.muted_foreground, tertiary(cx)));
     }
     element.child(div().flex_none().child(name)).child(
         div()
@@ -144,8 +173,8 @@ pub fn row(
     )
 }
 
-fn glyph_icon(glyph: Glyph, accent: Hsla, muted: Hsla) -> Icon {
-    let tint = if is_accented(glyph) { accent } else { muted };
+fn glyph_icon(glyph: Glyph, secondary: Hsla, muted: Hsla) -> Icon {
+    let tint = if is_accented(glyph) { secondary } else { muted };
     Icon::new(icon(glyph))
         .size(style::ICON_SIZE)
         .text_color(tint)
@@ -154,6 +183,7 @@ fn glyph_icon(glyph: Glyph, accent: Hsla, muted: Hsla) -> Icon {
 /// A dimmed line under the field or the list: a status, a note, a failure.
 pub fn note(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
+        .px(style::ROW_GAP)
         .text_size(style::TEXT_CAPTION)
         .text_color(cx.theme().muted_foreground)
         .overflow_hidden()

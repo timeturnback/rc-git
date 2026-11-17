@@ -23,6 +23,8 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   commit row highlights under the pointer. Sidebar section headings, folder and branch icons
   take quieter tones too. In Changes the tick boxes are gray instead of blue, and each file's
   status letter is a small colored mark.
+- Go to File, Find in Repository, Open Recent and the branch picker (⌘B) share one look: a
+  large borderless search field over a thin divider, and roomier result rows.
 
 ## 2026-11-12
 
