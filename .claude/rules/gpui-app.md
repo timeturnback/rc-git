@@ -14,3 +14,6 @@ paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
   text cell, or the text shapes as one line and the row clips; route the wrap switch through
   `list_rows::RowScroll`.
   (docs/solutions/ui-bugs/gpui-list-row-text-wraps-only-with-full-width-row.md)
+- Write `list.active`, `table.active` and `selection` fills in `assets/theme.json` translucent:
+  gpui-component clamps their alpha to 0.2/0.3, and drops a bad value or unknown key silently.
+  (docs/solutions/ui-bugs/gpui-component-theme-config-silent-clamps-and-drops.md)
