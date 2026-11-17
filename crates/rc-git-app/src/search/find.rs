@@ -231,7 +231,7 @@ fn file_row(
         highlighted,
         cx,
     )
-    .font_weight(gpui::FontWeight::SEMIBOLD)
+    .font_weight(gpui::FontWeight::MEDIUM)
 }
 
 /// The 1-based line number, dimmed, then the excerpt with each match marked.

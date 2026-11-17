@@ -736,7 +736,7 @@ impl RepoWindow {
                 .py(style::BAR_PADDING)
                 .border_b(style::HAIRLINE)
                 .border_color(theme.border)
-                .bg(theme.secondary)
+                .bg(theme.muted)
                 .text_size(style::TEXT_CAPTION)
                 .child(
                     gpui_component::Icon::new(crate::icons::icon(crate::icons::Glyph::Warning))

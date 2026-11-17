@@ -285,7 +285,7 @@ impl HistoryPane {
                 .items_center()
                 .justify_center()
                 .text_size(style::TEXT_BODY)
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::tertiary(cx))
                 .child(text)
                 .into_any_element();
         }

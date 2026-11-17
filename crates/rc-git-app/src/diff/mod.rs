@@ -400,8 +400,8 @@ impl DiffView {
                 div.bg(colors.selection.opacity(style::SELECTION_OPACITY))
             })
             .children(prefix)
-            .child(number(old, colors.muted))
-            .child(number(new, colors.muted))
+            .child(number(old, colors.gutter, tint))
+            .child(number(new, colors.gutter, tint))
             .child(body)
             .on_mouse_down(
                 MouseButton::Left,
@@ -493,6 +493,7 @@ impl DiffView {
 struct RowColors {
     foreground: Hsla,
     muted: Hsla,
+    gutter: Hsla,
     added: Hsla,
     removed: Hsla,
     selection: Hsla,
@@ -504,6 +505,7 @@ impl RowColors {
         Self {
             foreground: theme.foreground,
             muted: theme.muted_foreground,
+            gutter: crate::theme::tertiary(cx),
             added: theme.green,
             removed: theme.red,
             selection: theme.selection,
@@ -519,14 +521,18 @@ impl RowColors {
     }
 }
 
-fn number(value: Option<u32>, color: Hsla) -> impl IntoElement {
+fn number(value: Option<u32>, color: Hsla, tint: Option<Hsla>) -> impl IntoElement {
     div()
         .w(style::DIFF_NUMBER_WIDTH)
         .flex_none()
+        .self_stretch()
         .flex()
         .justify_end()
         .pr(style::ROW_GAP)
         .text_color(color)
+        .when_some(tint, |cell, tint| {
+            cell.bg(tint.opacity(style::DIFF_GUTTER_TINT_OPACITY))
+        })
         .children(value.map(|value| SharedString::from(value.to_string())))
 }
 

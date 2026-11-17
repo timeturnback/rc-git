@@ -25,6 +25,12 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   status letter is a small colored mark.
 - Go to File, Find in Repository, Open Recent and the branch picker (⌘B) share one look: a
   large borderless search field over a thin divider, and roomier result rows.
+- Added and removed lines in a diff carry a stronger tint along the line numbers, so changes
+  stand out at the edge. Source code uses new syntax colors: strings green, functions blue,
+  types cyan, comments in a quiet gray.
+- The markdown preview has more room around headings and blocks, and its headings are no
+  longer bold. Commit titles, window titles and empty-pane messages take a lighter weight or a
+  quieter tone, and Blame drops its striped rows.
 
 ## 2026-11-12
 

@@ -146,7 +146,7 @@ impl HistoryPane {
 
     fn render_header(&self, header: &Header, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
-        let (muted, accent, foreground) = (theme.muted_foreground, theme.primary, theme.foreground);
+        let (muted, foreground) = (theme.muted_foreground, theme.foreground);
         let summary = &header.summary;
         let author = identity_line(
             "Author",
@@ -185,7 +185,7 @@ impl HistoryPane {
         div()
             .flex()
             .flex_col()
-            .gap(style::HAIRLINE * 3.)
+            .gap(style::DETAIL_LINE_GAP)
             .px(style::MARGIN)
             .py(style::BAR_PADDING)
             .child(
@@ -198,7 +198,7 @@ impl HistoryPane {
                             .flex_1()
                             .min_w_0()
                             .text_size(style::TEXT_BODY)
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(foreground)
                             .line_clamp(style::DETAIL_TITLE_LINES)
                             .child(SharedString::from(detail_title(summary))),
@@ -214,7 +214,7 @@ impl HistoryPane {
                             })),
                     ),
             )
-            .children(refs.map(|refs| caption(refs, accent)))
+            .children(refs.map(|refs| caption(refs, muted).font_weight(gpui::FontWeight::MEDIUM)))
             .child(caption(author, muted))
             .children(committer.map(|line| caption(line, muted)))
             .children(header.body.clone().map(|body| {
@@ -315,9 +315,12 @@ impl HistoryPane {
                 .overflow_hidden()
                 .child(
                     div()
+                        .w(style::ICON_SIZE)
                         .flex_none()
-                        .font_family(style::MONOSPACE_FONT)
-                        .font_weight(gpui::FontWeight::BOLD)
+                        .flex()
+                        .justify_center()
+                        .text_size(style::TEXT_STATUS_MARK)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(change_color(change.kind, cx))
                         .child(change_letter(change.kind)),
                 )

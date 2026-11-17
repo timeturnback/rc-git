@@ -535,7 +535,7 @@ impl FilePane {
                 .child(preview.clone())
                 .into_any_element();
         }
-        let theme = cx.theme();
+        let tertiary = crate::theme::tertiary(cx);
         let text = placeholder(state).unwrap_or_default();
         let load = load_anyway_size(state);
         div()
@@ -549,7 +549,7 @@ impl FilePane {
             .child(
                 div()
                     .text_size(style::TEXT_BODY)
-                    .text_color(theme.muted_foreground)
+                    .text_color(tertiary)
                     .child(SharedString::from(text)),
             )
             .when_some(load, |body, size| {

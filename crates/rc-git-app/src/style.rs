@@ -69,7 +69,10 @@ pub const MARKER_OPACITY: f32 = 0.25;
 /// The width of one line-number column of a diff's gutter (old, then new).
 pub const DIFF_NUMBER_WIDTH: Pixels = px(40.);
 /// The opacity of an added or removed diff row's background tint.
-pub const DIFF_TINT_OPACITY: f32 = 0.12;
+pub const DIFF_TINT_OPACITY: f32 = 0.1;
+/// The extra tint on the line-number gutter of an added or removed row, over the row's own,
+/// so a change reads at the edge of the pane.
+pub const DIFF_GUTTER_TINT_OPACITY: f32 = 0.15;
 /// The width of a History lane in the graph column.
 pub const GRAPH_LANE_WIDTH: Pixels = px(10.);
 /// The space either side of the graph's lanes.
@@ -90,6 +93,8 @@ pub const COLUMN_FIT_SLACK: Pixels = px(2.);
 pub const SEARCH_FIELD_MIN_WIDTH: Pixels = px(160.);
 /// The width of a History date filter field.
 pub const DAY_FIELD_WIDTH: Pixels = px(110.);
+/// The space between the lines of the commit detail header.
+pub const DETAIL_LINE_GAP: Pixels = px(4.);
 /// How many lines of a commit body the detail header shows before it clips.
 pub const DETAIL_BODY_LINES: usize = 6;
 /// How many lines of a commit title the detail header shows before it clips.
@@ -151,21 +156,21 @@ pub const MARKDOWN_LIST_INDENT: Pixels = px(22.);
 /// See [`MARKDOWN_LIST_INDENT`].
 pub const MARKDOWN_MARKER_WIDTH: Pixels = px(20.);
 /// The space after a block, and before a level 1 or 2 heading or any other heading.
-pub const MARKDOWN_BLOCK_SPACING: Pixels = px(10.);
+pub const MARKDOWN_BLOCK_SPACING: Pixels = px(12.);
 /// See [`MARKDOWN_BLOCK_SPACING`].
-pub const MARKDOWN_MAJOR_HEADING_SPACING: Pixels = px(14.);
+pub const MARKDOWN_MAJOR_HEADING_SPACING: Pixels = px(20.);
 /// See [`MARKDOWN_BLOCK_SPACING`].
-pub const MARKDOWN_HEADING_SPACING: Pixels = px(8.);
+pub const MARKDOWN_HEADING_SPACING: Pixels = px(14.);
 /// The bar down the left of a quote, and the space between it and the text.
 pub const MARKDOWN_QUOTE_BAR: Pixels = px(3.);
 /// See [`MARKDOWN_QUOTE_BAR`].
 pub const MARKDOWN_QUOTE_PADDING: Pixels = px(10.);
 /// The padding inside a code panel and a table cell.
-pub const MARKDOWN_PANEL_PADDING: Pixels = px(8.);
+pub const MARKDOWN_PANEL_PADDING: Pixels = px(10.);
 /// See [`MARKDOWN_PANEL_PADDING`].
 pub const MARKDOWN_CELL_PADDING: Pixels = px(6.);
 /// The margin around the whole preview.
-pub const MARKDOWN_MARGIN: Pixels = px(16.);
+pub const MARKDOWN_MARGIN: Pixels = px(24.);
 /// The opacity of a code panel or a table header over the background.
 pub const MARKDOWN_CODE_OPACITY: f32 = 0.05;
 

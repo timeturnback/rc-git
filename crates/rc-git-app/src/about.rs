@@ -56,7 +56,7 @@ impl Render for AboutView {
             .child(
                 div()
                     .text_size(style::MARKDOWN_HEADINGS[1])
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.name.clone()),
             )
             .child(

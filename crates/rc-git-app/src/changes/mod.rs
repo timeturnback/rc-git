@@ -96,7 +96,7 @@ fn placeholder(text: impl Into<gpui::SharedString>, cx: &App) -> gpui::Div {
         .justify_center()
         .px(style::MARGIN)
         .text_size(style::TEXT_CAPTION)
-        .text_color(cx.theme().muted_foreground)
+        .text_color(crate::theme::tertiary(cx))
         .child(text.into())
 }
 

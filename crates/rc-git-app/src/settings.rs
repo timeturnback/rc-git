@@ -166,7 +166,7 @@ impl Render for SettingsView {
             .child(
                 div()
                     .text_size(style::TEXT_BODY)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Approved SSH Host Keys"),
             )
             .child(

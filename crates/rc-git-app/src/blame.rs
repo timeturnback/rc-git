@@ -69,7 +69,6 @@ impl BlameView {
             .px(style::MARGIN)
             .text_size(style::TEXT_CAPTION)
             .text_color(theme.foreground)
-            .when_odd(index, theme.table_even)
             .child(cell(
                 Some(style::BLAME_LINES_WIDTH),
                 blame_lines(range.start_line, range.line_count),
@@ -111,17 +110,6 @@ impl BlameView {
             .child(cell(Some(style::BLAME_AUTHOR_WIDTH), "Author"))
             .child(cell(Some(style::BLAME_DATE_WIDTH), "Date"))
             .child(cell(None, "Title"))
-    }
-}
-
-/// Paints every other row with `color`.
-trait WhenOdd {
-    fn when_odd(self, index: usize, color: gpui::Hsla) -> Self;
-}
-
-impl<E: Styled> WhenOdd for E {
-    fn when_odd(self, index: usize, color: gpui::Hsla) -> Self {
-        if index % 2 == 1 { self.bg(color) } else { self }
     }
 }
 

@@ -442,9 +442,9 @@ impl MarkdownPreview {
             .unwrap_or(style::MARKDOWN_BODY);
         let mut look = paint.body();
         look.font.weight = if level <= 2 {
-            FontWeight::BOLD
-        } else {
             FontWeight::SEMIBOLD
+        } else {
+            FontWeight::MEDIUM
         };
         if level >= 5 {
             look.color = paint.muted;
@@ -537,7 +537,7 @@ impl MarkdownPreview {
             let header = row_index == 0;
             let mut look = paint.body();
             if header {
-                look.font.weight = FontWeight::SEMIBOLD;
+                look.font.weight = FontWeight::MEDIUM;
             }
             let mut row = div().flex().w_full();
             if header {

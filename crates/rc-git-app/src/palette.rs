@@ -11,8 +11,9 @@ use rc_git_highlight::Class;
 pub struct Palette {
     foreground: Hsla,
     muted: Hsla,
+    comment: Hsla,
     link: Hsla,
-    red: Hsla,
+    green: Hsla,
     yellow: Hsla,
     blue: Hsla,
     magenta: Hsla,
@@ -28,8 +29,9 @@ impl Palette {
         Self {
             foreground: theme.foreground,
             muted: theme.muted_foreground,
+            comment: crate::theme::tertiary(cx),
             link: theme.link,
-            red: theme.red,
+            green: theme.green,
             yellow: theme.yellow,
             blue: theme.blue,
             magenta: theme.magenta,
@@ -38,20 +40,20 @@ impl Palette {
         }
     }
 
-    /// The color text of `class` is drawn in. Mirrors the `AppKit` app's system-color choices
-    /// with the nearest theme color: purple is magenta, orange and brown are yellow, teal is
-    /// cyan, indigo is blue.
+    /// The color text of `class` is drawn in: keywords magenta, strings green, functions blue,
+    /// types and properties cyan, constants and numbers yellow, comments in the tertiary text
+    /// tone.
     #[must_use]
     pub fn color(&self, class: Class) -> Hsla {
         match class {
             Class::Attribute | Class::Constant | Class::Number => self.yellow,
-            Class::Comment => self.muted,
+            Class::Comment => self.comment,
             Class::Emphasis | Class::Keyword | Class::Strong => self.magenta,
-            Class::Function => self.cyan,
-            Class::Heading | Class::Property | Class::Type => self.blue,
+            Class::Function => self.blue,
+            Class::Heading | Class::Property | Class::Type => self.cyan,
             Class::Link => self.link,
             Class::Operator | Class::Punctuation | Class::Variable => self.foreground,
-            Class::String => self.red,
+            Class::String => self.green,
         }
     }
 
