@@ -72,29 +72,16 @@ fn intersects(a: &TopLeftRect, b: &TopLeftRect) -> bool {
     a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 }
 
-/// The sidebar's saved width and collapse.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SavedSidebar {
-    /// The width it reopens at.
-    pub width: f64,
-    /// Whether it was collapsed.
-    pub collapsed: bool,
-}
-
-/// The sidebar as the main split saved it: its width, clamped to
-/// [`SIDEBAR_MINIMUM_WIDTH`]..[`SIDEBAR_MAXIMUM_WIDTH`], and whether it was collapsed. `None`
-/// when nothing usable is saved, so the default width stands.
+/// The sidebar's width as the main split saved it, clamped to
+/// [`SIDEBAR_MINIMUM_WIDTH`]..[`SIDEBAR_MAXIMUM_WIDTH`]. `None` when nothing usable is saved,
+/// so the default width stands. The saved collapse is not read: a window opens with its
+/// sidebar open.
 #[must_use]
-pub fn saved_sidebar(frames: &[SubviewFrame]) -> Option<SavedSidebar> {
-    let sidebar = frames.first()?;
-    let width = sidebar.frame.width;
-    if !width.is_finite() {
-        return None;
-    }
-    Some(SavedSidebar {
-        width: width.clamp(SIDEBAR_MINIMUM_WIDTH, SIDEBAR_MAXIMUM_WIDTH),
-        collapsed: sidebar.hidden,
-    })
+pub fn saved_sidebar_width(frames: &[SubviewFrame]) -> Option<f64> {
+    let width = frames.first()?.frame.width;
+    width
+        .is_finite()
+        .then(|| width.clamp(SIDEBAR_MINIMUM_WIDTH, SIDEBAR_MAXIMUM_WIDTH))
 }
 
 /// The two subview frames the main split saves: the sidebar `sidebar_width` wide (kept while

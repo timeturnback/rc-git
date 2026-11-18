@@ -2,6 +2,19 @@
 
 What changed in rc-git, newest first. Help ▸ Changelog shows this file in the app.
 
+## 2026-11-18
+
+### Changed
+
+- Window tabs are rounded pills with a repository icon: the current tab is filled, the others
+  stay quiet until you point at them, and a tab's close button shows on hover. Tabs keep a
+  fixed width from the left, with the + button right after the last one, and shrink only when
+  the window runs out of room.
+- The file, History and Changes panes sit on a rounded page inset from the window's edge, with
+  the toolbar, tabs and sidebar on one shared background and no lines between them.
+- The sidebar is open whenever a repository opens, even if you hid it earlier with View ▸
+  Toggle Sidebar (⌃⌘S). A window too narrow for it opens the sidebar once it is wide enough.
+
 ## 2026-11-17
 
 ### Added

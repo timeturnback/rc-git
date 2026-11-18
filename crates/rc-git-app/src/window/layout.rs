@@ -9,7 +9,7 @@ use rc_git_kit::layout_policy::{
 };
 use rc_git_kit::platform::keys::{MAIN_SPLIT, MAIN_WINDOW_FRAME};
 use rc_git_kit::platform::stores::{SharedSettings, SidebarWidthPin, SubviewFrame, WindowFrame};
-use rc_git_kit::window_geometry::{TopLeftRect, saved_sidebar, sidebar_frames, to_appkit};
+use rc_git_kit::window_geometry::{TopLeftRect, saved_sidebar_width, sidebar_frames, to_appkit};
 
 use crate::log;
 use crate::style::{points, value};
@@ -33,16 +33,17 @@ pub struct SidebarLayout {
 }
 
 impl SidebarLayout {
-    /// The sidebar as the main split last saved it, or open at its minimum width.
+    /// The sidebar open at the width the main split last saved, or at its minimum width. A
+    /// collapse is not carried over: a window opens with its sidebar showing.
     #[must_use]
     pub fn load(settings: SharedSettings) -> Self {
-        let saved = SubviewFrame::load_split(&*settings, MAIN_SPLIT)
+        let width = SubviewFrame::load_split(&*settings, MAIN_SPLIT)
             .as_deref()
-            .and_then(saved_sidebar);
+            .and_then(saved_sidebar_width);
         Self {
             settings,
-            width: saved.map_or(SIDEBAR_MINIMUM_WIDTH, |saved| saved.width),
-            collapsed: saved.is_some_and(|saved| saved.collapsed),
+            width: width.unwrap_or(SIDEBAR_MINIMUM_WIDTH),
+            collapsed: false,
             collapse: SidebarCollapse::new(),
             current: None,
             window: Size {
@@ -118,6 +119,18 @@ impl SidebarLayout {
     /// Whether the split's resize now is the fit's own; answers once per fit.
     pub fn take_fit_echo(&mut self) -> bool {
         std::mem::take(&mut self.fit_echo)
+    }
+
+    /// A repository opened in the window: the sidebar opens, as it does in a new window, once
+    /// the window is wide enough for it.
+    pub fn repository_opened(&mut self) {
+        if let Some(collapsed) = self
+            .collapse
+            .repository_opened(self.current, self.collapsed)
+        {
+            self.collapsed = collapsed;
+            self.save_split();
+        }
     }
 
     /// The user opened or closed the sidebar by hand.

@@ -15,6 +15,7 @@ mod toolbar;
 mod tree_actions;
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -25,7 +26,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 use gpui_component::resizable::{
-    ResizablePanelEvent, ResizableState, h_resizable, resizable_panel,
+    ResizablePanelEvent, ResizablePanelGroup, ResizableState, h_resizable, resizable_panel,
 };
 use rc_git_kit::back_forward::{ContentMode, Direction, NavigationStop};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel, can_open_ref_picker};
@@ -276,8 +277,8 @@ impl RepoWindow {
         self.notice.as_ref()
     }
 
-    /// Attaches `repository` and starts loading it: the title, the ref watcher, the sync
-    /// status, then the model's attach.
+    /// Attaches `repository` and starts loading it: the title, the sidebar opened, the ref
+    /// watcher, the sync status, then the model's attach.
     pub fn show(
         &mut self,
         repository: OpenedRepository,
@@ -302,6 +303,7 @@ impl RepoWindow {
             key: repository.key.clone(),
         });
         self.has_work_dir = repository.reading.work_dir().is_some();
+        self.layout.repository_opened();
         self.watch_refs(&repository, watchers, cx);
         let changes_source = changes::ChangesSource::of(&repository);
         self.sync = repository.sync;
@@ -723,6 +725,27 @@ impl RepoWindow {
         }
     }
 
+    /// The content card: the restore notice over the mode's pane, on a rounded, outlined page
+    /// that sits inset on the window chrome beside the sidebar.
+    fn render_card(
+        notice: Option<gpui::AnyElement>,
+        content: gpui::AnyElement,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded(style::RADIUS_LG)
+            .border(style::HAIRLINE)
+            .border_color(theme.border)
+            .bg(theme.background)
+            .children(notice)
+            .child(div().flex_1().min_h_0().child(content))
+    }
+
     fn render_notice(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let notice = self.notice.as_ref()?;
         let theme = cx.theme();
@@ -734,6 +757,7 @@ impl RepoWindow {
                 .gap(style::ROW_GAP)
                 .px(style::MARGIN)
                 .py(style::BAR_PADDING)
+                .rounded_t(style::RADIUS_LG - style::HAIRLINE)
                 .border_b(style::HAIRLINE)
                 .border_color(theme.border)
                 .bg(theme.muted)
@@ -761,8 +785,19 @@ impl RepoWindow {
         )
     }
 
-    fn render_picker(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    /// The ref picker under the banner, which sits lower while the tab strip shows
+    /// (`strip_shown`).
+    fn render_picker(
+        &self,
+        strip_shown: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
         let picker = self.picker.clone()?;
+        let strip = if strip_shown {
+            style::TAB_STRIP_HEIGHT
+        } else {
+            gpui::px(0.)
+        };
         Some(deferred(
             crate::search::frame(
                 "ref-picker",
@@ -771,11 +806,30 @@ impl RepoWindow {
                 cx,
             )
             .absolute()
-            .top(style::TOOLBAR_HEIGHT + style::PICKER_OFFSET)
+            .top(style::TOOLBAR_HEIGHT + strip + style::PICKER_OFFSET)
             .left(style::MARGIN)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_picker(cx))),
         ))
     }
+}
+
+/// The main split's divider: nothing at rest, so the sidebar meets the card across the chrome
+/// with no line, and the component's pill while the pointer holds it. The band, cursor and
+/// drag stay the split's.
+fn quiet_divider(split: ResizablePanelGroup) -> ResizablePanelGroup {
+    let drawn = gpui_component::resize_handle_appearance();
+    split.with_handle_appearance(Rc::new(move |handle, window, cx| {
+        if handle.is_active() {
+            return drawn(handle, window, cx);
+        }
+        Some(
+            div()
+                .flex_none()
+                .w(style::HAIRLINE)
+                .h_full()
+                .into_any_element(),
+        )
+    }))
 }
 
 /// Which History commands can run now; a command that cannot has no handler, so GPUI shows
@@ -825,10 +879,11 @@ impl Render for RepoWindow {
         let tab_bar = tab_bar::render(window, cx);
         let notice = self.render_notice(cx);
         let content = self.render_content(cx);
-        let picker = self.render_picker(cx);
+        let picker = self.render_picker(tab_bar.is_some(), cx);
         let collapsed = self.layout.collapsed() || self.diff_fills_window(cx);
         let sidebar_width = self.layout.width_pixels();
-        let (background, foreground) = (cx.theme().background, cx.theme().foreground);
+        let (chrome, foreground) = (cx.theme().sidebar, cx.theme().foreground);
+        let card = Self::render_card(notice.map(IntoElement::into_any_element), content, cx);
         let commands = HistoryCommands::of(self, cx);
         let availability = self.sync_availability(cx);
         let has_author = self
@@ -845,7 +900,7 @@ impl Render for RepoWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(background)
+            .bg(chrome)
             .text_color(foreground)
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| {
                 this.switch_mode(ContentMode::Files, cx);
@@ -894,20 +949,24 @@ impl Render for RepoWindow {
             }))
             .child(toolbar)
             .children(tab_bar)
-            .children(notice)
             .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("main-split")
-                        .with_state(&self.split)
-                        .child(
-                            resizable_panel()
-                                .visible(!collapsed)
-                                .size(sidebar_width)
-                                .size_range(layout::sidebar_range())
-                                .child(self.sidebar.clone()),
-                        )
-                        .child(resizable_panel().child(content)),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .pr(style::CARD_INSET)
+                    .pb(style::CARD_INSET)
+                    .when(collapsed, |area| area.pl(style::CARD_INSET))
+                    .child(
+                        quiet_divider(h_resizable("main-split").with_state(&self.split))
+                            .child(
+                                resizable_panel()
+                                    .visible(!collapsed)
+                                    .size(sidebar_width)
+                                    .size_range(layout::sidebar_range())
+                                    .child(self.sidebar.clone()),
+                            )
+                            .child(resizable_panel().child(card)),
+                    ),
             )
             .when_some(picker, gpui::ParentElement::child)
             .children(panels)

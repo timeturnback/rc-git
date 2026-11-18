@@ -12,7 +12,8 @@ use rc_git_kit::branch_banner::Symbol;
 icon_assets!(
     ExtraIcons,
     [
-        GitBranch, Cloud, Tag, Circle, CircleDot, FolderCog, Link, TextWrap, Maximize2, Minimize2
+        GitBranch, Cloud, Tag, Circle, CircleDot, FolderCog, Link, TextWrap, Maximize2, Minimize2,
+        FolderGit2
     ]
 );
 
@@ -51,6 +52,8 @@ pub enum Glyph {
     TickOn,
     /// A tick box with only some of what is below its row ticked.
     TickMixed,
+    /// A window tab: the repository it shows.
+    Repository,
     /// A window tab's close button.
     CloseTab,
     /// The tab strip's button that opens a repository in a new tab.
@@ -88,6 +91,7 @@ pub fn icon(glyph: Glyph) -> IconName {
         Glyph::Disclosure => IconName::ChevronsUpDown,
         Glyph::TickOn => IconName::Check,
         Glyph::TickMixed => IconName::Minus,
+        Glyph::Repository => IconName::FolderGit2,
         Glyph::CloseTab => IconName::Close,
         Glyph::OpenTab => IconName::Plus,
         Glyph::WrapLines => IconName::TextWrap,
@@ -129,6 +133,7 @@ pub fn is_accented(glyph: Glyph) -> bool {
         | Glyph::Disclosure
         | Glyph::TickOn
         | Glyph::TickMixed
+        | Glyph::Repository
         | Glyph::CloseTab
         | Glyph::OpenTab
         | Glyph::WrapLines

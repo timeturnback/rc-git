@@ -1,8 +1,8 @@
 //! The window tab strip against the fakes: it shows once a tab group holds two windows, on
-//! every window of the group, and redraws when the group changes; its tabs share its full width
-//! equally whatever their titles; a click selects a tab, its close button closes that window,
-//! the plus button asks to open a repository, and a window that takes a repository renames its
-//! tab.
+//! every window of the group, and redraws when the group changes; its tabs share its width
+//! equally whatever their titles, up to their widest; a click selects a tab, its close button
+//! closes that window, the plus button asks to open a repository, and a window that takes a
+//! repository renames its tab.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -14,6 +14,7 @@ use gpui::{
 
 use crate::app::Tab;
 use crate::menus::OpenRepository;
+use crate::style;
 use crate::tests::support::{Harness, harness, open_settled, repo};
 
 fn windows(harness: &Harness, cx: &TestAppContext) -> Vec<Tab> {
@@ -108,8 +109,24 @@ fn bounds_of<const N: usize>(
     })
 }
 
+/// The strip of `tab`'s window drawn `width` wide: the strip, the two tabs, and the plus.
+fn strip_at(tab: &Tab, width: f32, cx: &mut TestAppContext) -> [Bounds<Pixels>; 4] {
+    let mut visual = drawn(tab, cx);
+    visual.simulate_resize(gpui::size(px(width), px(700.)));
+    visual.run_until_parked();
+    bounds_of(
+        &mut visual,
+        [
+            "window-tabs",
+            "window-tab-0",
+            "window-tab-1",
+            "open-repository-tab",
+        ],
+    )
+}
+
 #[gpui::test]
-fn the_tabs_share_the_full_width_equally(cx: &mut TestAppContext) {
+fn the_tabs_share_the_strip_equally_up_to_their_widest(cx: &mut TestAppContext) {
     let long = "/repo/a-repository-whose-name-is-much-longer";
     let harness = harness(cx, &[("/repo/a", repo()), (long, repo())]);
     open_settled(&harness, cx, "/repo/a");
@@ -120,34 +137,42 @@ fn the_tabs_share_the_full_width_equally(cx: &mut TestAppContext) {
         SystemWindowTabController::update_tab_title(cx, tabs[0].id(), "a".into());
         SystemWindowTabController::update_tab_title(cx, tabs[1].id(), long.into());
     });
-    let [strip, first, second, plus] = bounds_of(
-        &mut drawn(&tabs[0], cx),
-        [
-            "window-tabs",
-            "window-tab-0",
-            "window-tab-1",
-            "open-repository-tab",
-        ],
+    for width in [1200., 400.] {
+        let [strip, first, second, plus] = strip_at(&tabs[0], width, cx);
+        assert!(
+            (first.size.width - second.size.width).abs() < px(1.),
+            "at {width}: tabs {first:?} and {second:?} differ in width"
+        );
+        assert!(
+            first.size.width <= style::TAB_MAX_WIDTH,
+            "at {width}: tab {first:?} is wider than a tab gets"
+        );
+        assert!(
+            plus.left() >= second.right() && plus.left() - second.right() < px(16.),
+            "at {width}: the plus follows the last tab: {second:?}, plus {plus:?}"
+        );
+        assert!(
+            plus.right() <= strip.right(),
+            "at {width}: the plus stays in the strip: {strip:?}, plus {plus:?}"
+        );
+        assert!(
+            first.left() - strip.left() < px(16.),
+            "at {width}: the tabs start at the strip's edge"
+        );
+    }
+    let [strip, first, _, plus] = strip_at(&tabs[0], 1200., cx);
+    assert!(
+        (first.size.width - style::TAB_MAX_WIDTH).abs() < px(1.),
+        "a wide window draws tabs at their widest: {first:?}"
     );
     assert!(
-        (first.size.width - second.size.width).abs() < px(1.),
-        "tabs {first:?} and {second:?} differ in width"
+        strip.right() - plus.right() > style::TAB_MAX_WIDTH,
+        "a short group leaves the strip's end empty: {strip:?}, plus {plus:?}"
     );
+    let [_, narrow, _, _] = strip_at(&tabs[0], 400., cx);
     assert!(
-        plus.left() >= second.right(),
-        "the plus follows the last tab"
-    );
-    assert!(
-        plus.left() - second.right() < px(16.),
-        "the tabs reach the plus: last tab {second:?}, plus {plus:?}"
-    );
-    assert!(
-        strip.right() - plus.right() < px(16.),
-        "the tabs and the plus fill the strip: {strip:?}, plus {plus:?}"
-    );
-    assert!(
-        first.left() - strip.left() < px(16.),
-        "the tabs start at the strip's edge"
+        narrow.size.width < style::TAB_MAX_WIDTH,
+        "a narrow window shrinks the tabs: {narrow:?}"
     );
 }
 

@@ -29,7 +29,6 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, Render, Styled, Subscription, Task,
     UniformListScrollHandle, Window, div,
 };
-use gpui_component::ActiveTheme;
 use gpui_component::input::InputEvent;
 use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use rc_git_core::bstr::ByteSlice;
@@ -499,7 +498,6 @@ impl Render for HistoryPane {
             .id("history-pane")
             .key_context("HistoryPane")
             .size_full()
-            .bg(cx.theme().background)
             .child(self.render_splits(window, cx))
     }
 }

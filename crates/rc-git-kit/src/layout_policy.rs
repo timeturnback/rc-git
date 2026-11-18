@@ -265,6 +265,23 @@ impl SidebarCollapse {
         None
     }
 
+    /// The collapsed state the sidebar should take when a repository opens in the window, or
+    /// `None` to leave it as it is. A closed sidebar opens, whoever closed it. In a window too
+    /// narrow for it (`current`), it stays closed and the collapse becomes the policy's, so
+    /// widening re-opens it.
+    pub fn repository_opened(
+        &mut self,
+        current: Option<Layout>,
+        is_collapsed: bool,
+    ) -> Option<bool> {
+        if !is_collapsed {
+            return None;
+        }
+        let narrow = current.is_some_and(|current| !current.shows_sidebar);
+        self.collapsed_by_policy = narrow;
+        (!narrow).then_some(false)
+    }
+
     /// The user opened or closed the sidebar by hand: whatever state it is in now is theirs.
     pub fn user_toggled(&mut self) {
         self.collapsed_by_policy = false;

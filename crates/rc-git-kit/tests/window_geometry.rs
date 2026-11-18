@@ -7,7 +7,7 @@
 use rc_git_kit::layout_policy::{SIDEBAR_MAXIMUM_WIDTH, SIDEBAR_MINIMUM_WIDTH};
 use rc_git_kit::platform::stores::{Rect, SubviewFrame, WindowFrame};
 use rc_git_kit::window_geometry::{
-    TopLeftRect, from_appkit, restorable, saved_sidebar, sidebar_frames, to_appkit,
+    TopLeftRect, from_appkit, restorable, saved_sidebar_width, sidebar_frames, to_appkit,
 };
 
 const PRIMARY: f64 = 1000.0;
@@ -79,23 +79,15 @@ fn a_frame_off_every_screen_or_below_the_minimum_does_not() {
 }
 
 #[test]
-fn the_saved_sidebar_is_clamped_and_keeps_its_collapse() {
+fn the_saved_sidebar_width_is_clamped_and_survives_a_collapse() {
     let frames = sidebar_frames(300.0, true, 1000.0, 700.0);
-    let restored = saved_sidebar(&frames).unwrap_or_else(|| panic!("saved"));
-    assert_eq!(restored.width, 300.0);
-    assert!(restored.collapsed);
+    assert_eq!(saved_sidebar_width(&frames), Some(300.0));
     assert_eq!(frames[1].frame.width, 1000.0);
     let wide = sidebar_frames(9000.0, false, 1000.0, 700.0);
-    assert_eq!(
-        saved_sidebar(&wide).map(|sidebar| sidebar.width),
-        Some(SIDEBAR_MAXIMUM_WIDTH)
-    );
+    assert_eq!(saved_sidebar_width(&wide), Some(SIDEBAR_MAXIMUM_WIDTH));
     let narrow = sidebar_frames(10.0, false, 1000.0, 700.0);
-    assert_eq!(
-        saved_sidebar(&narrow).map(|sidebar| sidebar.width),
-        Some(SIDEBAR_MINIMUM_WIDTH)
-    );
-    assert_eq!(saved_sidebar(&[]), None);
+    assert_eq!(saved_sidebar_width(&narrow), Some(SIDEBAR_MINIMUM_WIDTH));
+    assert_eq!(saved_sidebar_width(&[]), None);
     let poisoned = [SubviewFrame {
         frame: Rect {
             x: 0.0,
@@ -106,5 +98,5 @@ fn the_saved_sidebar_is_clamped_and_keeps_its_collapse() {
         hidden: false,
         flag: false,
     }];
-    assert_eq!(saved_sidebar(&poisoned), None);
+    assert_eq!(saved_sidebar_width(&poisoned), None);
 }

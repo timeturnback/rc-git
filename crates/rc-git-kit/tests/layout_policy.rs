@@ -230,6 +230,40 @@ fn a_manual_collapse_while_wide_never_reopens() {
 }
 
 #[test]
+fn a_repository_opening_opens_a_sidebar_closed_by_hand() {
+    let mut collapse = SidebarCollapse::new();
+    collapse.user_toggled();
+    assert_eq!(collapse.repository_opened(Some(WIDE), true), Some(false));
+    assert_eq!(
+        collapse.repository_opened(None, true),
+        Some(false),
+        "not laid out yet"
+    );
+    assert!(!collapse.collapsed_by_policy());
+}
+
+#[test]
+fn a_repository_opening_leaves_an_open_sidebar_alone() {
+    let mut collapse = SidebarCollapse::new();
+    assert_eq!(collapse.repository_opened(Some(WIDE), false), None);
+    assert_eq!(collapse.repository_opened(Some(NARROW), false), None);
+}
+
+#[test]
+fn a_repository_opening_in_a_narrow_window_opens_the_sidebar_once_it_widens() {
+    let mut collapse = SidebarCollapse::new();
+    collapse.user_toggled();
+    assert_eq!(
+        collapse.apply(NARROW, Some(WIDE), true),
+        None,
+        "closed by hand"
+    );
+    assert_eq!(collapse.repository_opened(Some(NARROW), true), None);
+    assert!(collapse.collapsed_by_policy());
+    assert_eq!(collapse.apply(WIDE, Some(NARROW), true), Some(false));
+}
+
+#[test]
 fn a_policy_collapse_stays_while_the_window_stays_wide() {
     let mut collapse = SidebarCollapse::new();
     assert_eq!(collapse.apply(NARROW, Some(WIDE), false), Some(true));

@@ -33,7 +33,6 @@ impl RepoWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let modes = self.mode_switch(cx);
-        let theme = cx.theme();
         div()
             .id("toolbar")
             .h(style::TOOLBAR_HEIGHT)
@@ -43,9 +42,6 @@ impl RepoWindow {
             .gap(style::ROW_GAP)
             .pl(style::TRAFFIC_LIGHT_INSET)
             .pr(style::MARGIN)
-            .border_b(style::HAIRLINE)
-            .border_color(theme.title_bar_border)
-            .bg(theme.sidebar)
             .on_click(|event: &ClickEvent, window, _| {
                 if event.click_count() == 2 {
                     window.titlebar_double_click();

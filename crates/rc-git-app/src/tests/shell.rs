@@ -10,18 +10,20 @@ use rc_git_kit::back_forward::{ContentMode, Direction};
 use rc_git_kit::browser::FileState;
 use rc_git_kit::fake::{branch, oid};
 use rc_git_kit::file_tree::ViewKind;
+use rc_git_kit::platform::keys::MAIN_SPLIT;
 use rc_git_kit::platform::settings::MemorySettings;
-use rc_git_kit::platform::stores::{SettingsTabStore, WrapLinesPreference};
+use rc_git_kit::platform::stores::{SettingsTabStore, SubviewFrame, WrapLinesPreference};
 use rc_git_kit::tabs::OpenTabs;
+use rc_git_kit::window_geometry::sidebar_frames;
 
 use crate::app::{Shell, Tab};
 use crate::list_rows::WrapLines;
-use crate::menus::ShowHistory;
+use crate::menus::{ShowHistory, ToggleSidebar};
 use crate::sidebar::refs::RefListEvent;
 use crate::tests::support::{
     FEATURE_COMMIT, Harness, harness, harness_with, open_settled, repo, wait_until,
 };
-use crate::window::RepoWindow;
+use crate::window::{RepoWindow, SidebarLayout};
 
 fn only_window(harness: &Harness, cx: &TestAppContext) -> Tab {
     let windows = harness
@@ -338,22 +340,94 @@ fn a_restore_with_nothing_saved_opens_one_empty_tab(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_narrow_window_collapses_the_sidebar_and_widening_reopens_it(cx: &mut TestAppContext) {
     let harness = harness(cx, &[("/repo/a", repo())]);
-    let window = open_settled(&harness, cx, "/repo/a");
+    open_settled(&harness, cx, "/repo/a");
     let tab = only_window(&harness, cx);
-    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
-    let collapsed = |cx: &mut VisualTestContext| cx.read(|cx| window.read(cx).layout().collapsed());
-    visual.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
-    visual.run_until_parked();
-    assert!(!collapsed(&mut visual));
-    visual.simulate_resize(gpui::size(gpui::px(559.), gpui::px(600.)));
-    visual.run_until_parked();
-    assert!(collapsed(&mut visual), "below the sidebar threshold");
-    visual.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
-    visual.run_until_parked();
+    sized(&tab, 900., cx);
+    assert!(!sidebar_collapsed(&tab, cx));
+    sized(&tab, 559., cx);
+    assert!(sidebar_collapsed(&tab, cx), "below the sidebar threshold");
+    sized(&tab, 900., cx);
     assert!(
-        !collapsed(&mut visual),
+        !sidebar_collapsed(&tab, cx),
         "the policy re-opens what it closed"
     );
+}
+
+/// `tab`'s window `width` wide, settled, to toggle the sidebar in or read its collapse.
+fn sized(tab: &Tab, width: f32, cx: &mut TestAppContext) -> VisualTestContext {
+    let visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
+    visual.run_until_parked();
+    visual
+}
+
+fn sidebar_collapsed(tab: &Tab, cx: &TestAppContext) -> bool {
+    cx.read(|cx| tab.view.read(cx).layout().collapsed())
+}
+
+#[test]
+fn a_loaded_sidebar_keeps_its_saved_width_and_opens_even_when_saved_closed() {
+    let settings = Arc::new(MemorySettings::new());
+    let frames = sidebar_frames(300.0, true, 1000.0, 700.0);
+    SubviewFrame::save_split(&*settings, MAIN_SPLIT, &frames).expect("saves");
+    let layout = SidebarLayout::load(settings);
+    assert!(!layout.collapsed());
+    assert!((layout.width() - 300.0).abs() < f64::EPSILON);
+}
+
+#[gpui::test]
+fn a_new_window_opens_its_sidebar_after_another_window_closed_its_own(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/a", repo()), ("/repo/b", repo())]);
+    open_settled(&harness, cx, "/repo/a");
+    let first = only_window(&harness, cx);
+    sized(&first, 900., cx).dispatch_action(ToggleSidebar);
+    cx.run_until_parked();
+    assert!(sidebar_collapsed(&first, cx), "closed by hand");
+    open_settled(&harness, cx, "/repo/b");
+    let windows = harness
+        .shell
+        .read_with(cx, |shell, _| shell.windows().to_vec());
+    let second = windows.last().expect("b has a window").clone();
+    sized(&second, 900., cx);
+    assert!(
+        !sidebar_collapsed(&second, cx),
+        "the saved collapse is not carried into a new window"
+    );
+}
+
+#[gpui::test]
+fn an_empty_tab_that_takes_a_repository_opens_its_sidebar(cx: &mut TestAppContext) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    harness.shell.update(cx, Shell::restore_tabs);
+    cx.run_until_parked();
+    let tab = only_window(&harness, cx);
+    sized(&tab, 900., cx).dispatch_action(ToggleSidebar);
+    cx.run_until_parked();
+    assert!(sidebar_collapsed(&tab, cx), "closed by hand");
+    open_settled(&harness, cx, "/repo/a");
+    assert_eq!(
+        only_window(&harness, cx).id(),
+        tab.id(),
+        "the empty tab took it"
+    );
+    assert!(!sidebar_collapsed(&tab, cx));
+}
+
+#[gpui::test]
+fn a_repository_opened_in_a_narrow_window_opens_the_sidebar_once_it_widens(
+    cx: &mut TestAppContext,
+) {
+    let harness = harness(cx, &[("/repo/a", repo())]);
+    harness.shell.update(cx, Shell::restore_tabs);
+    cx.run_until_parked();
+    let tab = only_window(&harness, cx);
+    sized(&tab, 900., cx).dispatch_action(ToggleSidebar);
+    cx.run_until_parked();
+    sized(&tab, 500., cx);
+    open_settled(&harness, cx, "/repo/a");
+    assert!(sidebar_collapsed(&tab, cx), "too narrow for the sidebar");
+    sized(&tab, 900., cx);
+    assert!(!sidebar_collapsed(&tab, cx), "widening opens it");
 }
 
 #[gpui::test]

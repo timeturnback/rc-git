@@ -29,6 +29,19 @@ pub const TRAFFIC_LIGHT_INSET: Pixels = px(78.);
 pub const TRAFFIC_LIGHT_X: Pixels = px(12.);
 /// See [`TRAFFIC_LIGHT_X`].
 pub const TRAFFIC_LIGHT_Y: Pixels = px(12.);
+/// The window chrome around the content card: the space between the card and the window's
+/// right and bottom edges, and the strip's side padding.
+pub const CARD_INSET: Pixels = px(8.);
+/// The height of the window tab strip under the toolbar.
+pub const TAB_STRIP_HEIGHT: Pixels = px(36.);
+/// The height of a window tab.
+pub const TAB_HEIGHT: Pixels = px(26.);
+/// The widest a window tab gets; tabs share the strip equally below it.
+pub const TAB_MAX_WIDTH: Pixels = px(220.);
+/// The space between window tabs.
+pub const TAB_GAP: Pixels = px(4.);
+/// A window tab's repository glyph.
+pub const TAB_ICON_SIZE: Pixels = px(14.);
 /// The thickness of a separator line.
 pub const HAIRLINE: Pixels = px(1.);
 /// The corner radius of a row, a banner, a find bar.

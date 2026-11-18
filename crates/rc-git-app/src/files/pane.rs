@@ -577,7 +577,6 @@ impl Render for FilePane {
             .size_full()
             .flex()
             .flex_col()
-            .bg(cx.theme().background)
             .on_action(cx.listener(|this, _: &Find, window, cx| this.show_find(window, cx)))
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.step(true, cx)))
             .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.step(false, cx)))
