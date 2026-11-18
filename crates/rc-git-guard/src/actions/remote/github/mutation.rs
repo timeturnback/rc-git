@@ -8,14 +8,16 @@ use rc_git_core::Oid;
 use serde_json::{Value, json};
 
 use super::RepositoryTarget;
-use super::merge::PullRequestMerge;
+use super::merge::{PullRequestAdminMerge, PullRequestMerge};
 use super::pull_types::{MergeMethod, PullRequestId};
 use crate::{Action, Confirmation};
 
 /// Merges a pull request into its base, refused by GitHub unless its head is still
 /// `$head`. Checked against GitHub's GraphQL reference: `mergePullRequest` takes
 /// `MergePullRequestInput` (`pullRequestId: ID!`, `expectedHeadOid: GitObjectID`, `mergeMethod:
-/// PullRequestMergeMethod`) and returns the merged `pullRequest`.
+/// PullRequestMergeMethod`) and returns the merged `pullRequest`. The admin merge sends this same
+/// document: the input has no field for going past branch protection, GitHub decides that from
+/// the account, and the GitHub CLI's `gh pr merge --admin` sends this mutation too.
 pub(super) const MERGE: &str = "mutation RcGitMergePullRequest($id: ID!, $head: GitObjectID!, \
 $method: PullRequestMergeMethod!) { mergePullRequest(input: {pullRequestId: $id, \
 expectedHeadOid: $head, mergeMethod: $method}) { pullRequest { number state merged headRefOid \
@@ -26,6 +28,9 @@ mergeCommit { oid } } } }";
 pub(super) enum Mutation<'a> {
     /// [`MERGE`] of a pull request.
     Merge(&'a PullRequestMerge),
+    /// [`MERGE`] of a pull request branch protection blocks, by an account GitHub says may
+    /// merge it past that protection.
+    AdminMerge(&'a PullRequestAdminMerge),
 }
 
 impl<'a> Mutation<'a> {
@@ -34,6 +39,7 @@ impl<'a> Mutation<'a> {
     pub(super) fn of(proof: &'a Confirmation) -> Option<Self> {
         match proof.action() {
             Action::MergePullRequest(merge) => Some(Self::Merge(merge)),
+            Action::AdminMergePullRequest(merge) => Some(Self::AdminMerge(merge)),
             Action::Fetch
             | Action::FetchPullRequest { .. }
             | Action::CreateLocalBranch { .. }
@@ -60,6 +66,7 @@ impl<'a> Mutation<'a> {
     pub(super) fn op(self) -> &'static str {
         match self {
             Self::Merge(_) => "merge the pull request",
+            Self::AdminMerge(_) => "merge the pull request past branch protection",
         }
     }
 
@@ -67,13 +74,14 @@ impl<'a> Mutation<'a> {
     pub(super) fn target(self) -> &'a RepositoryTarget {
         match self {
             Self::Merge(merge) => merge.target(),
+            Self::AdminMerge(merge) => merge.target(),
         }
     }
 
     /// The static document.
     pub(super) fn document(self) -> &'static str {
         match self {
-            Self::Merge(_) => MERGE,
+            Self::Merge(_) | Self::AdminMerge(_) => MERGE,
         }
     }
 
@@ -81,6 +89,7 @@ impl<'a> Mutation<'a> {
     pub(super) fn variables(self) -> Value {
         match self {
             Self::Merge(merge) => variables_of(merge.id(), merge.head_oid(), merge.method()),
+            Self::AdminMerge(merge) => variables_of(merge.id(), merge.head_oid(), merge.method()),
         }
     }
 }

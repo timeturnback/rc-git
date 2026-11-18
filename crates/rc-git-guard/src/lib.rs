@@ -126,6 +126,13 @@ pub enum Action {
     /// revert undoes the change. Built only from a read made just before
     /// ([`actions::github::PullRequestMerge::new`]).
     MergePullRequest(Box<actions::github::PullRequestMerge>),
+    /// Merge a pull request on GitHub past the branch protection that blocks it (an admin
+    /// merge), when GitHub says the signed-in account may. It is everything the plain merge is,
+    /// and it also skips rules a team set for the base on purpose (required checks, reviews, an
+    /// up-to-date head), which no revert puts back; so the user types the pull request's number.
+    /// Built only from a read GitHub reports as blocked or behind and that the account may merge
+    /// as an administrator ([`actions::github::PullRequestAdminMerge::new`]).
+    AdminMergePullRequest(Box<actions::github::PullRequestAdminMerge>),
 }
 
 /// How much an action can lose.
@@ -171,7 +178,8 @@ impl Action {
             }
             | Action::DiscardWorkingChanges { .. }
             | Action::Prune
-            | Action::StashDrop { .. } => Risk::Destructive,
+            | Action::StashDrop { .. }
+            | Action::AdminMergePullRequest(_) => Risk::Destructive,
         }
     }
 }
@@ -322,20 +330,29 @@ mod tests {
                 Expected::confirm(Risk::Recoverable, None, false)
             }
             Action::StashDrop { .. } => Expected::confirm(Risk::Destructive, Some("drop"), true),
+            // The admin merge goes past GitHub's protection of the base, so it asks for the
+            // number typed whatever the base is called, and rc-git's names change nothing.
+            Action::AdminMergePullRequest(merge) => {
+                let number = merge.number().to_string();
+                Expected::confirm(Risk::Destructive, Some(&number), false)
+            }
         }
     }
 
-    /// Merging pull request 7 of `octo/rc-git` into `base` with a squash, with three checks.
-    fn merge_into(base: &str) -> Action {
+    fn octo() -> actions::github::RepositoryTarget {
+        use actions::github::{GitHubHost, RepositoryTarget};
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap()
+    }
+
+    /// Pull request 7 of `octo/rc-git` into `base`, mergeable with a squash, with three
+    /// required checks read of four.
+    fn pull_request_into(base: &str) -> actions::github::PullRequestDetail {
         use actions::github::{
             Check, CheckConclusion, CheckList, CheckProgress, CheckStatus, DetailFields,
-            GitHubHost, MergeMethod, MergeMethods, MergeStateStatus, Mergeable, PullRequestDetail,
-            PullRequestId, PullRequestMerge, PullRequestState, PullRequestSummary,
-            RepositoryTarget,
+            MergeMethods, MergeStateStatus, Mergeable, PullRequestDetail, PullRequestId,
+            PullRequestState, PullRequestSummary,
         };
-        let target =
-            RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
-                .unwrap();
         let check = |name: &str, status, conclusion| Check {
             name: name.to_owned(),
             progress: CheckProgress::Run { status, conclusion },
@@ -344,7 +361,7 @@ mod tests {
             details: None,
             actions: None,
         };
-        let detail = PullRequestDetail {
+        PullRequestDetail {
             summary: PullRequestSummary {
                 number: 7,
                 title: "Ship \\u{202e}it".to_owned(),
@@ -390,9 +407,37 @@ mod tests {
                 total: 4,
             },
             fields: DetailFields::Full,
-        };
+        }
+    }
+
+    /// Merging pull request 7 of `octo/rc-git` into `base` with a squash, with three checks.
+    fn merge_into(base: &str) -> Action {
+        use actions::github::{MergeMethod, PullRequestMerge};
+        let detail = pull_request_into(base);
         Action::MergePullRequest(Box::new(
-            PullRequestMerge::new(&target, &detail, MergeMethod::Squash).unwrap(),
+            PullRequestMerge::new(&octo(), &detail, MergeMethod::Squash).unwrap(),
+        ))
+    }
+
+    /// [`pull_request_into`] blocked by branch protection, with an account GitHub says may
+    /// merge it past that protection.
+    fn blocked_into(base: &str) -> actions::github::PullRequestDetail {
+        use actions::github::{MergeStateStatus, ViewerAbilities};
+        let mut detail = pull_request_into(base);
+        detail.merge_state = Some(MergeStateStatus::Blocked);
+        detail.viewer = Some(ViewerAbilities {
+            can_merge_as_admin: true,
+            ..ViewerAbilities::default()
+        });
+        detail
+    }
+
+    /// The admin merge of [`blocked_into`] with a squash.
+    fn admin_merge_into(base: &str) -> Action {
+        use actions::github::{MergeMethod, PullRequestAdminMerge};
+        let detail = blocked_into(base);
+        Action::AdminMergePullRequest(Box::new(
+            PullRequestAdminMerge::new(&octo(), &detail, MergeMethod::Squash).unwrap(),
         ))
     }
 
@@ -411,6 +456,156 @@ mod tests {
         assert!(
             c.verify("").is_some(),
             "a plain confirm verifies any answer"
+        );
+    }
+
+    #[test]
+    fn an_admin_merge_challenge_says_what_it_skips_and_asks_for_the_number() {
+        let c = challenge(Policy::default().evaluate(&admin_merge_into("main")));
+        assert_eq!(c.typed_phrase(), Some("7"));
+        assert!(!c.backup_ref());
+        assert_eq!(c.risk(), Risk::Destructive);
+        assert_eq!(
+            c.summary(),
+            "Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main past its branch \
+             protection, as an administrator, with a squash merge: feature at abababa (1 of 4 \
+             checks passed, 1 failed, 1 pending, 1 not read). This skips rules set for main on \
+             purpose. Known to be skipped: required checks that failed: \u{201c}lint\u{201d}; \
+             required checks not finished: \u{201c}deploy\u{201d}. The read did not hold 1 of \
+             the head's checks; any of them may be required. Branch protection or rulesets may \
+             also require things GitHub's API does not report here, and those may be skipped \
+             too, so this list may not be complete. GitHub merges it for everyone and rc-git cannot \
+             undo it; the local repository is unchanged until you fetch."
+        );
+    }
+
+    #[test]
+    fn an_admin_merge_verifies_only_the_number_itself() {
+        let policy = Policy::default();
+        let admin = admin_merge_into("main");
+        let c = challenge(policy.evaluate(&admin));
+        for typed in ["7", " 7", "7\n", "\t7  "] {
+            assert!(c.verify(typed).is_some(), "{typed:?}");
+        }
+        for typed in [
+            "",
+            " ",
+            "#7",
+            "07",
+            "007",
+            "7.",
+            "+7",
+            "8",
+            "17",
+            "77",
+            "7 7",
+            "seven",
+            "\u{ff17}",
+            "PR 7",
+            "octo/rc-git#7",
+        ] {
+            assert!(c.verify(typed).is_none(), "{typed:?} must not verify");
+            assert_eq!(
+                policy.authorize(&admin, Some(typed)),
+                Err(Refusal::NotConfirmed {
+                    phrase: "7".to_owned()
+                }),
+                "{typed:?}"
+            );
+        }
+        assert_eq!(
+            policy.authorize(&admin, None),
+            Err(Refusal::NotConfirmed {
+                phrase: "7".to_owned()
+            }),
+            "no input is no proof"
+        );
+        let proof = policy.authorize(&admin, Some("7")).unwrap();
+        assert_eq!(proof.action(), &admin);
+        let plain = policy.authorize(&merge_into("main"), None).unwrap();
+        assert_ne!(
+            plain.action(),
+            &admin,
+            "the plain merge's proof is not the admin merge's"
+        );
+    }
+
+    #[test]
+    fn an_admin_merge_exists_only_for_a_blocked_read_the_account_may_merge_past() {
+        use actions::github::{
+            MergeBlocker, MergeMethod, MergeStateStatus, Mergeable, PullRequestAdminMerge,
+            PullRequestMerge, PullRequestState, ViewerAbilities,
+        };
+        let admin = |change: fn(&mut actions::github::PullRequestDetail)| {
+            let mut detail = blocked_into("main");
+            change(&mut detail);
+            PullRequestAdminMerge::new(&octo(), &detail, MergeMethod::Squash).err()
+        };
+        assert_eq!(admin(|_| {}), None);
+        assert_eq!(
+            admin(|d| d.merge_state = Some(MergeStateStatus::Behind)),
+            None
+        );
+        let refused = [
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::Clean)),
+                MergeBlocker::NothingToBypass,
+            ),
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::Unstable)),
+                MergeBlocker::NothingToBypass,
+            ),
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::HasHooks)),
+                MergeBlocker::NothingToBypass,
+            ),
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::Unknown)),
+                MergeBlocker::MergeStateUnknown,
+            ),
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::Dirty)),
+                MergeBlocker::Conflicting,
+            ),
+            (
+                admin(|d| d.merge_state = Some(MergeStateStatus::Draft)),
+                MergeBlocker::Draft,
+            ),
+            (
+                admin(|d| d.merge_state = None),
+                MergeBlocker::MergeStateUnreported,
+            ),
+            (admin(|d| d.summary.draft = true), MergeBlocker::Draft),
+            (
+                admin(|d| d.mergeable = Mergeable::Conflicting),
+                MergeBlocker::Conflicting,
+            ),
+            (
+                admin(|d| d.mergeable = Mergeable::Unknown),
+                MergeBlocker::MergeabilityUnknown,
+            ),
+            (
+                admin(|d| d.summary.state = PullRequestState::Closed),
+                MergeBlocker::NotOpen(PullRequestState::Closed),
+            ),
+            (
+                admin(|d| d.merge_methods.squash = false),
+                MergeBlocker::MethodNotAllowed(MergeMethod::Squash),
+            ),
+            (admin(|d| d.viewer = None), MergeBlocker::NoAdminRight),
+            (
+                admin(|d| d.viewer = Some(ViewerAbilities::default())),
+                MergeBlocker::NoAdminRight,
+            ),
+            (admin(|d| d.id = None), MergeBlocker::NoId),
+        ];
+        for (got, blocker) in refused {
+            assert_eq!(got, Some(blocker), "{blocker}");
+        }
+        assert_eq!(
+            PullRequestMerge::new(&octo(), &blocked_into("main"), MergeMethod::Squash),
+            Err(MergeBlocker::Blocked),
+            "a blocked read has no plain merge, whatever the account may do"
         );
     }
 
@@ -483,6 +678,7 @@ mod tests {
             Action::StashPop { name: stash() },
             Action::StashDrop { name: stash() },
             merge_into(&name()),
+            admin_merge_into(&name()),
         ]
     }
 

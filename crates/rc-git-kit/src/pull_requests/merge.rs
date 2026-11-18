@@ -1,8 +1,12 @@
 //! Merging a pull request from its tab: whether the Merge control shows and why it may not take
 //! a click ([`merge_button`], decided here from the guard's own [`merge_blocker`], never in the
-//! app), and one merge's flow as a state machine free of GPUI ([`MergeFlow`]): planning (the
-//! guard reads the pull request again and the policy words the challenge), confirming (the
-//! challenge is up), merging (Cancel works until the request is sent, never after), and done.
+//! app), whether the separate admin merge control exists at all ([`admin_merge_button`], from the
+//! guard's [`admin_merge_blocker`]), and one merge's flow as a state machine free of GPUI
+//! ([`MergeFlow`]): planning (the guard reads the pull request again and the policy words the
+//! challenge), confirming (the challenge is up), merging (Cancel works until the request is sent,
+//! never after), and done. A flow is a plain merge or an admin merge from its start
+//! ([`MergeKind`]) and stays one; the admin merge's challenge asks for the pull request's number,
+//! which the flow hands to the guard as typed.
 //!
 //! Every step's answer is taken only under the generation it was asked for, and a flow is tied
 //! to the stamp it started from: a read of the tab that shows another head, base or state while
@@ -12,8 +16,8 @@ use rc_git_core::Oid;
 
 use super::state::DetailState;
 use super::{
-    AfterLoss, Decision, MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeRefusal,
-    PullRequestStamp, Settled, merge_blocker,
+    AfterLoss, Bypassed, Decision, MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan,
+    MergeRefusal, PullRequestStamp, Settled, admin_merge_blocker, merge_blocker,
 };
 
 /// Why a merge sent nothing, in the terms the tab shows.
@@ -42,6 +46,18 @@ impl MergeStop {
     }
 }
 
+/// What the merge service is asked to plan: the pull request the user saw, the method, and the
+/// plain merge or the admin merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanAsk<'a> {
+    /// What the user saw.
+    pub stamp: &'a PullRequestStamp,
+    /// The method the user chose.
+    pub method: MergeMethod,
+    /// The plain merge or the admin merge.
+    pub kind: MergeKind,
+}
+
 /// What the merge service is asked to merge, with the user's answer.
 #[derive(Clone, Copy)]
 pub struct MergeAsk<'a> {
@@ -49,9 +65,11 @@ pub struct MergeAsk<'a> {
     pub stamp: &'a PullRequestStamp,
     /// The method the user chose.
     pub method: MergeMethod,
+    /// The plain merge or the admin merge, as the flow started.
+    pub kind: MergeKind,
     /// The decision the challenge showed; `None` when the user did not confirm.
     pub decision: Option<&'a Decision>,
-    /// What the user typed in the challenge; empty for a plain confirm.
+    /// What the user typed in the challenge, untouched: the guard verifies it.
     pub typed: &'a str,
     /// Called once, just before the request leaves.
     pub on_send: &'a (dyn Fn() + Sync),
@@ -62,6 +80,7 @@ impl std::fmt::Debug for MergeAsk<'_> {
         f.debug_struct("MergeAsk")
             .field("stamp", self.stamp)
             .field("method", &self.method)
+            .field("kind", &self.kind)
             .field("decision", &self.decision)
             .finish_non_exhaustive()
     }
@@ -122,6 +141,38 @@ pub fn merge_button(tab: &DetailState, linked: bool) -> MergeButton {
         },
         None => MergeButton::Enabled { methods },
     }
+}
+
+/// The admin merge control of a tab: there or not, never greyed out with a reason. It exists only
+/// when the plain merge is blocked and GitHub says the account may merge past that protection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdminMergeButton {
+    /// No control: nothing current is on screen, the account is signed out, or the guard finds
+    /// something in the way of an admin merge (nothing to go past included).
+    Hidden,
+    /// Clickable, with the methods to choose from, the default first.
+    Shown {
+        /// The repository's allowed methods, in [`allowed_methods`] order.
+        methods: Vec<MergeMethod>,
+    },
+}
+
+/// The admin merge control for `tab`, signed in when `linked`. Uses the guard's
+/// [`admin_merge_blocker`], so the control and the admin merge itself refuse alike; the guard
+/// decides again on its own read, and its challenge asks for the number.
+#[must_use]
+pub fn admin_merge_button(tab: &DetailState, linked: bool) -> AdminMergeButton {
+    let (Some(_), Some(detail)) = (tab.stamp(), tab.detail()) else {
+        return AdminMergeButton::Hidden;
+    };
+    let methods = allowed_methods(&detail.merge_methods);
+    let Some(first) = methods.first() else {
+        return AdminMergeButton::Hidden;
+    };
+    if !linked || admin_merge_blocker(detail, *first).is_some() {
+        return AdminMergeButton::Hidden;
+    }
+    AdminMergeButton::Shown { methods }
 }
 
 /// How a merge ended.
@@ -185,6 +236,8 @@ pub struct PlanLoad {
     pub stamp: PullRequestStamp,
     /// The method chosen.
     pub method: MergeMethod,
+    /// The plain merge or the admin merge.
+    pub kind: MergeKind,
 }
 
 /// The merge to run for a flow.
@@ -196,9 +249,11 @@ pub struct MergeLoad {
     pub stamp: PullRequestStamp,
     /// The method chosen.
     pub method: MergeMethod,
+    /// The plain merge or the admin merge.
+    pub kind: MergeKind,
     /// The decision the user answered.
     pub decision: Decision,
-    /// What the user typed.
+    /// What the user typed, untouched.
     pub typed: String,
 }
 
@@ -222,28 +277,34 @@ pub struct MergeFlow {
     generation: u64,
     stamp: PullRequestStamp,
     method: MergeMethod,
+    kind: MergeKind,
+    bypassed: Option<Bypassed>,
     phase: MergePhase,
 }
 
 impl MergeFlow {
-    /// A merge of the pull request `stamp` names with `method`, under `generation` (unique
-    /// among the window's merges), and the plan read to run.
+    /// A merge of `kind` of the pull request `stamp` names with `method`, under `generation`
+    /// (unique among the window's merges), and the plan read to run.
     #[must_use]
     pub fn start(
         generation: u64,
         stamp: PullRequestStamp,
         method: MergeMethod,
+        kind: MergeKind,
     ) -> (Self, PlanLoad) {
         let load = PlanLoad {
             generation,
             stamp: stamp.clone(),
             method,
+            kind,
         };
         let flow = Self {
             number: stamp.number,
             generation,
             stamp,
             method,
+            kind,
+            bypassed: None,
             phase: MergePhase::Planning,
         };
         (flow, load)
@@ -273,6 +334,19 @@ impl MergeFlow {
         self.method
     }
 
+    /// The plain merge or the admin merge.
+    #[must_use]
+    pub fn kind(&self) -> MergeKind {
+        self.kind
+    }
+
+    /// What an admin merge skips, as its plan's read reported it; `None` before the plan
+    /// landed, and always for the plain merge.
+    #[must_use]
+    pub fn bypassed(&self) -> Option<&Bypassed> {
+        self.bypassed.as_ref()
+    }
+
     /// Where it stands.
     #[must_use]
     pub fn phase(&self) -> &MergePhase {
@@ -294,13 +368,17 @@ impl MergeFlow {
             return false;
         }
         self.phase = match answer {
-            Ok(plan) => MergePhase::Confirming(Box::new(plan)),
+            Ok(plan) => {
+                self.bypassed.clone_from(&plan.bypassed);
+                MergePhase::Confirming(Box::new(plan))
+            }
             Err(stop) => MergePhase::Done(MergeEnd::NotSent(stop)),
         };
         true
     }
 
-    /// The user confirmed with `typed`: the merge to run, only while the challenge is up.
+    /// The user confirmed with `typed`: the merge to run, only while the challenge is up. The
+    /// text goes to the guard as typed; the guard alone verifies it.
     pub fn confirm(&mut self, typed: String) -> Option<MergeLoad> {
         let MergePhase::Confirming(plan) = &self.phase else {
             return None;
@@ -309,6 +387,7 @@ impl MergeFlow {
             generation: self.generation,
             stamp: self.stamp.clone(),
             method: self.method,
+            kind: self.kind,
             decision: plan.decision.clone(),
             typed,
         };

@@ -14,12 +14,12 @@ use crate::github::accounts::{GitHubAccount, SignInMethod};
 use crate::platform::api_tokens::AccountKey;
 use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use crate::pull_requests::link::{Linked, RepositoryLink};
-use crate::pull_requests::merge::{MergeAsk, MergeStop};
+use crate::pull_requests::merge::{MergeAsk, MergeStop, PlanAsk};
 use crate::pull_requests::{
-    Cancel, CheckList, Decision, DetailFields, MergeMethod, MergeMethods, MergeOutcome, MergePlan,
-    MergeStateStatus, Mergeable, PageCursor, PullRequestDetail, PullRequestId, PullRequestPage,
-    PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary, ReadError,
-    RepositoryTarget,
+    Cancel, CheckList, Decision, DetailFields, MergeKind, MergeMethod, MergeMethods, MergeOutcome,
+    MergePlan, MergeStateStatus, Mergeable, PageCursor, PullRequestDetail, PullRequestId,
+    PullRequestPage, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
+    ReadError, RepositoryTarget, ViewerAbilities,
 };
 
 /// What the fake answers and what it was asked.
@@ -72,8 +72,8 @@ pub struct FakePullRequestsState {
     pub unsent_gate: Option<Arc<CallGate>>,
     /// Holds each merge at the gate after its request is sent, when set.
     pub sent_gate: Option<Arc<CallGate>>,
-    /// The stamp and method of every plan read, in arrival order.
-    pub plan_calls: Vec<(PullRequestStamp, MergeMethod)>,
+    /// The stamp, method and kind of every plan read, in arrival order.
+    pub plan_calls: Vec<(PullRequestStamp, MergeMethod, MergeKind)>,
     /// Every merge asked for, in arrival order.
     pub merge_calls: Vec<MergeCall>,
     /// How many merge requests were sent: a merge's `on_send` and the sending itself.
@@ -87,9 +87,11 @@ pub struct MergeCall {
     pub stamp: PullRequestStamp,
     /// The method.
     pub method: MergeMethod,
+    /// The plain merge or the admin merge.
+    pub kind: MergeKind,
     /// The decision the user answered.
     pub decision: Option<Decision>,
-    /// What the user typed.
+    /// What the user typed, as it arrived.
     pub typed: String,
 }
 
@@ -304,13 +306,14 @@ impl PullRequestService for FakePullRequests {
     fn plan_merge(
         &self,
         linked: &Linked,
-        stamp: &PullRequestStamp,
-        method: MergeMethod,
+        ask: PlanAsk<'_>,
         cancel: &Cancel,
     ) -> Result<MergePlan, MergeStop> {
         let gate = {
             let mut state = self.state();
-            state.plan_calls.push((stamp.clone(), method));
+            state
+                .plan_calls
+                .push((ask.stamp.clone(), ask.method, ask.kind));
             state.plan_gate.clone()
         };
         if let Some(gate) = gate {
@@ -335,6 +338,7 @@ impl PullRequestService for FakePullRequests {
             state.merge_calls.push(MergeCall {
                 stamp: ask.stamp.clone(),
                 method: ask.method,
+                kind: ask.kind,
                 decision: ask.decision.cloned(),
                 typed: ask.typed.to_owned(),
             });
@@ -452,6 +456,41 @@ pub fn merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> MergePlan 
     MergePlan {
         decision,
         detail: detail.clone(),
+        bypassed: None,
+    }
+}
+
+/// `detail` blocked by branch protection, read by an account GitHub says may merge it past
+/// that protection: what the admin merge control and [`admin_merge_plan`] take.
+#[must_use]
+pub fn blocked_detail(mut detail: PullRequestDetail) -> PullRequestDetail {
+    detail.merge_state = Some(MergeStateStatus::Blocked);
+    detail.viewer = Some(ViewerAbilities {
+        can_merge_as_admin: true,
+        ..ViewerAbilities::default()
+    });
+    detail
+}
+
+/// The plan the guard would hand out for an admin merge of `detail` (as read from [`linked`]'s
+/// repository) with `method`: the policy's own decision for it, with what it skips.
+///
+/// # Panics
+/// When something stands in the way of an admin merge of `detail` with `method`.
+#[must_use]
+pub fn admin_merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> MergePlan {
+    #[expect(clippy::expect_used, reason = "a test helper given a blocked detail")]
+    let merge =
+        rc_git_guard::actions::github::PullRequestAdminMerge::new(&linked().target, detail, method)
+            .expect("a pull request an admin may merge");
+    let bypassed = merge.bypassed().clone();
+    let decision = crate::repository_actions::policy().evaluate(
+        &rc_git_guard::Action::AdminMergePullRequest(Box::new(merge)),
+    );
+    MergePlan {
+        decision,
+        detail: detail.clone(),
+        bypassed: Some(bypassed),
     }
 }
 

@@ -204,10 +204,18 @@ constraints are clear.
   `mergePullRequest` carrying `expectedHeadOid`, never resent, and a three-valued outcome a lost
   answer settles with one read. The fourth slice.
 
+- **Admin merge.** When branch protection blocks a pull request and GitHub says the account may
+  merge past it (`viewerCanMergeAsAdmin`), its tab shows a separate Merge Without Waiting for
+  Requirements (Admin) control, and `rc-git pr merge <n> --admin --confirm <n>` does the same:
+  the challenge lists what the fresh read shows it skips (failed and unfinished required checks,
+  a missing review, an out-of-date head) and says other rules may be skipped too, and only the
+  pull request's number typed confirms it. The same `mergePullRequest`, sent once. The fifth
+  slice.
+
 ## Planned
 
-- **Pull requests.** The rest of the pull request slices on the GitHub client: admin bypass
-  merge, auto-merge, re-running failed jobs, job logs and deleting the head branch, each
+- **Pull requests.** The rest of the pull request slices on the GitHub client: auto-merge,
+  re-running failed jobs, job logs and deleting the head branch, each
   mutation a new `Action` with its policy row (rc-git-guard, rc-git-kit, rc-git-app,
   `rc-git pr`) and an arm of `Mutation::of`, each comparing a fresh read against the
   `PullRequestStamp` of what the user saw.

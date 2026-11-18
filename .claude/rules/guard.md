@@ -115,6 +115,10 @@ here; so does everything that comes later.
 - Never resend a mutation at any layer: send it once, and settle a lost answer with one read.
 - A mutation's outcome is three-valued (merged, refused, unknown); never report a lost answer as
   "not merged" unless a read proves it.
+- Build an admin merge only through `PullRequestAdminMerge::new` (`admin_merge_blocker`), never by
+  reaching the plain merge's `read`; its phrase is the number, and its skipped list is part of it.
+- Never word what GitHub's bypass covers beyond what the read reports: say the list may not be
+  complete, and keep the two unverified API behaviours in `docs/safety.md` unasserted.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):
   its refspec comes from `pull_head::refspec(number)` alone, never from server text, it fetches
   no tags, and `run_fetch` refuses before `receive` when the advertised head is not the stamp's.

@@ -8,7 +8,9 @@
 //!
 //! A pull request merge comes through the same challenge sheet, when its model asks
 //! ([`MergeEvent`]): the guard's decision from its fresh read, a confirm that hands the typed
-//! text back to the model, which sends the merge once, and a cancel that ends it.
+//! text back to the model, which sends the merge once, and a cancel that ends it. An admin
+//! merge's sheet is titled apart from Merge and asks for the number the guard's challenge
+//! names; the typed text goes back untouched.
 
 use std::sync::Arc;
 
@@ -29,8 +31,8 @@ use rc_git_kit::guard_copy::{
     IDENTITY_ASK_MESSAGE, IDENTITY_ASK_TITLE, IDENTITY_EDIT_TITLE, deny_message,
     identity_edit_message,
 };
-use rc_git_kit::pull_requests::copy::MERGE;
-use rc_git_kit::pull_requests::merge::MergeFlow;
+use rc_git_kit::pull_requests::MergeKind;
+use rc_git_kit::pull_requests::copy::{ADMIN_MERGE_TITLE, MERGE};
 use rc_git_kit::pull_requests::model::MergeEvent;
 use rc_git_kit::repository_actions::{
     RepositoryActions, plan_commit, plan_discard, plan_stash_apply, plan_stash_drop,
@@ -183,18 +185,20 @@ impl RepoWindow {
         cx: &mut Context<Self>,
     ) {
         let model = self.pull_requests.clone();
-        let Some(decision) = model
-            .read(cx)
-            .merge_flow(number)
-            .and_then(MergeFlow::plan)
-            .map(|plan| GuardDecision::new(&plan.decision, false))
-        else {
+        let Some((decision, kind)) = model.read(cx).merge_flow(number).and_then(|flow| {
+            let plan = flow.plan()?;
+            Some((GuardDecision::new(&plan.decision, false), flow.kind()))
+        }) else {
             return;
+        };
+        let verb = match kind {
+            MergeKind::Plain => MERGE,
+            MergeKind::Admin => ADMIN_MERGE_TITLE,
         };
         let (confirm, cancel) = (model.clone(), model);
         let sheet = cx.new(|cx| {
             ChallengeSheet::new(
-                MERGE.to_owned(),
+                verb.to_owned(),
                 decision,
                 Box::new(move |typed, _, cx| {
                     confirm.update(cx, |model, cx| {
@@ -212,7 +216,7 @@ impl RepoWindow {
             number,
             sheet: sheet.downgrade(),
         });
-        sheets::open(MERGE.into(), &sheet, window, cx);
+        sheets::open(verb.into(), &sheet, window, cx);
     }
 
     /// Runs one guarded action off the UI thread with the challenge's `input`.

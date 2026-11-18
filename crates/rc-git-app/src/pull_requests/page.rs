@@ -8,8 +8,10 @@
 //!
 //! Under the header sits the Merge control, as kit decides it ([`MergeButton`]): hidden while
 //! nothing current is on screen, disabled with kit's reason, or the repository's methods and
-//! Merge. A click asks the model to start; the challenge, the only way to send, comes up
-//! through the window ([`crate::window::RepoWindow`]), and the note under the control is kit's.
+//! Merge. Below it, only when kit shows it ([`AdminMergeButton`]), the separate admin merge
+//! control, worded so it never reads as Merge. A click asks the model to start; the challenge,
+//! the only way to send, comes up through the window ([`crate::window::RepoWindow`]), and the
+//! note under the control is kit's.
 //!
 //! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
 
@@ -24,15 +26,16 @@ use gpui_component::{ActiveTheme, Disableable, Icon, h_flex, v_flex};
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
+    ADMIN_MERGE, ADMIN_MERGE_NOTE, MERGE, MERGE_CANCEL, MERGE_DISMISS, merge_method_label,
+    merge_note,
+};
+use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
     details_label, fields_note, freshness_problem, mergeable_label, review_label, row_detail,
     state_label, tab_title,
 };
-use rc_git_kit::pull_requests::copy::{
-    MERGE, MERGE_CANCEL, MERGE_DISMISS, merge_method_label, merge_note,
-};
 use rc_git_kit::pull_requests::link::RepositoryLink;
-use rc_git_kit::pull_requests::merge::{MergeButton, MergeEnd, MergePhase};
+use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton, MergeEnd, MergePhase};
 use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{Check, MergeMethod, PullRequestDetail, ServerLink};
@@ -101,6 +104,7 @@ impl PullRequestPage {
     fn merge_controls(&self, number: u64, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let model = self.model.read(cx);
         let button = model.merge_button(number);
+        let admin = model.admin_merge_button(number);
         let flow = model.merge_flow(number).cloned();
         let running = flow
             .as_ref()
@@ -113,21 +117,7 @@ impl PullRequestPage {
             MergeButton::Disabled { reason } => column = column.child(Self::line(reason, muted)),
             MergeButton::Enabled { methods } => {
                 let chosen = self.chosen_method(number, &methods);
-                let mut row = h_flex().gap(style::ROW_GAP);
-                for (index, method) in methods.into_iter().enumerate() {
-                    let pick = Button::new(("pull-request-merge-method", index))
-                        .label(merge_method_label(method))
-                        .disabled(running)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.merge_method = Some((number, method));
-                            cx.notify();
-                        }));
-                    row = row.child(if chosen == Some(method) {
-                        pick.primary()
-                    } else {
-                        pick.ghost()
-                    });
-                }
+                let row = Self::method_picks(number, methods, (chosen, running), cx);
                 let merge = Button::new("pull-request-merge")
                     .label(MERGE)
                     .danger()
@@ -140,6 +130,9 @@ impl PullRequestPage {
                     }));
                 column = column.child(row.child(merge));
             }
+        }
+        if let AdminMergeButton::Shown { methods } = admin {
+            column = column.child(self.admin_merge_control(number, methods, running, cx));
         }
         let Some(flow) = flow else {
             return column;
@@ -185,6 +178,62 @@ impl PullRequestPage {
             );
         }
         column.child(row)
+    }
+
+    /// One button per method in `methods`, the `chosen` one primary, none clickable while a
+    /// merge of tab `number` runs.
+    fn method_picks(
+        number: u64,
+        methods: Vec<MergeMethod>,
+        (chosen, running): (Option<MergeMethod>, bool),
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut row = h_flex().gap(style::ROW_GAP);
+        for (index, method) in methods.into_iter().enumerate() {
+            let pick = Button::new(("pull-request-merge-method", index))
+                .label(merge_method_label(method))
+                .disabled(running)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.merge_method = Some((number, method));
+                    cx.notify();
+                }));
+            row = row.child(if chosen == Some(method) {
+                pick.primary()
+            } else {
+                pick.ghost()
+            });
+        }
+        row
+    }
+
+    /// The admin merge control of tab `number`, which kit shows only when branch protection
+    /// blocks Merge and GitHub says the account may merge past it: kit's note, the methods, and
+    /// a button worded unlike Merge. Its click only asks the model to start; the challenge that
+    /// asks for the number is the only way to send.
+    fn admin_merge_control(
+        &self,
+        number: u64,
+        methods: Vec<MergeMethod>,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let chosen = self.chosen_method(number, &methods);
+        let muted = cx.theme().muted_foreground;
+        let row = Self::method_picks(number, methods, (chosen, running), cx);
+        let admin = Button::new("pull-request-admin-merge")
+            .label(ADMIN_MERGE)
+            .danger()
+            .disabled(running || chosen.is_none())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(method) = chosen {
+                    this.model
+                        .update(cx, |model, cx| model.start_admin_merge(method, cx));
+                }
+            }));
+        v_flex()
+            .gap(style::DETAIL_LINE_GAP)
+            .child(Self::line(ADMIN_MERGE_NOTE.to_owned(), muted))
+            .child(row.child(admin))
     }
 
     /// The view on show.

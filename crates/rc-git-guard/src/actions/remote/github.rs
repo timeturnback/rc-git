@@ -6,9 +6,10 @@
 //! repository's remote URL only ever selects the owner and name on that host
 //! ([`RepositoryTarget::on_host`]). `docs/safety.md`, "GitHub API", has the rules.
 //!
-//! It also merges a pull request ([`merge_pull_request`]), the one GitHub mutation so far: a
-//! fresh read compared with what the user saw, then one request built from the
-//! [`crate::Confirmation`] alone, whose outcome is merged, refused or unknown, never resent.
+//! It also merges a pull request ([`merge_pull_request`]), the one GitHub mutation so far, as a
+//! plain merge or as an admin merge past branch protection ([`MergeKind`]): a fresh read
+//! compared with what the user saw, then one request built from the [`crate::Confirmation`]
+//! alone, whose outcome is merged, refused or unknown, never resent.
 //!
 //! No curl or serde type crosses the public API. Secrets travel as [`ApiToken`] and
 //! [`RefreshToken`], whose `Debug` is redacted and which have no `Display`.
@@ -38,14 +39,17 @@ mod pull_tests;
 #[cfg(test)]
 mod merge_tests;
 
+#[cfg(test)]
+mod admin_merge_tests;
+
 pub use device::{DeviceFlow, DeviceMethod, DevicePoll, start_device_flow};
 pub use error::GitHubError;
 pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host, ssh_dialed_host};
 pub use links::ServerLink;
 pub use merge::{
-    AfterLoss, MergeAnswer, MergeBlocker, MergeOutcome, MergePlan, MergeRefusal, MergeRequest,
-    MergeTarget, PullRequestMerge, Settled, merge_blocker, merge_pull_request,
-    plan_merge_pull_request,
+    AfterLoss, Bypassed, MergeAnswer, MergeBlocker, MergeKind, MergeOutcome, MergePlan,
+    MergeRefusal, MergeRequest, MergeTarget, PullRequestAdminMerge, PullRequestMerge, Settled,
+    admin_merge_blocker, merge_blocker, merge_pull_request, plan_merge_pull_request,
 };
 pub use oauth::refresh_user_token;
 pub use pull_types::{

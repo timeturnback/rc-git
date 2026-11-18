@@ -113,7 +113,8 @@ files or hunks, the stash lifecycle, and discarding uncommitted changes; switchi
 another local branch, which the Back-to-default control composes with a fetch and a
 fast-forward; the remote operations — fetch, fast-forward pull, plain push, and their sync
 composition; the fetch of a pull request's head from its page or `rc-git pr diff --fetch`;
-and merging a pull request on GitHub from its page or `rc-git pr merge` — all driven through
+and merging a pull request on GitHub from its page or `rc-git pr merge`, plainly or as an admin
+merge past branch protection — all driven through
 `rc_git_guard::actions` from rc-git-kit. Every other row of the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
@@ -140,6 +141,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | stash pop | confirm, backup ref | same |
 | stash drop | type `drop`, backup ref | same |
 | merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge names `owner/name#N`, the title, both branches, the short head, the method and the checks, all from a read made just before | same: GitHub's branch protection guards the base, not rc-git's protected names |
+| admin merge a pull request on GitHub past the branch protection that blocks it (`Destructive`: it skips rules a team set for the base on purpose, and no revert puts those back) | type the pull request's number; offered only for a read GitHub reports blocked or behind that the account may merge past (`viewerCanMergeAsAdmin`); the challenge names what the plain merge's does, says it goes past branch protection, lists what the read shows it skips, and says the list may not be complete ("Admin merge" below) | same |
 
 Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
 a case-insensitive volume stores `MAIN` and `main` as one file, and the policy has no
@@ -455,7 +457,8 @@ the pull request's page) and the CLI (`rc-git pr merge`) both call `merge_pull_r
    unknown state refuses, and so does a host that reports none (an older GitHub Enterprise
    Server): GitHub may let an account that can bypass branch protection merge such a pull
    request through the same mutation (`viewerCanMergeAsAdmin`), and the plain merge is not that
-   action. So is a read that names no node id.
+   action: the admin merge is ("Admin merge" below), for a blocked or behind state only. A read
+   that names no node id refuses too.
 3. **Authorize the action built from that read.** The decision the user answered must equal
    the one the policy gives now: an answer to another action's challenge, or to this merge
    before a check, the title, the method or the head changed, refuses. No answer at all refuses
@@ -488,6 +491,57 @@ the note says the local repository is unchanged until the user fetches. Every at
 outcome is a line in the app's log (repository, number, head, method, outcome; never a token).
 Unverified against GitHub: which GraphQL error `type` each refusal carries (an unexpected one
 reads as unknown, never as refused).
+
+### Admin merge
+
+An admin merge merges a pull request that branch protection blocks, past that protection, when
+GitHub says the signed-in account may. It is irreversible and it skips rules a team set on
+purpose, so rc-git offers it only when it cannot be anything else, never by default, and never
+without the pull request's number typed (`github/merge/admin.rs`).
+
+- **The same mutation.** GitHub has no separate call: `MergePullRequestInput` has no field for
+  going past protection (GitHub's GraphQL reference), and the GitHub CLI's `gh pr merge
+  --admin` sends the plain `mergePullRequest`, only skipping its own blocked-state check. GitHub
+  decides from the account whether the merge may go past the rules; rc-git's checks only keep it
+  from offering or sending what the user did not knowingly confirm. `Mutation::of` maps
+  `Action::AdminMergePullRequest` to the plain merge's document, with the same `expectedHeadOid`.
+- **When it exists** (`admin_merge_blocker`, which the control and the guard both use): the read
+  is open, not a draft, free of conflicts (`MERGEABLE`), in a method the repository allows, with
+  a node id; its merge state is `BLOCKED` or `BEHIND`; and `viewerCanMergeAsAdmin` is true. A
+  false or missing ability, a merge state GitHub has not computed (`UNKNOWN`, absent, or a value
+  this build does not know), a host that reports none (an older GitHub Enterprise Server),
+  `DIRTY` and `DRAFT` have no admin merge. Nor does a pull request the plain merge can take
+  (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`): there is nothing to go past, and the guard says to use
+  Merge. Without a current read (the first read, or a failed refresh) the control is absent.
+- **The phrase.** The pull request's number in decimal digits, matched exactly after trimming
+  surrounding whitespace: `#7`, `07`, `7.`, a full-width `７` and another number all refuse. The
+  app's sheet takes it in its field; the CLI takes it as `pr merge --admin --confirm <n>`, and
+  `--yes` counts for nothing there. The front end hands the text to the guard untouched; the
+  guard alone verifies it.
+- **What the challenge says is skipped**, from the read made just before: required checks that
+  failed and required checks not finished, by name (neutralized, five named and the rest
+  counted); how many checks that have not passed GitHub did not say are required or not; how
+  many of the head's checks the read did not hold; a review decision of review required or
+  changes requested; and a head behind its base. It always adds that branch protection or
+  rulesets may require things GitHub's API does not report here (signed commits, resolved
+  conversations, deployments, and more), which may be skipped too, so the list may not be
+  complete. It never claims to be.
+- **The sequence** is the plain merge's (`merge_pull_request` with `MergeKind::Admin`): read again
+  and compare the stamp; check the admin conditions on that read (a pull request that has since
+  become plainly mergeable refuses and says to use Merge, an ability that is gone refuses);
+  authorize with the typed number; the decision answered must equal the decision now, and the
+  skipped list is part of it, so a check that moved between the challenge and the confirm
+  refuses; send once; merged, refused or unknown. A plain merge's answer never confirms an admin
+  merge, and the plain merge refuses a blocked pull request whatever was typed.
+- **The log.** Every admin merge attempt and outcome is a line in the app's log: repository,
+  number, head, method, the skipped list in full, and the outcome; never a token.
+- **Unverified against GitHub, so not asserted anywhere in rc-git:** whether an API merge by a
+  user on a ruleset's bypass list succeeds as it does for an administrator under classic branch
+  protection; and whether a GitHub App user access token carries the user's right to bypass
+  (GitHub documents that such a token reaches only what both the user and the app can, and says
+  nothing about bypass). When GitHub refuses an admin merge, the note passes its reason through
+  and says that rc-git has not verified the second point, so signing in through an OAuth App or
+  with a personal access token may be needed.
 
 ## Updater
 

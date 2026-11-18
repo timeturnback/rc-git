@@ -12,13 +12,13 @@ use super::*;
 use crate::actions::remote::Cancel;
 use crate::{Action, Decision, Policy};
 
-const TOKEN: &str = "ghp_merge_token_never_printed_0123";
-const ID: &str = "PR_kwDOmerge7";
-const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
-const MOVED: &str = "89abcdef0123456789abcdef0123456789abcdef";
-const MERGE_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+pub(super) const TOKEN: &str = "ghp_merge_token_never_printed_0123";
+pub(super) const ID: &str = "PR_kwDOmerge7";
+pub(super) const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+pub(super) const MOVED: &str = "89abcdef0123456789abcdef0123456789abcdef";
+pub(super) const MERGE_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
-fn server() -> GitHubServer {
+pub(super) fn server() -> GitHubServer {
     let server = GitHubServer::start();
     server.add_token(FakeToken {
         token: TOKEN.to_owned(),
@@ -29,24 +29,24 @@ fn server() -> GitHubServer {
     server
 }
 
-fn host_of(server: &GitHubServer) -> GitHubHost {
+pub(super) fn host_of(server: &GitHubServer) -> GitHubHost {
     GitHubHost::parse(&server.host()).unwrap()
 }
 
-fn token() -> ApiToken {
+pub(super) fn token() -> ApiToken {
     ApiToken::new(TOKEN.to_owned()).unwrap()
 }
 
-fn target(host: &GitHubHost) -> RepositoryTarget {
+pub(super) fn target(host: &GitHubHost) -> RepositoryTarget {
     RepositoryTarget::on_host(host, &format!("http://{host}/octo/rc-git.git")).unwrap()
 }
 
-fn oid(hex: &str) -> rc_git_core::Oid {
+pub(super) fn oid(hex: &str) -> rc_git_core::Oid {
     rc_git_core::Oid::from_hex(hex).unwrap()
 }
 
 /// What the user saw: pull request 7, open at `head` on `main`.
-fn stamp(head: &str) -> PullRequestStamp {
+pub(super) fn stamp(head: &str) -> PullRequestStamp {
     PullRequestStamp {
         number: 7,
         head_oid: oid(head),
@@ -56,7 +56,7 @@ fn stamp(head: &str) -> PullRequestStamp {
 }
 
 /// The detail read's answer for pull request 7 at `head` in `state`, one passing check.
-fn pull(head: &str, state: &str) -> Value {
+pub(super) fn pull(head: &str, state: &str) -> Value {
     let check = json!({ "__typename": "CheckRun", "name": "build", "status": "COMPLETED",
         "conclusion": "SUCCESS", "detailsUrl": null, "databaseId": 1, "isRequired": true,
         "checkSuite": { "workflowRun": null } });
@@ -86,7 +86,7 @@ fn open_with(key: &str, value: Value) -> String {
     answer.to_string()
 }
 
-fn merged_reply() -> String {
+pub(super) fn merged_reply() -> String {
     json!({ "data": { "mergePullRequest": { "pullRequest": {
         "number": 7, "state": "MERGED", "merged": true, "headRefOid": HEAD,
         "mergeCommit": { "oid": MERGE_COMMIT } } } } })
@@ -139,6 +139,7 @@ impl Merge {
             target: &self.target,
             stamp: &self.stamp,
             method: self.method,
+            kind: MergeKind::Plain,
         }
     }
 
@@ -172,7 +173,9 @@ impl Merge {
     }
 }
 
-fn no_token<T: std::fmt::Debug, E: std::fmt::Debug + std::fmt::Display>(result: &Result<T, E>) {
+pub(super) fn no_token<T: std::fmt::Debug, E: std::fmt::Debug + std::fmt::Display>(
+    result: &Result<T, E>,
+) {
     let printed = match result {
         Ok(value) => format!("{value:?}"),
         Err(error) => format!("{error} {error:?}"),
@@ -180,7 +183,7 @@ fn no_token<T: std::fmt::Debug, E: std::fmt::Debug + std::fmt::Display>(result: 
     assert!(!printed.contains(TOKEN), "{printed}");
 }
 
-fn mutations(server: &GitHubServer) -> Vec<rc_git_testkit::github::RecordedRequest> {
+pub(super) fn mutations(server: &GitHubServer) -> Vec<rc_git_testkit::github::RecordedRequest> {
     server
         .recorded()
         .into_iter()

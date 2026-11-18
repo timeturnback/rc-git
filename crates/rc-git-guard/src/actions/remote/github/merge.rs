@@ -6,15 +6,17 @@
 //!
 //! 1. Read the pull request again now and compare it with the [`PullRequestStamp`] of what the
 //!    user saw: a head, base or state that differs refuses with "changed since you looked".
-//! 2. Refuse what cannot merge as asked ([`merge_blocker`]): not open, a draft, a method the
+//! 2. Refuse what cannot merge as asked. The plain merge ([`MergeKind::Plain`],
+//!    [`merge_blocker`]) refuses a pull request that is not open, a draft, a method the
 //!    repository does not allow, conflicts, and any merge state but clean, unstable or
-//!    has-hooks. A blocked, behind or not-yet-computed state refuses too: GitHub may let an
-//!    account that can bypass branch protection merge such a pull request
-//!    (`viewerCanMergeAsAdmin`), and the plain merge is not that action.
+//!    has-hooks. The admin merge ([`MergeKind::Admin`], [`admin_merge_blocker`]) takes only a
+//!    blocked or behind state the account may merge past (`viewerCanMergeAsAdmin`), and
+//!    refuses everything else, a pull request the plain merge can take included.
 //! 3. Build the [`Action`] from that read and authorize it: the decision the user answered must
 //!    be the one the policy gives now (a challenge for anything else, a pull request whose
 //!    checks or title moved since the challenge was shown, refuses), and no answer at all
-//!    refuses.
+//!    refuses. The admin merge's decision also holds what it skips, and its challenge needs the
+//!    pull request's number typed.
 //! 4. Send exactly one mutation, built from the proof alone ([`super::mutation`]), carrying the
 //!    expected head and the method. It is never sent again, at any layer.
 //! 5. Read the outcome as one of three ([`MergeOutcome`]): merged (GitHub said so), refused
@@ -22,6 +24,8 @@
 //!    the unknown case reads the pull request once more, to settle what it can.
 //!
 //! Every refusal before step 4 is a [`MergeRefusal`] and means nothing was sent.
+
+mod admin;
 
 use rc_git_core::Oid;
 use serde_json::Value;
@@ -37,6 +41,8 @@ use super::text::single_line;
 use super::{GitHubError, GitHubHost, RepositoryTarget};
 use crate::actions::remote::Cancel;
 use crate::{Action, Confirmation, Decision, Policy, Refusal};
+
+pub use admin::{Bypassed, PullRequestAdminMerge, admin_merge_blocker};
 
 /// The longest title a challenge quotes, in characters.
 const TITLE_CHARS: usize = 120;
@@ -73,6 +79,18 @@ impl PullRequestMerge {
         if let Some(blocker) = merge_blocker(detail, method) {
             return Err(blocker);
         }
+        Self::read(target, detail, method)
+    }
+
+    /// The facts of `detail` a merge names, whatever stands in its way: only for a constructor
+    /// that has already decided the merge may be offered ([`PullRequestMerge::new`], and
+    /// [`PullRequestAdminMerge::new`] for the merge it wraps). Private to this module and the
+    /// admin merge's, so no other code builds a merge of a read its blockers did not pass.
+    fn read(
+        target: &RepositoryTarget,
+        detail: &PullRequestDetail,
+        method: MergeMethod,
+    ) -> Result<Self, MergeBlocker> {
         let id = detail.id.clone().ok_or(MergeBlocker::NoId)?;
         let summary = &detail.summary;
         Ok(Self {
@@ -210,6 +228,14 @@ pub enum MergeBlocker {
     /// The host sent no node id for it, so no mutation can name it.
     #[error("the host sent no id for it, so rc-git cannot name it in a merge")]
     NoId,
+    /// An admin merge of a pull request the plain merge can take: nothing blocks it, so there
+    /// is no protection to merge past.
+    #[error("nothing blocks it, so there is no branch protection to merge past; use Merge")]
+    NothingToBypass,
+    /// An admin merge GitHub does not say the account may make: `viewerCanMergeAsAdmin` is
+    /// false, or the host did not say.
+    #[error("GitHub does not report that your account may merge it past branch protection")]
+    NoAdminRight,
 }
 
 fn state_word(state: PullRequestState) -> &'static str {
@@ -274,6 +300,17 @@ fn merge_state_blocker(state: Option<MergeStateStatus>) -> Option<MergeBlocker> 
     }
 }
 
+/// Which merge the user asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MergeKind {
+    /// The plain merge: only a pull request nothing stands in the way of ([`merge_blocker`]).
+    Plain,
+    /// The admin merge: a pull request branch protection blocks, past that protection, when
+    /// GitHub says the account may ([`admin_merge_blocker`]). Its challenge asks for the pull
+    /// request's number, typed.
+    Admin,
+}
+
 /// Which pull request to merge and how, with the account that merges it.
 #[derive(Debug, Clone, Copy)]
 pub struct MergeTarget<'a> {
@@ -287,6 +324,8 @@ pub struct MergeTarget<'a> {
     pub stamp: &'a PullRequestStamp,
     /// The method the user chose.
     pub method: MergeMethod,
+    /// The plain merge or the admin merge, as the user chose.
+    pub kind: MergeKind,
 }
 
 /// The user's answer to a merge's challenge.
@@ -294,7 +333,7 @@ pub struct MergeTarget<'a> {
 pub struct MergeAnswer<'a> {
     /// The decision the challenge showed, as [`plan_merge_pull_request`] handed it out.
     pub decision: &'a Decision,
-    /// What the user typed in the challenge's field; empty for a plain confirm.
+    /// What the user typed in the challenge's field, untouched; empty for a plain confirm.
     pub typed: &'a str,
 }
 
@@ -326,6 +365,8 @@ pub struct MergePlan {
     pub decision: Decision,
     /// The pull request as read.
     pub detail: PullRequestDetail,
+    /// What an admin merge skips, as that read reports it; `None` for the plain merge.
+    pub bypassed: Option<Bypassed>,
 }
 
 /// Where a merge stands once its request was sent: never two-valued, since a request whose
@@ -461,12 +502,16 @@ pub fn plan_merge_pull_request(
     merge: &MergeTarget<'_>,
     cancel: &Cancel,
 ) -> Result<MergePlan, MergeRefusal> {
-    let (detail, action) = fresh(merge, cancel)?;
-    let decision = policy.evaluate(&action);
+    let fresh = fresh(merge, cancel)?;
+    let decision = policy.evaluate(&fresh.action);
     if let Decision::Deny { reason } = decision {
         return Err(MergeRefusal::Denied { reason });
     }
-    Ok(MergePlan { decision, detail })
+    Ok(MergePlan {
+        decision,
+        detail: fresh.detail,
+        bypassed: fresh.bypassed,
+    })
 }
 
 /// Merges the pull request `request` names, as the module's documentation lays out: a fresh
@@ -484,7 +529,7 @@ pub fn merge_pull_request(
 ) -> Result<MergeOutcome, MergeRefusal> {
     let merge = &request.merge;
     let pull_request = label(merge.target, merge.stamp.number);
-    let (_, action) = fresh(merge, cancel)?;
+    let action = fresh(merge, cancel)?.action;
     let proof = confirmed(policy, &action, request.answer, &pull_request)?;
     if cancel.is_cancelled() {
         return Err(MergeRefusal::Cancelled { pull_request });
@@ -510,12 +555,16 @@ pub fn merge_pull_request(
     Ok(settle(merge, lost, cancel))
 }
 
+/// A read made just now and the merge it allows.
+struct Fresh {
+    detail: PullRequestDetail,
+    action: Action,
+    bypassed: Option<Bypassed>,
+}
+
 /// The pull request read now, refused when it changed since the stamp or cannot merge as
-/// asked, and the action that merges it.
-fn fresh(
-    merge: &MergeTarget<'_>,
-    cancel: &Cancel,
-) -> Result<(PullRequestDetail, Action), MergeRefusal> {
+/// asked, and the action that merges it the way [`MergeTarget::kind`] says.
+fn fresh(merge: &MergeTarget<'_>, cancel: &Cancel) -> Result<Fresh, MergeRefusal> {
     let pull_request = label(merge.target, merge.stamp.number);
     let detail = read_pull_request(
         merge.host,
@@ -536,13 +585,31 @@ fn fresh(
     if let Some(what) = changed(merge.stamp, &detail.stamp()) {
         return Err(MergeRefusal::Changed { pull_request, what });
     }
-    let action = PullRequestMerge::new(merge.target, &detail, merge.method).map_err(|blocker| {
-        MergeRefusal::Blocked {
-            pull_request,
-            blocker,
+    let blocked = |blocker| MergeRefusal::Blocked {
+        pull_request: pull_request.clone(),
+        blocker,
+    };
+    let (action, bypassed) = match merge.kind {
+        MergeKind::Plain => {
+            let plain =
+                PullRequestMerge::new(merge.target, &detail, merge.method).map_err(blocked)?;
+            (Action::MergePullRequest(Box::new(plain)), None)
         }
-    })?;
-    Ok((detail, Action::MergePullRequest(Box::new(action))))
+        MergeKind::Admin => {
+            let admin =
+                PullRequestAdminMerge::new(merge.target, &detail, merge.method).map_err(blocked)?;
+            let bypassed = admin.bypassed().clone();
+            (
+                Action::AdminMergePullRequest(Box::new(admin)),
+                Some(bypassed),
+            )
+        }
+    };
+    Ok(Fresh {
+        detail,
+        action,
+        bypassed,
+    })
 }
 
 /// What differs between what the user saw and what was just read, as a phrase; `None` when

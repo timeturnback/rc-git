@@ -856,6 +856,75 @@ fn a_pull_request_merge_is_a_plain_confirm_built_from_its_read() {
     assert_eq!(blocked(|d| d.id = None), MergeBlocker::NoId);
 }
 
+/// The admin merge row of `docs/safety.md`: the pull request's number typed, no backup,
+/// destructive, built only from a read branch protection blocks and that the account may merge
+/// past, naming what it skips.
+#[test]
+fn an_admin_merge_needs_the_number_typed_and_a_blocked_read_the_account_may_merge_past() {
+    use rc_git_guard::Action;
+    use rc_git_guard::actions::github::{
+        GitHubHost, MergeBlocker, MergeMethod, MergeStateStatus, PullRequestAdminMerge,
+        RepositoryTarget, ReviewDecision, ViewerAbilities,
+    };
+    let target =
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap();
+    let mut detail = mergeable_pull_request();
+    detail.merge_state = Some(MergeStateStatus::Blocked);
+    detail.summary.review = Some(ReviewDecision::ReviewRequired);
+    detail.viewer = Some(ViewerAbilities {
+        can_merge_as_admin: true,
+        ..ViewerAbilities::default()
+    });
+    let admin = PullRequestAdminMerge::new(&target, &detail, MergeMethod::Rebase).unwrap();
+    assert_eq!(
+        admin.bypassed().review,
+        Some(ReviewDecision::ReviewRequired)
+    );
+    assert_eq!(
+        admin.bypassed().unreported,
+        1,
+        "deploy is pending and the host did not say whether it is required"
+    );
+    let action = Action::AdminMergePullRequest(Box::new(admin));
+    let Decision::Confirm(challenge) = Policy::default().evaluate(&action) else {
+        panic!("an admin merge is confirmed");
+    };
+    assert_eq!(challenge.typed_phrase(), Some("12"));
+    assert!(!challenge.backup_ref());
+    assert_eq!(challenge.risk(), Risk::Destructive);
+    assert!(
+        challenge.summary().starts_with(
+            "Merge octo/rc-git#12 \u{201c}Add the thing\u{201d} into main past its branch \
+             protection, as an administrator, with a rebase merge: topic at cdcdcdc"
+        ),
+        "{}",
+        challenge.summary()
+    );
+    assert!(
+        challenge
+            .summary()
+            .contains("Known to be skipped: a required review that has not approved it."),
+        "{}",
+        challenge.summary()
+    );
+    assert!(challenge.verify("12").is_some());
+    assert!(challenge.verify("#12").is_none());
+    assert!(challenge.verify("").is_none());
+
+    let refused = |change: fn(&mut rc_git_guard::actions::github::PullRequestDetail)| {
+        let mut detail = detail.clone();
+        change(&mut detail);
+        PullRequestAdminMerge::new(&target, &detail, MergeMethod::Rebase).unwrap_err()
+    };
+    assert_eq!(
+        refused(|d| d.merge_state = Some(MergeStateStatus::Clean)),
+        MergeBlocker::NothingToBypass
+    );
+    assert_eq!(refused(|d| d.viewer = None), MergeBlocker::NoAdminRight);
+    assert_eq!(refused(|d| d.summary.draft = true), MergeBlocker::Draft);
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

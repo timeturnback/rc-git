@@ -211,6 +211,9 @@ impl Policy {
                 true,
             ),
             Action::MergePullRequest(merge) => confirm(risk, merge.summary(), None, false),
+            Action::AdminMergePullRequest(merge) => {
+                confirm(risk, merge.summary(), Some(&merge.phrase()), false)
+            }
         }
     }
 

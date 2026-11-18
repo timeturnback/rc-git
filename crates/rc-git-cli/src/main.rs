@@ -165,6 +165,17 @@ usage: rc-git [--time] <command> <repo> [args]
                                           commit ('-' when unnamed)<TAB>head, then
                                           note<TAB>text. The local repository is unchanged
                                           until you fetch
+  pr merge <n> [repo] --method m --head <oid> --admin --confirm <n>
+                                          merge it past the branch protection that blocks it,
+                                          once, when GitHub says your account may (an admin
+                                          merge). It skips rules set for the base on purpose,
+                                          so it needs the pull request's number typed after
+                                          --confirm; --yes is never enough. Without --confirm
+                                          prints would-merge-admin<TAB>what and one
+                                          bypass<TAB>kind<TAB>value line per thing known to be
+                                          skipped, and exits 10, sending nothing. A pull request
+                                          nothing blocks (use plain merge), one that moved, or
+                                          an account GitHub does not allow, exits 11
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control and bidi characters as \\u{..} escapes.

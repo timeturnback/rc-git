@@ -15,8 +15,11 @@
 //!
 //! One pull request can be scripted to merge ([`MergeScript`]): its read answers from its state
 //! (open, moved, merged), and its one merge mutation succeeds, is refused, meets a head that
-//! moved after a given read, or merges and then stalls or drops the connection, or drops it
-//! without merging.
+//! moved after a given read, meets a pull request that changed some other way after a given
+//! read (a check that finished, a merge state that cleared), or merges and then stalls or drops
+//! the connection, or drops it without merging. The admin merge sends the plain merge's exact
+//! mutation, so the same script serves both: what differs is the read (`mergeStateStatus`,
+//! `viewerCanMergeAsAdmin`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -141,7 +144,8 @@ pub struct MergeScript {
     pub read: String,
     /// The read's answer while it is open at its first head.
     pub open: String,
-    /// The read's answer once its head moved ([`MergeBehaviour::MoveHeadAfter`]).
+    /// The read's answer once its head moved ([`MergeBehaviour::MoveHeadAfter`]), or once it
+    /// changed ([`MergeBehaviour::ChangeAfter`]).
     pub moved: String,
     /// The read's answer once it merged.
     pub merged: String,
@@ -174,6 +178,14 @@ pub enum MergeBehaviour {
         /// The mutation's answer once it moved.
         refusal: String,
     },
+    /// The pull request changes once the read has answered `reads` times: later reads answer
+    /// [`MergeScript::moved`] (the same head, with a check that moved, a merge state that
+    /// cleared, an ability that was withdrawn), and the mutation, should one still arrive,
+    /// merges as [`MergeBehaviour::Merge`] does, so a client that sends it anyway is seen.
+    ChangeAfter {
+        /// Reads answered before it changes.
+        reads: usize,
+    },
     /// Merges, then holds the connection open without answering until the client gives up.
     MergeThenStall,
     /// Merges, then closes the connection without answering.
@@ -192,7 +204,16 @@ struct MergeState {
 
 impl MergeState {
     fn moved(&self) -> bool {
-        matches!(self.script.behaviour, MergeBehaviour::MoveHeadAfter { reads, .. } if self.reads >= reads)
+        match self.script.behaviour {
+            MergeBehaviour::MoveHeadAfter { reads, .. } | MergeBehaviour::ChangeAfter { reads } => {
+                self.reads >= reads
+            }
+            MergeBehaviour::Merge
+            | MergeBehaviour::Refuse { .. }
+            | MergeBehaviour::MergeThenStall
+            | MergeBehaviour::MergeThenDrop
+            | MergeBehaviour::Drop => false,
+        }
     }
 }
 
@@ -927,7 +948,9 @@ fn merge_request(merge: &mut MergeState, body: &str) -> Option<Served> {
         return Some(Served::Answer(json("200 OK", refusal.clone())));
     }
     Some(match &merge.script.behaviour {
-        MergeBehaviour::Merge | MergeBehaviour::MoveHeadAfter { .. } => {
+        MergeBehaviour::Merge
+        | MergeBehaviour::MoveHeadAfter { .. }
+        | MergeBehaviour::ChangeAfter { .. } => {
             merge.merged = true;
             Served::Answer(json("200 OK", merge.script.reply.clone()))
         }

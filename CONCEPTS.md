@@ -24,6 +24,16 @@ an explicit `--yes`, and a confirm-only action refuses to run without it. Verify
 challenge is the only way to obtain the proof the write path demands, so an unconfirmed
 action cannot be expressed.
 
+## Admin merge
+
+Merging a pull request on GitHub past the branch protection that blocks it, which GitHub allows
+an account it reports as able to (`viewerCanMergeAsAdmin`). It is the plain merge's request:
+GitHub, not rc-git, decides whether the account may go past the rules. rc-git offers it only
+while the plain merge is blocked or behind and the account may, never as the default, and its
+challenge lists what the read shows it skips, says that rules the API does not report may be
+skipped too, and needs the pull request's number typed. A pull request nothing blocks has no
+admin merge.
+
 ## Backup ref
 
 A ref recorded under rc-git's own namespace before a destructive action runs, pointing

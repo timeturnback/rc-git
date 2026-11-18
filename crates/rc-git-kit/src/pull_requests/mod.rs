@@ -5,7 +5,8 @@
 //! ([`checks`]), when to poll ([`polling`]), which links in a description may open ([`body`]),
 //! and the words ([`copy`]).
 //!
-//! A tab's merge ([`merge`]) is a state machine too: planning, confirming, merging, done.
+//! A tab's merge ([`merge`]) is a state machine too: planning, confirming, merging, done. It is
+//! a plain merge, or an admin merge past branch protection where GitHub says the account may.
 //!
 //! The network reads are the guard's (`rc_git_guard::actions::github`), and so are the writes:
 //! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge on GitHub,
@@ -29,17 +30,17 @@ pub mod state;
 pub use rc_git_guard::Decision;
 pub use rc_git_guard::actions::Cancel;
 pub use rc_git_guard::actions::github::{
-    ActionsIds, AfterLoss, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress,
-    CheckStatus, CheckTally, DetailFields, GitHubError, MergeBlocker, MergeMethod, MergeMethods,
-    MergeOutcome, MergePlan, MergeRefusal, MergeStateStatus, Mergeable, PageCursor,
+    ActionsIds, AfterLoss, AutoMerge, Bypassed, Check, CheckConclusion, CheckList, CheckProgress,
+    CheckStatus, CheckTally, DetailFields, GitHubError, MergeBlocker, MergeKind, MergeMethod,
+    MergeMethods, MergeOutcome, MergePlan, MergeRefusal, MergeStateStatus, Mergeable, PageCursor,
     PullRequestDetail, PullRequestId, PullRequestPage, PullRequestRemote, PullRequestStamp,
     PullRequestState, PullRequestSummary, RepositoryTarget, ReviewDecision, ServerLink, Settled,
-    StatusState, ViewerAbilities, merge_blocker, multi_line, single_line,
+    StatusState, ViewerAbilities, admin_merge_blocker, merge_blocker, multi_line, single_line,
 };
 
 use changes::{ChangesRead, FetchProblem, HeadFetched};
 use link::{Linked, RepositoryLink};
-use merge::{MergeAsk, MergeStop};
+use merge::{MergeAsk, MergeStop, PlanAsk};
 use rc_git_core::{BlobDiff, TreeChange};
 
 use crate::platform::api_tokens::AccountKey;
@@ -165,17 +166,17 @@ pub trait PullRequestService: Send + Sync {
         cancel: &Cancel,
     ) -> Result<HeadFetched, FetchProblem>;
 
-    /// What merging the pull request `stamp` names with `method` needs the user to answer:
-    /// the guard reads it again, refuses what changed since the stamp or cannot merge, and the
-    /// policy words the challenge from that read. Sends no mutation.
+    /// What merging the pull request `ask` names, with its method and as its kind of merge,
+    /// needs the user to answer: the guard reads it again, refuses what changed since the stamp
+    /// or cannot merge that way, and the policy words the challenge from that read. Sends no
+    /// mutation.
     ///
     /// # Errors
     /// [`MergeStop`] for a cancel and every refusal.
     fn plan_merge(
         &self,
         linked: &Linked,
-        stamp: &PullRequestStamp,
-        method: MergeMethod,
+        ask: PlanAsk<'_>,
         cancel: &Cancel,
     ) -> Result<MergePlan, MergeStop>;
 

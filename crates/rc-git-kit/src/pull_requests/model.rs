@@ -9,8 +9,9 @@
 //! stamp of the tab's current read: a read that lands with another head or base starts them
 //! over. The head is fetched only from [`PullRequestsModel::fetch_changes`], the user's click.
 //!
-//! A tab's merge ([`super::merge`]) starts only from [`PullRequestsModel::start_merge`] and
-//! sends only from [`PullRequestsModel::confirm_merge`], the challenge's confirm, once per
+//! A tab's merge ([`super::merge`]) starts only from [`PullRequestsModel::start_merge`], or as
+//! an admin merge only from [`PullRequestsModel::start_admin_merge`] while its control is shown,
+//! and sends only from [`PullRequestsModel::confirm_merge`], the challenge's confirm, once per
 //! confirm. A tab read that no longer matches the stamp a merge started from ends it while it
 //! plans or confirms. After a merge whose request may have left, the tab and the list read
 //! again; nothing local is fetched or moved.
@@ -23,14 +24,14 @@ use super::changes::{ChangesLoad, ChangesState, FileLoad};
 use super::copy::{merge_attempt_log, merge_outcome_log};
 use super::link::{Linked, RepositoryLink};
 use super::merge::{
-    CancelAnswer, MergeAsk, MergeButton, MergeFlow, MergeLoad, MergePhase, MergeStop, PlanLoad,
-    merge_button,
+    AdminMergeButton, CancelAnswer, MergeAsk, MergeButton, MergeFlow, MergeLoad, MergePhase,
+    MergeStop, PlanAsk, PlanLoad, admin_merge_button, merge_button,
 };
 use super::polling::{
     DETAIL_INTERVAL, LIST_INTERVAL, PollInputs, PollPlan, detail_poll, is_due, list_poll,
 };
 use super::state::{DetailLoad, DetailState, ListLoad, ListState};
-use super::{Cancel, MergeMethod, PullRequestService};
+use super::{Cancel, MergeKind, MergeMethod, PullRequestService};
 use crate::blocking::blocking;
 use crate::platform::api_tokens::AccountKey;
 
@@ -799,6 +800,15 @@ impl PullRequestsModel {
         merge_button(tab, self.linked().is_some())
     }
 
+    /// The admin merge control for tab `number`.
+    #[must_use]
+    pub fn admin_merge_button(&self, number: u64) -> AdminMergeButton {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.number() == number) else {
+            return AdminMergeButton::Hidden;
+        };
+        admin_merge_button(tab, self.linked().is_some())
+    }
+
     /// Tab `number`'s merge, once started.
     #[must_use]
     pub fn merge_flow(&self, number: u64) -> Option<&MergeFlow> {
@@ -835,10 +845,40 @@ impl PullRequestsModel {
         let MergeButton::Enabled { methods } = self.merge_button(number) else {
             return;
         };
+        self.begin_merge(number, (method, MergeKind::Plain), &methods, cx);
+    }
+
+    /// Starts an admin merge of the selected tab with `method`, past the branch protection that
+    /// blocks it: the guard reads it again and the policy words the challenge, which asks for the
+    /// number. Nothing unless the admin control is shown and takes a click with `method`, and
+    /// never beside a running merge.
+    pub fn start_admin_merge(&mut self, method: MergeMethod, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let AdminMergeButton::Shown { methods } = self.admin_merge_button(number) else {
+            return;
+        };
+        self.begin_merge(number, (method, MergeKind::Admin), &methods, cx);
+    }
+
+    /// Starts a merge of tab `number` the way `how` says, when `methods` (what its control
+    /// offers) holds the method, the tab shows a current read, and no merge of it runs.
+    fn begin_merge(
+        &mut self,
+        number: u64,
+        (method, kind): (MergeMethod, MergeKind),
+        methods: &[MergeMethod],
+        cx: &mut Context<Self>,
+    ) {
         let running = self
             .merge_flow(number)
             .is_some_and(|flow| !matches!(flow.phase(), MergePhase::Done(_)));
-        let stamp = self.selected_tab().and_then(DetailState::stamp);
+        let stamp = self
+            .tabs
+            .iter()
+            .find(|tab| tab.number() == number)
+            .and_then(DetailState::stamp);
         let (Some(stamp), Some(linked)) = (stamp, self.linked()) else {
             return;
         };
@@ -846,7 +886,7 @@ impl PullRequestsModel {
             return;
         }
         self.merge_generation += 1;
-        let (flow, load) = MergeFlow::start(self.merge_generation, stamp, method);
+        let (flow, load) = MergeFlow::start(self.merge_generation, stamp, method, kind);
         self.merges.retain(|flow| flow.number() != number);
         self.merges.push(flow);
         self.run_plan(load, linked, cx);
@@ -861,7 +901,14 @@ impl PullRequestsModel {
         let service = Arc::clone(&self.service);
         let read = blocking(cx.background_executor(), {
             let load = load.clone();
-            move || service.plan_merge(&linked, &load.stamp, load.method, &cancel)
+            move || {
+                let ask = PlanAsk {
+                    stamp: &load.stamp,
+                    method: load.method,
+                    kind: load.kind,
+                };
+                service.plan_merge(&linked, ask, &cancel)
+            }
         });
         cx.spawn(async move |this, cx| {
             let answer = read.await;
@@ -935,6 +982,7 @@ impl PullRequestsModel {
             let ask = MergeAsk {
                 stamp: &load.stamp,
                 method: load.method,
+                kind: load.kind,
                 decision: Some(&load.decision),
                 typed: &load.typed,
                 on_send: &on_send,

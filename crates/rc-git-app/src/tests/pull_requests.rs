@@ -399,3 +399,83 @@ fn a_merge_runs_only_from_its_challenge_and_once(cx: &mut TestAppContext) {
     assert_eq!((state.merge_calls.len(), state.merges_sent), (1, 1));
     assert_eq!(state.merge_calls[0].stamp, detail.stamp());
 }
+
+#[gpui::test]
+fn an_admin_merge_runs_only_from_its_own_challenge_with_the_number_typed(cx: &mut TestAppContext) {
+    use rc_git_kit::fake::{admin_merge_plan, blocked_detail};
+    use rc_git_kit::pull_requests::MergeKind;
+    use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton, MergeEnd, MergePhase};
+    use rc_git_kit::pull_requests::{MergeMethod, MergeOutcome, Settled};
+
+    let fake = FakePullRequests::new();
+    fake.state()
+        .pages
+        .insert(None, Ok(page(vec![pull_request(7, "Ship", oid(7))], None)));
+    let detail = blocked_detail(pull_request_detail(
+        pull_request(7, "Ship", oid(7)),
+        "",
+        CheckList::default(),
+    ));
+    fake.state().details.insert(7, Ok(detail.clone()));
+    fake.state().plan = Ok(admin_merge_plan(&detail, MergeMethod::Squash));
+    fake.state().merge = Ok(MergeOutcome::Merged {
+        merge_commit: None,
+        settled: Settled::Answer,
+    });
+    let (harness, window) = shell(cx, &fake);
+    listed(cx, &window);
+    window.update(cx, |window, cx| window.open_pull_request(7, cx));
+    let model = cx.read(|cx| window.read(cx).pull_requests().clone());
+    wait_until(cx, |cx| {
+        model.read_with(cx, |model, _| {
+            matches!(model.admin_merge_button(7), AdminMergeButton::Shown { .. })
+        })
+    });
+    assert!(model.read_with(cx, |model, _| matches!(
+        model.merge_button(7),
+        MergeButton::Disabled { .. }
+    )));
+    let handle = harness.shell.read_with(cx, |shell, _| {
+        shell
+            .windows()
+            .first()
+            .map_or_else(|| panic!("a window"), |tab| tab.handle)
+    });
+
+    model.update(cx, |model, cx| {
+        model.start_admin_merge(MergeMethod::Squash, cx);
+    });
+    let sheet = merge_sheet(cx, &window);
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    sheet.update_in(&mut visual, |sheet, window, cx| {
+        assert!(!sheet.can_confirm(cx), "nothing typed yet");
+        sheet.confirm(window, cx);
+        sheet.type_phrase("#7", window, cx);
+        assert!(!sheet.can_confirm(cx), "#7 is not the number");
+        sheet.confirm(window, cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        fake.state().merge_calls.is_empty(),
+        "no merge without the number"
+    );
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    sheet.update_in(&mut visual, |sheet, window, cx| {
+        sheet.type_phrase(" 7 ", window, cx);
+        assert!(sheet.can_confirm(cx));
+        sheet.confirm(window, cx);
+        sheet.confirm(window, cx);
+    });
+    wait_until(cx, |cx| {
+        model.read_with(cx, |model, _| {
+            matches!(
+                model.merge_flow(7).map(|flow| flow.phase().clone()),
+                Some(MergePhase::Done(MergeEnd::Merged { .. }))
+            )
+        })
+    });
+    let state = fake.state();
+    assert_eq!((state.merge_calls.len(), state.merges_sent), (1, 1));
+    assert_eq!(state.merge_calls[0].kind, MergeKind::Admin);
+    assert_eq!(state.merge_calls[0].typed, " 7 ", "handed on as typed");
+}

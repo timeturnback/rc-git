@@ -696,3 +696,172 @@ fn pr_merge_whose_answer_is_lost_exits_12_and_sends_once() {
     assert!(said.contains("on GitHub before trying again"), "{said}");
     assert_eq!(server.mutation_requests(), 1);
 }
+
+/// Pull request 7 on `server`, open at [`HEAD`], blocked by branch protection with the account
+/// allowed past it and a review required, merging with a squash as `behaviour` says.
+fn script_admin_merge(server: &GitHubServer, behaviour: MergeBehaviour) {
+    let blocked = |head: &str, state: &str| {
+        mergeable(head, state)
+            .replace(
+                r#""mergeStateStatus": "CLEAN""#,
+                r#""mergeStateStatus": "BLOCKED""#,
+            )
+            .replace(
+                r#""viewerCanMergeAsAdmin": false"#,
+                r#""viewerCanMergeAsAdmin": true"#,
+            )
+            .replace(
+                r#""reviewDecision": null"#,
+                r#""reviewDecision": "REVIEW_REQUIRED""#,
+            )
+    };
+    let open = blocked(HEAD, "OPEN");
+    assert!(open.contains("BLOCKED") && open.contains("REVIEW_REQUIRED") && open.contains("true"));
+    let reply = format!(
+        r#"{{"data": {{"mergePullRequest": {{"pullRequest": {{"number": 7, "state": "MERGED",
+            "merged": true, "headRefOid": "{HEAD}", "mergeCommit": {{"oid": "{MOVED}"}}}}}}}}}}"#
+    );
+    server.script_merge(MergeScript {
+        read: detail_request_body(&pr_target(server), 7, false),
+        open,
+        moved: blocked(MOVED, "OPEN"),
+        merged: mergeable(HEAD, "MERGED"),
+        mutation: merge_request_body(NODE, HEAD, MergeMethod::Squash),
+        reply,
+        behaviour,
+    });
+}
+
+/// `pr merge 7` of [`HEAD`] with a squash, as an admin merge, with `extra` after.
+fn admin_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "merge", "7", "--method", "squash", "--head", HEAD, "--admin",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+#[test]
+fn pr_merge_admin_without_its_number_prints_what_it_skips_and_sends_nothing() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_admin_merge(&server, MergeBehaviour::Merge);
+    for extra in [&[][..], &["--yes"][..]] {
+        let out = run_pr(&scratch, &repo, &ssh, &admin_args(extra));
+        assert_eq!(out.status.code(), Some(10), "{}", text(&out.stderr));
+        let printed = text(&out.stdout);
+        assert!(
+            printed.starts_with(
+                "would-merge-admin\tMerge octo/rc-git#7 \u{201c}Ship\u{201d} into main past its \
+                 branch protection, as an administrator, with a squash merge: topic at 0123456"
+            ),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("\nbypass\treview\treview-required\n"),
+            "{printed}"
+        );
+        assert!(
+            printed.ends_with("bypass\tunreported-rules\tany the API does not report\n"),
+            "{printed}"
+        );
+        assert!(
+            text(&out.stderr).contains("--confirm 7 (--yes is not enough)"),
+            "{}",
+            text(&out.stderr)
+        );
+    }
+    for typed in ["8", "#7", "07", ""] {
+        let out = run_pr(&scratch, &repo, &ssh, &admin_args(&["--confirm", typed]));
+        assert_eq!(
+            out.status.code(),
+            Some(10),
+            "{typed:?}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("type '7' to confirm"),
+            "{}",
+            text(&out.stderr)
+        );
+    }
+    assert_eq!(server.mutation_requests(), 0);
+    assert!(!server.merged());
+}
+
+#[test]
+fn pr_merge_admin_with_its_number_merges_once() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_admin_merge(&server, MergeBehaviour::Merge);
+    let out = run_pr(&scratch, &repo, &ssh, &admin_args(&["--confirm", "7"]));
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\nnote\tMerged #7 into main");
+    assert!(printed.starts_with(&merged), "{printed}");
+    assert_eq!(server.mutation_requests(), 1);
+    assert!(server.merged());
+    assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
+}
+
+#[test]
+fn pr_merge_admin_of_a_pull_request_nothing_blocks_or_that_github_refuses_merges_nothing() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let confirmed = admin_args(&["--confirm", "7"]);
+    let out = run_pr(&scratch, &repo, &ssh, &confirmed);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("no branch protection to merge past; use Merge"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(server.mutation_requests(), 0);
+
+    let refusing = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&refusing, None);
+    let body = r#"{"data": {"mergePullRequest": null}, "errors": [{"type": "FORBIDDEN",
+        "message": "You're not authorized to bypass branch protections."}]}"#;
+    script_admin_merge(
+        &refusing,
+        MergeBehaviour::Refuse {
+            status: "200 OK",
+            body: body.to_owned(),
+        },
+    );
+    let out = run_pr(&scratch, &repo, &ssh, &confirmed);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    let said = text(&out.stderr);
+    assert!(
+        said.contains("GitHub refused the admin merge of #7"),
+        "{said}"
+    );
+    assert!(said.contains("has not verified"), "{said}");
+    assert_eq!(refusing.mutation_requests(), 1);
+    assert!(!format!("{}{said}", text(&out.stdout)).contains(TOKEN));
+}
+
+#[test]
+fn pr_merge_takes_confirm_only_with_admin() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let signed_in = server.requests();
+    let args = [
+        "merge",
+        "7",
+        "--method",
+        "squash",
+        "--head",
+        HEAD,
+        "--confirm",
+        "7",
+        "--yes",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("--confirm goes with --admin"));
+    assert_eq!(server.requests(), signed_in, "a usage error reads nothing");
+    assert_eq!(server.mutation_requests(), 0);
+}

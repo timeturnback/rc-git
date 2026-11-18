@@ -6,6 +6,19 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Added
 
+- When branch protection blocks a pull request and GitHub says your account may merge past it,
+  its tab shows a separate Merge Without Waiting for Requirements (Admin) control under the
+  greyed-out Merge. It skips rules your team set for the base branch on purpose, so RCGit reads
+  the pull request again first, lists what it knows will be skipped (required checks that failed
+  or have not finished, a review that is still required or asked for changes, a branch that is
+  out of date), says other rules GitHub does not report may be skipped too, and merges only
+  once you type the pull request's number. If anything moved since you looked, including a
+  check, nothing is sent. A pull request that can merge normally, or one GitHub does not let
+  your account merge past protection, has no such control. Every attempt and outcome is written
+  to the app's log. In Terminal, `rc-git pr merge <n> --method squash --head <oid> --admin
+  --confirm <n>` does the same; without `--confirm` it prints what would be skipped and sends
+  nothing, and `--yes` is not enough.
+
 - A pull request's tab can merge it on GitHub: pick Squash and Merge, Create a Merge Commit or
   Rebase and Merge (only the ones the repository allows), then Merge. RCGit reads the pull
   request again first and asks you to confirm what it is about to merge: the repository and

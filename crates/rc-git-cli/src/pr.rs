@@ -14,6 +14,9 @@
 //! refuses before anything is sent. Without `--yes` it prints what would be merged and merges
 //! nothing. It sends one request at most and never sends it again; an answer that was lost
 //! ends with its own exit code and tells the caller to look at the pull request on GitHub.
+//! `pr merge --admin` is the admin merge past branch protection: `--yes` does nothing for it,
+//! and without `--confirm` it prints what would be skipped and sends nothing. The `--confirm`
+//! text goes to the guard as typed; the guard alone checks it against the number.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,10 +39,13 @@ use rc_git_kit::pull_requests::copy::{
 };
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
-use rc_git_kit::pull_requests::merge::{MergeAsk, MergeEnd, MergeFlow, MergePhase, MergeStop};
+use rc_git_kit::pull_requests::merge::{
+    MergeAsk, MergeEnd, MergeFlow, MergePhase, MergeStop, PlanAsk,
+};
 use rc_git_kit::pull_requests::{
-    Decision, MergeMethod, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService,
-    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ServerLink,
+    Bypassed, Decision, MergeKind, MergeMethod, MergePlan, MergeRefusal, PageCursor,
+    PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
+    ReadError, ReviewDecision, ServerLink,
 };
 
 use crate::{
@@ -405,7 +411,21 @@ fn git_secrets(
 }
 
 /// `pr merge`'s valued flags.
-const MERGE_VALUED: [&str; 4] = ["--login", "--ssh-dir", "--method", "--head"];
+const MERGE_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--method", "--head", "--confirm"];
+
+/// The merge `--admin` asks for; `--confirm` belongs to it alone.
+fn merge_kind(args: &VerbArgs<'_>) -> Result<MergeKind> {
+    if args.has("--admin") {
+        return Ok(MergeKind::Admin);
+    }
+    if args.value(&["--confirm"]).is_some() {
+        return Err(UsageError(
+            "--confirm goes with --admin; a plain pr merge is confirmed with --yes".to_owned(),
+        )
+        .into());
+    }
+    Ok(MergeKind::Plain)
+}
 
 /// The method `--method` names.
 fn merge_method(args: &VerbArgs<'_>) -> Result<MergeMethod> {
@@ -450,16 +470,17 @@ fn merge_stopped(stop: &MergeStop) -> anyhow::Error {
     .into()
 }
 
-/// Merges pull request `<n>` as `--head` and `--method` say, once `--yes` confirms it. The
-/// head the caller saw and the base and state read now are the stamp the guard compares a
-/// fresh read with; the guard's plan words what is merged, and its decision is the answer.
+/// Merges pull request `<n>` as `--head` and `--method` say, once `--yes` confirms it, or, with
+/// `--admin`, past branch protection once `--confirm` carries the number. The head the caller
+/// saw and the base and state read now are the stamp the guard compares a fresh read with; the
+/// guard's plan words what is merged, and its decision is the answer.
 fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
-    use std::io::Write as _;
-    let args = split_args("pr merge", raw, &MERGE_VALUED, &["--yes"])?;
+    let args = split_args("pr merge", raw, &MERGE_VALUED, &["--yes", "--admin"])?;
     args.expect(1, 2, "<number> [repo]")?;
     let number = number(&args)?;
     let method = merge_method(&args)?;
     let head = merge_head(&args)?;
+    let kind = merge_kind(&args)?;
     let (service, linked) = linked(&args, 1)?;
     let cancel = crate::interruptible_cancel()?;
     let detail = service
@@ -472,26 +493,29 @@ fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
         state: PullRequestState::Open,
     };
     let plan = service
-        .plan_merge(&linked, &stamp, method, &cancel)
+        .plan_merge(
+            &linked,
+            PlanAsk {
+                stamp: &stamp,
+                method,
+                kind,
+            },
+            &cancel,
+        )
         .map_err(|stop| merge_stopped(&stop))?;
-    let summary = match &plan.decision {
-        Decision::Confirm(challenge) => challenge.summary().to_owned(),
-        Decision::Allow | Decision::Deny { .. } => format!("merge #{number}"),
+    let typed = match kind {
+        MergeKind::Plain => plain_answer(&args, &plan, out)?,
+        MergeKind::Admin => admin_answer(&args, &plan, out)?,
     };
-    if !args.has("--yes") {
-        writeln!(out, "would-merge\t{summary}")?;
-        return Err(
-            UsageError("pr merge needs --yes to merge; nothing was sent".to_owned()).into(),
-        );
-    }
-    let (mut flow, load) = MergeFlow::start(1, stamp.clone(), method);
+    let (mut flow, load) = MergeFlow::start(1, stamp.clone(), method, kind);
     flow.planned(load.generation, Ok(plan.clone()));
-    flow.confirm(String::new());
+    flow.confirm(typed.clone());
     let ask = MergeAsk {
         stamp: &stamp,
         method,
+        kind,
         decision: Some(&plan.decision),
-        typed: "",
+        typed: &typed,
         on_send: &|| {},
     };
     let answer = service.merge(&linked, ask, &cancel);
@@ -500,6 +524,81 @@ fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     }
     flow.finished(load.generation, answer);
     merge_report(out, &linked, &flow)
+}
+
+/// The challenge's summary of `plan`.
+fn plan_summary(plan: &MergePlan) -> String {
+    match &plan.decision {
+        Decision::Confirm(challenge) => challenge.summary().to_owned(),
+        Decision::Allow | Decision::Deny { .. } => format!("merge #{}", plan.detail.summary.number),
+    }
+}
+
+/// The plain merge's answer: `--yes`, or what would be merged and a usage error.
+fn plain_answer(args: &VerbArgs<'_>, plan: &MergePlan, out: &mut Vec<u8>) -> Result<String> {
+    use std::io::Write as _;
+    if !args.has("--yes") {
+        writeln!(out, "would-merge\t{}", plan_summary(plan))?;
+        return Err(
+            UsageError("pr merge needs --yes to merge; nothing was sent".to_owned()).into(),
+        );
+    }
+    Ok(String::new())
+}
+
+/// The admin merge's answer: the `--confirm` text exactly as given, which the guard checks.
+/// Without it (`--yes` counts for nothing here), what would be merged and skipped, and exit 10.
+fn admin_answer(args: &VerbArgs<'_>, plan: &MergePlan, out: &mut Vec<u8>) -> Result<String> {
+    use std::io::Write as _;
+    if let Some(typed) = args.value(&["--confirm"]) {
+        return Ok(typed.to_owned());
+    }
+    writeln!(out, "would-merge-admin\t{}", plan_summary(plan))?;
+    if let Some(bypassed) = &plan.bypassed {
+        write_bypassed(out, bypassed, &plan.detail.summary.base_ref)?;
+    }
+    let number = plan.detail.summary.number;
+    Err(ReadFailure {
+        message: format!(
+            "pr merge --admin needs the pull request's number typed: --confirm {number} (--yes \
+             is not enough); nothing was sent"
+        ),
+        code: EXIT_NOT_CONFIRMED,
+    }
+    .into())
+}
+
+/// One `bypass` record per thing an admin merge is known to skip.
+fn write_bypassed(out: &mut Vec<u8>, bypassed: &Bypassed, base: &str) -> Result<()> {
+    use std::io::Write as _;
+    for name in &bypassed.failed {
+        writeln!(out, "bypass\tfailed-required-check\t{name}")?;
+    }
+    for name in &bypassed.pending {
+        writeln!(out, "bypass\tpending-required-check\t{name}")?;
+    }
+    match bypassed.review {
+        Some(ReviewDecision::ReviewRequired) => writeln!(out, "bypass\treview\treview-required")?,
+        Some(ReviewDecision::ChangesRequested) => {
+            writeln!(out, "bypass\treview\tchanges-requested")?;
+        }
+        Some(ReviewDecision::Approved | ReviewDecision::Unknown) | None => {}
+    }
+    if bypassed.behind {
+        writeln!(out, "bypass\tbehind\t{base}")?;
+    }
+    if bypassed.unreported > 0 {
+        writeln!(
+            out,
+            "bypass\tmaybe-required-checks\t{}",
+            bypassed.unreported
+        )?;
+    }
+    if bypassed.unread > 0 {
+        writeln!(out, "bypass\tunread-checks\t{}", bypassed.unread)?;
+    }
+    writeln!(out, "bypass\tunreported-rules\tany the API does not report")?;
+    Ok(())
 }
 
 /// What `pr merge` prints once its request may have left, and the code it ends with.

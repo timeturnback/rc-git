@@ -24,11 +24,10 @@ use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pu
 use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
 use super::copy::{fetch_problem, problem};
 use super::link::{Linked, RepositoryLink, link_repository};
-use super::merge::{MergeAsk, MergeStop};
+use super::merge::{MergeAsk, MergeStop, PlanAsk};
 use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
 use super::{
-    MergeMethod, MergeOutcome, MergePlan, MergeRefusal, PullRequestService, PullRequestStamp,
-    ReadError,
+    MergeOutcome, MergePlan, MergeRefusal, PullRequestService, PullRequestStamp, ReadError,
 };
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
 use crate::github::tokens::{TokenError, TokenKeeper};
@@ -264,8 +263,7 @@ impl PullRequestService for LivePullRequests {
     fn plan_merge(
         &self,
         linked: &Linked,
-        stamp: &PullRequestStamp,
-        method: MergeMethod,
+        ask: PlanAsk<'_>,
         cancel: &Cancel,
     ) -> Result<MergePlan, MergeStop> {
         let token = self.merge_token(linked, cancel)?;
@@ -273,8 +271,9 @@ impl PullRequestService for LivePullRequests {
             host: linked.account.key.host(),
             token: &token,
             target: &linked.target,
-            stamp,
-            method,
+            stamp: ask.stamp,
+            method: ask.method,
+            kind: ask.kind,
         };
         plan_merge_pull_request(policy(), &merge, cancel).map_err(stop)
     }
@@ -293,6 +292,7 @@ impl PullRequestService for LivePullRequests {
                 target: &linked.target,
                 stamp: ask.stamp,
                 method: ask.method,
+                kind: ask.kind,
             },
             answer: ask.decision.map(|decision| MergeAnswer {
                 decision,

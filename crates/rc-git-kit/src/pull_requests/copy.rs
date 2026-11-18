@@ -9,9 +9,9 @@ use super::checks::CheckState;
 use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
 use super::state::Freshness;
 use super::{
-    AfterLoss, DetailFields, MergeBlocker, MergeMethod, Mergeable, PullRequestStamp,
-    PullRequestState, PullRequestSummary, ReadError, ReviewDecision, ServerLink, Settled,
-    single_line,
+    AfterLoss, Bypassed, DetailFields, MergeBlocker, MergeKind, MergeMethod, Mergeable,
+    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ReviewDecision, ServerLink,
+    Settled, single_line,
 };
 use crate::guard_bridge::{FailureKind, classify};
 use crate::history_text::{change_path_label, short_hash};
@@ -307,6 +307,17 @@ pub const MERGE_SIGNED_OUT: &str =
 /// Why Merge takes no click when the repository allows no method.
 pub const MERGE_NO_METHOD: &str = "Can't merge: the repository allows no merge method.";
 
+/// The admin merge control's button: worded so it never reads as Merge.
+pub const ADMIN_MERGE: &str = "Merge Without Waiting for Requirements (Admin)";
+
+/// The admin merge challenge's title and confirm button.
+pub const ADMIN_MERGE_TITLE: &str = "Merge Past Branch Protection";
+
+/// The line beside the admin merge control.
+pub const ADMIN_MERGE_NOTE: &str = "GitHub says your account may merge this past the branch \
+     protection that blocks it. That skips rules set for the base on purpose: the next step lists \
+     what is known to be skipped and asks you to type the pull request's number.";
+
 /// The button that stops a merge whose request has not left.
 pub const MERGE_CANCEL: &str = "Cancel";
 
@@ -353,13 +364,22 @@ pub fn merge_stop_message(stop: &MergeStop) -> String {
     }
 }
 
+/// A merge of `kind` as the notes and the log name it.
+fn merge_word(kind: MergeKind) -> &'static str {
+    match kind {
+        MergeKind::Plain => "merge",
+        MergeKind::Admin => "admin merge",
+    }
+}
+
 /// What the tab says under the Merge control for `flow`; `None` while the challenge is up,
 /// since the sheet says it.
 #[must_use]
 pub fn merge_note(flow: &MergeFlow) -> Option<String> {
     let number = flow.number();
+    let word = merge_word(flow.kind());
     let note = match flow.phase() {
-        MergePhase::Planning => format!("Reading #{number} again before the merge…"),
+        MergePhase::Planning => format!("Reading #{number} again before the {word}…"),
         MergePhase::Confirming(_) => return None,
         MergePhase::Merging {
             sent: false,
@@ -368,14 +388,29 @@ pub fn merge_note(flow: &MergeFlow) -> Option<String> {
         MergePhase::Merging {
             sent: false,
             cancelling: true,
-        } => format!("Stopping the merge of #{number}…"),
+        } => format!("Stopping the {word} of #{number}…"),
         MergePhase::Merging { sent: true, .. } => format!(
-            "The merge request for #{number} was sent; it cannot be stopped now. Waiting for \
+            "The {word} request for #{number} was sent; it cannot be stopped now. Waiting for \
              GitHub's answer…"
         ),
+        MergePhase::Done(MergeEnd::Refused { reason }) if flow.kind() == MergeKind::Admin => {
+            admin_refused_note(number, reason)
+        }
         MergePhase::Done(end) => merge_end_note(number, &flow.stamp().base_ref, end),
     };
     Some(note)
+}
+
+/// What an admin merge GitHub refused says: its reason, and what rc-git does not know about
+/// which sign-in carries the right to merge past branch protection.
+fn admin_refused_note(number: u64, reason: &str) -> String {
+    format!(
+        "GitHub refused the admin merge of #{number}: {reason} Nothing was merged. GitHub alone \
+         decides who may merge past branch protection, and rc-git has not verified that a \
+         GitHub App sign-in carries an administrator's bypass right: if this account signed in \
+         through a GitHub App, signing in through an OAuth App or with a personal access token \
+         may be needed."
+    )
 }
 
 /// What a finished merge says.
@@ -427,14 +462,44 @@ fn merge_end_note(number: u64, base: &str, end: &MergeEnd) -> String {
 }
 
 /// The app log's line for a merge of `repository#number` at `head` with `method` that is about
-/// to be sent: no token, no server text but the guard's scrubbed messages.
+/// to be sent, with what an admin merge skips: no token, no server text but the guard's
+/// scrubbed messages and neutralized check names.
 #[must_use]
 pub fn merge_attempt_log(repository: &str, flow: &MergeFlow) -> String {
-    format!(
-        "merge {repository}#{} head {} method {}: sending",
+    format!("{}: sending", log_subject(repository, flow))
+}
+
+/// `merge owner/name#7 head <oid> method squash`, and for an admin merge
+/// `admin merge … bypassing <what>`.
+fn log_subject(repository: &str, flow: &MergeFlow) -> String {
+    let subject = format!(
+        "{} {repository}#{} head {} method {}",
+        merge_word(flow.kind()),
         flow.number(),
         flow.stamp().head_oid,
         merge_method_word(flow.method())
+    );
+    match flow.kind() {
+        MergeKind::Plain => subject,
+        MergeKind::Admin => format!("{subject} bypassing {}", bypassed_log(flow.bypassed())),
+    }
+}
+
+/// What an admin merge skips, for the log: every list in full, names as the guard neutralized
+/// them.
+fn bypassed_log(bypassed: Option<&Bypassed>) -> String {
+    let Some(bypassed) = bypassed else {
+        return "[not read]".to_owned();
+    };
+    let review = match bypassed.review {
+        Some(ReviewDecision::ReviewRequired) => "review required",
+        Some(ReviewDecision::ChangesRequested) => "changes requested",
+        Some(ReviewDecision::Approved | ReviewDecision::Unknown) | None => "none",
+    };
+    format!(
+        "[failed required checks: {:?}; pending required checks: {:?}; checks of unreported \
+         requirement not passed: {}; checks not read: {}; review: {review}; behind base: {}]",
+        bypassed.failed, bypassed.pending, bypassed.unreported, bypassed.unread, bypassed.behind
     )
 }
 
@@ -457,12 +522,7 @@ pub fn merge_outcome_log(repository: &str, flow: &MergeFlow, end: &MergeEnd) -> 
         MergeEnd::Refused { reason } => format!("refused: {reason}"),
         MergeEnd::Unknown { problem, after } => format!("unknown: {problem}; after: {after:?}"),
     };
-    format!(
-        "merge {repository}#{} head {} method {}: {outcome}",
-        flow.number(),
-        flow.stamp().head_oid,
-        merge_method_word(flow.method())
-    )
+    format!("{}: {outcome}", log_subject(repository, flow))
 }
 
 /// What a failed head fetch says, with what to do when a secret or an approval saved for
