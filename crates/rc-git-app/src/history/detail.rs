@@ -1,29 +1,34 @@
-//! The open commit's half of the History pane: the detail header (title, refs, identities,
-//! body, parents) over the files it changed, and the picked file's path over its diff.
+//! The open commit's detail under the History commit list: a tab bar over one of two tabs.
+//! Commit shows the header (title, refs, identities, body, parents) beside the files it
+//! changed; Changes shows the files beside the picked file's path and diff. File Tree in the
+//! bar shows the commit's files in the Files pane.
 
 use std::ops::Range;
 
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, uniform_list,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, relative,
+    uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::resizable::{h_resizable, resizable_panel};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
-use rc_git_core::{CommitDetail, CommitSummary, RefEntry, TreeChange};
+use rc_git_core::{CommitDetail, CommitSummary, EntryKind, RefEntry, TreeChange};
 use rc_git_kit::browser::{BrowserModel, CommitDetailState};
-use rc_git_kit::change_tree::ChangeGrouping;
+use rc_git_kit::change_tree::{ChangeGrouping, last_component};
 use rc_git_kit::diff_text::change_letter;
 use rc_git_kit::history_text::{
-    change_path_label, changes_count, committer_differs, detail_title, identity_line,
-    parents_label, short_hash,
+    change_path_label, changes_count, commit_line, committer_differs, identity_line, parents_label,
+    short_hash,
 };
+use rc_git_kit::layout_policy::{HISTORY_COMMIT_FILES_SHARE, HISTORY_FILES_MIN_WIDTH};
 use rc_git_kit::models::FileDiffState;
 
-use super::{HistoryEvent, HistoryPane};
-use crate::icons::{Glyph, icon};
+use super::{DetailTab, HistoryEvent, HistoryPane, splits};
+use crate::icons::{Glyph, entry_glyph, icon, listing_icon};
 use crate::status::change_color;
-use crate::style;
+use crate::style::{self, points};
 
 /// What the header shows for one detail state.
 struct Header {
@@ -74,37 +79,229 @@ fn shown_change(state: &FileDiffState) -> Option<&TreeChange> {
 }
 
 impl HistoryPane {
-    /// The header over the file list.
-    pub(super) fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The tab bar over the open tab.
+    pub(super) fn render_detail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let model = self.model.read(cx);
         let Some(header) = header(model.commit_detail(), model.commit_changes().len()) else {
             return div().into_any_element();
         };
-        let theme = cx.theme();
-        let border = theme.border;
-        let muted = theme.muted_foreground;
-        let header_view = self.render_header(&header, cx);
-        let grouping = self.files.grouping;
+        let border = cx.theme().border;
+        let bar = self.render_tab_bar(cx);
+        let content = match self.detail_tab {
+            DetailTab::Commit => self.render_commit_tab(&header, cx),
+            DetailTab::Changes => self.render_changes_tab(&header, window, cx),
+        };
         div()
             .size_full()
             .flex()
             .flex_col()
             .border_t(style::HAIRLINE)
             .border_color(border)
-            .child(header_view)
+            .child(bar)
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
+    }
+
+    /// File Tree in the tab bar: shows the open commit's files in the Files pane.
+    pub(crate) fn browse_open_commit(&mut self, cx: &mut Context<Self>) {
+        let summary = self.model.read(cx).commit_detail().summary().cloned();
+        if let Some(summary) = summary {
+            cx.emit(HistoryEvent::BrowseCommit(summary));
+        }
+    }
+
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let border = cx.theme().border;
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(style::ROW_GAP)
+            .px(style::BAR_PADDING)
+            .h(style::LIST_ROW_HEIGHT + style::BAR_PADDING * 2.)
+            .border_b(style::HAIRLINE)
+            .border_color(border)
+            .child(self.tab_button("detail-tab-commit", DetailTab::Commit, cx))
+            .child(self.tab_button("detail-tab-changes", DetailTab::Changes, cx))
+            .child(
+                Button::new("detail-tab-file-tree")
+                    .small()
+                    .ghost()
+                    .label("File Tree")
+                    .tooltip("Browse Files at This Commit")
+                    .on_click(cx.listener(|this, _, _, cx| this.browse_open_commit(cx))),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("close-commit")
+                    .small()
+                    .ghost()
+                    .icon(Icon::new(icon(Glyph::CloseTab)))
+                    .tooltip("Hide Commit Details")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model.update(cx, BrowserModel::close_commit_detail);
+                    })),
+            )
+    }
+
+    fn tab_button(
+        &self,
+        id: &'static str,
+        tab: DetailTab,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let label = match tab {
+            DetailTab::Commit => "Commit",
+            DetailTab::Changes => "Changes",
+        };
+        Button::new(id)
+            .small()
+            .ghost()
+            .label(label)
+            .selected(self.detail_tab == tab)
+            .on_click(cx.listener(move |this, _, _, cx| this.set_detail_tab(tab, cx)))
+    }
+
+    /// The header on the left, scrolling when the body is long, and the files on the right.
+    fn render_commit_tab(&self, header: &Header, cx: &mut Context<Self>) -> AnyElement {
+        let border = cx.theme().border;
+        let info = self.render_header(header, cx);
+        let files = self.render_file_column(&header.count, cx);
+        div()
+            .size_full()
+            .flex()
+            .child(
+                div()
+                    .id("commit-info")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(info),
+            )
+            .child(
+                div()
+                    .h_full()
+                    .flex_none()
+                    .w(relative(HISTORY_COMMIT_FILES_SHARE))
+                    .min_w(points(HISTORY_FILES_MIN_WIDTH))
+                    .border_l(style::HAIRLINE)
+                    .border_color(border)
+                    .child(files),
+            )
+            .into_any_element()
+    }
+
+    /// One line naming the commit over the files beside the diff, split as last dragged.
+    fn render_changes_tab(
+        &self,
+        header: &Header,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let summary_line = Self::render_summary_line(&header.summary, cx);
+        let files = self.render_file_column(&header.count, cx);
+        let diff = self.render_diff(cx);
+        let diff_width = self.splits.diff_width(window, cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(summary_line)
+            .child(
+                div().flex_1().min_h_0().child(
+                    h_resizable("history-split")
+                        .with_state(self.splits.diff())
+                        .child(
+                            resizable_panel()
+                                .size_range(splits::files_range())
+                                .child(files),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size(diff_width)
+                                .size_range(splits::diff_range())
+                                .child(diff),
+                        ),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// The commit's short hash, author and title, so the Changes tab says what it shows.
+    fn render_summary_line(
+        summary: &CommitSummary,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (border, muted, foreground) = (theme.border, theme.muted_foreground, theme.foreground);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(style::ROW_GAP)
+            .px(style::MARGIN)
+            .h(style::LIST_ROW_HEIGHT)
+            .border_b(style::HAIRLINE)
+            .border_color(border)
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_size(style::TEXT_CAPTION)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(muted)
+                    .child(SharedString::from(summary.author_name.clone())),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(style::MONOSPACE_FONT)
+                    .text_color(muted)
+                    .child(SharedString::from(short_hash(&summary.oid))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(foreground)
+                    .child(SharedString::from(summary.title.clone())),
+            )
+    }
+
+    /// The changed-file count and the List/Tree choice over the files.
+    fn render_file_column(&self, count: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        let grouping = self.files.grouping;
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(style::ROW_GAP)
-                    .px(style::MARGIN)
-                    .pb(style::ROW_GAP)
+                    .pl(style::MARGIN)
+                    .pr(style::BAR_PADDING)
+                    .h(style::LIST_ROW_HEIGHT)
+                    .border_b(style::HAIRLINE)
+                    .border_color(border)
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
                             .text_size(style::TEXT_CAPTION)
                             .text_color(muted)
-                            .child(SharedString::from(header.count)),
+                            .child(SharedString::from(count.to_owned())),
                     )
                     .child(Self::grouping_button(
                         "group-flat",
@@ -120,7 +317,6 @@ impl HistoryPane {
                     )),
             )
             .child(div().flex_1().min_h_0().child(self.render_files(cx)))
-            .into_any_element()
     }
 
     fn grouping_button(
@@ -134,7 +330,7 @@ impl HistoryPane {
             ChangeGrouping::Folders => "Tree",
         };
         Button::new(id)
-            .small()
+            .xsmall()
             .ghost()
             .label(label)
             .selected(grouping == current)
@@ -190,41 +386,24 @@ impl HistoryPane {
             .py(style::BAR_PADDING)
             .child(
                 div()
-                    .flex()
-                    .items_start()
-                    .gap(style::ROW_GAP)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(style::TEXT_BODY)
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(foreground)
-                            .line_clamp(style::DETAIL_TITLE_LINES)
-                            .child(SharedString::from(detail_title(summary))),
-                    )
-                    .child(
-                        Button::new("close-commit")
-                            .small()
-                            .ghost()
-                            .label("\u{2715}")
-                            .tooltip("Close commit")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.model.update(cx, BrowserModel::close_commit_detail);
-                            })),
-                    ),
+                    .text_size(style::TEXT_BODY)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(foreground)
+                    .line_clamp(style::DETAIL_TITLE_LINES)
+                    .child(SharedString::from(summary.title.clone())),
             )
             .children(refs.map(|refs| caption(refs, muted).font_weight(gpui::FontWeight::MEDIUM)))
             .child(caption(author, muted))
             .children(committer.map(|line| caption(line, muted)))
+            .child(caption(commit_line(&summary.oid), muted).font_family(style::MONOSPACE_FONT))
+            .children(parents)
             .children(header.body.clone().map(|body| {
                 div()
+                    .pt(style::BAR_PADDING)
                     .text_size(style::TEXT_CAPTION)
                     .text_color(foreground)
-                    .line_clamp(style::DETAIL_BODY_LINES)
                     .child(SharedString::from(body))
             }))
-            .children(parents)
     }
 
     fn render_parents(
@@ -311,6 +490,7 @@ impl HistoryPane {
         let label: AnyElement = match &row.change {
             Some(change) => div()
                 .flex()
+                .items_center()
                 .gap(style::ROW_GAP)
                 .overflow_hidden()
                 .child(
@@ -324,6 +504,10 @@ impl HistoryPane {
                         .text_color(change_color(change.kind, cx))
                         .child(change_letter(change.kind)),
                 )
+                .child(listing_icon(
+                    entry_glyph(change.entry, last_component(&row.name)),
+                    cx,
+                ))
                 .child(
                     div()
                         .overflow_hidden()
@@ -346,6 +530,7 @@ impl HistoryPane {
                     }))
                     .size(style::ICON_SIZE),
                 )
+                .child(listing_icon(Glyph::Entry(EntryKind::Tree), cx))
                 .child(SharedString::from(row.name.clone()))
                 .into_any_element(),
         };
@@ -365,10 +550,7 @@ impl HistoryPane {
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(change) = &change {
-                    let change = change.clone();
-                    this.model
-                        .update(cx, |model, cx| model.load_file_diff(change, cx))
-                        .detach();
+                    this.open_file_diff(change.clone(), cx);
                 } else {
                     this.files.toggle(&key);
                     cx.notify();

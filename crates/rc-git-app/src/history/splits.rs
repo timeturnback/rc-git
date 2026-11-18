@@ -1,6 +1,6 @@
-//! History's two splits (`HistoryViewController.buildSplits`): the left column beside the
-//! diff (`rc-git.history.v5`) and, inside the column, the commit list over the commit's detail
-//! (`rc-git.history-column.v1`). The second pane of each opens at the size saved under those
+//! History's two splits: the commit list over the open commit's detail
+//! (`rc-git.history-column.v2`) and, in the detail's Changes tab, the changed-file list beside
+//! the diff (`rc-git.history.v6`). The second pane of each opens at the size saved under those
 //! keys, through `LayoutPolicy`, which keeps a saved size only while both floors fit and opens
 //! a never-sized pane at its share; a drag saves the new size. Floors bound a drag through each
 //! panel's size range.
@@ -10,8 +10,8 @@ use std::ops::Range;
 use gpui::{App, AppContext, Context, Entity, Pixels, Subscription, Window};
 use gpui_component::resizable::{ResizablePanelEvent, ResizableState};
 use rc_git_kit::layout_policy::{
-    HISTORY_COMMITS_FLOOR, HISTORY_DETAIL_FLOOR, HISTORY_DIFF_MIN_WIDTH, HISTORY_LIST_MIN_WIDTH,
-    history_commits_height, history_list_width,
+    HISTORY_COMMITS_FLOOR, HISTORY_DETAIL_FLOOR, HISTORY_DIFF_MIN_WIDTH, HISTORY_FILES_MIN_WIDTH,
+    history_commits_height, history_files_width,
 };
 use rc_git_kit::platform::keys::{HISTORY_COLUMN_SPLIT, HISTORY_SPLIT};
 use rc_git_kit::platform::stores::{SharedSettings, SubviewFrame};
@@ -69,18 +69,18 @@ impl Split {
 /// Both History splits of one pane.
 pub struct HistorySplits {
     settings: SharedSettings,
-    outer: Split,
+    diff: Split,
     column: Split,
 }
 
 impl HistorySplits {
     /// The splits as last saved.
     pub fn load(settings: SharedSettings, cx: &mut App) -> Self {
-        let outer = Split::load(HISTORY_SPLIT, SplitAxis::SideBySide, &settings, cx);
+        let diff = Split::load(HISTORY_SPLIT, SplitAxis::SideBySide, &settings, cx);
         let column = Split::load(HISTORY_COLUMN_SPLIT, SplitAxis::Stacked, &settings, cx);
         Self {
             settings,
-            outer,
+            diff,
             column,
         }
     }
@@ -91,13 +91,13 @@ impl HistorySplits {
         splits: impl Fn(&mut T) -> &mut Self + Clone + 'static,
         cx: &mut Context<T>,
     ) -> Vec<Subscription> {
-        let outer = splits.clone();
+        let diff = splits.clone();
         vec![
             cx.subscribe(
-                &self.outer.state,
+                &self.diff.state,
                 move |this, _, _: &ResizablePanelEvent, cx| {
-                    let splits = outer(this);
-                    splits.outer.resized(&splits.settings, cx);
+                    let splits = diff(this);
+                    splits.diff.resized(&splits.settings, cx);
                 },
             ),
             cx.subscribe(
@@ -113,12 +113,12 @@ impl HistorySplits {
     /// The second pane sizes as last saved or dragged: the diff's width, the detail's height.
     #[cfg(test)]
     pub(crate) fn saved(&self) -> (Option<f64>, Option<f64>) {
-        (self.outer.second, self.column.second)
+        (self.diff.second, self.column.second)
     }
 
-    /// The left column | diff split's state.
-    pub fn outer(&self) -> &Entity<ResizableState> {
-        &self.outer.state
+    /// The file list | diff split's state.
+    pub fn diff(&self) -> &Entity<ResizableState> {
+        &self.diff.state
     }
 
     /// The list over detail split's state.
@@ -126,14 +126,14 @@ impl HistorySplits {
         &self.column.state
     }
 
-    /// The width the diff opens at, out of the window's content.
+    /// The width the diff opens at, out of the Changes tab's.
     pub fn diff_width(&self, window: &Window, cx: &App) -> Pixels {
-        let available = self.outer.available(window.viewport_size().width, cx);
-        let diff = self.outer.second.unwrap_or(0.0);
-        points(available - history_list_width(available, diff))
+        let available = self.diff.available(window.viewport_size().width, cx);
+        let diff = self.diff.second.unwrap_or(0.0);
+        points(available - history_files_width(available, diff))
     }
 
-    /// The height the detail opens at, out of the column's.
+    /// The height the detail opens at, out of the pane's.
     pub fn detail_height(&self, window: &Window, cx: &App) -> Pixels {
         let available = self.column.available(window.viewport_size().height, cx);
         let detail = self.column.second.unwrap_or(0.0);
@@ -141,10 +141,10 @@ impl HistorySplits {
     }
 }
 
-/// The range a drag may move the left column's width through.
+/// The range a drag may move the changed-file list's width through.
 #[must_use]
-pub fn column_range() -> Range<Pixels> {
-    points(HISTORY_LIST_MIN_WIDTH)..Pixels::MAX
+pub fn files_range() -> Range<Pixels> {
+    points(HISTORY_FILES_MIN_WIDTH)..Pixels::MAX
 }
 
 /// The range a drag may move the diff's width through.

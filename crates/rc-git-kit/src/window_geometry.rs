@@ -122,9 +122,9 @@ pub fn sidebar_frames(
 /// How a two-pane split lays its panes out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitAxis {
-    /// Side by side: History's left column and diff (`rc-git.history.v5`).
+    /// Side by side: History's changed-file list and diff (`rc-git.history.v6`).
     SideBySide,
-    /// One over the other: History's commit list and detail (`rc-git.history-column.v1`).
+    /// One over the other: History's commit list and detail (`rc-git.history-column.v2`).
     Stacked,
 }
 

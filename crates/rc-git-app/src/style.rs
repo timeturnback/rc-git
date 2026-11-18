@@ -111,8 +111,6 @@ pub const SEARCH_FIELD_MIN_WIDTH: Pixels = px(160.);
 pub const DAY_FIELD_WIDTH: Pixels = px(110.);
 /// The space between the lines of the commit detail header.
 pub const DETAIL_LINE_GAP: Pixels = px(4.);
-/// How many lines of a commit body the detail header shows before it clips.
-pub const DETAIL_BODY_LINES: usize = 6;
 /// How many lines of a commit title the detail header shows before it clips.
 pub const DETAIL_TITLE_LINES: usize = 3;
 /// The blame window's size when it first opens.

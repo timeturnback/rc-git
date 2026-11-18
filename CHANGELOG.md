@@ -25,6 +25,12 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   scrollbar, and rows are taller and inset like the filter field above them, so the selected
   row no longer touches the sidebar's edges. Branches show a green icon, remote branches a blue
   one and tags a yellow one, here, in the branch picker (⌘B) and on the banner.
+- In History, a commit you click opens across the whole window under the commit list, taking
+  most of its height; drag the divider to resize it, or hide it with the close button on its
+  right. Its Commit tab shows the message, author, hash and parents with the changed files on
+  the right, and clicking a file opens it in the Changes tab: the files on the left, as a list
+  or a tree, beside the diff. File Tree shows the commit's files in the Files pane. Files in
+  both tabs show their type icon.
 
 ## 2026-11-17
 

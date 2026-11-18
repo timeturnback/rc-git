@@ -3,7 +3,7 @@
 //! lines and the changed-file count. The pane only renders these.
 
 use rc_git_core::bstr::ByteSlice;
-use rc_git_core::{CommitDetail, CommitSummary, Oid, TreeChange};
+use rc_git_core::{CommitDetail, Oid, TreeChange};
 
 use crate::dates::{format_date, format_date_time};
 
@@ -95,10 +95,10 @@ pub fn short_hash(oid: &Oid) -> String {
     hex
 }
 
-/// The detail header's title: the short hash, two spaces, the commit title.
+/// The detail header's full-hash line: `Commit: <40 hex digits>`.
 #[must_use]
-pub fn detail_title(commit: &CommitSummary) -> String {
-    format!("{}  {}", short_hash(&commit.oid), commit.title)
+pub fn commit_line(oid: &Oid) -> String {
+    format!("Commit: {}", oid.to_hex())
 }
 
 /// One identity line of the detail header: `Author: Name <email> · Nov 11, 2026 at 3:04 PM`,
@@ -177,7 +177,7 @@ pub fn blame_date(
 
 #[cfg(test)]
 mod tests {
-    use rc_git_core::{ChangeKind, EntryKind};
+    use rc_git_core::{ChangeKind, CommitSummary, EntryKind};
 
     use super::*;
 
@@ -263,11 +263,13 @@ mod tests {
 
     #[test]
     fn the_header_lines_read_like_the_swift_pane() {
-        let commit = summary();
-        assert_eq!(detail_title(&commit), "abababa  Fix the thing");
         assert_eq!(
             identity_line("Author", "Ann", "ann@example.com", 0, 0),
             "Author: Ann <ann@example.com> \u{b7} Jan 1, 1970 at 12:00 AM"
+        );
+        assert_eq!(
+            commit_line(&oid(0xab)),
+            format!("Commit: {}", "ab".repeat(20))
         );
         assert_eq!(parents_label(0), None);
         assert_eq!(parents_label(1), Some("Parent:"));

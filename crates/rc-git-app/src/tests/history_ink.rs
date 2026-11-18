@@ -31,6 +31,19 @@ fn settle(cx: &mut HeadlessAppContext, mut done: impl FnMut(&App) -> bool) {
     }
 }
 
+/// Shows the open commit's Changes tab, where its diff draws, and lets it lay out.
+fn show_changes_tab(cx: &mut HeadlessAppContext, tab: &crate::app::Tab) {
+    cx.update(|cx| {
+        let history = tab.view.read(cx).history().clone();
+        history.update(cx, |history, cx| {
+            history.set_detail_tab(crate::history::DetailTab::Changes, cx);
+        });
+    });
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+}
+
 #[test]
 fn the_history_pane_puts_ink_on_the_page() {
     let fixture = Fixture::standard();
@@ -141,9 +154,7 @@ fn a_long_diff_line_scrolls_inside_the_history_pane() {
     settle(&mut cx, |cx| {
         matches!(model.read(cx).file_diff(), FileDiffState::Loaded(..))
     });
-    for _ in 0..3 {
-        cx.run_until_parked();
-    }
+    show_changes_tab(&mut cx, &tab);
     cx.capture_screenshot(tab.handle.into()).unwrap();
     let diff = cx.update(|cx| tab.view.read(cx).history().read(cx).diff().clone());
     let window_width = cx
@@ -161,7 +172,7 @@ fn a_long_diff_line_scrolls_inside_the_history_pane() {
         .update_window(tab.handle.into(), |_, window, _| window.bounds())
         .unwrap();
     let event = gpui::ScrollEvent {
-        position: gpui::point(bounds.size.width * 0.8, bounds.size.height * 0.5),
+        position: gpui::point(bounds.size.width * 0.8, bounds.size.height * 0.8),
         delta: gpui::ScrollDelta::Lines(gpui::point(-3., 0.)),
         modifiers: gpui::Modifiers::default(),
         touch_phase: gpui::TouchPhase::Moved,

@@ -664,7 +664,7 @@ impl RepoWindow {
     }
 
     /// Whether History and Changes show their diff across the whole window, the sidebar and
-    /// History's left column out of the way. Files has no diff and keeps its layout. The
+    /// History's commit list out of the way. Files has no diff and keeps its layout. The
     /// History pane holds the flag; the Changes pane is told it.
     #[must_use]
     pub fn diff_expanded(&self, cx: &gpui::App) -> bool {
@@ -681,7 +681,7 @@ impl RepoWindow {
         }
     }
 
-    /// Shows the diff across the whole window, or puts the sidebar and History's left column
+    /// Shows the diff across the whole window, or puts the sidebar and History's commit list
     /// back. Files has no diff, so the toggle does nothing there.
     pub fn toggle_diff_expanded(&mut self, cx: &mut Context<Self>) {
         if self.mode == ContentMode::Files {

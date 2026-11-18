@@ -226,6 +226,21 @@ fn only_a_loaded_commit_with_no_changes_says_no_files_changed() {
     assert_eq!(loaded.empty_diff_placeholder(2), "Select a file");
 }
 
+#[test]
+fn every_state_but_empty_names_the_open_commit() {
+    let commit = main_commit();
+    assert_eq!(CommitDetailState::Empty.summary(), None);
+    let loading = CommitDetailState::Loading(commit.clone());
+    assert_eq!(loading.summary(), Some(&commit));
+    let failed = CommitDetailState::Failed(commit.clone(), "boom".to_owned());
+    assert_eq!(failed.summary(), Some(&commit));
+    let loaded = CommitDetailState::Loaded {
+        detail: detail(commit.clone(), 1_704_326_400),
+        refs: Vec::new(),
+    };
+    assert_eq!(loaded.summary(), Some(&commit));
+}
+
 #[gpui::test]
 async fn jumping_to_a_parent_shows_its_detail(cx: &mut TestAppContext) {
     let model = model(cx);

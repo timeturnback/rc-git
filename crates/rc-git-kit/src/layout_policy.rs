@@ -27,19 +27,21 @@ pub const CONTENT_MINIMUM_WIDTH: f64 = 240.0;
 pub const WINDOW_MINIMUM_WIDTH: f64 = 440.0;
 /// The smallest window height.
 pub const WINDOW_MINIMUM_HEIGHT: f64 = 320.0;
-/// The height the commit list on top of History's left column never drops below. A pane at
-/// zero reads as a missing feature.
+/// The height the commit list over History's commit detail never drops below. A pane at zero
+/// reads as a missing feature.
 pub const HISTORY_COMMITS_FLOOR: f64 = 120.0;
-/// The height the open commit's detail, header and changed files, never drops below.
+/// The height the open commit's detail, its tab bar over the open tab, never drops below.
 pub const HISTORY_DETAIL_FLOOR: f64 = 200.0;
-/// The share of the left column a commit detail opens at when it has no height of its own.
-pub const HISTORY_DETAIL_SHARE: f64 = 0.45;
-/// The width History's left column (commit list over the detail) keeps while a commit is open.
-pub const HISTORY_LIST_MIN_WIDTH: f64 = 320.0;
-/// The width the diff of the picked file beside History's left column keeps.
+/// The share of History's height a commit detail opens at when it has no height of its own.
+pub const HISTORY_DETAIL_SHARE: f64 = 0.7;
+/// The width the changed-file list of History's Changes tab keeps beside the diff.
+pub const HISTORY_FILES_MIN_WIDTH: f64 = 200.0;
+/// The share of the Commit tab's width the changed-file list beside the header takes.
+pub const HISTORY_COMMIT_FILES_SHARE: f32 = 0.45;
+/// The width the diff of the picked file in History's Changes tab keeps.
 pub const HISTORY_DIFF_MIN_WIDTH: f64 = 340.0;
-/// The share of History's width the diff pane opens at when it has no width of its own.
-pub const HISTORY_DIFF_SHARE: f64 = 0.5;
+/// The share of the Changes tab's width the diff opens at when it has no width of its own.
+pub const HISTORY_DIFF_SHARE: f64 = 0.7;
 /// The narrowest a drag leaves the History commit list's author column.
 pub const HISTORY_AUTHOR_MIN_WIDTH: f64 = 48.0;
 /// The History author column's width until a drag sizes it: names are short, so it gives way
@@ -102,12 +104,12 @@ pub fn split_pane(available: f64, preferred: f64, first_floor: f64, second_floor
     preferred.max(first_floor).min(available - second_floor)
 }
 
-/// The commit list's height in History's left column, out of the `available` height it shares
-/// with the commit detail under it.
+/// The commit list's height in History, out of the `available` height it shares with the
+/// commit detail under it.
 ///
 /// `detail_height` is the detail's height now, kept whenever both floors allow it. A detail
 /// below its floor has never been sized (it was hidden until a commit opened), so it opens at
-/// [`HISTORY_DETAIL_SHARE`] of the column instead of squeezed onto the floor.
+/// [`HISTORY_DETAIL_SHARE`] of the pane instead of squeezed onto the floor.
 #[must_use]
 pub fn history_commits_height(available: f64, detail_height: f64) -> f64 {
     let detail = if detail_height >= HISTORY_DETAIL_FLOOR {
@@ -123,15 +125,15 @@ pub fn history_commits_height(available: f64, detail_height: f64) -> f64 {
     )
 }
 
-/// The left column's width in History's outer split, out of the `available` width it shares
-/// with the diff pane beside it.
+/// The changed-file list's width in History's Changes tab, out of the `available` width it
+/// shares with the diff beside it.
 ///
 /// `diff_width` is the diff pane's width now, kept whenever both floors allow it, so a window
-/// resize moves the column and leaves the diff alone. A diff below its floor has never been
-/// sized, so it opens at [`HISTORY_DIFF_SHARE`] of the width instead of squeezed onto the
-/// floor.
+/// resize moves the file list's edge and leaves the diff alone. A diff below its floor has
+/// never been sized, so it opens at [`HISTORY_DIFF_SHARE`] of the width instead of squeezed
+/// onto the floor.
 #[must_use]
-pub fn history_list_width(available: f64, diff_width: f64) -> f64 {
+pub fn history_files_width(available: f64, diff_width: f64) -> f64 {
     let diff = if diff_width >= HISTORY_DIFF_MIN_WIDTH {
         diff_width
     } else {
@@ -140,7 +142,7 @@ pub fn history_list_width(available: f64, diff_width: f64) -> f64 {
     split_pane(
         available,
         available - diff,
-        HISTORY_LIST_MIN_WIDTH,
+        HISTORY_FILES_MIN_WIDTH,
         HISTORY_DIFF_MIN_WIDTH,
     )
 }

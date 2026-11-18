@@ -1,6 +1,6 @@
 //! The History pane's wiring against the fakes: one page at a time and only visible rows,
-//! the commit detail and its diff, the search box, the History commands and their enablement,
-//! the blame window, and the saved splits.
+//! the commit detail, its tabs and its diff, the search box, the History commands and their
+//! enablement, the blame window, and the saved splits.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -14,7 +14,10 @@ use rc_git_core::{
 use rc_git_kit::back_forward::{ContentMode, HistoryScope};
 use rc_git_kit::browser::{BrowserModel, FileState, HISTORY_PAGE_SIZE};
 use rc_git_kit::fake::{FakeRepository, commit_summary, oid};
-use rc_git_kit::layout_policy::{HISTORY_AUTHOR_WIDTH, HISTORY_DATE_MIN_WIDTH};
+use rc_git_kit::layout_policy::{
+    HISTORY_AUTHOR_WIDTH, HISTORY_DATE_MIN_WIDTH, HISTORY_DETAIL_SHARE,
+};
+use rc_git_kit::models::FileDiffState;
 use rc_git_kit::platform::keys::{
     HISTORY_AUTHOR_COLUMN, HISTORY_COLUMN_SPLIT, HISTORY_DATE_COLUMN, HISTORY_SPLIT,
 };
@@ -25,7 +28,7 @@ use rc_git_kit::window_geometry::{SplitAxis, split_frames};
 
 use crate::app::Tab;
 use crate::diff::{DiffContent, RowPrefix};
-use crate::history::TYPING_PAUSE;
+use crate::history::{DetailTab, HistoryPane, TYPING_PAUSE};
 use crate::menus::{SearchCommits, ShowBlame, ShowFileHistory, ShowHistory};
 use crate::tests::support::{
     Harness, MAIN_COMMIT, harness, harness_with, open_settled, repo, wait_until,
@@ -157,8 +160,9 @@ fn a_short_history_draws_its_graph_and_asks_for_nothing_more(cx: &mut TestAppCon
     assert_eq!(cx.read(|cx| model.read(cx).graph_rows().len()), 3);
 }
 
-#[gpui::test]
-fn an_open_commit_shows_its_files_and_the_first_diff(cx: &mut TestAppContext) {
+/// A three-commit history whose newest commit changes `src/a.rs` (30 diff lines) and
+/// `README.md` (3 diff lines).
+fn two_file_commit_repo() -> FakeRepository {
     let fake = history_repo(3);
     {
         let mut state = fake.state();
@@ -170,8 +174,20 @@ fn an_open_commit_shows_its_files_and_the_first_diff(cx: &mut TestAppContext) {
             (Some(oid(1)), Some(oid(2))),
             BlobDiff::Text { hunks: hunks(30) },
         );
+        state.blob_diffs.insert(
+            (Some(oid(3)), Some(oid(4))),
+            BlobDiff::Text { hunks: hunks(3) },
+        );
     }
-    let (_harness, window, _tab) = open_history(cx, fake);
+    fake
+}
+
+/// Opens History over `fake` and its newest commit, once the first file's diff has loaded.
+fn open_newest_commit(
+    cx: &mut TestAppContext,
+    fake: FakeRepository,
+) -> (Harness, Entity<RepoWindow>, Tab, Entity<HistoryPane>) {
+    let (harness, window, tab) = open_history(cx, fake);
     let model = model(&window, cx);
     wait_until(cx, |cx| cx.read(|cx| model.read(cx).history_complete()));
     let first = cx.read(|cx| model.read(cx).history()[0].clone());
@@ -183,6 +199,14 @@ fn an_open_commit_shows_its_files_and_the_first_diff(cx: &mut TestAppContext) {
     wait_until(cx, |cx| {
         cx.read(|cx| matches!(diff.read(cx).content(), DiffContent::Hunks(_)))
     });
+    (harness, window, tab, pane)
+}
+
+#[gpui::test]
+fn an_open_commit_shows_its_files_and_the_first_diff(cx: &mut TestAppContext) {
+    let (_harness, _window, _tab, pane) = open_newest_commit(cx, two_file_commit_repo());
+    let diff = cx.read(|cx| pane.read(cx).diff().clone());
+    pane.update(cx, |pane, cx| pane.set_detail_tab(DetailTab::Changes, cx));
     assert_eq!(
         cx.read(|cx| pane.read(cx).file_labels()),
         ["src", "  a.rs", "README.md"],
@@ -198,6 +222,91 @@ fn an_open_commit_shows_its_files_and_the_first_diff(cx: &mut TestAppContext) {
     assert!(built > 0, "the diff drew rows");
     let owner = cx.read(|cx| diff.read(cx).owning_hunk(5).map(|hunk| hunk.lines.len()));
     assert_eq!(owner, Some(30), "every row maps to its hunk");
+}
+
+#[gpui::test]
+fn a_changed_file_click_shows_its_diff_in_the_changes_tab(cx: &mut TestAppContext) {
+    let (_harness, window, _tab, pane) = open_newest_commit(cx, two_file_commit_repo());
+    assert_eq!(
+        cx.read(|cx| pane.read(cx).detail_tab()),
+        DetailTab::Commit,
+        "a commit opens on its Commit tab"
+    );
+    let model = model(&window, cx);
+    pane.update(cx, |pane, cx| {
+        pane.open_file_diff(modified("README.md", 3, 4), cx);
+    });
+    assert_eq!(cx.read(|cx| pane.read(cx).detail_tab()), DetailTab::Changes);
+    wait_until(cx, |cx| {
+        cx.read(|cx| match model.read(cx).file_diff() {
+            FileDiffState::Loaded(change, _) => change.path == "README.md",
+            FileDiffState::Empty
+            | FileDiffState::Loading(_)
+            | FileDiffState::Submodule(_)
+            | FileDiffState::Failed(..) => false,
+        })
+    });
+    let diff = cx.read(|cx| pane.read(cx).diff().clone());
+    wait_until(cx, |cx| cx.read(|cx| diff.read(cx).row_count() == 4));
+}
+
+#[gpui::test]
+fn a_click_on_the_shown_file_keeps_its_diff(cx: &mut TestAppContext) {
+    let fake = two_file_commit_repo();
+    let (_harness, _window, _tab, pane) = open_newest_commit(cx, fake.clone());
+    let reads = fake.state().diff_blobs_calls;
+    pane.update(cx, |pane, cx| {
+        pane.open_file_diff(modified("src/a.rs", 1, 2), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| pane.read(cx).detail_tab()), DetailTab::Changes);
+    assert_eq!(
+        fake.state().diff_blobs_calls,
+        reads,
+        "the diff on screen is not read again"
+    );
+}
+
+#[gpui::test]
+fn file_tree_shows_the_open_commit_in_the_files_pane(cx: &mut TestAppContext) {
+    let fake = two_file_commit_repo();
+    fake.state()
+        .tree_of
+        .insert(commit_oid(0), oid(crate::tests::support::MAIN_TREE));
+    let (_harness, window, _tab, pane) = open_newest_commit(cx, fake);
+    let model = model(&window, cx);
+    let first = cx.read(|cx| model.read(cx).history()[0].oid);
+    pane.update(cx, HistoryPane::browse_open_commit);
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            window.read(cx).mode() == ContentMode::Files
+                && model.read(cx).browsed_commit().map(|commit| commit.oid) == Some(first)
+        })
+    });
+}
+
+#[gpui::test]
+fn an_unsized_commit_detail_opens_at_its_share_of_the_pane(cx: &mut TestAppContext) {
+    let (_harness, _window, tab, pane) = open_newest_commit(cx, two_file_commit_repo());
+    let visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    visual.run_until_parked();
+    let column = visual.read(|cx| pane.read(cx).column_split().clone());
+    // The state records the list's size only until it is first measured, so read the
+    // container, which the detail shares with the list.
+    let (container, detail) = visual.read(|cx| {
+        let state = column.read(cx);
+        (
+            f32::from(state.container_size()),
+            f32::from(state.sizes()[1]),
+        )
+    });
+    #[expect(clippy::cast_possible_truncation, reason = "a share near 0.7")]
+    let share = HISTORY_DETAIL_SHARE as f32;
+    let opened = detail / container;
+    assert!(
+        (opened - share).abs() < 0.02,
+        "the detail opened at {opened} of the pane, not {share}"
+    );
 }
 
 #[gpui::test]
@@ -392,8 +501,19 @@ fn the_splits_open_at_the_saved_sizes_and_save_a_drag(cx: &mut TestAppContext) {
     let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
     visual.dispatch_action(ShowHistory);
     visual.run_until_parked();
-    let outer = visual.read(|cx| pane.read(cx).outer_split().clone());
-    outer.update_in(&mut visual, |state, window, cx| {
+    let model = model(&window, cx);
+    wait_until(cx, |cx| cx.read(|cx| model.read(cx).history_complete()));
+    let first = cx.read(|cx| model.read(cx).history()[0].clone());
+    model.update(cx, |model, cx| {
+        model.load_commit_changes(first, cx).detach();
+    });
+    let mut visual = VisualTestContext::from_window(tab.handle.into(), cx);
+    pane.update(&mut visual, |pane, cx| {
+        pane.set_detail_tab(DetailTab::Changes, cx);
+    });
+    visual.run_until_parked();
+    let diff_split = visual.read(|cx| pane.read(cx).diff_split().clone());
+    diff_split.update_in(&mut visual, |state, window, cx| {
         state.resize_panel(0, gpui::px(520.), window, cx);
     });
     visual.run_until_parked();
@@ -402,9 +522,9 @@ fn the_splits_open_at_the_saved_sizes_and_save_a_drag(cx: &mut TestAppContext) {
     assert_eq!(
         dragged.map(f64::to_bits),
         Some(saved[1].frame.width.to_bits()),
-        "the drag is saved under rc-git.history.v5"
+        "the drag is saved under rc-git.history.v6"
     );
-    let column = visual.read(|cx| f64::from(f32::from(outer.read(cx).sizes()[0])));
+    let column = visual.read(|cx| f64::from(f32::from(diff_split.read(cx).sizes()[0])));
     assert_eq!(saved[0].frame.width.to_bits(), column.to_bits());
 }
 

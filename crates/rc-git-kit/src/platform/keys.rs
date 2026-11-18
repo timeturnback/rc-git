@@ -35,10 +35,10 @@ pub const UPDATE_WINDOW_FRAME: &str = "rc-git.update.v1";
 pub const SETTINGS_WINDOW_FRAME: &str = "rc-git.settings.v1";
 /// The sidebar | content split's autosave name (`MainWindowController.swift`).
 pub const MAIN_SPLIT: &str = "rc-git.main.v2";
-/// History's left column | diff split's autosave name (`HistoryViewController.swift`).
-pub const HISTORY_SPLIT: &str = "rc-git.history.v5";
-/// History's commit list over detail split's autosave name (`HistoryViewController.swift`).
-pub const HISTORY_COLUMN_SPLIT: &str = "rc-git.history-column.v1";
+/// History's Changes tab file list | diff split's autosave name; rc-git's own key.
+pub const HISTORY_SPLIT: &str = "rc-git.history.v6";
+/// History's commit list over commit detail split's autosave name; rc-git's own key.
+pub const HISTORY_COLUMN_SPLIT: &str = "rc-git.history-column.v2";
 /// The History commit list's dragged author column width; rc-git's own key.
 pub const HISTORY_AUTHOR_COLUMN: &str = "rc-git.history-author-width.v1";
 /// The History commit list's dragged date column width; rc-git's own key.
@@ -117,11 +117,11 @@ mod tests {
         );
         assert_eq!(
             split_view_key(HISTORY_SPLIT),
-            "NSSplitView Subview Frames rc-git.history.v5"
+            "NSSplitView Subview Frames rc-git.history.v6"
         );
         assert_eq!(
             split_view_key(HISTORY_COLUMN_SPLIT),
-            "NSSplitView Subview Frames rc-git.history-column.v1"
+            "NSSplitView Subview Frames rc-git.history-column.v2"
         );
     }
 }

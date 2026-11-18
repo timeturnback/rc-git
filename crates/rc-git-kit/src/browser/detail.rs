@@ -42,6 +42,16 @@ impl CommitDetailState {
             Self::Loaded { .. } => "Select a file",
         }
     }
+
+    /// The open commit, whatever its detail's state; `None` when no commit is picked.
+    #[must_use]
+    pub fn summary(&self) -> Option<&CommitSummary> {
+        match self {
+            Self::Empty => None,
+            Self::Loading(summary) | Self::Failed(summary, _) => Some(summary),
+            Self::Loaded { detail, .. } => Some(&detail.summary),
+        }
+    }
 }
 
 impl BrowserModel {

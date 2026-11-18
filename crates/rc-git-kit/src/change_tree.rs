@@ -289,7 +289,9 @@ fn join(path: &str, name: &str) -> String {
     }
 }
 
-fn last_component(path: &str) -> &str {
+/// The last non-empty component of a slash-separated path, or the path itself.
+#[must_use]
+pub fn last_component(path: &str) -> &str {
     path.rsplit('/')
         .find(|part| !part.is_empty())
         .unwrap_or(path)

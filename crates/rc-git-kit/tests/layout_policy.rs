@@ -9,11 +9,11 @@ use rc_git_kit::layout_policy::{
     CHANGES_DIFF_FLOOR, CHANGES_FILES_FLOOR, CHANGES_MESSAGE_HEIGHT, CHANGES_STASH_HEIGHT,
     CONTENT_MINIMUM_WIDTH, HISTORY_AUTHOR_MIN_WIDTH, HISTORY_AUTHOR_WIDTH, HISTORY_COMMITS_FLOOR,
     HISTORY_DATE_MIN_WIDTH, HISTORY_DETAIL_FLOOR, HISTORY_DETAIL_SHARE, HISTORY_DIFF_MIN_WIDTH,
-    HISTORY_DIFF_SHARE, HISTORY_LIST_MIN_WIDTH, HISTORY_MESSAGE_MIN_WIDTH, HistoryColumn,
+    HISTORY_DIFF_SHARE, HISTORY_FILES_MIN_WIDTH, HISTORY_MESSAGE_MIN_WIDTH, HistoryColumn,
     HistoryColumns, Layout, SIDEBAR_MAXIMUM_WIDTH, SIDEBAR_MINIMUM_WIDTH, SIDEBAR_WINDOW_WIDTH,
     SavedHistoryColumns, SidebarCollapse, SidebarFit, Size, WINDOW_MINIMUM_HEIGHT,
     WINDOW_MINIMUM_WIDTH, dragged_history_column, history_columns, history_commits_height,
-    history_list_width, is_user_drag, layout, sidebar_width, split_pane,
+    history_files_width, is_user_drag, layout, sidebar_width, split_pane,
 };
 
 fn size(width: f64, height: f64) -> Size {
@@ -160,9 +160,9 @@ fn history_keeps_the_commit_list_off_its_floor() {
 
 #[test]
 fn history_keeps_a_diff_width_both_floors_allow() {
-    assert_eq!(history_list_width(1000.0, 400.0), 600.0);
+    assert_eq!(history_files_width(1000.0, 400.0), 600.0);
     assert_eq!(
-        history_list_width(1000.0, HISTORY_DIFF_MIN_WIDTH),
+        history_files_width(1000.0, HISTORY_DIFF_MIN_WIDTH),
         1000.0 - HISTORY_DIFF_MIN_WIDTH
     );
 }
@@ -171,9 +171,9 @@ fn history_keeps_a_diff_width_both_floors_allow() {
 fn history_opens_an_unsized_diff_at_its_share() {
     // Hidden until a commit opened: the diff arrives at zero, or just under its floor.
     let expected = 1000.0 - 1000.0 * HISTORY_DIFF_SHARE;
-    assert_eq!(history_list_width(1000.0, 0.0), expected);
+    assert_eq!(history_files_width(1000.0, 0.0), expected);
     assert_eq!(
-        history_list_width(1000.0, HISTORY_DIFF_MIN_WIDTH - 1.0),
+        history_files_width(1000.0, HISTORY_DIFF_MIN_WIDTH - 1.0),
         expected
     );
 }
@@ -181,17 +181,17 @@ fn history_opens_an_unsized_diff_at_its_share() {
 #[test]
 fn history_keeps_the_list_off_its_width_floor() {
     // A diff dragged or restored wider than the split leaves the list its floor.
-    assert_eq!(history_list_width(900.0, 900.0), HISTORY_LIST_MIN_WIDTH);
+    assert_eq!(history_files_width(900.0, 900.0), HISTORY_FILES_MIN_WIDTH);
 }
 
 #[test]
 fn history_keeps_both_panes_off_zero_in_a_narrow_content_pane() {
     // The narrowest content pane beside the sidebar is far below both width floors.
     let available = CONTENT_MINIMUM_WIDTH - 1.0;
-    let list = history_list_width(available, 500.0);
+    let list = history_files_width(available, 500.0);
     assert!(list > 0.0);
     assert!(available - list > 0.0);
-    let share = HISTORY_LIST_MIN_WIDTH / (HISTORY_LIST_MIN_WIDTH + HISTORY_DIFF_MIN_WIDTH);
+    let share = HISTORY_FILES_MIN_WIDTH / (HISTORY_FILES_MIN_WIDTH + HISTORY_DIFF_MIN_WIDTH);
     assert!((list - available * share).abs() < 0.001);
 }
 

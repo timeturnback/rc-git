@@ -1,15 +1,16 @@
 //! The History pane (`HistoryViewController`): the commit list of the anchor, its lane graph,
-//! search and date filters, the path scope, and an open commit's detail under the list with
-//! the picked file's diff beside it.
+//! search and date filters, the path scope, and an open commit's detail across the pane under
+//! the list, in two tabs: Commit (the header beside the changed files) and Changes (the
+//! changed files beside the picked file's diff).
 //!
 //! Commits load a page at a time as the list nears its end (`history_text::wants_next_page`),
 //! and only the rows on screen are built, so nothing scales with history length. Everything
 //! the pane shows is the model's state; the pane keeps only what the model has no word for:
-//! the search controls, the folders a user closed in the file list, the split sizes and the
-//! column widths.
+//! the search controls, the folders a user closed in the file list, the detail's tab, the
+//! split sizes and the column widths.
 //!
 //! `list` draws the commit list and its bars, `columns` the list's header and column widths,
-//! `detail` the commit's header, files and diff, `graph` the lane cells, `search` holds the
+//! `detail` the commit's tabs, header, files and diff, `graph` the lane cells, `search` holds the
 //! search controls, `splits` the two saved splits.
 
 mod columns;
@@ -30,7 +31,7 @@ use gpui::{
     UniformListScrollHandle, Window, div,
 };
 use gpui_component::input::InputEvent;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_component::resizable::{resizable_panel, v_resizable};
 use rc_git_core::bstr::ByteSlice;
 use rc_git_core::{CommitSummary, TreeChange};
 use rc_git_kit::browser::{BrowserEvent, BrowserModel, CommitDetailState};
@@ -59,6 +60,15 @@ pub enum HistoryEvent {
     BrowseCommit(CommitSummary),
     /// The detail's Back button: step back through the app-wide list.
     DetailBack,
+}
+
+/// The tab an open commit's detail shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailTab {
+    /// The commit's title, identities, body and parents beside the files it changed.
+    Commit,
+    /// The files the commit changed beside the picked file's diff.
+    Changes,
 }
 
 /// One row of the changed-file list, flattened from the kit tree.
@@ -149,6 +159,7 @@ pub struct HistoryPane {
     shown_diff: Option<FileDiffState>,
     splits: HistorySplits,
     columns: ColumnWidths,
+    detail_tab: DetailTab,
     /// Whether the diff fills the pane, the commit list and detail out of the way.
     diff_expanded: bool,
     detail_can_go_back: bool,
@@ -201,6 +212,7 @@ impl HistoryPane {
             diff,
             shown_diff: None,
             splits,
+            detail_tab: DetailTab::Commit,
             diff_expanded: false,
             detail_can_go_back: false,
             built_rows: Rc::default(),
@@ -238,6 +250,36 @@ impl HistoryPane {
         }
     }
 
+    /// The tab the open commit's detail shows, for tests.
+    #[cfg(test)]
+    pub(crate) fn detail_tab(&self) -> DetailTab {
+        self.detail_tab
+    }
+
+    /// Shows `tab` in the open commit's detail.
+    pub fn set_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        if self.detail_tab != tab {
+            self.detail_tab = tab;
+            cx.notify();
+        }
+    }
+
+    /// Shows `change`'s diff in the Changes tab: a click on a changed file in either tab. A
+    /// diff already loaded or loading for `change` is kept, so its scroll position stays.
+    pub(crate) fn open_file_diff(&mut self, change: TreeChange, cx: &mut Context<Self>) {
+        self.set_detail_tab(DetailTab::Changes, cx);
+        let shown = match self.model.read(cx).file_diff() {
+            FileDiffState::Loading(shown) | FileDiffState::Loaded(shown, _) => *shown == change,
+            FileDiffState::Empty | FileDiffState::Submodule(_) | FileDiffState::Failed(..) => false,
+        };
+        if shown {
+            return;
+        }
+        self.model
+            .update(cx, |model, cx| model.load_file_diff(change, cx))
+            .detach();
+    }
+
     /// Puts the keyboard in the search field (Search Commits, ⇧⌘F).
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search
@@ -251,10 +293,16 @@ impl HistoryPane {
         &self.diff
     }
 
-    /// The outer split's state, for tests.
+    /// The Changes tab's file list | diff split state, for tests.
     #[cfg(test)]
-    pub(crate) fn outer_split(&self) -> &Entity<gpui_component::resizable::ResizableState> {
-        self.splits.outer()
+    pub(crate) fn diff_split(&self) -> &Entity<gpui_component::resizable::ResizableState> {
+        self.splits.diff()
+    }
+
+    /// The commit list over detail split's state, for tests.
+    #[cfg(test)]
+    pub(crate) fn column_split(&self) -> &Entity<gpui_component::resizable::ResizableState> {
+        self.splits.column()
     }
 
     /// How many commit rows have been built, for tests of the budget.
@@ -427,42 +475,28 @@ impl HistoryPane {
         cx.write_to_clipboard(ClipboardItem::new_string(commit.oid.to_hex()));
     }
 
+    /// The commit list over the open commit's detail; the diff alone while it fills the pane.
     fn render_splits(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         if self.fills_with_diff(cx) {
             return self.render_diff(cx);
         }
         let open = *self.model.read(cx).commit_detail() != CommitDetailState::Empty;
         let commits = self.render_commits(cx);
-        let detail = open.then(|| self.render_detail(cx));
-        let diff = open.then(|| self.render_diff(cx));
-        let diff_width = self.splits.diff_width(window, cx);
+        let detail = open.then(|| self.render_detail(window, cx));
         let detail_height = self.splits.detail_height(window, cx);
-        h_resizable("history-split")
-            .with_state(self.splits.outer())
+        v_resizable("history-column")
+            .with_state(self.splits.column())
             .child(
-                resizable_panel().size_range(splits::column_range()).child(
-                    v_resizable("history-column")
-                        .with_state(self.splits.column())
-                        .child(
-                            resizable_panel()
-                                .size_range(splits::commits_range())
-                                .child(commits),
-                        )
-                        .child(
-                            resizable_panel()
-                                .visible(open)
-                                .size(detail_height)
-                                .size_range(splits::detail_range())
-                                .children(detail),
-                        ),
-                ),
+                resizable_panel()
+                    .size_range(splits::commits_range())
+                    .child(commits),
             )
             .child(
                 resizable_panel()
                     .visible(open)
-                    .size(diff_width)
-                    .size_range(splits::diff_range())
-                    .children(diff),
+                    .size(detail_height)
+                    .size_range(splits::detail_range())
+                    .children(detail),
             )
             .into_any_element()
     }
