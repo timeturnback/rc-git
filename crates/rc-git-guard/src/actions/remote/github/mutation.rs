@@ -18,10 +18,15 @@ use crate::{Action, Confirmation};
 /// PullRequestMergeMethod`) and returns the merged `pullRequest`. The admin merge sends this same
 /// document: the input has no field for going past branch protection, GitHub decides that from
 /// the account, and the GitHub CLI's `gh pr merge --admin` sends this mutation too.
+///
+/// The input has no field for the base either, so a base retargeted after rc-git's last read
+/// cannot be refused, only seen: the answer selects `baseRefName` (`String!`, "the name of the
+/// base Ref associated with the pull request") and the merge compares it with the base the user
+/// confirmed.
 pub(super) const MERGE: &str = "mutation RcGitMergePullRequest($id: ID!, $head: GitObjectID!, \
 $method: PullRequestMergeMethod!) { mergePullRequest(input: {pullRequestId: $id, \
 expectedHeadOid: $head, mergeMethod: $method}) { pullRequest { number state merged headRefOid \
-mergeCommit { oid } } } }";
+baseRefName mergeCommit { oid } } } }";
 
 /// One mutation a proof confirms.
 #[derive(Debug, Clone, Copy)]

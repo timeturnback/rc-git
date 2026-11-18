@@ -18,7 +18,9 @@ use rc_git_kit::github::accounts::{GitHubAccount, GitHubAccounts, SignInMethod};
 use rc_git_kit::github::{ApiToken, GitHubHost, TokenSet};
 use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore, MemoryApiTokenStore};
 use rc_git_kit::platform::settings::{MemorySettings, SettingsStore};
-use rc_git_kit::pull_requests::copy::{merge_note, merge_outcome_log, merge_stop_message};
+use rc_git_kit::pull_requests::copy::{
+    merge_note, merge_note_alarms, merge_outcome_log, merge_stop_message,
+};
 use rc_git_kit::pull_requests::link::RepositoryLink;
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::merge::{
@@ -37,6 +39,9 @@ use rc_git_testkit::github::{FakeToken, GitHubServer, MergeBehaviour, MergeScrip
 
 const REPO: &str = "/work/rc-git";
 
+/// The repository the fake links to, as a merge names it.
+const REPOSITORY: &str = "octo/rc-git@github.com";
+
 fn detail(head: u8) -> PullRequestDetail {
     pull_request_detail(
         pull_request(7, "Ship it", oid(head)),
@@ -49,7 +54,7 @@ fn detail(head: u8) -> PullRequestDetail {
 fn tab(answer: Result<PullRequestDetail, ReadError>) -> DetailState {
     let mut tab = DetailState::new(7);
     let load = tab.refresh().unwrap();
-    tab.finish(load.generation, answer, 1_000);
+    tab.finish(&load, answer, 1_000);
     tab
 }
 
@@ -68,11 +73,7 @@ fn no_current_read_means_no_merge_control() {
     );
     let mut stale = tab(Ok(detail(7)));
     let load = stale.refresh().unwrap();
-    stale.finish(
-        load.generation,
-        Err(ReadError::Failed("offline".to_owned())),
-        2_000,
-    );
+    stale.finish(&load, Err(ReadError::Failed("offline".to_owned())), 2_000);
     assert!(stale.detail().is_some(), "the old read stays on screen");
     assert_eq!(
         merge_button(&stale, true),
@@ -132,8 +133,13 @@ fn the_merge_control_says_why_it_takes_no_click() {
 #[test]
 fn a_flow_drops_answers_of_another_generation_and_stops_only_before_the_send() {
     let stamp = detail(7).stamp();
-    let (mut flow, load) =
-        MergeFlow::start(4, stamp.clone(), MergeMethod::Squash, MergeKind::Plain);
+    let (mut flow, load) = MergeFlow::start(
+        4,
+        REPOSITORY.to_owned(),
+        stamp.clone(),
+        MergeMethod::Squash,
+        MergeKind::Plain,
+    );
     let plan = merge_plan(&detail(7), MergeMethod::Squash);
     assert!(!flow.planned(3, Ok(plan.clone())), "another generation");
     assert_eq!(flow.phase(), &MergePhase::Planning);
@@ -153,6 +159,7 @@ fn a_flow_drops_answers_of_another_generation_and_stops_only_before_the_send() {
     assert_eq!(flow.cancel(), CancelAnswer::TooLate);
     let merged = Ok(MergeOutcome::Merged {
         merge_commit: Some(oid(9)),
+        base: Some("main".to_owned()),
         settled: Settled::Answer,
     });
     assert!(!flow.finished(5, merged.clone()));
@@ -167,8 +174,13 @@ fn a_flow_drops_answers_of_another_generation_and_stops_only_before_the_send() {
 #[test]
 fn a_tab_read_that_no_longer_matches_ends_a_merge_before_its_send() {
     let stamp = detail(7).stamp();
-    let (mut flow, load) =
-        MergeFlow::start(1, stamp.clone(), MergeMethod::Squash, MergeKind::Plain);
+    let (mut flow, load) = MergeFlow::start(
+        1,
+        REPOSITORY.to_owned(),
+        stamp.clone(),
+        MergeMethod::Squash,
+        MergeKind::Plain,
+    );
     flow.planned(
         load.generation,
         Ok(merge_plan(&detail(7), MergeMethod::Squash)),
@@ -180,14 +192,26 @@ fn a_tab_read_that_no_longer_matches_ends_a_merge_before_its_send() {
         panic!("{:?}", flow.phase());
     };
     assert!(stop.is_changed());
-    let (mut failed, _) = MergeFlow::start(2, stamp, MergeMethod::Squash, MergeKind::Plain);
+    let (mut failed, _) = MergeFlow::start(
+        2,
+        REPOSITORY.to_owned(),
+        stamp,
+        MergeMethod::Squash,
+        MergeKind::Plain,
+    );
     assert!(failed.follow(None), "a failed read stands for nothing");
 }
 
 #[test]
 fn an_unknown_outcome_never_reads_as_not_merged() {
     let stamp = detail(7).stamp();
-    let (mut flow, load) = MergeFlow::start(1, stamp, MergeMethod::Squash, MergeKind::Plain);
+    let (mut flow, load) = MergeFlow::start(
+        1,
+        REPOSITORY.to_owned(),
+        stamp,
+        MergeMethod::Squash,
+        MergeKind::Plain,
+    );
     flow.planned(
         load.generation,
         Ok(merge_plan(&detail(7), MergeMethod::Squash)),
@@ -241,11 +265,7 @@ fn the_admin_control_exists_only_for_a_current_blocked_read_the_account_may_merg
     );
     let mut stale = tab(Ok(blocked(7)));
     let load = stale.refresh().unwrap();
-    stale.finish(
-        load.generation,
-        Err(ReadError::Failed("offline".to_owned())),
-        2_000,
-    );
+    stale.finish(&load, Err(ReadError::Failed("offline".to_owned())), 2_000);
     assert!(stale.detail().is_some(), "the old read stays on screen");
     assert_eq!(
         admin_merge_button(&stale, true),
@@ -289,8 +309,13 @@ fn the_admin_control_exists_only_for_a_current_blocked_read_the_account_may_merg
 #[test]
 fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
     let stamp = blocked(7).stamp();
-    let (mut flow, load) =
-        MergeFlow::start(3, stamp.clone(), MergeMethod::Squash, MergeKind::Admin);
+    let (mut flow, load) = MergeFlow::start(
+        3,
+        REPOSITORY.to_owned(),
+        stamp.clone(),
+        MergeMethod::Squash,
+        MergeKind::Admin,
+    );
     assert_eq!(load.kind, MergeKind::Admin);
     let plan = admin_merge_plan(&blocked(7), MergeMethod::Squash);
     assert!(!flow.planned(2, Ok(plan.clone())), "another generation");
@@ -322,7 +347,6 @@ fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
     );
     assert!(note.contains("has not verified"), "{note}");
     let line = merge_outcome_log(
-        "octo/rc-git",
         &flow,
         &MergeEnd::Refused {
             reason: "Not allowed.".to_owned(),
@@ -330,7 +354,7 @@ fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
     );
     assert!(
         line.starts_with(&format!(
-            "admin merge octo/rc-git#7 head {} method squash bypassing [",
+            "admin merge #7 of octo/rc-git@github.com head {} method squash bypassing [",
             oid(7)
         )),
         "{line}"
@@ -352,6 +376,7 @@ fn harness(cx: &mut TestAppContext) -> Harness {
     fake.state().plan = Ok(merge_plan(&detail(7), MergeMethod::Squash));
     fake.state().merge = Ok(MergeOutcome::Merged {
         merge_commit: Some(oid(9)),
+        base: Some("main".to_owned()),
         settled: Settled::Answer,
     });
     let service: Arc<dyn PullRequestService> = Arc::new(fake.clone());
@@ -478,11 +503,11 @@ async fn a_confirmed_merge_sends_once_then_reads_the_tab_and_the_list_again(
     assert_eq!(log.len(), 2, "{log:?}");
     assert_eq!(
         log[0],
-        format!("merge octo/rc-git#7 head {head} method squash: sending")
+        format!("merge #7 of octo/rc-git@github.com head {head} method squash: sending")
     );
     assert!(
         log[1].starts_with(&format!(
-            "merge octo/rc-git#7 head {head} method squash: merged as "
+            "merge #7 of octo/rc-git@github.com head {head} method squash: merged as "
         )),
         "{}",
         log[1]
@@ -777,7 +802,8 @@ async fn an_admin_merge_starts_only_from_its_control_and_sends_the_typed_text_as
     let log = h.log.lock().unwrap().clone();
     assert_eq!(log.len(), 2, "{log:?}");
     let subject = format!(
-        "admin merge octo/rc-git#7 head {} method squash bypassing [failed required checks: []; \
+        "admin merge #7 of octo/rc-git@github.com head {} method squash bypassing [failed \
+         required checks: []; \
          pending required checks: []; checks of unreported requirement not passed: 0; checks not \
          read: 0; review: changes requested; behind base: false]",
         oid(7)
@@ -954,4 +980,185 @@ fn the_live_service_sends_an_admin_merge_only_with_the_number_typed() {
         "{outcome:?}"
     );
     assert_eq!((server.mutation_requests(), *sends.lock().unwrap()), (1, 1));
+}
+
+/// A flow of #7 confirmed and finished with `outcome`.
+fn finished_with(outcome: MergeOutcome) -> MergeFlow {
+    let stamp = detail(7).stamp();
+    let (mut flow, load) = MergeFlow::start(
+        1,
+        REPOSITORY.to_owned(),
+        stamp,
+        MergeMethod::Squash,
+        MergeKind::Plain,
+    );
+    flow.planned(
+        load.generation,
+        Ok(merge_plan(&detail(7), MergeMethod::Squash)),
+    );
+    let load = flow.confirm(String::new()).unwrap();
+    assert!(flow.finished(load.generation, Ok(outcome)));
+    flow
+}
+
+#[test]
+fn a_merge_into_another_base_reads_as_a_warning_naming_both_branches() {
+    let flow = finished_with(MergeOutcome::MergedIntoOtherBase {
+        confirmed: "main".to_owned(),
+        actual: "release".to_owned(),
+        merge_commit: Some(oid(9)),
+        settled: Settled::Answer,
+    });
+    let MergePhase::Done(end) = flow.phase() else {
+        panic!("{:?}", flow.phase());
+    };
+    assert!(
+        matches!(end, MergeEnd::MergedIntoOtherBase { confirmed, actual, .. }
+            if confirmed == "main" && actual == "release"),
+        "{end:?}"
+    );
+    let note = merge_note(&flow).unwrap();
+    assert!(
+        note.starts_with("Warning: #7 merged into release, not main, the base you confirmed"),
+        "{note}"
+    );
+    assert!(merge_note_alarms(&flow), "shown as an alarm");
+    let line = merge_outcome_log(&flow, end);
+    assert!(
+        line.contains("MERGED INTO ANOTHER BASE")
+            && line.contains("into release, not the confirmed main"),
+        "{line}"
+    );
+
+    let unnamed = finished_with(MergeOutcome::Merged {
+        merge_commit: None,
+        base: None,
+        settled: Settled::Answer,
+    });
+    let note = merge_note(&unnamed).unwrap();
+    assert!(
+        note.starts_with("Merged #7. GitHub did not say which branch"),
+        "{note}"
+    );
+    assert!(!note.contains("main"), "no base named as fact: {note}");
+    let named = finished_with(MergeOutcome::Merged {
+        merge_commit: None,
+        base: Some("main".to_owned()),
+        settled: Settled::Answer,
+    });
+    assert!(
+        merge_note(&named)
+            .unwrap()
+            .starts_with("Merged #7 into main.")
+    );
+    assert!(!merge_note_alarms(&named) && !merge_note_alarms(&unnamed));
+}
+
+/// The fake's link, for another repository on the same host.
+fn other_link() -> RepositoryLink {
+    let mut other = rc_git_kit::fake::linked();
+    other.target = rc_git_kit::pull_requests::RepositoryTarget::on_host(
+        &GitHubHost::github_com(),
+        "https://github.com/octo/other",
+    )
+    .unwrap();
+    RepositoryLink::Linked(other)
+}
+
+#[gpui::test]
+async fn a_merge_sent_before_a_relink_is_logged_as_its_own_and_shown_by_no_new_tab(
+    cx: &mut TestAppContext,
+) {
+    let h = harness(cx);
+    h.open(cx).await;
+    let sent = Arc::new(CallGate::new());
+    h.fake.state().sent_gate = Some(Arc::clone(&sent));
+    h.start(cx);
+    h.settle(cx);
+    h.confirm(cx);
+    assert!(sent.wait_until_arrived());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(h.phase(cx), MergePhase::Merging { sent: true, .. }) {
+        assert!(Instant::now() < deadline, "the send was never seen");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.fake.state().link = other_link();
+    h.model.update(cx, PullRequestsModel::relink).await;
+    h.settle(cx);
+    h.model.update(cx, |m, cx| m.open(7, cx));
+    h.settle(cx);
+    assert!(
+        h.model.read_with(cx, |m, _| m.merge_flow(7).is_none()),
+        "the new link's #7 has no merge"
+    );
+    let details = h.fake.state().detail_calls.len();
+    sent.open();
+    while h.log.lock().unwrap().len() < 2 {
+        assert!(Instant::now() < deadline, "the merge never ended");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.settle(cx);
+    let log = h.log.lock().unwrap().clone();
+    assert!(
+        log[1].starts_with("merge #7 of octo/rc-git@github.com head "),
+        "{log:?}"
+    );
+    assert!(h.model.read_with(cx, |m, _| m.merge_flow(7).is_none()));
+    assert_eq!(
+        h.fake.state().detail_calls.len(),
+        details,
+        "the old link's merge reads nothing of the new link"
+    );
+}
+
+#[gpui::test]
+async fn a_detail_read_asked_under_an_old_link_never_lands_in_the_new_link_s_tab(
+    cx: &mut TestAppContext,
+) {
+    let h = harness(cx);
+    h.model
+        .update(cx, |m, cx| m.attach(REPO.to_owned(), cx))
+        .await;
+    h.settle(cx);
+    let old = Arc::new(CallGate::new());
+    h.fake.state().detail_gate = Some(Arc::clone(&old));
+    // The old tab's first read, so its generation is the one the new tab's first read gets.
+    h.model.update(cx, |m, cx| m.open(7, cx));
+    assert!(old.wait_until_arrived());
+    let new = Arc::new(CallGate::new());
+    {
+        let mut state = h.fake.state();
+        state.link = other_link();
+        state.detail_gate = Some(Arc::clone(&new));
+        state.details.insert(7, Ok(detail(2)));
+    }
+    h.model.update(cx, PullRequestsModel::relink).await;
+    cx.run_until_parked();
+    h.model.update(cx, |m, cx| m.open(7, cx));
+    assert!(new.wait_until_arrived());
+    let tab = |cx: &mut TestAppContext| h.model.read_with(cx, |m, _| m.tabs()[0].clone());
+    old.open();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while h.fake.state().details_answered < 1 {
+        assert!(Instant::now() < deadline, "the old read never answered");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if !tab(cx).is_loading() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        tab(cx).is_loading() && tab(cx).detail().is_none(),
+        "the old link's answer landed: {:?}",
+        tab(cx)
+    );
+    new.open();
+    h.settle(cx);
+    assert_eq!(tab(cx).stamp().map(|stamp| stamp.head_oid), Some(oid(2)));
 }

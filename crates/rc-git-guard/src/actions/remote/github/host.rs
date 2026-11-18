@@ -256,6 +256,12 @@ impl ApiUrl {
     pub(super) fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// `url` as is, for the transport's own tests against a listener they run.
+    #[cfg(test)]
+    pub(super) fn for_test(url: String) -> Self {
+        Self(url)
+    }
 }
 
 /// The host a repository's remote URL names, for looking up the account to use. The URL is

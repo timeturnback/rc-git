@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, TreeChange};
+use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, TreeChange};
 use rc_git_guard::actions::github::{
     ApiToken, MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, list_open_pull_requests,
     merge_pull_request, plan_merge_pull_request, pull_request_base_ref, pull_request_remote,
@@ -192,13 +192,14 @@ impl PullRequestService for LivePullRequests {
         repo_path: &str,
         linked: &Linked,
         stamp: &PullRequestStamp,
+        base: Option<Oid>,
     ) -> Result<ChangesRead, String> {
         same_remote(repo_path, linked)?;
         let repository =
             LiveRepository::open(repo_path).map_err(|error| error.message().to_owned())?;
         let tracking = pull_request_base_ref(Path::new(repo_path), &stamp.base_ref)
             .map_err(|error| error.to_string())?;
-        read_changes(&repository, stamp, tracking)
+        read_changes(&repository, stamp, base, tracking)
     }
 
     fn file_diff(&self, repo_path: &str, change: &TreeChange) -> Result<BlobDiff, String> {
@@ -270,6 +271,7 @@ impl PullRequestService for LivePullRequests {
         let merge = MergeTarget {
             host: linked.account.key.host(),
             token: &token,
+            login: linked.account.key.login(),
             target: &linked.target,
             stamp: ask.stamp,
             method: ask.method,
@@ -289,6 +291,7 @@ impl PullRequestService for LivePullRequests {
             merge: MergeTarget {
                 host: linked.account.key.host(),
                 token: &token,
+                login: linked.account.key.login(),
                 target: &linked.target,
                 stamp: ask.stamp,
                 method: ask.method,

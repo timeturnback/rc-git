@@ -454,6 +454,12 @@ fn pr_reads_nothing_for_a_remote_on_another_host_or_without_an_account() {
 
 /// Scripts pull request 7 with head `head` on base `main`, in the full detail read.
 fn script_pull_request(server: &GitHubServer, head: &str) {
+    script_pull_request_on(server, head, None);
+}
+
+/// [`script_pull_request`], with GitHub reporting its base at `base` when set.
+fn script_pull_request_on(server: &GitHubServer, head: &str, base: Option<&str>) {
+    let base = base.map_or_else(String::new, |oid| format!(r#""baseRefOid": "{oid}","#));
     let detail = format!(
         r#"{{"data": {{"repository": {{
             "mergeCommitAllowed": true, "squashMergeAllowed": true,
@@ -462,7 +468,7 @@ fn script_pull_request(server: &GitHubServer, head: &str) {
                 "number": 7, "title": "Ship", "body": "", "url": null, "isDraft": false,
                 "state": "OPEN", "updatedAt": "2026-11-18T09:00:00Z",
                 "author": {{"login": "mona"}}, "headRefName": "topic", "headRefOid": "{head}",
-                "baseRefName": "main", "isCrossRepository": false,
+                "baseRefName": "main", {base} "isCrossRepository": false,
                 "headRepositoryOwner": {{"login": "octo"}}, "reviewDecision": null,
                 "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
                 "viewerCanMergeAsAdmin": false, "viewerCanEnableAutoMerge": false,
@@ -494,15 +500,37 @@ fn pr_diff_lists_the_changes_of_a_local_head_from_its_merge_base() {
     repo.write("topic.txt", b"topic\n");
     repo.commit("topic work", "2024-05-01T00:00:00+0000");
     let head = repo.rev_parse("topic");
-    script_pull_request(&server, &head);
+    let reported = repo.rev_parse("refs/remotes/origin/main");
+    script_pull_request_on(&server, &head, Some(&reported));
 
     let out = run_pr(&scratch, &repo, &ssh, &["diff", "7"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let names = repo.git_output(&["diff", "--name-status", &format!("origin/main...{head}")]);
+    let names = repo.git_output(&["diff", "--name-status", &format!("{reported}...{head}")]);
     assert_eq!(
         text(&out.stdout),
-        format!("base\t{base}\trefs/remotes/origin/main\nhead\t{head}\n{names}\n")
+        format!("base\t{base}\tpull-request-base\t{reported}\nhead\t{head}\n{names}\n")
     );
+
+    script_pull_request(&server, &head);
+    let out = run_pr(&scratch, &repo, &ssh, &["diff", "7"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with(&format!(
+            "base\t{base}\tlocal-copy\trefs/remotes/origin/main\n"
+        )),
+        "a host that reports no base commit is compared with the local copy, and says so"
+    );
+
+    let absent = "fedcba9876543210fedcba9876543210fedcba98";
+    script_pull_request_on(&server, &head, Some(absent));
+    let out = run_pr(&scratch, &repo, &ssh, &["diff", "7"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains(&format!("commit {absent}, where main is on GitHub")),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(text(&out.stdout).is_empty(), "no diff from another base");
     assert!(
         git_requests(&server).is_empty(),
         "a local head needs no fetch"
@@ -591,12 +619,23 @@ fn mergeable(head: &str, state: &str) -> String {
     )
 }
 
+/// The merge mutation's answer: merged at [`HEAD`] into `base` as [`MOVED`].
+fn merged_reply(base: &str) -> String {
+    format!(
+        r#"{{"data": {{"mergePullRequest": {{"pullRequest": {{"number": 7, "state": "MERGED",
+            "merged": true, "headRefOid": "{HEAD}", "baseRefName": "{base}",
+            "mergeCommit": {{"oid": "{MOVED}"}}}}}}}}}}"#
+    )
+}
+
 /// Pull request 7 on `server`, open at [`HEAD`], merging with a squash as `behaviour` says.
 fn script_merge(server: &GitHubServer, behaviour: MergeBehaviour) {
-    let reply = format!(
-        r#"{{"data": {{"mergePullRequest": {{"pullRequest": {{"number": 7, "state": "MERGED",
-            "merged": true, "headRefOid": "{HEAD}", "mergeCommit": {{"oid": "{MOVED}"}}}}}}}}}}"#
-    );
+    script_merge_into(server, "main", behaviour);
+}
+
+/// [`script_merge`], with GitHub's answer naming `base` as the base it merged into.
+fn script_merge_into(server: &GitHubServer, base: &str, behaviour: MergeBehaviour) {
+    let reply = merged_reply(base);
     server.script_merge(MergeScript {
         read: detail_request_body(&pr_target(server), 7, false),
         open: mergeable(HEAD, "OPEN"),
@@ -615,10 +654,13 @@ fn pr_merge_without_its_head_or_yes_merges_nothing() {
     script_merge(&server, MergeBehaviour::Merge);
     let signed_in = server.requests();
     for args in [
-        vec!["merge", "7", "--method", "squash", "--yes"],
-        vec!["merge", "7", "--head", HEAD, "--yes"],
         vec![
-            "merge", "7", "--method", "squash", "--head", "0123", "--yes",
+            "merge", "7", "--method", "squash", "--base", "main", "--yes",
+        ],
+        vec!["merge", "7", "--head", HEAD, "--base", "main", "--yes"],
+        vec!["merge", "7", "--method", "squash", "--head", HEAD, "--yes"],
+        vec![
+            "merge", "7", "--method", "squash", "--head", "0123", "--base", "main", "--yes",
         ],
     ] {
         let out = run_pr(&scratch, &repo, &ssh, &args);
@@ -634,16 +676,32 @@ fn pr_merge_without_its_head_or_yes_merges_nothing() {
             "{args:?}: a usage error reads nothing"
         );
     }
-    let unconfirmed = ["merge", "7", "--method", "squash", "--head", HEAD];
+    let unconfirmed = [
+        "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main",
+    ];
     let out = run_pr(&scratch, &repo, &ssh, &unconfirmed);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    let lines: Vec<&str> = printed.lines().collect();
     assert!(
-        text(&out.stdout).starts_with(
-            "would-merge\tMerge octo/rc-git#7 \u{201c}Ship\u{201d} into main with a squash merge: \
-             topic at 0123456"
-        ),
-        "{}",
-        text(&out.stdout)
+        lines[0].starts_with("would-merge\tMerge this pull request on GitHub."),
+        "{printed}"
+    );
+    for line in [
+        "would-merge\tAccount: octocat@",
+        "would-merge\tBase: \u{201c}main\u{201d}",
+        "would-merge\tHead: 0123456 on \u{201c}topic\u{201d}",
+        "would-merge\tMethod: a squash merge",
+        "would-merge\tTitle: \u{201c}Ship\u{201d}",
+    ] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(line)),
+            "{line}\n{printed}"
+        );
+    }
+    assert!(
+        lines.iter().all(|l| l.starts_with("would-merge\t")),
+        "{printed}"
     );
     assert!(text(&out.stderr).contains("needs --yes"));
     assert_eq!(server.mutation_requests(), 0);
@@ -655,13 +713,21 @@ fn pr_merge_with_yes_merges_once_and_prints_the_merge_commit() {
     let server = server_knowing(TOKEN, "octocat");
     let (scratch, repo, ssh) = pr_setup(&server, None);
     script_merge(&server, MergeBehaviour::Merge);
-    let args = ["merge", "7", "--method", "squash", "--head", HEAD, "--yes"];
+    let args = [
+        "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main", "--yes",
+    ];
     let out = run_pr(&scratch, &repo, &ssh, &args);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let printed = text(&out.stdout);
-    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\nnote\tMerged #7 into main");
+    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\tmain\nnote\tMerged #7 into main");
     assert!(printed.starts_with(&merged), "{printed}");
     assert!(printed.contains("unchanged until you fetch"), "{printed}");
+    let said = text(&out.stderr);
+    assert!(
+        said.contains("sending\tMerge this pull request on GitHub.")
+            && said.contains("\nsending\tBase: \u{201c}main\u{201d}\n"),
+        "the challenge goes to stderr before the request: {said}"
+    );
     assert_eq!(server.mutation_requests(), 1);
     assert!(server.merged());
     assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
@@ -672,7 +738,9 @@ fn pr_merge_of_a_head_that_moved_refuses_before_any_mutation() {
     let server = server_knowing(TOKEN, "octocat");
     let (scratch, repo, ssh) = pr_setup(&server, None);
     script_merge(&server, MergeBehaviour::Merge);
-    let args = ["merge", "7", "--method", "squash", "--head", MOVED, "--yes"];
+    let args = [
+        "merge", "7", "--method", "squash", "--head", MOVED, "--base", "main", "--yes",
+    ];
     let out = run_pr(&scratch, &repo, &ssh, &args);
     assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
     assert!(
@@ -688,12 +756,65 @@ fn pr_merge_whose_answer_is_lost_exits_12_and_sends_once() {
     let server = server_knowing(TOKEN, "octocat");
     let (scratch, repo, ssh) = pr_setup(&server, None);
     script_merge(&server, MergeBehaviour::Drop);
-    let args = ["merge", "7", "--method", "squash", "--head", HEAD, "--yes"];
+    let args = [
+        "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main", "--yes",
+    ];
     let out = run_pr(&scratch, &repo, &ssh, &args);
     assert_eq!(out.status.code(), Some(12), "{}", text(&out.stderr));
     let said = text(&out.stderr);
     assert!(said.contains("could not tell whether #7 merged"), "{said}");
     assert!(said.contains("on GitHub before trying again"), "{said}");
+    assert_eq!(server.mutation_requests(), 1);
+}
+
+#[test]
+fn pr_merge_of_a_base_retargeted_since_it_was_seen_refuses_before_any_mutation() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let args = [
+        "merge",
+        "7",
+        "--method",
+        "squash",
+        "--head",
+        HEAD,
+        "--base",
+        "experimental",
+        "--yes",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("its base is now 'main', not 'experimental'"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(server.mutation_requests(), 0);
+    assert!(!server.merged());
+}
+
+#[test]
+fn pr_merge_github_says_landed_on_another_base_exits_13_naming_both() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge_into(&server, "release", MergeBehaviour::Merge);
+    let args = [
+        "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main", "--yes",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(13), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert_eq!(
+        printed,
+        format!("merged-into-other-base\tocto/rc-git#7\t{MOVED}\t{HEAD}\trelease\tmain\n")
+    );
+    let said = text(&out.stderr);
+    assert!(
+        said.contains("Warning: #7 merged into release, not main, the base you confirmed"),
+        "{said}"
+    );
+    assert!(!printed.contains("\nmerged\t") && !printed.starts_with("merged\t"));
     assert_eq!(server.mutation_requests(), 1);
 }
 
@@ -717,10 +838,7 @@ fn script_admin_merge(server: &GitHubServer, behaviour: MergeBehaviour) {
     };
     let open = blocked(HEAD, "OPEN");
     assert!(open.contains("BLOCKED") && open.contains("REVIEW_REQUIRED") && open.contains("true"));
-    let reply = format!(
-        r#"{{"data": {{"mergePullRequest": {{"pullRequest": {{"number": 7, "state": "MERGED",
-            "merged": true, "headRefOid": "{HEAD}", "mergeCommit": {{"oid": "{MOVED}"}}}}}}}}}}"#
-    );
+    let reply = merged_reply("main");
     server.script_merge(MergeScript {
         read: detail_request_body(&pr_target(server), 7, false),
         open,
@@ -735,10 +853,25 @@ fn script_admin_merge(server: &GitHubServer, behaviour: MergeBehaviour) {
 /// `pr merge 7` of [`HEAD`] with a squash, as an admin merge, with `extra` after.
 fn admin_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
-        "merge", "7", "--method", "squash", "--head", HEAD, "--admin",
+        "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main", "--admin",
     ];
     args.extend_from_slice(extra);
     args
+}
+
+/// The fingerprint a dry run of the admin merge printed, from its `plan` record.
+fn printed_plan(out: &std::process::Output) -> String {
+    let printed = text(&out.stdout);
+    let line = printed.lines().find(|line| line.starts_with("plan\t"));
+    assert!(line.is_some(), "no plan record: {printed}");
+    line.unwrap().trim_start_matches("plan\t").to_owned()
+}
+
+/// The plan fingerprint of the admin merge `server` scripts, read by a dry run.
+fn dry_run_plan(scratch: &Scratch, repo: &Fixture, ssh: &Fixture) -> String {
+    let out = run_pr(scratch, repo, ssh, &admin_args(&[]));
+    assert_eq!(out.status.code(), Some(10), "{}", text(&out.stderr));
+    printed_plan(&out)
 }
 
 #[test]
@@ -752,27 +885,41 @@ fn pr_merge_admin_without_its_number_prints_what_it_skips_and_sends_nothing() {
         let printed = text(&out.stdout);
         assert!(
             printed.starts_with(
-                "would-merge-admin\tMerge octo/rc-git#7 \u{201c}Ship\u{201d} into main past its \
-                 branch protection, as an administrator, with a squash merge: topic at 0123456"
+                "would-merge-admin\tMerge this pull request on GitHub past its branch \
+                 protection, as an administrator."
             ),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("\nwould-merge-admin\tHead: 0123456 on \u{201c}topic\u{201d}\n"),
             "{printed}"
         );
         assert!(
             printed.contains("\nbypass\treview\treview-required\n"),
             "{printed}"
         );
+        let plan = printed_plan(&out);
+        assert_eq!(plan.len(), 16, "{printed}");
         assert!(
-            printed.ends_with("bypass\tunreported-rules\tany the API does not report\n"),
+            printed.ends_with(&format!(
+                "bypass\tunreported-rules\tany the API does not report\nplan\t{plan}\n"
+            )),
             "{printed}"
         );
         assert!(
-            text(&out.stderr).contains("--confirm 7 (--yes is not enough)"),
+            text(&out.stderr).contains(&format!("--confirm 7 --plan {plan} (--yes is not enough)")),
             "{}",
             text(&out.stderr)
         );
     }
+    let plan = dry_run_plan(&scratch, &repo, &ssh);
     for typed in ["8", "#7", "07", ""] {
-        let out = run_pr(&scratch, &repo, &ssh, &admin_args(&["--confirm", typed]));
+        let out = run_pr(
+            &scratch,
+            &repo,
+            &ssh,
+            &admin_args(&["--confirm", typed, "--plan", &plan]),
+        );
         assert_eq!(
             out.status.code(),
             Some(10),
@@ -794,11 +941,22 @@ fn pr_merge_admin_with_its_number_merges_once() {
     let server = server_knowing(TOKEN, "octocat");
     let (scratch, repo, ssh) = pr_setup(&server, None);
     script_admin_merge(&server, MergeBehaviour::Merge);
-    let out = run_pr(&scratch, &repo, &ssh, &admin_args(&["--confirm", "7"]));
+    let plan = dry_run_plan(&scratch, &repo, &ssh);
+    let out = run_pr(
+        &scratch,
+        &repo,
+        &ssh,
+        &admin_args(&["--confirm", "7", "--plan", &plan]),
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
     let printed = text(&out.stdout);
-    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\nnote\tMerged #7 into main");
+    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\tmain\nnote\tMerged #7 into main");
     assert!(printed.starts_with(&merged), "{printed}");
+    assert!(
+        text(&out.stderr).contains("sending\tSkipped: a required review that has not approved it"),
+        "{}",
+        text(&out.stderr)
+    );
     assert_eq!(server.mutation_requests(), 1);
     assert!(server.merged());
     assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
@@ -830,7 +988,13 @@ fn pr_merge_admin_of_a_pull_request_nothing_blocks_or_that_github_refuses_merges
             body: body.to_owned(),
         },
     );
-    let out = run_pr(&scratch, &repo, &ssh, &confirmed);
+    let plan = dry_run_plan(&scratch, &repo, &ssh);
+    let out = run_pr(
+        &scratch,
+        &repo,
+        &ssh,
+        &admin_args(&["--confirm", "7", "--plan", &plan]),
+    );
     assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
     let said = text(&out.stderr);
     assert!(
@@ -848,20 +1012,49 @@ fn pr_merge_takes_confirm_only_with_admin() {
     let (scratch, repo, ssh) = pr_setup(&server, None);
     script_merge(&server, MergeBehaviour::Merge);
     let signed_in = server.requests();
-    let args = [
-        "merge",
-        "7",
-        "--method",
-        "squash",
-        "--head",
-        HEAD,
-        "--confirm",
-        "7",
-        "--yes",
-    ];
-    let out = run_pr(&scratch, &repo, &ssh, &args);
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
-    assert!(text(&out.stderr).contains("--confirm goes with --admin"));
+    for (flag, value) in [("--confirm", "7"), ("--plan", "0123456789abcdef")] {
+        let args = [
+            "merge", "7", "--method", "squash", "--head", HEAD, "--base", "main", flag, value,
+            "--yes",
+        ];
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+        assert!(
+            text(&out.stderr).contains(&format!("{flag} goes with --admin")),
+            "{}",
+            text(&out.stderr)
+        );
+    }
     assert_eq!(server.requests(), signed_in, "a usage error reads nothing");
     assert_eq!(server.mutation_requests(), 0);
+}
+
+#[test]
+fn pr_merge_admin_merges_only_the_plan_its_fingerprint_names() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_admin_merge(&server, MergeBehaviour::Merge);
+    let plan = dry_run_plan(&scratch, &repo, &ssh);
+    let without = run_pr(&scratch, &repo, &ssh, &admin_args(&["--confirm", "7"]));
+    assert_eq!(without.status.code(), Some(2), "{}", text(&without.stderr));
+    assert!(
+        text(&without.stderr).contains("needs --plan"),
+        "{}",
+        text(&without.stderr)
+    );
+    let other = if plan.starts_with('0') { "1" } else { "0" }.repeat(16);
+    let out = run_pr(
+        &scratch,
+        &repo,
+        &ssh,
+        &admin_args(&["--confirm", "7", "--plan", &other]),
+    );
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("changed since the plan you were shown"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(server.mutation_requests(), 0);
+    assert!(!server.merged());
 }

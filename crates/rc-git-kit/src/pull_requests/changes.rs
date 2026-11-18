@@ -1,6 +1,12 @@
 //! A pull request's changes, read from local objects: the files that differ between the merge
 //! base of (base, head) and the head, GitHub's three-dot view, and one file's diff at a time.
 //!
+//! The base is the commit GitHub reports the pull request's base branch at (`baseRefOid`), never
+//! a local branch that may have moved on or fallen behind: when that commit is not in the object
+//! database the state asks for a fetch rather than diff against another one. Only a host that
+//! reports no base commit (an older GitHub Enterprise Server) is compared with the local copy of
+//! the base branch, and the result says so ([`ComparedWith::LocalCopy`]).
+//!
 //! The diff always belongs to one [`PullRequestStamp`], the read the user saw: its head is the
 //! commit diffed, so a pull request that moved can never show another commit's files under its
 //! name. When the head is not in the object database the state waits for the user to fetch it
@@ -22,23 +28,38 @@ use crate::repository::RepositoryReading;
 /// The most commits a merge-base walk reads before it answers that it could not tell.
 pub const MERGE_BASE_SCAN: usize = 50_000;
 
+/// What a pull request's head is compared with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComparedWith {
+    /// The commit GitHub reports the pull request's base branch at: GitHub's own view of its
+    /// changes.
+    PullRequestBase(Oid),
+    /// The local copy of the base branch, this remote-tracking ref, because the host reported no
+    /// base commit: what it holds may differ from the base GitHub compares with.
+    LocalCopy(String),
+}
+
 /// What the repository holds for a pull request's diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangesRead {
     /// The head commit is not in the object database: it has to be fetched first.
     HeadMissing,
-    /// The repository keeps no copy of the base branch: `tracking` is where the remote's
-    /// refspecs would put one (`None` when they map none).
+    /// The repository holds nothing to compare the head with: not the base commit GitHub
+    /// reported (`commit`), or, when the host reported none, no copy of the base branch.
+    /// `tracking` is where the remote's refspecs put one (`None` when they map none).
     NoBaseCopy {
         /// The base branch, as the host named it.
         branch: String,
         /// The remote-tracking ref that would hold it.
         tracking: Option<String>,
+        /// The base commit GitHub reported and the object database lacks; `None` when the host
+        /// reported none.
+        commit: Option<Oid>,
     },
-    /// The walk from the base's copy and the head found no merge base.
+    /// The walk from the base and the head found no merge base.
     NoMergeBase {
-        /// The remote-tracking ref of the base.
-        tracking: String,
+        /// What the head was compared with.
+        compared: ComparedWith,
         /// Whether the walk stopped at its limit or a shallow edge rather than running out of
         /// history.
         incomplete: bool,
@@ -49,42 +70,50 @@ pub enum ChangesRead {
     Files {
         /// The merge base.
         base: Oid,
-        /// The remote-tracking ref of the base.
-        tracking: String,
+        /// What the head was compared with.
+        compared: ComparedWith,
         /// The changed files, sorted by path.
         files: Vec<TreeChange>,
     },
 }
 
-/// Reads what the repository holds for the diff of `stamp`'s head against its base, whose
-/// local copy is `tracking` (as `rc_git_guard`'s `pull_request_base_ref` names it). Local only.
+/// Reads what the repository holds for the diff of `stamp`'s head against `base`, the commit
+/// GitHub reports its base branch at. Only when the host reported none (`base` is `None`) is the
+/// head compared with the base branch's local copy, `tracking` (as `rc_git_guard`'s
+/// `pull_request_base_ref` names it). Local only.
 ///
 /// # Errors
 /// The read's failure, as a sentence.
 pub fn read_changes(
     repository: &dyn RepositoryReading,
     stamp: &PullRequestStamp,
+    base: Option<Oid>,
     tracking: Option<String>,
 ) -> Result<ChangesRead, String> {
     let head = stamp.head_oid;
     if !repository.has_object(head) {
         return Ok(ChangesRead::HeadMissing);
     }
-    let branch = stamp.base_ref.clone();
-    let Some(tracking) = tracking else {
-        return Ok(ChangesRead::NoBaseCopy {
-            branch,
-            tracking: None,
-        });
+    let missing = |tracking, commit| ChangesRead::NoBaseCopy {
+        branch: stamp.base_ref.clone(),
+        tracking,
+        commit,
     };
-    let Ok(base_tip) = repository.resolve(&tracking) else {
-        return Ok(ChangesRead::NoBaseCopy {
-            branch,
-            tracking: Some(tracking),
-        });
+    let (tip, compared) = match (base, tracking) {
+        (Some(base), tracking) => {
+            if !repository.has_object(base) {
+                return Ok(missing(tracking, Some(base)));
+            }
+            (base, ComparedWith::PullRequestBase(base))
+        }
+        (None, None) => return Ok(missing(None, None)),
+        (None, Some(tracking)) => match repository.resolve(&tracking) {
+            Ok(tip) => (tip, ComparedWith::LocalCopy(tracking)),
+            Err(_) => return Ok(missing(Some(tracking), None)),
+        },
     };
     let found = repository
-        .merge_base(base_tip, head, MERGE_BASE_SCAN)
+        .merge_base(tip, head, MERGE_BASE_SCAN)
         .map_err(|error| error.message().to_owned())?;
     let (incomplete, scanned) = match found {
         MergeBase::Found { base, .. } => {
@@ -93,7 +122,7 @@ pub fn read_changes(
                 .map_err(|error| error.message().to_owned())?;
             return Ok(ChangesRead::Files {
                 base,
-                tracking,
+                compared,
                 files,
             });
         }
@@ -101,7 +130,7 @@ pub fn read_changes(
         MergeBase::Incomplete { scanned } => (true, scanned),
     };
     Ok(ChangesRead::NoMergeBase {
-        tracking,
+        compared,
         incomplete,
         scanned,
     })
@@ -163,17 +192,20 @@ pub enum ChangesPhase {
         /// The head the remote advertised.
         found: Oid,
     },
-    /// No local copy of the base branch.
+    /// Nothing local to compare with: the base commit GitHub reported is missing, or the host
+    /// reported none and there is no copy of the base branch.
     NoBaseCopy {
         /// The base branch.
         branch: String,
         /// Where its copy would be.
         tracking: Option<String>,
+        /// The base commit GitHub reported, missing here.
+        commit: Option<Oid>,
     },
     /// No merge base found.
     NoMergeBase {
-        /// The base's copy.
-        tracking: String,
+        /// What the head was compared with.
+        compared: ComparedWith,
         /// Whether the walk gave up rather than ran out of history.
         incomplete: bool,
         /// Commits read.
@@ -183,8 +215,8 @@ pub enum ChangesPhase {
     Ready {
         /// The merge base.
         base: Oid,
-        /// The base's copy.
-        tracking: String,
+        /// What the head was compared with.
+        compared: ComparedWith,
         /// The files, sorted by path.
         files: Vec<TreeChange>,
     },
@@ -202,6 +234,8 @@ pub enum ChangesLoad {
         generation: u64,
         /// What to read for.
         stamp: PullRequestStamp,
+        /// The base commit GitHub reported with it, if any.
+        base: Option<Oid>,
     },
     /// Fetch the stamp's head; answer with [`ChangesState::finish_fetch`].
     Fetch {
@@ -221,10 +255,12 @@ pub struct FileLoad {
     pub change: TreeChange,
 }
 
-/// One pull request's changes, for the stamp they were read for.
+/// One pull request's changes, for the stamp they were read for and the base commit GitHub
+/// reported with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangesState {
     stamp: PullRequestStamp,
+    base: Option<Oid>,
     phase: ChangesPhase,
     generation: u64,
     selected: Option<usize>,
@@ -233,11 +269,13 @@ pub struct ChangesState {
 }
 
 impl ChangesState {
-    /// The changes of `stamp`, about to be read: answer the returned load.
+    /// The changes of `stamp`, compared with `base` (the base commit GitHub reported with the
+    /// read; `None` when it reported none), about to be read: answer the returned load.
     #[must_use]
-    pub fn new(stamp: PullRequestStamp) -> (Self, ChangesLoad) {
+    pub fn new(stamp: PullRequestStamp, base: Option<Oid>) -> (Self, ChangesLoad) {
         let mut state = Self {
             stamp,
+            base,
             phase: ChangesPhase::Reading,
             generation: 0,
             selected: None,
@@ -252,6 +290,12 @@ impl ChangesState {
     #[must_use]
     pub fn stamp(&self) -> &PullRequestStamp {
         &self.stamp
+    }
+
+    /// The base commit GitHub reported with the read: the one the head is compared with.
+    #[must_use]
+    pub fn base(&self) -> Option<Oid> {
+        self.base
     }
 
     /// Where they stand.
@@ -284,6 +328,7 @@ impl ChangesState {
         ChangesLoad::Read {
             generation: self.generation,
             stamp: self.stamp.clone(),
+            base: self.base,
         }
     }
 
@@ -342,25 +387,31 @@ impl ChangesState {
         }
         self.phase = match answer {
             Ok(ChangesRead::HeadMissing) => ChangesPhase::NeedsFetch { problem: None },
-            Ok(ChangesRead::NoBaseCopy { branch, tracking }) => {
-                ChangesPhase::NoBaseCopy { branch, tracking }
-            }
-            Ok(ChangesRead::NoMergeBase {
+            Ok(ChangesRead::NoBaseCopy {
+                branch,
                 tracking,
+                commit,
+            }) => ChangesPhase::NoBaseCopy {
+                branch,
+                tracking,
+                commit,
+            },
+            Ok(ChangesRead::NoMergeBase {
+                compared,
                 incomplete,
                 scanned,
             }) => ChangesPhase::NoMergeBase {
-                tracking,
+                compared,
                 incomplete,
                 scanned,
             },
             Ok(ChangesRead::Files {
                 base,
-                tracking,
+                compared,
                 files,
             }) => ChangesPhase::Ready {
                 base,
-                tracking,
+                compared,
                 files,
             },
             Err(message) => ChangesPhase::Failed(message),

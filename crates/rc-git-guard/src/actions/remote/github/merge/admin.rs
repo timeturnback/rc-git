@@ -20,8 +20,7 @@ use super::super::RepositoryTarget;
 use super::super::pull_types::{
     CheckState, MergeMethod, MergeStateStatus, PullRequestDetail, PullRequestId, ReviewDecision,
 };
-use super::super::text::single_line;
-use super::{MergeBlocker, PullRequestMerge, checks_phrase, label, merge_blocker, method_phrase};
+use super::{MergeBlocker, PullRequestMerge, UNDO, fact, fact_line, merge_blocker, quoted};
 use rc_git_core::Oid;
 
 /// The longest check name a challenge quotes, in characters.
@@ -83,7 +82,7 @@ impl Bypassed {
     }
 
     /// The challenge's list of what is known to be skipped, joined with `; `; `None` when the
-    /// read names nothing.
+    /// read names nothing. `base` is the base branch already in quotes.
     fn known(&self, base: &str) -> Option<String> {
         let mut items = Vec::new();
         if !self.failed.is_empty() {
@@ -113,37 +112,40 @@ impl Bypassed {
         (!items.is_empty()).then(|| items.join("; "))
     }
 
-    /// What the read could not tell, as sentences; empty when it told everything it holds.
+    /// What the read could not tell, then that rules the API does not report may be skipped
+    /// too: the sentences of the challenge's "May also skip" line.
     fn uncertain(&self) -> String {
         let mut sentences = Vec::new();
         if self.unreported > 0 {
             sentences.push(format!(
-                " {} more check(s) that have not passed may be required; GitHub did not say, \
-                 so they may be skipped too.",
+                "{} more check(s) that have not passed may be required; GitHub did not say, so \
+                 they may be skipped too.",
                 self.unreported
             ));
         }
         if self.unread > 0 {
             sentences.push(format!(
-                " The read did not hold {} of the head's checks; any of them may be required.",
+                "The read did not hold {} of the head's checks; any of them may be required.",
                 self.unread
             ));
         }
-        sentences.concat()
+        sentences.push(
+            "Branch protection or rulesets may also require things GitHub's API does not \
+             report here, and those may be skipped too, so this list may not be complete."
+                .to_owned(),
+        );
+        sentences.join(" ")
     }
 }
 
 /// The names in curly quotes, `a, b, c, d, e and 3 more`: at most [`NAMED_CHECKS`] names, each
-/// re-cut to [`CHECK_CHARS`] (they arrive single-line already).
+/// a challenge value re-cut to [`CHECK_CHARS`] (they arrive single-line already).
 fn named(names: &[String]) -> String {
-    let mut quoted = Vec::new();
+    let mut shown = Vec::new();
     for name in names.iter().take(NAMED_CHECKS) {
-        quoted.push(format!(
-            "\u{201c}{}\u{201d}",
-            single_line(name, CHECK_CHARS)
-        ));
+        shown.push(quoted(&fact(name, CHECK_CHARS)));
     }
-    let text = quoted.join(", ");
+    let text = shown.join(", ");
     match names.len().saturating_sub(NAMED_CHECKS) {
         0 => text,
         more => format!("{text} and {more} more"),
@@ -162,12 +164,14 @@ pub struct PullRequestAdminMerge {
 }
 
 impl PullRequestAdminMerge {
-    /// The admin merge of `detail`, as read from `target`, with `method`.
+    /// The admin merge of `detail`, as read from `target` with the token of account `login`,
+    /// with `method`.
     ///
     /// # Errors
     /// The [`MergeBlocker`] [`admin_merge_blocker`] finds.
     pub fn new(
         target: &RepositoryTarget,
+        login: &str,
         detail: &PullRequestDetail,
         method: MergeMethod,
     ) -> Result<Self, MergeBlocker> {
@@ -175,7 +179,7 @@ impl PullRequestAdminMerge {
             return Err(blocker);
         }
         Ok(Self {
-            merge: PullRequestMerge::read(target, detail, method)?,
+            merge: PullRequestMerge::read(target, login, detail, method)?,
             bypassed: Bypassed::of(detail),
         })
     }
@@ -226,36 +230,30 @@ impl PullRequestAdminMerge {
         self.merge.number.to_string()
     }
 
-    /// The challenge's text: the pull request, its title, both branches, the head commit, the
-    /// method and the checks; that it merges past branch protection; what the read shows it
-    /// skips and that other rules may be skipped too; and that rc-git cannot undo it.
+    /// The challenge's text, one labelled line per fact in the plain merge's fixed order: rc-git's
+    /// own first line (it merges past branch protection on purpose, for everyone, and rc-git
+    /// cannot undo it), the repository to the checks as the plain merge names them, what the
+    /// read shows it skips, what else it may skip (the list may not be complete), and the title
+    /// last.
     pub(crate) fn summary(&self) -> String {
         let merge = &self.merge;
-        let short: String = merge.head_oid.to_hex().chars().take(7).collect();
-        let known = self.bypassed.known(&merge.base).map_or_else(
-            || {
-                "GitHub reports it as blocked, but the read names no failed or unfinished \
-                 required check, missing review or out-of-date branch."
+        let known = self
+            .bypassed
+            .known(&quoted(&merge.base))
+            .unwrap_or_else(|| {
+                "nothing the read names: GitHub reports it as blocked, but the read names no \
+                 failed or unfinished required check, missing review or out-of-date branch"
                     .to_owned()
-            },
-            |known| format!("Known to be skipped: {known}."),
-        );
-        format!(
-            "Merge {} \u{201c}{}\u{201d} into {} past its branch protection, as an \
-             administrator, with {}: {} at {short} ({}). This skips rules set for {} on \
-             purpose. {known}{} Branch protection or rulesets may also require things GitHub's \
-             API does not report here, and those may be skipped too, so this list may not be \
-             complete. GitHub merges it for everyone and rc-git cannot undo it; the local \
-             repository is unchanged until you fetch.",
-            label(&merge.target, merge.number),
-            merge.title,
-            merge.base,
-            method_phrase(merge.method),
-            merge.head,
-            checks_phrase(&merge.checks),
-            merge.base,
-            self.bypassed.uncertain(),
-        )
+            });
+        let mut lines = vec![format!(
+            "Merge this pull request on GitHub past its branch protection, as an \
+             administrator. This skips rules set for its base branch on purpose. {UNDO}"
+        )];
+        lines.extend(merge.fact_lines());
+        lines.push(fact_line("Skipped", &known));
+        lines.push(fact_line("May also skip", &self.bypassed.uncertain()));
+        lines.push(merge.title_line());
+        lines.join("\n")
     }
 }
 

@@ -55,8 +55,12 @@ pub struct FakePullRequestsState {
     pub file_diffs: BTreeMap<String, Result<BlobDiff, String>>,
     /// Holds each fetch at the gate, when set.
     pub fetch_gate: Option<Arc<CallGate>>,
+    /// How many detail reads have answered, counted just before each returns.
+    pub details_answered: usize,
     /// The stamp of every changes read, in arrival order.
     pub changes_calls: Vec<PullRequestStamp>,
+    /// The base commit every changes read compared with, in arrival order.
+    pub changes_bases: Vec<Option<Oid>>,
     /// The stamp of every fetch, in arrival order.
     pub fetch_calls: Vec<PullRequestStamp>,
     /// The path of every file diff, in arrival order.
@@ -127,7 +131,9 @@ impl FakePullRequests {
                 fetches: BTreeMap::new(),
                 file_diffs: BTreeMap::new(),
                 fetch_gate: None,
+                details_answered: 0,
                 changes_calls: Vec::new(),
+                changes_bases: Vec::new(),
                 fetch_calls: Vec::new(),
                 file_diff_calls: Vec::new(),
                 plan: Err(MergeStop::Failed(
@@ -219,16 +225,19 @@ impl PullRequestService for FakePullRequests {
         if let Some(gate) = gate {
             gate.pass();
         }
-        self.expected(linked)?;
-        self.state()
-            .details
-            .get(&number)
-            .cloned()
-            .unwrap_or_else(|| {
-                Err(ReadError::Failed(format!(
-                    "the fake has no pull request {number}"
-                )))
-            })
+        let answer = self.expected(linked).and_then(|()| {
+            self.state()
+                .details
+                .get(&number)
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err(ReadError::Failed(format!(
+                        "the fake has no pull request {number}"
+                    )))
+                })
+        });
+        self.state().details_answered += 1;
+        answer
     }
 
     fn choose_account(&self, repo_path: &str, key: &AccountKey) -> Result<(), String> {
@@ -241,8 +250,10 @@ impl PullRequestService for FakePullRequests {
         _repo_path: &str,
         linked: &Linked,
         stamp: &PullRequestStamp,
+        base: Option<Oid>,
     ) -> Result<ChangesRead, String> {
         self.state().changes_calls.push(stamp.clone());
+        self.state().changes_bases.push(base);
         self.expected(linked)
             .map_err(|error| format!("{error:?}"))?;
         let mut state = self.state();
@@ -423,6 +434,7 @@ pub fn pull_request_detail(
     PullRequestDetail {
         summary,
         id: PullRequestId::parse("PR_kwDOfake"),
+        base_oid: None,
         body: body.to_owned(),
         url: None,
         mergeable: Mergeable::Mergeable,
@@ -447,10 +459,15 @@ pub fn pull_request_detail(
 /// When something stands in the way of merging `detail` with `method`.
 #[must_use]
 pub fn merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> MergePlan {
+    let linked = linked();
     #[expect(clippy::expect_used, reason = "a test helper given a mergeable detail")]
-    let merge =
-        rc_git_guard::actions::github::PullRequestMerge::new(&linked().target, detail, method)
-            .expect("a mergeable pull request");
+    let merge = rc_git_guard::actions::github::PullRequestMerge::new(
+        &linked.target,
+        linked.account.key.login(),
+        detail,
+        method,
+    )
+    .expect("a mergeable pull request");
     let decision = crate::repository_actions::policy()
         .evaluate(&rc_git_guard::Action::MergePullRequest(Box::new(merge)));
     MergePlan {
@@ -479,10 +496,15 @@ pub fn blocked_detail(mut detail: PullRequestDetail) -> PullRequestDetail {
 /// When something stands in the way of an admin merge of `detail` with `method`.
 #[must_use]
 pub fn admin_merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> MergePlan {
+    let linked = linked();
     #[expect(clippy::expect_used, reason = "a test helper given a blocked detail")]
-    let merge =
-        rc_git_guard::actions::github::PullRequestAdminMerge::new(&linked().target, detail, method)
-            .expect("a pull request an admin may merge");
+    let merge = rc_git_guard::actions::github::PullRequestAdminMerge::new(
+        &linked.target,
+        linked.account.key.login(),
+        detail,
+        method,
+    )
+    .expect("a pull request an admin may merge");
     let bypassed = merge.bypassed().clone();
     let decision = crate::repository_actions::policy().evaluate(
         &rc_git_guard::Action::AdminMergePullRequest(Box::new(merge)),

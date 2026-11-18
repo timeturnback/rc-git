@@ -41,9 +41,10 @@ uses) answer in the guard's own types, text already neutralized; the stamp of a 
 read against. A pull request's changes come from local objects: `fetch_pull_request_head` (the
 guard's one pull request write) fetches `refs/pull/<n>/head` into `refs/rc-git/pr/<n>/head` when
 the user asks and the remote's head is the stamp's, and the core's `merge_base` (a bounded
-paint-down walk) plus `diff_trees` give GitHub's three-dot view from the local copy of the base
-branch (`pull_request_base_ref`). The guard's one GitHub mutation so far, merging a pull request
-(`merge_pull_request`, planned by `plan_merge_pull_request`), reads the pull request again,
+paint-down walk) plus `diff_trees` give GitHub's three-dot view from the commit GitHub reports
+the base branch at (`baseRefOid`), or, for a host that reports none, from the local copy of the
+base branch (`pull_request_base_ref`). The guard's one GitHub mutation so far, merging a pull
+request (`merge_pull_request`, planned by `plan_merge_pull_request`), reads the pull request again,
 refuses what changed since the stamp or cannot merge (`merge_blocker`), and sends one
 `mergePullRequest` through `Session::mutate`, which takes the `Confirmation` and builds the
 request from the action it carries (`mutation`); the outcome is merged, refused or unknown.

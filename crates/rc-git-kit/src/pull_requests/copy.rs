@@ -2,9 +2,9 @@
 //! and the CLI only place them. A failed read says "couldn't check" and why; what an earlier
 //! read left is labelled as possibly out of date, never shown as current.
 
-use rc_git_core::TreeChange;
+use rc_git_core::{Oid, TreeChange};
 
-use super::changes::ChangesPhase;
+use super::changes::{ChangesPhase, ComparedWith};
 use super::checks::CheckState;
 use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
 use super::state::Freshness;
@@ -241,40 +241,90 @@ pub fn changes_note(phase: &ChangesPhase, stamp: &PullRequestStamp, remote: &str
              Nothing was fetched; reading the pull request again.",
             short_hash(found)
         ),
-        ChangesPhase::NoBaseCopy { branch, tracking } => match tracking {
-            Some(tracking) => format!(
-                "There is no {tracking} here, the copy of {branch} the changes are compared \
-                 with. Fetch {remote} (Fetch in the toolbar), then Look Again."
-            ),
-            None => format!(
-                "{remote}'s fetch settings keep no copy of {branch}, the branch the changes are \
-                 compared with. Fetch it with git, then Look Again."
-            ),
-        },
-        ChangesPhase::NoMergeBase {
+        ChangesPhase::NoBaseCopy {
+            branch,
             tracking,
+            commit,
+        } => no_base_note(branch, tracking.as_deref(), commit.as_ref(), remote),
+        ChangesPhase::NoMergeBase {
+            compared,
             incomplete: true,
             scanned,
         } => format!(
-            "rc-git read {scanned} commits without finding where {head} branches off \
-             {tracking}. The history here may be shallow; fetch more of it with git, then Look \
-             Again."
+            "rc-git read {scanned} commits without finding where {head} branches off {}. The \
+             history here may be shallow; fetch more of it with git, then Look Again.",
+            compared_label(compared, &stamp.base_ref)
         ),
         ChangesPhase::NoMergeBase {
-            tracking,
+            compared,
             incomplete: false,
             ..
-        } => format!("{head} and {tracking} share no history, so there is nothing to compare."),
+        } => format!(
+            "{head} and {} share no history, so there is nothing to compare.",
+            compared_label(compared, &stamp.base_ref)
+        ),
         ChangesPhase::Ready {
             base,
-            tracking,
+            compared: ComparedWith::PullRequestBase(commit),
             files,
         } => format!(
-            "{} in {head} since {} (where it branches off {tracking})",
+            "{} in {head} since {}, where it branches off {} at {}, the base GitHub reports",
             changed_files(files.len()),
-            short_hash(base)
+            short_hash(base),
+            stamp.base_ref,
+            short_hash(commit)
+        ),
+        ChangesPhase::Ready {
+            base,
+            compared: ComparedWith::LocalCopy(tracking),
+            files,
+        } => format!(
+            "{} in {head} since {}, where it branches off {tracking}, the local copy of {}. \
+             This host does not report the pull request's base commit, so GitHub may show \
+             other changes for #{number}.",
+            changed_files(files.len()),
+            short_hash(base),
+            stamp.base_ref
         ),
         ChangesPhase::Failed(message) => format!("Couldn't read the changes: {message}"),
+    }
+}
+
+/// What the head of a pull request based on `branch` was compared with, in words.
+fn compared_label(compared: &ComparedWith, branch: &str) -> String {
+    match compared {
+        ComparedWith::PullRequestBase(commit) => {
+            format!("{branch} at {}", short_hash(commit))
+        }
+        ComparedWith::LocalCopy(tracking) => format!("{tracking}, the local copy of {branch}"),
+    }
+}
+
+/// What the changes view says when nothing local can stand for the base: the base commit
+/// GitHub reported (`commit`) is missing, or the host reported none and `tracking`, the copy of
+/// `branch` the remote's fetch settings name (`None`: they name none), is missing too.
+fn no_base_note(
+    branch: &str,
+    tracking: Option<&str>,
+    commit: Option<&Oid>,
+    remote: &str,
+) -> String {
+    let what = match commit {
+        Some(commit) => format!(
+            "Commit {}, where {branch} is on GitHub, is not in this repository, and the changes \
+             are compared with it.",
+            short_hash(commit)
+        ),
+        None => {
+            format!("There is no copy of {branch} here, the branch the changes are compared with.")
+        }
+    };
+    match tracking {
+        Some(_) => format!("{what} Fetch {remote} (Fetch in the toolbar), then Look Again."),
+        None => format!(
+            "{what} {remote}'s fetch settings keep no copy of {branch}, so fetch it with git, \
+             then Look Again."
+        ),
     }
 }
 
@@ -396,9 +446,26 @@ pub fn merge_note(flow: &MergeFlow) -> Option<String> {
         MergePhase::Done(MergeEnd::Refused { reason }) if flow.kind() == MergeKind::Admin => {
             admin_refused_note(number, reason)
         }
-        MergePhase::Done(end) => merge_end_note(number, &flow.stamp().base_ref, end),
+        MergePhase::Done(end) => merge_end_note(number, end),
     };
     Some(note)
+}
+
+/// Whether `flow`'s note is an alarm the tab shows in red: GitHub refused the merge, rc-git
+/// cannot tell whether it merged, or it merged into another base than the one confirmed.
+#[must_use]
+pub fn merge_note_alarms(flow: &MergeFlow) -> bool {
+    match flow.phase() {
+        MergePhase::Done(
+            MergeEnd::Refused { .. }
+            | MergeEnd::Unknown { .. }
+            | MergeEnd::MergedIntoOtherBase { .. },
+        ) => true,
+        MergePhase::Planning
+        | MergePhase::Confirming(_)
+        | MergePhase::Merging { .. }
+        | MergePhase::Done(MergeEnd::Merged { .. } | MergeEnd::NotSent(_)) => false,
+    }
 }
 
 /// What an admin merge GitHub refused says: its reason, and what rc-git does not know about
@@ -414,27 +481,54 @@ fn admin_refused_note(number: u64, reason: &str) -> String {
 }
 
 /// What a finished merge says.
-fn merge_end_note(number: u64, base: &str, end: &MergeEnd) -> String {
+fn merge_end_note(number: u64, end: &MergeEnd) -> String {
     const UNCHANGED: &str = "The local repository is unchanged until you fetch.";
     const LOOK: &str = "Look at the pull request on GitHub before trying again.";
+    let commit = |merge_commit: &Option<Oid>| {
+        merge_commit
+            .as_ref()
+            .map_or_else(String::new, |oid| format!(" as {}", short_hash(oid)))
+    };
+    let how = |settled: &Settled| match settled {
+        Settled::Answer => String::new(),
+        Settled::Reread => format!(
+            " GitHub's answer was lost; reading #{number} again shows it merged at the head you \
+             confirmed."
+        ),
+    };
     match end {
         MergeEnd::NotSent(stop) => merge_stop_message(stop),
         MergeEnd::Merged {
             merge_commit,
+            base: Some(base),
             settled,
-        } => {
-            let commit = merge_commit
-                .as_ref()
-                .map_or_else(String::new, |oid| format!(" as {}", short_hash(oid)));
-            let how = match settled {
-                Settled::Answer => String::new(),
-                Settled::Reread => format!(
-                    " GitHub's answer was lost; reading #{number} again shows it merged at the \
-                     head you confirmed."
-                ),
-            };
-            format!("Merged #{number} into {base}{commit}.{how} {UNCHANGED}")
-        }
+        } => format!(
+            "Merged #{number} into {base}{}.{} {UNCHANGED}",
+            commit(merge_commit),
+            how(settled)
+        ),
+        MergeEnd::Merged {
+            merge_commit,
+            base: None,
+            settled,
+        } => format!(
+            "Merged #{number}{}. GitHub did not say which branch it merged into; look at the \
+             pull request on GitHub to see.{} {UNCHANGED}",
+            commit(merge_commit),
+            how(settled)
+        ),
+        MergeEnd::MergedIntoOtherBase {
+            confirmed,
+            actual,
+            merge_commit,
+            settled,
+        } => format!(
+            "Warning: #{number} merged into {actual}, not {confirmed}, the base you confirmed{}. \
+             Its base was changed on GitHub after rc-git last read it, and GitHub's merge cannot \
+             refuse that. Look at {actual} on GitHub now.{} {UNCHANGED}",
+            commit(merge_commit),
+            how(settled)
+        ),
         MergeEnd::Refused { reason } => {
             format!("GitHub refused the merge of #{number}: {reason} Nothing was merged.")
         }
@@ -461,21 +555,22 @@ fn merge_end_note(number: u64, base: &str, end: &MergeEnd) -> String {
     }
 }
 
-/// The app log's line for a merge of `repository#number` at `head` with `method` that is about
-/// to be sent, with what an admin merge skips: no token, no server text but the guard's
-/// scrubbed messages and neutralized check names.
+/// The app log's line for `flow`'s merge, about to be sent: its repository (as the flow started
+/// with it), number, head and method, with what an admin merge skips. No token, no server text
+/// but the guard's scrubbed messages and neutralized check names.
 #[must_use]
-pub fn merge_attempt_log(repository: &str, flow: &MergeFlow) -> String {
-    format!("{}: sending", log_subject(repository, flow))
+pub fn merge_attempt_log(flow: &MergeFlow) -> String {
+    format!("{}: sending", log_subject(flow))
 }
 
-/// `merge owner/name#7 head <oid> method squash`, and for an admin merge
+/// `merge #7 of owner/name@host head <oid> method squash`, and for an admin merge
 /// `admin merge … bypassing <what>`.
-fn log_subject(repository: &str, flow: &MergeFlow) -> String {
+fn log_subject(flow: &MergeFlow) -> String {
     let subject = format!(
-        "{} {repository}#{} head {} method {}",
+        "{} #{} of {} head {} method {}",
         merge_word(flow.kind()),
         flow.number(),
+        flow.repository(),
         flow.stamp().head_oid,
         merge_method_word(flow.method())
     );
@@ -503,26 +598,43 @@ fn bypassed_log(bypassed: Option<&Bypassed>) -> String {
     )
 }
 
-/// The app log's line for how a merge of `repository` ended.
+/// The app log's line for how `flow`'s merge ended.
 #[must_use]
-pub fn merge_outcome_log(repository: &str, flow: &MergeFlow, end: &MergeEnd) -> String {
+pub fn merge_outcome_log(flow: &MergeFlow, end: &MergeEnd) -> String {
+    let commit = |merge_commit: &Option<Oid>| {
+        merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex())
+    };
+    let how = |settled: &Settled| match settled {
+        Settled::Answer => "answer",
+        Settled::Reread => "read after a lost answer",
+    };
     let outcome = match end {
         MergeEnd::NotSent(stop) => format!("not sent: {}", merge_stop_message(stop)),
         MergeEnd::Merged {
             merge_commit,
+            base,
             settled,
-        } => {
-            let commit = merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex());
-            let how = match settled {
-                Settled::Answer => "answer",
-                Settled::Reread => "read after a lost answer",
-            };
-            format!("merged as {commit} ({how})")
-        }
+        } => format!(
+            "merged as {} into {} ({})",
+            commit(merge_commit),
+            base.as_deref().unwrap_or("a base GitHub did not name"),
+            how(settled)
+        ),
+        MergeEnd::MergedIntoOtherBase {
+            confirmed,
+            actual,
+            merge_commit,
+            settled,
+        } => format!(
+            "MERGED INTO ANOTHER BASE: merged as {} into {actual}, not the confirmed {confirmed} \
+             ({})",
+            commit(merge_commit),
+            how(settled)
+        ),
         MergeEnd::Refused { reason } => format!("refused: {reason}"),
         MergeEnd::Unknown { problem, after } => format!("unknown: {problem}; after: {after:?}"),
     };
-    format!("{}: {outcome}", log_subject(repository, flow))
+    format!("{}: {outcome}", log_subject(flow))
 }
 
 /// What a failed head fetch says, with what to do when a secret or an approval saved for

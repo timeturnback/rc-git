@@ -191,22 +191,25 @@ constraints are clear.
   account through the `HostName` the user's ssh config maps it to. The second slice.
 
 - **Pull request changes.** A pull request tab's Changes view lists the files it changes since
-  it left its base (the merge base with the local copy of the base branch) and diffs the one
+  it left its base (the merge base with the commit GitHub reports its base branch at; the local
+  copy of the base branch only for a host that reports none, and it says so) and diffs the one
   picked, from local objects. A head that is not local is fetched only on Fetch Changes, into
   `refs/rc-git/pr/<n>/head`, and only when the remote's head is the one the tab read; Stop stays
   on screen while it runs. `rc-git pr diff <n> [--fetch]` and `rc-git merge-base` do the same
   from Terminal. The third slice.
 
 - **Pull request merge.** A pull request tab's Merge control (the repository's allowed
-  methods, squash first) and `rc-git pr merge <n> --method m --head <oid> --yes` merge through
-  the guard: a fresh read compared with the stamp and the answered challenge, the blockers
-  (draft, conflicts, a blocked, behind or unknown merge state, a disallowed method), one
-  `mergePullRequest` carrying `expectedHeadOid`, never resent, and a three-valued outcome a lost
-  answer settles with one read. The fourth slice.
+  methods, squash first) and `rc-git pr merge <n> --method m --head <oid> --base <branch> --yes`
+  merge through the guard: a fresh read compared with the stamp and the answered challenge (one
+  labelled line per fact, the title last), the blockers (draft, conflicts, a blocked, behind or
+  unknown merge state, a disallowed method), one `mergePullRequest` carrying `expectedHeadOid`,
+  never resent, and a three-valued outcome a lost answer settles with one read; a merge GitHub
+  says landed on another base is a warning of its own. The fourth slice.
 
 - **Admin merge.** When branch protection blocks a pull request and GitHub says the account may
   merge past it (`viewerCanMergeAsAdmin`), its tab shows a separate Merge Without Waiting for
-  Requirements (Admin) control, and `rc-git pr merge <n> --admin --confirm <n>` does the same:
+  Requirements (Admin) control, and `rc-git pr merge <n> --admin --confirm <n> --plan <p>` does
+  the same (the fingerprint of the plan a run without `--confirm` printed):
   the challenge lists what the fresh read shows it skips (failed and unfinished required checks,
   a missing review, an out-of-date head) and says other rules may be skipped too, and only the
   pull request's number typed confirms it. The same `mergePullRequest`, sent once. The fifth

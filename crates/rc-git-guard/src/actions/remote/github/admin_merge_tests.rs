@@ -89,6 +89,7 @@ impl Admin {
         MergeTarget {
             host: &self.host,
             token: &self.token,
+            login: "octocat",
             target: &self.target,
             stamp: &self.stamp,
             method: MergeMethod::Squash,
@@ -150,6 +151,7 @@ fn an_admin_merge_sends_one_mutation_with_the_confirmed_head_and_method_to_the_a
         outcome,
         MergeOutcome::Merged {
             merge_commit: Some(oid(super::merge_tests::MERGE_COMMIT)),
+            base: Some("main".to_owned()),
             settled: Settled::Answer
         }
     );
@@ -533,14 +535,15 @@ fn the_challenge_lists_what_the_fresh_read_shows_it_skips() {
     let summary = challenge(&plan).summary();
     let cut = format!("{}\u{2026}", "x".repeat(80));
     for part in [
-        "Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main past its branch \
-         protection, as an administrator, with a squash merge: feature at 0123456",
+        "Merge this pull request on GitHub past its branch protection, as an administrator.",
+        "\nBase: \u{201c}main\u{201d}\nHead: 0123456 on \u{201c}feature\u{201d}\n",
         &format!(
-            "Known to be skipped: required checks that failed: \
+            "\nSkipped: required checks that failed: \
              \u{201c}lint\\u{{202e}}gnp.exe\\u{{a}}\u{201d}, \u{201c}{cut}\u{201d}, \
              \u{201c}f2\u{201d}, \u{201c}f3\u{201d}, \
              \u{201c}f4\u{201d} and 2 more; required checks not finished: \u{201c}deploy\u{201d}; \
-             a review that asked for changes; bringing its head branch up to date with main."
+             a review that asked for changes; bringing its head branch up to date with \
+             \u{201c}main\u{201d}\n"
         ),
         "1 more check(s) that have not passed may be required; GitHub did not say",
         "The read did not hold 8 of the head's checks",
@@ -548,9 +551,13 @@ fn the_challenge_lists_what_the_fresh_read_shows_it_skips() {
     ] {
         assert!(summary.contains(part), "{part}\n---\n{summary}");
     }
-    for hidden in ['\u{202e}', '\n', '\t'] {
+    for hidden in ['\u{202e}', '\t'] {
         assert!(!summary.contains(hidden), "{hidden:?} in {summary}");
     }
+    assert!(
+        summary.ends_with("\nTitle: \u{201c}Ship \\u{202e}it\u{201d}"),
+        "{summary}"
+    );
     assert!(!summary.contains("optional") && !summary.contains("ci/legacy"));
     assert_eq!(server.mutation_requests(), 0);
 }
@@ -589,6 +596,7 @@ fn a_lost_answer_is_settled_by_one_read_and_never_resent() {
         outcome,
         MergeOutcome::Merged {
             merge_commit: None,
+            base: Some("main".to_owned()),
             settled: Settled::Reread
         }
     );

@@ -89,7 +89,7 @@ fn open_with(key: &str, value: Value) -> String {
 pub(super) fn merged_reply() -> String {
     json!({ "data": { "mergePullRequest": { "pullRequest": {
         "number": 7, "state": "MERGED", "merged": true, "headRefOid": HEAD,
-        "mergeCommit": { "oid": MERGE_COMMIT } } } } })
+        "baseRefName": "main", "mergeCommit": { "oid": MERGE_COMMIT } } } } })
     .to_string()
 }
 
@@ -136,6 +136,7 @@ impl Merge {
         MergeTarget {
             host: &self.host,
             token: &self.token,
+            login: "octocat",
             target: &self.target,
             stamp: &self.stamp,
             method: self.method,
@@ -201,6 +202,7 @@ fn a_merge_sends_one_mutation_carrying_the_confirmed_head_and_method() {
         outcome,
         MergeOutcome::Merged {
             merge_commit: Some(oid(MERGE_COMMIT)),
+            base: Some("main".to_owned()),
             settled: Settled::Answer
         }
     );
@@ -239,19 +241,23 @@ fn the_challenge_is_built_from_the_fresh_read() {
         panic!("{:?}", plan.decision);
     };
     assert_eq!(challenge.typed_phrase(), None);
-    assert!(
-        challenge
-            .summary()
-            .starts_with("Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main"),
-        "{}",
-        challenge.summary()
-    );
-    assert!(
-        challenge
-            .summary()
-            .contains("squash merge: feature at 0123456 (1 of 1 checks passed)"),
-        "{}",
-        challenge.summary()
+    let host = host_of(&server);
+    assert_eq!(
+        challenge.summary(),
+        format!(
+            "Merge this pull request on GitHub. GitHub merges it for everyone and rc-git cannot \
+             undo it; the local repository is unchanged until you fetch.\n\
+             Repository: octo/rc-git on {host}\n\
+             Pull request: #7\n\
+             Account: octocat@{host}\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: 0123456 on \u{201c}feature\u{201d}\n\
+             Method: a squash merge\n\
+             Checks: 1 of 1 checks passed\n\
+             Protection: your account can merge past branch protection, so a requirement that \
+             starts blocking this pull request before GitHub runs the merge will not stop it\n\
+             Title: \u{201c}Ship \\u{{202e}}it\u{201d}"
+        )
     );
     assert_eq!(server.mutation_requests(), 0, "a plan only reads");
 }
@@ -453,7 +459,7 @@ fn the_mutation_primitive_sends_nothing_to_a_repository_on_another_host() {
     let token = token();
     let detail = read_pull_request(&host, &token, &target(&host), 7, &Cancel::new()).unwrap();
     let foreign = target(&host_of(&elsewhere));
-    let merge = PullRequestMerge::new(&foreign, &detail, MergeMethod::Squash).unwrap();
+    let merge = PullRequestMerge::new(&foreign, "octocat", &detail, MergeMethod::Squash).unwrap();
     let action = Action::MergePullRequest(Box::new(merge));
     let Decision::Confirm(challenge) = Policy::default().evaluate(&action) else {
         panic!("a merge is confirmed");
@@ -594,6 +600,7 @@ fn an_applied_merge_whose_answer_stalls_is_settled_by_one_read() {
         outcome,
         MergeOutcome::Merged {
             merge_commit: None,
+            base: Some("main".to_owned()),
             settled: Settled::Reread
         }
     );
@@ -610,6 +617,7 @@ fn an_applied_merge_whose_connection_drops_is_settled_by_one_read() {
         outcome,
         MergeOutcome::Merged {
             merge_commit: None,
+            base: Some("main".to_owned()),
             settled: Settled::Reread
         }
     );
@@ -677,6 +685,7 @@ fn a_cancel_after_the_send_cannot_stop_the_merge_and_reads_its_outcome() {
             outcome,
             MergeOutcome::Merged {
                 merge_commit: None,
+                base: Some("main".to_owned()),
                 settled: Settled::Reread
             }
         );
@@ -731,6 +740,277 @@ fn a_host_without_the_merge_state_cannot_merge_from_rc_git() {
                 ..
             }
         ),
+        "{error}"
+    );
+    assert_eq!(server.mutation_requests(), 0);
+}
+
+/// Pull request 7 on `server` as [`script`] scripts it, with the read once it merged and the
+/// mutation's answer set by the test.
+fn script_with(server: &GitHubServer, merged: &Value, reply: &Value, behaviour: MergeBehaviour) {
+    let target = target(&host_of(server));
+    server.script_merge(MergeScript {
+        read: detail_request_body(&target, 7, false),
+        open: pull(HEAD, "OPEN").to_string(),
+        moved: pull(MOVED, "OPEN").to_string(),
+        merged: merged.to_string(),
+        mutation: merge_request_body(ID, HEAD, MergeMethod::Squash),
+        reply: reply.to_string(),
+        behaviour,
+    });
+}
+
+/// [`merged_reply`] with `baseRefName` set to `base`, or left out for `None`.
+fn merged_into_reply(base: Option<&str>) -> Value {
+    let mut reply: Value = serde_json::from_str(&merged_reply()).unwrap();
+    let pull_request = &mut reply["data"]["mergePullRequest"]["pullRequest"];
+    match base {
+        Some(base) => pull_request["baseRefName"] = json!(base),
+        None => drop(pull_request.as_object_mut().unwrap().remove("baseRefName")),
+    }
+    reply
+}
+
+/// [`pull`] at [`HEAD`], merged, into `base`.
+fn merged_read_into(base: &str) -> Value {
+    let mut read = pull(HEAD, "MERGED");
+    read["data"]["repository"]["pullRequest"]["baseRefName"] = json!(base);
+    read
+}
+
+#[test]
+fn a_merge_github_says_landed_on_another_base_is_never_reported_as_merged() {
+    let server = server();
+    script_with(
+        &server,
+        &merged_read_into("release"),
+        &merged_into_reply(Some("release")),
+        MergeBehaviour::Merge,
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::MergedIntoOtherBase {
+            confirmed: "main".to_owned(),
+            actual: "release".to_owned(),
+            merge_commit: Some(oid(MERGE_COMMIT)),
+            settled: Settled::Answer
+        }
+    );
+    assert_eq!(server.mutation_requests(), 1);
+}
+
+#[test]
+fn a_merge_whose_answer_names_no_base_is_merged_without_a_base() {
+    let server = server();
+    script_with(
+        &server,
+        &pull(HEAD, "MERGED"),
+        &merged_into_reply(None),
+        MergeBehaviour::Merge,
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::Merged {
+            merge_commit: Some(oid(MERGE_COMMIT)),
+            base: None,
+            settled: Settled::Answer
+        }
+    );
+}
+
+#[test]
+fn a_lost_answer_settled_by_a_read_on_another_base_is_never_reported_as_merged() {
+    let server = server();
+    script_with(
+        &server,
+        &merged_read_into("release"),
+        &merged_into_reply(Some("release")),
+        MergeBehaviour::MergeThenDrop,
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::MergedIntoOtherBase {
+            confirmed: "main".to_owned(),
+            actual: "release".to_owned(),
+            merge_commit: None,
+            settled: Settled::Reread
+        }
+    );
+    assert_eq!(server.mutation_requests(), 1);
+}
+
+/// The headers of an answer whose rate limit is spent.
+fn spent() -> Vec<(String, String)> {
+    vec![
+        ("x-ratelimit-remaining".to_owned(), "0".to_owned()),
+        ("x-ratelimit-reset".to_owned(), "1900000000".to_owned()),
+    ]
+}
+
+#[test]
+fn a_merge_the_answer_reports_is_merged_whatever_errors_and_rate_limit_came_with_it() {
+    let server = server();
+    let mut reply = merged_into_reply(Some("main"));
+    reply["errors"] = json!([ { "type": "RATE_LIMITED", "message": "API rate limit exceeded" } ]);
+    script_with(
+        &server,
+        &pull(HEAD, "MERGED"),
+        &reply,
+        MergeBehaviour::Answer {
+            merges: true,
+            body: reply.to_string(),
+            headers: spent(),
+        },
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::Merged {
+            merge_commit: Some(oid(MERGE_COMMIT)),
+            base: Some("main".to_owned()),
+            settled: Settled::Answer
+        }
+    );
+    assert_eq!(
+        server.graphql_reads(),
+        2,
+        "no read after an answer that says"
+    );
+}
+
+#[test]
+fn a_spent_rate_limit_refuses_only_an_answer_without_a_merge_whose_error_says_so() {
+    let limited = json!({ "data": { "mergePullRequest": null }, "errors": [ {
+        "type": "RATE_LIMITED", "message": "API rate limit exceeded" } ] });
+    let unplaced = json!({ "data": { "mergePullRequest": null }, "errors": [ {
+        "message": "Something went wrong" } ] });
+    let server = server();
+    script_with(
+        &server,
+        &pull(HEAD, "MERGED"),
+        &limited,
+        MergeBehaviour::Answer {
+            merges: false,
+            body: limited.to_string(),
+            headers: spent(),
+        },
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("rate limited")),
+        "{outcome:?}"
+    );
+    assert_eq!(server.graphql_reads(), 2);
+
+    let server = super::merge_tests::server();
+    script_with(
+        &server,
+        &pull(HEAD, "MERGED"),
+        &unplaced,
+        MergeBehaviour::Answer {
+            merges: true,
+            body: unplaced.to_string(),
+            headers: spent(),
+        },
+    );
+    let outcome = Merge::on(&server).confirmed().unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::Merged {
+            merge_commit: None,
+            base: Some("main".to_owned()),
+            settled: Settled::Reread
+        },
+        "a spent limit with an error that does not say is settled by the read"
+    );
+    assert_eq!(server.graphql_reads(), 3);
+}
+
+#[test]
+fn only_a_schema_validation_code_shows_the_merge_never_ran() {
+    for code in ["someCodeGitHubAddsLater", "INTERNAL", "timeout"] {
+        let answer = json!({ "data": { "mergePullRequest": null }, "errors": [ {
+            "message": "it went wrong", "extensions": { "code": code } } ] });
+        let server = server();
+        script_with(
+            &server,
+            &pull(HEAD, "MERGED"),
+            &answer,
+            MergeBehaviour::Answer {
+                merges: true,
+                body: answer.to_string(),
+                headers: Vec::new(),
+            },
+        );
+        let outcome = Merge::on(&server).confirmed().unwrap();
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                merge_commit: None,
+                base: Some("main".to_owned()),
+                settled: Settled::Reread
+            },
+            "{code}: an applied merge behind an unknown code is settled by the read"
+        );
+    }
+    for code in super::merge::VALIDATION_CODES {
+        let answer = json!({ "errors": [ {
+            "message": "Field 'x' doesn't exist", "extensions": { "code": code } } ] });
+        let server = server();
+        script_with(
+            &server,
+            &pull(HEAD, "MERGED"),
+            &answer,
+            MergeBehaviour::Answer {
+                merges: false,
+                body: answer.to_string(),
+                headers: Vec::new(),
+            },
+        );
+        let outcome = Merge::on(&server).confirmed().unwrap();
+        assert_eq!(
+            outcome,
+            MergeOutcome::Refused {
+                reason: "Field 'x' doesn't exist".to_owned()
+            },
+            "{code}"
+        );
+        assert_eq!(server.graphql_reads(), 2, "{code}");
+    }
+}
+
+#[test]
+fn an_account_that_gains_the_bypass_right_after_the_challenge_sends_no_mutation() {
+    let server = server();
+    let mut plain = pull(HEAD, "OPEN");
+    plain["data"]["repository"]["pullRequest"]["viewerCanMergeAsAdmin"] = json!(false);
+    let target = target(&host_of(&server));
+    server.script_merge(MergeScript {
+        read: detail_request_body(&target, 7, false),
+        open: plain.to_string(),
+        moved: pull(HEAD, "OPEN").to_string(),
+        merged: pull(HEAD, "MERGED").to_string(),
+        mutation: merge_request_body(ID, HEAD, MergeMethod::Squash),
+        reply: merged_reply(),
+        behaviour: MergeBehaviour::ChangeAfter { reads: 1 },
+    });
+    let merge = Merge::on(&server);
+    let shown = merge.plan().unwrap().decision;
+    let Decision::Confirm(challenge) = &shown else {
+        panic!("{shown:?}");
+    };
+    assert!(
+        !challenge.summary().contains("Protection:"),
+        "{}",
+        challenge.summary()
+    );
+    let error = merge.run(Some(&shown), &Cancel::new()).unwrap_err();
+    assert!(
+        matches!(&error, MergeRefusal::Changed { what, .. }
+            if what.contains("Protection: your account can merge past branch protection")),
         "{error}"
     );
     assert_eq!(server.mutation_requests(), 0);

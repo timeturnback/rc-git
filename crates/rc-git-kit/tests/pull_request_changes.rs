@@ -22,7 +22,7 @@ use rc_git_kit::platform::credentials::MemoryCredentialStore;
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::platform::settings::MemorySettings;
 use rc_git_kit::pull_requests::changes::{
-    ChangesLoad, ChangesPhase, ChangesRead, ChangesState, FetchProblem, HeadFetched,
+    ChangesLoad, ChangesPhase, ChangesRead, ChangesState, ComparedWith, FetchProblem, HeadFetched,
     MERGE_BASE_SCAN, read_changes,
 };
 use rc_git_kit::pull_requests::live::LivePullRequests;
@@ -58,10 +58,13 @@ fn change(path: &str) -> TreeChange {
     }
 }
 
+/// The remote-tracking ref of `main`.
+const TRACKING: &str = "refs/remotes/origin/main";
+
 fn files(base: Oid, paths: &[&str]) -> ChangesRead {
     ChangesRead::Files {
         base,
-        tracking: "refs/remotes/origin/main".to_owned(),
+        compared: ComparedWith::LocalCopy(TRACKING.to_owned()),
         files: paths.iter().map(|path| change(path)).collect(),
     }
 }
@@ -77,7 +80,7 @@ fn load_generation(load: &ChangesLoad) -> u64 {
 #[test]
 fn a_missing_head_waits_for_fetch_and_a_fetched_one_is_read_again() {
     let shown = stamp(7, oid(7));
-    let (mut state, read) = ChangesState::new(shown.clone());
+    let (mut state, read) = ChangesState::new(shown.clone(), None);
     assert!(matches!(read, ChangesLoad::Read { .. }));
     assert_eq!(state.fetch(), None, "no fetch while reading");
     state.finish_read(load_generation(&read), &shown, Ok(ChangesRead::HeadMissing));
@@ -102,7 +105,7 @@ fn a_missing_head_waits_for_fetch_and_a_fetched_one_is_read_again() {
 #[test]
 fn a_moved_head_shows_no_files_and_reads_nothing() {
     let shown = stamp(7, oid(7));
-    let (mut state, read) = ChangesState::new(shown.clone());
+    let (mut state, read) = ChangesState::new(shown.clone(), None);
     state.finish_read(load_generation(&read), &shown, Ok(ChangesRead::HeadMissing));
     let fetch = state.fetch().unwrap();
     let next = state.finish_fetch(
@@ -121,7 +124,7 @@ fn a_moved_head_shows_no_files_and_reads_nothing() {
 #[test]
 fn answers_for_another_load_or_stamp_are_dropped() {
     let shown = stamp(7, oid(7));
-    let (mut state, read) = ChangesState::new(shown.clone());
+    let (mut state, read) = ChangesState::new(shown.clone(), None);
     let generation = load_generation(&read);
     let other = stamp(7, oid(8));
     state.finish_read(generation, &other, Ok(files(oid(3), &["x.rs"])));
@@ -150,7 +153,7 @@ fn answers_for_another_load_or_stamp_are_dropped() {
 #[test]
 fn a_file_diff_is_taken_only_for_the_selection_on_screen() {
     let shown = stamp(7, oid(7));
-    let (mut state, read) = ChangesState::new(shown.clone());
+    let (mut state, read) = ChangesState::new(shown.clone(), None);
     state.finish_read(
         load_generation(&read),
         &shown,
@@ -168,10 +171,10 @@ fn a_file_diff_is_taken_only_for_the_selection_on_screen() {
     let mut submodule = change("vendor/lib");
     submodule.entry = EntryKind::Submodule;
     submodule.old_entry = Some(EntryKind::Submodule);
-    let (mut state, read) = ChangesState::new(shown.clone());
+    let (mut state, read) = ChangesState::new(shown.clone(), None);
     let read_files = ChangesRead::Files {
         base: oid(3),
-        tracking: "refs/remotes/origin/main".to_owned(),
+        compared: ComparedWith::LocalCopy(TRACKING.to_owned()),
         files: vec![submodule],
     };
     state.finish_read(load_generation(&read), &shown, Ok(read_files));
@@ -483,7 +486,7 @@ fn the_live_service_fetches_on_request_then_diffs_from_the_merge_base() {
     let head = Oid::from_hex(&served.origin.rev_parse("topic")).unwrap();
     let shown = stamp(7, head);
     assert_eq!(
-        service.changes(&path, &linked(), &shown).unwrap(),
+        service.changes(&path, &linked(), &shown, None).unwrap(),
         ChangesRead::HeadMissing
     );
 
@@ -491,13 +494,13 @@ fn the_live_service_fetches_on_request_then_diffs_from_the_merge_base() {
     assert_eq!(fetched, Ok(HeadFetched::Fetched));
     let ChangesRead::Files {
         base,
-        tracking,
+        compared,
         files,
-    } = service.changes(&path, &linked(), &shown).unwrap()
+    } = service.changes(&path, &linked(), &shown, None).unwrap()
     else {
         panic!("expected files");
     };
-    assert_eq!(tracking, "refs/remotes/origin/main");
+    assert_eq!(compared, ComparedWith::LocalCopy(TRACKING.to_owned()));
     let merge_base = served
         .clone
         .git_output(&["merge-base", "origin/main", &head.to_hex()]);
@@ -540,7 +543,9 @@ fn the_live_service_reads_an_already_local_head_and_names_a_missing_base_copy() 
     served
         .clone
         .git(&["config", "branch.mine.remote", "origin"]);
-    let read = live().changes(&path, &linked(), &stamp(7, head)).unwrap();
+    let read = live()
+        .changes(&path, &linked(), &stamp(7, head), None)
+        .unwrap();
     assert!(
         matches!(&read, ChangesRead::Files { files, .. } if files.len() == 1),
         "{read:?}"
@@ -549,10 +554,11 @@ fn the_live_service_reads_an_already_local_head_and_names_a_missing_base_copy() 
     let mut elsewhere = stamp(7, head);
     elsewhere.base_ref = "release".to_owned();
     assert_eq!(
-        live().changes(&path, &linked(), &elsewhere).unwrap(),
+        live().changes(&path, &linked(), &elsewhere, None).unwrap(),
         ChangesRead::NoBaseCopy {
             branch: "release".to_owned(),
             tracking: None,
+            commit: None,
         },
         "a single-branch clone keeps no copy of release"
     );
@@ -564,11 +570,7 @@ fn read_changes_walks_at_most_its_scan_and_reads_nothing_for_a_missing_head() {
     let repository = LiveRepository::open(served.clone.path()).unwrap();
     let missing = stamp(7, oid(42));
     assert_eq!(
-        read_changes(
-            &repository,
-            &missing,
-            Some("refs/remotes/origin/main".to_owned())
-        ),
+        read_changes(&repository, &missing, None, Some(TRACKING.to_owned())),
         Ok(ChangesRead::HeadMissing)
     );
     let fake = rc_git_kit::fake::FakeRepository::default();
@@ -584,15 +586,11 @@ fn read_changes_walks_at_most_its_scan_and_reads_nothing_for_a_missing_head() {
             rc_git_core::MergeBase::Incomplete { scanned: 12 },
         );
     }
-    let read = read_changes(
-        &fake,
-        &stamp(7, head),
-        Some("refs/remotes/origin/main".to_owned()),
-    );
+    let read = read_changes(&fake, &stamp(7, head), None, Some(TRACKING.to_owned()));
     assert_eq!(
         read,
         Ok(ChangesRead::NoMergeBase {
-            tracking: "refs/remotes/origin/main".to_owned(),
+            compared: ComparedWith::LocalCopy(TRACKING.to_owned()),
             incomplete: true,
             scanned: 12,
         })
@@ -607,4 +605,144 @@ fn read_changes_walks_at_most_its_scan_and_reads_nothing_for_a_missing_head() {
         "no files without a merge base"
     );
     let _ = Path::new(REPO);
+}
+
+#[test]
+fn the_live_service_compares_with_the_base_github_reports_never_the_local_copy() {
+    let served = served();
+    let service = live();
+    let path = path_of(&served.clone);
+    let head = Oid::from_hex(&served.origin.rev_parse("topic")).unwrap();
+    let shown = stamp(7, head);
+    let fetched = service.fetch_head(&path, &linked(), &shown, &Cancel::new());
+    assert_eq!(fetched, Ok(HeadFetched::Fetched));
+    let tracking = Oid::from_hex(&served.clone.rev_parse(TRACKING)).unwrap();
+    // A base GitHub reports at the head itself (its commits already on the base): nothing is
+    // left to show, where the local copy of main would still show both of topic's files.
+    let reported = head;
+    assert_ne!(
+        reported, tracking,
+        "the local copy is not where GitHub's base is"
+    );
+    let ChangesRead::Files {
+        base,
+        compared,
+        files,
+    } = service
+        .changes(&path, &linked(), &shown, Some(reported))
+        .unwrap()
+    else {
+        panic!("expected files");
+    };
+    assert_eq!(compared, ComparedWith::PullRequestBase(reported));
+    assert_eq!(base, reported);
+    assert!(files.is_empty(), "{files:?}");
+    let names: Vec<String> = files.iter().map(|change| change.path.to_string()).collect();
+    assert_eq!(
+        names,
+        three_dot_names(&served.clone, &reported.to_hex(), &head.to_hex())
+    );
+    assert_ne!(
+        names,
+        three_dot_names(&served.clone, TRACKING, &head.to_hex()),
+        "the local copy would have given other files"
+    );
+
+    let absent = oid(42);
+    assert_eq!(
+        service
+            .changes(&path, &linked(), &shown, Some(absent))
+            .unwrap(),
+        ChangesRead::NoBaseCopy {
+            branch: "main".to_owned(),
+            tracking: Some(TRACKING.to_owned()),
+            commit: Some(absent),
+        },
+        "a base commit missing here asks for a fetch, though the local copy exists"
+    );
+}
+
+#[test]
+fn the_words_never_call_a_diff_from_the_local_copy_the_pull_request_s_changes() {
+    use rc_git_kit::pull_requests::copy::changes_note;
+    let shown = stamp(7, oid(0xab));
+    let reported = changes_note(
+        &ChangesPhase::Ready {
+            base: oid(0xcd),
+            compared: ComparedWith::PullRequestBase(oid(0xef)),
+            files: vec![change("a.rs")],
+        },
+        &shown,
+        "origin",
+    );
+    assert!(
+        reported.contains("branches off main at efefefe, the base GitHub reports"),
+        "{reported}"
+    );
+    let local = changes_note(
+        &ChangesPhase::Ready {
+            base: oid(0xcd),
+            compared: ComparedWith::LocalCopy(TRACKING.to_owned()),
+            files: vec![change("a.rs")],
+        },
+        &shown,
+        "origin",
+    );
+    assert!(
+        local.contains("the local copy of main")
+            && local.contains("does not report the pull request's base commit"),
+        "{local}"
+    );
+    let missing = changes_note(
+        &ChangesPhase::NoBaseCopy {
+            branch: "main".to_owned(),
+            tracking: Some(TRACKING.to_owned()),
+            commit: Some(oid(0xef)),
+        },
+        &shown,
+        "origin",
+    );
+    assert!(
+        missing.starts_with("Commit efefefe, where main is on GitHub, is not in this repository")
+            && missing.contains("Fetch origin"),
+        "{missing}"
+    );
+}
+
+#[gpui::test]
+async fn the_changes_follow_the_base_commit_github_reports(cx: &mut TestAppContext) {
+    let h = harness(cx);
+    let with_base = |base: u8| {
+        let mut detail =
+            pull_request_detail(pull_request(7, "Ship", oid(7)), "", CheckList::default());
+        detail.base_oid = Some(oid(base));
+        detail
+    };
+    h.fake.state().details.insert(7, Ok(with_base(5)));
+    h.script_changes(oid(7), vec![Ok(files(oid(3), &["a.rs"]))]);
+    h.open(cx).await;
+    h.model.update(cx, PullRequestsModel::show_changes);
+    h.settle(cx);
+    assert_eq!(h.fake.state().changes_bases, [Some(oid(5))]);
+    assert_eq!(
+        h.model
+            .read_with(cx, |m, _| m.selected_changes().map(ChangesState::base)),
+        Some(Some(oid(5)))
+    );
+    h.model.update(cx, PullRequestsModel::show_changes);
+    h.settle(cx);
+    assert_eq!(
+        h.fake.state().changes_calls.len(),
+        1,
+        "the same read reads nothing again"
+    );
+
+    h.fake.state().details.insert(7, Ok(with_base(6)));
+    h.model.update(cx, PullRequestsModel::refresh_detail);
+    h.settle(cx);
+    assert_eq!(
+        h.fake.state().changes_bases,
+        [Some(oid(5)), Some(oid(6))],
+        "a base that moved on GitHub starts the changes over, with the same head"
+    );
 }

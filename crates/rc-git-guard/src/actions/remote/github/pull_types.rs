@@ -426,8 +426,8 @@ pub enum DetailFields {
     /// Every field rc-git asks for.
     Full,
     /// The host's schema lacked a newer field (an older GitHub Enterprise Server), so the read
-    /// left out the merge state, the viewer's abilities, auto-merge, required checks and the
-    /// Actions ids.
+    /// left out the merge state, the viewer's abilities, auto-merge, required checks, the
+    /// Actions ids and the base commit.
     Basic,
 }
 
@@ -439,6 +439,10 @@ pub struct PullRequestDetail {
     /// The node id a mutation names it by; `None` when the host sent none rc-git accepts,
     /// which leaves it unmergeable from rc-git.
     pub id: Option<PullRequestId>,
+    /// The commit GitHub reports the base branch at (`baseRefOid`), the one its changes are
+    /// compared with; `None` from a [`DetailFields::Basic`] read or an answer without a commit
+    /// id.
+    pub base_oid: Option<Oid>,
     /// The description, neutralized multi-line text; empty when there is none.
     pub body: String,
     /// The pull request's page on the host.

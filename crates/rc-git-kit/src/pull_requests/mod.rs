@@ -41,7 +41,7 @@ pub use rc_git_guard::actions::github::{
 use changes::{ChangesRead, FetchProblem, HeadFetched};
 use link::{Linked, RepositoryLink};
 use merge::{MergeAsk, MergeStop, PlanAsk};
-use rc_git_core::{BlobDiff, TreeChange};
+use rc_git_core::{BlobDiff, Oid, TreeChange};
 
 use crate::platform::api_tokens::AccountKey;
 
@@ -133,8 +133,9 @@ pub trait PullRequestService: Send + Sync {
     fn choose_account(&self, repo_path: &str, key: &AccountKey) -> Result<(), String>;
 
     /// What the repository at `repo_path` holds for the diff of the pull request `stamp`
-    /// names: whether its head is local, the local copy of its base, their merge base and the
-    /// changed files. Local only: no network.
+    /// names against `base`, the commit GitHub reported its base branch at (the base branch's
+    /// local copy only when the host reported none): whether both are local, their merge base
+    /// and the changed files. Local only: no network.
     ///
     /// # Errors
     /// The read's failure, as a sentence.
@@ -143,6 +144,7 @@ pub trait PullRequestService: Send + Sync {
         repo_path: &str,
         linked: &Linked,
         stamp: &PullRequestStamp,
+        base: Option<Oid>,
     ) -> Result<ChangesRead, String>;
 
     /// One changed file's line diff.

@@ -781,6 +781,7 @@ fn mergeable_pull_request() -> rc_git_guard::actions::github::PullRequestDetail 
             review: None,
         },
         id: PullRequestId::parse("PR_kwDOtwelve"),
+        base_oid: None,
         body: String::new(),
         url: None,
         mergeable: Mergeable::Mergeable,
@@ -817,7 +818,7 @@ fn a_pull_request_merge_is_a_plain_confirm_built_from_its_read() {
         RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
             .unwrap();
     let detail = mergeable_pull_request();
-    let merge = PullRequestMerge::new(&target, &detail, MergeMethod::Rebase).unwrap();
+    let merge = PullRequestMerge::new(&target, "octocat", &detail, MergeMethod::Rebase).unwrap();
     let Decision::Confirm(challenge) =
         Policy::default().evaluate(&Action::MergePullRequest(Box::new(merge)))
     else {
@@ -827,9 +828,11 @@ fn a_pull_request_merge_is_a_plain_confirm_built_from_its_read() {
     assert!(!challenge.backup_ref(), "nothing local to back up");
     assert_eq!(challenge.risk(), Risk::Recoverable);
     assert!(
-        challenge.summary().starts_with(
-            "Merge octo/rc-git#12 \u{201c}Add the thing\u{201d} into main with a rebase merge: \
-             topic at cdcdcdc (1 of 2 checks passed, 1 pending)."
+        challenge.summary().ends_with(
+            "\nRepository: octo/rc-git on github.com\nPull request: #12\n\
+             Account: octocat@github.com\nBase: \u{201c}main\u{201d}\n\
+             Head: cdcdcdc on \u{201c}topic\u{201d}\nMethod: a rebase merge\n\
+             Checks: 1 of 2 checks passed, 1 pending\nTitle: \u{201c}Add the thing\u{201d}"
         ),
         "{}",
         challenge.summary()
@@ -838,7 +841,7 @@ fn a_pull_request_merge_is_a_plain_confirm_built_from_its_read() {
     let blocked = |change: fn(&mut rc_git_guard::actions::github::PullRequestDetail)| {
         let mut detail = mergeable_pull_request();
         change(&mut detail);
-        PullRequestMerge::new(&target, &detail, MergeMethod::Rebase).unwrap_err()
+        PullRequestMerge::new(&target, "octocat", &detail, MergeMethod::Rebase).unwrap_err()
     };
     assert_eq!(blocked(|d| d.summary.draft = true), MergeBlocker::Draft);
     assert_eq!(
@@ -876,7 +879,8 @@ fn an_admin_merge_needs_the_number_typed_and_a_blocked_read_the_account_may_merg
         can_merge_as_admin: true,
         ..ViewerAbilities::default()
     });
-    let admin = PullRequestAdminMerge::new(&target, &detail, MergeMethod::Rebase).unwrap();
+    let admin =
+        PullRequestAdminMerge::new(&target, "octocat", &detail, MergeMethod::Rebase).unwrap();
     assert_eq!(
         admin.bypassed().review,
         Some(ReviewDecision::ReviewRequired)
@@ -895,16 +899,17 @@ fn an_admin_merge_needs_the_number_typed_and_a_blocked_read_the_account_may_merg
     assert_eq!(challenge.risk(), Risk::Destructive);
     assert!(
         challenge.summary().starts_with(
-            "Merge octo/rc-git#12 \u{201c}Add the thing\u{201d} into main past its branch \
-             protection, as an administrator, with a rebase merge: topic at cdcdcdc"
-        ),
+            "Merge this pull request on GitHub past its branch protection, as an administrator."
+        ) && challenge
+            .summary()
+            .contains("\nBase: \u{201c}main\u{201d}\nHead: cdcdcdc on \u{201c}topic\u{201d}\n"),
         "{}",
         challenge.summary()
     );
     assert!(
         challenge
             .summary()
-            .contains("Known to be skipped: a required review that has not approved it."),
+            .contains("\nSkipped: a required review that has not approved it\n"),
         "{}",
         challenge.summary()
     );
@@ -915,7 +920,7 @@ fn an_admin_merge_needs_the_number_typed_and_a_blocked_read_the_account_may_merg
     let refused = |change: fn(&mut rc_git_guard::actions::github::PullRequestDetail)| {
         let mut detail = detail.clone();
         change(&mut detail);
-        PullRequestAdminMerge::new(&target, &detail, MergeMethod::Rebase).unwrap_err()
+        PullRequestAdminMerge::new(&target, "octocat", &detail, MergeMethod::Rebase).unwrap_err()
     };
     assert_eq!(
         refused(|d| d.merge_state = Some(MergeStateStatus::Clean)),

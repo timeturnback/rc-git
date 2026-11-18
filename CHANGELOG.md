@@ -2,6 +2,55 @@
 
 What changed in rc-git, newest first. Help ▸ Changelog shows this file in the app.
 
+## 2026-11-19
+
+### Changed
+
+- The Merge confirmation lists what it is about to merge one fact per line, always in the same
+  order: the repository and its host, the pull request's number, the GitHub account that
+  merges, the base branch, the head commit and its branch, the method, the checks, and the
+  title last. A title or branch name can no longer start a line of its own or look like one of
+  those facts: line breaks, quote marks, invisible characters and unusual spaces in them show
+  as escapes such as `\u{a0}`. When GitHub says your account could merge past branch protection,
+  the confirmation also says that GitHub will not stop this merge if a requirement starts
+  blocking before it runs, and a change to that since you opened the confirmation sends
+  nothing.
+- `rc-git pr merge` now needs `--base <branch>` beside `--head`, both as `rc-git pr view` prints
+  them; a pull request moved to another base since you looked sends nothing. Without `--yes` it
+  prints the confirmation one `would-merge` line per fact, and with it the same lines go to
+  stderr before the request is sent. `merged` lines end with the base GitHub merged into.
+- `rc-git pr merge --admin` prints the plan's fingerprint (`plan<TAB>…`) when run without
+  `--confirm`, and the real run needs it: `--confirm <n> --plan <fingerprint>`. If anything in
+  the plan changed since (a check, the title, what would be skipped), nothing is sent and it
+  exits 11.
+- A pull request's Changes view, and `rc-git pr diff`, compare its head with the commit GitHub
+  reports its base branch at, not your local copy of that branch. When that commit is not in
+  your repository yet, the view asks you to fetch instead of showing changes against another
+  commit; `pr diff` prints `base<TAB>merge base<TAB>pull-request-base<TAB>commit`. Only a GitHub
+  Enterprise Server that does not report the base commit is compared with your local copy,
+  and the view and `pr diff` (`local-copy`) say so.
+- `rc-git` quotes a path that holds a bidirectional, invisible or other hidden character, or a
+  space other than the ordinary one, printing that character's bytes in octal, so a file name
+  cannot hide its real name in a terminal. `rc-git pr view` prints a tab inside a description
+  line as `\u{9}`. Titles, branch names and check names show unusual spaces and invisible
+  characters as escapes too.
+
+### Fixed
+
+- A merge that GitHub says landed on another base branch than the one you confirmed (the pull
+  request was moved to another base on GitHub after RCGit last read it) is no longer reported
+  as merged into the base you confirmed: the tab shows a warning naming both branches, the log
+  marks it, and `rc-git pr merge` prints `merged-into-other-base` and exits 13. When GitHub's
+  answer does not name the base, the note no longer names one.
+- A merge GitHub reported as done is no longer called refused when its answer also said the
+  rate limit was spent; and an error RCGit cannot place no longer reads as "nothing was merged":
+  RCGit reads the pull request again and tells you where it stands.
+- After the window switched to another repository or GitHub account, a merge still running for
+  the old one is logged under its own repository and never shows in the new one's tab of the
+  same number, and a read still running for the old one's tab never lands in the new one's.
+- A second Ctrl+C once `rc-git pr merge` has sent its request no longer ends the command as if
+  it stopped between steps: it reads and prints the outcome first.
+
 ## 2026-11-18
 
 ### Added

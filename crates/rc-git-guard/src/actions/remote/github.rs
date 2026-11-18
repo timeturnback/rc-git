@@ -61,7 +61,7 @@ pub use pull_types::{
 pub use pulls::{MAX_CHECKS, PAGE_SIZE, list_open_pull_requests, read_pull_request};
 pub use repository::{PullRequestRemote, pull_request_base_ref, pull_request_remote};
 pub use secret::{ApiToken, ClientId, RefreshToken, TokenSet, unix_now};
-pub use text::{multi_line, single_line};
+pub use text::{is_escaped_on_one_line, multi_line, single_line};
 pub use user::{TokenIdentity, validate_token};
 
 /// The exact request bodies the pull request reads send, for tests in other crates that script

@@ -180,8 +180,23 @@ pub fn admin_merge_button(tab: &DetailState, linked: bool) -> AdminMergeButton {
 pub enum MergeEnd {
     /// Nothing was sent.
     NotSent(MergeStop),
-    /// GitHub merged it.
+    /// GitHub merged it, into the confirmed base when it named one.
     Merged {
+        /// The merge commit, when GitHub named one.
+        merge_commit: Option<Oid>,
+        /// The base GitHub says it merged into, always the confirmed one; `None` when GitHub
+        /// did not say, so nothing may name a base as fact.
+        base: Option<String>,
+        /// How rc-git knows.
+        settled: Settled,
+    },
+    /// GitHub merged it at the confirmed head into another base than the confirmed one: it was
+    /// retargeted after the last read. Shown as a warning, never as a plain success.
+    MergedIntoOtherBase {
+        /// The base the user confirmed.
+        confirmed: String,
+        /// The base GitHub merged it into.
+        actual: String,
         /// The merge commit, when GitHub named one.
         merge_commit: Option<Oid>,
         /// How rc-git knows.
@@ -273,6 +288,7 @@ pub enum CancelAnswer {
 /// One merge of one tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeFlow {
+    repository: String,
     number: u64,
     generation: u64,
     stamp: PullRequestStamp,
@@ -283,11 +299,14 @@ pub struct MergeFlow {
 }
 
 impl MergeFlow {
-    /// A merge of `kind` of the pull request `stamp` names with `method`, under `generation`
-    /// (unique among the window's merges), and the plan read to run.
+    /// A merge of `kind` of the pull request `stamp` names in `repository` (`owner/name@host`,
+    /// as the log and the notes name it for as long as the flow lives, whatever the window
+    /// links to later) with `method`, under `generation` (unique among the window's merges),
+    /// and the plan read to run.
     #[must_use]
     pub fn start(
         generation: u64,
+        repository: String,
         stamp: PullRequestStamp,
         method: MergeMethod,
         kind: MergeKind,
@@ -299,6 +318,7 @@ impl MergeFlow {
             kind,
         };
         let flow = Self {
+            repository,
             number: stamp.number,
             generation,
             stamp,
@@ -308,6 +328,12 @@ impl MergeFlow {
             phase: MergePhase::Planning,
         };
         (flow, load)
+    }
+
+    /// The repository it merges in, `owner/name@host`, as it was when the flow started.
+    #[must_use]
+    pub fn repository(&self) -> &str {
+        &self.repository
     }
 
     /// The pull request's number.
@@ -417,8 +443,21 @@ impl MergeFlow {
         self.phase = MergePhase::Done(match answer {
             Ok(MergeOutcome::Merged {
                 merge_commit,
+                base,
                 settled,
             }) => MergeEnd::Merged {
+                merge_commit,
+                base,
+                settled,
+            },
+            Ok(MergeOutcome::MergedIntoOtherBase {
+                confirmed,
+                actual,
+                merge_commit,
+                settled,
+            }) => MergeEnd::MergedIntoOtherBase {
+                confirmed,
+                actual,
                 merge_commit,
                 settled,
             },

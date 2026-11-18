@@ -545,6 +545,113 @@ mod tests {
         assert!(printed.contains("refresh the token") && printed.contains("set-cookie"));
     }
 
+    /// A merge-shaped request to `url`, with no token.
+    fn request_to(url: String) -> Request {
+        Request {
+            op: "merge the pull request",
+            method: Method::Post,
+            url: super::super::host::ApiUrl::for_test(url),
+            accept: "application/json",
+            token: None,
+            api_version: false,
+            body: Some(Body::Json(b"{\"q\":1}".to_vec())),
+            limit: 1024,
+            scrub: Vec::new(),
+        }
+    }
+
+    /// A listener on a loopback port, and the port.
+    fn listener() -> (std::net::TcpListener, u16) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    /// Everything `stream` sends until it closes, or until `ends` is seen.
+    fn read_from(stream: &mut std::net::TcpStream, ends: &[u8]) -> Vec<u8> {
+        use std::io::Read as _;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        while !seen.ends_with(ends) {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_refused_connection_sends_nothing() {
+        let (listener, port) = listener();
+        drop(listener);
+        let delivery = deliver(
+            request_to(format!("http://127.0.0.1:{port}/api/graphql")),
+            &Cancel::new(),
+        );
+        assert!(
+            matches!(delivery, Delivery::NotSent(GitHubError::Transport { .. })),
+            "{delivery:?}"
+        );
+    }
+
+    #[test]
+    fn a_connection_that_ends_after_the_request_arrived_may_have_sent_it() {
+        for reset in [false, true] {
+            let (listener, port) = listener();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                if reset {
+                    use std::io::Read as _;
+                    let mut first = [0_u8; 4];
+                    stream.read_exact(&mut first).unwrap();
+                    // Closing with the rest of the request unread makes the kernel reset it.
+                    return first.to_vec();
+                }
+                read_from(&mut stream, b"{\"q\":1}")
+            });
+            let delivery = deliver(
+                request_to(format!("http://127.0.0.1:{port}/api/graphql")),
+                &Cancel::new(),
+            );
+            let seen = server.join().unwrap();
+            assert!(seen.starts_with(b"POST"), "{reset}: {seen:?}");
+            assert!(
+                matches!(delivery, Delivery::Sent(Err(GitHubError::Transport { .. }))),
+                "{reset}: {delivery:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_tls_handshake_sends_no_byte_of_the_request() {
+        use std::io::Write as _;
+        let (listener, port) = listener();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .unwrap();
+            read_from(&mut stream, b"\0never")
+        });
+        let delivery = deliver(
+            request_to(format!("https://127.0.0.1:{port}/api/graphql")),
+            &Cancel::new(),
+        );
+        let seen = server.join().unwrap();
+        assert!(
+            !String::from_utf8_lossy(&seen).contains("POST"),
+            "the request never left: {seen:?}"
+        );
+        assert!(
+            matches!(delivery, Delivery::NotSent(GitHubError::Transport { .. })),
+            "{delivery:?}"
+        );
+    }
+
     #[test]
     fn the_dev_allowance_reaches_loopback_only() {
         assert!(allowed_url("http://127.0.0.1:4010/x", PlainHttp::Loopback));

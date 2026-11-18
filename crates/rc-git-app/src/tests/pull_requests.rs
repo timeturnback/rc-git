@@ -242,7 +242,7 @@ fn the_changes_view_reads_local_objects_and_fetches_only_on_its_button(cx: &mut 
     };
     let ready = ChangesRead::Files {
         base: oid(3),
-        tracking: "refs/remotes/origin/main".to_owned(),
+        compared: rc_git_kit::pull_requests::changes::ComparedWith::PullRequestBase(oid(2)),
         files: vec![change],
     };
     fake.state()
@@ -343,6 +343,7 @@ fn a_merge_runs_only_from_its_challenge_and_once(cx: &mut TestAppContext) {
     fake.state().plan = Ok(merge_plan(&detail, MergeMethod::Squash));
     fake.state().merge = Ok(MergeOutcome::Merged {
         merge_commit: None,
+        base: Some("main".to_owned()),
         settled: Settled::Answer,
     });
     let (harness, window) = shell(cx, &fake);
@@ -420,6 +421,7 @@ fn an_admin_merge_runs_only_from_its_own_challenge_with_the_number_typed(cx: &mu
     fake.state().plan = Ok(admin_merge_plan(&detail, MergeMethod::Squash));
     fake.state().merge = Ok(MergeOutcome::Merged {
         merge_commit: None,
+        base: Some("main".to_owned()),
         settled: Settled::Answer,
     });
     let (harness, window) = shell(cx, &fake);
@@ -478,4 +480,40 @@ fn an_admin_merge_runs_only_from_its_own_challenge_with_the_number_typed(cx: &mu
     assert_eq!((state.merge_calls.len(), state.merges_sent), (1, 1));
     assert_eq!(state.merge_calls[0].kind, MergeKind::Admin);
     assert_eq!(state.merge_calls[0].typed, " 7 ", "handed on as typed");
+}
+
+#[test]
+fn a_changed_file_s_name_reaches_the_diff_pane_only_neutralized() {
+    use rc_git_core::{BlobDiff, ChangeKind, EntryKind, TreeChange};
+    use rc_git_kit::models::FileDiffState;
+
+    use crate::diff::DiffContent;
+    use crate::pull_requests::changes::diff_content;
+
+    let change = TreeChange {
+        kind: ChangeKind::Modified,
+        path: "evil\u{202e}gnp.exe\u{9b}".into(),
+        source_path: None,
+        old: Some(oid(1)),
+        new: Some(oid(2)),
+        entry: EntryKind::Blob,
+        old_entry: Some(EntryKind::Blob),
+    };
+    let binary = BlobDiff::Binary {
+        old_size: 1,
+        new_size: 2,
+    };
+    for state in [
+        FileDiffState::Loaded(change.clone(), binary),
+        FileDiffState::Failed(change.clone(), "evil\u{202e}gnp.exe: gone".to_owned()),
+    ] {
+        let DiffContent::Placeholder(line) = diff_content(&state) else {
+            panic!("{state:?}");
+        };
+        assert!(line.contains("evil\\u{202e}gnp.exe"), "{line}");
+        assert!(
+            !line.contains('\u{202e}') && !line.contains('\u{9b}'),
+            "{line}"
+        );
+    }
 }

@@ -23,6 +23,7 @@ use rc_git_kit::pull_requests::copy::{
     FETCH_CHANGES, LOOK_AGAIN, PICK_A_FILE, STOP_FETCH, changed_file_label, changes_note,
 };
 use rc_git_kit::pull_requests::model::PullRequestsModel;
+use rc_git_kit::pull_requests::single_line;
 
 use crate::diff::{DiffContent, DiffView};
 use crate::status::change_color;
@@ -48,14 +49,20 @@ fn offer(phase: &ChangesPhase) -> Option<Offer> {
     }
 }
 
-/// What the diff view shows for `state`.
+/// The longest placeholder line kept, in characters.
+const PLACEHOLDER_CHARS: usize = 4096;
+
+/// What the diff view shows for `state`. Whoever opened the pull request named its files, so
+/// every line that names one shows it as kit neutralized it: a control, bidirectional or
+/// invisible character is a visible escape.
 pub(crate) fn diff_content(state: &FileDiffState) -> DiffContent {
-    let line = |text: String| DiffContent::Placeholder(text.into());
+    let line =
+        |text: String| DiffContent::Placeholder(single_line(&text, PLACEHOLDER_CHARS).into());
     match state {
         FileDiffState::Empty => line(PICK_A_FILE.to_owned()),
         FileDiffState::Loading(_) => line("Loading\u{2026}".to_owned()),
         FileDiffState::Loaded(change, diff) => {
-            DiffContent::for_blob(diff, &change.path.to_string())
+            DiffContent::for_blob(diff, &changed_file_label(change))
         }
         FileDiffState::Submodule(change) => line(submodule_summary(change)),
         FileDiffState::Failed(_, message) => line(message.clone()),

@@ -115,6 +115,12 @@ here; so does everything that comes later.
 - Never resend a mutation at any layer: send it once, and settle a lost answer with one read.
 - A mutation's outcome is three-valued (merged, refused, unknown); never report a lost answer as
   "not merged" unless a read proves it.
+- Read a mutation answer's `data` before its errors and headers; call it refused only with empty
+  data and errors that each prove it never ran (`refuses` in `github/merge.rs`).
+- Report a merge GitHub names on another base than the stamp's as `MergedIntoOtherBase`, never
+  `Merged`; name a base only when GitHub's answer or the settling read did.
+- Build a merge challenge as labelled lines, facts first and server free text last, each value
+  through `merge.rs`'s `fact`, so no server text starts a line or reads as a fact.
 - Build an admin merge only through `PullRequestAdminMerge::new` (`admin_merge_blocker`), never by
   reaching the plain merge's `read`; its phrase is the number, and its skipped list is part of it.
 - Never word what GitHub's bypass covers beyond what the read reports: say the list may not be

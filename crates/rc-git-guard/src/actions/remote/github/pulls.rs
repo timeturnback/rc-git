@@ -36,7 +36,7 @@ pub const MAX_CHECKS: u32 = 100;
 const MAX_BODY_CHARS: usize = 65_536;
 
 /// The longest title, branch name or check name kept, in characters.
-const MAX_LINE_CHARS: usize = 1024;
+pub(super) const MAX_LINE_CHARS: usize = 1024;
 
 /// The longest login kept, in characters.
 const MAX_LOGIN_CHARS: usize = 100;
@@ -55,7 +55,7 @@ pub(super) const DETAIL_FULL: &str = "query RcGitPullRequest($owner: String!, $n
 $number: Int!, $checks: Int!) { repository(owner: $owner, name: $name) { \
 mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed \
 pullRequest(number: $number) { id number title body url isDraft state updatedAt \
-author { login } headRefName headRefOid baseRefName isCrossRepository \
+author { login } headRefName headRefOid baseRefName baseRefOid isCrossRepository \
 headRepositoryOwner { login } reviewDecision mergeable mergeStateStatus viewerCanMergeAsAdmin viewerCanEnableAutoMerge \
 viewerCanDisableAutoMerge viewerCanDeleteHeadRef autoMergeRequest { mergeMethod \
 enabledBy { login } } commits(last: 1) { nodes { commit { statusCheckRollup { state \
@@ -263,6 +263,11 @@ fn detail(
     Ok(PullRequestDetail {
         summary,
         id: text(node, "id").and_then(PullRequestId::parse),
+        base_oid: if full {
+            text(node, "baseRefOid").and_then(|oid| rc_git_core::Oid::from_hex(oid).ok())
+        } else {
+            None
+        },
         body: text(node, "body")
             .map(|body| multi_line(body, MAX_BODY_CHARS))
             .unwrap_or_default(),
@@ -510,5 +515,6 @@ mod tests {
             assert!(!query.contains("mutation"), "{query}");
         }
         assert!(!DETAIL_BASIC.contains("viewerCan") && !DETAIL_BASIC.contains("isRequired"));
+        assert!(DETAIL_FULL.contains(" baseRefOid ") && !DETAIL_BASIC.contains("baseRefOid"));
     }
 }

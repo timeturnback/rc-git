@@ -197,7 +197,10 @@ not this action. Its challenge is worded from a read made just before, and the m
 reads again and refuses unless that read still matches both the stamp the user saw and the
 challenge the user answered. It sends one request, never a second, and ends in one of three
 ways: merged (GitHub said so), refused (GitHub said no), or unknown (no usable answer came
-back), the last settled only as far as one more read of the pull request can.
+back), the last settled only as far as one more read of the pull request can. A merge GitHub
+says landed on another base than the stamp's is merged, but never reported as a plain success:
+GitHub's merge cannot be told which base to expect, so a retarget after the last read can only
+be seen afterwards, and is shown as a warning naming both branches.
 
 ## Pull request head
 
@@ -206,8 +209,9 @@ read from into rc-git's own ref for it, `refs/rc-git/pr/<n>/head`, so its change
 from local objects. Fetched only when the user asks, from one refspec built from the number,
 force-updated as the pull request is rewritten, and never checked out: the ref keeps the objects
 alive and lists as "other", never as a branch or a tag. Its changes run from the merge base of
-the local copy of the base branch and the stamp's head, GitHub's three-dot view, and always
-belong to that stamp.
+the commit GitHub reports the base branch at and the stamp's head, GitHub's three-dot view, and
+always belong to that stamp; when that commit is not local the user fetches, and only a host
+that reports none is compared with the local copy of the base branch, saying so.
 
 ## Host-key trust
 

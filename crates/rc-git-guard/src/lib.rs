@@ -198,6 +198,34 @@ pub enum Decision {
     },
 }
 
+/// How many bytes of the SHA-1 a [`Decision::fingerprint`] keeps: 64 bits, so finding another
+/// decision with the same fingerprint takes about 2^64 tries.
+const FINGERPRINT_BYTES: usize = 8;
+
+impl Decision {
+    /// A short fingerprint of everything this decision holds (the action with every fact it was
+    /// built from, the challenge's words, its phrase): 16 lowercase hex digits of a SHA-1 over
+    /// the decision as this build prints it for debugging. Two decisions that differ in
+    /// anything get different fingerprints, so a caller that saw one decision can make sure the
+    /// one it confirms later is the same. It is stable only within one build of rc-git: a
+    /// fingerprint from another build does not match, which refuses rather than confirms.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        use sha1::{Digest, Sha1};
+        let digest = Sha1::digest(format!("{self:?}").as_bytes());
+        let mut hex = String::new();
+        for byte in digest.iter().take(FINGERPRINT_BYTES) {
+            hex.push_str(&two_hex_digits(*byte));
+        }
+        hex
+    }
+}
+
+/// `byte` as two lowercase hex digits.
+fn two_hex_digits(byte: u8) -> String {
+    format!("{byte:02x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +406,7 @@ mod tests {
                 review: None,
             },
             id: PullRequestId::parse("PR_kwDOtest7"),
+            base_oid: None,
             body: String::new(),
             url: None,
             mergeable: Mergeable::Mergeable,
@@ -415,7 +444,7 @@ mod tests {
         use actions::github::{MergeMethod, PullRequestMerge};
         let detail = pull_request_into(base);
         Action::MergePullRequest(Box::new(
-            PullRequestMerge::new(&octo(), &detail, MergeMethod::Squash).unwrap(),
+            PullRequestMerge::new(&octo(), "octocat", &detail, MergeMethod::Squash).unwrap(),
         ))
     }
 
@@ -437,7 +466,7 @@ mod tests {
         use actions::github::{MergeMethod, PullRequestAdminMerge};
         let detail = blocked_into(base);
         Action::AdminMergePullRequest(Box::new(
-            PullRequestAdminMerge::new(&octo(), &detail, MergeMethod::Squash).unwrap(),
+            PullRequestAdminMerge::new(&octo(), "octocat", &detail, MergeMethod::Squash).unwrap(),
         ))
     }
 
@@ -448,10 +477,16 @@ mod tests {
         assert!(!c.backup_ref());
         assert_eq!(
             c.summary(),
-            "Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main with a squash merge: \
-             feature at abababa (1 of 4 checks passed, 1 failed, 1 pending, 1 not read). GitHub \
-             merges it for everyone and rc-git cannot undo it; the local repository is unchanged \
-             until you fetch."
+            "Merge this pull request on GitHub. GitHub merges it for everyone and rc-git cannot \
+             undo it; the local repository is unchanged until you fetch.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: abababa on \u{201c}feature\u{201d}\n\
+             Method: a squash merge\n\
+             Checks: 1 of 4 checks passed, 1 failed, 1 pending, 1 not read\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
         );
         assert!(
             c.verify("").is_some(),
@@ -467,15 +502,22 @@ mod tests {
         assert_eq!(c.risk(), Risk::Destructive);
         assert_eq!(
             c.summary(),
-            "Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main past its branch \
-             protection, as an administrator, with a squash merge: feature at abababa (1 of 4 \
-             checks passed, 1 failed, 1 pending, 1 not read). This skips rules set for main on \
-             purpose. Known to be skipped: required checks that failed: \u{201c}lint\u{201d}; \
-             required checks not finished: \u{201c}deploy\u{201d}. The read did not hold 1 of \
-             the head's checks; any of them may be required. Branch protection or rulesets may \
-             also require things GitHub's API does not report here, and those may be skipped \
-             too, so this list may not be complete. GitHub merges it for everyone and rc-git cannot \
-             undo it; the local repository is unchanged until you fetch."
+            "Merge this pull request on GitHub past its branch protection, as an administrator. \
+             This skips rules set for its base branch on purpose. GitHub merges it for everyone \
+             and rc-git cannot undo it; the local repository is unchanged until you fetch.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: abababa on \u{201c}feature\u{201d}\n\
+             Method: a squash merge\n\
+             Checks: 1 of 4 checks passed, 1 failed, 1 pending, 1 not read\n\
+             Skipped: required checks that failed: \u{201c}lint\u{201d}; required checks not \
+             finished: \u{201c}deploy\u{201d}\n\
+             May also skip: The read did not hold 1 of the head's checks; any of them may be \
+             required. Branch protection or rulesets may also require things GitHub's API does \
+             not report here, and those may be skipped too, so this list may not be complete.\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
         );
     }
 
@@ -539,7 +581,7 @@ mod tests {
         let admin = |change: fn(&mut actions::github::PullRequestDetail)| {
             let mut detail = blocked_into("main");
             change(&mut detail);
-            PullRequestAdminMerge::new(&octo(), &detail, MergeMethod::Squash).err()
+            PullRequestAdminMerge::new(&octo(), "octocat", &detail, MergeMethod::Squash).err()
         };
         assert_eq!(admin(|_| {}), None);
         assert_eq!(
@@ -603,7 +645,12 @@ mod tests {
             assert_eq!(got, Some(blocker), "{blocker}");
         }
         assert_eq!(
-            PullRequestMerge::new(&octo(), &blocked_into("main"), MergeMethod::Squash),
+            PullRequestMerge::new(
+                &octo(),
+                "octocat",
+                &blocked_into("main"),
+                MergeMethod::Squash
+            ),
             Err(MergeBlocker::Blocked),
             "a blocked read has no plain merge, whatever the account may do"
         );
@@ -627,6 +674,168 @@ mod tests {
             elsewhere,
             "two merges' challenges differ"
         );
+    }
+
+    /// The plain merge of `detail` into its base with a squash, by `octocat`.
+    fn merge_of(detail: &actions::github::PullRequestDetail) -> Action {
+        use actions::github::{MergeMethod, PullRequestMerge};
+        Action::MergePullRequest(Box::new(
+            PullRequestMerge::new(&octo(), "octocat", detail, MergeMethod::Squash).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn a_hostile_title_cannot_place_text_before_the_facts_of_a_merge_challenge() {
+        let mut detail = pull_request_into("main");
+        detail.summary.title = "x\u{201d} into docs\nBase: \u{201c}docs\u{201d}\r\nChecks: 9 of 9 \
+                                checks passed\u{2028}\"\u{ff02}\u{ab}"
+            .to_owned();
+        detail.summary.head_ref = "topic\nBase: docs".to_owned();
+        let c = challenge(Policy::default().evaluate(&merge_of(&detail)));
+        let lines: Vec<&str> = c.summary().lines().collect();
+        assert_eq!(lines.len(), 9, "{}", c.summary());
+        assert_eq!(lines[4], "Base: \u{201c}main\u{201d}");
+        assert_eq!(
+            lines[5],
+            "Head: abababa on \u{201c}topic\\u{a}Base: docs\u{201d}"
+        );
+        assert_eq!(
+            lines[8],
+            "Title: \u{201c}x\\u{201d} into docs\\u{a}Base: \\u{201c}docs\\u{201d}\\u{d}\\u{a}\
+             Checks: 9 of 9 checks passed\\u{2028}\\u{22}\\u{ff02}\\u{ab}\u{201d}"
+        );
+        for (index, label) in ["Repository", "Pull request", "Account", "Base", "Head"]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(
+                lines[index + 1].starts_with(&format!("{label}: ")),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("Base: "))
+                .count(),
+            1,
+            "no server text starts a line of its own"
+        );
+    }
+
+    #[test]
+    fn a_merge_challenge_shows_every_space_and_invisible_character_of_a_branch_as_an_escape() {
+        let mut hidden: Vec<char> =
+            vec!['\u{a0}', '\u{3000}', '\u{3164}', '\u{e0000}', '\u{e007f}'];
+        hidden.extend('\u{2000}'..='\u{200a}');
+        hidden.extend('\u{2061}'..='\u{2064}');
+        hidden.extend('\u{206a}'..='\u{206f}');
+        for c in hidden {
+            let mut detail = pull_request_into(&format!("main{c}"));
+            detail.summary.head_ref = format!("feature{c}");
+            detail.summary.title = format!("Ship{c}it");
+            let summary = challenge(Policy::default().evaluate(&merge_of(&detail)))
+                .summary()
+                .to_owned();
+            let escaped = format!("\\u{{{:x}}}", u32::from(c));
+            assert!(!summary.contains(c), "{:x} in {summary}", u32::from(c));
+            for line in [
+                format!("Base: \u{201c}main{escaped}\u{201d}"),
+                format!("Head: abababa on \u{201c}feature{escaped}\u{201d}"),
+                format!("Title: \u{201c}Ship{escaped}it\u{201d}"),
+            ] {
+                assert!(summary.lines().any(|l| l == line), "{line}\n{summary}");
+            }
+        }
+        let mut readable = pull_request_into("main");
+        readable.summary.title = "Ελληνικά 한국어 日本".to_owned();
+        let summary = challenge(Policy::default().evaluate(&merge_of(&readable)))
+            .summary()
+            .to_owned();
+        assert!(
+            summary.ends_with("Title: \u{201c}Ελληνικά 한국어 日本\u{201d}"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn a_plain_merge_challenge_says_when_the_account_could_merge_past_protection() {
+        use actions::github::ViewerAbilities;
+        let line = "Protection: your account can merge past branch protection, so a requirement \
+                    that starts blocking this pull request before GitHub runs the merge will \
+                    not stop it";
+        let without = challenge(Policy::default().evaluate(&merge_of(&pull_request_into("main"))));
+        assert!(
+            !without.summary().contains("Protection:"),
+            "{}",
+            without.summary()
+        );
+        let mut able = pull_request_into("main");
+        able.viewer = Some(ViewerAbilities {
+            can_merge_as_admin: true,
+            ..ViewerAbilities::default()
+        });
+        let with = challenge(Policy::default().evaluate(&merge_of(&able)));
+        let lines: Vec<&str> = with.summary().lines().collect();
+        assert_eq!(lines[lines.len() - 2], line, "{}", with.summary());
+        assert!(lines[lines.len() - 1].starts_with("Title: "));
+        assert_ne!(
+            Policy::default().evaluate(&merge_of(&able)),
+            Policy::default().evaluate(&merge_of(&pull_request_into("main"))),
+            "the line is part of the decision a confirm is compared with"
+        );
+        able.viewer = Some(ViewerAbilities::default());
+        assert!(
+            !challenge(Policy::default().evaluate(&merge_of(&able)))
+                .summary()
+                .contains("Protection:")
+        );
+    }
+
+    #[test]
+    fn a_decision_s_fingerprint_follows_everything_it_holds() {
+        let policy = Policy::default();
+        let shown = policy.evaluate(&admin_merge_into("main"));
+        let print = shown.fingerprint();
+        assert_eq!(print.len(), 16);
+        assert!(
+            print
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(
+            policy.evaluate(&admin_merge_into("main")).fingerprint(),
+            print
+        );
+        let mut retitled = blocked_into("main");
+        retitled.summary.title = "Ship it".to_owned();
+        let mut rechecked = blocked_into("main");
+        rechecked.checks.checks.pop();
+        for other in [
+            policy.evaluate(&admin_merge_into("release/2.0")),
+            policy.evaluate(&merge_into("main")),
+            policy.evaluate(&Action::AdminMergePullRequest(Box::new(
+                actions::github::PullRequestAdminMerge::new(
+                    &octo(),
+                    "octocat",
+                    &retitled,
+                    actions::github::MergeMethod::Squash,
+                )
+                .unwrap(),
+            ))),
+            policy.evaluate(&Action::AdminMergePullRequest(Box::new(
+                actions::github::PullRequestAdminMerge::new(
+                    &octo(),
+                    "hubot",
+                    &rechecked,
+                    actions::github::MergeMethod::Squash,
+                )
+                .unwrap(),
+            ))),
+            Decision::Allow,
+        ] {
+            assert_ne!(other.fingerprint(), print, "{other:?}");
+        }
     }
 
     fn one_of_each_action(name: &str) -> Vec<Action> {

@@ -4,24 +4,33 @@
 /// The longest server-provided text an error message carries.
 pub(super) const MESSAGE_CHARS: usize = 300;
 
-/// `text` made safe to show on one line: ANSI escape sequences are dropped, and every other
-/// control character (line breaks and tabs included), every bidirectional control (Unicode's
-/// whole `Bidi_Control` set: U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), the line
-/// and paragraph separators (U+2028, U+2029) and the zero-width characters (U+200B–U+200D,
-/// U+2060, U+FEFF) are shown as a visible `\u{..}` escape rather than interpreted. Longer
-/// than `max_chars` characters, it is cut there and ends in `…`.
+/// `text` made safe to show on one line: ANSI escape sequences are dropped, and every character
+/// [`is_escaped_on_one_line`] names (every control character, line breaks and tabs included;
+/// every bidirectional control; the line and paragraph separators; the invisible and
+/// zero-width characters; every space but the ASCII one) is shown as a visible `\u{..}` escape
+/// rather than interpreted. Longer than `max_chars` characters, it is cut there and ends in `…`.
 #[must_use]
 pub fn single_line(text: &str, max_chars: usize) -> String {
     neutralize(text, max_chars, Breaks::Escaped)
 }
 
 /// `text` made safe to show as several lines, as a pull request's description: line breaks
-/// are kept (`\r\n` and a lone `\r` become `\n`) and so are tabs, ANSI escape sequences are
-/// dropped, and every other character [`single_line`] escapes is shown as the same visible
-/// `\u{..}` escape. Longer than `max_chars` characters, it is cut there and ends in `…`.
+/// are kept (`\r\n` and a lone `\r` become `\n`) and so are tabs and the spaces other than the
+/// ASCII one, ANSI escape sequences are dropped, and every other character [`single_line`]
+/// escapes is shown as the same visible `\u{..}` escape. Longer than `max_chars` characters,
+/// it is cut there and ends in `…`.
 #[must_use]
 pub fn multi_line(text: &str, max_chars: usize) -> String {
     neutralize(text, max_chars, Breaks::Kept)
+}
+
+/// Whether [`single_line`] shows `c` as an escape: a control character (C0, DEL and C1), a
+/// character that changes how the text around it shows without showing itself
+/// (`is_hidden_format`), or a space other than U+0020, which reads as an ordinary space and
+/// so can make one name look like another. Ordinary letters of every script are not.
+#[must_use]
+pub fn is_escaped_on_one_line(c: char) -> bool {
+    c.is_control() || is_hidden_format(c) || is_wide_space(c)
 }
 
 /// What [`neutralize`] does with a line break or a tab.
@@ -51,8 +60,8 @@ fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> String {
             }
             c = '\n';
         }
-        let kept = breaks == Breaks::Kept && matches!(c, '\n' | '\t');
-        if !kept && (c.is_control() || is_hidden_format(c)) {
+        let kept = breaks == Breaks::Kept && (matches!(c, '\n' | '\t') || is_wide_space(c));
+        if !kept && is_escaped_on_one_line(c) {
             shown.push_str("\\u{");
             shown.push_str(&hex(u32::from(c)));
             shown.push('}');
@@ -96,17 +105,42 @@ fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 
 /// Whether `c` changes how the text around it shows without showing itself: every
 /// `Bidi_Control` code point (the Arabic letter mark, the bidirectional marks, embeddings,
-/// overrides and isolates), the line and paragraph separators, and the zero-width space,
-/// joiners, word joiner and byte-order mark.
+/// overrides and isolates), the line and paragraph separators, the zero-width space, joiners,
+/// word joiner and byte-order mark, the invisible operators (U+2061–U+2064), the deprecated
+/// format characters (U+206A–U+206F), the tag characters (U+E0000–U+E007F), and the characters
+/// that draw nothing: the soft hyphen, the combining grapheme joiner, the Hangul fillers
+/// (U+115F, U+1160, U+3164, U+FFA0), the Khmer inherent vowels (U+17B4, U+17B5), the Mongolian
+/// vowel separator and the interlinear annotation marks (U+FFF9–U+FFFB).
 fn is_hidden_format(c: char) -> bool {
     matches!(
         c,
-        '\u{061c}'
+        '\u{00ad}'
+            | '\u{034f}'
+            | '\u{061c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{180e}'
             | '\u{200b}'..='\u{200f}'
             | '\u{2028}'..='\u{202e}'
-            | '\u{2060}'
-            | '\u{2066}'..='\u{2069}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{3164}'
             | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
+}
+
+/// Whether `c` is a space other than U+0020 (Unicode's `Space_Separator` class): the no-break
+/// space, the Ogham space mark, the en to hair spaces (U+2000–U+200A), the narrow no-break
+/// space, the medium mathematical space and the ideographic space.
+fn is_wide_space(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
     )
 }
 
@@ -223,6 +257,34 @@ mod tests {
         for kept in ["é", "日本", "a b", "ﷺ"] {
             assert_eq!(single_line(kept, 100), kept, "{kept:?}");
         }
+    }
+
+    #[test]
+    fn single_line_shows_every_other_space_and_invisible_character_as_an_escape() {
+        let mut hidden = vec![
+            '\u{a0}', '\u{1680}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{ad}', '\u{34f}',
+            '\u{115f}', '\u{1160}', '\u{17b4}', '\u{17b5}', '\u{180e}', '\u{3164}', '\u{ffa0}',
+            '\u{fff9}', '\u{fffa}', '\u{fffb}', '\u{9b}', '\u{80}', '\u{9f}',
+        ];
+        hidden.extend('\u{2000}'..='\u{200a}');
+        hidden.extend('\u{2061}'..='\u{2064}');
+        hidden.extend('\u{206a}'..='\u{206f}');
+        hidden.extend(['\u{e0000}', '\u{e0001}', '\u{e0041}', '\u{e007f}']);
+        for c in hidden {
+            assert!(is_escaped_on_one_line(c), "{:x}", u32::from(c));
+            assert_eq!(
+                single_line(&format!("main{c}"), 100),
+                format!("main\\u{{{:x}}}", u32::from(c)),
+                "{:x}",
+                u32::from(c)
+            );
+        }
+        for kept in ["a b", "Ελληνικά", "한국어", "ไทย", "עברית", "❤\u{fe0f}"]
+        {
+            assert_eq!(single_line(kept, 100), kept, "{kept:?}");
+        }
+        assert_eq!(multi_line("a\u{a0}b\u{3000}c", 100), "a\u{a0}b\u{3000}c");
+        assert_eq!(multi_line("a\u{2064}b", 100), "a\\u{2064}b");
     }
 
     #[test]

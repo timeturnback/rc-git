@@ -187,12 +187,14 @@ impl ListState {
     }
 }
 
-/// One detail load to run, under its generation.
+/// One detail load to run, under its tab's epoch and its generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetailLoad {
     /// The pull request.
     pub number: u64,
-    /// Answer [`DetailState::finish`] with it.
+    /// The tab it was asked for ([`DetailState::opened`]).
+    pub epoch: u64,
+    /// Its generation within that tab.
     pub generation: u64,
 }
 
@@ -200,6 +202,7 @@ pub struct DetailLoad {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailState {
     number: u64,
+    epoch: u64,
     generation: u64,
     in_flight: bool,
     queued: bool,
@@ -208,11 +211,21 @@ pub struct DetailState {
 }
 
 impl DetailState {
-    /// The tab of pull request `number`, read nothing yet.
+    /// The tab of pull request `number`, read nothing yet, in epoch 0.
     #[must_use]
     pub fn new(number: u64) -> Self {
+        Self::opened(number, 0)
+    }
+
+    /// The tab of pull request `number`, read nothing yet, opened as `epoch`: a number its
+    /// window never gave another tab. A read asked for another tab of the same number (one that
+    /// was closed, or one from before the repository's link changed) carries that tab's epoch,
+    /// so its answer is dropped here however its generation compares.
+    #[must_use]
+    pub fn opened(number: u64, epoch: u64) -> Self {
         Self {
             number,
+            epoch,
             generation: 0,
             in_flight: false,
             queued: false,
@@ -279,19 +292,23 @@ impl DetailState {
         self.in_flight = true;
         DetailLoad {
             number: self.number,
+            epoch: self.epoch,
             generation: self.generation,
         }
     }
 
-    /// Takes the answer of read `generation`, read at `now`; any other generation is dropped.
-    /// Answers the queued read to run next, if any.
+    /// Takes the answer of `load`, read at `now`; an answer for another tab (another epoch) or
+    /// another generation is dropped. Answers the queued read to run next, if any.
     pub fn finish(
         &mut self,
-        generation: u64,
+        load: &DetailLoad,
         answer: Result<PullRequestDetail, ReadError>,
         now: u64,
     ) -> Option<DetailLoad> {
-        if generation != self.generation || !self.in_flight {
+        let current = load.number == self.number
+            && load.epoch == self.epoch
+            && load.generation == self.generation;
+        if !current || !self.in_flight {
             return None;
         }
         self.in_flight = false;

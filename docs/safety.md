@@ -140,8 +140,8 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | stash apply | allow (the write path refuses dirty files) | same |
 | stash pop | confirm, backup ref | same |
 | stash drop | type `drop`, backup ref | same |
-| merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge names `owner/name#N`, the title, both branches, the short head, the method and the checks, all from a read made just before | same: GitHub's branch protection guards the base, not rc-git's protected names |
-| admin merge a pull request on GitHub past the branch protection that blocks it (`Destructive`: it skips rules a team set for the base on purpose, and no revert puts those back) | type the pull request's number; offered only for a read GitHub reports blocked or behind that the account may merge past (`viewerCanMergeAsAdmin`); the challenge names what the plain merge's does, says it goes past branch protection, lists what the read shows it skips, and says the list may not be complete ("Admin merge" below) | same |
+| merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge is one labelled line per fact, in a fixed order, from a read made just before: the repository and its host, the pull request's number, the account that merges (`login@host`), the base, the short head and its branch, the method and the checks; for an account the read says may merge past branch protection, a line saying GitHub will not stop this merge if a requirement starts blocking before it runs; the title last ("Merging a pull request" below) | same: GitHub's branch protection guards the base, not rc-git's protected names |
+| admin merge a pull request on GitHub past the branch protection that blocks it (`Destructive`: it skips rules a team set for the base on purpose, and no revert puts those back) | type the pull request's number; offered only for a read GitHub reports blocked or behind that the account may merge past (`viewerCanMergeAsAdmin`); the challenge has the plain merge's lines, says it goes past branch protection, lists what the read shows it skips, and says the list may not be complete, with the title last ("Admin merge" below) | same |
 
 Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
 a case-insensitive volume stores `MAIN` and `main` as one file, and the policy has no
@@ -366,9 +366,10 @@ libcurl directly.
   signed out, since the CLI may have renewed it. A renewal whose item was deleted meanwhile is
   dropped, not saved. A refresh that cannot reach the host signs nobody out.
 - **Untrusted text.** `single_line` shows control characters, every `Bidi_Control` code point,
-  the line and paragraph separators and the zero-width characters as visible `\u{..}` escapes
-  and drops ANSI escape sequences; every server message in an error passes through it, and so
-  does every free-text field read back from the settings file. An OAuth `error` code is shown
+  the line and paragraph separators, the zero-width and invisible characters and every space but
+  U+0020 as visible `\u{..}` escapes (`is_escaped_on_one_line`) and drops ANSI escape
+  sequences; every server message in an error passes through it, and so does every free-text
+  field read back from the settings file. An OAuth `error` code is shown
   only when it is 1 to 64 of `[a-z_]` and holds no secret of the request, else as
   `unrecognized error code`. GraphQL queries are static strings and every value travels in
   `variables`.
@@ -395,10 +396,20 @@ libcurl directly.
   the reset time; a 401 signs the reader out in the UI rather than retrying. An older GitHub
   Enterprise Server that lacks a field of the full detail query answers `undefinedField`; the
   read then asks once more without the newer fields (merge state, viewer permissions, auto-merge,
-  required checks, Actions ids) and says so in `DetailFields::Basic`.
+  required checks, Actions ids, the base commit `baseRefOid`) and says so in
+  `DetailFields::Basic`.
 - **Pull request text.** Titles, branch names, logins, check names and status descriptions pass
-  through `single_line`; a description through `multi_line`, which keeps line breaks and tabs and
-  escapes everything else `single_line` does. A URL from the server is kept only when it is
+  through `single_line`, which shows every control character (C0, DEL and C1, U+009B included),
+  every bidirectional control, the line and paragraph separators, the zero-width and invisible
+  characters (U+2061–U+2064, U+206A–U+206F, the Hangul fillers, the tag characters
+  U+E0000–U+E007F and the others `is_hidden_format` lists) and every space but U+0020 as a
+  visible `\u{..}` escape, so a branch named `main` followed by a no-break space never reads as
+  `main`; letters of every script stay as they are. A description passes through `multi_line`,
+  which keeps line breaks, tabs and spaces and escapes everything else `single_line` does; the
+  CLI prints a tab in it as `\u{9}` so a description line stays one field. The CLI quotes a path
+  (`write_path`, every verb but `-z`) that holds any character `single_line` escapes, printing
+  that character's UTF-8 bytes in octal, and the app's Changes view names a file only through
+  `changed_file_label`. A URL from the server is kept only when it is
   `https://` with a DNS host, no userinfo and only URL characters, typed `ServerLink::OnHost` for
   the account's host and `ServerLink::Elsewhere` (with its host) otherwise; rc-git never fetches
   one. In the app a description renders through the markdown parser, which loads nothing: an
@@ -423,10 +434,16 @@ libcurl directly.
   on screen (`PullRequestStamp`); a different one answers `Moved` and writes nothing, and the
   page reads the pull request again. The diff is always computed for the stamp's head, never
   for whatever the ref holds, so a pull request that moved never shows another commit's files
-  under its name. The ref is force-updated, since heads are rewritten routinely. Objects a pull
-  request brings are untrusted like any repository content: they are read, capped and diffed as
-  every blob is, and `refs/rc-git/pr/*` is never checked out, merged or applied to the working
-  tree; it lists as "other" beside the backup refs, never as a branch or a tag.
+  under its name. Its base is the commit GitHub reports the base branch at (`baseRefOid`), never
+  the local remote-tracking ref, which may be behind or ahead: when that commit is not in the
+  object database, the page and `pr diff` ask for a fetch instead of diffing against another
+  commit, and when GitHub's base moves the changes are read again. Only a host that reports no
+  base commit (an older GitHub Enterprise Server's basic read) is compared with the local copy,
+  and the page and the CLI (`local-copy`) say so and say GitHub may show other changes. The
+  ref is force-updated, since heads are rewritten routinely. Objects a pull request brings are
+  untrusted like any repository content: they are read, capped and diffed as every blob is,
+  and `refs/rc-git/pr/*` is never checked out, merged or applied to the working tree; it lists
+  as "other" beside the backup refs, never as a branch or a tag.
 
 - **Mutations take the proof.** A GitHub mutation leaves rc-git only through
   `Session::mutate` (`github/api.rs`), which takes a `Confirmation` and builds the request from
@@ -449,8 +466,8 @@ the pull request's page) and the CLI (`rc-git pr merge`) both call `merge_pull_r
 
 1. **Read it again, compare it with what the user saw.** The guard reads the pull request now
    and compares it with the `PullRequestStamp` the front end passes (the tab's current read; the
-   CLI's `--head` with the base read just before): a head, base or state that differs refuses
-   with "changed since you looked", naming what changed.
+   CLI's `--head` and `--base`, both printed by `pr view`): a head, base or state that differs
+   refuses with "changed since you looked", naming what changed.
 2. **Refuse what cannot merge as asked** (`merge_blocker`, which the Merge control uses too):
    not open, a draft, a method the repository does not allow, conflicts, mergeability not yet
    computed, and every merge state but clean, unstable and has-hooks. A blocked, behind or
@@ -458,28 +475,52 @@ the pull request's page) and the CLI (`rc-git pr merge`) both call `merge_pull_r
    Server): GitHub may let an account that can bypass branch protection merge such a pull
    request through the same mutation (`viewerCanMergeAsAdmin`), and the plain merge is not that
    action: the admin merge is ("Admin merge" below), for a blocked or behind state only. A read
-   that names no node id refuses too.
+   that names no node id refuses too. These refusals are rc-git's own, made on its read: GitHub's
+   mutation has no switch that asks it to respect branch protection, so for an account that may
+   merge past protection, a requirement that starts blocking after rc-git's read and before
+   GitHub runs the merge does not stop it. When the read says the account may
+   (`viewerCanMergeAsAdmin`), the plain merge's challenge says exactly that in a line of its own,
+   and that line is part of the decision the confirm is compared with.
 3. **Authorize the action built from that read.** The decision the user answered must equal
    the one the policy gives now: an answer to another action's challenge, or to this merge
-   before a check, the title, the method or the head changed, refuses. No answer at all refuses
-   (`MergeAnswer` is `None` until the confirm step: the GUI's sheet, the CLI's `--yes`).
+   before a check, the title, the method, the head or what the account may do changed, refuses,
+   naming the lines that differ. No answer at all refuses (`MergeAnswer` is `None` until the
+   confirm step: the GUI's sheet, the CLI's `--yes`). The challenge is labelled lines in a fixed
+   order with the facts first and the title last; every value is single-line, with double
+   quote characters, invisible characters and spaces other than U+0020 escaped, so a title or a
+   branch name cannot start a line of its own or put words before the base. The CLI writes the
+   same lines to stderr before the request leaves.
 4. **Send exactly one mutation.** `mergePullRequest` with `pullRequestId`, `expectedHeadOid`
    (the confirmed head, so GitHub refuses a head that moved after the read) and `mergeMethod`,
-   checked against GitHub's GraphQL reference. Nothing sends it again: not the guard, not the
-   kit, not the app, not the CLI; a 401 or a spent rate limit is an answer to show.
-5. **Three outcomes, never two.** *Merged*: GitHub's answer says merged at the confirmed head
-   (with the merge commit when named). *Refused*: GitHub answered no — a 4xx, a 401, a spent
-   rate limit, or GraphQL errors all of a refusing kind (`UNPROCESSABLE`, `FORBIDDEN`,
-   `NOT_FOUND`, `UNAUTHORIZED`, or a schema error) — passed through `server_text`. *Unknown*: the
-   request may have left and no usable answer came back — a timeout, a dropped connection, a
-   cancel after the send, a redirect, a body over its cap, a 5xx, an answer that is not JSON, or
-   GraphQL errors of any other kind (GitHub answers its own timeouts that way). Only then does
-   the guard read the pull request once more: merged at the confirmed head is *Merged*; merged
-   at another head is not this request's doing; closed means this request merged nothing;
-   still open says plainly that rc-git cannot tell, since the merge may still land, and tells
-   the user to look on GitHub before trying again. That read watches a fresh cancel flag with
-   the caller's budgets: a cancel after the send cannot stop the merge, and this read is what
-   says where it stands.
+   checked against GitHub's GraphQL reference, selecting the merged pull request's `merged`,
+   `headRefOid`, `baseRefName` and merge commit. `MergePullRequestInput` has no field for an
+   expected base, so a base retargeted after the guard's read cannot be refused, only seen in
+   the answer. Nothing sends it again: not the guard, not the kit, not the app, not the CLI.
+5. **Three outcomes, never two.** The answer's `data` is read first. *Merged*: it reports the
+   pull request merged at the confirmed head, whatever errors or rate-limit headers came with
+   it, with the merge commit and the base GitHub names; a note names a base only when GitHub's
+   answer did. Merged at the confirmed head into another base than the confirmed one is its own
+   outcome, *merged into another base*: the page shows it as a warning naming both branches, the
+   log marks it, and the CLI prints `merged-into-other-base` and exits 13; it never reads as a
+   plain success. *Refused*: GitHub answered no: a 4xx HTTP status (a 401 and a 403 or 429 with
+   a spent limit included), or a 200 whose `mergePullRequest` is empty and whose errors each show
+   the mutation did not run or was refused: a `type` of `UNPROCESSABLE`, `FORBIDDEN`,
+   `NOT_FOUND`, `UNAUTHORIZED` or `RATE_LIMITED`, or an `extensions.code` of a schema validation
+   failure (`undefinedField`, `argumentNotAccepted`, `missingRequiredArguments`,
+   `variableMismatch`: graphql-ruby's codes for those rules; the GraphQL specification runs only
+   a document that validates). The reason passes through `server_text`. *Unknown*: the request
+   may have left and no usable answer came back: a timeout, a dropped connection, a cancel after
+   the send, a redirect, a body over its cap, a 5xx, an answer that is not JSON, or GraphQL
+   errors of any other type or code, or none (GitHub answers its own timeouts that way). Only
+   then does the guard read the pull request once more: merged at the confirmed head is
+   *Merged*, or *merged into another base* when the read's base is not the confirmed one;
+   merged at another head is not this request's doing; closed means this request merged
+   nothing; still open says plainly that rc-git cannot tell, since the merge may still land,
+   and tells the user to look on GitHub before trying again. That read watches a fresh cancel
+   flag with the caller's budgets: a cancel after the send cannot stop the merge, and this read
+   is what says where it stands. In the CLI a second SIGINT or SIGTERM ends the command at once
+   only until the request leaves; from then on further ones are ignored until the outcome is
+   read and printed.
 
 A cancel before the request leaves sends nothing: the guard checks the flag after the
 authorization and the transport checks it again before the transfer starts; a failure to
@@ -488,8 +529,13 @@ request only after those. Any other failure counts as sent. The front end is tol
 the request leaves (`MergeRequest::on_send`) and stops offering Cancel then. After a merge the
 page reads the pull request and the list again; nothing local is fetched, moved or written, and
 the note says the local repository is unchanged until the user fetches. Every attempt and
-outcome is a line in the app's log (repository, number, head, method, outcome; never a token).
-Unverified against GitHub: which GraphQL error `type` each refusal carries (an unexpected one
+outcome is a line in the app's log (repository and host, number, head, method, outcome; never a
+token). A merge belongs to the link it started under: it names its repository from the start,
+and once the window links to another repository or account, it only runs to its end and is
+logged under that name; no tab of the new link shows it, and a read asked for a tab of the old
+link never lands in the new one's.
+Unverified against GitHub: which GraphQL error `type` each refusal carries, and that GitHub's
+validation errors carry graphql-ruby's `extensions.code` values (an unexpected type or code
 reads as unknown, never as refused).
 
 ### Admin merge
@@ -518,6 +564,13 @@ without the pull request's number typed (`github/merge/admin.rs`).
   app's sheet takes it in its field; the CLI takes it as `pr merge --admin --confirm <n>`, and
   `--yes` counts for nothing there. The front end hands the text to the guard untouched; the
   guard alone verifies it.
+- **The CLI's plan.** A script that knows the number could otherwise confirm an admin merge it
+  never saw. `pr merge --admin` without `--confirm` prints the challenge, the skipped list and
+  `plan<TAB>fingerprint`: 16 hex digits of a SHA-1 over the guard's whole decision
+  (`Decision::fingerprint`, stable within one build). The real run needs `--plan` with that
+  fingerprint beside `--confirm`; it computes the fingerprint of the decision its own fresh
+  read gives, and any difference (a check, the title, what is skipped, another build) refuses
+  with exit 11 before anything is sent.
 - **What the challenge says is skipped**, from the read made just before: required checks that
   failed and required checks not finished, by name (neutralized, five named and the rest
   counted); how many checks that have not passed GitHub did not say are required or not; how

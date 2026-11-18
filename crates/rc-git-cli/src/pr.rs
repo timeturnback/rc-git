@@ -3,20 +3,26 @@
 //! kit's live service, so the CLI picks the account exactly as the app does: the one account
 //! on the remote's host, else the one chosen for the repository, else `--login`. Every text
 //! the server sent is printed as the guard neutralized it: one-line fields carry no tab, line
-//! break, control or bidi character, and the description's lines are printed one record each.
+//! break, control or bidi character, and the description's lines are printed one record each,
+//! with a tab in them shown as `\u{9}` so a line stays one field.
 //!
 //! `pr diff` reads the changes from local objects. It fetches the pull request's head only
 //! with `--fetch`, over the remote's git transport with the remote options' credentials; the
 //! GitHub token stays with the API reads.
 //!
-//! `pr merge` merges through the guard as the app does. `--head` is required: it is the stamp
-//! of what the caller saw (`pr view` prints it), and a pull request whose head moved since
-//! refuses before anything is sent. Without `--yes` it prints what would be merged and merges
-//! nothing. It sends one request at most and never sends it again; an answer that was lost
-//! ends with its own exit code and tells the caller to look at the pull request on GitHub.
+//! `pr merge` merges through the guard as the app does. `--head` and `--base` are required: they
+//! are the stamp of what the caller saw (`pr view` prints both), and a pull request whose head
+//! moved or whose base changed since refuses before anything is sent. Without `--yes` it prints
+//! what would be merged and merges nothing; with it, the challenge goes to stderr before the
+//! request leaves. It sends one request at most and never sends it again; an answer that was
+//! lost ends with its own exit code and tells the caller to look at the pull request on GitHub,
+//! and a merge GitHub says landed on another base than `--base` ends with its own too. Once the
+//! request has left, a second Ctrl+C no longer ends the command, which reads the outcome first.
 //! `pr merge --admin` is the admin merge past branch protection: `--yes` does nothing for it,
-//! and without `--confirm` it prints what would be skipped and sends nothing. The `--confirm`
-//! text goes to the guard as typed; the guard alone checks it against the number.
+//! and without `--confirm` it prints what would be skipped and the plan's fingerprint and sends
+//! nothing. The real run needs `--confirm` with the number and `--plan` with that fingerprint,
+//! which the guard's fresh decision must still have; the `--confirm` text goes to the guard as
+//! typed, and the guard alone checks it against the number.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,7 +37,7 @@ use rc_git_kit::canonical_path;
 use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore};
 use rc_git_kit::platform::credentials::{CredentialKind, CredentialStore, MemoryCredentialStore};
 use rc_git_kit::platform::host_keys::{HostKeyStore, MemoryHostKeyStore};
-use rc_git_kit::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
+use rc_git_kit::pull_requests::changes::{ChangesRead, ComparedWith, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
     check_label, merge_note, merge_stop_message, mergeable_label, problem, review_label,
@@ -49,9 +55,9 @@ use rc_git_kit::pull_requests::{
 };
 
 use crate::{
-    EXIT_AUTH, EXIT_ERROR, EXIT_HOSTKEY, EXIT_INTERRUPTED, EXIT_MERGE_REFUSED, EXIT_MERGE_UNKNOWN,
-    EXIT_NOT_CONFIRMED, Records, Transport, UsageError, VerbArgs, credentials_for, split_args,
-    write_path,
+    EXIT_AUTH, EXIT_ERROR, EXIT_HOSTKEY, EXIT_INTERRUPTED, EXIT_MERGE_OTHER_BASE,
+    EXIT_MERGE_REFUSED, EXIT_MERGE_UNKNOWN, EXIT_NOT_CONFIRMED, Records, Transport, UsageError,
+    VerbArgs, credentials_for, split_args, write_path,
 };
 
 /// A failed read, with the exit code it ends with.
@@ -265,7 +271,7 @@ fn view(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     writeln!(out, "url\t{}", link_text(detail.url.as_ref()))?;
     writeln!(out, "checks\t{}", checks::summary(&detail.checks))?;
     for line in detail.body.lines() {
-        writeln!(out, "body\t{line}")?;
+        writeln!(out, "{}", body_record(line))?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -317,12 +323,12 @@ fn diff(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     let (store, host_keys) = git_secrets(&path, &args)?;
     let service = service.with_git_credentials(store, host_keys);
     let cancel = crate::interruptible_cancel()?;
-    let stamp = service
+    let detail = service
         .detail(&linked, number, &cancel)
-        .map_err(|error| failure(&error))?
-        .stamp();
+        .map_err(|error| failure(&error))?;
+    let (stamp, base) = (detail.stamp(), detail.base_oid);
     let mut read = service
-        .changes(&path, &linked, &stamp)
+        .changes(&path, &linked, &stamp, base)
         .map_err(|message| anyhow!(message))?;
     if read == ChangesRead::HeadMissing {
         if !args.has("--fetch") {
@@ -341,7 +347,7 @@ fn diff(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
             stamp.head_oid
         )?;
         read = service
-            .changes(&path, &linked, &stamp)
+            .changes(&path, &linked, &stamp, base)
             .map_err(|message| anyhow!(message))?;
     }
     write_changes(out, &stamp, read)
@@ -411,18 +417,28 @@ fn git_secrets(
 }
 
 /// `pr merge`'s valued flags.
-const MERGE_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--method", "--head", "--confirm"];
+const MERGE_VALUED: [&str; 7] = [
+    "--login",
+    "--ssh-dir",
+    "--method",
+    "--head",
+    "--base",
+    "--confirm",
+    "--plan",
+];
 
-/// The merge `--admin` asks for; `--confirm` belongs to it alone.
+/// The merge `--admin` asks for; `--confirm` and `--plan` belong to it alone.
 fn merge_kind(args: &VerbArgs<'_>) -> Result<MergeKind> {
     if args.has("--admin") {
         return Ok(MergeKind::Admin);
     }
-    if args.value(&["--confirm"]).is_some() {
-        return Err(UsageError(
-            "--confirm goes with --admin; a plain pr merge is confirmed with --yes".to_owned(),
-        )
-        .into());
+    for flag in ["--confirm", "--plan"] {
+        if args.value(&[flag]).is_some() {
+            return Err(UsageError(format!(
+                "{flag} goes with --admin; a plain pr merge is confirmed with --yes"
+            ))
+            .into());
+        }
     }
     Ok(MergeKind::Plain)
 }
@@ -454,6 +470,22 @@ fn merge_head(args: &VerbArgs<'_>) -> Result<rc_git_core::Oid> {
         .map_err(|_| UsageError(format!("--head '{text}' is not a full commit id")).into())
 }
 
+/// The base `--base` names: the base branch the caller saw, as `pr view` printed it.
+fn merge_base(args: &VerbArgs<'_>) -> Result<String> {
+    let Some(text) = args.value(&["--base"]) else {
+        return Err(UsageError(
+            "pr merge needs --base <branch>, the base `pr view` printed: the branch you looked \
+             at, which the merge refuses to merge into any other"
+                .to_owned(),
+        )
+        .into());
+    };
+    if text.is_empty() {
+        return Err(UsageError("--base needs a branch name".to_owned()).into());
+    }
+    Ok(text.to_owned())
+}
+
 /// A merge that sent nothing, with the exit code it ends with.
 fn merge_stopped(stop: &MergeStop) -> anyhow::Error {
     let code = match stop {
@@ -470,28 +502,25 @@ fn merge_stopped(stop: &MergeStop) -> anyhow::Error {
     .into()
 }
 
-/// Merges pull request `<n>` as `--head` and `--method` say, once `--yes` confirms it, or, with
-/// `--admin`, past branch protection once `--confirm` carries the number. The head the caller
-/// saw and the base and state read now are the stamp the guard compares a fresh read with; the
-/// guard's plan words what is merged, and its decision is the answer.
+/// Merges pull request `<n>` as `--head`, `--base` and `--method` say, once `--yes` confirms it,
+/// or, with `--admin`, past branch protection once `--confirm` carries the number and `--plan`
+/// the fingerprint of the plan the caller was shown. The head, the base and the state the caller
+/// saw are the stamp the guard compares a fresh read with; the guard's plan words what is
+/// merged, its decision is the answer, and its text goes to stderr before the request leaves.
 fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     let args = split_args("pr merge", raw, &MERGE_VALUED, &["--yes", "--admin"])?;
     args.expect(1, 2, "<number> [repo]")?;
     let number = number(&args)?;
     let method = merge_method(&args)?;
-    let head = merge_head(&args)?;
-    let kind = merge_kind(&args)?;
-    let (service, linked) = linked(&args, 1)?;
-    let cancel = crate::interruptible_cancel()?;
-    let detail = service
-        .detail(&linked, number, &cancel)
-        .map_err(|error| failure(&error))?;
     let stamp = PullRequestStamp {
         number,
-        head_oid: head,
-        base_ref: detail.summary.base_ref,
+        head_oid: merge_head(&args)?,
+        base_ref: merge_base(&args)?,
         state: PullRequestState::Open,
     };
+    let kind = merge_kind(&args)?;
+    let (service, linked) = linked(&args, 1)?;
+    let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
     let plan = service
         .plan_merge(
             &linked,
@@ -507,16 +536,23 @@ fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
         MergeKind::Plain => plain_answer(&args, &plan, out)?,
         MergeKind::Admin => admin_answer(&args, &plan, out)?,
     };
-    let (mut flow, load) = MergeFlow::start(1, stamp.clone(), method, kind);
+    let repository = format!(
+        "{}/{}@{}",
+        linked.target.owner(),
+        linked.target.name(),
+        linked.target.host()
+    );
+    let (mut flow, load) = MergeFlow::start(1, repository, stamp.clone(), method, kind);
     flow.planned(load.generation, Ok(plan.clone()));
     flow.confirm(typed.clone());
+    write_sending(&plan)?;
     let ask = MergeAsk {
         stamp: &stamp,
         method,
         kind,
         decision: Some(&plan.decision),
         typed: &typed,
-        on_send: &|| {},
+        on_send: &|| exits.disarm(),
     };
     let answer = service.merge(&linked, ask, &cancel);
     if let Err(stop) = &answer {
@@ -526,7 +562,7 @@ fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     merge_report(out, &linked, &flow)
 }
 
-/// The challenge's summary of `plan`.
+/// The challenge's text of `plan`, one line per fact.
 fn plan_summary(plan: &MergePlan) -> String {
     match &plan.decision {
         Decision::Confirm(challenge) => challenge.summary().to_owned(),
@@ -534,11 +570,29 @@ fn plan_summary(plan: &MergePlan) -> String {
     }
 }
 
+/// One `label<TAB>line` record per line of `plan`'s challenge text.
+fn write_plan(out: &mut Vec<u8>, label: &str, plan: &MergePlan) -> Result<()> {
+    use std::io::Write as _;
+    for line in plan_summary(plan).lines() {
+        writeln!(out, "{label}\t{line}")?;
+    }
+    Ok(())
+}
+
+/// Writes what is about to be merged to stderr, just before the request may leave: the
+/// challenge the guard worded from its fresh read, which `--yes` or `--confirm` answered.
+fn write_sending(plan: &MergePlan) -> Result<()> {
+    use std::io::Write as _;
+    let mut text = Vec::new();
+    write_plan(&mut text, "sending", plan)?;
+    std::io::stderr().lock().write_all(&text)?;
+    Ok(())
+}
+
 /// The plain merge's answer: `--yes`, or what would be merged and a usage error.
 fn plain_answer(args: &VerbArgs<'_>, plan: &MergePlan, out: &mut Vec<u8>) -> Result<String> {
-    use std::io::Write as _;
     if !args.has("--yes") {
-        writeln!(out, "would-merge\t{}", plan_summary(plan))?;
+        write_plan(out, "would-merge", plan)?;
         return Err(
             UsageError("pr merge needs --yes to merge; nothing was sent".to_owned()).into(),
         );
@@ -546,26 +600,52 @@ fn plain_answer(args: &VerbArgs<'_>, plan: &MergePlan, out: &mut Vec<u8>) -> Res
     Ok(String::new())
 }
 
-/// The admin merge's answer: the `--confirm` text exactly as given, which the guard checks.
-/// Without it (`--yes` counts for nothing here), what would be merged and skipped, and exit 10.
+/// The admin merge's answer: the `--confirm` text exactly as given, which the guard checks,
+/// once `--plan` holds the fingerprint of the decision the guard gives now, so a script that
+/// knows the number still merges only what a dry run showed. Without `--confirm` (`--yes`
+/// counts for nothing here), what would be merged and skipped, the plan's fingerprint, and
+/// exit 10; a `--plan` that is not the fingerprint now, exit 11. Neither sends anything.
 fn admin_answer(args: &VerbArgs<'_>, plan: &MergePlan, out: &mut Vec<u8>) -> Result<String> {
     use std::io::Write as _;
-    if let Some(typed) = args.value(&["--confirm"]) {
-        return Ok(typed.to_owned());
-    }
-    writeln!(out, "would-merge-admin\t{}", plan_summary(plan))?;
-    if let Some(bypassed) = &plan.bypassed {
-        write_bypassed(out, bypassed, &plan.detail.summary.base_ref)?;
-    }
+    let fingerprint = plan.decision.fingerprint();
     let number = plan.detail.summary.number;
-    Err(ReadFailure {
-        message: format!(
-            "pr merge --admin needs the pull request's number typed: --confirm {number} (--yes \
-             is not enough); nothing was sent"
-        ),
-        code: EXIT_NOT_CONFIRMED,
+    let Some(typed) = args.value(&["--confirm"]) else {
+        write_plan(out, "would-merge-admin", plan)?;
+        if let Some(bypassed) = &plan.bypassed {
+            write_bypassed(out, bypassed, &plan.detail.summary.base_ref)?;
+        }
+        writeln!(out, "plan\t{fingerprint}")?;
+        return Err(ReadFailure {
+            message: format!(
+                "pr merge --admin needs the pull request's number typed and the plan it was \
+                 shown: --confirm {number} --plan {fingerprint} (--yes is not enough); nothing \
+                 was sent"
+            ),
+            code: EXIT_NOT_CONFIRMED,
+        }
+        .into());
+    };
+    match args.value(&["--plan"]) {
+        Some(given) if given == fingerprint => Ok(typed.to_owned()),
+        Some(given) => {
+            write_plan(out, "would-merge-admin", plan)?;
+            writeln!(out, "plan\t{fingerprint}")?;
+            Err(ReadFailure {
+                message: format!(
+                    "merge #{number}: it changed since the plan you were shown (--plan {given}, \
+                     now {fingerprint}); nothing was sent. Read the plan again with pr merge \
+                     --admin without --confirm"
+                ),
+                code: EXIT_MERGE_REFUSED,
+            }
+            .into())
+        }
+        None => Err(UsageError(format!(
+            "pr merge --admin --confirm needs --plan, the fingerprint the run without --confirm \
+             printed (it is {fingerprint} now); nothing was sent"
+        ))
+        .into()),
     }
-    .into())
 }
 
 /// One `bypass` record per thing an admin merge is known to skip.
@@ -608,19 +688,41 @@ fn merge_report(out: &mut Vec<u8>, linked: &Linked, flow: &MergeFlow) -> Result<
     let MergePhase::Done(end) = flow.phase() else {
         bail!("the merge has no outcome: {note}");
     };
+    let label = format!(
+        "{}/{}#{}",
+        linked.target.owner(),
+        linked.target.name(),
+        flow.number()
+    );
+    let head = flow.stamp().head_oid;
+    let commit = |merge_commit: &Option<rc_git_core::Oid>| {
+        merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex())
+    };
     let code = match end {
-        MergeEnd::Merged { merge_commit, .. } => {
-            let commit = merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex());
+        MergeEnd::Merged {
+            merge_commit, base, ..
+        } => {
+            let base = base.as_deref().unwrap_or("-");
             writeln!(
                 out,
-                "merged\t{}/{}#{}\t{commit}\t{}",
-                linked.target.owner(),
-                linked.target.name(),
-                flow.number(),
-                flow.stamp().head_oid
+                "merged\t{label}\t{}\t{head}\t{base}",
+                commit(merge_commit)
             )?;
             writeln!(out, "note\t{note}")?;
             return Ok(ExitCode::SUCCESS);
+        }
+        MergeEnd::MergedIntoOtherBase {
+            confirmed,
+            actual,
+            merge_commit,
+            ..
+        } => {
+            writeln!(
+                out,
+                "merged-into-other-base\t{label}\t{}\t{head}\t{actual}\t{confirmed}",
+                commit(merge_commit)
+            )?;
+            EXIT_MERGE_OTHER_BASE
         }
         MergeEnd::Refused { .. } | MergeEnd::NotSent(_) => EXIT_MERGE_REFUSED,
         MergeEnd::Unknown { .. } => EXIT_MERGE_UNKNOWN,
@@ -640,16 +742,29 @@ fn write_changes(
 ) -> Result<ExitCode> {
     use std::io::Write as _;
     let head = stamp.head_oid;
-    let (base, tracking, files) = match read {
+    let (base, compared, files) = match read {
         ChangesRead::Files {
             base,
-            tracking,
+            compared,
             files,
-        } => (base, tracking, files),
+        } => (base, compared, files),
         ChangesRead::HeadMissing => bail!("commit {head} is still not in this repository"),
         ChangesRead::NoBaseCopy {
             branch,
+            tracking,
+            commit: Some(commit),
+        } => bail!(
+            "commit {commit}, where {branch} is on GitHub and the changes are compared with, is \
+             not in this repository; {}",
+            match tracking {
+                Some(_) => "fetch the remote, then run the command again",
+                None => "the remote's fetch refspecs keep no copy of it, so fetch it with git",
+            }
+        ),
+        ChangesRead::NoBaseCopy {
+            branch,
             tracking: Some(tracking),
+            commit: None,
         } => bail!(
             "there is no {tracking}, the copy of {branch} the changes are compared with; \
              fetch the remote, then run the command again"
@@ -657,20 +772,26 @@ fn write_changes(
         ChangesRead::NoBaseCopy {
             branch,
             tracking: None,
+            commit: None,
         } => bail!("the remote's fetch refspecs keep no copy of {branch}; fetch it with git"),
         ChangesRead::NoMergeBase {
-            tracking,
+            compared,
             incomplete: true,
             scanned,
         } => bail!(
-            "no merge base of {head} and {tracking} within {scanned} commits; the history \
-             may be shallow, so fetch more of it with git"
+            "no merge base of {head} and {} within {scanned} commits; the history may be \
+             shallow, so fetch more of it with git",
+            compared_text(&compared)
         ),
-        ChangesRead::NoMergeBase { tracking, .. } => {
-            bail!("{head} and {tracking} share no history")
+        ChangesRead::NoMergeBase { compared, .. } => {
+            bail!("{head} and {} share no history", compared_text(&compared))
         }
     };
-    writeln!(out, "base\t{base}\t{tracking}")?;
+    let (source, against) = match &compared {
+        ComparedWith::PullRequestBase(commit) => ("pull-request-base", commit.to_hex()),
+        ComparedWith::LocalCopy(tracking) => ("local-copy", tracking.clone()),
+    };
+    writeln!(out, "base\t{base}\t{source}\t{against}")?;
     writeln!(out, "head\t{head}")?;
     for change in files {
         let letter = match change.kind {
@@ -690,6 +811,20 @@ fn write_changes(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One `body` record: a line of the description, its tabs shown as `\u{9}` so the line stays
+/// one field.
+fn body_record(line: &str) -> String {
+    format!("body\t{}", line.replace('\t', "\\u{9}"))
+}
+
+/// What a pull request's head was compared with, for an error.
+fn compared_text(compared: &ComparedWith) -> String {
+    match compared {
+        ComparedWith::PullRequestBase(commit) => format!("{commit}, the base GitHub reports"),
+        ComparedWith::LocalCopy(tracking) => tracking.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -719,5 +854,12 @@ mod tests {
         assert_eq!(printed.lines().count(), 1);
         assert_eq!(printed.matches('\t').count(), 8, "{printed}");
         assert!(printed.ends_with("a\\u{9}b\\u{a}c\\u{202e}"), "{printed}");
+    }
+
+    #[test]
+    fn a_description_line_keeps_its_tabs_out_of_the_record() {
+        let record = body_record("a\tb\t\u{a0}c");
+        assert_eq!(record, "body\ta\\u{9}b\\u{9}\u{a0}c");
+        assert_eq!(record.matches('\t').count(), 1);
     }
 }

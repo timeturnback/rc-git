@@ -14,10 +14,11 @@
 //! ones that could change something are counted apart from the reads.
 //!
 //! One pull request can be scripted to merge ([`MergeScript`]): its read answers from its state
-//! (open, moved, merged), and its one merge mutation succeeds, is refused, meets a head that
-//! moved after a given read, meets a pull request that changed some other way after a given
-//! read (a check that finished, a merge state that cleared), or merges and then stalls or drops
-//! the connection, or drops it without merging. The admin merge sends the plain merge's exact
+//! (open, moved, merged), and its one merge mutation succeeds, is refused, answers with words
+//! and headers set apart from what it did, meets a head that moved after a given read, meets a
+//! pull request that changed some other way after a given read (a check that finished, a merge
+//! state that cleared), or merges and then stalls or drops the connection, or drops it without
+//! merging. The admin merge sends the plain merge's exact
 //! mutation, so the same script serves both: what differs is the read (`mergeStateStatus`,
 //! `viewerCanMergeAsAdmin`).
 
@@ -169,6 +170,17 @@ pub enum MergeBehaviour {
         /// The body.
         body: String,
     },
+    /// Merges when `merges` says so, then answers `200 OK` with `body` and the extra
+    /// `headers` (a spent rate limit, say): an answer whose words and whose effect a test sets
+    /// apart.
+    Answer {
+        /// Whether the pull request merges before the answer.
+        merges: bool,
+        /// The body.
+        body: String,
+        /// Extra response headers, as `(name, value)`.
+        headers: Vec<(String, String)>,
+    },
     /// The head moves once the read has answered `reads` times: later reads answer
     /// [`MergeScript::moved`], and the mutation is refused with `refusal` (a `200 OK` body), as
     /// GitHub refuses a merge whose expected head is no longer the head.
@@ -210,6 +222,7 @@ impl MergeState {
             }
             MergeBehaviour::Merge
             | MergeBehaviour::Refuse { .. }
+            | MergeBehaviour::Answer { .. }
             | MergeBehaviour::MergeThenStall
             | MergeBehaviour::MergeThenDrop
             | MergeBehaviour::Drop => false,
@@ -955,6 +968,16 @@ fn merge_request(merge: &mut MergeState, body: &str) -> Option<Served> {
             Served::Answer(json("200 OK", merge.script.reply.clone()))
         }
         MergeBehaviour::Refuse { status, body } => Served::Answer(json(status, body.clone())),
+        MergeBehaviour::Answer {
+            merges,
+            body,
+            headers,
+        } => {
+            merge.merged = *merges;
+            let mut answer = json("200 OK", body.clone());
+            answer.headers.clone_from(headers);
+            Served::Answer(answer)
+        }
         MergeBehaviour::MergeThenStall => {
             merge.merged = true;
             Served::Stall

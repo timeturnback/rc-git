@@ -137,14 +137,21 @@ impl<'a> Session<'a> {
         let request = self.graphql_request(op, query, variables);
         let shown_url = request.url.as_str().to_owned();
         let reply = self.run(request, cancel)?;
-        self.read_graphql(op, shown_url, &reply)
+        let answer = self.read_graphql(op, shown_url, &reply);
+        if answer.is_rate_limited() {
+            return Err(answer.rate_limited());
+        }
+        Ok(answer)
     }
 
     /// Sends the one GitHub mutation `proof` confirms, once: its static document and the
     /// variables derived from the confirmed action alone, to this session's host only. This is
     /// the only way a mutation leaves rc-git, and nothing builds a [`Confirmation`] but the
     /// policy, so no code path sends a mutation without a verified challenge. It never retries:
-    /// what came back, or why nothing did, is the caller's to read.
+    /// what came back, or why nothing did, is the caller's to read. A `200` answer is handed back
+    /// whole, its `data` and `errors` apart, whatever its rate-limit headers say: a spent limit
+    /// does not undo a merge the answer's `data` reports, so only the caller, reading `data`
+    /// first, may call an answer a refusal.
     pub(super) fn mutate(&self, proof: &Confirmation, cancel: &Cancel) -> Mutated {
         let Some(mutation) = Mutation::of(proof) else {
             return Mutated::NotSent(GitHubError::InvalidValue {
@@ -166,7 +173,7 @@ impl<'a> Session<'a> {
         };
         let secrets = [self.token.expose_secret()];
         let judged = judge(response, op, &shown_url, self.host, &secrets)
-            .and_then(|reply| self.read_graphql(op, shown_url, &reply));
+            .map(|reply| self.read_graphql(op, shown_url, &reply));
         Mutated::Answered(judged)
     }
 
@@ -176,13 +183,9 @@ impl<'a> Session<'a> {
         request
     }
 
-    /// A GraphQL answer read out of `reply`, a spent rate limit refused.
-    fn read_graphql(
-        &self,
-        op: &'static str,
-        shown_url: String,
-        reply: &ApiReply,
-    ) -> GitHubResult<GraphqlReply> {
+    /// A GraphQL answer read out of `reply`: its `data`, its `errors`, and whether its rate limit
+    /// is spent, judged by no one yet.
+    fn read_graphql(&self, op: &'static str, shown_url: String, reply: &ApiReply) -> GraphqlReply {
         let secrets = [self.token.expose_secret()];
         let errors: Vec<GraphqlError> = reply
             .value
@@ -195,31 +198,22 @@ impl<'a> Session<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        let spent = reply.header("x-ratelimit-remaining") == Some("0");
-        let limited = errors
-            .iter()
-            .any(|e| e.kind.as_deref() == Some("RATE_LIMITED"));
-        if limited || (spent && !errors.is_empty()) {
-            return Err(GitHubError::RateLimited {
-                op,
-                url: shown_url,
-                reset: reply
-                    .header("x-ratelimit-reset")
-                    .and_then(|reset| reset.parse().ok()),
-            });
-        }
         let data = reply
             .value
             .get("data")
             .filter(|data| !data.is_null())
             .cloned();
-        Ok(GraphqlReply {
+        GraphqlReply {
             data,
             errors,
             op,
             url: shown_url,
             status: reply.response.status,
-        })
+            limit_spent: reply.header("x-ratelimit-remaining") == Some("0"),
+            reset: reply
+                .header("x-ratelimit-reset")
+                .and_then(|reset| reset.parse().ok()),
+        }
     }
 
     /// Refuses a repository on another host than the session's.
@@ -314,6 +308,11 @@ impl GraphqlError {
             Some("undefinedField" | "argumentNotAccepted")
         )
     }
+
+    /// Whether the error says the rate limit is spent (type `RATE_LIMITED`).
+    pub(super) fn is_rate_limited(&self) -> bool {
+        self.kind.as_deref() == Some("RATE_LIMITED")
+    }
 }
 
 /// A GraphQL answer: its `data` (`None` when absent or null) and its `errors`.
@@ -324,9 +323,30 @@ pub(super) struct GraphqlReply {
     op: &'static str,
     url: String,
     status: u32,
+    /// The answer said `x-ratelimit-remaining: 0`.
+    limit_spent: bool,
+    /// `x-ratelimit-reset`, when it is a number.
+    reset: Option<u64>,
 }
 
 impl GraphqlReply {
+    /// Whether a read's answer is a spent rate limit: an error of type `RATE_LIMITED`, or any
+    /// error while `x-ratelimit-remaining` is `0` (GitHub answers a spent limit with a `200`).
+    /// Never asked of a mutation's answer, whose `data` comes first.
+    pub(super) fn is_rate_limited(&self) -> bool {
+        self.errors.iter().any(GraphqlError::is_rate_limited)
+            || (self.limit_spent && !self.errors.is_empty())
+    }
+
+    /// [`GitHubError::RateLimited`] for this answer, with its reset time.
+    pub(super) fn rate_limited(&self) -> GitHubError {
+        GitHubError::RateLimited {
+            op: self.op,
+            url: self.url.clone(),
+            reset: self.reset,
+        }
+    }
+
     /// The answer as an error: the first GraphQL error's message, or `reason` when it sent
     /// none.
     pub(super) fn failure(&self, reason: &str) -> GitHubError {

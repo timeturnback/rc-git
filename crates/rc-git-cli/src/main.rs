@@ -21,7 +21,7 @@ use rc_git_core::{
     LineEnd, Oid, RefKind, Repository, SearchLimits, TreeEntry, UnreadableEntry, WorktreeFileList,
     WorktreeStatus,
 };
-use rc_git_guard::actions::github::GitHubError;
+use rc_git_guard::actions::github::{GitHubError, is_escaped_on_one_line};
 use rc_git_guard::actions::{ActionError, Cancel};
 
 const USAGE: &str = "\
@@ -137,16 +137,22 @@ usage: rc-git [--time] <command> <repo> [args]
                                           pr<TAB>number<TAB>state<TAB>checks<TAB>review<TAB>
                                           author<TAB>head<TAB>base<TAB>title, then
                                           more<TAB>CURSOR when another page follows
-  pr view <n> [repo]                      one pull request: a field<TAB>value line each, then
-                                          body<TAB>line for each line of its description
+  pr view <n> [repo]                      one pull request: a field<TAB>value line each (head
+                                          and base as pr merge takes them), then
+                                          body<TAB>line for each line of its description, a
+                                          tab in it shown as \\u{9}
   pr checks <n> [repo]                    its head commit's checks, required first:
                                           check<TAB>state<TAB>required|optional|-<TAB>name<TAB>
                                           details url<TAB>description ('-' when none)
   pr diff <n> [repo] [--fetch] [remote options]
                                           the files it changes since it left its base (the
-                                          merge base with the local copy of the base branch):
-                                          base<TAB>oid<TAB>tracking ref, head<TAB>oid, then a
-                                          diff-style <letter><TAB><path> line per file. Its
+                                          merge base with the commit GitHub reports its base
+                                          at): base<TAB>merge base<TAB>pull-request-base<TAB>
+                                          that commit, head<TAB>oid, then a diff-style
+                                          <letter><TAB><path> line per file. A base commit
+                                          missing here fails, asking for a fetch; only a host
+                                          that reports none is compared with the local copy:
+                                          base<TAB>merge base<TAB>local-copy<TAB>tracking ref. Its
                                           head commit is read from local objects; when it is
                                           missing the command fails unless --fetch, which
                                           fetches refs/pull/<n>/head from the remote into
@@ -154,35 +160,47 @@ usage: rc-git [--time] <command> <repo> [args]
                                           only when it is the head just read, and checks out
                                           nothing. The remote options (below) are the git
                                           transport's; the GitHub token is never sent with them
-  pr merge <n> [repo] --method merge|squash|rebase --head <oid> --yes
+  pr merge <n> [repo] --method merge|squash|rebase --head <oid> --base <branch> --yes
                                           merge it on GitHub, once: --head is the full head
-                                          commit `pr view` printed, and a pull request that
-                                          moved, changed base, closed, or cannot merge as
-                                          asked (a draft, conflicts, branch protection, a
-                                          method the repository refuses) sends nothing.
-                                          Without --yes prints would-merge<TAB>what and exits
-                                          2; merged prints merged<TAB>owner/name#n<TAB>merge
-                                          commit ('-' when unnamed)<TAB>head, then
-                                          note<TAB>text. The local repository is unchanged
-                                          until you fetch
-  pr merge <n> [repo] --method m --head <oid> --admin --confirm <n>
+                                          commit and --base the base branch `pr view` printed,
+                                          and a pull request that moved, changed base, closed,
+                                          or cannot merge as asked (a draft, conflicts, branch
+                                          protection, a method the repository refuses) sends
+                                          nothing. Without --yes prints one
+                                          would-merge<TAB>line per line of what it would merge
+                                          and exits 2; with it, the same lines go to stderr as
+                                          sending<TAB>line before the request leaves. merged
+                                          prints merged<TAB>owner/name#n<TAB>merge commit
+                                          ('-' when unnamed)<TAB>head<TAB>base GitHub names ('-'
+                                          when it names none), then note<TAB>text. A merge
+                                          GitHub says landed on another base prints
+                                          merged-into-other-base<TAB>owner/name#n<TAB>merge
+                                          commit<TAB>head<TAB>that base<TAB>--base and exits
+                                          13. The local repository is unchanged until you fetch
+  pr merge <n> [repo] --method m --head <oid> --base <branch> --admin --confirm <n> --plan <p>
                                           merge it past the branch protection that blocks it,
                                           once, when GitHub says your account may (an admin
                                           merge). It skips rules set for the base on purpose,
                                           so it needs the pull request's number typed after
                                           --confirm; --yes is never enough. Without --confirm
-                                          prints would-merge-admin<TAB>what and one
-                                          bypass<TAB>kind<TAB>value line per thing known to be
-                                          skipped, and exits 10, sending nothing. A pull request
-                                          nothing blocks (use plain merge), one that moved, or
-                                          an account GitHub does not allow, exits 11
+                                          prints one would-merge-admin<TAB>line per line of
+                                          what it would merge, one bypass<TAB>kind<TAB>value
+                                          line per thing known to be skipped, and
+                                          plan<TAB>fingerprint, and exits 10, sending nothing.
+                                          --plan takes that fingerprint: a plan that changed
+                                          since (a check, the title, what is skipped) exits 11.
+                                          A pull request nothing blocks (use plain merge), one
+                                          that moved, or an account GitHub does not allow,
+                                          exits 11
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
-  Every text from the server prints with control and bidi characters as \\u{..} escapes.
+  Every text from the server prints with control, bidi and invisible characters and every
+  space but U+0020 as \\u{..} escapes.
 
   Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
-  octal \\ooo), so \"a\\nb\" is one file. -z (files, changes, status) ends each record with
+  octal \\ooo), so \"a\\nb\" is one file. A name holding a bidi or invisible character or a
+  space other than U+0020 is quoted too, that character's bytes in octal. -z (files, changes, status) ends each record with
   NUL instead of a newline and prints the path raw, unquoted, as the last field.
   A commit title is its first paragraph on one line, as git's %s; a control character in a
   title, name or message column prints as a space.
@@ -200,8 +218,11 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   (it changed since --head, or cannot merge as asked),
   12 pr merge sent its request and no usable answer came back: look at the pull request on
   GitHub before trying again (rc-git never sends a merge twice),
+  13 pr merge merged, but GitHub says into another base than --base: its base changed after
+  the last read, which GitHub's merge cannot refuse; look at that branch now,
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push, sync or auth between steps
-  (a second one exits at once, even mid-step)
+  (a second one exits at once, even mid-step, except once pr merge has sent its request:
+  then further ones are ignored until its outcome is read and printed)
 ";
 
 const EXIT_ERROR: u8 = 1;
@@ -216,6 +237,7 @@ const EXIT_IDENTITY: u8 = 9;
 const EXIT_NOT_CONFIRMED: u8 = 10;
 const EXIT_MERGE_REFUSED: u8 = 11;
 const EXIT_MERGE_UNKNOWN: u8 = 12;
+const EXIT_MERGE_OTHER_BASE: u8 = 13;
 const EXIT_INTERRUPTED: u8 = 130;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
@@ -647,25 +669,63 @@ fn shell_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
+/// The signals that stop a command: Ctrl+C and `kill`.
+const STOP_SIGNALS: [i32; 2] = [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM];
+
 /// One cancel flag for every remote step of the command, set by SIGINT or SIGTERM so the guard
 /// stops between steps and cleans up instead of the process dying with `.lock` and `tmp_pack_*`
 /// files left in `.git`. A second signal, once the flag is set, exits at once with
 /// [`EXIT_INTERRUPTED`]: some steps never look at the flag (the ssh dial, the pull's tree
 /// apply), and Ctrl+C must still end them.
 fn interruptible_cancel() -> Result<Cancel> {
+    Ok(interruptible(&STOP_SIGNALS)?.0)
+}
+
+/// [`interruptible_cancel`] for `signals`, with the second-signal exits it installed, so a
+/// command can take them away once exiting would hide what it did ([`SecondSignalExits`]).
+fn interruptible(signals: &[i32]) -> Result<(Cancel, SecondSignalExits)> {
     let cancel = Cancel::new();
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+    let mut exits = Vec::new();
+    for &signal in signals {
         // Registered first so it runs first: it sees the flag still clear on the first signal.
-        signal_hook::flag::register_conditional_shutdown(
+        let exit = signal_hook::flag::register_conditional_shutdown(
             signal,
             i32::from(EXIT_INTERRUPTED),
             cancel.share(),
         )
         .with_context(|| format!("install the second-signal exit for signal {signal}"))?;
+        exits.push(exit);
         signal_hook::flag::register(signal, cancel.share())
             .with_context(|| format!("install the cancel handler for signal {signal}"))?;
     }
-    Ok(cancel)
+    Ok((
+        cancel,
+        SecondSignalExits {
+            exits: std::sync::Mutex::new(exits),
+        },
+    ))
+}
+
+/// The handlers that end the process at a second SIGINT or SIGTERM. A merge removes them once
+/// its request leaves ([`SecondSignalExits::disarm`]): from then on the merge may have happened,
+/// and exiting with [`EXIT_INTERRUPTED`] would say it stopped between steps, so further signals
+/// only set the cancel flag again while the outcome is read (within its own time budgets) and
+/// printed.
+struct SecondSignalExits {
+    exits: std::sync::Mutex<Vec<signal_hook::SigId>>,
+}
+
+impl SecondSignalExits {
+    /// Removes the second-signal exits; the cancel handlers stay.
+    fn disarm(&self) {
+        let mut exits = self
+            .exits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for exit in exits.drain(..) {
+            signal_hook::low_level::unregister(exit);
+        }
+    }
 }
 
 /// Joins the error chain into one line, each cause once and without gix's source locations.
@@ -871,36 +931,68 @@ impl Records {
 
 /// Writes a path the way git's `core.quotePath` does: unchanged when it is UTF-8 with no control
 /// character, `"` or `\`; otherwise in double quotes with C escapes and every other byte that
-/// needs one in octal, so a newline in a name cannot split one record into two.
+/// needs one in octal, so a newline in a name cannot split one record into two. Unlike git, a
+/// UTF-8 name keeps its letters readable, but a character that hides or reorders the text
+/// around it (a C1 control such as U+009B, a bidirectional control such as U+202E, an invisible
+/// or zero-width character, a space other than U+0020: what [`is_escaped_on_one_line`] names)
+/// quotes the path and prints as the octal escapes of its UTF-8 bytes, so the escaped path
+/// still unquotes to the same bytes.
 fn write_path(out: &mut Vec<u8>, path: &[u8]) {
-    let plain = std::str::from_utf8(path).is_ok_and(|text| {
+    let text = std::str::from_utf8(path).ok();
+    let plain = text.is_some_and(|text| {
         !text
-            .bytes()
-            .any(|byte| byte < 0x20 || byte == 0x7f || byte == b'"' || byte == b'\\')
+            .chars()
+            .any(|c| c == '"' || c == '\\' || is_escaped_on_one_line(c))
     });
     if plain {
         out.extend_from_slice(path);
         return;
     }
-    let utf8_valid = std::str::from_utf8(path).is_ok();
     out.push(b'"');
-    for &byte in path {
-        match byte {
-            0x07 => out.extend_from_slice(b"\\a"),
-            0x08 => out.extend_from_slice(b"\\b"),
-            b'\t' => out.extend_from_slice(b"\\t"),
-            b'\n' => out.extend_from_slice(b"\\n"),
-            0x0b => out.extend_from_slice(b"\\v"),
-            0x0c => out.extend_from_slice(b"\\f"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            b'"' => out.extend_from_slice(b"\\\""),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            0x20..=0x7e => out.push(byte),
-            0x80..=0xff if utf8_valid => out.push(byte),
-            _ => out.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+    match text {
+        Some(text) => {
+            for c in text.chars() {
+                write_quoted_char(out, c);
+            }
+        }
+        None => {
+            for &byte in path {
+                write_quoted_byte(out, byte);
+            }
         }
     }
     out.push(b'"');
+}
+
+/// One character of a quoted UTF-8 path: a C escape, its bytes in octal when it hides or
+/// reorders the text around it, else itself.
+fn write_quoted_char(out: &mut Vec<u8>, c: char) {
+    let mut bytes = [0_u8; 4];
+    let encoded = c.encode_utf8(&mut bytes).as_bytes();
+    if c.is_ascii() || is_escaped_on_one_line(c) {
+        for &byte in encoded {
+            write_quoted_byte(out, byte);
+        }
+    } else {
+        out.extend_from_slice(encoded);
+    }
+}
+
+/// One byte of a quoted path: a C escape, itself when printable ASCII, else three octal digits.
+fn write_quoted_byte(out: &mut Vec<u8>, byte: u8) {
+    match byte {
+        0x07 => out.extend_from_slice(b"\\a"),
+        0x08 => out.extend_from_slice(b"\\b"),
+        b'\t' => out.extend_from_slice(b"\\t"),
+        b'\n' => out.extend_from_slice(b"\\n"),
+        0x0b => out.extend_from_slice(b"\\v"),
+        0x0c => out.extend_from_slice(b"\\f"),
+        b'\r' => out.extend_from_slice(b"\\r"),
+        b'"' => out.extend_from_slice(b"\\\""),
+        b'\\' => out.extend_from_slice(b"\\\\"),
+        0x20..=0x7e => out.push(byte),
+        _ => out.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+    }
 }
 
 fn head(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
@@ -2657,6 +2749,35 @@ mod tests {
     #[test]
     fn bytes_that_are_not_utf8_print_in_octal() {
         assert_eq!(quoted(b"caf\xe9\xff"), br#""caf\351\377""#);
+    }
+
+    #[test]
+    fn a_name_with_a_hidden_or_reordering_character_prints_it_in_octal() {
+        assert_eq!(
+            quoted("evil\u{202e}gnp.exe".as_bytes()),
+            br#""evil\342\200\256gnp.exe""#
+        );
+        assert_eq!(quoted("a\u{9b}31mb".as_bytes()), br#""a\302\23331mb""#);
+        assert_eq!(
+            quoted("caf\u{e9}\u{a0}\u{200b}.txt".as_bytes()),
+            "\"caf\u{e9}\\302\\240\\342\\200\\213.txt\"".as_bytes()
+        );
+        assert_eq!(quoted("日本.txt".as_bytes()), "日本.txt".as_bytes());
+    }
+
+    #[test]
+    fn a_second_signal_after_a_merge_left_no_longer_exits() {
+        let signal = signal_hook::consts::SIGUSR2;
+        let (cancel, exits) = crate::interruptible(&[signal]).unwrap();
+        exits.disarm();
+        signal_hook::low_level::raise(signal).unwrap();
+        assert!(cancel.is_cancelled());
+        signal_hook::low_level::raise(signal).unwrap();
+        signal_hook::low_level::raise(signal).unwrap();
+        assert!(
+            cancel.is_cancelled(),
+            "still running after the second signal"
+        );
     }
     #[test]
     fn confirm_hint_quotes_a_phrase_only_when_the_shell_would_split_it() {

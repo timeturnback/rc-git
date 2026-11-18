@@ -27,7 +27,7 @@ use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
     ADMIN_MERGE, ADMIN_MERGE_NOTE, MERGE, MERGE_CANCEL, MERGE_DISMISS, merge_method_label,
-    merge_note,
+    merge_note, merge_note_alarms,
 };
 use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
@@ -35,7 +35,7 @@ use rc_git_kit::pull_requests::copy::{
     state_label, tab_title,
 };
 use rc_git_kit::pull_requests::link::RepositoryLink;
-use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton, MergeEnd, MergePhase};
+use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton, MergePhase};
 use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{Check, MergeMethod, PullRequestDetail, ServerLink};
@@ -140,10 +140,7 @@ impl PullRequestPage {
         let Some(note) = merge_note(&flow) else {
             return column;
         };
-        let failed = matches!(
-            flow.phase(),
-            MergePhase::Done(MergeEnd::Refused { .. } | MergeEnd::Unknown { .. })
-        );
+        let failed = merge_note_alarms(&flow);
         let mut row = h_flex()
             .gap(style::ROW_GAP)
             .child(Self::line(note, if failed { red } else { muted }));

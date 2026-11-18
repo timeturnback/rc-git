@@ -202,12 +202,28 @@ fn an_answer_for_an_earlier_generation_is_dropped() {
     let early = tab.refresh().unwrap();
     assert_eq!(tab.refresh(), None, "queued behind the running read");
     let detail = pull_request_detail(pull_request(4, "t", oid(4)), "", CheckList::default());
-    let next = tab
-        .finish(early.generation, Ok(detail.clone()), 100)
-        .unwrap();
-    assert_eq!(tab.finish(early.generation, Ok(detail.clone()), 100), None);
-    tab.finish(next.generation, Ok(detail), 101);
+    let next = tab.finish(&early, Ok(detail.clone()), 100).unwrap();
+    assert_eq!(tab.finish(&early, Ok(detail.clone()), 100), None);
+    tab.finish(&next, Ok(detail), 101);
     assert_eq!(tab.freshness(), &Freshness::Current { at: 101 });
+}
+
+#[test]
+fn a_read_asked_for_another_opening_of_the_tab_is_dropped() {
+    let mut old = DetailState::opened(7, 1);
+    let late = old.refresh().unwrap();
+    let mut reopened = DetailState::opened(7, 2);
+    let current = reopened.refresh().unwrap();
+    assert_eq!(
+        late.generation, current.generation,
+        "both tabs start counting at one"
+    );
+    let detail =
+        |head| pull_request_detail(pull_request(7, "t", oid(head)), "", CheckList::default());
+    assert_eq!(reopened.finish(&late, Ok(detail(1)), 100), None);
+    assert!(reopened.detail().is_none() && reopened.is_loading());
+    reopened.finish(&current, Ok(detail(2)), 101);
+    assert_eq!(reopened.stamp().unwrap().head_oid, oid(2));
 }
 
 #[test]
@@ -271,10 +287,10 @@ fn a_failed_refresh_keeps_the_rows_but_never_as_current() {
     let mut tab = DetailState::new(1);
     let read = tab.refresh().unwrap();
     let detail = pull_request_detail(pull_request(1, "a", oid(1)), "", CheckList::default());
-    tab.finish(read.generation, Ok(detail), 1);
+    tab.finish(&read, Ok(detail), 1);
     assert_eq!(tab.stamp().unwrap().head_oid, oid(1));
     let failed = tab.refresh().unwrap();
-    tab.finish(failed.generation, Err(ReadError::Failed("x".to_owned())), 2);
+    tab.finish(&failed, Err(ReadError::Failed("x".to_owned())), 2);
     assert!(tab.detail().is_some());
     assert_eq!(tab.stamp(), None, "a stale screen is not what the user saw");
 }
