@@ -8,8 +8,8 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 - Files show an icon for their type, as VS Code draws them: TypeScript, Swift, Python,
   Markdown, JSON, Dockerfiles, Rust and a few hundred more, most in a color of their own, in the
-  file tree, Go to File and Find in Files. A file deleted from disk keeps its icon dimmed, and a
-  file of an unknown type keeps the plain file icon.
+  file tree, Go to File and Find in Files, drawn at the size VS Code draws them. A file deleted
+  from disk keeps its icon dimmed, and a file of an unknown type keeps the plain file icon.
 
 ### Changed
 

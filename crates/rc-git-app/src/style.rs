@@ -17,6 +17,9 @@ pub const GROUP_GAP: Pixels = px(16.);
 pub const FOLDER_INDENT: Pixels = px(12.);
 /// The size of a row or toolbar icon.
 pub const ICON_SIZE: Pixels = px(16.);
+/// A Seti file-type icon's drawn size. Its glyphs fill only the middle of their canvas, so it
+/// draws at 150% (as VS Code draws Seti) over the same [`ICON_SIZE`] slot.
+pub const FILE_ICON_SIZE: Pixels = px(24.);
 /// The height of a segment in the toolbar's mode switch.
 pub const SEGMENT_HEIGHT: Pixels = px(24.);
 /// The track around and between the mode switch's segments.

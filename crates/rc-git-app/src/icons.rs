@@ -337,12 +337,25 @@ pub fn banner_glyph(symbol: Symbol) -> Option<Glyph> {
     }
 }
 
-/// `glyph` as a row icon where files and folders are listed, in [`listing_tint`].
+/// `glyph` as a row icon where files and folders are listed, in [`listing_tint`]. A Seti icon
+/// draws at [`FILE_ICON_SIZE`](crate::style::FILE_ICON_SIZE) and a negative margin keeps its
+/// slot at [`ICON_SIZE`](crate::style::ICON_SIZE), so labels line up with folder rows.
 #[must_use]
 pub fn listing_icon(glyph: Glyph, cx: &App) -> Icon {
-    Icon::new(icon(glyph))
-        .size(crate::style::ICON_SIZE)
-        .text_color(listing_tint(glyph, cx.theme()))
+    let symbol = icon(glyph);
+    let tint = listing_tint(glyph, cx.theme());
+    match symbol {
+        AppIcon::Seti(_) => {
+            let overhang = (crate::style::FILE_ICON_SIZE - crate::style::ICON_SIZE) / 2.;
+            Icon::new(symbol)
+                .size(crate::style::FILE_ICON_SIZE)
+                .m(-overhang)
+                .text_color(tint)
+        }
+        AppIcon::Lucide(_) => Icon::new(symbol)
+            .size(crate::style::ICON_SIZE)
+            .text_color(tint),
+    }
 }
 
 /// The color `glyph` draws in where files and folders are listed: a file type's own tint, the
@@ -531,6 +544,52 @@ mod tests {
             tint: FileTint::Blue,
         });
         assert_eq!(icon(missing), AppIcon::Lucide(IconName::File));
+    }
+
+    /// Two listing rows as the tree and the panels lay them out: icon, gap, label.
+    struct Rows;
+
+    impl gpui::Render for Rows {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::{InteractiveElement as _, ParentElement as _, div};
+            let row = |glyph: Glyph, label: &'static str| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::style::ROW_GAP)
+                    .child(listing_icon(glyph, cx))
+                    .child(div().debug_selector(move || label.to_owned()).child(label))
+            };
+            div()
+                .flex()
+                .flex_col()
+                .child(row(Glyph::Entry(EntryKind::Tree), "folder-label"))
+                .child(row(entry_glyph(EntryKind::Blob, "main.ts"), "file-label"))
+        }
+    }
+
+    /// A Seti icon draws larger than its slot; the slot must stay [`style::ICON_SIZE`] wide,
+    /// or a file's name sits right of its folder's.
+    #[gpui::test]
+    fn a_seti_icon_keeps_the_label_where_a_folder_row_puts_it(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx
+            .update(|cx| {
+                cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                    gpui::AppContext::new(cx, |_| Rows)
+                })
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        let folder = visual.debug_bounds("folder-label").unwrap();
+        let file = visual.debug_bounds("file-label").unwrap();
+        assert_eq!(file.origin.x, folder.origin.x);
+        assert_eq!(file.size.height, folder.size.height);
     }
 
     #[test]
