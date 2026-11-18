@@ -18,7 +18,7 @@ use rc_git_kit::path_search::{PathIndex, PathIndexEntry};
 use rc_git_kit::path_search_session::{PathSearchEvent, PathSearchProvider, PathSearchSession};
 use rc_git_kit::picker;
 
-use crate::icons::Glyph;
+use crate::icons::entry_glyph;
 use crate::search::{PanelKey, body, field, frame, keys, note, row};
 use crate::style;
 
@@ -172,7 +172,7 @@ impl GoToFilePanel {
             .to_vec();
         let mut rows = Vec::with_capacity(entries.len());
         for (index, entry) in range.zip(entries) {
-            let glyph = Glyph::Entry(entry.kind);
+            let glyph = entry_glyph(entry.kind, entry.name());
             let name = SharedString::from(entry.name().to_owned());
             let highlighted = self.highlight == Some(index);
             rows.push(

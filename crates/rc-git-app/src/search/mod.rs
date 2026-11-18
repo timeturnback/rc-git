@@ -10,15 +10,14 @@ pub mod recent;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
+    AnyElement, App, Context, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
     Pixels, SharedString, Stateful, Styled, Window, deferred, div,
 };
+use gpui_component::ActiveTheme;
 use gpui_component::input::{Enter, Escape, MoveDown, MoveUp};
-use gpui_component::{ActiveTheme, Icon};
 
-use crate::icons::{Glyph, icon, is_accented};
+use crate::icons::{Glyph, listing_icon};
 use crate::style;
-use crate::theme::tertiary;
 
 /// A key a panel answers from its field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +157,7 @@ pub fn row(
         element = element.bg(theme.list_active);
     }
     if let Some(glyph) = glyph {
-        element = element.child(glyph_icon(glyph, theme.muted_foreground, tertiary(cx)));
+        element = element.child(listing_icon(glyph, cx));
     }
     element.child(div().flex_none().child(name)).child(
         div()
@@ -171,13 +170,6 @@ pub fn row(
             .text_color(theme.muted_foreground)
             .child(detail),
     )
-}
-
-fn glyph_icon(glyph: Glyph, secondary: Hsla, muted: Hsla) -> Icon {
-    let tint = if is_accented(glyph) { secondary } else { muted };
-    Icon::new(icon(glyph))
-        .size(style::ICON_SIZE)
-        .text_color(tint)
 }
 
 /// A dimmed line under the field or the list: a status, a note, a failure.

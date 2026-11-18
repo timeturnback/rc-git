@@ -86,7 +86,13 @@ fn with_highlight(config: &Rc<ThemeConfig>, fallback: &Rc<ThemeConfig>) -> Rc<Th
 /// glyphs and other quiet labels. The theme keeps it in the table-header slot.
 #[must_use]
 pub fn tertiary(cx: &App) -> Hsla {
-    cx.theme().table_head_foreground
+    tertiary_of(cx.theme())
+}
+
+/// [`tertiary`] read from `theme` directly.
+#[must_use]
+pub fn tertiary_of(theme: &Theme) -> Hsla {
+    theme.table_head_foreground
 }
 
 #[cfg(test)]
@@ -239,6 +245,37 @@ mod tests {
                 ("cyan", theme.cyan, defaults.cyan),
             ] {
                 assert_ne!(ours, theirs, "{}: base.{label} did not apply", config.name);
+            }
+        }
+    }
+
+    /// A file icon is a graphic, not text, so it needs 3:1 against the row it sits on (WCAG
+    /// 1.4.11), on every ground a listing row takes: bare, hovered and selected.
+    #[test]
+    fn every_file_tint_reads_at_three_to_one_on_every_row_ground() {
+        use rc_git_kit::file_icons::FileTint;
+        let themes = parse().unwrap();
+        for config in [&themes.light, &themes.dark] {
+            let theme = applied(config);
+            let mode = config.name.as_ref();
+            for tint in [
+                FileTint::Blue,
+                FileTint::Green,
+                FileTint::Yellow,
+                FileTint::Orange,
+                FileTint::Red,
+                FileTint::Purple,
+                FileTint::Pink,
+                FileTint::Muted,
+            ] {
+                let color = crate::icons::file_tint(tint, &theme);
+                for (ground, under) in row_grounds(&theme) {
+                    let ratio = contrast(over(color, under), under);
+                    assert!(
+                        ratio >= 3.,
+                        "{mode}: {tint:?} on {ground} {under:?} is {ratio:.2}:1, under 3:1"
+                    );
+                }
             }
         }
     }

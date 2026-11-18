@@ -20,7 +20,7 @@ use rc_git_kit::models::BrowseRow;
 use rc_git_kit::repository::ReadResult;
 
 use crate::files::fit::{self, RowExtent, WidthCache};
-use crate::icons::{Glyph, icon, is_accented};
+use crate::icons::{Glyph, entry_glyph, icon, listing_icon};
 use crate::style;
 
 /// How a row draws: its glyph, or none for a placeholder.
@@ -397,7 +397,7 @@ fn items(
                 looks.insert(
                     node.id.clone(),
                     RowLook {
-                        glyph: Some(Glyph::Entry(row.entry.kind)),
+                        glyph: Some(entry_glyph(row.entry.kind, &row.entry.name_lossy())),
                         dimmed: row.missing,
                     },
                 );
@@ -423,11 +423,7 @@ impl Render for FileTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.report_width(window, cx);
         let theme = cx.theme();
-        let (secondary, muted, foreground) = (
-            theme.muted_foreground,
-            crate::theme::tertiary(cx),
-            theme.foreground,
-        );
+        let (muted, foreground) = (crate::theme::tertiary(cx), theme.foreground);
         if self.model.read(cx).root_tree().is_none() && self.tree.node_count() == 0 {
             let text = self.model.read(cx).tree_placeholder();
             return div()
@@ -440,7 +436,7 @@ impl Render for FileTreeView {
         }
         let looks = Rc::clone(&self.looks);
         let weak = cx.weak_entity();
-        tree(&self.state, move |index, entry, _selected, _window, _cx| {
+        tree(&self.state, move |index, entry, _selected, _window, cx| {
             let id = entry.item().id.to_string();
             let look = looks.get(&id).copied().unwrap_or(RowLook {
                 glyph: None,
@@ -470,12 +466,11 @@ impl Render for FileTreeView {
                 .text_color(color)
                 .child(disclosure);
             if let Some(glyph) = look.glyph {
-                let tint = if is_accented(glyph) { secondary } else { muted };
-                row = row.child(
-                    Icon::new(icon(glyph))
-                        .size(style::ICON_SIZE)
-                        .text_color(tint),
-                );
+                let mut glyph_icon = listing_icon(glyph, cx);
+                if look.dimmed {
+                    glyph_icon = glyph_icon.text_color(muted);
+                }
+                row = row.child(glyph_icon);
             }
             let menu = (weak.clone(), entry.item().id.to_string());
             ListItem::new(index).px(style::MARGIN).child(

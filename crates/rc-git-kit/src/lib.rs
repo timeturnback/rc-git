@@ -21,6 +21,7 @@ pub mod diff_rows;
 pub mod diff_text;
 #[cfg(feature = "test-support")]
 pub mod fake;
+pub mod file_icons;
 pub mod file_pane;
 pub mod file_tree;
 pub mod file_url;

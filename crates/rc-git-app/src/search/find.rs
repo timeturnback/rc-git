@@ -26,7 +26,7 @@ use rc_git_kit::path_search::PathIndexEntry;
 use rc_git_kit::picker;
 use rc_git_kit::repository::RepositoryError;
 
-use crate::icons::Glyph;
+use crate::icons::entry_glyph;
 use crate::search::{PanelKey, body, field, frame, keys, note, row};
 use crate::style;
 
@@ -222,7 +222,7 @@ fn file_row(
     let more = if hit.truncated { "+" } else { "" };
     let plural = if count == 1 { "" } else { "s" };
     let detail = format!("{} \u{b7} {count}{more} line{plural}", hit.entry.path);
-    let glyph = Glyph::Entry(hit.entry.kind);
+    let glyph = entry_glyph(hit.entry.kind, hit.entry.name());
     let name = SharedString::from(hit.entry.name().to_owned());
     row(
         ("hit", index),
