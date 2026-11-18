@@ -158,6 +158,24 @@ or the code expires. A GitHub App's token then lasts eight hours and renews with
 refresh token; renewals of one account never run two at once, and a refused renewal signs the
 account out only when no other writer (the CLI, the app) renewed it first.
 
+## Repository link
+
+Which GitHub repository a repository's pull requests come from, and through which account. It
+is read from the remote fetch uses, and the remote names only an owner, a name and a host to
+look an account up by; the account's host is where the token goes. When the remote's host is an
+alias in the user's own ssh config, the host the alias stands for is looked up instead, under
+the same rule: one account on the host, the one chosen for the repository among several, else
+ask. A repository whose remote names no host with an account is linked to nothing, and shows no
+pull requests; github.com without an account offers the sign-in.
+
+## Pull request stamp
+
+What the user saw of a pull request: its number, head commit, base branch and state. Only a
+read that is current makes one; a screen left by a failed refresh is stale and stands for
+nothing. It is what an action on the pull request is to compare a fresh read against, refusing
+with "changed since you looked" when they differ; the reads carry it now, and no action uses it
+yet.
+
 ## Host-key trust
 
 How an SSH server proves its identity to rc-git. The `known_hosts` files OpenSSH would

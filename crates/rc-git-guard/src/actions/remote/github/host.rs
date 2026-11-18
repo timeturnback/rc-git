@@ -142,7 +142,7 @@ impl GitHubHost {
         format!("{}/login/device", self.origin(PLAIN_HTTP))
     }
 
-    fn is_loopback(&self) -> bool {
+    pub(super) fn is_loopback(&self) -> bool {
         matches!(self.name.as_str(), "127.0.0.1" | "localhost")
     }
 
@@ -213,7 +213,7 @@ impl fmt::Display for GitHubHost {
     }
 }
 
-fn parse_port(text: &str) -> Option<u16> {
+pub(super) fn parse_port(text: &str) -> Option<u16> {
     if text.is_empty() || text.len() > 5 || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -222,7 +222,7 @@ fn parse_port(text: &str) -> Option<u16> {
 
 /// Checks a lowercase host name: dot-separated labels of 1 to 63 letters, digits and inner
 /// dashes, 253 characters at most.
-fn check_name(name: &str) -> Result<(), &'static str> {
+pub(super) fn check_name(name: &str) -> Result<(), &'static str> {
     if name.len() > 253 {
         return Err("the host name is longer than 253 characters");
     }
@@ -269,6 +269,48 @@ pub fn remote_host(remote_url: &str) -> GitHubResult<GitHubHost> {
     Ok(parse_remote(remote_url)?.host)
 }
 
+/// The host an ssh remote dials once the user's ssh config (in `ssh_dir`, else `~/.ssh`)
+/// applies, when that is not the host the URL names: the `HostName` of an alias such as
+/// `git@github-work:owner/repo`, lowercased. `None` for an `https://` remote, for an ssh host
+/// the config leaves as it is, and for a `Port` other than 22 (no GitHub host serves git
+/// there). The resolution is the ssh transport's own, refusals included; the result only names
+/// a host to look an account up by, and a token goes there only through an account record for
+/// exactly that host.
+///
+/// # Errors
+/// [`GitHubError::ForeignRemote`] when the URL names no repository (as for
+/// [`RepositoryTarget::on_host`]) or the ssh config is refused (`ProxyJump`, `ProxyCommand`,
+/// a `Match` that may apply, an unreadable file).
+pub fn ssh_dialed_host(
+    remote_url: &str,
+    ssh_dir: Option<&std::path::Path>,
+) -> GitHubResult<Option<GitHubHost>> {
+    const OP: &str = "read the ssh config for a pull request remote";
+    let parsed = parse_remote(remote_url)?;
+    let Ok(url) = gix::url::parse(gix::bstr::BStr::new(remote_url)) else {
+        return Ok(None);
+    };
+    if url.scheme != gix::url::Scheme::Ssh {
+        return Ok(None);
+    }
+    let (name, port) = super::super::ssh::dialed_host(&url, ssh_dir, OP).map_err(|error| {
+        GitHubError::ForeignRemote {
+            remote: parsed.shown.clone(),
+            reason: format!(
+                "could not be read through the ssh config: {}",
+                single_line(&error.to_string(), 300)
+            ),
+        }
+    })?;
+    if port != SSH_PORT {
+        return Ok(None);
+    }
+    let Ok(dialed) = GitHubHost::parse(&name) else {
+        return Ok(None);
+    };
+    Ok((dialed != parsed.host).then_some(dialed))
+}
+
 /// One repository on one host, with owner and name validated as plain names: what a pull
 /// request call is about.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -302,6 +344,35 @@ impl RepositoryTarget {
             owner: parsed.owner,
             name: parsed.name,
         })
+    }
+
+    /// The repository `remote_url` names for the account on `host`: [`RepositoryTarget::on_host`]
+    /// when the URL is on `host` itself; else, for an ssh remote, when the user's ssh config
+    /// (in `ssh_dir`, else `~/.ssh`) maps the URL's host (an alias such as `github-work`) to a
+    /// `HostName` that is `host` exactly, on port 22, as [`ssh_dialed_host`] reads it. The ssh
+    /// config is the user's own file, never the repository's, and the comparison is as whole
+    /// and exact as `on_host`'s.
+    ///
+    /// # Errors
+    /// [`GitHubError::ForeignRemote`] as for `on_host`, also when the ssh config is refused.
+    pub fn for_account(
+        host: &GitHubHost,
+        remote_url: &str,
+        ssh_dir: Option<&std::path::Path>,
+    ) -> GitHubResult<Self> {
+        let refused = match Self::on_host(host, remote_url) {
+            Ok(target) => return Ok(target),
+            Err(refused) => refused,
+        };
+        let parsed = parse_remote(remote_url)?;
+        match ssh_dialed_host(remote_url, ssh_dir)? {
+            Some(dialed) if dialed == *host => Ok(Self {
+                host: dialed,
+                owner: parsed.owner,
+                name: parsed.name,
+            }),
+            Some(_) | None => Err(refused),
+        }
     }
 
     /// The host.

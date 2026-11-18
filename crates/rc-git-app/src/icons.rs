@@ -241,6 +241,16 @@ pub enum Glyph {
     ExpandDiff,
     /// A diff's path bar: put the panes beside the diff back.
     RestoreDiff,
+    /// A pull request check that passed.
+    CheckPassing,
+    /// A pull request check that failed.
+    CheckFailing,
+    /// A pull request check still running.
+    CheckPending,
+    /// A pull request check that neither passed nor failed.
+    CheckNeutral,
+    /// A pull request page's link to the host.
+    OpenInBrowser,
 }
 
 /// The symbol an icon draws: a Lucide icon or a bundled Seti one, by asset path.
@@ -313,16 +323,19 @@ fn lucide(glyph: Glyph) -> IconName {
         Glyph::Sidebar => IconName::PanelLeft,
         Glyph::BackToDefault => IconName::Undo2,
         Glyph::Sync => IconName::RefreshCw,
-        Glyph::Busy => IconName::LoaderCircle,
+        Glyph::Busy | Glyph::CheckPending => IconName::LoaderCircle,
         Glyph::Disclosure => IconName::ChevronsUpDown,
         Glyph::TickOn => IconName::Check,
-        Glyph::TickMixed => IconName::Minus,
+        Glyph::TickMixed | Glyph::CheckNeutral => IconName::Minus,
         Glyph::Repository => IconName::FolderGit2,
         Glyph::CloseTab => IconName::Close,
         Glyph::OpenTab => IconName::Plus,
         Glyph::WrapLines => IconName::TextWrap,
         Glyph::ExpandDiff => IconName::Maximize2,
         Glyph::RestoreDiff => IconName::Minimize2,
+        Glyph::CheckPassing => IconName::CircleCheck,
+        Glyph::CheckFailing => IconName::CircleX,
+        Glyph::OpenInBrowser => IconName::ExternalLink,
     }
 }
 
@@ -428,7 +441,12 @@ pub fn is_accented(glyph: Glyph) -> bool {
         | Glyph::OpenTab
         | Glyph::WrapLines
         | Glyph::ExpandDiff
-        | Glyph::RestoreDiff => false,
+        | Glyph::RestoreDiff
+        | Glyph::CheckPassing
+        | Glyph::CheckFailing
+        | Glyph::CheckPending
+        | Glyph::CheckNeutral
+        | Glyph::OpenInBrowser => false,
     }
 }
 

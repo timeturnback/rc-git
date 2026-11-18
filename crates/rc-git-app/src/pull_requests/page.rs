@@ -1,0 +1,316 @@
+//! A pull request's read-only page in the content card: the strip of open pull request tabs,
+//! the header (title, author, branches, state, review), the checks, and the description in a
+//! markdown preview that opens only web links, on a click ([`LinkPolicy::WebOnly`]). Nothing
+//! on the page loads a URL: a details link and the host's page open in the browser when
+//! clicked, their host named on the button.
+//!
+//! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
+
+use std::sync::Arc;
+
+use gpui::{
+    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::{ActiveTheme, Icon, h_flex, v_flex};
+use rc_git_kit::pull_requests::body::body_document;
+use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
+use rc_git_kit::pull_requests::copy::{
+    DETAIL_LOADING, NO_DESCRIPTION, STALE_NOTE, check_label, details_label, fields_note,
+    freshness_problem, mergeable_label, review_label, row_detail, state_label, tab_title,
+};
+use rc_git_kit::pull_requests::model::PullRequestsModel;
+use rc_git_kit::pull_requests::state::DetailState;
+use rc_git_kit::pull_requests::{Check, PullRequestDetail, ServerLink};
+
+use super::check_icon;
+use crate::files::markdown::MarkdownPreview;
+use crate::icons::{Glyph, icon};
+use crate::style;
+
+/// The page.
+pub struct PullRequestPage {
+    model: Entity<PullRequestsModel>,
+    /// The description on show: its pull request, its text, and its preview.
+    preview: Option<(u64, String, Entity<MarkdownPreview>)>,
+    now: fn() -> u64,
+}
+
+impl PullRequestPage {
+    /// The page over `model`; `now` tells the time for rate-limit notes.
+    pub fn new(model: Entity<PullRequestsModel>, now: fn() -> u64, cx: &mut Context<Self>) -> Self {
+        cx.observe(&model, |this, model, cx| {
+            let detail = model
+                .read(cx)
+                .selected_tab()
+                .and_then(DetailState::detail)
+                .cloned();
+            this.sync_preview(detail.as_ref(), cx);
+            cx.notify();
+        })
+        .detach();
+        Self {
+            model,
+            preview: None,
+            now,
+        }
+    }
+
+    /// The description preview on show, for tests.
+    #[cfg(test)]
+    pub(crate) fn preview(&self) -> Option<&Entity<MarkdownPreview>> {
+        self.preview.as_ref().map(|(_, _, preview)| preview)
+    }
+
+    /// The description's preview for `detail`, rebuilt only when the text changed.
+    fn sync_preview(&mut self, detail: Option<&PullRequestDetail>, cx: &mut Context<Self>) {
+        let Some(detail) = detail.filter(|detail| !detail.body.is_empty()) else {
+            self.preview = None;
+            return;
+        };
+        let number = detail.summary.number;
+        let same = self
+            .preview
+            .as_ref()
+            .is_some_and(|(shown, body, _)| *shown == number && *body == detail.body);
+        if same {
+            return;
+        }
+        let document = Arc::new(body_document(&detail.body));
+        let preview = cx.new(|cx| MarkdownPreview::web_only(document, cx));
+        self.preview = Some((number, detail.body.clone(), preview));
+    }
+
+    fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let model = self.model.read(cx);
+        let selected = model.selected_tab().map(DetailState::number);
+        let tabs: Vec<(u64, String)> = model
+            .tabs()
+            .iter()
+            .map(|tab| {
+                let summary = tab.detail().map(|detail| &detail.summary);
+                (tab.number(), tab_title(tab.number(), summary))
+            })
+            .collect();
+        let theme = cx.theme();
+        let mut strip = h_flex()
+            .id("pull-request-tabs")
+            .gap(style::TAB_GAP)
+            .px(style::MARGIN)
+            .py(style::BAR_PADDING)
+            .border_b(style::HAIRLINE)
+            .border_color(theme.border)
+            .overflow_x_scroll();
+        for (number, title) in tabs {
+            let active = selected == Some(number);
+            strip = strip.child(
+                h_flex()
+                    .id(SharedString::from(format!("pull-request-tab-{number}")))
+                    .h(style::TAB_HEIGHT)
+                    .max_w(style::TAB_MAX_WIDTH)
+                    .px(style::ROW_GAP)
+                    .gap(style::ROW_GAP)
+                    .rounded(style::RADIUS)
+                    .when(active, |tab| tab.bg(theme.list_active))
+                    .cursor_pointer()
+                    .text_size(style::TEXT_CAPTION)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(SharedString::from(title)),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("pull-request-close-{number}")))
+                            .child(Icon::new(icon(Glyph::CloseTab)).size(style::TAB_ICON_SIZE))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.model.update(cx, |model, cx| model.close(number, cx));
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.update(cx, |model, cx| model.select(number, cx));
+                    })),
+            );
+        }
+        strip
+    }
+
+    fn line(text: String, color: gpui::Hsla) -> impl IntoElement {
+        div()
+            .text_size(style::TEXT_CAPTION)
+            .text_color(color)
+            .child(SharedString::from(text))
+    }
+
+    fn link_button(id: &'static str, label: String, url: String) -> impl IntoElement {
+        Button::new(id)
+            .ghost()
+            .label(label)
+            .icon(Icon::new(icon(Glyph::OpenInBrowser)))
+            .tooltip(url.clone())
+            .on_click(move |_, _, cx| cx.open_url(&url))
+    }
+
+    fn header(&self, tab: &DetailState, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (muted, red) = (theme.muted_foreground, theme.red);
+        let detail = tab.detail();
+        let mut column = v_flex()
+            .gap(style::DETAIL_LINE_GAP)
+            .px(style::MARGIN)
+            .py(style::BAR_PADDING);
+        let title =
+            detail.map_or_else(|| format!("#{}", tab.number()), |d| d.summary.title.clone());
+        column = column.child(
+            div()
+                .text_size(style::TEXT_BODY + gpui::px(3.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(SharedString::from(title)),
+        );
+        if let Some(detail) = detail {
+            let summary = &detail.summary;
+            let facts = format!(
+                "{} · {} · {} · {}",
+                state_label(summary.state, summary.draft),
+                row_detail(summary),
+                review_label(summary.review),
+                mergeable_label(detail.mergeable)
+            );
+            column = column.child(Self::line(facts, muted));
+            if let Some(note) = fields_note(detail.fields) {
+                column = column.child(Self::line(note.to_owned(), muted));
+            }
+            if let Some(url) = &detail.url {
+                let label = match url {
+                    ServerLink::OnHost(_) => "Open in Browser".to_owned(),
+                    ServerLink::Elsewhere { host, .. } => format!("Open on {host}"),
+                };
+                column = column.child(Self::link_button(
+                    "pull-request-open",
+                    label,
+                    url.url().to_owned(),
+                ));
+            }
+        } else if tab.is_loading() {
+            column = column.child(Self::line(DETAIL_LOADING.to_owned(), muted));
+        }
+        if let Some(problem) = freshness_problem(tab.freshness(), (self.now)()) {
+            column = column.child(Self::line(problem, red));
+            if detail.is_some() {
+                column = column.child(Self::line(STALE_NOTE.to_owned(), muted));
+            }
+        }
+        column
+    }
+
+    fn check_row(index: usize, check: &Check, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let state = check_state(&check.progress);
+        let mut name = check.name.clone();
+        if check.required == Some(true) {
+            name.push_str(" · required");
+        }
+        let detail = check
+            .description
+            .clone()
+            .unwrap_or_else(|| check_label(state).to_owned());
+        let details = check
+            .details
+            .as_ref()
+            .map(|link| (details_label(link), link.url().to_owned()));
+        h_flex()
+            .id(("pull-request-check", index))
+            .w_full()
+            .gap(style::ROW_GAP)
+            .py(gpui::px(2.))
+            .child(div().flex_none().child(check_icon(state, theme)))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(style::TEXT_BODY)
+                            .child(SharedString::from(name)),
+                    )
+                    .child(Self::line(detail, theme.muted_foreground)),
+            )
+            .when_some(details, |row, (label, url)| {
+                row.child(
+                    Button::new(("pull-request-check-details", index))
+                        .ghost()
+                        .label(label)
+                        .tooltip(url.clone())
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+            })
+    }
+
+    fn checks(detail: &PullRequestDetail, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let mut rows = v_flex()
+            .id("pull-request-checks")
+            .max_h(style::PULL_REQUEST_CHECKS_MAX_HEIGHT)
+            .overflow_y_scroll();
+        for (index, check) in ordered(&detail.checks.checks).into_iter().enumerate() {
+            rows = rows.child(Self::check_row(index, check, cx));
+        }
+        v_flex()
+            .px(style::MARGIN)
+            .py(style::BAR_PADDING)
+            .border_t(style::HAIRLINE)
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_size(style::TEXT_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Checks"),
+            )
+            .child(Self::line(summary(&detail.checks), theme.muted_foreground))
+            .child(rows)
+    }
+}
+
+impl Render for PullRequestPage {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = self.model.read(cx).selected_tab().cloned();
+        let strip = self.tab_strip(cx);
+        let theme = cx.theme();
+        let mut page = v_flex()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .child(strip);
+        let Some(tab) = tab else {
+            return page;
+        };
+        page = page.child(self.header(&tab, cx));
+        if let Some(detail) = tab.detail() {
+            page = page.child(Self::checks(detail, cx));
+        }
+        let description = v_flex()
+            .flex_1()
+            .min_h_0()
+            .border_t(style::HAIRLINE)
+            .border_color(cx.theme().border);
+        let description = match (&self.preview, tab.detail()) {
+            (Some((_, _, preview)), _) => {
+                description.child(div().size_full().child(preview.clone()))
+            }
+            (None, Some(_)) => description.child(
+                div()
+                    .p(style::MARGIN)
+                    .text_size(style::TEXT_BODY)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(NO_DESCRIPTION),
+            ),
+            (None, None) => description,
+        };
+        page.child(description)
+    }
+}

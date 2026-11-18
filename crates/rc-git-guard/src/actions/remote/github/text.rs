@@ -12,10 +12,30 @@ pub(super) const MESSAGE_CHARS: usize = 300;
 /// than `max_chars` characters, it is cut there and ends in `…`.
 #[must_use]
 pub fn single_line(text: &str, max_chars: usize) -> String {
+    neutralize(text, max_chars, Breaks::Escaped)
+}
+
+/// `text` made safe to show as several lines, as a pull request's description: line breaks
+/// are kept (`\r\n` and a lone `\r` become `\n`) and so are tabs, ANSI escape sequences are
+/// dropped, and every other character [`single_line`] escapes is shown as the same visible
+/// `\u{..}` escape. Longer than `max_chars` characters, it is cut there and ends in `…`.
+#[must_use]
+pub fn multi_line(text: &str, max_chars: usize) -> String {
+    neutralize(text, max_chars, Breaks::Kept)
+}
+
+/// What [`neutralize`] does with a line break or a tab.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Breaks {
+    Escaped,
+    Kept,
+}
+
+fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> String {
     let mut shown = String::new();
     let mut count = 0;
     let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
+    while let Some(mut c) = chars.next() {
         if c == '\u{1b}' {
             skip_escape_sequence(&mut chars);
             continue;
@@ -25,7 +45,14 @@ pub fn single_line(text: &str, max_chars: usize) -> String {
             break;
         }
         count += 1;
-        if c.is_control() || is_hidden_format(c) {
+        if breaks == Breaks::Kept && c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            c = '\n';
+        }
+        let kept = breaks == Breaks::Kept && matches!(c, '\n' | '\t');
+        if !kept && (c.is_control() || is_hidden_format(c)) {
             shown.push_str("\\u{");
             shown.push_str(&hex(u32::from(c)));
             shown.push('}');
@@ -196,6 +223,17 @@ mod tests {
         for kept in ["é", "日本", "a b", "ﷺ"] {
             assert_eq!(single_line(kept, 100), kept, "{kept:?}");
         }
+    }
+
+    #[test]
+    fn multi_line_keeps_breaks_and_tabs_and_escapes_the_rest() {
+        assert_eq!(multi_line("a\r\nb\rc\n\td", 100), "a\nb\nc\n\td");
+        assert_eq!(
+            multi_line("x\u{202e}y\u{200b}z\u{2028}w\u{0}v\u{85}", 100),
+            "x\\u{202e}y\\u{200b}z\\u{2028}w\\u{0}v\\u{85}"
+        );
+        assert_eq!(multi_line("\u{1b}[2J\u{1b}]0;title\u{7}ok", 100), "ok");
+        assert_eq!(multi_line("ab\ncd", 3), "ab\n…");
     }
 
     #[test]

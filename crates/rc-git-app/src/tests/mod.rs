@@ -10,6 +10,7 @@ mod ink;
 mod markdown;
 mod panels;
 mod panels_ink;
+mod pull_requests;
 mod shell;
 mod support;
 mod update;

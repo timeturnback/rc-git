@@ -191,6 +191,19 @@ pub fn harness_with(
     repos: &[(&str, FakeRepository)],
     settings: &Arc<MemorySettings>,
 ) -> Harness {
+    let hidden = rc_git_kit::fake::FakePullRequests::with_link(
+        rc_git_kit::pull_requests::link::RepositoryLink::Hidden,
+    );
+    harness_reading(cx, repos, settings, Arc::new(hidden))
+}
+
+/// [`harness_with`] reading pull requests through `pull_requests`.
+pub fn harness_reading(
+    cx: &mut TestAppContext,
+    repos: &[(&str, FakeRepository)],
+    settings: &Arc<MemorySettings>,
+    pull_requests: Arc<dyn rc_git_kit::pull_requests::PullRequestService>,
+) -> Harness {
     cx.executor().allow_parking();
     cx.update(gpui_component::init);
     let known: HashMap<String, FakeRepository> = repos
@@ -216,6 +229,7 @@ pub fn harness_with(
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
         api_tokens: Arc::new(MemoryApiTokenStore::new()),
+        pull_requests,
         home: "/Users/me".to_owned(),
         app_name: "rc-git".to_owned(),
     };

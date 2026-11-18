@@ -26,7 +26,7 @@ signal-hook.workspace = true
 rc-git-testkit.workspace = true
 # `auth` tests sign in against the testkit's fake GitHub host over plain http on loopback;
 # dev-only, so a normal build speaks https to every host (scripts/check.sh checks).
-rc-git-guard = { workspace = true, features = ["dev-loopback-http"] }
+rc-git-guard = { workspace = true, features = ["dev-loopback-http", "test-support"] }
 # Tests talk Basic auth to the loopback HTTP server; release builds keep the
 # clear-text refusal because this feature is dev-only.
 gix-transport = { workspace = true, features = ["http-client-insecure-credentials"] }

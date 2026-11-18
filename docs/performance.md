@@ -32,6 +32,9 @@ port; follow an import is an estimate from its design, with no timing test.
 | highlight | after first paint, cached per blob and file extension | capped at 2 MiB; plain text never waits; colors apply only to the rows on screen, never a whole-file pass on the main thread; the span cache is LRU-bounded |
 | import links | about 100 ms per MiB, on the first pointer move over a file, off the main thread | one parse of its own, skipped when the bytes hold no `import`, `require` or `from`; 16 bytes a link, cached with the blob's highlight spans; hover is a binary search and one overlay on the rows it touches |
 | follow an import | one tree object per directory on the way, plus the config files above the importing file when the specifier is not relative | resolved on click, through the shared tree cache; nothing is indexed and nothing is kept |
+| pull request list | one GraphQL request per page of 30, network-bound, background | Load More reads the next page only when clicked, up to 10 pages; a refresh reads the first page alone and drops the rest; one read in flight and at most one queued |
+| pull request tab | one GraphQL request per read, at most 100 checks, background | read when the tab opens and when it polls; a second request only on an older GitHub Enterprise Server that lacks a field of the full query |
+| pull request polling | the list every 60 s while its section shows, the open tab every 15 s while one of its checks runs | nothing while the window is inactive or the section collapsed, nothing after a sign-out, nothing until a spent rate limit resets; the CLI reads once per command (`rc-git --time pr list`) |
 
 First paint after choosing a repository should land under 30 ms: open, `HEAD`, root tree,
 refs. Everything else is on demand.

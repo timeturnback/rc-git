@@ -366,13 +366,44 @@ libcurl directly.
   only when it is 1 to 64 of `[a-z_]` and holds no secret of the request, else as
   `unrecognized error code`. GraphQL queries are static strings and every value travels in
   `variables`.
-- **CLI test hooks.** `RC_GIT_SETTINGS` and `RC_GIT_KEYCHAIN_SERVICE` point `rc-git auth` at a
-  scratch settings file and keychain service, and are read only when `DEV_ALLOWANCE`
-  (`github/host.rs`, true only with the dev allowance compiled in) says so. A shipped CLI reads
-  neither, so its environment cannot point it at other accounts.
+- **CLI test hooks.** `RC_GIT_SETTINGS` and `RC_GIT_KEYCHAIN_SERVICE` point `rc-git auth` and
+  `rc-git pr` at a scratch settings file and keychain service, and are read only when
+  `DEV_ALLOWANCE` (`github/host.rs`, true only with the dev allowance compiled in) says so. A
+  shipped CLI reads neither, so its environment cannot point it at other accounts.
+- **Which remote, which account.** Pull requests are read from the remote fetch uses: the
+  checked-out branch's `branch.<name>.remote`, else `origin` (`pull_request_remote`, through
+  `configured_remote_name`). An ssh remote whose host is an alias in the user's own
+  `~/.ssh/config` (`git@github-work:o/r`) matches no account by its written host; when no account
+  is on that host, the alias's `HostName`, read by the ssh transport's own resolver
+  (`ssh_dialed_host`, which refuses `ProxyJump`, `ProxyCommand` and a `Match` that may apply,
+  and ignores a `Port` other than 22), is compared whole and exactly with the account hosts.
+  The repository's config never reaches that lookup, and the alias never picks an account
+  alone: the no-fallthrough rule applies to the resolved host as to a written one
+  (`link_repository`, rc-git-kit). `RepositoryTarget::for_account` repeats the comparison before
+  a target exists, so a read can only name a repository on the account's host.
+- **Pull request reads.** `list_open_pull_requests` (one page of 30) and `read_pull_request`
+  (one pull request with at most 100 checks) are GraphQL queries with static text and owner,
+  name, number and page cursor in `variables`; both refuse a target on another host before any
+  request, and the number is checked to fit GraphQL's `Int` first. A spent GraphQL rate limit (a
+  200 with `x-ratelimit-remaining: 0`, or an error of type `RATE_LIMITED`) is `RateLimited` with
+  the reset time; a 401 signs the reader out in the UI rather than retrying. An older GitHub
+  Enterprise Server that lacks a field of the full detail query answers `undefinedField`; the
+  read then asks once more without the newer fields (merge state, viewer permissions, auto-merge,
+  required checks, Actions ids) and says so in `DetailFields::Basic`.
+- **Pull request text.** Titles, branch names, logins, check names and status descriptions pass
+  through `single_line`; a description through `multi_line`, which keeps line breaks and tabs and
+  escapes everything else `single_line` does. A URL from the server is kept only when it is
+  `https://` with a DNS host, no userinfo and only URL characters, typed `ServerLink::OnHost` for
+  the account's host and `ServerLink::Elsewhere` (with its host) otherwise; rc-git never fetches
+  one. In the app a description renders through the markdown parser, which loads nothing: an
+  image is its alt text linked to its source. Its links open only on a click, only `http:` and
+  `https:` with a plain host and no userinfo (`body_link`), with the host named in the tooltip;
+  every other destination does nothing (`LinkPolicy::WebOnly`). The CLI prints the same
+  neutralized text, one record per line.
 
-Sign-in, the token check and the refresh change no repository, so they have no `Action`; the
-pull request mutations of later slices will each get a policy row in the table above.
+Sign-in, the token check, the refresh and the pull request reads change no repository, so they
+have no `Action`; the pull request mutations of later slices will each get a policy row in the
+table above.
 
 ## Updater
 

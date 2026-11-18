@@ -1,13 +1,13 @@
-//! A fake GitHub host for tests: the device-flow and token endpoints, `GET /user`, a GraphQL
-//! echo, and endpoints that misbehave on purpose (a redirect, an oversized body, a stall, an
-//! error that echoes the token, a token endpoint that echoes the form it got). Plain HTTP on
-//! loopback, laid out as a GitHub Enterprise host
+//! A fake GitHub host for tests: the device-flow and token endpoints, `GET /user`, scripted
+//! GraphQL answers (or an echo), and endpoints that misbehave on purpose (a redirect, an
+//! oversized body, a stall, an error that echoes the token, a token endpoint that echoes the
+//! form it got). Plain HTTP on loopback, laid out as a GitHub Enterprise host
 //! (`/api/v3`, `/api/graphql`), since rc-git builds github.com's URLs for `api.github.com`.
 //!
 //! It is strict: every endpoint answers only for the exact method, headers and parameters a
-//! correct client sends, and anything else gets an error, so a client that sends the wrong
-//! thing fails its test instead of passing against a lenient fake. Every request is recorded,
-//! headers included.
+//! correct client sends, and a GraphQL query only for the exact request body scripted for it;
+//! anything else gets an error, so a client that sends the wrong thing fails its test instead
+//! of passing against a lenient fake. Every request is recorded, headers included.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -132,7 +132,18 @@ struct State {
     redirect_to: Option<String>,
     oversized_bytes: usize,
     echo_form: Option<EchoForm>,
+    /// Exact GraphQL request bodies and what each is answered with.
+    graphql: Vec<(String, Scripted)>,
+    /// Whether an unscripted GraphQL request is echoed back instead of refused.
+    graphql_echo: bool,
     requests: Vec<RecordedRequest>,
+}
+
+/// A scripted GraphQL answer: a `200 OK` with this body and these extra headers.
+#[derive(Debug, Clone)]
+struct Scripted {
+    body: String,
+    headers: Vec<(String, String)>,
 }
 
 /// A fake GitHub host on `127.0.0.1`, answering from background threads until dropped.
@@ -224,6 +235,37 @@ impl GitHubServer {
     /// refresh) with its values echoed `into` an error, instead of judging it.
     pub fn echo_form(&self, into: EchoForm) {
         self.state().echo_form = Some(into);
+    }
+
+    /// Answers a GraphQL request whose body is exactly `request_body` with `answer` (a JSON
+    /// document) from now on. Any other GraphQL body is refused with a 400, unless
+    /// [`GitHubServer::echo_graphql`] is on.
+    pub fn script_graphql(&self, request_body: &str, answer: &str) {
+        self.script_graphql_with_headers(request_body, answer, &[]);
+    }
+
+    /// As [`GitHubServer::script_graphql`], with extra response headers (a spent rate limit).
+    pub fn script_graphql_with_headers(
+        &self,
+        request_body: &str,
+        answer: &str,
+        headers: &[(&str, &str)],
+    ) {
+        let scripted = Scripted {
+            body: answer.to_owned(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        };
+        let mut state = self.state();
+        state.graphql.retain(|(body, _)| body != request_body);
+        state.graphql.push((request_body.to_owned(), scripted));
+    }
+
+    /// Answers every unscripted GraphQL request with `{"data":{"echo":<the request body>}}`.
+    pub fn echo_graphql(&self) {
+        self.state().graphql_echo = true;
     }
 
     /// Every request so far, in arrival order.
@@ -670,7 +712,15 @@ fn graphql(request: &RecordedRequest, state: &Mutex<State>) -> Answer {
     let Ok(body) = String::from_utf8(request.body.clone()) else {
         return bad_request("the body is not UTF-8");
     };
-    json("200 OK", format!(r#"{{"data":{{"echo":{body}}}}}"#))
+    if let Some((_, scripted)) = state.graphql.iter().find(|(expected, _)| *expected == body) {
+        let mut answer = json("200 OK", scripted.body.clone());
+        answer.headers.clone_from(&scripted.headers);
+        return answer;
+    }
+    if state.graphql_echo {
+        return json("200 OK", format!(r#"{{"data":{{"echo":{body}}}}}"#));
+    }
+    bad_request("the fake has no answer for this GraphQL request")
 }
 
 fn repository(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Answer {

@@ -9,6 +9,7 @@
 //! call while the test thread drives the models; such a test allows parking on its executor.
 
 mod actions;
+mod pull_requests;
 mod repository;
 
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
@@ -17,6 +18,9 @@ use std::time::Duration;
 use rc_git_core::{Oid, RefEntry, RefKind};
 
 pub use actions::{ActionCall, ActionKind, FakeActions, FakeActionsState};
+pub use pull_requests::{
+    FakePullRequests, FakePullRequestsState, linked, page, pull_request, pull_request_detail,
+};
 pub use repository::{FakeRepository, FakeState, commit_summary, text_blob};
 
 /// How long [`CallGate::wait_until_arrived`] waits before it gives up, so a test whose call

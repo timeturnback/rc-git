@@ -35,11 +35,11 @@ const KEYCHAIN_ENV: &str = "RC_GIT_KEYCHAIN_SERVICE";
 /// The most bytes read from standard input for a token.
 const MAX_TOKEN_INPUT: u64 = 4096;
 
-/// The stores `auth` reads and writes.
-struct Stores {
-    settings: Arc<dyn SettingsStore>,
+/// The stores `auth` reads and writes, and `pr` reads.
+pub(crate) struct Stores {
+    pub(crate) settings: Arc<dyn SettingsStore>,
     accounts: GitHubAccounts,
-    tokens: KeychainApiTokenStore,
+    pub(crate) tokens: KeychainApiTokenStore,
 }
 
 /// Where the test hooks point the stores; `None` is the app's own.
@@ -62,7 +62,8 @@ fn hook_targets(dev_allowance: bool, var: impl Fn(&str) -> Option<String>) -> Ho
     }
 }
 
-fn stores() -> Result<Stores> {
+/// The app's account settings and keychain, or the test hooks' scratch ones in a test build.
+pub(crate) fn stores() -> Result<Stores> {
     let hooks = hook_targets(DEV_ALLOWANCE, |name| std::env::var(name).ok());
     let settings: Arc<dyn SettingsStore> = match hooks.settings {
         Some(path) if path.starts_with('/') => Arc::new(Preferences::domain(&path)?),

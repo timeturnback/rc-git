@@ -26,6 +26,10 @@ serde_json.workspace = true
 # of the app or the CLI carries it. The guard's own unit tests get the same allowance from
 # cfg(test).
 dev-loopback-http = []
+# `actions::github::testing`: the exact request bodies the pull request reads send, for other crates'
+# tests that script the testkit's fake GitHub host. Dev-only like dev-loopback-http, and
+# scripts/check.sh fails a normal app or CLI build that carries it.
+test-support = []
 
 [dev-dependencies]
 rc-git-testkit.workspace = true

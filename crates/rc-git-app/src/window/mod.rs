@@ -47,10 +47,14 @@ use crate::menus::{
     ShowChanges, ShowFiles, ShowHistory, ToggleDiffExpanded, ToggleFullScreen, ToggleSidebar, Zoom,
 };
 use crate::menus::{SearchCommits, ShowBlame, ShowFileHistory};
+use crate::pull_requests::page::PullRequestPage;
+use crate::pull_requests::section::{PullRequestSection, SectionEvent};
 use crate::sheets::OpenSheet;
 use crate::sidebar::refs::{RefListEvent, RefListView};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::style;
+use rc_git_kit::pull_requests::PullRequestService;
+use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::repository_actions::RepositoryActions;
 
 pub use changes::ChangesParts;
@@ -117,17 +121,28 @@ pub struct RepoWindow {
     visibility: gpui::WindowVisibility,
     sheet: Option<OpenSheet>,
     handle: gpui::AnyWindowHandle,
+    pull_requests: Entity<PullRequestsModel>,
+    pull_request_page: Entity<PullRequestPage>,
 }
 
 impl EventEmitter<WindowEvent> for RepoWindow {}
 
 impl RepoWindow {
-    /// An empty window: no repository yet.
-    pub fn new(settings: SharedSettings, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// An empty window: no repository yet. Its pull requests are read through
+    /// `pull_requests`.
+    pub fn new(
+        settings: SharedSettings,
+        pull_requests: Arc<dyn PullRequestService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let model = cx.new(|cx| BrowserModel::new(Arc::clone(&settings), cx));
         let tree = cx.new(|cx| FileTreeView::new(model.clone(), window, cx));
         let refs = cx.new(|cx| RefListView::new(model.clone(), window, cx));
-        let sidebar = cx.new(|cx| Sidebar::new(model.clone(), tree.clone(), refs.clone(), cx));
+        let (pull_requests, section, pull_request_page) =
+            Self::pull_request_parts(pull_requests, window, cx);
+        let sidebar =
+            cx.new(|cx| Sidebar::new(model.clone(), tree.clone(), refs.clone(), section, cx));
         let pane = cx.new(|cx| FilePane::new(model.clone(), window, cx));
         let (history, history_events, blame_events) =
             Self::history_parts(&model, &settings, window, cx);
@@ -212,7 +227,74 @@ impl RepoWindow {
             },
             sheet: None,
             handle: window.window_handle(),
+            pull_requests,
+            pull_request_page,
         }
+    }
+
+    /// The window's pull request model, the sidebar section over it and the page that shows
+    /// an open pull request; the section's events land in [`RepoWindow::section_event`].
+    fn pull_request_parts(
+        service: Arc<dyn PullRequestService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (
+        Entity<PullRequestsModel>,
+        Entity<PullRequestSection>,
+        Entity<PullRequestPage>,
+    ) {
+        let clock: rc_git_kit::pull_requests::model::Clock =
+            Arc::new(crate::pull_requests::unix_now);
+        let model = cx.new(|_| PullRequestsModel::new(service, clock));
+        let now = crate::pull_requests::unix_now as fn() -> u64;
+        let section = cx.new(|cx| PullRequestSection::new(model.clone(), now, cx));
+        let page = cx.new(|cx| PullRequestPage::new(model.clone(), now, cx));
+        cx.subscribe_in(
+            &section,
+            window,
+            |this, _, event: &SectionEvent, window, cx| {
+                this.section_event(*event, window, cx);
+            },
+        )
+        .detach();
+        cx.observe(&model, |_, _, cx| cx.notify()).detach();
+        (model, section, page)
+    }
+
+    /// The window's pull request model.
+    #[cfg(test)]
+    pub(crate) fn pull_requests(&self) -> &Entity<PullRequestsModel> {
+        &self.pull_requests
+    }
+
+    /// The pull request page.
+    #[cfg(test)]
+    pub(crate) fn pull_request_page(&self) -> &Entity<PullRequestPage> {
+        &self.pull_request_page
+    }
+
+    /// What the Pull Requests section asked for.
+    fn section_event(&mut self, event: SectionEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            SectionEvent::Open(number) => self.open_pull_request(number, cx),
+            SectionEvent::OpenSettings => {
+                window.dispatch_action(Box::new(crate::menus::Settings), cx);
+            }
+        }
+    }
+
+    /// Opens pull request `number`'s tab and shows its page in the content card.
+    pub fn open_pull_request(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.close_picker(cx);
+        self.pull_requests
+            .update(cx, |model, cx| model.open(number, cx));
+        cx.notify();
+    }
+
+    /// Whether the content card shows a pull request page rather than the mode's pane.
+    #[must_use]
+    pub fn shows_pull_request(&self, cx: &gpui::App) -> bool {
+        self.pull_requests.read(cx).page_visible()
     }
 
     /// The window's browser model.
@@ -328,6 +410,10 @@ impl RepoWindow {
             .detach();
         }
         self.show_changes(changes_source, watchers, window, cx);
+        let tab_path = repository.tab_path.clone();
+        self.pull_requests
+            .update(cx, |model, cx| model.attach(tab_path, cx))
+            .detach();
         let reading = repository.reading;
         self.model.update(cx, |model, cx| model.attach(reading, cx))
     }
@@ -425,6 +511,8 @@ impl RepoWindow {
     /// Shows the pane of `mode` and the section that belongs to it in the sidebar.
     pub fn set_mode(&mut self, mode: ContentMode, cx: &mut Context<Self>) {
         self.close_picker(cx);
+        self.pull_requests
+            .update(cx, |model, cx| model.set_page_visible(false, cx));
         self.mode = mode;
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_mode(mode, cx));
@@ -525,8 +613,15 @@ impl RepoWindow {
                 this.layout.window_resized(window, cx);
                 cx.notify();
             }),
-            cx.observe_window_activation(window, |_, window, cx| {
-                if window.is_window_active() {
+            cx.observe_window_activation(window, |this, window, cx| {
+                let active = window.is_window_active();
+                this.pull_requests.update(cx, |model, cx| {
+                    model.set_window_active(active, cx);
+                    if active {
+                        model.relink(cx).detach();
+                    }
+                });
+                if active {
                     cx.emit(WindowEvent::BecameFront);
                 }
             }),
@@ -674,6 +769,9 @@ impl RepoWindow {
     /// Whether the content pane draws only its diff now, so the sidebar steps aside: History
     /// with a commit open, or Changes, while expanded.
     fn diff_fills_window(&self, cx: &gpui::App) -> bool {
+        if self.shows_pull_request(cx) {
+            return false;
+        }
         match self.mode {
             ContentMode::Files => false,
             ContentMode::History => self.history.read(cx).fills_with_diff(cx),
@@ -705,6 +803,9 @@ impl RepoWindow {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.shows_pull_request(cx) {
+            return self.pull_request_page.clone().into_any_element();
+        }
         if self.mode == ContentMode::Changes
             && let Some(parts) = &self.changes
         {

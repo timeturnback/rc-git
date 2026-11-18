@@ -183,12 +183,20 @@ constraints are clear.
   of eight pull request slices: the reads, the PR diff, merge, admin merge, auto-merge and
   re-runs, job logs and branch deletion follow.
 
+- **Pull request reads.** The sidebar's Pull Requests section lists the open pull requests of
+  the remote fetch uses, with each head commit's check state; a row opens a read-only tab with
+  the header, the checks (required first) and the description, which opens only web links on a
+  click. The list polls every 60 s and a tab with a running check every 15 s, only while shown in
+  the active window. `rc-git pr list|view|checks` reads the same. An ssh alias reaches its
+  account through the `HostName` the user's ssh config maps it to. The second slice.
+
 ## Planned
 
-- **Pull requests.** A Pull Requests sidebar section and PR tabs on the GitHub client: list,
-  detail and checks; the PR diff from local objects; merge and admin bypass merge, auto-merge,
-  re-running failed jobs, job logs and deleting the head branch, each mutation a new `Action`
-  with its policy row (rc-git-guard, rc-git-kit, rc-git-app, `rc-git pr`).
+- **Pull requests.** The rest of the pull request slices on the GitHub client: the PR diff from
+  local objects; merge and admin bypass merge, auto-merge, re-running failed jobs, job logs and
+  deleting the head branch, each mutation a new `Action` with its policy row (rc-git-guard,
+  rc-git-kit, rc-git-app, `rc-git pr`), each comparing a fresh read against the
+  `PullRequestStamp` of what the user saw.
 
 - **Reveal in tree from path search.** Jump-to-file opens the file; expanding the tree to
   show it selected is still missing.

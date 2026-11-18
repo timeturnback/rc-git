@@ -6,6 +6,19 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Added
 
+- The sidebar has a Pull Requests section for a repository on GitHub: the open pull requests
+  of its remote, newest activity first, each with its number, title, author, branches and a
+  check icon (passing, failing, running). Click one to open it in a tab on the page: its state,
+  review, conflicts, every check with required ones first and a Details button naming the site
+  it opens, and the description. Links in a description open in your browser only when you
+  click them, and only web links; images show as their name. The list checks again every minute
+  and an open pull request every 15 seconds while a check runs, only while the window is in
+  front. When a check fails to load the section says "Couldn't check" and why rather than
+  showing old results as current. With no account for github.com it offers to open Settings,
+  and with several accounts on one host it asks which one this repository uses. A remote named
+  through an alias in your ssh config (`git@github-work:…`) is found through the host the alias
+  stands for. In Terminal, `rc-git pr list`, `pr view <n>` and `pr checks <n>` show the same.
+
 - Settings has a GitHub Accounts list: Add Account… signs in to github.com or a GitHub
   Enterprise host through a GitHub App or an OAuth App (you get a code to enter on the host's
   own login/device page, and Cancel stays on screen while RCGit waits), or with a pasted

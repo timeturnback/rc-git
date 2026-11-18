@@ -1,4 +1,5 @@
-//! `rc-git auth` against the testkit's fake GitHub host. Every run points the CLI at a scratch
+//! `rc-git auth` and `rc-git pr` against the testkit's fake GitHub host. Every run points the
+//! CLI at a scratch
 //! settings plist and a scratch keychain service (`RC_GIT_SETTINGS`, `RC_GIT_KEYCHAIN_SERVICE`),
 //! so nothing touches the user's real accounts or keychain items; each test signs its accounts
 //! out again through the CLI itself, the program that created the items.
@@ -13,6 +14,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rc_git_guard::actions::github::testing::{detail_request_body, list_request_body};
+use rc_git_guard::actions::github::{GitHubHost, RepositoryTarget};
 use rc_git_testkit::Fixture;
 use rc_git_testkit::github::{DeviceScript, FakeToken, GitHubServer, Grant, PollAnswer, USER_CODE};
 
@@ -293,4 +296,153 @@ fn a_device_method_needs_a_client_id() {
     let out = scratch.run(&["auth", "login", "--method", "github-app"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains("--client-id"));
+}
+
+/// Signs [`TOKEN`] in as `octocat` on `server` and makes a repository whose `origin` is
+/// `octo/rc-git` there (or `remote` when given), with an empty ssh directory beside it.
+fn pr_setup(server: &GitHubServer, remote: Option<&str>) -> (Scratch, Fixture, Fixture) {
+    let mut scratch = Scratch::new();
+    let host = server.host();
+    let login = ["auth", "login", "--host", &host, "--method", "token"];
+    let out = scratch.run_with_stdin(&login, TOKEN);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    scratch.will_sign_out(&host, "octocat");
+    let repo = Fixture::standard();
+    let url = format!("{}/octo/rc-git.git", server.origin());
+    repo.git(&["remote", "add", "origin", remote.unwrap_or(&url)]);
+    (scratch, repo, Fixture::empty_dir())
+}
+
+fn pr_target(server: &GitHubServer) -> RepositoryTarget {
+    let host = GitHubHost::parse(&server.host()).unwrap();
+    RepositoryTarget::on_host(&host, &format!("{}/octo/rc-git.git", server.origin())).unwrap()
+}
+
+fn run_pr(scratch: &Scratch, repo: &Fixture, ssh: &Fixture, verb: &[&str]) -> Output {
+    let path = repo.path().to_string_lossy().into_owned();
+    let ssh_dir = ssh.path().to_string_lossy().into_owned();
+    let mut args = vec!["pr"];
+    args.extend_from_slice(verb);
+    args.extend_from_slice(&[path.as_str(), "--ssh-dir", ssh_dir.as_str()]);
+    scratch.run(&args)
+}
+
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[test]
+fn pr_list_prints_one_neutralized_record_per_pull_request() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    let page = format!(
+        r#"{{"data": {{"repository": {{"pullRequests": {{
+            "pageInfo": {{"hasNextPage": true, "endCursor": "Y3Vyc29y"}},
+            "nodes": [{{
+                "number": 7, "title": "evil\u202e\t\u001b[2Jtitle",
+                "isDraft": false, "state": "OPEN", "updatedAt": "2026-11-18T09:00:00Z",
+                "author": {{"login": "mona"}}, "headRefName": "feature",
+                "headRefOid": "{HEAD}", "baseRefName": "main", "isCrossRepository": false,
+                "headRepositoryOwner": {{"login": "octo"}}, "reviewDecision": "APPROVED",
+                "commits": {{"nodes": [
+                    {{"commit": {{"statusCheckRollup": {{"state": "FAILURE"}}}}}}
+                ]}}
+            }}]
+        }}}}}}}}"#
+    );
+    server.script_graphql(&list_request_body(&pr_target(&server), None), &page);
+    let out = run_pr(&scratch, &repo, &ssh, &["list"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "pr\t7\tOpen\tfailing\tApproved\tmona\tfeature\tmain\tevil\\u{202e}\\u{9}title\n\
+         more\tY3Vyc29y\n"
+    );
+    let graphql: Vec<_> = server
+        .recorded()
+        .into_iter()
+        .filter(|request| request.target == "/api/graphql")
+        .collect();
+    assert_eq!(graphql.len(), 1);
+    assert_eq!(
+        graphql[0].header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert!(!format!("{}{}", text(&out.stdout), text(&out.stderr)).contains(TOKEN));
+}
+
+#[test]
+fn pr_view_and_checks_print_the_detail_and_its_checks_required_first() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    let detail = format!(
+        r#"{{"data": {{"repository": {{
+            "mergeCommitAllowed": true, "squashMergeAllowed": true,
+            "rebaseMergeAllowed": false, "autoMergeAllowed": false,
+            "pullRequest": {{
+                "number": 7, "title": "Ship",
+                "body": "line one\r\nline \u001b]8;;x\u0007two",
+                "url": "https://evil.example/x", "isDraft": false, "state": "OPEN",
+                "updatedAt": "2026-11-18T09:00:00Z", "author": null,
+                "headRefName": "feature", "headRefOid": "{HEAD}", "baseRefName": "main",
+                "isCrossRepository": true, "headRepositoryOwner": {{"login": "fork"}},
+                "reviewDecision": null, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+                "viewerCanMergeAsAdmin": false, "viewerCanEnableAutoMerge": false,
+                "viewerCanDisableAutoMerge": false, "viewerCanDeleteHeadRef": false,
+                "autoMergeRequest": null,
+                "commits": {{"nodes": [{{"commit": {{"statusCheckRollup": {{
+                    "state": "PENDING",
+                    "contexts": {{"totalCount": 2, "nodes": [
+                        {{"__typename": "StatusContext", "context": "deploy",
+                          "state": "PENDING", "targetUrl": null, "description": "waiting",
+                          "isRequired": false}},
+                        {{"__typename": "CheckRun", "name": "build", "status": "COMPLETED",
+                          "conclusion": "SUCCESS", "detailsUrl": "https://ci.example/1",
+                          "databaseId": 5, "isRequired": true,
+                          "checkSuite": {{"workflowRun": null}}}}
+                    ]}}
+                }}}}}}]}}
+            }}
+        }}}}}}"#
+    );
+    server.script_graphql(&detail_request_body(&pr_target(&server), 7, false), &detail);
+    let view = run_pr(&scratch, &repo, &ssh, &["view", "7"]);
+    assert!(view.status.success(), "{}", text(&view.stderr));
+    let printed = text(&view.stdout);
+    for line in [
+        "number\t7\n",
+        "author\t-\n",
+        &format!("head\tfork\tfeature\t{HEAD}\n"),
+        "url\thttps://evil.example/x\n",
+        "checks\t1 pending, 1 passing; 1 required.\n",
+        "body\tline one\nbody\tline two\n",
+    ] {
+        assert!(printed.contains(line), "{line:?} in {printed}");
+    }
+    assert!(!printed.contains('\u{1b}'), "{printed}");
+    let checks = run_pr(&scratch, &repo, &ssh, &["checks", "7"]);
+    assert!(checks.status.success(), "{}", text(&checks.stderr));
+    assert_eq!(
+        text(&checks.stdout),
+        "check\tpassing\trequired\tbuild\thttps://ci.example/1\t-\n\
+         check\tpending\toptional\tdeploy\t-\twaiting\n"
+    );
+}
+
+#[test]
+fn pr_reads_nothing_for_a_remote_on_another_host_or_without_an_account() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, Some("https://github.com.evil.example/o/r.git"));
+    let foreign = run_pr(&scratch, &repo, &ssh, &["list"]);
+    assert_eq!(foreign.status.code(), Some(1), "{}", text(&foreign.stderr));
+    assert!(text(&foreign.stderr).contains("names no GitHub repository"));
+    let unsigned = Fixture::standard();
+    unsigned.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/octo/rc-git.git",
+    ]);
+    let none = run_pr(&scratch, &unsigned, &ssh, &["list"]);
+    assert_eq!(none.status.code(), Some(5), "{}", text(&none.stderr));
+    assert!(text(&none.stderr).contains("rc-git auth login --host github.com"));
+    assert_eq!(server.requests_to("/api/graphql"), 0);
 }

@@ -6,6 +6,7 @@
 //! `docs/performance.md` are checked without the GUI; the rows that run in Swift are not.
 
 mod auth;
+mod pr;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -26,6 +27,7 @@ use rc_git_guard::actions::{ActionError, Cancel};
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
        rc-git auth login|status|logout [args]
+       rc-git [--time] pr list|view|checks [args]
 
   head    <repo>                          branch and commit HEAD points to
   refs    <repo>                          every branch, remote branch, and tag
@@ -126,6 +128,20 @@ usage: rc-git [--time] <command> <repo> [args]
   auth logout --host H --login L          forget the account and delete its token
   The accounts are the app's (Settings > GitHub Accounts) and the tokens live in the login
   keychain.
+
+  pr list [repo] [--after CURSOR]         open pull requests of the repository's remote
+                                          (default repo: .), newest update first, 30 a page:
+                                          pr<TAB>number<TAB>state<TAB>checks<TAB>review<TAB>
+                                          author<TAB>head<TAB>base<TAB>title, then
+                                          more<TAB>CURSOR when another page follows
+  pr view <n> [repo]                      one pull request: a field<TAB>value line each, then
+                                          body<TAB>line for each line of its description
+  pr checks <n> [repo]                    its head commit's checks, required first:
+                                          check<TAB>state<TAB>required|optional|-<TAB>name<TAB>
+                                          details url<TAB>description ('-' when none)
+  pr options: --login L picks among several accounts on the remote's host (the app's choice
+  for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
+  Every text from the server prints with control and bidi characters as \\u{..} escapes.
 
   Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
@@ -446,6 +462,8 @@ enum Command {
     Run(Invocation),
     /// `rc-git auth …`, which takes no repository.
     Auth(Vec<String>),
+    /// `rc-git pr …`, which names its repository after the verb, and whether to time it.
+    Pr(Vec<String>, bool),
 }
 
 /// Runs `auth` and writes what it printed, then reports a failure the way every verb does.
@@ -462,10 +480,25 @@ fn run_auth(args: &[String]) -> ExitCode {
     }
 }
 
+/// Runs `pr` and writes what it printed, then reports a failure the way every verb does.
+fn run_pr(args: &[String], time: bool) -> ExitCode {
+    let mut out = Vec::new();
+    let result = pr::run(args, time, &mut out);
+    let written = write_stdout(&out);
+    match result.and_then(|code| written.map(|()| code)) {
+        Ok(code) => code,
+        Err(err) => {
+            let _ = writeln!(io::stderr().lock(), "error: {}", error_line(&err));
+            ExitCode::from(exit_code_for(&err))
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let invocation = match parse(std::env::args_os().skip(1).collect()) {
         Ok(Command::Run(invocation)) => invocation,
         Ok(Command::Auth(args)) => return run_auth(&args),
+        Ok(Command::Pr(args, time)) => return run_pr(&args, time),
         Ok(Command::Help) => {
             if let Err(err) = io::stdout().lock().write_all(USAGE.as_bytes()) {
                 let _ = writeln!(io::stderr().lock(), "error: write usage to stdout: {err}");
@@ -500,6 +533,9 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
     }
     if let Some(github) = err.downcast_ref::<GitHubError>() {
         return github_exit_code(github);
+    }
+    if let Some(failure) = err.downcast_ref::<pr::ReadFailure>() {
+        return failure.code();
     }
     match err.downcast_ref::<ActionError>() {
         Some(
@@ -632,6 +668,14 @@ fn parse(mut args: Vec<OsString>) -> std::result::Result<Command, String> {
             .map(utf8_arg)
             .collect::<std::result::Result<Vec<_>, _>>()?;
         return Ok(Command::Auth(words));
+    }
+    if args.first().is_some_and(|a| a == "pr") {
+        let words = args
+            .into_iter()
+            .skip(1)
+            .map(utf8_arg)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        return Ok(Command::Pr(words, time));
     }
     if args.len() < 2 {
         return Err("expected <command> <repo>".to_owned());

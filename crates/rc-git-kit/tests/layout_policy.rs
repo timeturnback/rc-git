@@ -21,6 +21,19 @@ fn size(width: f64, height: f64) -> Size {
 }
 
 #[test]
+fn the_pull_request_caps_leave_a_minimum_window_room_for_the_rest() {
+    use rc_git_kit::layout_policy::{
+        PULL_REQUEST_CHECKS_MAX_HEIGHT, PULL_REQUESTS_SECTION_MAX_HEIGHT,
+    };
+    for cap in [
+        PULL_REQUESTS_SECTION_MAX_HEIGHT,
+        PULL_REQUEST_CHECKS_MAX_HEIGHT,
+    ] {
+        assert!(cap > 0.0 && cap <= WINDOW_MINIMUM_HEIGHT * 0.7, "{cap}");
+    }
+}
+
+#[test]
 fn wide_window_shows_everything() {
     assert_eq!(
         layout(size(1400.0, 900.0)),

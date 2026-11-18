@@ -61,6 +61,12 @@ pub const CHANGES_STASH_HEIGHT: f64 = 96.0;
 pub const CHANGES_MESSAGE_HEIGHT: f64 = 64.0;
 /// The height the Changes tab's diff never drops below.
 pub const CHANGES_DIFF_FLOOR: f64 = 150.0;
+/// The tallest the sidebar's Pull Requests section grows before its rows scroll, so the
+/// mode's own section above it keeps the rest of a window at its minimum height.
+pub const PULL_REQUESTS_SECTION_MAX_HEIGHT: f64 = 220.0;
+/// The tallest a pull request tab's checks list grows before it scrolls, leaving the
+/// description below it room on a window at its minimum height.
+pub const PULL_REQUEST_CHECKS_MAX_HEIGHT: f64 = 160.0;
 
 /// A window or pane size in points.
 #[derive(Debug, Clone, Copy, PartialEq)]

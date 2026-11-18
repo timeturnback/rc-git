@@ -14,7 +14,7 @@ rc-git-mac        Live macOS implementations of those traits. The only `unsafe`.
   rc-git-core       gix wrapper. Repository pool, refs, trees, blobs, log, revision parsing,
                     diff, blame, worktree status, stash listing.
 rc-git-cli        Beside the app crates, on core, guard and highlight; on kit and mac for
-                  `auth`, which shares the app's GitHub accounts and keychain items.
+                  `auth` and `pr`, which share the app's GitHub accounts and keychain items.
 ```
 
 `rc-git-cli` sits beside the app crates on top of the core, the guard and the highlighter, and gives
@@ -34,7 +34,17 @@ the pull request features build on, every URL built from the account's host; `sa
 "GitHub API", has its rules. rc-git-kit's `github` module holds the account records and the
 per-repository choice (`accounts`), the sign-in state machine (`sign_in`) and the token keeper
 that serializes refreshes (`tokens`); rc-git-mac keeps the tokens in the login keychain
-(`KeychainApiTokenStore`), and Settings and `rc-git auth` drive them. `rc-git-highlight` is a pure
+(`KeychainApiTokenStore`), and Settings and `rc-git auth` drive them. The pull request reads
+(`list_open_pull_requests`, `read_pull_request`, and `pull_request_remote` for the remote fetch
+uses) answer in the guard's own types, text already neutralized; the stamp of a read
+(`PullRequestStamp`: number, head oid, base ref, state) is what later mutations compare a fresh
+read against. rc-git-kit's `pull_requests` module links a repository to its GitHub repository and
+account (`link`), holds the list and each open pull request tab as state machines with a
+generation per read and one read queued at most (`state`), runs them for a window
+(`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard, a
+fake in tests), and decides polling (`polling`), check order and summary (`checks`), which
+description links open (`body`) and the words (`copy`). The app's sidebar section and pull
+request page draw that model; `rc-git pr` reads through the same live service. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

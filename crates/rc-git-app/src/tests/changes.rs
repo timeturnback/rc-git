@@ -215,6 +215,9 @@ fn open_changes(cx: &mut TestAppContext) -> Opened1 {
         credentials: credentials.clone(),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
         api_tokens: Arc::new(MemoryApiTokenStore::new()),
+        pull_requests: Arc::new(rc_git_kit::fake::FakePullRequests::with_link(
+            rc_git_kit::pull_requests::link::RepositoryLink::Hidden,
+        )),
         home: "/Users/me".to_owned(),
         app_name: "rc-git".to_owned(),
     };

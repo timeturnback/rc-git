@@ -16,6 +16,7 @@ mod list_rows;
 mod log;
 mod menus;
 mod palette;
+mod pull_requests;
 mod search;
 mod settings;
 mod sheets;
@@ -33,9 +34,11 @@ use gpui::{App, AppContext, Context, Entity};
 use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
+use rc_git_kit::platform::api_tokens::ApiTokenStore;
 use rc_git_kit::platform::credentials::CachingCredentialStore;
 use rc_git_kit::platform::host_keys::SettingsHostKeyStore;
 use rc_git_kit::platform::stores::SharedSettings;
+use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_mac::{FsEventsWatchers, KeychainApiTokenStore, KeychainCredentialStore, Preferences};
 
 use crate::app::{Services, Shell, ShellGlobal, live_opener};
@@ -48,13 +51,15 @@ use crate::menus::{
 /// The live services: the app's own preferences domain, the core, `FSEvents`, the keychain.
 fn live_services() -> Services {
     let settings: SharedSettings = Arc::new(Preferences::current_application());
+    let api_tokens: Arc<dyn ApiTokenStore> = Arc::new(KeychainApiTokenStore::new());
     Services {
         settings: Arc::clone(&settings),
         opener: live_opener(),
         watchers: Arc::new(FsEventsWatchers),
         credentials: Arc::new(CachingCredentialStore::new(KeychainCredentialStore::new())),
-        host_keys: Arc::new(SettingsHostKeyStore::new(settings)),
-        api_tokens: Arc::new(KeychainApiTokenStore::new()),
+        host_keys: Arc::new(SettingsHostKeyStore::new(Arc::clone(&settings))),
+        api_tokens: Arc::clone(&api_tokens),
+        pull_requests: Arc::new(LivePullRequests::new(settings, api_tokens)),
         home: std::env::var("HOME").unwrap_or_default(),
         app_name: "rc-git".to_owned(),
     }

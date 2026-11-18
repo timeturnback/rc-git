@@ -497,12 +497,15 @@ fn a_token_without_scope_headers_reports_none() {
 #[test]
 fn graphql_sends_the_static_query_with_values_only_in_variables() {
     let server = server_with_token();
+    server.echo_graphql();
     let host = host_of(&server);
     let token = token();
     let variables = serde_json::json!({ "owner": "o\"} } mutation { x" });
-    let data = Session::new(&host, &token)
+    let reply = Session::new(&host, &token)
         .graphql("read", QUERY, &variables, &Cancel::new())
         .unwrap();
+    assert!(reply.errors.is_empty());
+    let data = reply.data.unwrap();
     assert_eq!(data["echo"]["query"], QUERY);
     assert_eq!(data["echo"]["variables"], variables);
     let recorded = server.recorded();

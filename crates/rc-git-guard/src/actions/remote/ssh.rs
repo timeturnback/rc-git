@@ -30,6 +30,23 @@ pub(super) use output::ServerRefusal;
 use session::{SessionHold, SshRead, SshWrite};
 use target::SshTarget;
 
+/// The host and port an ssh `url` dials once the user's ssh config (in `ssh_dir`, else
+/// `~/.ssh`) applies: `HostName`, lowercased as OpenSSH does, and `Port`. It is the transport's
+/// own resolution, refusals included, so the GitHub API reads the alias exactly as a fetch
+/// would dial it.
+///
+/// # Errors
+/// What [`target::resolve`] refuses: an unreadable config, `ProxyJump`, `ProxyCommand`, a
+/// `Match` that may apply, a `%` token rc-git cannot expand, no user.
+pub(super) fn dialed_host(
+    url: &gix::Url,
+    ssh_dir: Option<&std::path::Path>,
+    op: &'static str,
+) -> ActionResult<(String, u16)> {
+    let target = target::resolve(url, ssh_dir, op)?;
+    Ok((target.host_name, target.port))
+}
+
 /// Boxed transport type shared with the HTTPS push path.
 type BoxedTransport = Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>;
 

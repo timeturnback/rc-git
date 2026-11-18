@@ -25,6 +25,8 @@ paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
   until its panel is first measured, so it goes stale when a sibling appears. Measure with
   `container_size()`, and read `sizes()` only for a panel you gave `.size(..)` or inside a
   `Resized` handler. (docs/solutions/ui-bugs/gpui-resizable-sizes-stale-after-first-measure.md)
+- Render pull request text (a description, a check's link) only as the kit hands it: a
+  description through `MarkdownPreview::web_only`, a server link opened only from a click.
 - Bump a split's `SubviewFrame` key in `platform/keys.rs` when its panes change or its default
   share changes: a drag saves the size, and `LayoutPolicy` keeps any saved size whose floors
   fit, so the new default never shows to anyone who has dragged the split before.

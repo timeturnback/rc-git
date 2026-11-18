@@ -104,6 +104,10 @@ here; so does everything that comes later.
   that carries it. A test hook (the CLI's `RC_GIT_SETTINGS`) is honored only when `DEV_ALLOWANCE`.
 - GraphQL queries are `&'static str`; every value goes in `variables`. Test each GitHub call
   against testkit's `GitHubServer`, which answers only the exact arguments a call must send.
+- Pass every server string through `single_line` (`multi_line` for a description) and every
+  server URL through `links::server_link` before it leaves the guard: no raw server text out.
+- Resolve an ssh alias only through `ssh::dialed_host` (the transport's resolver), and compare its
+  `HostName` with an account host exactly; never write a second ssh-config reader.
 - Resolve a branch's remote and tracking ref only through `configured_remote_name` and
   `tracking_ref_name` in `actions/remote.rs`, never gix's `branch_remote*` helpers directly
   (clippy-banned in `clippy.toml`; those two wrappers carry the only `#[expect]`):

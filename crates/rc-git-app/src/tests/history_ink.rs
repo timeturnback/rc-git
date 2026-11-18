@@ -61,6 +61,9 @@ fn the_history_pane_puts_ink_on_the_page() {
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
         api_tokens: Arc::new(MemoryApiTokenStore::new()),
+        pull_requests: Arc::new(rc_git_kit::fake::FakePullRequests::with_link(
+            rc_git_kit::pull_requests::link::RepositoryLink::Hidden,
+        )),
         home: String::new(),
         app_name: "rc-git".to_owned(),
     };
@@ -129,6 +132,9 @@ fn a_long_diff_line_scrolls_inside_the_history_pane() {
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
         api_tokens: Arc::new(MemoryApiTokenStore::new()),
+        pull_requests: Arc::new(rc_git_kit::fake::FakePullRequests::with_link(
+            rc_git_kit::pull_requests::link::RepositoryLink::Hidden,
+        )),
         home: String::new(),
         app_name: "rc-git".to_owned(),
     };

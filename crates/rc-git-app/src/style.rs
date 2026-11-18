@@ -151,6 +151,12 @@ pub const CHANGES_MESSAGE_HEIGHT: Pixels =
     points(rc_git_kit::layout_policy::CHANGES_MESSAGE_HEIGHT);
 /// The worktree diff pane's floor.
 pub const CHANGES_DIFF_FLOOR: Pixels = points(rc_git_kit::layout_policy::CHANGES_DIFF_FLOOR);
+/// The tallest the sidebar's Pull Requests section grows before its rows scroll.
+pub const PULL_REQUESTS_SECTION_MAX_HEIGHT: Pixels =
+    points(rc_git_kit::layout_policy::PULL_REQUESTS_SECTION_MAX_HEIGHT);
+/// The tallest a pull request tab's checks list grows before it scrolls.
+pub const PULL_REQUEST_CHECKS_MAX_HEIGHT: Pixels =
+    points(rc_git_kit::layout_policy::PULL_REQUEST_CHECKS_MAX_HEIGHT);
 /// The height of a Changes row, which carries a tick box beside its label.
 pub const CHANGE_ROW_HEIGHT: Pixels = px(26.);
 /// The side of a tick box.

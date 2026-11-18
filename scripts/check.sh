@@ -164,6 +164,12 @@ for pkg in rc-git-app rc-git-cli; do
       "keep it in [dev-dependencies]" >&2
     exit 1
   fi
+  # The pull request reads' request bodies, for other crates' tests only.
+  if [[ $guard_features == *'rc-git-guard feature "test-support"'* ]]; then
+    echo "error: dev-only rc-git-guard/test-support reached the $pkg build;" \
+      "keep it in [dev-dependencies]" >&2
+    exit 1
+  fi
 done
 step "bundle stamp"
 # AppBuild relaunches BUNDLE_NAME after a rebuild and reads the keys build-app.sh stamps.

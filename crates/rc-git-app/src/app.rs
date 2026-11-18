@@ -97,6 +97,8 @@ pub struct Services {
     pub host_keys: Arc<dyn HostKeyStore>,
     /// GitHub API tokens, per host and account.
     pub api_tokens: Arc<dyn rc_git_kit::platform::api_tokens::ApiTokenStore>,
+    /// The pull request reads.
+    pub pull_requests: Arc<dyn rc_git_kit::pull_requests::PullRequestService>,
     /// The home directory Open Recent abbreviates.
     pub home: String,
     /// The app's name in the menus.
@@ -414,12 +416,13 @@ impl Shell {
     pub fn new_window(&mut self, cx: &mut Context<Self>) -> Option<Tab> {
         let options = self.window_options(cx);
         let settings = Arc::clone(&self.services.settings);
+        let pull_requests = Arc::clone(&self.services.pull_requests);
         let shows_hidden = self.hidden.shows();
         let made: Rc<Cell<Option<Entity<RepoWindow>>>> = Rc::default();
         let slot = Rc::clone(&made);
         let group = rc_git_mac::window_tabs::TabHost::before_open(TABBING_IDENTIFIER);
         let handle = cx.open_window(options, move |window, cx| {
-            let view = cx.new(|cx| RepoWindow::new(settings, window, cx));
+            let view = cx.new(|cx| RepoWindow::new(settings, pull_requests, window, cx));
             view.update(cx, |view, cx| view.set_shows_hidden_files(shows_hidden, cx));
             slot.set(Some(view.clone()));
             cx.new(|cx| Root::new(view, window, cx))

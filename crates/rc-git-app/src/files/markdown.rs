@@ -31,6 +31,7 @@ use rc_git_kit::markdown::{
     Alignment, BlockKind, MarkdownBlock, MarkdownDocument, MarkdownLinkTarget, MarkdownListMarker,
     MarkdownRun, MarkdownStyle, MarkdownTable,
 };
+use rc_git_kit::pull_requests::body::body_link;
 use rc_git_kit::text_document::TextDocument;
 
 use crate::palette::Palette;
@@ -38,6 +39,9 @@ use crate::style;
 
 /// Code blocks above this many bytes are shown plain; a preview is not an editor.
 pub const HIGHLIGHT_LIMIT: usize = 128 * 1024;
+
+/// The tooltip of a description link [`LinkPolicy::WebOnly`] does not open.
+pub const NOT_A_WEB_LINK: &str = "RCGit opens only http and https links from a pull request.";
 
 /// A parsed document ready to draw: its blocks, the spans of each fenced block that has a
 /// known language, and where each heading and footnote anchor starts.
@@ -248,10 +252,23 @@ pub enum PreviewEvent {
     },
 }
 
+/// Where a link in the preview may lead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkPolicy {
+    /// A repository file's links: web links, another scheme after a prompt, a repository
+    /// path, a heading.
+    Repository,
+    /// A pull request's description, which anyone can write: only an `http:` or `https:`
+    /// link with a plain host opens, on a click, its host named in the tooltip
+    /// ([`body_link`]); every other destination does nothing.
+    WebOnly,
+}
+
 /// The markdown preview of one text document.
 pub struct MarkdownPreview {
     document: Arc<TextDocument>,
     source_path: Option<String>,
+    links: LinkPolicy,
     rendered: Option<Arc<Rendered>>,
     list: ListState,
     /// The destination of the link under the pointer, which the context menu acts on.
@@ -285,12 +302,20 @@ impl MarkdownPreview {
         Self {
             document,
             source_path,
+            links: LinkPolicy::Repository,
             rendered: None,
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             hovered: Rc::default(),
             focus: cx.focus_handle(),
             _build: task,
         }
+    }
+
+    /// A preview of a pull request's description: [`LinkPolicy::WebOnly`], no repository path.
+    pub fn web_only(document: Arc<TextDocument>, cx: &mut Context<Self>) -> Self {
+        let mut preview = Self::new(document, None, cx);
+        preview.links = LinkPolicy::WebOnly;
+        preview
     }
 
     fn built(&mut self, rendered: Rendered, cx: &mut Context<Self>) {
@@ -340,6 +365,12 @@ impl MarkdownPreview {
     /// the user confirms the prompt naming it, a repository path goes up to the pane, and a
     /// bare fragment scrolls this preview. A destination that resolves to nothing is ignored.
     pub fn follow(&mut self, destination: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.links == LinkPolicy::WebOnly {
+            if let Some(link) = body_link(destination) {
+                cx.open_url(&link.url);
+            }
+            return;
+        }
         let target = MarkdownLinkTarget::resolve(destination, self.source_path.as_deref());
         match target {
             None => {}
@@ -358,6 +389,9 @@ impl MarkdownPreview {
     /// for a destination that resolves to nothing.
     #[must_use]
     pub fn link_copy_text(&self, destination: &str) -> Option<String> {
+        if self.links == LinkPolicy::WebOnly {
+            return body_link(destination).map(|link| link.url);
+        }
         MarkdownLinkTarget::resolve(destination, self.source_path.as_deref())
             .map(|target| target.copy_text())
     }
@@ -368,18 +402,24 @@ impl MarkdownPreview {
         let Some(destination) = self.hovered.borrow().clone() else {
             return menu;
         };
-        let Some(target) = MarkdownLinkTarget::resolve(&destination, self.source_path.as_deref())
-        else {
+        let title = match self.links {
+            LinkPolicy::WebOnly => {
+                body_link(&destination).map(|link| format!("Open {}", link.host))
+            }
+            LinkPolicy::Repository => {
+                MarkdownLinkTarget::resolve(&destination, self.source_path.as_deref())
+                    .map(|target| target.open_title().to_string())
+            }
+        };
+        let Some(title) = title else {
             return menu;
         };
         let open = (weak.clone(), destination.clone());
-        menu.item(
-            PopupMenuItem::new(target.open_title()).on_click(move |_, window, cx| {
-                let (weak, destination) = &open;
-                weak.update(cx, |this, cx| this.follow(destination, window, cx))
-                    .ok();
-            }),
-        )
+        menu.item(PopupMenuItem::new(title).on_click(move |_, window, cx| {
+            let (weak, destination) = &open;
+            weak.update(cx, |this, cx| this.follow(destination, window, cx))
+                .ok();
+        }))
         .item(PopupMenuItem::new("Copy Link").on_click(move |_, _, cx| {
             let Some(text) = weak
                 .read_with(cx, |this, _| this.link_copy_text(&destination))
@@ -490,7 +530,13 @@ impl MarkdownPreview {
         look: &Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let built = inline(runs, look);
+        let mut built = inline(runs, look);
+        if self.links == LinkPolicy::WebOnly {
+            for link in &mut built.links {
+                link.tooltip = body_link(&link.destination)
+                    .map_or_else(|| NOT_A_WEB_LINK.to_owned(), |web| web.tooltip());
+            }
+        }
         let text = StyledText::new(built.text).with_runs(built.runs);
         if built.links.is_empty() {
             return div().child(text).into_any_element();

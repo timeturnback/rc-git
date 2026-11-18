@@ -1,6 +1,8 @@
 //! The sidebar (`SidebarViewController`, `RefBannerView`): the navigation of whichever mode is
 //! showing. History shows the ref list alone; Files and Changes show the banner over the
-//! mode's section. What the banner says comes from [`BranchBanner`] and nowhere else.
+//! mode's section. What the banner says comes from [`BranchBanner`] and nowhere else. Under
+//! every mode sits the Pull Requests section, which draws nothing for a repository whose
+//! remote names no GitHub repository.
 
 pub mod refs;
 
@@ -16,6 +18,7 @@ use rc_git_kit::browser::BrowserModel;
 use crate::changes::list::ChangeListView;
 use crate::files::tree::FileTreeView;
 use crate::icons::{Glyph, banner_glyph, icon, ref_tint};
+use crate::pull_requests::section::PullRequestSection;
 use crate::sidebar::refs::RefListView;
 use crate::style;
 
@@ -36,6 +39,7 @@ pub struct Sidebar {
     tree: Entity<FileTreeView>,
     refs: Entity<RefListView>,
     changes: Option<Entity<ChangeListView>>,
+    pull_requests: Entity<PullRequestSection>,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -46,6 +50,7 @@ impl Sidebar {
         model: Entity<BrowserModel>,
         tree: Entity<FileTreeView>,
         refs: Entity<RefListView>,
+        pull_requests: Entity<PullRequestSection>,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
@@ -55,7 +60,14 @@ impl Sidebar {
             tree,
             refs,
             changes: None,
+            pull_requests,
         }
+    }
+
+    /// The Pull Requests section.
+    #[cfg(test)]
+    pub(crate) fn pull_requests(&self) -> &Entity<PullRequestSection> {
+        &self.pull_requests
     }
 
     /// The Files tree.
@@ -162,16 +174,17 @@ impl Render for Sidebar {
             .flex_col()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground);
-        match self.mode {
-            ContentMode::History => column.child(self.refs.clone()),
-            ContentMode::Files => column
+        let part = div().flex_1().min_h_0().flex().flex_col();
+        let part = match self.mode {
+            ContentMode::History => part.child(div().flex_1().min_h_0().child(self.refs.clone())),
+            ContentMode::Files => part
                 .child(self.render_banner(cx))
                 .child(div().flex_1().min_h_0().child(self.tree.clone())),
             ContentMode::Changes => match self.changes.clone() {
-                Some(changes) => column
+                Some(changes) => part
                     .child(self.render_banner(cx))
                     .child(div().flex_1().min_h_0().child(changes)),
-                None => column.child(self.render_banner(cx)).child(
+                None => part.child(self.render_banner(cx)).child(
                     div()
                         .p(style::MARGIN)
                         .text_size(style::TEXT_BODY)
@@ -179,6 +192,9 @@ impl Render for Sidebar {
                         .child(CHANGES_PENDING),
                 ),
             },
-        }
+        };
+        column
+            .child(part)
+            .child(div().flex_none().child(self.pull_requests.clone()))
     }
 }
