@@ -1,15 +1,19 @@
-//! A repository's GitHub pull requests, read-only: which account and repository the
-//! repository's remote names ([`link`]), the list and the open pull request tabs as pure state
-//! machines ([`state`]) driven by one model per window ([`model`]), how checks are summed up
+//! A repository's GitHub pull requests: which account and repository the repository's remote
+//! names ([`link`]), the list and the open pull request tabs as pure state machines
+//! ([`state`]) driven by one model per window ([`model`]), a pull request's changes read from
+//! local objects after the user fetches its head ([`changes`]), how checks are summed up
 //! ([`checks`]), when to poll ([`polling`]), which links in a description may open ([`body`]),
 //! and the words ([`copy`]).
 //!
-//! The network reads are the guard's (`rc_git_guard::actions::github`), reached through the
-//! [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a fake in
-//! tests. Every text the server sent is attacker-controlled and arrives neutralized by the
-//! guard; nothing here fetches a URL or an image.
+//! The network reads are the guard's (`rc_git_guard::actions::github`), and so is the one
+//! write, the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`; both are reached
+//! through the [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a
+//! fake in tests. Every text the server sent is attacker-controlled and arrives neutralized by
+//! the guard; nothing here fetches a URL or an image, and fetched commits are only diffed,
+//! never checked out.
 
 pub mod body;
+pub mod changes;
 pub mod checks;
 pub mod copy;
 pub mod link;
@@ -27,7 +31,9 @@ pub use rc_git_guard::actions::github::{
     multi_line, single_line,
 };
 
+use changes::{ChangesRead, FetchProblem, HeadFetched};
 use link::{Linked, RepositoryLink};
+use rc_git_core::{BlobDiff, TreeChange};
 
 use crate::platform::api_tokens::AccountKey;
 
@@ -117,4 +123,38 @@ pub trait PullRequestService: Send + Sync {
     /// # Errors
     /// The settings' failure, as a sentence.
     fn choose_account(&self, repo_path: &str, key: &AccountKey) -> Result<(), String>;
+
+    /// What the repository at `repo_path` holds for the diff of the pull request `stamp`
+    /// names: whether its head is local, the local copy of its base, their merge base and the
+    /// changed files. Local only: no network.
+    ///
+    /// # Errors
+    /// The read's failure, as a sentence.
+    fn changes(
+        &self,
+        repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+    ) -> Result<ChangesRead, String>;
+
+    /// One changed file's line diff.
+    ///
+    /// # Errors
+    /// The read's failure, as a sentence.
+    fn file_diff(&self, repo_path: &str, change: &TreeChange) -> Result<BlobDiff, String>;
+
+    /// Fetches the head of the pull request `stamp` names into `refs/rc-git/pr/<n>/head`,
+    /// through the guard, over the remote's own git transport and the git credentials saved
+    /// for its host; the account's API token is never offered to it. Only when the user asked:
+    /// nothing calls it on its own.
+    ///
+    /// # Errors
+    /// [`FetchProblem`] for a cancel and every failure.
+    fn fetch_head(
+        &self,
+        repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<HeadFetched, FetchProblem>;
 }

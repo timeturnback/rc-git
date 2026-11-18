@@ -431,6 +431,41 @@ fn resolve_prints_the_oid() {
 }
 
 #[test]
+fn merge_base_prints_where_two_histories_meet_or_fails_without_guessing() {
+    let fx = Fixture::standard();
+    let path = fx.path().to_str().unwrap();
+    let base = fx.rev_parse("HEAD~1");
+    fx.git(&["checkout", "-q", "-b", "side", &base]);
+    fx.write("side.txt", b"side\n");
+    fx.commit("side work", "2024-05-01T00:00:00+0000");
+    let out = rc_git(&["merge-base", path, "main", "side"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let expected = fx.git_output(&["merge-base", "main", "side"]);
+    assert_eq!(stdout(&out), format!("{expected}\n"));
+    assert_eq!(expected, base);
+
+    let short = rc_git(&["merge-base", path, "main", "side", "--max-scan", "1"]);
+    assert_eq!(short.status.code(), Some(1), "{}", stderr(&short));
+    assert!(
+        stderr(&short).contains("raise --max-scan"),
+        "{}",
+        stderr(&short)
+    );
+    let zero = rc_git(&["merge-base", path, "main", "side", "--max-scan", "0"]);
+    assert_eq!(zero.status.code(), Some(2));
+
+    fx.git(&["checkout", "-q", "--orphan", "island"]);
+    fx.commit("island", "2024-05-02T00:00:00+0000");
+    let apart = rc_git(&["merge-base", path, "main", "island"]);
+    assert_eq!(apart.status.code(), Some(1));
+    assert!(
+        stderr(&apart).contains("share no history"),
+        "{}",
+        stderr(&apart)
+    );
+}
+
+#[test]
 fn usage_and_open_errors_have_distinct_exit_codes() {
     let no_args = rc_git(&[]);
     assert_eq!(no_args.status.code(), Some(2));

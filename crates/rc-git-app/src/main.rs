@@ -35,8 +35,8 @@ use rc_git_kit::app_build::AppBuild;
 use rc_git_kit::back_forward::Direction;
 use rc_git_kit::file_url;
 use rc_git_kit::platform::api_tokens::ApiTokenStore;
-use rc_git_kit::platform::credentials::CachingCredentialStore;
-use rc_git_kit::platform::host_keys::SettingsHostKeyStore;
+use rc_git_kit::platform::credentials::{CachingCredentialStore, CredentialStore};
+use rc_git_kit::platform::host_keys::{HostKeyStore, SettingsHostKeyStore};
 use rc_git_kit::platform::stores::SharedSettings;
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_mac::{FsEventsWatchers, KeychainApiTokenStore, KeychainCredentialStore, Preferences};
@@ -49,17 +49,25 @@ use crate::menus::{
 };
 
 /// The live services: the app's own preferences domain, the core, `FSEvents`, the keychain.
+/// A pull request's head is fetched with the same git credentials and host-key approvals as
+/// every other fetch, never with the API token.
 fn live_services() -> Services {
     let settings: SharedSettings = Arc::new(Preferences::current_application());
     let api_tokens: Arc<dyn ApiTokenStore> = Arc::new(KeychainApiTokenStore::new());
+    let credentials: Arc<dyn CredentialStore> =
+        Arc::new(CachingCredentialStore::new(KeychainCredentialStore::new()));
+    let host_keys: Arc<dyn HostKeyStore> =
+        Arc::new(SettingsHostKeyStore::new(Arc::clone(&settings)));
+    let pull_requests = LivePullRequests::new(Arc::clone(&settings), Arc::clone(&api_tokens))
+        .with_git_credentials(Arc::clone(&credentials), Arc::clone(&host_keys));
     Services {
-        settings: Arc::clone(&settings),
+        settings,
         opener: live_opener(),
         watchers: Arc::new(FsEventsWatchers),
-        credentials: Arc::new(CachingCredentialStore::new(KeychainCredentialStore::new())),
-        host_keys: Arc::new(SettingsHostKeyStore::new(Arc::clone(&settings))),
-        api_tokens: Arc::clone(&api_tokens),
-        pull_requests: Arc::new(LivePullRequests::new(settings, api_tokens)),
+        credentials,
+        host_keys,
+        api_tokens,
+        pull_requests: Arc::new(pull_requests),
         home: std::env::var("HOME").unwrap_or_default(),
         app_name: "rc-git".to_owned(),
     }

@@ -4,11 +4,16 @@
 //! under the generation it was asked for ([`super::state`]). Polling follows
 //! [`super::polling`]: a timer is armed only for what is on screen in the active window, and
 //! re-armed after each read.
+//!
+//! A tab's changes ([`super::changes`]) are read once the user shows them, always for the
+//! stamp of the tab's current read: a read that lands with another head or base starts them
+//! over. The head is fetched only from [`PullRequestsModel::fetch_changes`], the user's click.
 
 use std::sync::Arc;
 
 use gpui::{Context, Task};
 
+use super::changes::{ChangesLoad, ChangesState, FileLoad};
 use super::link::{Linked, RepositoryLink};
 use super::polling::{
     DETAIL_INTERVAL, LIST_INTERVAL, PollInputs, PollPlan, detail_poll, is_due, list_poll,
@@ -20,6 +25,28 @@ use crate::platform::api_tokens::AccountKey;
 
 /// Now, in seconds since the Unix epoch; a test supplies its own.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The fetch tab `number`'s changes asked for, under their generation and stamp.
+struct FetchAsked {
+    number: u64,
+    generation: u64,
+    stamp: super::PullRequestStamp,
+}
+
+/// One tab's changes and the cancel flag of its running fetch.
+struct TabChanges {
+    number: u64,
+    state: ChangesState,
+    fetch_cancel: Option<Cancel>,
+}
+
+impl TabChanges {
+    fn stop_fetch(&mut self) {
+        if let Some(cancel) = self.fetch_cancel.take() {
+            cancel.signal();
+        }
+    }
+}
 
 /// One window's pull requests.
 pub struct PullRequestsModel {
@@ -39,6 +66,7 @@ pub struct PullRequestsModel {
     list_timer: Option<Task<()>>,
     detail_timer: Option<Task<()>>,
     choice_problem: Option<String>,
+    changes: Vec<TabChanges>,
 }
 
 impl std::fmt::Debug for PullRequestsModel {
@@ -73,6 +101,7 @@ impl PullRequestsModel {
             list_timer: None,
             detail_timer: None,
             choice_problem: None,
+            changes: Vec::new(),
         }
     }
 
@@ -148,6 +177,10 @@ impl PullRequestsModel {
             cancel.signal();
         }
         self.tabs.clear();
+        for changes in &mut self.changes {
+            changes.stop_fetch();
+        }
+        self.changes.clear();
         self.selected = None;
         self.list_timer = None;
         self.detail_timer = None;
@@ -281,6 +314,12 @@ impl PullRequestsModel {
             return;
         };
         self.tabs.remove(index);
+        self.changes.retain_mut(|changes| {
+            if changes.number == number {
+                changes.stop_fetch();
+            }
+            changes.number != number
+        });
         self.detail_cancels.retain(|(tab, cancel)| {
             if *tab == number {
                 cancel.signal();
@@ -308,7 +347,14 @@ impl PullRequestsModel {
 
     /// Reads the selected tab again now.
     pub fn refresh_detail(&mut self, cx: &mut Context<Self>) {
-        let (Some(number), Some(linked)) = (self.selected, self.linked()) else {
+        if let Some(number) = self.selected {
+            self.refresh_detail_of(number, cx);
+        }
+    }
+
+    /// Reads tab `number` again now.
+    fn refresh_detail_of(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(linked) = self.linked() else {
             return;
         };
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.number() == number) else {
@@ -351,8 +397,12 @@ impl PullRequestsModel {
             return;
         };
         let next = tab.finish(load.generation, answer, now);
+        let stamp = tab.stamp();
         if let (Some(next), Some(linked)) = (next, self.linked()) {
             self.run_detail(next, linked, cx);
+        }
+        if let Some(stamp) = stamp {
+            self.follow_stamp(load.number, stamp, cx);
         }
         if self.selected == Some(load.number) {
             self.schedule_detail_poll(cx);
@@ -450,6 +500,246 @@ impl PullRequestsModel {
                 relink.await;
             }
         })
+    }
+
+    /// The changes of tab `number`, once shown.
+    #[must_use]
+    pub fn changes(&self, number: u64) -> Option<&ChangesState> {
+        self.changes
+            .iter()
+            .find(|changes| changes.number == number)
+            .map(|changes| &changes.state)
+    }
+
+    /// The selected tab's changes, once shown.
+    #[must_use]
+    pub fn selected_changes(&self) -> Option<&ChangesState> {
+        self.changes(self.selected?)
+    }
+
+    /// Shows the selected tab's changes: reads what the repository holds for its current read,
+    /// unless they are already read for it. Nothing until the tab's read is current. Never
+    /// fetches.
+    pub fn show_changes(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let stamp = self.selected_tab().and_then(DetailState::stamp);
+        let Some(stamp) = stamp else {
+            return;
+        };
+        if self
+            .changes(number)
+            .is_some_and(|shown| *shown.stamp() == stamp)
+        {
+            return;
+        }
+        self.start_changes(number, stamp, cx);
+    }
+
+    /// Starts tab `number`'s changes over for `stamp`, stopping a fetch for the old one.
+    fn start_changes(
+        &mut self,
+        number: u64,
+        stamp: super::PullRequestStamp,
+        cx: &mut Context<Self>,
+    ) {
+        let (state, load) = ChangesState::new(stamp);
+        self.changes.retain_mut(|changes| {
+            if changes.number == number {
+                changes.stop_fetch();
+            }
+            changes.number != number
+        });
+        self.changes.push(TabChanges {
+            number,
+            state,
+            fetch_cancel: None,
+        });
+        self.run_changes(number, load, cx);
+        cx.notify();
+    }
+
+    /// After tab `number` read `stamp`: shown changes of another head or base start over.
+    fn follow_stamp(
+        &mut self,
+        number: u64,
+        stamp: super::PullRequestStamp,
+        cx: &mut Context<Self>,
+    ) {
+        let stale = self
+            .changes(number)
+            .is_some_and(|shown| *shown.stamp() != stamp);
+        if stale {
+            self.start_changes(number, stamp, cx);
+        }
+    }
+
+    fn changes_mut(&mut self, number: u64) -> Option<&mut TabChanges> {
+        self.changes
+            .iter_mut()
+            .find(|changes| changes.number == number)
+    }
+
+    /// Fetches the selected tab's head: the user's click, and the only way a fetch starts.
+    pub fn fetch_changes(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let load = self
+            .changes_mut(number)
+            .and_then(|changes| changes.state.fetch());
+        if let Some(load) = load {
+            self.run_changes(number, load, cx);
+        }
+        cx.notify();
+    }
+
+    /// Stops the selected tab's running fetch; Fetch Changes shows again at once.
+    pub fn cancel_changes_fetch(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        if let Some(changes) = self.changes_mut(number)
+            && changes.state.cancel_fetch()
+        {
+            changes.stop_fetch();
+        }
+        cx.notify();
+    }
+
+    /// Reads the selected tab's changes again (after fetching the base, say).
+    pub fn reread_changes(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let load = self
+            .changes_mut(number)
+            .and_then(|changes| changes.state.reread());
+        if let Some(load) = load {
+            self.run_changes(number, load, cx);
+        }
+        cx.notify();
+    }
+
+    fn run_changes(&mut self, number: u64, load: ChangesLoad, cx: &mut Context<Self>) {
+        let (Some(path), Some(linked)) = (self.repo_path.clone(), self.linked()) else {
+            return;
+        };
+        let service = Arc::clone(&self.service);
+        match load {
+            ChangesLoad::Read { generation, stamp } => {
+                let read = blocking(cx.background_executor(), {
+                    let stamp = stamp.clone();
+                    move || service.changes(&path, &linked, &stamp)
+                });
+                cx.spawn(async move |this, cx| {
+                    let answer = read.await;
+                    this.update(cx, |this, cx| {
+                        if let Some(changes) = this.changes_mut(number) {
+                            changes.state.finish_read(generation, &stamp, answer);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            ChangesLoad::Fetch { generation, stamp } => {
+                let asked = FetchAsked {
+                    number,
+                    generation,
+                    stamp,
+                };
+                self.run_fetch(asked, cx);
+            }
+        }
+    }
+
+    fn run_fetch(&mut self, asked: FetchAsked, cx: &mut Context<Self>) {
+        let number = asked.number;
+        let (Some(path), Some(linked)) = (self.repo_path.clone(), self.linked()) else {
+            return;
+        };
+        let cancel = Cancel::new();
+        if let Some(changes) = self.changes_mut(number) {
+            changes.stop_fetch();
+            changes.fetch_cancel = Some(cancel.clone());
+        }
+        let service = Arc::clone(&self.service);
+        let fetch = blocking(cx.background_executor(), {
+            let stamp = asked.stamp.clone();
+            move || service.fetch_head(&path, &linked, &stamp, &cancel)
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = fetch.await;
+            this.update(cx, |this, cx| this.fetched(&asked, answer, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn fetched(
+        &mut self,
+        asked: &FetchAsked,
+        answer: Result<super::changes::HeadFetched, super::changes::FetchProblem>,
+        cx: &mut Context<Self>,
+    ) {
+        let number = asked.number;
+        let Some(changes) = self.changes_mut(number) else {
+            return;
+        };
+        let next = changes
+            .state
+            .finish_fetch(asked.generation, &asked.stamp, answer);
+        if !changes.state.is_fetching() {
+            changes.fetch_cancel = None;
+        }
+        let moved = matches!(
+            changes.state.phase(),
+            super::changes::ChangesPhase::Moved { .. }
+        );
+        if let Some(next) = next {
+            self.run_changes(number, next, cx);
+        }
+        if moved {
+            self.refresh_detail_of(number, cx);
+        }
+        cx.notify();
+    }
+
+    /// Selects file `index` of the selected tab's changes and reads its diff.
+    pub fn select_changed_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let load = self
+            .changes_mut(number)
+            .and_then(|changes| changes.state.select(index));
+        cx.notify();
+        let (Some(load), Some(path)) = (load, self.repo_path.clone()) else {
+            return;
+        };
+        self.run_file(number, load, path, cx);
+    }
+
+    fn run_file(&mut self, number: u64, load: FileLoad, path: String, cx: &mut Context<Self>) {
+        let service = Arc::clone(&self.service);
+        let read = blocking(cx.background_executor(), {
+            let change = load.change.clone();
+            move || service.file_diff(&path, &change)
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = read.await;
+            this.update(cx, |this, cx| {
+                if let Some(changes) = this.changes_mut(number) {
+                    changes.state.finish_file(&load, answer);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Whether the list's poll timer is armed.

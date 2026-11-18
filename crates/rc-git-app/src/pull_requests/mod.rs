@@ -1,9 +1,11 @@
-//! The pull request views: the sidebar's section ([`section`]) and the read-only pull request
-//! page with its tabs ([`page`]). Both draw kit's [`PullRequestsModel`] and send every click
-//! back to it; neither reads the network or decides anything.
+//! The pull request views: the sidebar's section ([`section`]) and the pull request
+//! page with its tabs ([`page`]) and their Changes view ([`changes`]). All draw kit's
+//! [`PullRequestsModel`] and send every click
+//! back to it; none reads the network or the repository, or decides anything.
 //!
 //! [`PullRequestsModel`]: rc_git_kit::pull_requests::model::PullRequestsModel
 
+pub mod changes;
 pub mod page;
 pub mod section;
 

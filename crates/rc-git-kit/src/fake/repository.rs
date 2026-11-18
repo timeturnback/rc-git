@@ -1,6 +1,6 @@
 //! Port of `FakeRepository.swift`: an in-memory [`RepositoryReading`] for model tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, CommitDetail, CommitFilter, CommitPage, CommitSummary,
-    ContentQuery, DefaultBranch, FileSearch, Head, Oid, RefListing, SearchBatch, SearchLimits,
-    StashEntry, StatusReport, TreeChange, TreeEntry, WorktreeFileList, WorktreeListing,
+    ContentQuery, DefaultBranch, FileSearch, Head, MergeBase, Oid, RefListing, SearchBatch,
+    SearchLimits, StashEntry, StatusReport, TreeChange, TreeEntry, WorktreeFileList,
+    WorktreeListing,
 };
 
 use super::CallGate;
@@ -66,6 +67,14 @@ pub struct FakeState {
     pub log_calls: usize,
     /// Tree diffs per new side.
     pub tree_diffs: HashMap<Oid, Vec<TreeChange>>,
+    /// The `(from, to)` of every `diff_trees` call, in call order.
+    pub diff_tree_calls: Vec<(Option<Oid>, Oid)>,
+    /// The objects `has_object` answers present.
+    pub objects: HashSet<Oid>,
+    /// What `merge_base` answers per `(one, two)`; any other pair fails as a missing commit.
+    pub merge_bases: HashMap<(Oid, Oid), MergeBase>,
+    /// The `(one, two, max_scan)` of every `merge_base` call, in call order.
+    pub merge_base_calls: Vec<(Oid, Oid, usize)>,
     /// Blob diffs per (old, new).
     pub blob_diffs: HashMap<(Option<Oid>, Option<Oid>), BlobDiff>,
     /// `diff_blobs` calls.
@@ -184,6 +193,10 @@ impl Default for FakeState {
             search_gate: None,
             log_calls: 0,
             tree_diffs: HashMap::new(),
+            diff_tree_calls: Vec::new(),
+            objects: HashSet::new(),
+            merge_bases: HashMap::new(),
+            merge_base_calls: Vec::new(),
             blob_diffs: HashMap::new(),
             diff_blobs_calls: 0,
             blames: HashMap::new(),
@@ -597,9 +610,10 @@ impl RepositoryReading for FakeRepository {
         }))
     }
 
-    fn diff_trees(&self, _from: Option<Oid>, to: Oid) -> ReadResult<Vec<TreeChange>> {
+    fn diff_trees(&self, from: Option<Oid>, to: Oid) -> ReadResult<Vec<TreeChange>> {
         let (found, delay) = {
-            let state = self.state();
+            let mut state = self.state();
+            state.diff_tree_calls.push((from, to));
             (
                 state.tree_diffs.get(&to).cloned(),
                 state.delays.get(&to).copied().unwrap_or_default(),
@@ -609,6 +623,19 @@ impl RepositoryReading for FakeRepository {
         found.ok_or_else(|| {
             RepositoryError::new(format!("read tree: object {to} is missing or unreadable"))
         })
+    }
+
+    fn has_object(&self, oid: Oid) -> bool {
+        self.state().objects.contains(&oid)
+    }
+
+    fn merge_base(&self, one: Oid, two: Oid, max_scan: usize) -> ReadResult<MergeBase> {
+        let found = {
+            let mut state = self.state();
+            state.merge_base_calls.push((one, two, max_scan));
+            state.merge_bases.get(&(one, two)).copied()
+        };
+        found.ok_or_else(|| RepositoryError::new(format!("read commit: object {two}: missing")))
     }
 
     fn diff_blobs(

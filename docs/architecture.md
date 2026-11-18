@@ -38,13 +38,20 @@ that serializes refreshes (`tokens`); rc-git-mac keeps the tokens in the login k
 (`list_open_pull_requests`, `read_pull_request`, and `pull_request_remote` for the remote fetch
 uses) answer in the guard's own types, text already neutralized; the stamp of a read
 (`PullRequestStamp`: number, head oid, base ref, state) is what later mutations compare a fresh
-read against. rc-git-kit's `pull_requests` module links a repository to its GitHub repository and
-account (`link`), holds the list and each open pull request tab as state machines with a
-generation per read and one read queued at most (`state`), runs them for a window
-(`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard, a
-fake in tests), and decides polling (`polling`), check order and summary (`checks`), which
-description links open (`body`) and the words (`copy`). The app's sidebar section and pull
-request page draw that model; `rc-git pr` reads through the same live service. `rc-git-highlight` is a pure
+read against. A pull request's changes come from local objects: `fetch_pull_request_head` (the
+guard's one pull request write) fetches `refs/pull/<n>/head` into `refs/rc-git/pr/<n>/head` when
+the user asks and the remote's head is the stamp's, and the core's `merge_base` (a bounded
+paint-down walk) plus `diff_trees` give GitHub's three-dot view from the local copy of the base
+branch (`pull_request_base_ref`). rc-git-kit's `pull_requests` module links a repository to its
+GitHub repository and account (`link`), holds the list and each open pull request tab as state
+machines with a generation per read and one read queued at most (`state`), a tab's changes as a
+state machine tied to the stamp they were read for (`changes`: reading, needs fetch, fetching,
+moved, no base copy, no merge base, ready, one file diff at a time), runs them for a window
+(`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard and
+the core, a fake in tests), and decides polling (`polling`), check order and summary (`checks`),
+which description links open (`body`) and the words (`copy`). The app's sidebar section and pull
+request page draw that model, the page's Changes view reusing the shared `DiffView`;
+`rc-git pr` reads and fetches through the same live service. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

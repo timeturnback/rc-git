@@ -112,7 +112,7 @@ fn refused() -> Error {
 /// The parents shallow boundary commits list that the clone does not have, sorted. Empty in a
 /// complete clone. A parent missing anywhere else is corruption, and the walk still fails on
 /// it.
-fn absent_shallow_parents(repo: &gix::Repository) -> Result<Vec<ObjectId>> {
+pub(crate) fn absent_shallow_parents(repo: &gix::Repository) -> Result<Vec<ObjectId>> {
     let Some(boundary) = repo.shallow_commits().map_err(git("read shallow file"))? else {
         return Ok(Vec::new());
     };

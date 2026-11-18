@@ -67,6 +67,9 @@ pub const PULL_REQUESTS_SECTION_MAX_HEIGHT: f64 = 220.0;
 /// The tallest a pull request tab's checks list grows before it scrolls, leaving the
 /// description below it room on a window at its minimum height.
 pub const PULL_REQUEST_CHECKS_MAX_HEIGHT: f64 = 160.0;
+/// The share of a pull request's Changes view its changed-file list takes beside the diff,
+/// which keeps the larger part.
+pub const PULL_REQUEST_FILES_SHARE: f32 = 0.3;
 
 /// A window or pane size in points.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -132,6 +132,7 @@ impl Policy {
         let risk = action.risk();
         match action {
             Action::Fetch
+            | Action::FetchPullRequest { .. }
             | Action::CreateLocalBranch { .. }
             | Action::CreateTag { .. }
             | Action::Checkout { .. }

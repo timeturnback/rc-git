@@ -29,6 +29,10 @@ paths: crates/rc-git-core/**
   report `scanned`/`complete` and cap examined commits with `max_scan`, so no call holds a
   pool handle through a long scan. A time floor maps to `Sorting::ByCommitTimeCutoff`, which
   terminates the walk instead of filtering; gix 0.87 has no topo order in `rev_walk`.
+- `merge_base` is git's paint-down walk, newest committer time first, bounded by `max_scan`:
+  past the budget, or at a shallow edge on a path that still matters, it answers
+  `MergeBase::Incomplete`, never a guess. Keep any ancestry question that could walk the whole
+  history on the same footing.
 - The working-tree status walk reads the index as a stat cache (`StatCache` in `worktree.rs`)
   so an unchanged file costs one `lstat` instead of a full hash. It may only ever *decline*:
   a conflicted, assume-valid, skip-worktree, intent-to-add or racy entry, an id that is not

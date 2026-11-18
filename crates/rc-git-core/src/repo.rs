@@ -228,6 +228,13 @@ impl Repository {
         })
     }
 
+    /// Whether the object database holds `id`, of any kind: a lookup of its location, nothing
+    /// decoded. Objects reached through `objects/info/alternates` count.
+    #[must_use]
+    pub fn has_object(&self, id: Oid) -> bool {
+        self.with(|repo| repo.has_object(id.as_gix()))
+    }
+
     /// Resolves `spec` and peels tags and commits down to the tree they contain.
     ///
     /// # Errors

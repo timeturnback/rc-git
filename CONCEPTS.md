@@ -173,8 +173,18 @@ pull requests; github.com without an account offers the sign-in.
 What the user saw of a pull request: its number, head commit, base branch and state. Only a
 read that is current makes one; a screen left by a failed refresh is stale and stands for
 nothing. It is what an action on the pull request is to compare a fresh read against, refusing
-with "changed since you looked" when they differ; the reads carry it now, and no action uses it
-yet.
+with "changed since you looked" when they differ. The fetch of a pull request head is the first
+to use it: it writes nothing unless the remote's head is the stamp's.
+
+## Pull request head
+
+A pull request's head commit, fetched from `refs/pull/<n>/head` on the remote pull requests are
+read from into rc-git's own ref for it, `refs/rc-git/pr/<n>/head`, so its changes can be read
+from local objects. Fetched only when the user asks, from one refspec built from the number,
+force-updated as the pull request is rewritten, and never checked out: the ref keeps the objects
+alive and lists as "other", never as a branch or a tag. Its changes run from the merge base of
+the local copy of the base branch and the stamp's head, GitHub's three-dot view, and always
+belong to that stamp.
 
 ## Host-key trust
 

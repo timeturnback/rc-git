@@ -2,13 +2,19 @@
 //! and the CLI only place them. A failed read says "couldn't check" and why; what an earlier
 //! read left is labelled as possibly out of date, never shown as current.
 
+use rc_git_core::TreeChange;
+
+use super::changes::ChangesPhase;
 use super::checks::CheckState;
 use super::state::Freshness;
 use super::{
-    DetailFields, Mergeable, PullRequestState, PullRequestSummary, ReadError, ReviewDecision,
-    ServerLink,
+    DetailFields, Mergeable, PullRequestStamp, PullRequestState, PullRequestSummary, ReadError,
+    ReviewDecision, ServerLink, single_line,
 };
+use crate::guard_bridge::{FailureKind, classify};
+use crate::history_text::{change_path_label, short_hash};
 use crate::platform::api_tokens::AccountKey;
+use rc_git_guard::actions::ActionError;
 use rc_git_guard::actions::github::GitHubHost;
 
 /// The section's heading.
@@ -189,5 +195,125 @@ pub fn fields_note(fields: DetailFields) -> Option<&'static str> {
     match fields {
         DetailFields::Full => None,
         DetailFields::Basic => Some(BASIC_FIELDS_NOTE),
+    }
+}
+
+/// The tab's first view: header, checks and description.
+pub const OVERVIEW_VIEW: &str = "Overview";
+
+/// The tab's second view: the changed files and their diffs.
+pub const CHANGES_VIEW: &str = "Changes";
+
+/// The button that fetches a pull request's head.
+pub const FETCH_CHANGES: &str = "Fetch Changes";
+
+/// The button that stops a running fetch.
+pub const STOP_FETCH: &str = "Stop";
+
+/// The button that reads the local state again.
+pub const LOOK_AGAIN: &str = "Look Again";
+
+/// What the changes view says while it reads the repository.
+pub const CHANGES_READING: &str = "Reading the changes…";
+
+/// What the diff pane says before a file is picked.
+pub const PICK_A_FILE: &str = "Select a file to see its changes.";
+
+/// What the changes view says for `phase`, the changes of `stamp` read from `remote`.
+#[must_use]
+pub fn changes_note(phase: &ChangesPhase, stamp: &PullRequestStamp, remote: &str) -> String {
+    let (number, head) = (stamp.number, short_hash(&stamp.head_oid));
+    match phase {
+        ChangesPhase::Reading => CHANGES_READING.to_owned(),
+        ChangesPhase::NeedsFetch { problem: None } => format!(
+            "Commit {head}, the head of #{number}, is not in this repository. Fetch Changes \
+             downloads it from {remote} into refs/rc-git/pr/{number}/head; no branch changes and \
+             nothing is checked out."
+        ),
+        ChangesPhase::NeedsFetch {
+            problem: Some(problem),
+        } => format!("The fetch failed: {problem}"),
+        ChangesPhase::Fetching => format!("Fetching #{number} ({head}) from {remote}…"),
+        ChangesPhase::Moved { found } => format!(
+            "#{number} moved after it was read: {remote} has {} as its head, not {head}. \
+             Nothing was fetched; reading the pull request again.",
+            short_hash(found)
+        ),
+        ChangesPhase::NoBaseCopy { branch, tracking } => match tracking {
+            Some(tracking) => format!(
+                "There is no {tracking} here, the copy of {branch} the changes are compared \
+                 with. Fetch {remote} (Fetch in the toolbar), then Look Again."
+            ),
+            None => format!(
+                "{remote}'s fetch settings keep no copy of {branch}, the branch the changes are \
+                 compared with. Fetch it with git, then Look Again."
+            ),
+        },
+        ChangesPhase::NoMergeBase {
+            tracking,
+            incomplete: true,
+            scanned,
+        } => format!(
+            "rc-git read {scanned} commits without finding where {head} branches off \
+             {tracking}. The history here may be shallow; fetch more of it with git, then Look \
+             Again."
+        ),
+        ChangesPhase::NoMergeBase {
+            tracking,
+            incomplete: false,
+            ..
+        } => format!("{head} and {tracking} share no history, so there is nothing to compare."),
+        ChangesPhase::Ready {
+            base,
+            tracking,
+            files,
+        } => format!(
+            "{} in {head} since {} (where it branches off {tracking})",
+            changed_files(files.len()),
+            short_hash(base)
+        ),
+        ChangesPhase::Failed(message) => format!("Couldn't read the changes: {message}"),
+    }
+}
+
+/// The longest changed-file label kept, in characters.
+const MAX_PATH_CHARS: usize = 4096;
+
+/// A changed file's label in the Changes view: its path (`old → new` for a rename) with
+/// control, bidi and zero-width characters shown as escapes, since whoever opened the pull
+/// request named the file.
+#[must_use]
+pub fn changed_file_label(change: &TreeChange) -> String {
+    single_line(&change_path_label(change), MAX_PATH_CHARS)
+}
+
+/// `n file(s) changed`.
+fn changed_files(count: usize) -> String {
+    match count {
+        1 => "1 file changed".to_owned(),
+        count => format!("{count} files changed"),
+    }
+}
+
+/// What a failed head fetch says, with what to do when a secret or an approval saved for
+/// `host` would fix it. The fetch offers only what is saved; it never prompts.
+#[must_use]
+pub fn fetch_problem(error: &ActionError, host: &str) -> String {
+    let message = error.to_string();
+    match classify(error) {
+        FailureKind::AuthRequired | FailureKind::PassphraseRequired { .. } => format!(
+            "{message}. The fetch offers only the credentials saved for {host}: use Fetch in the \
+             toolbar once to enter them, then fetch the pull request again."
+        ),
+        FailureKind::HostKeyUnknown { .. } => format!(
+            "{message}. Approve {host}'s host key with Fetch in the toolbar first, then fetch \
+             the pull request again."
+        ),
+        FailureKind::IdentityRequired
+        | FailureKind::Stale
+        | FailureKind::CredentialHostRefused
+        | FailureKind::Diverged
+        | FailureKind::Cancelled
+        | FailureKind::Failed => message,
     }
 }

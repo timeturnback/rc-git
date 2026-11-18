@@ -27,7 +27,7 @@ use rc_git_guard::actions::{ActionError, Cancel};
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
        rc-git auth login|status|logout [args]
-       rc-git [--time] pr list|view|checks [args]
+       rc-git [--time] pr list|view|checks|diff [args]
 
   head    <repo>                          branch and commit HEAD points to
   refs    <repo>                          every branch, remote branch, and tag
@@ -57,6 +57,9 @@ usage: rc-git [--time] <command> <repo> [args]
                                           1 MiB and binary files are skipped
   stash   <repo>                          stash entries, newest first
   resolve <repo> <rev>                    object id a revision names
+  merge-base <repo> <rev> <rev> [--max-scan N]  the best common ancestor, where a three-dot
+                                          diff starts; reads at most N commits (default
+                                          50000) and fails rather than guess when it needs more
   default-branch <repo>                   the mainline branch: a remote's HEAD, else master/main
   upstream <repo>                         the current branch's upstream:
                                           branch<TAB>remote<TAB>url<TAB>ahead<TAB>behind,
@@ -139,6 +142,18 @@ usage: rc-git [--time] <command> <repo> [args]
   pr checks <n> [repo]                    its head commit's checks, required first:
                                           check<TAB>state<TAB>required|optional|-<TAB>name<TAB>
                                           details url<TAB>description ('-' when none)
+  pr diff <n> [repo] [--fetch] [remote options]
+                                          the files it changes since it left its base (the
+                                          merge base with the local copy of the base branch):
+                                          base<TAB>oid<TAB>tracking ref, head<TAB>oid, then a
+                                          diff-style <letter><TAB><path> line per file. Its
+                                          head commit is read from local objects; when it is
+                                          missing the command fails unless --fetch, which
+                                          fetches refs/pull/<n>/head from the remote into
+                                          refs/rc-git/pr/<n>/head (fetched<TAB>ref<TAB>oid)
+                                          only when it is the head just read, and checks out
+                                          nothing. The remote options (below) are the git
+                                          transport's; the GitHub token is never sent with them
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control and bidi characters as \\u{..} escapes.
@@ -343,6 +358,7 @@ enum Verb {
     Grep,
     Stash,
     Resolve,
+    MergeBase,
     DefaultBranch,
     Commit,
     StashPush,
@@ -384,6 +400,7 @@ impl Verb {
             "grep" => Some(Self::Grep),
             "stash" => Some(Self::Stash),
             "resolve" => Some(Self::Resolve),
+            "merge-base" => Some(Self::MergeBase),
             "default-branch" => Some(Self::DefaultBranch),
             "commit" => Some(Self::Commit),
             "stash-push" => Some(Self::StashPush),
@@ -426,6 +443,7 @@ impl Verb {
             Self::Grep => "grep",
             Self::Stash => "stash",
             Self::Resolve => "resolve",
+            Self::MergeBase => "merge-base",
             Self::DefaultBranch => "default-branch",
             Self::Commit => "commit",
             Self::StashPush => "stash-push",
@@ -763,6 +781,7 @@ fn dispatch(repo: &Repository, invocation: &Invocation, out: &mut Vec<u8>) -> Re
         Verb::Grep => grep(repo, &invocation.args, out),
         Verb::Stash => stash(repo, &invocation.args, out),
         Verb::Resolve => resolve(repo, &invocation.args, out),
+        Verb::MergeBase => merge_base(repo, &invocation.args, out),
         Verb::DefaultBranch => default_branch(repo, &invocation.args, out),
         Verb::Commit => commit_verb(repo, &invocation.repo, &invocation.args, out),
         Verb::StashPush => stash_push_verb(&invocation.repo, &invocation.args, out),
@@ -1933,6 +1952,34 @@ fn resolve(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
+/// The default `merge-base --max-scan`: the budget the app's pull request changes use.
+const MERGE_BASE_SCAN: usize = rc_git_kit::pull_requests::changes::MERGE_BASE_SCAN;
+
+fn merge_base(repo: &Repository, args: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let args = split_args("merge-base", args, &["--max-scan"], &[])?;
+    args.expect(2, 2, "<rev> <rev>")?;
+    let (Some(one), Some(two)) = (args.positional(0), args.positional(1)) else {
+        bail!("merge-base needs <rev> <rev>\n\n{USAGE}");
+    };
+    let budget = match args.number("--max-scan")? {
+        None => MERGE_BASE_SCAN,
+        Some(0) => return Err(usage_error("--max-scan must be at least 1".to_owned())),
+        Some(budget) => budget,
+    };
+    let (a, b) = (repo.resolve(one)?, repo.resolve(two)?);
+    match repo.merge_base(a, b, budget)? {
+        rc_git_core::MergeBase::Found { base, .. } => writeln!(out, "{base}")?,
+        rc_git_core::MergeBase::Unrelated { scanned } => {
+            bail!("{one} and {two} share no history ({scanned} commits read)")
+        }
+        rc_git_core::MergeBase::Incomplete { scanned } => bail!(
+            "no merge base of {one} and {two} within {scanned} commits, or the history is \
+             shallow; raise --max-scan or fetch more history"
+        ),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Everything a remote verb's arguments and environment provide.
 struct RemoteArgs {
     creds: Option<rc_git_guard::actions::Credentials>,
@@ -1989,13 +2036,26 @@ fn parse_remote_args(
 fn credentials(
     repo_path: &std::path::Path,
     username: Option<String>,
-    mut token: Option<String>,
+    token: Option<String>,
 ) -> Result<Option<rc_git_guard::actions::Credentials>> {
     let transport = if token.is_none() {
         upstream_transport(repo_path)?
     } else {
         Transport::Other
     };
+    credentials_for(transport, username, token)
+}
+
+/// [`credentials`] for a remote whose transport is already known.
+///
+/// # Errors
+///
+/// Fails when only one of username and token is known.
+fn credentials_for(
+    transport: Transport,
+    username: Option<String>,
+    mut token: Option<String>,
+) -> Result<Option<rc_git_guard::actions::Credentials>> {
     if token.is_none() && (username.is_some() || transport == Transport::Https) {
         token = non_empty_env("RC_GIT_TOKEN");
     }

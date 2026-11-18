@@ -446,3 +446,117 @@ fn pr_reads_nothing_for_a_remote_on_another_host_or_without_an_account() {
     assert!(text(&none.stderr).contains("rc-git auth login --host github.com"));
     assert_eq!(server.requests_to("/api/graphql"), 0);
 }
+
+/// Scripts pull request 7 with head `head` on base `main`, in the full detail read.
+fn script_pull_request(server: &GitHubServer, head: &str) {
+    let detail = format!(
+        r#"{{"data": {{"repository": {{
+            "mergeCommitAllowed": true, "squashMergeAllowed": true,
+            "rebaseMergeAllowed": true, "autoMergeAllowed": false,
+            "pullRequest": {{
+                "number": 7, "title": "Ship", "body": "", "url": null, "isDraft": false,
+                "state": "OPEN", "updatedAt": "2026-11-18T09:00:00Z",
+                "author": {{"login": "mona"}}, "headRefName": "topic", "headRefOid": "{head}",
+                "baseRefName": "main", "isCrossRepository": false,
+                "headRepositoryOwner": {{"login": "octo"}}, "reviewDecision": null,
+                "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+                "viewerCanMergeAsAdmin": false, "viewerCanEnableAutoMerge": false,
+                "viewerCanDisableAutoMerge": false, "viewerCanDeleteHeadRef": false,
+                "autoMergeRequest": null,
+                "commits": {{"nodes": [{{"commit": {{"statusCheckRollup": null}}}}]}}
+            }}
+        }}}}}}"#
+    );
+    server.script_graphql(&detail_request_body(&pr_target(server), 7, false), &detail);
+}
+
+/// The git requests the fake host got: its ref advertisement endpoint.
+fn git_requests(server: &GitHubServer) -> Vec<rc_git_testkit::github::RecordedRequest> {
+    server
+        .recorded()
+        .into_iter()
+        .filter(|request| request.target.contains(".git/info/refs"))
+        .collect()
+}
+
+#[test]
+fn pr_diff_lists_the_changes_of_a_local_head_from_its_merge_base() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    let base = repo.rev_parse("HEAD~1");
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["checkout", "-q", "-b", "topic", &base]);
+    repo.write("topic.txt", b"topic\n");
+    repo.commit("topic work", "2024-05-01T00:00:00+0000");
+    let head = repo.rev_parse("topic");
+    script_pull_request(&server, &head);
+
+    let out = run_pr(&scratch, &repo, &ssh, &["diff", "7"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let names = repo.git_output(&["diff", "--name-status", &format!("origin/main...{head}")]);
+    assert_eq!(
+        text(&out.stdout),
+        format!("base\t{base}\trefs/remotes/origin/main\nhead\t{head}\n{names}\n")
+    );
+    assert!(
+        git_requests(&server).is_empty(),
+        "a local head needs no fetch"
+    );
+}
+
+#[test]
+fn pr_diff_fetches_only_with_fetch_and_never_offers_the_api_token_to_git() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    script_pull_request(&server, missing);
+
+    let without = run_pr(&scratch, &repo, &ssh, &["diff", "7"]);
+    assert_eq!(without.status.code(), Some(1), "{}", text(&without.stderr));
+    assert!(text(&without.stderr).contains("rerun with --fetch"));
+    assert!(git_requests(&server).is_empty(), "no fetch without --fetch");
+
+    let fetch = run_pr(&scratch, &repo, &ssh, &["diff", "7", "--fetch"]);
+    assert_eq!(fetch.status.code(), Some(5), "{}", text(&fetch.stderr));
+    let asked = git_requests(&server);
+    assert!(!asked.is_empty(), "--fetch asks the remote");
+    for request in &asked {
+        assert_eq!(
+            request.header("authorization"),
+            None,
+            "the API token is never a git credential"
+        );
+    }
+
+    let with_git = [
+        "diff",
+        "7",
+        "--fetch",
+        "--username",
+        "x",
+        "--token",
+        "git-secret",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &with_git);
+    assert_eq!(out.status.code(), Some(5), "{}", text(&out.stderr));
+    let offered: Vec<String> = git_requests(&server)
+        .iter()
+        .filter_map(|request| request.header("authorization").map(str::to_owned))
+        .collect();
+    assert_eq!(
+        offered,
+        ["Basic eDpnaXQtc2VjcmV0"],
+        "only the git credential: x:git-secret"
+    );
+    let printed = format!("{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        !printed.contains(TOKEN) && !printed.contains("git-secret"),
+        "{printed}"
+    );
+    assert_eq!(
+        repo.git_output(&["for-each-ref", "refs/rc-git/"]),
+        "",
+        "nothing written"
+    );
+}

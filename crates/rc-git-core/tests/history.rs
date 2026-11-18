@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use rc_git_core::{CommitFilter, CommitPage, Error, ObjectKind, Oid, Repository};
+use rc_git_core::{CommitFilter, CommitPage, Error, MergeBase, ObjectKind, Oid, Repository};
 use rc_git_testkit::Fixture;
 
 /// How much of a walk one page takes: at most `limit` matches from `max_scan` commits.
@@ -707,4 +707,191 @@ fn path_history_reads_a_path_under_a_submodule_as_absent() {
         None,
         "a path through a gitlink is absent, not an unreadable object"
     );
+}
+
+// --- merge base ---
+
+/// `git merge-base --all <one> <two>`, one id per line.
+fn git_merge_bases(fx: &Fixture, one: &str, two: &str) -> Vec<String> {
+    fx.git_output(&["merge-base", "--all", one, two])
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The base found, `None` for any other answer.
+fn found(base: &MergeBase) -> Option<String> {
+    match base {
+        MergeBase::Found { base, .. } => Some(base.to_string()),
+        MergeBase::Unrelated { .. } | MergeBase::Incomplete { .. } => None,
+    }
+}
+
+/// Runs `git <args>` with the author and committer dates set to `date`.
+fn git_dated(fx: &Fixture, args: &[&str], date: &str) {
+    fx.git_with_env(
+        args,
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+}
+
+#[test]
+fn merge_base_finds_where_a_branch_left_its_base_as_git_does() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    for (one, two) in [("main", "hack"), ("hack", "main"), ("main~1", "topic")] {
+        let (a, b) = (repo.resolve(one).unwrap(), repo.resolve(two).unwrap());
+        let base = repo.merge_base(a, b, 1000).unwrap();
+        assert_eq!(
+            found(&base).into_iter().collect::<Vec<_>>(),
+            git_merge_bases(&fx, one, two),
+            "{one}...{two}"
+        );
+    }
+}
+
+#[test]
+fn merge_base_of_an_ancestor_is_the_ancestor_and_of_itself_is_itself() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let topic = repo.resolve("topic").unwrap();
+    let base = repo.merge_base(tip, topic, 1000).unwrap();
+    assert_eq!(found(&base), Some(fx.rev_parse("topic")));
+    assert_eq!(
+        repo.merge_base(tip, tip, 0).unwrap(),
+        MergeBase::Found {
+            base: tip,
+            scanned: 0
+        }
+    );
+}
+
+#[test]
+fn merge_base_picks_one_best_base_of_a_criss_cross() {
+    let fx = Fixture::empty_dir();
+    fx.git(&["init", "-q", "-b", "main"]);
+    fx.write("f", b"0\n");
+    fx.commit("root", "2024-01-01T00:00:00+0000");
+    fx.git(&["checkout", "-q", "-b", "side"]);
+    fx.write("s", b"1\n");
+    fx.commit("side one", "2024-01-02T00:00:00+0000");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("m", b"1\n");
+    fx.commit("main one", "2024-01-03T00:00:00+0000");
+    let take_side = ["merge", "-q", "--no-ff", "-m", "main takes side", "side"];
+    git_dated(&fx, &take_side, "2024-01-04T00:00:00+0000");
+    fx.git(&["checkout", "-q", "side"]);
+    let take_main = ["merge", "-q", "--no-ff", "-m", "side takes main", "main~1"];
+    git_dated(&fx, &take_main, "2024-01-05T00:00:00+0000");
+    let bases = git_merge_bases(&fx, "main", "side");
+    assert_eq!(
+        bases.len(),
+        2,
+        "a criss-cross has two best bases: {bases:?}"
+    );
+
+    let repo = Repository::open(fx.path()).unwrap();
+    let (main, side) = (repo.resolve("main").unwrap(), repo.resolve("side").unwrap());
+    let base = found(&repo.merge_base(main, side, 1000).unwrap()).unwrap();
+    assert!(bases.contains(&base), "{base} is not among {bases:?}");
+    assert_eq!(base, fx.rev_parse("main~1"), "the newer of the two");
+}
+
+#[test]
+fn merge_base_of_unrelated_histories_says_so() {
+    let fx = merge_fixture();
+    fx.git(&["checkout", "-q", "--orphan", "island"]);
+    fx.write("island.txt", b"alone\n");
+    fx.commit("island", "2024-02-01T00:00:00+0000");
+    let repo = Repository::open(fx.path()).unwrap();
+    let main = repo.resolve("main").unwrap();
+    let island = repo.resolve("island").unwrap();
+    let all = fx.git_output(&["rev-list", "--count", "main", "island"]);
+    assert_eq!(
+        repo.merge_base(main, island, 1000).unwrap(),
+        MergeBase::Unrelated {
+            scanned: all.parse().unwrap()
+        }
+    );
+}
+
+#[test]
+fn merge_base_stops_at_max_scan_without_guessing() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let main = repo.resolve("main~1").unwrap();
+    let hack = repo.resolve("hack").unwrap();
+    assert_eq!(
+        repo.merge_base(main, hack, 2).unwrap(),
+        MergeBase::Incomplete { scanned: 2 }
+    );
+    assert!(matches!(
+        repo.merge_base(main, hack, 1000).unwrap(),
+        MergeBase::Found { .. }
+    ));
+}
+
+#[test]
+fn merge_base_is_incomplete_at_a_shallow_edge_it_needed() {
+    let fx = merge_fixture();
+    fx.git(&["checkout", "-q", "-b", "early", "main~3"]);
+    fx.write("early.txt", b"early\n");
+    fx.commit("early change", "2024-01-07T00:00:00+0000");
+    fx.git(&["checkout", "-q", "main"]);
+    let clone = Fixture::empty_dir();
+    let url = format!("file://{}", fx.path().display());
+    clone.git(&[
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--no-single-branch",
+        &url,
+        ".",
+    ]);
+    let repo = Repository::open(clone.path()).unwrap();
+    let main = repo.resolve("origin/main").unwrap();
+    let early = repo.resolve("origin/early").unwrap();
+    assert!(
+        matches!(
+            repo.merge_base(main, early, 1000).unwrap(),
+            MergeBase::Incomplete { .. }
+        ),
+        "the base lies past the shallow edge"
+    );
+}
+
+#[test]
+fn merge_base_reports_a_missing_commit_by_id() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    let tip = repo.resolve("main").unwrap();
+    let missing = Oid::from_hex(&"ab".repeat(20)).unwrap();
+    let err = repo.merge_base(tip, missing, 1000).unwrap_err();
+    assert!(
+        matches!(&err, Error::Object { oid, .. } if *oid == missing),
+        "{err:?}"
+    );
+    let tree = repo.resolve_tree("main").unwrap();
+    let err = repo.merge_base(tip, tree, 1000).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::WrongKind {
+                actual: ObjectKind::Tree,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn has_object_answers_for_present_and_missing_ids() {
+    let fx = merge_fixture();
+    let repo = Repository::open(fx.path()).unwrap();
+    assert!(repo.has_object(repo.resolve("main").unwrap()));
+    assert!(repo.has_object(repo.resolve_tree("main").unwrap()));
+    assert!(!repo.has_object(Oid::from_hex(&"ab".repeat(20)).unwrap()));
 }

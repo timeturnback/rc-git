@@ -18,7 +18,7 @@ mod links;
 mod oauth;
 mod pull_types;
 mod pulls;
-mod repository;
+pub(super) mod repository;
 mod secret;
 mod text;
 mod user;
@@ -41,7 +41,7 @@ pub use pull_types::{
     ReviewDecision, StatusState, ViewerAbilities,
 };
 pub use pulls::{MAX_CHECKS, PAGE_SIZE, list_open_pull_requests, read_pull_request};
-pub use repository::{PullRequestRemote, pull_request_remote};
+pub use repository::{PullRequestRemote, pull_request_base_ref, pull_request_remote};
 pub use secret::{ApiToken, ClientId, RefreshToken, TokenSet, unix_now};
 pub use text::{multi_line, single_line};
 pub use user::{TokenIdentity, validate_token};

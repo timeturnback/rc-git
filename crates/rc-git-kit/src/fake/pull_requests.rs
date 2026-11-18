@@ -6,17 +6,18 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use rc_git_core::Oid;
+use rc_git_core::{BlobDiff, Oid, TreeChange};
 use rc_git_guard::actions::github::GitHubHost;
 
 use super::CallGate;
 use crate::github::accounts::{GitHubAccount, SignInMethod};
 use crate::platform::api_tokens::AccountKey;
+use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use crate::pull_requests::link::{Linked, RepositoryLink};
 use crate::pull_requests::{
     Cancel, CheckList, DetailFields, MergeMethods, Mergeable, PageCursor, PullRequestDetail,
-    PullRequestPage, PullRequestService, PullRequestState, PullRequestSummary, ReadError,
-    RepositoryTarget,
+    PullRequestPage, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
+    ReadError, RepositoryTarget,
 };
 
 /// What the fake answers and what it was asked.
@@ -43,6 +44,21 @@ pub struct FakePullRequestsState {
     pub detail_calls: Vec<u64>,
     /// Every account choice saved, as `(repo_path, key id)`.
     pub chosen: Vec<(String, String)>,
+    /// What [`PullRequestService::changes`] answers, by the head it is asked for; answers are
+    /// taken in order, the last one repeating.
+    pub changes: BTreeMap<Oid, VecDeque<Result<ChangesRead, String>>>,
+    /// What [`PullRequestService::fetch_head`] answers, by the head it is asked to fetch.
+    pub fetches: BTreeMap<Oid, Result<HeadFetched, FetchProblem>>,
+    /// What [`PullRequestService::file_diff`] answers, by the changed path.
+    pub file_diffs: BTreeMap<String, Result<BlobDiff, String>>,
+    /// Holds each fetch at the gate, when set.
+    pub fetch_gate: Option<Arc<CallGate>>,
+    /// The stamp of every changes read, in arrival order.
+    pub changes_calls: Vec<PullRequestStamp>,
+    /// The stamp of every fetch, in arrival order.
+    pub fetch_calls: Vec<PullRequestStamp>,
+    /// The path of every file diff, in arrival order.
+    pub file_diff_calls: Vec<String>,
 }
 
 /// The fake service; clones share one state.
@@ -73,6 +89,13 @@ impl FakePullRequests {
                 list_calls: Vec::new(),
                 detail_calls: Vec::new(),
                 chosen: Vec::new(),
+                changes: BTreeMap::new(),
+                fetches: BTreeMap::new(),
+                file_diffs: BTreeMap::new(),
+                fetch_gate: None,
+                changes_calls: Vec::new(),
+                fetch_calls: Vec::new(),
+                file_diff_calls: Vec::new(),
             })),
         }
     }
@@ -165,6 +188,73 @@ impl PullRequestService for FakePullRequests {
     fn choose_account(&self, repo_path: &str, key: &AccountKey) -> Result<(), String> {
         self.state().chosen.push((repo_path.to_owned(), key.id()));
         Ok(())
+    }
+
+    fn changes(
+        &self,
+        _repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+    ) -> Result<ChangesRead, String> {
+        self.state().changes_calls.push(stamp.clone());
+        self.expected(linked)
+            .map_err(|error| format!("{error:?}"))?;
+        let mut state = self.state();
+        let Some(answers) = state.changes.get_mut(&stamp.head_oid) else {
+            return Err(format!("the fake has no changes for {}", stamp.head_oid));
+        };
+        if answers.len() > 1 {
+            return answers
+                .pop_front()
+                .unwrap_or_else(|| Err("no answer".to_owned()));
+        }
+        answers
+            .front()
+            .cloned()
+            .unwrap_or_else(|| Err("no answer".to_owned()))
+    }
+
+    fn file_diff(&self, _repo_path: &str, change: &TreeChange) -> Result<BlobDiff, String> {
+        let path = change.path.to_string();
+        let mut state = self.state();
+        state.file_diff_calls.push(path.clone());
+        state
+            .file_diffs
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("the fake has no diff of {path}")))
+    }
+
+    fn fetch_head(
+        &self,
+        _repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<HeadFetched, FetchProblem> {
+        let gate = {
+            let mut state = self.state();
+            state.fetch_calls.push(stamp.clone());
+            state.fetch_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(FetchProblem::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| FetchProblem::Failed(format!("{error:?}")))?;
+        self.state()
+            .fetches
+            .get(&stamp.head_oid)
+            .cloned()
+            .unwrap_or_else(|| {
+                Err(FetchProblem::Failed(format!(
+                    "the fake has no fetch of {}",
+                    stamp.head_oid
+                )))
+            })
     }
 }
 

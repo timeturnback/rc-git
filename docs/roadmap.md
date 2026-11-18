@@ -190,13 +190,24 @@ constraints are clear.
   the active window. `rc-git pr list|view|checks` reads the same. An ssh alias reaches its
   account through the `HostName` the user's ssh config maps it to. The second slice.
 
+- **Pull request changes.** A pull request tab's Changes view lists the files it changes since
+  it left its base (the merge base with the local copy of the base branch) and diffs the one
+  picked, from local objects. A head that is not local is fetched only on Fetch Changes, into
+  `refs/rc-git/pr/<n>/head`, and only when the remote's head is the one the tab read; Stop stays
+  on screen while it runs. `rc-git pr diff <n> [--fetch]` and `rc-git merge-base` do the same
+  from Terminal. The third slice.
+
 ## Planned
 
-- **Pull requests.** The rest of the pull request slices on the GitHub client: the PR diff from
-  local objects; merge and admin bypass merge, auto-merge, re-running failed jobs, job logs and
-  deleting the head branch, each mutation a new `Action` with its policy row (rc-git-guard,
+- **Pull requests.** The rest of the pull request slices on the GitHub client: merge and admin
+  bypass merge, auto-merge, re-running failed jobs, job logs and deleting the head branch, each mutation a new `Action` with its policy row (rc-git-guard,
   rc-git-kit, rc-git-app, `rc-git pr`), each comparing a fresh read against the
   `PullRequestStamp` of what the user saw.
+
+- **Prune old pull request heads.** Every fetched pull request head stays under
+  `refs/rc-git/pr/<n>/head`, keeping its objects alive, until the user deletes it with git. A
+  prune of the refs of closed and merged pull requests (a policy row of its own, since it lets
+  `git gc` drop their objects) is still missing.
 
 - **Reveal in tree from path search.** Jump-to-file opens the file; expanding the tree to
   show it selected is still missing.

@@ -3,6 +3,9 @@
 //! oversized body, a stall, an error that echoes the token, a token endpoint that echoes the
 //! form it got). Plain HTTP on loopback, laid out as a GitHub Enterprise host
 //! (`/api/v3`, `/api/graphql`), since rc-git builds github.com's URLs for `api.github.com`.
+//! Its git smart-HTTP endpoint (`<owner>/<name>.git/info/refs`) answers every request with a
+//! `401` Basic challenge, as GitHub does for a private repository, so a test sees exactly what
+//! credentials a fetch offered the git transport.
 //!
 //! It is strict: every endpoint answers only for the exact method, headers and parameters a
 //! correct client sends, and a GraphQL query only for the exact request body scripted for it;
@@ -382,6 +385,7 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>, stop: &AtomicBool) 
             return;
         }
         ("POST", "/api/graphql") => graphql(&request, state),
+        ("GET", target) if target.ends_with(".git/info/refs") => git_challenge(),
         (method, target) if method == "GET" && target.starts_with("/api/v3/repos/") => {
             repository(&request, target, state)
         }
@@ -628,6 +632,19 @@ fn authorized(request: &RecordedRequest, state: &State, accept: &str) -> Option<
         .iter()
         .find(|known| known.token == token)
         .cloned()
+}
+
+/// The answer to a git fetch's ref advertisement: a Basic challenge, whatever was sent.
+fn git_challenge() -> Answer {
+    let mut answer = json(
+        "401 Unauthorized",
+        r#"{"message":"Bad credentials"}"#.to_owned(),
+    );
+    answer.headers.push((
+        "WWW-Authenticate".to_owned(),
+        "Basic realm=\"GitHub\"".to_owned(),
+    ));
+    answer
 }
 
 fn unauthorized() -> Answer {

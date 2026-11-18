@@ -423,9 +423,49 @@ fn the_pull_request_remote_is_the_branch_remote_else_origin() {
     ]);
     let upstream = pull_request_remote(fixture.path()).unwrap().unwrap();
     assert_eq!(upstream.name(), "upstream");
+    assert_eq!((upstream.host(), upstream.uses_ssh()), ("github.com", true));
     fixture.git(&["checkout", "--detach"]);
+    let detached = pull_request_remote(fixture.path()).unwrap().unwrap();
+    assert_eq!(detached.name(), "origin");
     assert_eq!(
-        pull_request_remote(fixture.path()).unwrap().unwrap().name(),
-        "origin"
+        (detached.host(), detached.uses_ssh()),
+        ("github.com", false)
+    );
+}
+
+#[test]
+fn a_pull_request_base_maps_through_the_remote_fetch_refspecs() {
+    let fixture = Fixture::standard();
+    assert_eq!(pull_request_base_ref(fixture.path(), "main").unwrap(), None);
+    fixture.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/octo/rc-git.git",
+    ]);
+    assert_eq!(
+        pull_request_base_ref(fixture.path(), "main").unwrap(),
+        Some("refs/remotes/origin/main".to_owned())
+    );
+    assert_eq!(
+        pull_request_base_ref(fixture.path(), "release/2.0").unwrap(),
+        Some("refs/remotes/origin/release/2.0".to_owned())
+    );
+    for unusable in ["", "a..b", "x\\u{202e}y", "a b"] {
+        assert_eq!(
+            pull_request_base_ref(fixture.path(), unusable).unwrap(),
+            None,
+            "{unusable:?}"
+        );
+    }
+    fixture.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/main:refs/remotes/origin/main",
+    ]);
+    assert_eq!(
+        pull_request_base_ref(fixture.path(), "topic").unwrap(),
+        None,
+        "a single-branch clone keeps no copy of other branches"
     );
 }

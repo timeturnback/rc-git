@@ -162,6 +162,11 @@ fn every_operation_leaves_the_repository_untouched() {
     repo.entry_at_path(root, "src/main.rs").unwrap();
     walk_history(&repo, tip);
     let old = repo.resolve("v0.9").unwrap();
+    assert!(repo.has_object(old));
+    assert!(matches!(
+        repo.merge_base(tip, old, 1000).unwrap(),
+        rc_git_core::MergeBase::Found { .. }
+    ));
     for change in repo.diff_trees(Some(old), tip).unwrap() {
         repo.diff_blobs(
             change.old,

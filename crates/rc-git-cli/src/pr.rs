@@ -1,19 +1,28 @@
-//! `rc-git pr`: a repository's open pull requests, one in full, and its checks, read through
-//! the app's accounts and keychain (the same stores `auth` uses) and kit's live service, so the
-//! CLI picks the account exactly as the app does: the one account on the remote's host, else
-//! the one chosen for the repository, else `--login`. Every text the server sent is printed as
-//! the guard neutralized it: one-line fields carry no tab, line break, control or bidi
-//! character, and the description's lines are printed one record each.
+//! `rc-git pr`: a repository's open pull requests, one in full, its checks, and the files it
+//! changes, read through the app's accounts and keychain (the same stores `auth` uses) and
+//! kit's live service, so the CLI picks the account exactly as the app does: the one account
+//! on the remote's host, else the one chosen for the repository, else `--login`. Every text
+//! the server sent is printed as the guard neutralized it: one-line fields carry no tab, line
+//! break, control or bidi character, and the description's lines are printed one record each.
+//!
+//! `pr diff` reads the changes from local objects. It fetches the pull request's head only
+//! with `--fetch`, over the remote's git transport with the remote options' credentials; the
+//! GitHub token stays with the API reads.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
-use rc_git_core::Repository;
+use rc_git_core::{ChangeKind, Repository};
+use rc_git_guard::actions::github::pull_request_remote;
+use rc_git_guard::actions::pull_head_ref;
 use rc_git_kit::canonical_path;
 use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore};
+use rc_git_kit::platform::credentials::{CredentialKind, CredentialStore, MemoryCredentialStore};
+use rc_git_kit::platform::host_keys::{HostKeyStore, MemoryHostKeyStore};
+use rc_git_kit::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
     check_label, mergeable_label, problem, review_label, state_label,
@@ -21,10 +30,14 @@ use rc_git_kit::pull_requests::copy::{
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::{
-    PageCursor, PullRequestDetail, PullRequestService, PullRequestSummary, ReadError, ServerLink,
+    PageCursor, PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestSummary,
+    ReadError, ServerLink,
 };
 
-use crate::{EXIT_AUTH, EXIT_ERROR, EXIT_INTERRUPTED, UsageError, VerbArgs, split_args};
+use crate::{
+    EXIT_AUTH, EXIT_ERROR, EXIT_HOSTKEY, EXIT_INTERRUPTED, Records, Transport, UsageError,
+    VerbArgs, credentials_for, split_args, write_path,
+};
 
 /// A failed read, with the exit code it ends with.
 #[derive(Debug)]
@@ -64,14 +77,18 @@ fn failure(error: &ReadError) -> anyhow::Error {
 /// Runs `rc-git pr <args>`, timing it when `time` is set.
 pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<ExitCode> {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(UsageError("pr needs list, view or checks".to_owned()).into());
+        return Err(UsageError("pr needs list, view, checks or diff".to_owned()).into());
     };
     let started = Instant::now();
     let result = match verb.as_str() {
         "list" => list(rest, out),
         "view" => view(rest, out),
         "checks" => checks(rest, out),
-        other => Err(UsageError(format!("pr has no '{other}'; use list, view or checks")).into()),
+        "diff" => diff(rest, out),
+        other => Err(UsageError(format!(
+            "pr has no '{other}'; use list, view, checks or diff"
+        ))
+        .into()),
     };
     if time {
         use std::io::Write as _;
@@ -261,6 +278,178 @@ fn checks(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
         .saturating_sub(detail.checks.checks.len());
     if unread > 0 {
         writeln!(out, "unread\t{unread}")?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `pr diff`'s valued flags: the pr options and the remote options of `fetch`.
+const DIFF_VALUED: [&str; 5] = [
+    "--login",
+    "--ssh-dir",
+    "--username",
+    "--token",
+    "--accept-hostkey",
+];
+
+fn diff(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let args = split_args("pr diff", raw, &DIFF_VALUED, &["--fetch"])?;
+    args.expect(1, 2, "<number> [repo]")?;
+    let number = number(&args)?;
+    let (service, linked) = linked(&args, 1)?;
+    let path = repo_path(&args, 1)?;
+    let (store, host_keys) = git_secrets(&path, &args)?;
+    let service = service.with_git_credentials(store, host_keys);
+    let cancel = crate::interruptible_cancel()?;
+    let stamp = service
+        .detail(&linked, number, &cancel)
+        .map_err(|error| failure(&error))?
+        .stamp();
+    let mut read = service
+        .changes(&path, &linked, &stamp)
+        .map_err(|message| anyhow!(message))?;
+    if read == ChangesRead::HeadMissing {
+        if !args.has("--fetch") {
+            bail!(
+                "commit {}, the head of #{number}, is not in this repository; rerun with \
+                 --fetch to download it into {}",
+                stamp.head_oid,
+                pull_head_ref(number)
+            );
+        }
+        fetch_head(&service, (&path, &linked), &stamp, &cancel)?;
+        writeln!(
+            out,
+            "fetched\t{}\t{}",
+            pull_head_ref(number),
+            stamp.head_oid
+        )?;
+        read = service
+            .changes(&path, &linked, &stamp)
+            .map_err(|message| anyhow!(message))?;
+    }
+    write_changes(out, &stamp, read)
+}
+
+/// Fetches `stamp`'s head; a head that moved since the read, or a failure, ends the command.
+fn fetch_head(
+    service: &LivePullRequests,
+    (path, linked): (&str, &Linked),
+    stamp: &PullRequestStamp,
+    cancel: &crate::Cancel,
+) -> Result<()> {
+    let problem = match service.fetch_head(path, linked, stamp, cancel) {
+        Ok(HeadFetched::Fetched) => return Ok(()),
+        Ok(HeadFetched::Moved { found }) => bail!(
+            "#{} moved after it was read: the remote's head is {found}, not {}; nothing was \
+             fetched, so run the command again",
+            stamp.number,
+            stamp.head_oid
+        ),
+        Err(problem) => problem,
+    };
+    let code = match &problem {
+        FetchProblem::Cancelled => EXIT_INTERRUPTED,
+        FetchProblem::NeedsSecret(_) => EXIT_AUTH,
+        FetchProblem::UnknownHostKey(_) => EXIT_HOSTKEY,
+        FetchProblem::Failed(_) => EXIT_ERROR,
+    };
+    Err(ReadFailure {
+        message: problem.message().unwrap_or("interrupted").to_owned(),
+        code,
+    }
+    .into())
+}
+
+/// The git secrets the remote options give, keyed by the pull request remote's host as the
+/// fetch offers them; nothing for a repository without that remote.
+fn git_secrets(
+    path: &str,
+    args: &VerbArgs<'_>,
+) -> Result<(Arc<dyn CredentialStore>, Arc<dyn HostKeyStore>)> {
+    let store = MemoryCredentialStore::new();
+    let host_keys = MemoryHostKeyStore::new();
+    if let Some(remote) = pull_request_remote(Path::new(path))? {
+        let transport = if remote.uses_ssh() {
+            Transport::Ssh
+        } else if remote.url().starts_with("https://") || remote.url().starts_with("http://") {
+            Transport::Https
+        } else {
+            Transport::Other
+        };
+        let username = args.value(&["--username"]).map(str::to_owned);
+        let token = args.value(&["--token"]).map(str::to_owned);
+        if let Some(creds) = credentials_for(transport, username, token)? {
+            let kind = if remote.uses_ssh() {
+                CredentialKind::SshPassphrase
+            } else {
+                CredentialKind::HttpsToken
+            };
+            store.store(&creds, remote.host(), kind)?;
+        }
+        if let Some(fingerprint) = args.value(&["--accept-hostkey"]) {
+            host_keys.store(fingerprint, remote.host())?;
+        }
+    }
+    Ok((Arc::new(store), Arc::new(host_keys)))
+}
+
+/// What `pr diff` prints for `read`, or why there is nothing to print.
+fn write_changes(
+    out: &mut Vec<u8>,
+    stamp: &PullRequestStamp,
+    read: ChangesRead,
+) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let head = stamp.head_oid;
+    let (base, tracking, files) = match read {
+        ChangesRead::Files {
+            base,
+            tracking,
+            files,
+        } => (base, tracking, files),
+        ChangesRead::HeadMissing => bail!("commit {head} is still not in this repository"),
+        ChangesRead::NoBaseCopy {
+            branch,
+            tracking: Some(tracking),
+        } => bail!(
+            "there is no {tracking}, the copy of {branch} the changes are compared with; \
+             fetch the remote, then run the command again"
+        ),
+        ChangesRead::NoBaseCopy {
+            branch,
+            tracking: None,
+        } => bail!("the remote's fetch refspecs keep no copy of {branch}; fetch it with git"),
+        ChangesRead::NoMergeBase {
+            tracking,
+            incomplete: true,
+            scanned,
+        } => bail!(
+            "no merge base of {head} and {tracking} within {scanned} commits; the history \
+             may be shallow, so fetch more of it with git"
+        ),
+        ChangesRead::NoMergeBase { tracking, .. } => {
+            bail!("{head} and {tracking} share no history")
+        }
+    };
+    writeln!(out, "base\t{base}\t{tracking}")?;
+    writeln!(out, "head\t{head}")?;
+    for change in files {
+        let letter = match change.kind {
+            ChangeKind::Added => "A",
+            ChangeKind::Deleted => "D",
+            ChangeKind::Modified => "M",
+            ChangeKind::Renamed => "R",
+        };
+        write!(out, "{letter}\t")?;
+        match &change.source_path {
+            Some(source) => {
+                write_path(out, &change.path);
+                out.push(b'\t');
+                Records::Lines.end_with_path(out, source);
+            }
+            None => Records::Lines.end_with_path(out, &change.path),
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

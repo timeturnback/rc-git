@@ -18,12 +18,16 @@ mod fetch;
 pub mod github;
 mod pack;
 mod pull;
+mod pull_head;
 mod push;
 mod report;
 mod ssh;
 
 pub use fetch::{FetchOutcome, FetchRemote, RefUpdate, fetch_remote, fetch_upstream};
 pub use pull::{PullOutcome, pull_fast_forward};
+pub use pull_head::{
+    PULL_HEAD_NAMESPACE, PullHeadFetch, PullHeadRequest, fetch_pull_request_head, pull_head_ref,
+};
 pub use push::{PushOutcome, push_upstream};
 
 /// How long dialing, the TLS or ssh handshake, and authentication may take together.

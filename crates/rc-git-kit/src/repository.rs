@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use rc_git_core::{
     Blame, BlobContent, BlobDiff, CommitDetail, CommitFilter, CommitPage, CommitSummary,
-    ContentQuery, DefaultBranch, Head, HistoryWalk, LogCursor, Oid, RefListing, SearchBatch,
-    SearchLimits, StashEntry, StatusReport, TreeChange, TreeEntry, WorktreeFileList,
+    ContentQuery, DefaultBranch, Head, HistoryWalk, LogCursor, MergeBase, Oid, RefListing,
+    SearchBatch, SearchLimits, StashEntry, StatusReport, TreeChange, TreeEntry, WorktreeFileList,
     WorktreeListing,
 };
 
@@ -144,6 +144,15 @@ pub trait RepositoryReading: Send + Sync {
     /// # Errors
     /// When either side is missing or not a tree.
     fn diff_trees(&self, from: Option<Oid>, to: Oid) -> ReadResult<Vec<TreeChange>>;
+
+    /// Whether the object database holds `oid`.
+    fn has_object(&self, oid: Oid) -> bool;
+
+    /// The merge base of two commits, reading at most `max_scan` commits.
+    ///
+    /// # Errors
+    /// When either side, or a commit on the way, is missing or not a commit.
+    fn merge_base(&self, one: Oid, two: Oid, max_scan: usize) -> ReadResult<MergeBase>;
 
     /// The line diff of two blobs; `None` stands for an absent side.
     ///
@@ -353,6 +362,14 @@ impl RepositoryReading for LiveRepository {
 
     fn diff_trees(&self, from: Option<Oid>, to: Oid) -> ReadResult<Vec<TreeChange>> {
         Ok(self.repository.diff_trees(from, to)?)
+    }
+
+    fn has_object(&self, oid: Oid) -> bool {
+        self.repository.has_object(oid)
+    }
+
+    fn merge_base(&self, one: Oid, two: Oid, max_scan: usize) -> ReadResult<MergeBase> {
+        Ok(self.repository.merge_base(one, two, max_scan)?)
     }
 
     fn diff_blobs(

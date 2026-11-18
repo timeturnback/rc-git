@@ -19,6 +19,13 @@ pub use policy::{Challenge, Confirmation, Policy};
 pub enum Action {
     /// Download objects and update remote-tracking refs. Never loses local work.
     Fetch,
+    /// Download one pull request's head commit and point rc-git's own ref for it,
+    /// `refs/rc-git/pr/<number>/head`, at that commit, moving the ref wherever the pull request
+    /// went. No branch, tag or remote-tracking ref changes. Never loses local work.
+    FetchPullRequest {
+        /// The pull request's number.
+        number: u64,
+    },
     /// Create a local branch at an existing commit, never overwriting one. Loses nothing.
     CreateLocalBranch {
         /// Branch name without `refs/heads/`.
@@ -132,6 +139,7 @@ impl Action {
     pub fn risk(&self) -> Risk {
         match self {
             Action::Fetch
+            | Action::FetchPullRequest { .. }
             | Action::CreateLocalBranch { .. }
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
@@ -262,6 +270,7 @@ mod tests {
         let unless_protected = |row: Expected| if protected { Expected::Deny } else { row };
         match action {
             Action::Fetch
+            | Action::FetchPullRequest { .. }
             | Action::CreateLocalBranch { .. }
             | Action::CreateTag { .. }
             | Action::Checkout { .. }
@@ -310,6 +319,7 @@ mod tests {
         let stash = || "stash@{0} \"On topic: wip\"".to_owned();
         vec![
             Action::Fetch,
+            Action::FetchPullRequest { number: 7 },
             Action::CreateLocalBranch { name: name() },
             Action::CreateTag { name: name() },
             Action::Checkout { target: name() },

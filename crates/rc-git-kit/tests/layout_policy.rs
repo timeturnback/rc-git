@@ -34,6 +34,16 @@ fn the_pull_request_caps_leave_a_minimum_window_room_for_the_rest() {
 }
 
 #[test]
+fn a_pull_request_file_list_leaves_its_diff_the_larger_part() {
+    use rc_git_kit::layout_policy::PULL_REQUEST_FILES_SHARE;
+    let widths = [WINDOW_MINIMUM_WIDTH, 1400.0]
+        .map(|width| (width * f64::from(PULL_REQUEST_FILES_SHARE), width));
+    for (files, width) in widths {
+        assert!(files > 0.0 && files < width - files, "{files} of {width}");
+    }
+}
+
+#[test]
 fn wide_window_shows_everything() {
     assert_eq!(
         layout(size(1400.0, 900.0)),

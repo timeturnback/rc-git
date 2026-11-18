@@ -1,28 +1,51 @@
 //! The live [`PullRequestService`]: the guard's reads, the app's account settings, and the
 //! token keeper over the keychain. The app and the CLI both use it, so they share the accounts,
 //! the per-repository choices and the tokens.
+//!
+//! A pull request's head is fetched like any fetch: over the remote's own git transport, with
+//! the git credentials and approved ssh host keys saved for the remote's host
+//! ([`LivePullRequests::with_git_credentials`]). The API token is never one of them: it goes
+//! only to the API host, in the guard's GitHub client.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, TreeChange};
 use rc_git_guard::actions::github::{
-    ApiToken, list_open_pull_requests, pull_request_remote, read_pull_request, refresh_user_token,
-    unix_now,
+    ApiToken, PullRequestRemote, list_open_pull_requests, pull_request_base_ref,
+    pull_request_remote, read_pull_request, refresh_user_token, unix_now,
 };
+use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pull_request_head};
 
+use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
+use super::copy::fetch_problem;
 use super::link::{Linked, RepositoryLink, link_repository};
 use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
-use super::{PullRequestService, ReadError};
+use super::{PullRequestService, PullRequestStamp, ReadError};
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
 use crate::github::tokens::{TokenError, TokenKeeper};
+use crate::guard_bridge::{Credentials, FailureKind, classify};
+use crate::models::{new_blob, old_blob};
 use crate::platform::api_tokens::{AccountKey, ApiTokenStore};
+use crate::platform::credentials::{CredentialKind, CredentialStore};
+use crate::platform::host_keys::HostKeyStore;
 use crate::platform::stores::SharedSettings;
+use crate::repository::{LiveRepository, RepositoryReading};
+use crate::repository_actions::policy;
+
+/// The git credentials a pull request head fetch may offer: the secrets saved per host for
+/// fetch and push, and the approved ssh host keys.
+struct GitSecrets {
+    store: Arc<dyn CredentialStore>,
+    host_keys: Arc<dyn HostKeyStore>,
+}
 
 /// The service over the guard, the settings and the token store.
 pub struct LivePullRequests {
     accounts: GitHubAccounts,
     keeper: TokenKeeper<Arc<dyn ApiTokenStore>>,
     ssh_dir: Option<PathBuf>,
+    git: Option<GitSecrets>,
 }
 
 impl std::fmt::Debug for LivePullRequests {
@@ -42,7 +65,21 @@ impl LivePullRequests {
             accounts: GitHubAccounts::new(settings),
             keeper: TokenKeeper::new(tokens),
             ssh_dir: None,
+            git: None,
         }
+    }
+
+    /// The same, fetching pull request heads with the git credentials in `store` (the ones
+    /// fetch and push use, keyed by host) and the ssh host keys approved in `host_keys`.
+    /// Without them a fetch goes out with none, as an anonymous `git fetch` would.
+    #[must_use]
+    pub fn with_git_credentials(
+        mut self,
+        store: Arc<dyn CredentialStore>,
+        host_keys: Arc<dyn HostKeyStore>,
+    ) -> Self {
+        self.git = Some(GitSecrets { store, host_keys });
+        self
     }
 
     /// The same, reading ssh aliases from `dir/config` instead (the CLI's `--ssh-dir`, tests).
@@ -142,4 +179,112 @@ impl PullRequestService for LivePullRequests {
             .choose(repo_path, key)
             .map_err(|error| error.to_string())
     }
+
+    fn changes(
+        &self,
+        repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+    ) -> Result<ChangesRead, String> {
+        same_remote(repo_path, linked)?;
+        let repository =
+            LiveRepository::open(repo_path).map_err(|error| error.message().to_owned())?;
+        let tracking = pull_request_base_ref(Path::new(repo_path), &stamp.base_ref)
+            .map_err(|error| error.to_string())?;
+        read_changes(&repository, stamp, tracking)
+    }
+
+    fn file_diff(&self, repo_path: &str, change: &TreeChange) -> Result<BlobDiff, String> {
+        let repository =
+            LiveRepository::open(repo_path).map_err(|error| error.message().to_owned())?;
+        repository
+            .diff_blobs(
+                old_blob(change),
+                new_blob(change),
+                DEFAULT_BLOB_LIMIT,
+                DEFAULT_DIFF_CONTEXT,
+            )
+            .map_err(|error| error.message().to_owned())
+    }
+
+    fn fetch_head(
+        &self,
+        repo_path: &str,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<HeadFetched, FetchProblem> {
+        let remote = same_remote(repo_path, linked).map_err(FetchProblem::Failed)?;
+        let host = remote.host();
+        let kind = if remote.uses_ssh() {
+            CredentialKind::SshPassphrase
+        } else {
+            CredentialKind::HttpsToken
+        };
+        let (creds, accepted) = self.git_secrets(host, kind)?;
+        let auth = RemoteAuth {
+            creds: creds.as_ref(),
+            host: Some(host),
+            accepted_hostkey: accepted.as_deref(),
+            ssh_dir: self.ssh_dir.as_deref(),
+        };
+        let request = PullHeadRequest {
+            number: stamp.number,
+            expected: stamp.head_oid,
+        };
+        let error =
+            match fetch_pull_request_head(Path::new(repo_path), policy(), request, auth, cancel) {
+                Ok(PullHeadFetch::Fetched { .. }) => return Ok(HeadFetched::Fetched),
+                Ok(PullHeadFetch::Moved { found, .. }) => return Ok(HeadFetched::Moved { found }),
+                Err(error) => error,
+            };
+        let message = fetch_problem(&error, host);
+        Err(match classify(&error) {
+            FailureKind::Cancelled => FetchProblem::Cancelled,
+            FailureKind::AuthRequired | FailureKind::PassphraseRequired { .. } => {
+                FetchProblem::NeedsSecret(message)
+            }
+            FailureKind::HostKeyUnknown { .. } => FetchProblem::UnknownHostKey(message),
+            FailureKind::IdentityRequired
+            | FailureKind::Stale
+            | FailureKind::CredentialHostRefused
+            | FailureKind::Diverged
+            | FailureKind::Failed => FetchProblem::Failed(message),
+        })
+    }
+}
+
+impl LivePullRequests {
+    /// The git secret saved for `host` and `kind`, and the ssh host key approved for `host`.
+    fn git_secrets(
+        &self,
+        host: &str,
+        kind: CredentialKind,
+    ) -> Result<(Option<Credentials>, Option<String>), FetchProblem> {
+        let Some(git) = &self.git else {
+            return Ok((None, None));
+        };
+        let creds = git
+            .store
+            .credentials(host, kind)
+            .map_err(|error| FetchProblem::Failed(error.to_string()))?;
+        Ok((creds, git.host_keys.fingerprint(host)))
+    }
+}
+
+/// The repository's pull request remote, when it is still the one `linked` was read through:
+/// a remote changed since would fetch from somewhere the pull request was not read.
+fn same_remote(repo_path: &str, linked: &Linked) -> Result<PullRequestRemote, String> {
+    let remote = pull_request_remote(Path::new(repo_path))
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "the repository no longer has a remote".to_owned())?;
+    if remote.name() != linked.remote {
+        return Err(format!(
+            "the repository's pull requests now come from '{}', not '{}'; open the pull \
+             request again",
+            remote.name(),
+            linked.remote
+        ));
+    }
+    Ok(remote)
 }

@@ -203,3 +203,106 @@ fn a_hostile_title_and_description_show_escapes_and_load_nothing(cx: &mut TestAp
         "an image is a link that opens only on a click"
     );
 }
+
+/// The page's view and the selected tab's changes phase.
+fn changes_phase(
+    cx: &TestAppContext,
+    window: &Entity<RepoWindow>,
+) -> Option<rc_git_kit::pull_requests::changes::ChangesPhase> {
+    cx.read(|cx| {
+        let model = window.read(cx).pull_requests().read(cx);
+        model
+            .selected_changes()
+            .map(|changes| changes.phase().clone())
+    })
+}
+
+#[gpui::test]
+fn the_changes_view_reads_local_objects_and_fetches_only_on_its_button(cx: &mut TestAppContext) {
+    use rc_git_core::{BlobDiff, ChangeKind, DiffHunk, EntryKind, TreeChange};
+    use rc_git_kit::pull_requests::changes::{ChangesPhase, ChangesRead, HeadFetched};
+
+    use crate::diff::DiffContent;
+    use crate::pull_requests::page::PageView;
+
+    let fake = FakePullRequests::new();
+    fake.state()
+        .pages
+        .insert(None, Ok(page(vec![pull_request(7, "Ship", oid(7))], None)));
+    let detail = pull_request_detail(pull_request(7, "Ship", oid(7)), "", CheckList::default());
+    fake.state().details.insert(7, Ok(detail));
+    let change = TreeChange {
+        kind: ChangeKind::Modified,
+        path: "src/lib.rs".into(),
+        source_path: None,
+        old: Some(oid(1)),
+        new: Some(oid(2)),
+        entry: EntryKind::Blob,
+        old_entry: Some(EntryKind::Blob),
+    };
+    let ready = ChangesRead::Files {
+        base: oid(3),
+        tracking: "refs/remotes/origin/main".to_owned(),
+        files: vec![change],
+    };
+    fake.state()
+        .changes
+        .insert(oid(7), [Ok(ChangesRead::HeadMissing), Ok(ready)].into());
+    fake.state()
+        .fetches
+        .insert(oid(7), Ok(HeadFetched::Fetched));
+    let hunk = DiffHunk {
+        old_start: 1,
+        old_lines: 0,
+        new_start: 1,
+        new_lines: 0,
+        lines: Vec::new(),
+    };
+    fake.state().file_diffs.insert(
+        "src/lib.rs".to_owned(),
+        Ok(BlobDiff::Text { hunks: vec![hunk] }),
+    );
+    let (_harness, window) = shell(cx, &fake);
+    listed(cx, &window);
+    window.update(cx, |window, cx| window.open_pull_request(7, cx));
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            let model = window.read(cx).pull_requests().read(cx);
+            model
+                .selected_tab()
+                .is_some_and(|tab| tab.stamp().is_some())
+        })
+    });
+    assert_eq!(
+        changes_phase(cx, &window),
+        None,
+        "Overview reads no changes"
+    );
+    let page = cx.read(|cx| window.read(cx).pull_request_page().clone());
+    page.update(cx, |page, cx| page.set_view(PageView::Changes, cx));
+    assert_eq!(cx.read(|cx| page.read(cx).view()), PageView::Changes);
+    wait_until(cx, |cx| {
+        changes_phase(cx, &window) == Some(ChangesPhase::NeedsFetch { problem: None })
+    });
+    assert!(
+        fake.state().fetch_calls.is_empty(),
+        "showing changes fetches nothing"
+    );
+
+    let model = cx.read(|cx| window.read(cx).pull_requests().clone());
+    model.update(
+        cx,
+        rc_git_kit::pull_requests::model::PullRequestsModel::fetch_changes,
+    );
+    wait_until(cx, |cx| {
+        matches!(changes_phase(cx, &window), Some(ChangesPhase::Ready { .. }))
+    });
+    assert_eq!(fake.state().fetch_calls.len(), 1);
+    model.update(cx, |model, cx| model.select_changed_file(0, cx));
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            let diff = page.read(cx).changes_diff().read(cx);
+            matches!(diff.content(), DiffContent::Hunks(hunks) if hunks.len() == 1)
+        })
+    });
+}

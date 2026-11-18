@@ -92,7 +92,8 @@ Opening a repository someone else produced must be harmless.
 - Errors are messages, never panics. Clippy denies `unwrap`, `expect`, `panic`, `todo`, and
   `unimplemented` outside tests; release builds abort on panic rather than unwind across the
   C boundary.
-- Network I/O exists only behind `rc-git-guard`'s fetch, pull, push, and sync actions,
+- Network I/O exists only behind `rc-git-guard`'s fetch, pull, push, and sync actions
+  and its fetch of a pull request's head,
   speaks HTTPS and SSH only (plain `http://` is accepted for loopback hosts, so tests
   can run a local server end to end), and sends credentials only when the caller passed
   them. SSH host keys are verified against a read-only `known_hosts`: an unknown key is
@@ -110,14 +111,15 @@ its `actions` module is the only code in rc-git that performs one. Today that me
 and tag creation and deletion from the sidebar; from the Changes tab, committing selected
 files or hunks, the stash lifecycle, and discarding uncommitted changes; switching `HEAD` to
 another local branch, which the Back-to-default control composes with a fetch and a
-fast-forward; and the remote operations — fetch, fast-forward pull, plain push, and their sync
-composition — all driven through `rc_git_guard::actions` from rc-git-kit. Every other row of
-the table is settled policy
-waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
+fast-forward; the remote operations — fetch, fast-forward pull, plain push, and their sync
+composition; and the fetch of a pull request's head from its page or `rc-git pr diff --fetch`
+— all driven through `rc_git_guard::actions` from rc-git-kit. Every other row of the table is
+settled policy waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 | Action | Protected branch | Elsewhere |
 |---|---|---|
 | fetch, plain push | allow | allow |
+| fetch a pull request's head into `refs/rc-git/pr/<n>/head` (force-updated; writes nothing when the head moved) | allow | allow |
 | checkout | allow (the write path refuses dirty files, and a branch another worktree has checked out) | same |
 | pull (fast-forward) | allow (the write path refuses dirty files) | same |
 | create branch, create tag | allow (never overwrites) | allow (never overwrites) |
@@ -401,9 +403,30 @@ libcurl directly.
   every other destination does nothing (`LinkPolicy::WebOnly`). The CLI prints the same
   neutralized text, one record per line.
 
+- **Pull request heads.** A pull request's changes are read from local objects, so its head
+  commit has to be in the repository. When it is not, rc-git fetches it only when the user
+  clicks Fetch Changes on its page or passes `rc-git pr diff --fetch`: a pull request's size is
+  whatever its author made it, and the fetch writes objects. `fetch_pull_request_head`
+  (`actions/remote/pull_head.rs`) is a guarded fetch (`Action::FetchPullRequest`, the row
+  above) with the same cancel, idle budget and repository claim as every fetch, from the remote
+  pull requests are read from, over that remote's own git transport. It offers only the git
+  credentials and ssh host-key approvals saved for the remote's host, as fetch and push do; the
+  API token is never one of them (a test serves a git endpoint that challenges for Basic
+  credentials and checks the token never reaches it). It asks for exactly one refspec, built
+  from the number alone (`+refs/pull/<n>/head:refs/rc-git/pr/<n>/head`, never from server text),
+  and no tags, so no branch, tag or remote-tracking ref moves. Before any object is received it
+  compares the head the remote advertises with the head the API reported for the pull request
+  on screen (`PullRequestStamp`); a different one answers `Moved` and writes nothing, and the
+  page reads the pull request again. The diff is always computed for the stamp's head, never
+  for whatever the ref holds, so a pull request that moved never shows another commit's files
+  under its name. The ref is force-updated, since heads are rewritten routinely. Objects a pull
+  request brings are untrusted like any repository content: they are read, capped and diffed as
+  every blob is, and `refs/rc-git/pr/*` is never checked out, merged or applied to the working
+  tree; it lists as "other" beside the backup refs, never as a branch or a tag.
+
 Sign-in, the token check, the refresh and the pull request reads change no repository, so they
-have no `Action`; the pull request mutations of later slices will each get a policy row in the
-table above.
+have no `Action`; fetching a pull request's head has the row above, and the pull request
+mutations of later slices will each get one too.
 
 ## Updater
 

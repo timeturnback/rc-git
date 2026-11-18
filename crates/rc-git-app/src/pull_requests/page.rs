@@ -1,8 +1,10 @@
-//! A pull request's read-only page in the content card: the strip of open pull request tabs,
-//! the header (title, author, branches, state, review), the checks, and the description in a
-//! markdown preview that opens only web links, on a click ([`LinkPolicy::WebOnly`]). Nothing
-//! on the page loads a URL: a details link and the host's page open in the browser when
-//! clicked, their host named on the button.
+//! A pull request's page in the content card: the strip of open pull request tabs, the header
+//! (title, author, branches, state, review), then one of two views. Overview shows the checks
+//! and the description in a markdown preview that opens only web links, on a click
+//! ([`LinkPolicy::WebOnly`]); Changes shows the files the pull request changes and their diffs
+//! ([`super::changes`]), fetched only when the user clicks Fetch Changes. Nothing on the page
+//! loads a URL: a details link and the host's page open in the browser when clicked, their
+//! host named on the button.
 //!
 //! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
 
@@ -17,23 +19,37 @@ use gpui_component::{ActiveTheme, Icon, h_flex, v_flex};
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
-    DETAIL_LOADING, NO_DESCRIPTION, STALE_NOTE, check_label, details_label, fields_note,
-    freshness_problem, mergeable_label, review_label, row_detail, state_label, tab_title,
+    CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
+    details_label, fields_note, freshness_problem, mergeable_label, review_label, row_detail,
+    state_label, tab_title,
 };
+use rc_git_kit::pull_requests::link::RepositoryLink;
 use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{Check, PullRequestDetail, ServerLink};
 
+use super::changes::{self, ChangesView};
 use super::check_icon;
 use crate::files::markdown::MarkdownPreview;
 use crate::icons::{Glyph, icon};
 use crate::style;
+
+/// Which view the page shows under the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageView {
+    /// The checks and the description.
+    Overview,
+    /// The changed files and their diffs.
+    Changes,
+}
 
 /// The page.
 pub struct PullRequestPage {
     model: Entity<PullRequestsModel>,
     /// The description on show: its pull request, its text, and its preview.
     preview: Option<(u64, String, Entity<MarkdownPreview>)>,
+    view: PageView,
+    changes: ChangesView,
     now: fn() -> u64,
 }
 
@@ -47,14 +63,47 @@ impl PullRequestPage {
                 .and_then(DetailState::detail)
                 .cloned();
             this.sync_preview(detail.as_ref(), cx);
+            this.follow_changes(cx);
             cx.notify();
         })
         .detach();
         Self {
+            changes: ChangesView::new(cx),
             model,
             preview: None,
+            view: PageView::Overview,
             now,
         }
+    }
+
+    /// The view on show.
+    #[cfg(test)]
+    pub(crate) fn view(&self) -> PageView {
+        self.view
+    }
+
+    /// Shows `view`; Changes reads what the repository holds for the selected tab.
+    pub fn set_view(&mut self, view: PageView, cx: &mut Context<Self>) {
+        self.view = view;
+        self.follow_changes(cx);
+        cx.notify();
+    }
+
+    /// Keeps the Changes view on the selected tab's current read and its diff on the picked
+    /// file. Reads only local objects: a fetch starts from its button alone.
+    fn follow_changes(&mut self, cx: &mut Context<Self>) {
+        if self.view == PageView::Changes {
+            self.model.update(cx, PullRequestsModel::show_changes);
+        }
+        let model = self.model.read(cx);
+        let changes = model.selected_changes().cloned();
+        self.changes.sync(changes.as_ref(), cx);
+    }
+
+    /// The Changes view's diff, for tests.
+    #[cfg(test)]
+    pub(crate) fn changes_diff(&self) -> &Entity<crate::diff::DiffView> {
+        &self.changes.diff
     }
 
     /// The description preview on show, for tests.
@@ -138,6 +187,36 @@ impl PullRequestPage {
             );
         }
         strip
+    }
+
+    fn view_switch(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let mut switch = h_flex()
+            .gap(style::TAB_GAP)
+            .px(style::MARGIN)
+            .pb(style::BAR_PADDING);
+        for (id, label, view) in [
+            ("pull-request-overview", OVERVIEW_VIEW, PageView::Overview),
+            ("pull-request-changes", CHANGES_VIEW, PageView::Changes),
+        ] {
+            let button = Button::new(id)
+                .label(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_view(view, cx)));
+            let button = if self.view == view {
+                button.primary()
+            } else {
+                button.ghost()
+            };
+            switch = switch.child(button);
+        }
+        switch
+    }
+
+    /// The remote the linked repository reads from, for the Changes view's words.
+    fn remote(&self, cx: &Context<Self>) -> String {
+        match self.model.read(cx).link() {
+            Some(RepositoryLink::Linked(linked)) => linked.remote.clone(),
+            Some(_) | None => "the remote".to_owned(),
+        }
     }
 
     fn line(text: String, color: gpui::Hsla) -> impl IntoElement {
@@ -290,6 +369,19 @@ impl Render for PullRequestPage {
             return page;
         };
         page = page.child(self.header(&tab, cx));
+        page = page.child(self.view_switch(cx));
+        if self.view == PageView::Changes {
+            let remote = self.remote(cx);
+            let view = changes::render(&self.changes, &self.model, &remote, cx);
+            return page.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .border_t(style::HAIRLINE)
+                    .border_color(cx.theme().border)
+                    .child(view),
+            );
+        }
         if let Some(detail) = tab.detail() {
             page = page.child(Self::checks(detail, cx));
         }

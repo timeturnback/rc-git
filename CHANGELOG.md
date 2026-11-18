@@ -6,6 +6,16 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Added
 
+- A pull request's tab has a Changes view: the files the pull request changes since it left
+  its base branch, as GitHub counts them, and the diff of the file you pick, read from your own
+  repository. When its commits are not in your repository yet, Fetch Changes downloads them
+  from the remote, with the credentials you saved for Fetch and never your GitHub token, into
+  `refs/rc-git/pr/<number>/head`, a ref that never shows as a branch and is never checked out;
+  Stop stays on screen while it runs. If the pull request moved after you opened it, nothing is
+  downloaded and RCGit reads it again. When your copy of the base branch is missing, it says to
+  fetch first rather than guess. In Terminal, `rc-git pr diff <n>` lists the same files (add
+  `--fetch` to download them), and `rc-git merge-base` prints where two branches meet.
+
 - The sidebar has a Pull Requests section for a repository on GitHub: the open pull requests
   of its remote, newest activity first, each with its number, title, author, branches and a
   check icon (passing, failing, running). Click one to open it in a tab on the page: its state,

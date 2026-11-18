@@ -108,6 +108,11 @@ here; so does everything that comes later.
   server URL through `links::server_link` before it leaves the guard: no raw server text out.
 - Resolve an ssh alias only through `ssh::dialed_host` (the transport's resolver), and compare its
   `HostName` with an account host exactly; never write a second ssh-config reader.
+- Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):
+  its refspec comes from `pull_head::refspec(number)` alone, never from server text, it fetches
+  no tags, and `run_fetch` refuses before `receive` when the advertised head is not the stamp's.
+  Give a new fetch variant a `fetch::Wanted` arm rather than a second transport path; the PR
+  remote resolves through `pull_request_upstream`, as the reads do.
 - Resolve a branch's remote and tracking ref only through `configured_remote_name` and
   `tracking_ref_name` in `actions/remote.rs`, never gix's `branch_remote*` helpers directly
   (clippy-banned in `clippy.toml`; those two wrappers carry the only `#[expect]`):

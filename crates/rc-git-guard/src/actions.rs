@@ -32,9 +32,10 @@ pub use commit::{CommitRequest, Committed, commit, configured_identity};
 pub use discard::{DiscardKind, DiscardOutcome, discard_files, discard_hunks};
 pub use remote::github;
 pub use remote::{
-    Cancel, Credentials, FetchOutcome, FetchRemote, PullOutcome, PushOutcome, RefUpdate,
-    RemoteAuth, UpstreamStatus, fetch_remote, fetch_upstream, pull_fast_forward, push_upstream,
-    upstream_status,
+    Cancel, Credentials, FetchOutcome, FetchRemote, PULL_HEAD_NAMESPACE, PullHeadFetch,
+    PullHeadRequest, PullOutcome, PushOutcome, RefUpdate, RemoteAuth, UpstreamStatus,
+    fetch_pull_request_head, fetch_remote, fetch_upstream, pull_fast_forward, pull_head_ref,
+    push_upstream, upstream_status,
 };
 pub use stash::{StashRequest, StashSaved, stash_apply, stash_drop, stash_pop, stash_push};
 
