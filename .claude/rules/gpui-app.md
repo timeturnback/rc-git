@@ -1,5 +1,5 @@
 ---
-description: GPUI app rules for window tabs, the tab strip and wrapping text rows
+description: GPUI app rules for window tabs, the tab strip, wrapping text rows and rounded containers
 paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
 ---
 
@@ -17,3 +17,7 @@ paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
 - Write `list.active`, `table.active` and `selection` fills in `assets/theme.json` translucent:
   gpui-component clamps their alpha to 0.2/0.3, and drops a bad value or unknown key silently.
   (docs/solutions/ui-bugs/gpui-component-theme-config-silent-clamps-and-drops.md)
+- Inside a rounded container, paint the background on the container only: GPUI clips
+  `overflow_hidden` to a rectangle, so a child fill at its edge squares off the corners. Hide a
+  split's divider with a handle renderer that returns an empty `Some`, never `None`.
+  (docs/solutions/ui-bugs/gpui-rounded-card-clips-children-square.md)
