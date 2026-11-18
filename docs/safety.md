@@ -291,7 +291,8 @@ libcurl directly.
   `github.com.evil.example` and `evil.example/github.com` get nothing. An `https://` remote
   carrying userinfo, an ssh remote with a user other than `git` or a port other than 22, and
   `git://`, `file://` and plain `http://` remotes are refused before any request. Owner and name
-  must be `[A-Za-z0-9._-]+` and not `.` or `..`.
+  must be `[A-Za-z0-9._-]+` and not `.` or `..`, the owner at most 39 characters and the name at
+  most 100 (GitHub's own limits), and a remote URL over 1024 bytes is refused unparsed.
 - **No account fallthrough.** Accounts and the per-repository choice live in app settings
   (`rc-git.githubAccounts`, `rc-git.githubRepositoryAccounts`, keyed by repository path), never
   in the repository's config. One account on the host is used; several with no choice ask; a
@@ -299,24 +300,41 @@ libcurl directly.
 - **Tokens.** Only in the login keychain: a generic-password item per host and account, service
   `rc-git`, account `github-api/<host>/<login>`, holding the access token, a GitHub App's
   refresh token and their expiries. Generic passwords never match the HTTPS push and ssh items,
-  which are internet passwords queried by host and protocol alone. Never in settings, logs,
-  error messages, argv or the environment: `ApiToken` and `RefreshToken` print `<redacted>`
-  under `Debug` and have no `Display`, and every message built from server or curl text is
-  scrubbed of the secrets the request carried. A token must be visible ASCII, so it cannot
-  split a header. `rc-git auth login --method token` reads it from standard input and refuses a
-  terminal. The keychain key decides where a token goes: a settings record naming another host
-  for a login reads no token.
+  which are internet passwords queried by host and protocol alone. A sign-in deletes whatever
+  item holds its account and adds a fresh one (`save_new_tokens`), so an item another program
+  planted under that service and account, with an access list of its choosing, never receives
+  the token; one that reappears between the delete and the add fails the add. A refresh
+  rewrites the data of the existing item only (`update_tokens`) and never adds one, so it
+  cannot bring back an account a sign-out deleted. Never in settings, logs, error messages,
+  argv or the environment: `ApiToken` and `RefreshToken` print `<redacted>` under `Debug` and
+  have no `Display`; the transport's request, body and response types print no secret either;
+  and every message built from server or curl text is scrubbed of the secrets the request
+  carried. A token must be visible ASCII, so it cannot split a header. `rc-git auth login
+  --method token` reads it from standard input and refuses a terminal. The keychain key decides
+  where a token goes: a settings record naming another host for a login reads no token.
 - **Transport.** `https://` only: the request URL is checked in the one send function, and
   plain `http://` reaches a loopback host only under `cfg(test)` or the dev-only
-  `dev-loopback-http` feature, which `scripts/check.sh` proves the app and CLI builds lack. The
-  `curl` crate has no safe setter for curl's protocol list and `unsafe` is forbidden outside
-  rc-git-mac, so that URL check, with redirects off, is the restriction: curl connects to that
-  URL alone. Redirects are never followed and a 3xx is an error, so a redirect target receives
-  nothing. Peer and host verification stay on; `clippy.toml` bans the setters that would turn
-  them off, add a CA or send credentials across a redirect, and the curl constructors outside
-  the client. `.netrc` is ignored. Nothing is read from the repository; libcurl still honors the
-  process environment's proxy variables, as fetch and push do, and a loopback host bypasses
-  them.
+  `dev-loopback-http` feature. `scripts/check.sh` proves that a `cargo build -p rc-git-app` or
+  `cargo build -p rc-git-cli`, and so the bundle `scripts/build-app.sh` assembles, lacks the
+  feature. It proves nothing about a binary `cargo test` leaves behind: Cargo unifies features
+  with dev-dependencies when it builds tests, so after any `cargo test` the
+  `target/<profile>/rc-git` it built carries the feature (as it carries the dev-only
+  `http-client-insecure-credentials`), speaks plain http to loopback and honors the CLI's test
+  hooks. Such a binary is a test artifact; never use it with a real account. The `curl` crate
+  has no safe setter for curl's protocol list and `unsafe` is forbidden outside rc-git-mac, so
+  that URL check, with redirects off, is the restriction: curl connects to that URL alone.
+  Redirects are never followed and a 3xx is an error, so a redirect target receives nothing.
+  Peer and host verification stay on. `clippy.toml` bans the curl constructors outside the
+  client, and everywhere the setters that would turn verification off (DoH's included), add a
+  CA, lower the TLS version or ciphers, load a crypto engine or entropy source, print the
+  headers (`verbose`), hand credentials to curl or a proxy, send them across a redirect, or
+  connect anywhere but the URL's host as the system resolves it. It also bans gix-transport's
+  own HTTP client (the `Curl` type, `http::connect`, `Transport::new`, `Http::get` and `post`),
+  which fetch and push reach only through the banned connect entry points. The dependency graph
+  is checked too: only gix-transport and rc-git-guard may depend on `curl`, and only `curl` on
+  `curl-sys`, however a manifest spells it. `.netrc` is ignored. Nothing is read from the
+  repository; libcurl still honors the process environment's proxy variables, as fetch and push
+  do, and a loopback host bypasses them.
 - **Bounded.** Every call takes a `Cancel`: the connect budget, the idle budget and a total of
   both, a wait that returns within 200 ms of a cancel while curl's progress callback aborts the
   transfer at its next tick, and caps on the body (4 MiB for the API, 64 KiB for sign-in) and
@@ -329,17 +347,29 @@ libcurl directly.
 - **Device flow.** rc-git opens only `https://<host>/login/device`; an answer naming another
   `verification_uri` stops the flow before any poll. Polls wait `interval` and slow down by what
   `slow_down` says, stop at `expires_in` without another request, end on `access_denied` and
-  `expired_token`, and every wait looks at the cancel flag. One flow runs per process. No client
-  secret exists anywhere: GitHub refreshes a device-flow token with the client id alone. The
-  device code is never shown or logged.
-- **Refresh.** A GitHub App refresh token is single-use. `TokenKeeper` (rc-git-kit) serializes
-  refreshes per account in one process, reads the keychain again before refreshing, and after a
-  refused refresh reads it once more: only when the item still holds the refused refresh token
-  is the account signed out, since the CLI may have renewed it. A refresh that cannot reach the
-  host signs nobody out.
-- **Untrusted text.** `single_line` shows control characters and bidirectional controls as
-  visible `\u{..}` escapes and drops ANSI escape sequences; every server message in an error
-  passes through it. GraphQL queries are static strings and every value travels in `variables`.
+  `expired_token`, and every wait looks at the cancel flag. One flow runs per process, and the
+  sign-in sheet's state machine (`SignInFlow`, rc-git-kit) holds it only while a poll follows,
+  so a failed or cancelled attempt frees it for the next. No client secret exists anywhere:
+  GitHub refreshes a device-flow token with the client id alone. The device code is never shown
+  or logged, and a test makes the fake host echo it (and a refresh token) back in each place an
+  error can carry text.
+- **Refresh.** A GitHub App refresh token is single-use. `TokenKeeper` (rc-git-kit) reads the
+  keychain on every call, so a sign-out in the app or the CLI stops the other at its next call;
+  it serializes refreshes per account in one process, and after a refused refresh reads the
+  keychain once more: only when the item still holds the refused refresh token is the account
+  signed out, since the CLI may have renewed it. A renewal whose item was deleted meanwhile is
+  dropped, not saved. A refresh that cannot reach the host signs nobody out.
+- **Untrusted text.** `single_line` shows control characters, every `Bidi_Control` code point,
+  the line and paragraph separators and the zero-width characters as visible `\u{..}` escapes
+  and drops ANSI escape sequences; every server message in an error passes through it, and so
+  does every free-text field read back from the settings file. An OAuth `error` code is shown
+  only when it is 1 to 64 of `[a-z_]` and holds no secret of the request, else as
+  `unrecognized error code`. GraphQL queries are static strings and every value travels in
+  `variables`.
+- **CLI test hooks.** `RC_GIT_SETTINGS` and `RC_GIT_KEYCHAIN_SERVICE` point `rc-git auth` at a
+  scratch settings file and keychain service, and are read only when `DEV_ALLOWANCE`
+  (`github/host.rs`, true only with the dev allowance compiled in) says so. A shipped CLI reads
+  neither, so its environment cannot point it at other accounts.
 
 Sign-in, the token check and the refresh change no repository, so they have no `Action`; the
 pull request mutations of later slices will each get a policy row in the table above.

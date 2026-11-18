@@ -21,7 +21,7 @@ use rc_git_kit::github::copy::{
     method_note, open_page_label, phase_message,
 };
 use rc_git_kit::github::sign_in::{SignInFlow, SignInPhase, SignInStart, SignInStep};
-use rc_git_kit::github::{DeviceFlow, save_sign_in, start_device_flow, validate_token};
+use rc_git_kit::github::{save_sign_in, start_device_flow, validate_token};
 use rc_git_kit::guard_bridge::CancelToken;
 use rc_git_kit::platform::api_tokens::ApiTokenStore;
 
@@ -40,8 +40,6 @@ pub struct GitHubSignInSheet {
     token: Entity<InputState>,
     /// What the form started, for the steps that need its host or app.
     start: Option<SignInStart>,
-    /// The running device flow, shared with the poll thread.
-    device: Option<Arc<DeviceFlow>>,
     cancel: Arc<CancelToken>,
     tokens: Arc<dyn ApiTokenStore>,
     accounts: GitHubAccounts,
@@ -90,7 +88,6 @@ impl GitHubSignInSheet {
             client_id,
             token,
             start: None,
-            device: None,
             cancel: Arc::new(CancelToken::new()),
             tokens,
             accounts,
@@ -132,7 +129,6 @@ impl GitHubSignInSheet {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.flow.cancel() {
             self.cancel.signal();
-            self.device = None;
         }
         cx.notify();
     }
@@ -155,13 +151,17 @@ impl GitHubSignInSheet {
                 });
                 cx.spawn(async move |this, cx| {
                     let started = work.await;
-                    this.update(cx, |this, cx| this.code_landed(generation, started, cx))
-                        .ok();
+                    this.update(cx, |this, cx| {
+                        let step = this.flow.code_shown(generation, started);
+                        this.run(step, cx);
+                        cx.notify();
+                    })
+                    .ok();
                 })
                 .detach();
             }
             SignInStep::Poll { generation } => {
-                let Some(device) = self.device.clone() else {
+                let Some(device) = self.flow.device() else {
                     return;
                 };
                 let work = blocking(cx.background_executor(), move || {
@@ -204,28 +204,6 @@ impl GitHubSignInSheet {
         }
     }
 
-    fn code_landed(
-        &mut self,
-        generation: u64,
-        started: Result<DeviceFlow, rc_git_kit::github::GitHubError>,
-        cx: &mut Context<Self>,
-    ) {
-        let (device, shown) = match started {
-            Ok(device) => {
-                let shown = (device.user_code().to_owned(), device.verification_url());
-                (Some(device), Ok(shown))
-            }
-            Err(error) => (None, Err(error)),
-        };
-        let step = self.flow.code_shown(generation, shown);
-        // A flow that lands after a cancel is dropped here, freeing the process's one slot.
-        if let (SignInStep::Poll { .. }, Some(device)) = (&step, device) {
-            self.device = Some(Arc::new(device));
-        }
-        self.run(step, cx);
-        cx.notify();
-    }
-
     fn save(
         &mut self,
         generation: u64,
@@ -242,7 +220,6 @@ impl GitHubSignInSheet {
             let answer = work.await;
             this.update(cx, |this, cx| {
                 this.flow.saved(generation, saved_account, answer);
-                this.device = None;
                 if matches!(this.flow.phase(), SignInPhase::SignedIn { .. }) {
                     (this.on_signed_in)(cx);
                 }

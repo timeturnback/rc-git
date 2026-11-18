@@ -1,13 +1,19 @@
-//! The sign-in sheet's state machine, pure: what the user typed becomes a [`SignInStart`], and
-//! each answer the front end brings back (a user code, a poll, the token check, the save)
+//! The sign-in sheet's state machine: what the user typed becomes a [`SignInStart`], and each
+//! answer the front end brings back (a started device flow, a poll, the token check, the save)
 //! moves the flow one step and names the next thing to run. Every answer carries the
 //! generation it was asked under, so an answer that lands after a cancel or a restart is
 //! dropped. Cancel is offered in every phase until the sign-in is saved.
+//!
+//! The flow owns the running [`DeviceFlow`], which holds the process's one device-flow slot,
+//! and keeps it only while the next step is a poll: every other step (a failure, a cancel, the
+//! token check) drops it, so the user can start again from the same sheet.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use rc_git_guard::actions::github::{
-    ApiToken, ClientId, DeviceMethod, DevicePoll, GitHubError, GitHubHost, TokenIdentity, TokenSet,
+    ApiToken, ClientId, DeviceFlow, DeviceMethod, DevicePoll, GitHubError, GitHubHost,
+    TokenIdentity, TokenSet,
 };
 
 use super::accounts::{GitHubAccount, SignInMethod};
@@ -131,13 +137,14 @@ pub enum SignInPhase {
 /// The work the front end runs next, under the generation it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignInStep {
-    /// Start the device flow (`start_device_flow`) and answer [`SignInFlow::code_shown`].
+    /// Start the device flow (`start_device_flow`) and answer [`SignInFlow::code_shown`] with
+    /// it.
     RequestCode {
         /// The generation to answer under.
         generation: u64,
     },
-    /// Poll once (`DeviceFlow::poll`, which waits for its interval) and answer
-    /// [`SignInFlow::polled`].
+    /// Poll [`SignInFlow::device`] once (`DeviceFlow::poll`, which waits for its interval) and
+    /// answer [`SignInFlow::polled`].
     Poll {
         /// The generation to answer under.
         generation: u64,
@@ -170,6 +177,9 @@ pub struct SignInFlow {
     start: Option<SignInStart>,
     /// The tokens between the grant and the save.
     tokens: Option<TokenSet>,
+    /// The running device flow, held only while the phase is
+    /// [`SignInPhase::WaitingForUser`].
+    device: Option<Arc<DeviceFlow>>,
 }
 
 impl Default for SignInFlow {
@@ -187,6 +197,7 @@ impl SignInFlow {
             generation: 0,
             start: None,
             tokens: None,
+            device: None,
         }
     }
 
@@ -194,6 +205,21 @@ impl SignInFlow {
     #[must_use]
     pub fn phase(&self) -> &SignInPhase {
         &self.phase
+    }
+
+    /// The device flow a [`SignInStep::Poll`] polls; `None` in every other phase.
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<DeviceFlow>> {
+        self.device.clone()
+    }
+
+    /// Moves to `phase`, dropping the device flow unless the user is still to enter its code:
+    /// the flow's slot is free again as soon as no poll follows.
+    fn enter(&mut self, phase: SignInPhase) {
+        if !matches!(phase, SignInPhase::WaitingForUser { .. }) {
+            self.device = None;
+        }
+        self.phase = phase;
     }
 
     /// Whether something runs that Cancel stops.
@@ -217,11 +243,11 @@ impl SignInFlow {
         let generation = self.generation;
         let step = match &start {
             SignInStart::Device { .. } => {
-                self.phase = SignInPhase::RequestingCode;
+                self.enter(SignInPhase::RequestingCode);
                 SignInStep::RequestCode { generation }
             }
             SignInStart::Token { token, .. } => {
-                self.phase = SignInPhase::Checking;
+                self.enter(SignInPhase::Checking);
                 self.tokens = Some(TokenSet::lasting(token.clone()));
                 SignInStep::Check {
                     generation,
@@ -247,9 +273,9 @@ impl SignInFlow {
         if running {
             self.generation += 1;
             self.tokens = None;
-            self.phase = SignInPhase::Form {
+            self.enter(SignInPhase::Form {
                 note: Some("Sign-in cancelled.".to_owned()),
-            };
+            });
         }
         running
     }
@@ -261,28 +287,30 @@ impl SignInFlow {
     fn fail(&mut self, message: String) -> SignInStep {
         self.generation += 1;
         self.tokens = None;
-        self.phase = SignInPhase::Form {
+        self.enter(SignInPhase::Form {
             note: Some(message),
-        };
+        });
         SignInStep::Idle
     }
 
-    /// The device flow started (its code and page) or failed to.
+    /// The device flow started, or failed to. A flow that lands after a cancel or a restart
+    /// is dropped here, freeing the process's one device-flow slot.
     pub fn code_shown(
         &mut self,
         generation: u64,
-        answer: Result<(String, String), GitHubError>,
+        answer: Result<DeviceFlow, GitHubError>,
     ) -> SignInStep {
         if !self.current(generation) || self.phase != SignInPhase::RequestingCode {
             return SignInStep::Idle;
         }
         match answer {
-            Ok((user_code, verification_url)) => {
-                self.phase = SignInPhase::WaitingForUser {
-                    user_code,
-                    verification_url,
+            Ok(device) => {
+                self.enter(SignInPhase::WaitingForUser {
+                    user_code: device.user_code().to_owned(),
+                    verification_url: device.verification_url(),
                     slowed_to: None,
-                };
+                });
+                self.device = Some(Arc::new(device));
                 SignInStep::Poll { generation }
             }
             Err(error) => self.fail(error.to_string()),
@@ -310,7 +338,7 @@ impl SignInFlow {
             Ok(DevicePoll::Granted(tokens)) => {
                 let token = tokens.access.clone();
                 self.tokens = Some(tokens);
-                self.phase = SignInPhase::Checking;
+                self.enter(SignInPhase::Checking);
                 SignInStep::Check { generation, token }
             }
             Err(error) => self.fail(error.to_string()),
@@ -344,7 +372,7 @@ impl SignInFlow {
             scopes: identity.scopes,
             token_expires: identity.expires,
         };
-        self.phase = SignInPhase::Saving;
+        self.enter(SignInPhase::Saving);
         SignInStep::Save {
             generation,
             account,
@@ -365,7 +393,7 @@ impl SignInFlow {
         match answer {
             Ok(()) => {
                 self.tokens = None;
-                self.phase = SignInPhase::SignedIn { account };
+                self.enter(SignInPhase::SignedIn { account });
                 SignInStep::Idle
             }
             Err(message) => self.fail(message),

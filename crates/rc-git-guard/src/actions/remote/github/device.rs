@@ -140,10 +140,10 @@ pub fn start_device_flow(
     };
     let answer = post_form(host, post, cancel)?;
     let value = &answer.value;
-    if let Some(code) = value.get("error").and_then(Value::as_str) {
+    if let Some(code) = answer.error_code() {
         return Err(GitHubError::OAuth {
             host: host.to_string(),
-            code: single_line(code, 80),
+            code,
             description: answer.text("error_description"),
         });
     }

@@ -24,6 +24,9 @@ gpui.workspace = true
 # Itself with the fakes on, so `cargo test -p rc-git-kit` builds them for tests/.
 rc-git-kit = { path = ".", features = ["test-support"] }
 rc-git-testkit.workspace = true
+# The sign-in tests start real device flows against the testkit's fake GitHub host over plain
+# http on loopback; dev-only, so a normal build speaks https to every host (scripts/check.sh).
+rc-git-guard = { workspace = true, features = ["dev-loopback-http"] }
 tempfile.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 

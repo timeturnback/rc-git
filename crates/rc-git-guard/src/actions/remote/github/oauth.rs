@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::host::GitHubHost;
 use super::http::{Body, Method, Request, send};
 use super::secret::{ApiToken, ClientId, RefreshToken, TokenSet, unix_now};
-use super::text::{form_body, server_text, single_line};
+use super::text::{form_body, scrub, server_text};
 use super::{GitHubError, GitHubResult};
 use crate::actions::remote::Cancel;
 
@@ -40,16 +40,48 @@ pub(super) struct FormAnswer {
     pub secrets: Vec<String>,
 }
 
+/// How an OAuth `error` code that is not one of GitHub's shows.
+pub(super) const UNRECOGNIZED_CODE: &str = "unrecognized error code";
+
+/// The longest OAuth `error` code shown as sent.
+const MAX_CODE_BYTES: usize = 64;
+
 impl FormAnswer {
+    fn secret_refs(&self) -> Vec<&str> {
+        self.secrets.iter().map(String::as_str).collect()
+    }
+
     /// Server text from the answer, scrubbed and single-line.
     pub(super) fn text(&self, field: &str) -> String {
-        let secrets: Vec<&str> = self.secrets.iter().map(String::as_str).collect();
         let raw = self
             .value
             .get(field)
             .and_then(Value::as_str)
             .unwrap_or_default();
-        server_text(raw, &secrets)
+        server_text(raw, &self.secret_refs())
+    }
+
+    /// The OAuth `error` code, when the answer carries one, as [`oauth_code`] shows it.
+    pub(super) fn error_code(&self) -> Option<String> {
+        let raw = self.value.get("error").and_then(Value::as_str)?;
+        Some(oauth_code(raw, &self.secret_refs()))
+    }
+}
+
+/// `raw` as an OAuth `error` code fit to show and match on: GitHub's codes are 1 to 64
+/// lowercase letters and `_` (`authorization_pending`, `bad_refresh_token`), so anything else,
+/// or a code holding one of `secrets`, is [`UNRECOGNIZED_CODE`].
+fn oauth_code(raw: &str, secrets: &[&str]) -> String {
+    let scrubbed = scrub(raw, secrets);
+    let plain = !scrubbed.is_empty()
+        && scrubbed.len() <= MAX_CODE_BYTES
+        && scrubbed
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'_');
+    if plain {
+        scrubbed
+    } else {
+        UNRECOGNIZED_CODE.to_owned()
     }
 }
 
@@ -132,9 +164,9 @@ pub(super) fn post_token_endpoint(
     };
     let answer = post_form(host, post, cancel)?;
     let value = &answer.value;
-    if let Some(code) = value.get("error").and_then(Value::as_str) {
+    if let Some(code) = answer.error_code() {
         return Ok(TokenAnswer::Error {
-            code: single_line(code, 80),
+            code,
             description: answer.text("error_description"),
             interval: value.get("interval").and_then(Value::as_u64),
         });
@@ -225,6 +257,39 @@ mod tests {
         assert_eq!(
             set,
             TokenSet::lasting(ApiToken::new("gho_a".to_owned()).unwrap())
+        );
+    }
+
+    #[test]
+    fn only_githubs_shape_of_error_code_is_shown() {
+        for code in [
+            "authorization_pending",
+            "bad_refresh_token",
+            "slow_down",
+            "x",
+        ] {
+            assert_eq!(oauth_code(code, &[]), code);
+        }
+        let too_long = "a".repeat(MAX_CODE_BYTES + 1);
+        for bad in [
+            "",
+            "Bad-Code",
+            "access denied",
+            "slow_down\u{202e}",
+            "\u{1b}[31mred",
+            "code\n",
+            too_long.as_str(),
+        ] {
+            assert_eq!(oauth_code(bad, &[]), UNRECOGNIZED_CODE, "{bad:?}");
+        }
+        assert_eq!(
+            oauth_code("ghr_lowercase_secret", &["ghr_lowercase_secret"]),
+            UNRECOGNIZED_CODE,
+            "a code that is a secret of the request is never shown, even in the right shape"
+        );
+        assert_eq!(
+            oauth_code("pending_ghr_lowercase_secret", &["ghr_lowercase_secret"]),
+            UNRECOGNIZED_CODE
         );
     }
 

@@ -84,15 +84,24 @@ here; so does everything that comes later.
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).
 - GitHub API calls go through `actions/remote/github/http.rs`'s `send` only: it fixes https-only,
-  no redirects, body and header caps and timeouts. Never build a curl handle elsewhere (clippy bans it).
+  no redirects, body and header caps and timeouts. Never build a curl handle elsewhere, nor
+  gix-transport's own HTTP client (clippy bans both; `check.sh` checks who depends on curl).
+  A curl setter that weakens TLS, adds a CA, prints headers, hands curl credentials or picks
+  another address joins `clippy.toml` for `Easy` and `Easy2` both.
 - Build every GitHub URL from the account's `GitHubHost`; a remote URL only yields owner and name
   through `RepositoryTarget::on_host`. Never let repository config or a remote URL pick a host.
-- Hold tokens as `ApiToken`/`RefreshToken` (redacted `Debug`, no `Display`); put a secret in a
-  header or form body, never a URL, and pass server text through `server_text` before an error.
+- Hold tokens as `ApiToken`/`RefreshToken` (redacted `Debug`, no `Display`), and hand-write a
+  redacting `Debug` for any type that carries one (`Request`, `Body`, `Response`); put a secret in
+  a header or form body, never a URL. Pass server text through `server_text` with the request's
+  secrets, and an OAuth `error` code through `FormAnswer::error_code`, before either reaches an
+  error.
 - Send a GitHub App's refresh only through kit's `TokenKeeper`: refresh tokens are single-use, and
-  it serializes them and re-reads the keychain before signing out.
-- Read `dev-loopback-http` only in `github/host.rs`'s `PLAIN_HTTP`, and enable it only from
-  `[dev-dependencies]`; `scripts/check.sh` fails a normal app or CLI build that carries it.
+  it serializes them, reads the keychain on every call (a sign-out elsewhere must stop the token)
+  and re-reads it before signing out. A sign-in saves through `ApiTokenStore::save_new_tokens`
+  (a fresh item), a refresh through `update_tokens` (the existing item, never a new one).
+- Read `dev-loopback-http` only in `github/host.rs`'s `PLAIN_HTTP` (`DEV_ALLOWANCE` exposes it),
+  and enable it only from `[dev-dependencies]`; `scripts/check.sh` fails a normal app or CLI build
+  that carries it. A test hook (the CLI's `RC_GIT_SETTINGS`) is honored only when `DEV_ALLOWANCE`.
 - GraphQL queries are `&'static str`; every value goes in `variables`. Test each GitHub call
   against testkit's `GitHubServer`, which answers only the exact arguments a call must send.
 - Resolve a branch's remote and tracking ref only through `configured_remote_name` and

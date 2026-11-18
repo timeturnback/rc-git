@@ -40,6 +40,14 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   or a tree, beside the diff. File Tree shows the commit's files in the Files pane. Files in
   both tabs show their type icon.
 
+### Fixed
+
+- When a GitHub sign-in stops partway (the host declines or expires the code, or the token
+  check fails), you can start again from the same sign-in sheet; it no longer says another
+  sign-in is still waiting for its code.
+- Signing in to GitHub always puts the token in a new keychain item of RCGit's own, so an item
+  another program left under RCGit's name never receives it.
+
 ## 2026-11-17
 
 ### Added

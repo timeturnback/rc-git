@@ -37,7 +37,7 @@ fn pair(access: &str, expires_at: u64, refresh: &str) -> TokenSet {
 
 fn keeper_holding(tokens: &TokenSet) -> TokenKeeper<MemoryApiTokenStore> {
     let store = MemoryApiTokenStore::new();
-    store.store_tokens(&account().key, tokens).unwrap();
+    store.save_new_tokens(&account().key, tokens).unwrap();
     TokenKeeper::new(store)
 }
 
@@ -58,13 +58,90 @@ fn never(_: &RefreshToken) -> Result<TokenSet, GitHubError> {
 }
 
 #[test]
-fn a_fresh_token_is_read_once_and_never_refreshed() {
+fn a_fresh_token_is_read_from_the_store_on_every_call_and_never_refreshed() {
     let keeper = keeper_holding(&pair("ghu_fresh", NOW + 3600, "ghr_one"));
     for _ in 0..3 {
         let fresh = keeper.token(&account(), NOW, never).unwrap();
         assert_eq!(fresh.token.expose_secret(), "ghu_fresh");
     }
-    assert_eq!(keeper.store().read_count(), 1);
+    assert_eq!(keeper.store().read_count(), 3);
+}
+
+#[test]
+fn a_token_removed_from_the_store_is_never_served_again() {
+    let keeper = keeper_holding(&pair("ghu_fresh", NOW + 3600, "ghr_one"));
+    keeper.token(&account(), NOW, never).unwrap();
+    // `rc-git auth logout` in the other process deletes the item.
+    keeper.store().delete_tokens(&account().key).unwrap();
+    let error = keeper.token(&account(), NOW, never).unwrap_err();
+    assert!(matches!(error, TokenError::SignedOut { .. }), "{error}");
+    assert_eq!(
+        keeper.store().read_count(),
+        2,
+        "the second call asked the store"
+    );
+}
+
+#[test]
+fn an_unsaved_renewal_ends_when_the_store_signs_out() {
+    let keeper = keeper_holding(&pair("ghu_old", NOW - 1, "ghr_one"));
+    keeper.store().fail_writes(true);
+    let renewed = keeper
+        .token(&account(), NOW, |_| {
+            Ok(pair("ghu_new", NOW + 28_800, "ghr_two"))
+        })
+        .unwrap();
+    assert!(renewed.unsaved.is_some());
+    keeper.store().fail_writes(false);
+    keeper.store().delete_tokens(&account().key).unwrap();
+    let error = keeper.token(&account(), NOW, never).unwrap_err();
+    assert!(matches!(error, TokenError::SignedOut { .. }), "{error}");
+}
+
+#[test]
+fn an_unsaved_renewal_is_never_served_over_a_newer_sign_in() {
+    let keeper = keeper_holding(&pair("ghu_old", NOW - 1, "ghr_one"));
+    keeper.store().fail_writes(true);
+    keeper
+        .token(&account(), NOW, |_| {
+            Ok(pair("ghu_new", NOW + 28_800, "ghr_two"))
+        })
+        .unwrap();
+    keeper.store().fail_writes(false);
+    // The CLI signs in again; its token has expired by the time the app asks.
+    keeper
+        .store()
+        .save_new_tokens(&account().key, &pair("ghu_cli", NOW - 1, "ghr_cli"))
+        .unwrap();
+    let fresh = keeper
+        .token(&account(), NOW, |used| {
+            assert_eq!(used.expose_secret(), "ghr_cli");
+            Ok(pair("ghu_renewed", NOW + 28_800, "ghr_three"))
+        })
+        .unwrap();
+    assert_eq!(fresh.token.expose_secret(), "ghu_renewed");
+}
+
+#[test]
+fn a_renewal_after_a_sign_out_elsewhere_is_dropped_not_stored() {
+    let store = Arc::new(MemoryApiTokenStore::new());
+    store
+        .save_new_tokens(&account().key, &pair("ghu_old", NOW - 1, "ghr_one"))
+        .unwrap();
+    let keeper = TokenKeeper::new(Arc::clone(&store));
+    let error = keeper
+        .token(&account(), NOW, |_| {
+            // The CLI signs out while the refresh is on the wire.
+            store.delete_tokens(&account().key).unwrap();
+            Ok(pair("ghu_new", NOW + 28_800, "ghr_two"))
+        })
+        .unwrap_err();
+    assert!(matches!(error, TokenError::SignedOut { .. }), "{error}");
+    assert_eq!(
+        store.tokens(&account().key).unwrap(),
+        None,
+        "the renewal never brings the signed-out item back"
+    );
 }
 
 #[test]
@@ -137,14 +214,14 @@ fn a_refused_refresh_signs_out_only_when_the_store_still_holds_it() {
 fn a_refresh_another_writer_made_first_is_used_instead_of_signing_out() {
     let store = Arc::new(MemoryApiTokenStore::new());
     store
-        .store_tokens(&account().key, &pair("ghu_old", NOW - 1, "ghr_one"))
+        .save_new_tokens(&account().key, &pair("ghu_old", NOW - 1, "ghr_one"))
         .unwrap();
     let keeper = TokenKeeper::new(Arc::clone(&store));
     let fresh = keeper
         .token(&account(), NOW, |_| {
             // The CLI renewed with the same refresh token a moment earlier.
             store
-                .store_tokens(&account().key, &pair("ghu_cli", NOW + 28_800, "ghr_cli"))
+                .update_tokens(&account().key, &pair("ghu_cli", NOW + 28_800, "ghr_cli"))
                 .unwrap();
             Err(rejected())
         })

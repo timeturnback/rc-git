@@ -19,9 +19,10 @@ use accounts::{GitHubAccount, GitHubAccounts};
 
 use crate::platform::api_tokens::{AccountKey, ApiTokenStore};
 
-/// Saves a finished sign-in: the tokens first, then the account record, so a record never
-/// names an account whose token is missing. A record left behind by a failed second write is
-/// harmless: its token reads back and a retry replaces both.
+/// Saves a finished sign-in: the tokens first, in a fresh keychain item
+/// ([`ApiTokenStore::save_new_tokens`]), then the account record, so a record never names an
+/// account whose token is missing. A record left behind by a failed second write is harmless:
+/// its token reads back and a retry replaces both.
 ///
 /// # Errors
 /// The keychain's or the settings' failure, as a sentence.
@@ -32,7 +33,7 @@ pub fn save_sign_in(
     tokens: &TokenSet,
 ) -> Result<(), String> {
     store
-        .store_tokens(&account.key, tokens)
+        .save_new_tokens(&account.key, tokens)
         .map_err(|error| error.to_string())?;
     accounts.save(account).map_err(|error| error.to_string())
 }

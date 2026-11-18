@@ -1,6 +1,7 @@
 //! A fake GitHub host for tests: the device-flow and token endpoints, `GET /user`, a GraphQL
 //! echo, and endpoints that misbehave on purpose (a redirect, an oversized body, a stall, an
-//! error that echoes the token). Plain HTTP on loopback, laid out as a GitHub Enterprise host
+//! error that echoes the token, a token endpoint that echoes the form it got). Plain HTTP on
+//! loopback, laid out as a GitHub Enterprise host
 //! (`/api/v3`, `/api/graphql`), since rc-git builds github.com's URLs for `api.github.com`.
 //!
 //! It is strict: every endpoint answers only for the exact method, headers and parameters a
@@ -108,6 +109,19 @@ pub struct DeviceScript {
     pub polls: VecDeque<PollAnswer>,
 }
 
+/// Where the token endpoint echoes the form values it received (a device code, a refresh
+/// token), as a careless or hostile host would, so a test can check that none reaches an
+/// error. The values are joined by spaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EchoForm {
+    /// In `error_description`, under the error code `echoed_form`.
+    Description,
+    /// As the `error` code itself.
+    Code,
+    /// As a `400` body that is not JSON.
+    Body,
+}
+
 #[derive(Debug, Default)]
 struct State {
     device: Option<DeviceScript>,
@@ -117,6 +131,7 @@ struct State {
     used_refreshes: BTreeSet<String>,
     redirect_to: Option<String>,
     oversized_bytes: usize,
+    echo_form: Option<EchoForm>,
     requests: Vec<RecordedRequest>,
 }
 
@@ -203,6 +218,12 @@ impl GitHubServer {
     /// How many bytes `GET /api/v3/oversized` answers with (2 MiB unless set).
     pub fn set_oversized_bytes(&self, bytes: usize) {
         self.state().oversized_bytes = bytes;
+    }
+
+    /// From now on the token endpoint answers every well-formed form (a device-flow poll, a
+    /// refresh) with its values echoed `into` an error, instead of judging it.
+    pub fn echo_form(&self, into: EchoForm) {
+        self.state().echo_form = Some(into);
     }
 
     /// Every request so far, in arrival order.
@@ -477,10 +498,36 @@ fn token_endpoint(request: &RecordedRequest, state: &Mutex<State>) -> Answer {
     if fields.contains_key("client_secret") {
         return bad_request("rc-git has no client secret and must never send one");
     }
+    let echo = lock(state).echo_form;
+    if let Some(into) = echo {
+        return echoed(&fields, into);
+    }
     match fields.get("grant_type").map(String::as_str) {
         Some("urn:ietf:params:oauth:grant-type:device_code") => device_poll(&fields, state),
         Some("refresh_token") => refresh(&fields, state),
         Some(_) | None => oauth_error("unsupported_grant_type"),
+    }
+}
+
+/// The form's values joined by spaces, echoed `into` an error answer.
+fn echoed(fields: &BTreeMap<String, String>, into: EchoForm) -> Answer {
+    let values: Vec<&str> = fields.values().map(String::as_str).collect();
+    let sent = escape(&values.join(" "));
+    match into {
+        EchoForm::Description => json(
+            "200 OK",
+            format!(r#"{{"error":"echoed_form","error_description":"you sent {sent}"}}"#),
+        ),
+        EchoForm::Code => json(
+            "200 OK",
+            format!(r#"{{"error":"{sent}","error_description":"echoed"}}"#),
+        ),
+        EchoForm::Body => Answer {
+            status: "400 Bad Request",
+            headers: Vec::new(),
+            body: format!("you sent {sent}").into_bytes(),
+            streamed: false,
+        },
     }
 }
 

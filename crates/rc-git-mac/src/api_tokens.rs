@@ -9,13 +9,20 @@
 //! their queries match none of these. Every query here names the service and the full account,
 //! so it reads, replaces or deletes exactly one item.
 //!
-//! A write replaces the data in place (`SecItemUpdate`), adding the item only when it is
-//! missing, so a second writer (the CLI) never sees the account without a token mid-write.
+//! A sign-in deletes whatever item holds its account and adds a fresh one, as the push store
+//! does: an item another program planted under rc-git's service and account, with an access
+//! list of its own choosing, would otherwise receive the user's token and keep that list. An
+//! item that reappears between the delete and the add makes the add fail; it is never
+//! overwritten. A refresh replaces the data of the item the sign-in created in place
+//! (`SecItemUpdate`), so a second writer (the CLI) never sees the account without a token
+//! mid-refresh, and never adds one: a refresh that finds no item stores nothing.
 
 use std::ptr;
 
 use rc_git_kit::github::TokenSet;
-use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore, decode_tokens, encode_tokens};
+use rc_git_kit::platform::api_tokens::{
+    AccountKey, ApiTokenStore, TokenUpdate, decode_tokens, encode_tokens,
+};
 use rc_git_kit::platform::credentials::CredentialError;
 
 use crate::cf::{self, CFTypeRef, Owned};
@@ -174,31 +181,18 @@ impl ApiTokenStore for KeychainApiTokenStore {
             .ok_or_else(|| failed(ERR_SEC_DECODE))
     }
 
-    fn store_tokens(&self, key: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError> {
+    fn save_new_tokens(&self, key: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError> {
         let failed = |status| Self::failed("write", key, status);
+        self.delete(key, "write")?;
         let parts = self.parts(key, "write")?;
-        let query =
-            cf::dictionary(&Self::identity(&parts)).ok_or_else(|| failed(ERR_SEC_DECODE))?;
         let data = cf::data(&encode_tokens(tokens)).ok_or_else(|| failed(ERR_SEC_DECODE))?;
         let label = cf::string(&label(key)).ok_or_else(|| failed(ERR_SEC_DECODE))?;
-        // SAFETY: framework constants.
-        let changes = unsafe {
-            [
-                (kSecValueData, data.as_ptr()),
-                (kSecAttrLabel, label.as_ptr()),
-            ]
-        };
-        let update = cf::dictionary(&changes).ok_or_else(|| failed(ERR_SEC_DECODE))?;
-        // SAFETY: both dictionaries are live for the call.
-        let status = unsafe { SecItemUpdate(query.as_ptr(), update.as_ptr()) };
-        if status == ERR_SEC_SUCCESS {
-            return Ok(());
-        }
-        if status != ERR_SEC_ITEM_NOT_FOUND {
-            return Err(failed(status));
-        }
         let mut pairs = Self::identity(&parts);
-        pairs.extend(changes);
+        // SAFETY: framework constants.
+        unsafe {
+            pairs.push((kSecValueData, data.as_ptr()));
+            pairs.push((kSecAttrLabel, label.as_ptr()));
+        }
         let attributes = cf::dictionary(&pairs).ok_or_else(|| failed(ERR_SEC_DECODE))?;
         // SAFETY: `attributes` is live; a null result pointer asks for nothing back.
         let status = unsafe { SecItemAdd(attributes.as_ptr(), ptr::null_mut()) };
@@ -208,14 +202,41 @@ impl ApiTokenStore for KeychainApiTokenStore {
         Ok(())
     }
 
+    fn update_tokens(
+        &self,
+        key: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<TokenUpdate, CredentialError> {
+        let failed = |status| Self::failed("write", key, status);
+        let query = self.query(key, "write")?;
+        let data = cf::data(&encode_tokens(tokens)).ok_or_else(|| failed(ERR_SEC_DECODE))?;
+        // SAFETY: framework constant.
+        let changes = unsafe { [(kSecValueData, data.as_ptr())] };
+        let update = cf::dictionary(&changes).ok_or_else(|| failed(ERR_SEC_DECODE))?;
+        // SAFETY: both dictionaries are live for the call.
+        let status = unsafe { SecItemUpdate(query.as_ptr(), update.as_ptr()) };
+        match status {
+            ERR_SEC_SUCCESS => Ok(TokenUpdate::Replaced),
+            ERR_SEC_ITEM_NOT_FOUND => Ok(TokenUpdate::NoItem),
+            other => Err(failed(other)),
+        }
+    }
+
     fn delete_tokens(&self, key: &AccountKey) -> Result<(), CredentialError> {
-        let query = self.query(key, "delete")?;
+        self.delete(key, "delete")
+    }
+}
+
+impl KeychainApiTokenStore {
+    /// Deletes `key`'s item, reporting a failure as `op`; deleting what is not there succeeds.
+    fn delete(&self, key: &AccountKey, op: &'static str) -> Result<(), CredentialError> {
+        let query = self.query(key, op)?;
         // SAFETY: `query` is a live dictionary.
         let status = unsafe { SecItemDelete(query.as_ptr()) };
         if status == ERR_SEC_SUCCESS || status == ERR_SEC_ITEM_NOT_FOUND {
             return Ok(());
         }
-        Err(Self::failed("delete", key, status))
+        Err(Self::failed(op, key, status))
     }
 }
 

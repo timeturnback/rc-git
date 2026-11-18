@@ -15,6 +15,7 @@
 //!   caller's [`Cancel`] stops the call: the wait returns within [`CANCEL_POLL`], and curl's
 //!   progress callback aborts the abandoned transfer at its next tick.
 
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,8 +47,9 @@ pub(super) enum Method {
     Post,
 }
 
-/// A request body and its media type.
-#[derive(Debug, Clone)]
+/// A request body and its media type. Its `Debug` shows the kind and the length only: a form
+/// carries a device code or a refresh token.
+#[derive(Clone)]
 pub(super) enum Body {
     /// `application/x-www-form-urlencoded`, for the OAuth endpoints.
     Form(Vec<u8>),
@@ -55,8 +57,19 @@ pub(super) enum Body {
     Json(Vec<u8>),
 }
 
-/// One request, owned, so it can move onto the transfer thread.
-#[derive(Debug, Clone)]
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (kind, bytes) = match self {
+            Self::Form(bytes) => ("Form", bytes),
+            Self::Json(bytes) => ("Json", bytes),
+        };
+        write!(f, "{kind}(<{} bytes redacted>)", bytes.len())
+    }
+}
+
+/// One request, owned, so it can move onto the transfer thread. Its `Debug` shows neither the
+/// token, the body nor the secrets to scrub.
+#[derive(Clone)]
 pub(super) struct Request {
     /// What is being done, for messages.
     pub op: &'static str,
@@ -76,13 +89,44 @@ pub(super) struct Request {
     pub scrub: Vec<String>,
 }
 
-/// A response with a status outside 3xx.
-#[derive(Debug, Clone)]
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Request")
+            .field("op", &self.op)
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("accept", &self.accept)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("api_version", &self.api_version)
+            .field("body", &self.body)
+            .field("limit", &self.limit)
+            .field("scrub", &format_args!("<{} redacted>", self.scrub.len()))
+            .finish()
+    }
+}
+
+/// A response with a status outside 3xx. Its `Debug` shows the status, the header names and
+/// the body's length: a token endpoint's body is a token, and a sign-in page sets cookies.
+#[derive(Clone)]
 pub(super) struct Response {
     pub status: u32,
     /// Header names lowercase, values trimmed, in arrival order, of the final response only.
     headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl fmt::Debug for Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &names)
+            .field(
+                "body",
+                &format_args!("<{} bytes redacted>", self.body.len()),
+            )
+            .finish()
+    }
 }
 
 impl Response {
@@ -419,6 +463,40 @@ mod tests {
         assert!(collected.progress(0.0, 0.0, 0.0, 0.0));
         collected.cancel.store(true, Ordering::SeqCst);
         assert!(!collected.progress(0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn requests_and_responses_never_print_a_secret() {
+        let token = ApiToken::new("ghu_token_secret".to_owned()).unwrap();
+        let request = Request {
+            op: "refresh the token",
+            method: Method::Post,
+            url: super::super::GitHubHost::github_com().web_url("/login/oauth/access_token"),
+            accept: "application/json",
+            token: Some(token),
+            api_version: false,
+            body: Some(Body::Form(b"refresh_token=ghr_form_secret".to_vec())),
+            limit: 10,
+            scrub: vec!["ghr_scrub_secret".to_owned()],
+        };
+        let response = Response {
+            status: 200,
+            headers: vec![("set-cookie".to_owned(), "_gh_sess=cookie_secret".to_owned())],
+            body: br#"{"access_token":"ghu_body_secret"}"#.to_vec(),
+        };
+        let json = Body::Json(br#"{"token":"json_secret"}"#.to_vec());
+        let printed = format!("{request:?} {request:#?} {response:?} {response:#?} {json:?}");
+        for secret in [
+            "ghu_token_secret",
+            "ghr_form_secret",
+            "ghr_scrub_secret",
+            "cookie_secret",
+            "ghu_body_secret",
+            "json_secret",
+        ] {
+            assert!(!printed.contains(secret), "{secret}: {printed}");
+        }
+        assert!(printed.contains("refresh the token") && printed.contains("set-cookie"));
     }
 
     #[test]

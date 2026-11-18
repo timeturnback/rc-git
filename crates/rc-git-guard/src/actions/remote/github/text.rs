@@ -5,10 +5,11 @@
 pub(super) const MESSAGE_CHARS: usize = 300;
 
 /// `text` made safe to show on one line: ANSI escape sequences are dropped, and every other
-/// control character (line breaks and tabs included) and every bidirectional control
-/// (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) is shown as a visible `\u{..}` escape
-/// rather than interpreted. Longer than `max_chars` characters, it is cut there and ends in
-/// `…`.
+/// control character (line breaks and tabs included), every bidirectional control (Unicode's
+/// whole `Bidi_Control` set: U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), the line
+/// and paragraph separators (U+2028, U+2029) and the zero-width characters (U+200B–U+200D,
+/// U+2060, U+FEFF) are shown as a visible `\u{..}` escape rather than interpreted. Longer
+/// than `max_chars` characters, it is cut there and ends in `…`.
 #[must_use]
 pub fn single_line(text: &str, max_chars: usize) -> String {
     let mut shown = String::new();
@@ -24,7 +25,7 @@ pub fn single_line(text: &str, max_chars: usize) -> String {
             break;
         }
         count += 1;
-        if c.is_control() || is_bidi_control(c) {
+        if c.is_control() || is_hidden_format(c) {
             shown.push_str("\\u{");
             shown.push_str(&hex(u32::from(c)));
             shown.push('}');
@@ -66,12 +67,19 @@ fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
-/// Whether `c` reorders the text around it when shown: the bidirectional marks, embeddings,
-/// overrides and isolates.
-fn is_bidi_control(c: char) -> bool {
+/// Whether `c` changes how the text around it shows without showing itself: every
+/// `Bidi_Control` code point (the Arabic letter mark, the bidirectional marks, embeddings,
+/// overrides and isolates), the line and paragraph separators, and the zero-width space,
+/// joiners, word joiner and byte-order mark.
+fn is_hidden_format(c: char) -> bool {
     matches!(
         c,
-        '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
     )
 }
 
@@ -134,6 +142,24 @@ pub(super) fn is_plain_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// The longest user or organization name GitHub allows.
+pub(super) const MAX_OWNER_CHARS: usize = 39;
+
+/// The longest repository name GitHub allows.
+pub(super) const MAX_REPOSITORY_CHARS: usize = 100;
+
+/// Whether `owner` may name a repository's owner: a plain name of at most
+/// [`MAX_OWNER_CHARS`] characters.
+pub(super) fn is_owner_name(owner: &str) -> bool {
+    owner.len() <= MAX_OWNER_CHARS && is_plain_name(owner)
+}
+
+/// Whether `name` may name a repository: a plain name of at most [`MAX_REPOSITORY_CHARS`]
+/// characters.
+pub(super) fn is_repository_name(name: &str) -> bool {
+    name.len() <= MAX_REPOSITORY_CHARS && is_plain_name(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +175,36 @@ mod tests {
         assert_eq!(single_line("\u{1b}]8;;https://x\u{7}link", 100), "link");
         assert_eq!(single_line("abcdef", 3), "abc…");
         assert_eq!(single_line("abc", 3), "abc");
+    }
+
+    #[test]
+    fn single_line_shows_every_hidden_format_character_as_an_escape() {
+        let hidden = [
+            '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{2028}',
+            '\u{2029}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2060}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{feff}', '\u{85}', '\u{7f}',
+        ];
+        for c in hidden {
+            let shown = single_line(&format!("a{c}b"), 100);
+            assert_eq!(
+                shown,
+                format!("a\\u{{{:x}}}b", u32::from(c)),
+                "{:x}",
+                u32::from(c)
+            );
+        }
+        for kept in ["é", "日本", "a b", "ﷺ"] {
+            assert_eq!(single_line(kept, 100), kept, "{kept:?}");
+        }
+    }
+
+    #[test]
+    fn owner_and_repository_names_are_capped_at_githubs_lengths() {
+        assert!(is_owner_name(&"o".repeat(MAX_OWNER_CHARS)));
+        assert!(!is_owner_name(&"o".repeat(MAX_OWNER_CHARS + 1)));
+        assert!(is_repository_name(&"r".repeat(MAX_REPOSITORY_CHARS)));
+        assert!(!is_repository_name(&"r".repeat(MAX_REPOSITORY_CHARS + 1)));
+        assert!(!is_owner_name("..") && !is_repository_name("a/b"));
     }
 
     #[test]

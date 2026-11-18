@@ -93,6 +93,10 @@ target/release/rc-git --time highlight <repo> HEAD path/to/file   # one highligh
 target/release/rc-git --time links <repo> HEAD path/to/file.ts    # one import-link pass
 ```
 
+Run the binary that `cargo build` just made: a `cargo test --release` after it leaves a test
+build at the same path, with the dev-only features on, and that one must never sign in to a real
+GitHub account (`docs/safety.md`, "GitHub API").
+
 `--time` reports the open and the command separately on stderr, so the two can be tracked
 apart. For statistics over many runs use `hyperfine` around the same commands. Compare against
 `git ls-tree`, `git cat-file -p`, and `git log -n 100` on the same repository to keep the

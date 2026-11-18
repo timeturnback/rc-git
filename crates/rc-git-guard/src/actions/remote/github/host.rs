@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use super::text::{is_plain_name, single_line};
+use super::text::{is_owner_name, is_plain_name, is_repository_name, single_line};
 use super::{GitHubError, GitHubResult};
 
 /// The public GitHub host.
@@ -38,6 +38,19 @@ pub(super) const PLAIN_HTTP: PlainHttp = if cfg!(any(test, feature = "dev-loopba
 } else {
     PlainHttp::Refused
 };
+
+/// Whether this build carries the dev allowance: the guard's own unit tests, or the dev-only
+/// `dev-loopback-http` feature that only `[dev-dependencies]` enable. It decides plain http to
+/// a loopback host here and the CLI's test hooks (a scratch settings file and keychain
+/// service); every shipped build has it `false`.
+pub const DEV_ALLOWANCE: bool = match PLAIN_HTTP {
+    PlainHttp::Loopback => true,
+    PlainHttp::Refused => false,
+};
+
+/// The longest remote URL rc-git parses: a host, an owner and a repository at their longest
+/// fit with room to spare.
+const MAX_REMOTE_URL_BYTES: usize = 1024;
 
 /// A GitHub host the user signs into: `github.com` or a GitHub Enterprise Server host, as a
 /// lowercase DNS name (or IPv4 address) and a port other than 443 when it has one.
@@ -271,7 +284,8 @@ impl RepositoryTarget {
     /// and exact, so `github.com.evil.example` and `evil.example/github.com` name other hosts.
     /// `https://` URLs carry no userinfo; ssh URLs carry no user but `git` and no port but 22;
     /// `git://`, `file://` and plain `http://` (outside the dev loopback allowance) are refused.
-    /// The path must be `owner/name` or `owner/name.git`.
+    /// The path must be `owner/name` or `owner/name.git`, the owner at most 39 characters and
+    /// the name at most 100, and the whole URL at most 1024 bytes.
     ///
     /// # Errors
     /// [`GitHubError::ForeignRemote`] naming the remote (userinfo removed) and the reason.
@@ -319,6 +333,13 @@ struct ParsedRemote {
 }
 
 fn parse_remote(remote_url: &str) -> GitHubResult<ParsedRemote> {
+    if remote_url.len() > MAX_REMOTE_URL_BYTES {
+        let start: String = remote_url.chars().take(200).collect();
+        return Err(GitHubError::ForeignRemote {
+            remote: single_line(&strip_userinfo_text(&start), 200),
+            reason: format!("is longer than {MAX_REMOTE_URL_BYTES} bytes"),
+        });
+    }
     let url = gix::url::parse(gix::bstr::BStr::new(remote_url)).map_err(|_| {
         GitHubError::ForeignRemote {
             remote: single_line(&strip_userinfo_text(remote_url), 200),
@@ -381,12 +402,13 @@ fn parse_remote(remote_url: &str) -> GitHubResult<ParsedRemote> {
 }
 
 /// `owner` and `name` from a remote path `owner/name` or `owner/name.git`, with or without the
-/// leading `/`; `None` for any other shape or a part that is not a plain name.
+/// leading `/`; `None` for any other shape, a part that is not a plain name, an owner over 39
+/// characters or a name over 100.
 fn owner_and_name(path: &str) -> Option<(String, String)> {
     let path = path.strip_prefix('/').unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
     let name = name.strip_suffix(".git").unwrap_or(name);
-    (is_plain_name(owner) && is_plain_name(name)).then(|| (owner.to_owned(), name.to_owned()))
+    (is_owner_name(owner) && is_repository_name(name)).then(|| (owner.to_owned(), name.to_owned()))
 }
 
 /// `text` with anything between `://` and the last `@` before the next `/` removed: the

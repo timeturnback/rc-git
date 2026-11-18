@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rc_git_guard::actions::Cancel;
+use rc_git_guard::actions::github::DEV_ALLOWANCE;
 use rc_git_kit::app_build::BUNDLE_IDENTIFIER;
 use rc_git_kit::github::accounts::{GitHubAccount, GitHubAccounts, SignInMethod};
 use rc_git_kit::github::copy::minutes;
@@ -23,12 +24,12 @@ use rc_git_mac::{KeychainApiTokenStore, Preferences};
 
 use crate::{EXIT_AUTH, EXIT_ERROR, UsageError, VerbArgs, interruptible_cancel, split_args};
 
-/// Where the accounts live: the app's defaults domain, or, for tests and scripts, the plist
-/// `RC_GIT_SETTINGS` names by absolute path.
+/// A test build's hook: the plist, by absolute path, its accounts live in instead of the app's
+/// defaults domain.
 const SETTINGS_ENV: &str = "RC_GIT_SETTINGS";
 
-/// The keychain service the tokens live under: rc-git's own, or, for tests and scripts, the
-/// `rc-git-…` service `RC_GIT_KEYCHAIN_SERVICE` names.
+/// A test build's hook: the `rc-git-…` keychain service its tokens live under instead of
+/// rc-git's own.
 const KEYCHAIN_ENV: &str = "RC_GIT_KEYCHAIN_SERVICE";
 
 /// The most bytes read from standard input for a token.
@@ -41,15 +42,36 @@ struct Stores {
     tokens: KeychainApiTokenStore,
 }
 
+/// Where the test hooks point the stores; `None` is the app's own.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HookTargets {
+    settings: Option<String>,
+    keychain_service: Option<String>,
+}
+
+/// The test hooks `var` names, read only when `dev_allowance` says this build carries the dev
+/// allowance (`cargo test` builds). A shipped CLI reads neither variable, so nothing in its
+/// environment can point `auth` at other accounts or another keychain service.
+fn hook_targets(dev_allowance: bool, var: impl Fn(&str) -> Option<String>) -> HookTargets {
+    if !dev_allowance {
+        return HookTargets::default();
+    }
+    HookTargets {
+        settings: var(SETTINGS_ENV),
+        keychain_service: var(KEYCHAIN_ENV),
+    }
+}
+
 fn stores() -> Result<Stores> {
-    let settings: Arc<dyn SettingsStore> = match std::env::var(SETTINGS_ENV) {
-        Ok(path) if path.starts_with('/') => Arc::new(Preferences::domain(&path)?),
-        Ok(path) => bail!("{SETTINGS_ENV} '{path}' must be an absolute path"),
-        Err(_) => Arc::new(Preferences::domain(BUNDLE_IDENTIFIER)?),
+    let hooks = hook_targets(DEV_ALLOWANCE, |name| std::env::var(name).ok());
+    let settings: Arc<dyn SettingsStore> = match hooks.settings {
+        Some(path) if path.starts_with('/') => Arc::new(Preferences::domain(&path)?),
+        Some(path) => bail!("{SETTINGS_ENV} '{path}' must be an absolute path"),
+        None => Arc::new(Preferences::domain(BUNDLE_IDENTIFIER)?),
     };
-    let tokens = match std::env::var(KEYCHAIN_ENV) {
-        Ok(service) => KeychainApiTokenStore::with_service(&service).map_err(|e| anyhow!(e))?,
-        Err(_) => KeychainApiTokenStore::new(),
+    let tokens = match hooks.keychain_service {
+        Some(service) => KeychainApiTokenStore::with_service(&service).map_err(|e| anyhow!(e))?,
+        None => KeychainApiTokenStore::new(),
     };
     Ok(Stores {
         accounts: GitHubAccounts::new(Arc::clone(&settings)),
@@ -308,5 +330,23 @@ mod tests {
             "github.com\toctocat\ttoken\trepo, evil line\t-"
         );
         assert_eq!(method_label(account.method), "Personal access token");
+    }
+
+    #[test]
+    fn a_shipped_build_never_reads_the_test_hooks() {
+        let asked = std::cell::Cell::new(0);
+        let var = |name: &str| {
+            asked.set(asked.get() + 1);
+            Some(format!("/scratch/{name}"))
+        };
+        assert_eq!(hook_targets(false, var), HookTargets::default());
+        assert_eq!(asked.get(), 0, "no variable was read");
+        assert_eq!(
+            hook_targets(true, var),
+            HookTargets {
+                settings: Some("/scratch/RC_GIT_SETTINGS".to_owned()),
+                keychain_service: Some("/scratch/RC_GIT_KEYCHAIN_SERVICE".to_owned()),
+            }
+        );
     }
 }

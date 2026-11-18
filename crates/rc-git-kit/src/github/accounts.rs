@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use rc_git_guard::actions::github::{ClientId, GitHubError, GitHubHost, remote_host};
+use rc_git_guard::actions::github::{ClientId, GitHubError, GitHubHost, remote_host, single_line};
 
 use crate::platform::api_tokens::AccountKey;
 use crate::platform::keys;
@@ -71,13 +71,21 @@ pub struct GitHubAccount {
     pub token_expires: Option<String>,
 }
 
+/// The most characters of a free-text field (the scopes, the expiry) a record keeps, as
+/// `validate_token` reports them.
+const FREE_TEXT_CHARS: usize = 200;
+
 /// Reads one account record; `None` when any required field is missing or malformed, so one
-/// bad record hides no other.
+/// bad record hides no other. The settings file is outside rc-git's control (another program
+/// can edit it), so the host, login, method and client id must parse, and the free-text
+/// scopes and expiry pass through [`single_line`]: no escape sequence or control character
+/// in them reaches a terminal or the UI.
 fn account_from(value: &Value) -> Option<GitHubAccount> {
     let Value::Dict(fields) = value else {
         return None;
     };
     let text = |name: &str| fields.get(name).and_then(Value::as_str);
+    let shown = |name: &str| text(name).map(|value| single_line(value, FREE_TEXT_CHARS));
     let host = GitHubHost::parse(text("host")?).ok()?;
     let key = AccountKey::new(host, text("login")?).ok()?;
     let method = SignInMethod::from_word(text("method")?)?;
@@ -92,8 +100,8 @@ fn account_from(value: &Value) -> Option<GitHubAccount> {
         key,
         method,
         client_id,
-        scopes: text("scopes").map(str::to_owned),
-        token_expires: text("tokenExpires").map(str::to_owned),
+        scopes: shown("scopes"),
+        token_expires: shown("tokenExpires"),
     })
 }
 

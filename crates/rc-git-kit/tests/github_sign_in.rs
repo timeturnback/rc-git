@@ -1,22 +1,75 @@
 //! The sign-in sheet's state machine and its words, driven with the answers the guard would
-//! give.
+//! give. A device flow is a real one, started against testkit's fake GitHub host, since the
+//! state machine owns it and must free its one slot per process.
 #![expect(
     clippy::unwrap_used,
     reason = "the fixture helpers outside #[test] fns unwrap values valid by construction"
 )]
 
+use std::collections::VecDeque;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use rc_git_guard::actions::Cancel;
 use rc_git_kit::github::accounts::{GitHubAccount, SignInMethod};
 use rc_git_kit::github::copy::{method_note, phase_message, signed_in_summary};
 use rc_git_kit::github::sign_in::{SignInFlow, SignInPhase, SignInStart, SignInStep};
 use rc_git_kit::github::{
-    ApiToken, ClientId, DeviceMethod, DevicePoll, GitHubError, GitHubHost, TokenIdentity, TokenSet,
+    ApiToken, ClientId, DeviceFlow, DeviceMethod, DevicePoll, GitHubError, GitHubHost,
+    TokenIdentity, TokenSet, start_device_flow,
 };
 use rc_git_kit::platform::api_tokens::AccountKey;
+use rc_git_testkit::github::{DeviceScript, GitHubServer, USER_CODE};
+
+const CLIENT: &str = "Iv23li.client";
+
+/// Device flows hold a process-wide slot, so the tests that start one run one at a time.
+static DEVICE_FLOWS: Mutex<()> = Mutex::new(());
+
+/// A fake host answering the device-code endpoint for [`CLIENT`], held with the lock that
+/// keeps other tests' flows out.
+struct Fake {
+    server: GitHubServer,
+    _one: MutexGuard<'static, ()>,
+}
+
+impl Fake {
+    fn start() -> Self {
+        let one = DEVICE_FLOWS.lock().unwrap_or_else(PoisonError::into_inner);
+        let server = GitHubServer::start();
+        server.script_device_flow(DeviceScript {
+            client_id: CLIENT.to_owned(),
+            scope: None,
+            verification_uri: None,
+            interval: 1,
+            expires_in: 900,
+            polls: VecDeque::new(),
+        });
+        Self { server, _one: one }
+    }
+
+    fn host(&self) -> GitHubHost {
+        GitHubHost::parse(&self.server.host()).unwrap()
+    }
+
+    fn device_start(&self) -> SignInStart {
+        SignInStart::from_form(&self.server.host(), SignInMethod::GitHubApp, CLIENT, "").unwrap()
+    }
+
+    /// What `SignInStep::RequestCode` runs; fails while another flow holds the slot.
+    fn start_flow(&self) -> Result<DeviceFlow, GitHubError> {
+        let client = ClientId::parse(CLIENT).unwrap();
+        start_device_flow(
+            &self.host(),
+            &client,
+            DeviceMethod::GitHubApp,
+            &Cancel::new(),
+        )
+    }
+}
 
 fn device_start() -> SignInStart {
-    SignInStart::from_form("github.com", SignInMethod::GitHubApp, "Iv23li.client", "").unwrap()
+    SignInStart::from_form("github.com", SignInMethod::GitHubApp, CLIENT, "").unwrap()
 }
 
 fn identity() -> TokenIdentity {
@@ -31,9 +84,10 @@ fn granted() -> TokenSet {
     TokenSet::lasting(ApiToken::new("ghu_granted".to_owned()).unwrap())
 }
 
-/// Drives a device flow up to the code on screen, answering under its generation.
-fn waiting(flow: &mut SignInFlow) -> u64 {
-    let step = flow.submit(device_start());
+/// Drives a device flow up to the code on screen, answering under its generation. Fails when
+/// the process's one device-flow slot is still held.
+fn waiting(flow: &mut SignInFlow, fake: &Fake) -> u64 {
+    let step = flow.submit(fake.device_start());
     let generation = match step {
         SignInStep::RequestCode { generation } => generation,
         other => {
@@ -41,21 +95,28 @@ fn waiting(flow: &mut SignInFlow) -> u64 {
             0
         }
     };
-    let shown = (
-        "WDJB-MJHT".to_owned(),
-        "https://github.com/login/device".to_owned(),
-    );
+    let device = fake.start_flow().unwrap();
     assert_eq!(
-        flow.code_shown(generation, Ok(shown)),
+        flow.code_shown(generation, Ok(device)),
         SignInStep::Poll { generation }
     );
+    assert_eq!(
+        flow.phase(),
+        &SignInPhase::WaitingForUser {
+            user_code: USER_CODE.to_owned(),
+            verification_url: format!("{}/login/device", fake.server.origin()),
+            slowed_to: None,
+        }
+    );
+    assert!(flow.device().is_some(), "the flow holds the device to poll");
     generation
 }
 
 #[test]
 fn a_device_sign_in_polls_through_pending_and_slow_down_to_a_saved_account() {
+    let fake = Fake::start();
     let mut flow = SignInFlow::new();
-    let generation = waiting(&mut flow);
+    let generation = waiting(&mut flow, &fake);
     assert!(flow.can_cancel());
     assert_eq!(
         flow.polled(generation, Ok(DevicePoll::Pending)),
@@ -77,6 +138,7 @@ fn a_device_sign_in_polls_through_pending_and_slow_down_to_a_saved_account() {
             token: granted().access
         }
     );
+    assert!(flow.device().is_none(), "no poll follows a grant");
     let SignInStep::Save {
         account, tokens, ..
     } = flow.checked(generation, Ok(identity()))
@@ -85,10 +147,8 @@ fn a_device_sign_in_polls_through_pending_and_slow_down_to_a_saved_account() {
     };
     assert_eq!(tokens, granted());
     assert_eq!(account.method, SignInMethod::GitHubApp);
-    assert_eq!(
-        account.client_id,
-        Some(ClientId::parse("Iv23li.client").unwrap())
-    );
+    assert_eq!(account.client_id, Some(ClientId::parse(CLIENT).unwrap()));
+    assert_eq!(account.key.host(), &fake.host());
     assert_eq!(account.key.login(), "octocat");
     assert!(!flow.can_cancel(), "the save is not cancelled halfway");
     assert!(!flow.cancel());
@@ -123,9 +183,11 @@ fn a_pasted_token_is_checked_then_saved_without_a_client_id() {
 
 #[test]
 fn cancel_returns_to_the_form_and_drops_every_late_answer() {
+    let fake = Fake::start();
     let mut flow = SignInFlow::new();
-    let generation = waiting(&mut flow);
+    let generation = waiting(&mut flow, &fake);
     assert!(flow.cancel());
+    assert!(flow.device().is_none(), "a cancel frees the device flow");
     assert_eq!(
         flow.phase(),
         &SignInPhase::Form {
@@ -140,24 +202,65 @@ fn cancel_returns_to_the_form_and_drops_every_late_answer() {
     assert!(matches!(flow.phase(), SignInPhase::Form { .. }));
     assert!(!flow.cancel(), "nothing runs on the form");
 
-    let restarted = waiting(&mut flow);
+    let restarted = waiting(&mut flow, &fake);
     assert_ne!(restarted, generation);
     assert_eq!(
         flow.polled(generation, Ok(DevicePoll::Pending)),
         SignInStep::Idle,
         "an answer from the cancelled run does not move the new one"
     );
+    assert!(flow.device().is_some(), "nor drops its device flow");
+}
+
+#[test]
+fn a_device_flow_that_lands_after_a_cancel_is_dropped() {
+    let fake = Fake::start();
+    let mut flow = SignInFlow::new();
+    let SignInStep::RequestCode { generation } = flow.submit(fake.device_start()) else {
+        panic!("a device start asks for a code");
+    };
+    assert!(flow.cancel());
+    let late = fake.start_flow().unwrap();
+    assert_eq!(flow.code_shown(generation, Ok(late)), SignInStep::Idle);
+    assert!(flow.device().is_none());
+    fake.start_flow()
+        .expect("the late flow's slot is free again");
+}
+
+#[test]
+fn a_failed_poll_or_token_check_frees_the_device_flow_for_a_retry() {
+    let fake = Fake::start();
+    let mut flow = SignInFlow::new();
+    let generation = waiting(&mut flow, &fake);
+    let denied = GitHubError::AccessDenied {
+        host: fake.server.host(),
+    };
+    assert_eq!(flow.polled(generation, Err(denied)), SignInStep::Idle);
+    assert!(flow.device().is_none(), "no poll follows a failed one");
+
+    let retried = waiting(&mut flow, &fake);
+    let step = flow.polled(retried, Ok(DevicePoll::Granted(granted())));
+    assert!(matches!(step, SignInStep::Check { .. }), "{step:?}");
+    let refused = GitHubError::Unauthorized {
+        op: "check the token",
+        url: format!("{}/api/v3/user", fake.server.origin()),
+        host: fake.server.host(),
+    };
+    assert_eq!(flow.checked(retried, Err(refused)), SignInStep::Idle);
+    assert!(matches!(flow.phase(), SignInPhase::Form { note: Some(_) }));
+    waiting(&mut flow, &fake);
 }
 
 #[test]
 fn a_declined_expired_or_foreign_flow_ends_on_the_form_with_its_reason() {
-    let host = "github.com".to_owned();
+    let fake = Fake::start();
+    let host = fake.server.host();
     for error in [
         GitHubError::AccessDenied { host: host.clone() },
         GitHubError::DeviceCodeExpired { host: host.clone() },
     ] {
         let mut flow = SignInFlow::new();
-        let generation = waiting(&mut flow);
+        let generation = waiting(&mut flow, &fake);
         let message = error.to_string();
         assert_eq!(flow.polled(generation, Err(error)), SignInStep::Idle);
         assert_eq!(
@@ -185,9 +288,10 @@ fn a_declined_expired_or_foreign_flow_ends_on_the_form_with_its_reason() {
 
 #[test]
 fn a_submit_while_running_starts_nothing() {
+    let fake = Fake::start();
     let mut flow = SignInFlow::new();
-    waiting(&mut flow);
-    assert_eq!(flow.submit(device_start()), SignInStep::Idle);
+    waiting(&mut flow, &fake);
+    assert_eq!(flow.submit(fake.device_start()), SignInStep::Idle);
 }
 
 #[test]

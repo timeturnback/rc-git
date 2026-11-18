@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use rc_git_testkit::github::{
-    DEVICE_CODE, DeviceScript, FakeToken, GitHubServer, Grant, PollAnswer, USER_CODE,
+    DEVICE_CODE, DeviceScript, EchoForm, FakeToken, GitHubServer, Grant, PollAnswer, USER_CODE,
 };
 
 use super::api::{API_BODY_LIMIT, Session};
@@ -205,6 +205,48 @@ fn hostile_remotes_name_no_repository_on_the_account_host() {
             matches!(error, GitHubError::ForeignRemote { .. }),
             "{remote}: {error}"
         );
+        assert_no_secret(&error, &["hunter2"]);
+    }
+}
+
+#[test]
+fn an_oversized_owner_name_or_remote_url_names_no_repository() {
+    let com = GitHubHost::github_com();
+    let longest = format!(
+        "https://github.com/{}/{}.git",
+        "o".repeat(39),
+        "r".repeat(100)
+    );
+    let target = RepositoryTarget::on_host(&com, &longest).unwrap();
+    assert_eq!((target.owner().len(), target.name().len()), (39, 100));
+    for (remote, unparsed) in [
+        (
+            format!("https://github.com/{}/r.git", "o".repeat(40)),
+            false,
+        ),
+        (
+            format!("https://github.com/o/{}.git", "r".repeat(101)),
+            false,
+        ),
+        (
+            format!("https://github.com/o/r.git?{}", "x".repeat(1024)),
+            true,
+        ),
+        (
+            format!("https://user:hunter2@github.com/o/{}", "r".repeat(1024)),
+            true,
+        ),
+    ] {
+        let error = RepositoryTarget::on_host(&com, &remote).unwrap_err();
+        let GitHubError::ForeignRemote { reason, .. } = &error else {
+            panic!("{remote}: {error}");
+        };
+        assert_eq!(
+            reason.contains("longer than 1024 bytes"),
+            unparsed,
+            "an oversized URL is refused before it is parsed: {error}"
+        );
+        assert!(error.to_string().len() < 600, "{error}");
         assert_no_secret(&error, &["hunter2"]);
     }
 }
@@ -642,7 +684,78 @@ fn a_declined_or_expired_code_ends_the_flow() {
                 "{error}"
             );
         }
-        assert_no_secret(&error, &[DEVICE_CODE]);
+    }
+}
+
+/// Asserts `error` names none of `secrets` and, when `scrubbed`, shows `<redacted>` where the
+/// host echoed one.
+fn assert_echo_scrubbed(error: &GitHubError, secrets: &[&str], scrubbed: bool) {
+    assert_no_secret(error, secrets);
+    if scrubbed {
+        assert!(error.to_string().contains("<redacted>"), "{error}");
+    }
+}
+
+#[test]
+fn a_device_code_the_host_echoes_back_never_reaches_an_error() {
+    let _one = one_flow_at_a_time();
+    for into in [EchoForm::Description, EchoForm::Code, EchoForm::Body] {
+        let server = GitHubServer::start();
+        server.script_device_flow(script(vec![PollAnswer::Grant(grant())]));
+        let cancel = Cancel::new();
+        let flow = start_device_flow(
+            &host_of(&server),
+            &client(),
+            DeviceMethod::GitHubApp,
+            &cancel,
+        )
+        .unwrap();
+        server.echo_form(into);
+        let error = flow.poll(&cancel).unwrap_err();
+        match into {
+            EchoForm::Description => assert!(
+                matches!(&error, GitHubError::OAuth { code, .. } if code == "echoed_form"),
+                "{error}"
+            ),
+            EchoForm::Code => assert!(
+                matches!(&error, GitHubError::OAuth { code, .. }
+                    if code == "unrecognized error code"),
+                "{error}"
+            ),
+            EchoForm::Body => assert!(
+                matches!(error, GitHubError::Status { status: 400, .. }),
+                "{error}"
+            ),
+        }
+        assert_echo_scrubbed(&error, &[DEVICE_CODE], into != EchoForm::Code);
+    }
+}
+
+#[test]
+fn a_refresh_token_the_host_echoes_back_never_reaches_an_error() {
+    let refresh = RefreshToken::new("ghr_echoed_refresh".to_owned()).unwrap();
+    for into in [EchoForm::Description, EchoForm::Code, EchoForm::Body] {
+        let server = GitHubServer::start();
+        server.echo_form(into);
+        let error =
+            refresh_user_token(&host_of(&server), &client(), &refresh, &Cancel::new()).unwrap_err();
+        match into {
+            EchoForm::Description => assert!(
+                matches!(&error, GitHubError::RefreshRejected { code, .. }
+                    if code == "echoed_form"),
+                "{error}"
+            ),
+            EchoForm::Code => assert!(
+                matches!(&error, GitHubError::RefreshRejected { code, .. }
+                    if code == "unrecognized error code"),
+                "{error}"
+            ),
+            EchoForm::Body => assert!(
+                matches!(error, GitHubError::Status { status: 400, .. }),
+                "{error}"
+            ),
+        }
+        assert_echo_scrubbed(&error, &["ghr_echoed_refresh"], into == EchoForm::Body);
     }
 }
 
@@ -798,7 +911,6 @@ fn a_refresh_token_buys_new_tokens_exactly_once() {
         matches!(&again, GitHubError::RefreshRejected { code, .. } if code == "bad_refresh_token"),
         "{again}"
     );
-    assert_no_secret(&again, &["ghr_first"]);
     let body = String::from_utf8(server.recorded()[0].body.clone()).unwrap();
     assert_eq!(
         body,

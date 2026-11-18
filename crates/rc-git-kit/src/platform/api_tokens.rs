@@ -76,7 +76,18 @@ impl fmt::Display for AccountKey {
     }
 }
 
-/// Stores one account's tokens per [`AccountKey`].
+/// What [`ApiTokenStore::update_tokens`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenUpdate {
+    /// The account's item now holds the new tokens.
+    Replaced,
+    /// The account has no item (it was signed out meanwhile); nothing was stored.
+    NoItem,
+}
+
+/// Stores one account's tokens per [`AccountKey`]. A sign-in and a refresh write through
+/// different methods, so neither can take the other's path: a sign-in never writes into an
+/// item it did not create, and a refresh never brings back an item a sign-out deleted.
 pub trait ApiTokenStore: Send + Sync {
     /// The tokens saved for `account`, or `None` when there are none.
     ///
@@ -85,11 +96,29 @@ pub trait ApiTokenStore: Send + Sync {
     /// answer or holds bytes [`decode_tokens`] refuses.
     fn tokens(&self, account: &AccountKey) -> Result<Option<TokenSet>, CredentialError>;
 
-    /// Saves `tokens` for `account`, replacing what was there in one step.
+    /// Saves a new sign-in's `tokens` for `account` in a fresh item: any item already holding
+    /// that account, whoever wrote it, is deleted first, so the token never lands in an item
+    /// another program planted with its own access rules.
+    ///
+    /// # Errors
+    /// [`CredentialError`] with op `"write"` naming the account when the store refused the
+    /// delete or the add (an item that reappears in between is refused, not overwritten).
+    fn save_new_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<(), CredentialError>;
+
+    /// Replaces the tokens in `account`'s existing item with a refresh's `tokens`. Never
+    /// creates an item: with none there it stores nothing and answers [`TokenUpdate::NoItem`].
     ///
     /// # Errors
     /// [`CredentialError`] with op `"write"` naming the account when the store refused it.
-    fn store_tokens(&self, account: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError>;
+    fn update_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<TokenUpdate, CredentialError>;
 
     /// Forgets `account`'s tokens; forgetting what is not there succeeds.
     ///
@@ -103,8 +132,20 @@ impl<T: ApiTokenStore + ?Sized> ApiTokenStore for &T {
         (**self).tokens(account)
     }
 
-    fn store_tokens(&self, account: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError> {
-        (**self).store_tokens(account, tokens)
+    fn save_new_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<(), CredentialError> {
+        (**self).save_new_tokens(account, tokens)
+    }
+
+    fn update_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<TokenUpdate, CredentialError> {
+        (**self).update_tokens(account, tokens)
     }
 
     fn delete_tokens(&self, account: &AccountKey) -> Result<(), CredentialError> {
@@ -117,8 +158,20 @@ impl<T: ApiTokenStore + ?Sized> ApiTokenStore for std::sync::Arc<T> {
         (**self).tokens(account)
     }
 
-    fn store_tokens(&self, account: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError> {
-        (**self).store_tokens(account, tokens)
+    fn save_new_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<(), CredentialError> {
+        (**self).save_new_tokens(account, tokens)
+    }
+
+    fn update_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<TokenUpdate, CredentialError> {
+        (**self).update_tokens(account, tokens)
     }
 
     fn delete_tokens(&self, account: &AccountKey) -> Result<(), CredentialError> {
@@ -272,7 +325,11 @@ impl ApiTokenStore for MemoryApiTokenStore {
             .ok_or_else(|| failed("read", account, -26275))
     }
 
-    fn store_tokens(&self, account: &AccountKey, tokens: &TokenSet) -> Result<(), CredentialError> {
+    fn save_new_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<(), CredentialError> {
         let mut state = lock(&self.state);
         state.writes += 1;
         if state.failing_writes {
@@ -280,6 +337,23 @@ impl ApiTokenStore for MemoryApiTokenStore {
         }
         state.items.insert(account.clone(), encode_tokens(tokens));
         Ok(())
+    }
+
+    fn update_tokens(
+        &self,
+        account: &AccountKey,
+        tokens: &TokenSet,
+    ) -> Result<TokenUpdate, CredentialError> {
+        let mut state = lock(&self.state);
+        state.writes += 1;
+        if state.failing_writes {
+            return Err(failed("write", account, -25293));
+        }
+        let Some(item) = state.items.get_mut(account) else {
+            return Ok(TokenUpdate::NoItem);
+        };
+        *item = encode_tokens(tokens);
+        Ok(TokenUpdate::Replaced)
     }
 
     fn delete_tokens(&self, account: &AccountKey) -> Result<(), CredentialError> {
@@ -363,10 +437,29 @@ mod tests {
     }
 
     #[test]
+    fn the_memory_store_updates_only_an_item_that_exists() {
+        let store = MemoryApiTokenStore::new();
+        let key = AccountKey::new(GitHubHost::github_com(), "octocat").unwrap();
+        assert_eq!(store.update_tokens(&key, &full()), Ok(TokenUpdate::NoItem));
+        assert_eq!(
+            store.tokens(&key).unwrap(),
+            None,
+            "an update creates nothing"
+        );
+        let lasting = TokenSet::lasting(ApiToken::new("ghp_x".to_owned()).unwrap());
+        store.save_new_tokens(&key, &lasting).unwrap();
+        assert_eq!(
+            store.update_tokens(&key, &full()),
+            Ok(TokenUpdate::Replaced)
+        );
+        assert_eq!(store.tokens(&key).unwrap(), Some(full()));
+    }
+
+    #[test]
     fn the_memory_store_never_prints_a_token() {
         let store = MemoryApiTokenStore::new();
         let key = AccountKey::new(GitHubHost::github_com(), "octocat").unwrap();
-        store.store_tokens(&key, &full()).unwrap();
+        store.save_new_tokens(&key, &full()).unwrap();
         let printed = format!("{store:?}");
         assert!(!printed.contains("ghu_access"), "{printed}");
         assert_eq!(store.tokens(&key).unwrap(), Some(full()));

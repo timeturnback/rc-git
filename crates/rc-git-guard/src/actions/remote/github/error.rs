@@ -164,7 +164,8 @@ pub enum GitHubError {
     OAuth {
         /// The host signed into.
         host: String,
-        /// The `error` code, made single-line.
+        /// The `error` code as sent when it is 1 to 64 of `[a-z_]` and holds no secret of the
+        /// request, else `unrecognized error code`.
         code: String,
         /// The `error_description`, made single-line and scrubbed.
         description: String,
@@ -174,7 +175,7 @@ pub enum GitHubError {
     RefreshRejected {
         /// The host.
         host: String,
-        /// The `error` code, made single-line.
+        /// The `error` code, shown as for [`GitHubError::OAuth`].
         code: String,
     },
 }

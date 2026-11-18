@@ -90,11 +90,22 @@ if [[ -n $curl_users ]]; then
     'route the request through the GitHub client' >&2
   exit 1
 fi
-curl_crates="$(git grep -lE '^curl(\.workspace)? *=' -- 'crates/*/Cargo.toml' |
-  grep -v '^crates/rc-git-guard/Cargo.toml$' || true)"
-if [[ -n $curl_crates ]]; then
-  printf '%s\n' "$curl_crates"
-  echo 'error: only rc-git-guard may depend on curl' >&2
+# Read from the dependency graph, not the manifests' text, so a [dependencies.curl] table, a
+# renamed `package = "curl"` or a direct curl-sys shows up whatever its spelling.
+dependents() {
+  cargo tree --locked --workspace --all-features --target all -e normal,build,dev \
+    -i "$1" --depth 1 --prefix none --format '{p}' |
+    sed '1d; s/ .*//' | LC_ALL=C sort -u | paste -sd ' ' -
+}
+curl_dependents="$(dependents curl)"
+if [[ $curl_dependents != 'gix-transport rc-git-guard' ]]; then
+  echo "error: curl is a dependency of '$curl_dependents'; only gix-transport and" \
+    'rc-git-guard may depend on it' >&2
+  exit 1
+fi
+curl_sys_dependents="$(dependents curl-sys)"
+if [[ $curl_sys_dependents != 'curl' ]]; then
+  echo "error: curl-sys is a dependency of '$curl_sys_dependents'; only curl may depend on it" >&2
   exit 1
 fi
 # The plain-http allowance for a loopback GitHub host is decided in one place.

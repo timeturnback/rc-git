@@ -18,11 +18,21 @@ pub(super) const API_BODY_LIMIT: usize = 4 * 1024 * 1024;
 /// The media type the REST API answers with.
 const REST_ACCEPT: &str = "application/vnd.github+json";
 
-/// A parsed JSON answer and the response it came in, for its headers.
-#[derive(Debug, Clone)]
+/// A parsed JSON answer and the response it came in, for its headers. Its `Debug` shows the
+/// body no more than [`Response`]'s does.
+#[derive(Clone)]
 pub(super) struct ApiReply {
     pub value: Value,
     response: Response,
+}
+
+impl std::fmt::Debug for ApiReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiReply")
+            .field("value", &"<redacted>")
+            .field("response", &self.response)
+            .finish()
+    }
 }
 
 impl ApiReply {

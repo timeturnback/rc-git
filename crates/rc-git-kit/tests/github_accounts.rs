@@ -82,6 +82,36 @@ fn a_malformed_record_is_dropped_alone() {
 }
 
 #[test]
+fn free_text_from_a_tampered_settings_file_loads_on_one_visible_line() {
+    let (settings, store) = accounts();
+    let mut record = BTreeMap::new();
+    let mut put = |name: &str, value: &str| {
+        record.insert(name.to_owned(), Value::String(value.to_owned()));
+    };
+    put("host", "github.com");
+    put("login", "octocat");
+    put("method", "token");
+    put("scopes", "repo\u{1b}]0;owned\u{7}\u{1b}[2J\nX-Injected: 1");
+    put("tokenExpires", "soon\u{202e}txt.exe\u{2028}");
+    settings
+        .set_value(
+            keys::GITHUB_ACCOUNTS,
+            Some(Value::Array(vec![Value::Dict(record)])),
+        )
+        .unwrap();
+    let [loaded] = store.load().try_into().unwrap();
+    assert_eq!(
+        loaded.scopes.as_deref(),
+        Some("repo\\u{a}X-Injected: 1"),
+        "escape sequences dropped, the line break shown"
+    );
+    assert_eq!(
+        loaded.token_expires.as_deref(),
+        Some("soon\\u{202e}txt.exe\\u{2028}")
+    );
+}
+
+#[test]
 fn signing_in_keeps_the_token_in_the_token_store_and_never_in_settings() {
     let (settings, store) = accounts();
     let tokens = MemoryApiTokenStore::new();

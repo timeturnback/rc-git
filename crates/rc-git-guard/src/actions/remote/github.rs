@@ -24,7 +24,7 @@ mod tests;
 
 pub use device::{DeviceFlow, DeviceMethod, DevicePoll, start_device_flow};
 pub use error::GitHubError;
-pub use host::{GitHubHost, RepositoryTarget, remote_host};
+pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host};
 pub use oauth::refresh_user_token;
 pub use secret::{ApiToken, ClientId, RefreshToken, TokenSet, unix_now};
 pub use text::single_line;

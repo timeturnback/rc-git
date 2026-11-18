@@ -98,25 +98,123 @@ fn only_rc_git_prefixed_services_are_accepted() {
     }
 }
 
+#[link(name = "Security", kind = "framework")]
+unsafe extern "C" {
+    static kSecAttrComment: CFTypeRef;
+}
+
+/// What another program could leave behind: an item under the scratch store's service and
+/// account, marked with a comment rc-git never writes.
+fn plant(scratch: &Scratch) {
+    let parts = scratch.store.parts(&scratch.key, "plant").unwrap();
+    let data = cf::data(b"planted").unwrap();
+    let comment = cf::string("planted by another program").unwrap();
+    let mut pairs = KeychainApiTokenStore::identity(&parts);
+    // SAFETY: framework constants.
+    unsafe {
+        pairs.push((kSecValueData, data.as_ptr()));
+        pairs.push((kSecAttrComment, comment.as_ptr()));
+    }
+    let attributes = cf::dictionary(&pairs).unwrap();
+    // SAFETY: `attributes` is live; a null result pointer asks for nothing back.
+    let status = unsafe { SecItemAdd(attributes.as_ptr(), ptr::null_mut()) };
+    assert_eq!(status, ERR_SEC_SUCCESS, "plant the item");
+}
+
+/// The comment on the scratch store's item; `None` when the item has none.
+fn comment(scratch: &Scratch) -> Option<String> {
+    let parts = scratch.store.parts(&scratch.key, "inspect").unwrap();
+    let mut pairs = KeychainApiTokenStore::identity(&parts);
+    // SAFETY: framework constants.
+    unsafe {
+        pairs.push((kSecReturnAttributes, cf::boolean(true)));
+        pairs.push((kSecMatchLimit, kSecMatchLimitOne));
+    }
+    let query = cf::dictionary(&pairs).unwrap();
+    let mut result: CFTypeRef = ptr::null();
+    // SAFETY: `query` is live; on success `result` receives an owned dictionary.
+    let status = unsafe { SecItemCopyMatching(query.as_ptr(), &raw mut result) };
+    assert_eq!(status, ERR_SEC_SUCCESS, "find the item");
+    // SAFETY: `result` is the owned reference the call returned.
+    let item = unsafe { Owned::from_create(result) }.unwrap();
+    // SAFETY: `item` is a live dictionary; the value is borrowed from it while it lives.
+    let comment = unsafe { cf::dictionary_get(item.as_ptr(), kSecAttrComment) };
+    // SAFETY: a comment attribute is a CF string.
+    (!comment.is_null()).then(|| unsafe { cf::string_text(comment) }.unwrap())
+}
+
+#[test]
+fn a_sign_in_replaces_a_planted_item_with_a_fresh_one() {
+    let scratch = Scratch::new();
+    plant(&scratch);
+    assert_eq!(
+        comment(&scratch).as_deref(),
+        Some("planted by another program")
+    );
+    scratch
+        .store
+        .save_new_tokens(&scratch.key, &app_tokens("ghu_user", "ghr_user"))
+        .unwrap();
+    assert_eq!(
+        comment(&scratch),
+        None,
+        "the token went into a new item, not the planted one"
+    );
+    assert_eq!(
+        scratch.store.tokens(&scratch.key).unwrap(),
+        Some(app_tokens("ghu_user", "ghr_user"))
+    );
+}
+
+#[test]
+fn a_refresh_writes_only_into_the_item_that_is_there() {
+    let scratch = Scratch::new();
+    let (store, key) = (&scratch.store, &scratch.key);
+    assert_eq!(
+        store.update_tokens(key, &app_tokens("ghu_x", "ghr_x")),
+        Ok(TokenUpdate::NoItem)
+    );
+    assert_eq!(store.tokens(key).unwrap(), None, "a refresh adds no item");
+    plant(&scratch);
+    assert_eq!(
+        store.update_tokens(key, &app_tokens("ghu_x", "ghr_x")),
+        Ok(TokenUpdate::Replaced)
+    );
+    assert_eq!(
+        comment(&scratch).as_deref(),
+        Some("planted by another program"),
+        "an update keeps the item it found, which is why a sign-in never takes this path"
+    );
+}
+
 #[test]
 fn tokens_round_trip_replace_in_place_and_delete() {
     let scratch = Scratch::new();
     let (store, key) = (&scratch.store, &scratch.key);
     assert_eq!(store.tokens(key).unwrap(), None);
     store
-        .store_tokens(key, &app_tokens("ghu_one", "ghr_one"))
+        .save_new_tokens(key, &app_tokens("ghu_one", "ghr_one"))
         .unwrap();
     assert_eq!(
         store.tokens(key).unwrap(),
         Some(app_tokens("ghu_one", "ghr_one"))
     );
-    store
-        .store_tokens(key, &app_tokens("ghu_two", "ghr_two"))
-        .unwrap();
+    assert_eq!(
+        store.update_tokens(key, &app_tokens("ghu_two", "ghr_two")),
+        Ok(TokenUpdate::Replaced)
+    );
     assert_eq!(
         store.tokens(key).unwrap(),
         Some(app_tokens("ghu_two", "ghr_two")),
-        "a store replaces the earlier pair"
+        "a refresh replaces the earlier pair"
+    );
+    store
+        .save_new_tokens(key, &app_tokens("ghu_three", "ghr_three"))
+        .unwrap();
+    assert_eq!(
+        store.tokens(key).unwrap(),
+        Some(app_tokens("ghu_three", "ghr_three")),
+        "a second sign-in replaces the item"
     );
     let other = AccountKey::new(key.host().clone(), "someone-else").unwrap();
     assert_eq!(
@@ -145,7 +243,7 @@ fn api_tokens_and_push_tokens_of_one_host_never_touch_each_other() {
     };
     scratch
         .store
-        .store_tokens(&scratch.key, &app_tokens("ghu_api", "ghr_api"))
+        .save_new_tokens(&scratch.key, &app_tokens("ghu_api", "ghr_api"))
         .unwrap();
     push.store(&push_token, &host, CredentialKind::HttpsToken)
         .unwrap();

@@ -125,8 +125,7 @@ usage: rc-git [--time] <command> <repo> [args]
                                           expires<TAB>ok or the problem; exits 5 unless all ok
   auth logout --host H --login L          forget the account and delete its token
   The accounts are the app's (Settings > GitHub Accounts) and the tokens live in the login
-  keychain. RC_GIT_SETTINGS (an absolute plist path) and RC_GIT_KEYCHAIN_SERVICE
-  (rc-git-...) point both elsewhere, for tests and scripts.
+  keychain.
 
   Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
