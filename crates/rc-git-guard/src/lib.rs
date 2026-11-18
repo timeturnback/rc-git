@@ -120,6 +120,12 @@ pub enum Action {
         /// The entry being dropped and its message, e.g. `stash@{1} "On main: wip"`.
         name: String,
     },
+    /// Merge a pull request on GitHub into its base branch with the method the user chose,
+    /// expecting the head the user saw. It changes a branch everyone shares, and rc-git cannot
+    /// take it back; it loses nothing, though: the base's old tip stays in its history, and a
+    /// revert undoes the change. Built only from a read made just before
+    /// ([`actions::github::PullRequestMerge::new`]).
+    MergePullRequest(Box<actions::github::PullRequestMerge>),
 }
 
 /// How much an action can lose.
@@ -153,7 +159,8 @@ impl Action {
                 published: false, ..
             }
             | Action::StashPush { .. }
-            | Action::StashPop { .. } => Risk::Recoverable,
+            | Action::StashPop { .. }
+            | Action::MergePullRequest(_) => Risk::Recoverable,
             Action::Push { force: true, .. }
             | Action::DeleteLocalBranch { merged: false, .. }
             | Action::DeleteRemoteBranch { .. }
@@ -309,9 +316,122 @@ mod tests {
                 Expected::confirm(Risk::Destructive, None, false)
             }
             Action::Prune => Expected::confirm(Risk::Destructive, Some("prune"), false),
-            Action::StashPush { .. } => Expected::confirm(Risk::Recoverable, None, false),
+            // A merge is a plain confirm into a protected base too: GitHub's branch protection
+            // guards the base, not rc-git's protected names.
+            Action::StashPush { .. } | Action::MergePullRequest(_) => {
+                Expected::confirm(Risk::Recoverable, None, false)
+            }
             Action::StashDrop { .. } => Expected::confirm(Risk::Destructive, Some("drop"), true),
         }
+    }
+
+    /// Merging pull request 7 of `octo/rc-git` into `base` with a squash, with three checks.
+    fn merge_into(base: &str) -> Action {
+        use actions::github::{
+            Check, CheckConclusion, CheckList, CheckProgress, CheckStatus, DetailFields,
+            GitHubHost, MergeMethod, MergeMethods, MergeStateStatus, Mergeable, PullRequestDetail,
+            PullRequestId, PullRequestMerge, PullRequestState, PullRequestSummary,
+            RepositoryTarget,
+        };
+        let target =
+            RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+                .unwrap();
+        let check = |name: &str, status, conclusion| Check {
+            name: name.to_owned(),
+            progress: CheckProgress::Run { status, conclusion },
+            description: None,
+            required: Some(true),
+            details: None,
+            actions: None,
+        };
+        let detail = PullRequestDetail {
+            summary: PullRequestSummary {
+                number: 7,
+                title: "Ship \\u{202e}it".to_owned(),
+                author: None,
+                head_ref: "feature".to_owned(),
+                head_oid: rc_git_core::Oid::from_hex(&"ab".repeat(20)).unwrap(),
+                base_ref: base.to_owned(),
+                head_owner: None,
+                cross_repository: false,
+                draft: false,
+                state: PullRequestState::Open,
+                updated_at: None,
+                checks: None,
+                review: None,
+            },
+            id: PullRequestId::parse("PR_kwDOtest7"),
+            body: String::new(),
+            url: None,
+            mergeable: Mergeable::Mergeable,
+            merge_state: Some(MergeStateStatus::Unstable),
+            merge_methods: MergeMethods {
+                merge: false,
+                squash: true,
+                rebase: false,
+            },
+            auto_merge_allowed: None,
+            viewer: None,
+            auto_merge: None,
+            checks: CheckList {
+                checks: vec![
+                    check(
+                        "build",
+                        CheckStatus::Completed,
+                        Some(CheckConclusion::Success),
+                    ),
+                    check(
+                        "lint",
+                        CheckStatus::Completed,
+                        Some(CheckConclusion::Failure),
+                    ),
+                    check("deploy", CheckStatus::InProgress, None),
+                ],
+                total: 4,
+            },
+            fields: DetailFields::Full,
+        };
+        Action::MergePullRequest(Box::new(
+            PullRequestMerge::new(&target, &detail, MergeMethod::Squash).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn a_merge_challenge_names_everything_that_was_read_and_no_phrase() {
+        let c = challenge(Policy::default().evaluate(&merge_into("main")));
+        assert_eq!(c.typed_phrase(), None);
+        assert!(!c.backup_ref());
+        assert_eq!(
+            c.summary(),
+            "Merge octo/rc-git#7 \u{201c}Ship \\u{202e}it\u{201d} into main with a squash merge: \
+             feature at abababa (1 of 4 checks passed, 1 failed, 1 pending, 1 not read). GitHub \
+             merges it for everyone and rc-git cannot undo it; the local repository is unchanged \
+             until you fetch."
+        );
+        assert!(
+            c.verify("").is_some(),
+            "a plain confirm verifies any answer"
+        );
+    }
+
+    #[test]
+    fn a_proof_is_bound_to_the_action_it_answered() {
+        let policy = Policy::default();
+        let merge = merge_into("main");
+        let proof = challenge(policy.evaluate(&merge)).verify("").unwrap();
+        assert_eq!(proof.action(), &merge);
+        let other = challenge(policy.evaluate(&Action::DeleteTag {
+            name: "v1".to_owned(),
+        }))
+        .verify("v1")
+        .unwrap();
+        assert_ne!(other.action(), &merge);
+        let elsewhere = challenge(policy.evaluate(&merge_into("release/2.0")));
+        assert_ne!(
+            challenge(policy.evaluate(&merge)),
+            elsewhere,
+            "two merges' challenges differ"
+        );
     }
 
     fn one_of_each_action(name: &str) -> Vec<Action> {
@@ -362,6 +482,7 @@ mod tests {
             Action::StashApply,
             Action::StashPop { name: stash() },
             Action::StashDrop { name: stash() },
+            merge_into(&name()),
         ]
     }
 

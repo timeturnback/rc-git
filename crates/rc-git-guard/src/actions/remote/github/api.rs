@@ -6,10 +6,12 @@
 use serde_json::Value;
 
 use super::host::GitHubHost;
-use super::http::{Body, Method, Request, Response, send};
+use super::http::{Body, Delivery, Method, Request, Response, deliver, send};
+use super::mutation::Mutation;
 use super::secret::ApiToken;
 use super::text::server_text;
 use super::{GitHubError, GitHubResult, RepositoryTarget};
+use crate::Confirmation;
 use crate::actions::remote::Cancel;
 
 /// The default cap on an API response body.
@@ -107,34 +109,17 @@ impl<'a> Session<'a> {
         self.get(op, &segments, "", cancel)
     }
 
-    /// `POST` `body` as JSON to the REST endpoint at `segments`.
+    /// Runs the static GraphQL read `query` with `variables`. The answer keeps its `data` and
+    /// its `errors` apart, since GitHub answers a partly failed query with both: the caller
+    /// decides what an error means for its read. A spent rate limit, which GitHub answers with a
+    /// 200, `x-ratelimit-remaining: 0` and an error, or an error of type `RATE_LIMITED`, is
+    /// [`GitHubError::RateLimited`]. Only a `query` document is sent: a mutation goes through
+    /// [`Session::mutate`], which needs the proof of its action, so a read call site cannot
+    /// send one by accident.
     ///
     /// # Errors
-    /// As [`Session::get`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the pull request mutations call it")
-    )]
-    pub(super) fn post(
-        &self,
-        op: &'static str,
-        segments: &[&str],
-        body: &Value,
-        cancel: &Cancel,
-    ) -> GitHubResult<ApiReply> {
-        let mut request = self.request(op, Method::Post, self.host.rest_url(segments, "")?);
-        request.body = Some(Body::Json(body.to_string().into_bytes()));
-        self.run(request, cancel)
-    }
-
-    /// Runs the static GraphQL `query` with `variables`. The answer keeps its `data` and its
-    /// `errors` apart, since GitHub answers a partly failed query with both: the caller decides
-    /// what an error means for its read. A spent rate limit, which GitHub answers with a 200,
-    /// `x-ratelimit-remaining: 0` and an error, or an error of type `RATE_LIMITED`, is
-    /// [`GitHubError::RateLimited`].
-    ///
-    /// # Errors
-    /// As [`Session::get`], and [`GitHubError::RateLimited`] as above.
+    /// As [`Session::get`], [`GitHubError::RateLimited`] as above, and
+    /// [`GitHubError::InvalidValue`] before any request for a document that is not a query.
     pub(super) fn graphql(
         &self,
         op: &'static str,
@@ -142,11 +127,62 @@ impl<'a> Session<'a> {
         variables: &Value,
         cancel: &Cancel,
     ) -> GitHubResult<GraphqlReply> {
-        let url = self.host.graphql_url();
-        let mut request = self.request(op, Method::Post, url);
-        request.body = Some(Body::Json(graphql_body(query, variables)));
+        if !is_read_document(query) {
+            return Err(GitHubError::InvalidValue {
+                field: "GraphQL read",
+                value: op.to_owned(),
+                reason: "a read sends a `query` document only; a mutation needs its proof",
+            });
+        }
+        let request = self.graphql_request(op, query, variables);
         let shown_url = request.url.as_str().to_owned();
         let reply = self.run(request, cancel)?;
+        self.read_graphql(op, shown_url, &reply)
+    }
+
+    /// Sends the one GitHub mutation `proof` confirms, once: its static document and the
+    /// variables derived from the confirmed action alone, to this session's host only. This is
+    /// the only way a mutation leaves rc-git, and nothing builds a [`Confirmation`] but the
+    /// policy, so no code path sends a mutation without a verified challenge. It never retries:
+    /// what came back, or why nothing did, is the caller's to read.
+    pub(super) fn mutate(&self, proof: &Confirmation, cancel: &Cancel) -> Mutated {
+        let Some(mutation) = Mutation::of(proof) else {
+            return Mutated::NotSent(GitHubError::InvalidValue {
+                field: "GitHub mutation",
+                value: "the confirmed action".to_owned(),
+                reason: "it is not an action rc-git performs on GitHub",
+            });
+        };
+        if let Err(error) = self.check_target(mutation.target()) {
+            return Mutated::NotSent(error);
+        }
+        let op = mutation.op();
+        let request = self.graphql_request(op, mutation.document(), &mutation.variables());
+        let shown_url = request.url.as_str().to_owned();
+        let response = match deliver(request, cancel) {
+            Delivery::NotSent(error) => return Mutated::NotSent(error),
+            Delivery::Sent(Err(error)) => return Mutated::Lost(error),
+            Delivery::Sent(Ok(response)) => response,
+        };
+        let secrets = [self.token.expose_secret()];
+        let judged = judge(response, op, &shown_url, self.host, &secrets)
+            .and_then(|reply| self.read_graphql(op, shown_url, &reply));
+        Mutated::Answered(judged)
+    }
+
+    fn graphql_request(&self, op: &'static str, query: &'static str, variables: &Value) -> Request {
+        let mut request = self.request(op, Method::Post, self.host.graphql_url());
+        request.body = Some(Body::Json(graphql_body(query, variables)));
+        request
+    }
+
+    /// A GraphQL answer read out of `reply`, a spent rate limit refused.
+    fn read_graphql(
+        &self,
+        op: &'static str,
+        shown_url: String,
+        reply: &ApiReply,
+    ) -> GitHubResult<GraphqlReply> {
         let secrets = [self.token.expose_secret()];
         let errors: Vec<GraphqlError> = reply
             .value
@@ -203,6 +239,25 @@ impl<'a> Session<'a> {
         let response = send(request, cancel)?;
         judge(response, op, &url, self.host, &[self.token.expose_secret()])
     }
+}
+
+/// What a mutation came to: refused before it left, answered, or lost on the way back.
+#[derive(Debug)]
+pub(super) enum Mutated {
+    /// Nothing left the machine.
+    NotSent(GitHubError),
+    /// The host answered: its reply as a GraphQL answer, or the status it refused with.
+    Answered(GitHubResult<GraphqlReply>),
+    /// The request may have reached the host and no usable answer came back.
+    Lost(GitHubError),
+}
+
+/// Whether `document` is a GraphQL read: it starts with the `query` keyword. A mutation, a
+/// subscription and the anonymous `{ ... }` shorthand all fail.
+fn is_read_document(document: &str) -> bool {
+    document
+        .strip_prefix("query")
+        .is_some_and(|rest| rest.starts_with([' ', '(', '{', '\n']))
 }
 
 /// The JSON body of a GraphQL request: the static query and the variables, nothing else.

@@ -6,10 +6,12 @@ use rc_git_core::TreeChange;
 
 use super::changes::ChangesPhase;
 use super::checks::CheckState;
+use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
 use super::state::Freshness;
 use super::{
-    DetailFields, Mergeable, PullRequestStamp, PullRequestState, PullRequestSummary, ReadError,
-    ReviewDecision, ServerLink, single_line,
+    AfterLoss, DetailFields, MergeBlocker, MergeMethod, Mergeable, PullRequestStamp,
+    PullRequestState, PullRequestSummary, ReadError, ReviewDecision, ServerLink, Settled,
+    single_line,
 };
 use crate::guard_bridge::{FailureKind, classify};
 use crate::history_text::{change_path_label, short_hash};
@@ -293,6 +295,174 @@ fn changed_files(count: usize) -> String {
         1 => "1 file changed".to_owned(),
         count => format!("{count} files changed"),
     }
+}
+
+/// The Merge control's button, and the title and confirm button of its challenge.
+pub const MERGE: &str = "Merge";
+
+/// Why Merge takes no click while the repository's account is signed out.
+pub const MERGE_SIGNED_OUT: &str =
+    "Can't merge: sign in to the repository's host in Settings > GitHub Accounts first.";
+
+/// Why Merge takes no click when the repository allows no method.
+pub const MERGE_NO_METHOD: &str = "Can't merge: the repository allows no merge method.";
+
+/// The button that stops a merge whose request has not left.
+pub const MERGE_CANCEL: &str = "Cancel";
+
+/// The button that clears a finished merge's note.
+pub const MERGE_DISMISS: &str = "Dismiss";
+
+/// Why Merge takes no click for `blocker`.
+#[must_use]
+pub fn merge_blocked(blocker: &MergeBlocker) -> String {
+    format!("Can't merge: {blocker}.")
+}
+
+/// A merge method as the control offers it, in GitHub's own words.
+#[must_use]
+pub fn merge_method_label(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Squash => "Squash and Merge",
+        MergeMethod::Merge => "Create a Merge Commit",
+        MergeMethod::Rebase => "Rebase and Merge",
+    }
+}
+
+/// A merge method as one lowercase word, for the CLI and the log.
+#[must_use]
+pub fn merge_method_word(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Squash => "squash",
+        MergeMethod::Merge => "merge",
+        MergeMethod::Rebase => "rebase",
+    }
+}
+
+/// What the tab says about a merge that sent nothing.
+#[must_use]
+pub fn merge_stop_message(stop: &MergeStop) -> String {
+    match stop {
+        MergeStop::Cancelled => "Cancelled; nothing was sent.".to_owned(),
+        MergeStop::Refused(refusal) => format!("{refusal}."),
+        MergeStop::SignedOut { account } => format!(
+            "Nothing was sent: {account} is signed out, or refused its token. Sign in again in \
+             Settings > GitHub Accounts."
+        ),
+        MergeStop::Failed(cause) => format!("Nothing was sent: {cause}"),
+    }
+}
+
+/// What the tab says under the Merge control for `flow`; `None` while the challenge is up,
+/// since the sheet says it.
+#[must_use]
+pub fn merge_note(flow: &MergeFlow) -> Option<String> {
+    let number = flow.number();
+    let note = match flow.phase() {
+        MergePhase::Planning => format!("Reading #{number} again before the merge…"),
+        MergePhase::Confirming(_) => return None,
+        MergePhase::Merging {
+            sent: false,
+            cancelling: false,
+        } => format!("Merging #{number}… Cancel stops it until the request is sent."),
+        MergePhase::Merging {
+            sent: false,
+            cancelling: true,
+        } => format!("Stopping the merge of #{number}…"),
+        MergePhase::Merging { sent: true, .. } => format!(
+            "The merge request for #{number} was sent; it cannot be stopped now. Waiting for \
+             GitHub's answer…"
+        ),
+        MergePhase::Done(end) => merge_end_note(number, &flow.stamp().base_ref, end),
+    };
+    Some(note)
+}
+
+/// What a finished merge says.
+fn merge_end_note(number: u64, base: &str, end: &MergeEnd) -> String {
+    const UNCHANGED: &str = "The local repository is unchanged until you fetch.";
+    const LOOK: &str = "Look at the pull request on GitHub before trying again.";
+    match end {
+        MergeEnd::NotSent(stop) => merge_stop_message(stop),
+        MergeEnd::Merged {
+            merge_commit,
+            settled,
+        } => {
+            let commit = merge_commit
+                .as_ref()
+                .map_or_else(String::new, |oid| format!(" as {}", short_hash(oid)));
+            let how = match settled {
+                Settled::Answer => String::new(),
+                Settled::Reread => format!(
+                    " GitHub's answer was lost; reading #{number} again shows it merged at the \
+                     head you confirmed."
+                ),
+            };
+            format!("Merged #{number} into {base}{commit}.{how} {UNCHANGED}")
+        }
+        MergeEnd::Refused { reason } => {
+            format!("GitHub refused the merge of #{number}: {reason} Nothing was merged.")
+        }
+        MergeEnd::Unknown { problem, after } => match after {
+            AfterLoss::StillOpen { .. } => format!(
+                "rc-git could not tell whether #{number} merged: GitHub did not answer \
+                 ({problem}). Reading it again shows it still open, but the merge may still \
+                 land. {LOOK}"
+            ),
+            AfterLoss::Closed => format!(
+                "#{number} did not merge: GitHub did not answer ({problem}), and reading it \
+                 again shows it closed."
+            ),
+            AfterLoss::MergedAtOtherHead { head } => format!(
+                "#{number} is merged, but at {}, not the head you confirmed, so not by this \
+                 request. {LOOK}",
+                short_hash(head)
+            ),
+            AfterLoss::Unread { reason } => format!(
+                "rc-git could not tell whether #{number} merged: GitHub did not answer \
+                 ({problem}), and reading it again failed too ({reason}). {LOOK}"
+            ),
+        },
+    }
+}
+
+/// The app log's line for a merge of `repository#number` at `head` with `method` that is about
+/// to be sent: no token, no server text but the guard's scrubbed messages.
+#[must_use]
+pub fn merge_attempt_log(repository: &str, flow: &MergeFlow) -> String {
+    format!(
+        "merge {repository}#{} head {} method {}: sending",
+        flow.number(),
+        flow.stamp().head_oid,
+        merge_method_word(flow.method())
+    )
+}
+
+/// The app log's line for how a merge of `repository` ended.
+#[must_use]
+pub fn merge_outcome_log(repository: &str, flow: &MergeFlow, end: &MergeEnd) -> String {
+    let outcome = match end {
+        MergeEnd::NotSent(stop) => format!("not sent: {}", merge_stop_message(stop)),
+        MergeEnd::Merged {
+            merge_commit,
+            settled,
+        } => {
+            let commit = merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex());
+            let how = match settled {
+                Settled::Answer => "answer",
+                Settled::Reread => "read after a lost answer",
+            };
+            format!("merged as {commit} ({how})")
+        }
+        MergeEnd::Refused { reason } => format!("refused: {reason}"),
+        MergeEnd::Unknown { problem, after } => format!("unknown: {problem}; after: {after:?}"),
+    };
+    format!(
+        "merge {repository}#{} head {} method {}: {outcome}",
+        flow.number(),
+        flow.stamp().head_oid,
+        merge_method_word(flow.method())
+    )
 }
 
 /// What a failed head fetch says, with what to do when a secret or an approval saved for

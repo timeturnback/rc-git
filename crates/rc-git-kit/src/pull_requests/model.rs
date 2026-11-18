@@ -8,23 +8,46 @@
 //! A tab's changes ([`super::changes`]) are read once the user shows them, always for the
 //! stamp of the tab's current read: a read that lands with another head or base starts them
 //! over. The head is fetched only from [`PullRequestsModel::fetch_changes`], the user's click.
+//!
+//! A tab's merge ([`super::merge`]) starts only from [`PullRequestsModel::start_merge`] and
+//! sends only from [`PullRequestsModel::confirm_merge`], the challenge's confirm, once per
+//! confirm. A tab read that no longer matches the stamp a merge started from ends it while it
+//! plans or confirms. After a merge whose request may have left, the tab and the list read
+//! again; nothing local is fetched or moved.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use gpui::{Context, Task};
+use gpui::{Context, EventEmitter, Task};
 
 use super::changes::{ChangesLoad, ChangesState, FileLoad};
+use super::copy::{merge_attempt_log, merge_outcome_log};
 use super::link::{Linked, RepositoryLink};
+use super::merge::{
+    CancelAnswer, MergeAsk, MergeButton, MergeFlow, MergeLoad, MergePhase, MergeStop, PlanLoad,
+    merge_button,
+};
 use super::polling::{
     DETAIL_INTERVAL, LIST_INTERVAL, PollInputs, PollPlan, detail_poll, is_due, list_poll,
 };
 use super::state::{DetailLoad, DetailState, ListLoad, ListState};
-use super::{Cancel, PullRequestService};
+use super::{Cancel, MergeMethod, PullRequestService};
 use crate::blocking::blocking;
 use crate::platform::api_tokens::AccountKey;
 
 /// Now, in seconds since the Unix epoch; a test supplies its own.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Where the model writes one line per merge attempt and outcome: the app's log.
+pub type MergeLog = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What the window must do for a tab's merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeEvent {
+    /// Show the challenge of tab `number`'s merge ([`PullRequestsModel::merge_flow`]'s plan).
+    Confirm(u64),
+    /// Tab `number`'s merge ended before its challenge was answered: close the challenge.
+    Withdrawn(u64),
+}
 
 /// The fetch tab `number`'s changes asked for, under their generation and stamp.
 struct FetchAsked {
@@ -67,7 +90,13 @@ pub struct PullRequestsModel {
     detail_timer: Option<Task<()>>,
     choice_problem: Option<String>,
     changes: Vec<TabChanges>,
+    merges: Vec<MergeFlow>,
+    merge_cancels: Vec<(u64, Cancel)>,
+    merge_generation: u64,
+    merge_log: MergeLog,
 }
+
+impl EventEmitter<MergeEvent> for PullRequestsModel {}
 
 impl std::fmt::Debug for PullRequestsModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,6 +131,10 @@ impl PullRequestsModel {
             detail_timer: None,
             choice_problem: None,
             changes: Vec::new(),
+            merges: Vec::new(),
+            merge_cancels: Vec::new(),
+            merge_generation: 0,
+            merge_log: Arc::new(|_| {}),
         }
     }
 
@@ -181,6 +214,14 @@ impl PullRequestsModel {
             changes.stop_fetch();
         }
         self.changes.clear();
+        for number in self
+            .merges
+            .iter()
+            .map(MergeFlow::number)
+            .collect::<Vec<_>>()
+        {
+            self.stop_merge(number, cx);
+        }
         self.selected = None;
         self.list_timer = None;
         self.detail_timer = None;
@@ -326,6 +367,7 @@ impl PullRequestsModel {
             }
             *tab != number
         });
+        self.stop_merge(number, cx);
         if self.selected == Some(number) {
             let neighbour = self.tabs.get(index).or_else(|| self.tabs.last());
             self.selected = neighbour.map(DetailState::number);
@@ -401,6 +443,7 @@ impl PullRequestsModel {
         if let (Some(next), Some(linked)) = (next, self.linked()) {
             self.run_detail(next, linked, cx);
         }
+        self.follow_merge(load.number, stamp.as_ref(), cx);
         if let Some(stamp) = stamp {
             self.follow_stamp(load.number, stamp, cx);
         }
@@ -740,6 +783,290 @@ impl PullRequestsModel {
             .ok();
         })
         .detach();
+    }
+
+    /// Writes one line per merge attempt and outcome to `log` from now on.
+    pub fn set_merge_log(&mut self, log: MergeLog) {
+        self.merge_log = log;
+    }
+
+    /// The Merge control for tab `number`.
+    #[must_use]
+    pub fn merge_button(&self, number: u64) -> MergeButton {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.number() == number) else {
+            return MergeButton::Hidden;
+        };
+        merge_button(tab, self.linked().is_some())
+    }
+
+    /// Tab `number`'s merge, once started.
+    #[must_use]
+    pub fn merge_flow(&self, number: u64) -> Option<&MergeFlow> {
+        self.merges.iter().find(|flow| flow.number() == number)
+    }
+
+    fn merge_flow_mut(&mut self, number: u64) -> Option<&mut MergeFlow> {
+        self.merges.iter_mut().find(|flow| flow.number() == number)
+    }
+
+    fn take_merge_cancel(&mut self, number: u64) -> Option<Cancel> {
+        let index = self
+            .merge_cancels
+            .iter()
+            .position(|(flow, _)| *flow == number)?;
+        Some(self.merge_cancels.remove(index).1)
+    }
+
+    /// The `owner/name` merges of this window act on, for the log.
+    fn repository_label(&self) -> String {
+        self.linked().map_or_else(
+            || "an unlinked repository".to_owned(),
+            |linked| format!("{}/{}", linked.target.owner(), linked.target.name()),
+        )
+    }
+
+    /// Starts merging the selected tab with `method`: the guard reads it again and the policy
+    /// words the challenge, which [`MergeEvent::Confirm`] asks the window to show. Nothing
+    /// unless the Merge control takes a click with `method`, and never beside a running merge.
+    pub fn start_merge(&mut self, method: MergeMethod, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let MergeButton::Enabled { methods } = self.merge_button(number) else {
+            return;
+        };
+        let running = self
+            .merge_flow(number)
+            .is_some_and(|flow| !matches!(flow.phase(), MergePhase::Done(_)));
+        let stamp = self.selected_tab().and_then(DetailState::stamp);
+        let (Some(stamp), Some(linked)) = (stamp, self.linked()) else {
+            return;
+        };
+        if running || !methods.contains(&method) {
+            return;
+        }
+        self.merge_generation += 1;
+        let (flow, load) = MergeFlow::start(self.merge_generation, stamp, method);
+        self.merges.retain(|flow| flow.number() != number);
+        self.merges.push(flow);
+        self.run_plan(load, linked, cx);
+        cx.notify();
+    }
+
+    fn run_plan(&mut self, load: PlanLoad, linked: Linked, cx: &mut Context<Self>) {
+        let number = load.stamp.number;
+        let cancel = Cancel::new();
+        self.take_merge_cancel(number);
+        self.merge_cancels.push((number, cancel.clone()));
+        let service = Arc::clone(&self.service);
+        let read = blocking(cx.background_executor(), {
+            let load = load.clone();
+            move || service.plan_merge(&linked, &load.stamp, load.method, &cancel)
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = read.await;
+            this.update(cx, |this, cx| this.planned(&load, answer, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn planned(
+        &mut self,
+        load: &PlanLoad,
+        answer: Result<super::MergePlan, MergeStop>,
+        cx: &mut Context<Self>,
+    ) {
+        let number = load.stamp.number;
+        let changed = answer.as_ref().is_err_and(MergeStop::is_changed);
+        let Some(flow) = self.merge_flow_mut(number) else {
+            return;
+        };
+        if !flow.planned(load.generation, answer) {
+            return;
+        }
+        let confirming = flow.plan().is_some();
+        if !confirming {
+            self.take_merge_cancel(number);
+        }
+        if confirming {
+            cx.emit(MergeEvent::Confirm(number));
+        }
+        if changed {
+            self.refresh_detail_of(number, cx);
+        }
+        cx.notify();
+    }
+
+    /// The user confirmed tab `number`'s challenge with `typed`: sends the merge, once. Nothing
+    /// unless that challenge is up.
+    pub fn confirm_merge(&mut self, number: u64, typed: String, cx: &mut Context<Self>) {
+        let Some(linked) = self.linked() else {
+            return;
+        };
+        let Some(load) = self
+            .merge_flow_mut(number)
+            .and_then(|flow| flow.confirm(typed))
+        else {
+            return;
+        };
+        if let Some(flow) = self.merge_flow(number) {
+            (self.merge_log)(&merge_attempt_log(&self.repository_label(), flow));
+        }
+        self.run_merge(number, load, linked, cx);
+        cx.notify();
+    }
+
+    fn run_merge(&mut self, number: u64, load: MergeLoad, linked: Linked, cx: &mut Context<Self>) {
+        let cancel = Cancel::new();
+        self.take_merge_cancel(number);
+        self.merge_cancels.push((number, cancel.clone()));
+        let (sent, on_sent) = crate::oneshot::channel::<()>();
+        let sent = Mutex::new(Some(sent));
+        let service = Arc::clone(&self.service);
+        let generation = load.generation;
+        let work = blocking(cx.background_executor(), move || {
+            let on_send = move || {
+                let sender = sent.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(sender) = sender {
+                    sender.send(());
+                }
+            };
+            let ask = MergeAsk {
+                stamp: &load.stamp,
+                method: load.method,
+                decision: Some(&load.decision),
+                typed: &load.typed,
+                on_send: &on_send,
+            };
+            service.merge(&linked, ask, &cancel)
+        });
+        cx.spawn(async move |this, cx| {
+            if on_sent.await.is_some() {
+                this.update(cx, |this, cx| {
+                    if let Some(flow) = this.merge_flow_mut(number) {
+                        flow.sent(generation);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let answer = work.await;
+            this.update(cx, |this, cx| this.merged(number, generation, answer, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn merged(
+        &mut self,
+        number: u64,
+        generation: u64,
+        answer: Result<super::MergeOutcome, MergeStop>,
+        cx: &mut Context<Self>,
+    ) {
+        let repository = self.repository_label();
+        let Some(flow) = self.merge_flow_mut(number) else {
+            return;
+        };
+        if !flow.finished(generation, answer) {
+            return;
+        }
+        let MergePhase::Done(end) = flow.phase() else {
+            return;
+        };
+        let line = merge_outcome_log(&repository, flow, end);
+        let reread = end.was_sent()
+            || matches!(end, super::merge::MergeEnd::NotSent(stop) if stop.is_changed());
+        (self.merge_log)(&line);
+        self.take_merge_cancel(number);
+        if !self.tabs.iter().any(|tab| tab.number() == number) {
+            self.merges.retain(|flow| flow.number() != number);
+        }
+        if reread {
+            self.refresh_detail_of(number, cx);
+            self.refresh_list(cx);
+        }
+        cx.notify();
+    }
+
+    /// The user asked to stop tab `number`'s merge: it ends while it plans or confirms, stops
+    /// while its request has not left, and goes on once it has, which the note says.
+    pub fn cancel_merge(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(answer) = self.merge_flow_mut(number).map(MergeFlow::cancel) else {
+            return;
+        };
+        match answer {
+            CancelAnswer::Ended => {
+                if let Some(cancel) = self.take_merge_cancel(number) {
+                    cancel.signal();
+                }
+                cx.emit(MergeEvent::Withdrawn(number));
+            }
+            CancelAnswer::Signal => {
+                if let Some((_, cancel)) =
+                    self.merge_cancels.iter().find(|(flow, _)| *flow == number)
+                {
+                    cancel.signal();
+                }
+            }
+            CancelAnswer::TooLate | CancelAnswer::Nothing => {}
+        }
+        cx.notify();
+    }
+
+    /// Clears tab `number`'s finished merge.
+    pub fn dismiss_merge(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.merges
+            .retain(|flow| flow.number() != number || !matches!(flow.phase(), MergePhase::Done(_)));
+        cx.notify();
+    }
+
+    /// Tab `number` closed, or the repository changed: its merge ends unless its request left,
+    /// in which case it runs on so its outcome is logged.
+    fn stop_merge(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(answer) = self.merge_flow_mut(number).map(MergeFlow::cancel) else {
+            return;
+        };
+        match answer {
+            CancelAnswer::Signal => {
+                if let Some((_, cancel)) =
+                    self.merge_cancels.iter().find(|(flow, _)| *flow == number)
+                {
+                    cancel.signal();
+                }
+            }
+            CancelAnswer::Ended | CancelAnswer::Nothing => {
+                if let Some(cancel) = self.take_merge_cancel(number) {
+                    cancel.signal();
+                }
+                self.merges.retain(|flow| flow.number() != number);
+                cx.emit(MergeEvent::Withdrawn(number));
+            }
+            CancelAnswer::TooLate => {}
+        }
+    }
+
+    /// Tab `number` read `stamp` (`None`: the read failed): a merge that plans or confirms for
+    /// another one ends, and its challenge is withdrawn.
+    fn follow_merge(
+        &mut self,
+        number: u64,
+        stamp: Option<&super::PullRequestStamp>,
+        cx: &mut Context<Self>,
+    ) {
+        let ended = self
+            .merge_flow_mut(number)
+            .is_some_and(|flow| flow.follow(stamp));
+        if ended {
+            if let Some(cancel) = self.take_merge_cancel(number) {
+                cancel.signal();
+            }
+            cx.emit(MergeEvent::Withdrawn(number));
+        }
     }
 
     /// Whether the list's poll timer is armed.

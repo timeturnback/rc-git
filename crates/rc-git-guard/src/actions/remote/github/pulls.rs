@@ -18,8 +18,8 @@ use super::links::server_link;
 use super::pull_types::{
     ActionsIds, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress, CheckStatus,
     DetailFields, MergeMethod, MergeMethods, MergeStateStatus, Mergeable, PageCursor,
-    PullRequestDetail, PullRequestPage, PullRequestState, PullRequestSummary, ReviewDecision,
-    StatusState, ViewerAbilities,
+    PullRequestDetail, PullRequestId, PullRequestPage, PullRequestState, PullRequestSummary,
+    ReviewDecision, StatusState, ViewerAbilities,
 };
 use super::secret::ApiToken;
 use super::text::{multi_line, single_line};
@@ -54,9 +54,9 @@ commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } } }";
 pub(super) const DETAIL_FULL: &str = "query RcGitPullRequest($owner: String!, $name: String!, \
 $number: Int!, $checks: Int!) { repository(owner: $owner, name: $name) { \
 mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed \
-pullRequest(number: $number) { number title body url isDraft state updatedAt author { login } \
-headRefName headRefOid baseRefName isCrossRepository headRepositoryOwner { login } \
-reviewDecision mergeable mergeStateStatus viewerCanMergeAsAdmin viewerCanEnableAutoMerge \
+pullRequest(number: $number) { id number title body url isDraft state updatedAt \
+author { login } headRefName headRefOid baseRefName isCrossRepository \
+headRepositoryOwner { login } reviewDecision mergeable mergeStateStatus viewerCanMergeAsAdmin viewerCanEnableAutoMerge \
 viewerCanDisableAutoMerge viewerCanDeleteHeadRef autoMergeRequest { mergeMethod \
 enabledBy { login } } commits(last: 1) { nodes { commit { statusCheckRollup { state \
 contexts(first: $checks) { totalCount nodes { __typename ... on CheckRun { name status \
@@ -68,9 +68,9 @@ description isRequired(pullRequestNumber: $number) } } } } } } } } } }";
 pub(super) const DETAIL_BASIC: &str = "query RcGitPullRequestBasic($owner: String!, \
 $name: String!, $number: Int!, $checks: Int!) { repository(owner: $owner, name: $name) { \
 mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed \
-pullRequest(number: $number) { number title body url isDraft state updatedAt author { login } \
-headRefName headRefOid baseRefName isCrossRepository headRepositoryOwner { login } \
-reviewDecision mergeable commits(last: 1) { nodes { commit { statusCheckRollup { state \
+pullRequest(number: $number) { id number title body url isDraft state updatedAt \
+author { login } headRefName headRefOid baseRefName isCrossRepository \
+headRepositoryOwner { login } reviewDecision mergeable commits(last: 1) { nodes { commit { statusCheckRollup { state \
 contexts(first: $checks) { totalCount nodes { __typename ... on CheckRun { name status \
 conclusion detailsUrl databaseId } ... on StatusContext { context state targetUrl \
 description } } } } } } } } } }";
@@ -262,6 +262,7 @@ fn detail(
     let full = fields == DetailFields::Full;
     Ok(PullRequestDetail {
         summary,
+        id: text(node, "id").and_then(PullRequestId::parse),
         body: text(node, "body")
             .map(|body| multi_line(body, MAX_BODY_CHARS))
             .unwrap_or_default(),

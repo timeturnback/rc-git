@@ -5,6 +5,10 @@
 //! failure is answered as kit decides: a stale repository reloads the lists and gets a soft
 //! notice, anything else an alert titled by the action's verb. Nothing here classifies an
 //! action or offers a way around a challenge.
+//!
+//! A pull request merge comes through the same challenge sheet, when its model asks
+//! ([`MergeEvent`]): the guard's decision from its fresh read, a confirm that hands the typed
+//! text back to the model, which sends the merge once, and a cancel that ends it.
 
 use std::sync::Arc;
 
@@ -25,6 +29,9 @@ use rc_git_kit::guard_copy::{
     IDENTITY_ASK_MESSAGE, IDENTITY_ASK_TITLE, IDENTITY_EDIT_TITLE, deny_message,
     identity_edit_message,
 };
+use rc_git_kit::pull_requests::copy::MERGE;
+use rc_git_kit::pull_requests::merge::MergeFlow;
+use rc_git_kit::pull_requests::model::MergeEvent;
 use rc_git_kit::repository_actions::{
     RepositoryActions, plan_commit, plan_discard, plan_stash_apply, plan_stash_drop,
     plan_stash_pop, plan_stash_push,
@@ -141,6 +148,71 @@ impl RepoWindow {
         });
         self.sheet = Some(OpenSheet::Challenge(sheet.downgrade()));
         sheets::open(verb.into(), &sheet, window, cx);
+    }
+
+    /// A pull request merge's turn for the window: show its challenge, the guard's decision
+    /// from the read it just made, or close it when the merge ended before an answer. The
+    /// confirm hands the typed text to the model, which sends the merge once; a cancel or a
+    /// dismissal ends the merge there.
+    pub(super) fn merge_event(
+        &mut self,
+        event: MergeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            MergeEvent::Confirm(number) => self.present_merge_challenge(number, window, cx),
+            MergeEvent::Withdrawn(number) => {
+                let open = matches!(
+                    &self.sheet,
+                    Some(OpenSheet::Merge { number: shown, sheet })
+                        if *shown == number && sheet.upgrade().is_some()
+                );
+                if open {
+                    self.sheet = None;
+                    sheets::close(window, cx);
+                }
+            }
+        }
+    }
+
+    fn present_merge_challenge(
+        &mut self,
+        number: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let model = self.pull_requests.clone();
+        let Some(decision) = model
+            .read(cx)
+            .merge_flow(number)
+            .and_then(MergeFlow::plan)
+            .map(|plan| GuardDecision::new(&plan.decision, false))
+        else {
+            return;
+        };
+        let (confirm, cancel) = (model.clone(), model);
+        let sheet = cx.new(|cx| {
+            ChallengeSheet::new(
+                MERGE.to_owned(),
+                decision,
+                Box::new(move |typed, _, cx| {
+                    confirm.update(cx, |model, cx| {
+                        model.confirm_merge(number, typed.unwrap_or_default(), cx);
+                    });
+                }),
+                window,
+                cx,
+            )
+            .on_cancel(Box::new(move |cx| {
+                cancel.update(cx, |model, cx| model.cancel_merge(number, cx));
+            }))
+        });
+        self.sheet = Some(OpenSheet::Merge {
+            number,
+            sheet: sheet.downgrade(),
+        });
+        sheets::open(MERGE.into(), &sheet, window, cx);
     }
 
     /// Runs one guarded action off the UI thread with the challenge's `input`.

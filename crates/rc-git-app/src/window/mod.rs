@@ -54,7 +54,7 @@ use crate::sidebar::refs::{RefListEvent, RefListView};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::style;
 use rc_git_kit::pull_requests::PullRequestService;
-use rc_git_kit::pull_requests::model::PullRequestsModel;
+use rc_git_kit::pull_requests::model::{MergeEvent, PullRequestsModel};
 use rc_git_kit::repository_actions::RepositoryActions;
 
 pub use changes::ChangesParts;
@@ -245,7 +245,15 @@ impl RepoWindow {
     ) {
         let clock: rc_git_kit::pull_requests::model::Clock =
             Arc::new(crate::pull_requests::unix_now);
-        let model = cx.new(|_| PullRequestsModel::new(service, clock));
+        let model = cx.new(|_| {
+            let mut model = PullRequestsModel::new(service, clock);
+            model.set_merge_log(Arc::new(crate::log::notice));
+            model
+        });
+        cx.subscribe_in(&model, window, |this, _, event: &MergeEvent, window, cx| {
+            this.merge_event(*event, window, cx);
+        })
+        .detach();
         let now = crate::pull_requests::unix_now as fn() -> u64;
         let section = cx.new(|cx| PullRequestSection::new(model.clone(), now, cx));
         let page = cx.new(|cx| PullRequestPage::new(model.clone(), now, cx));

@@ -8,6 +8,12 @@
 //! `pr diff` reads the changes from local objects. It fetches the pull request's head only
 //! with `--fetch`, over the remote's git transport with the remote options' credentials; the
 //! GitHub token stays with the API reads.
+//!
+//! `pr merge` merges through the guard as the app does. `--head` is required: it is the stamp
+//! of what the caller saw (`pr view` prints it), and a pull request whose head moved since
+//! refuses before anything is sent. Without `--yes` it prints what would be merged and merges
+//! nothing. It sends one request at most and never sends it again; an answer that was lost
+//! ends with its own exit code and tells the caller to look at the pull request on GitHub.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,18 +31,21 @@ use rc_git_kit::platform::host_keys::{HostKeyStore, MemoryHostKeyStore};
 use rc_git_kit::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
-    check_label, mergeable_label, problem, review_label, state_label,
+    check_label, merge_note, merge_stop_message, mergeable_label, problem, review_label,
+    state_label,
 };
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
+use rc_git_kit::pull_requests::merge::{MergeAsk, MergeEnd, MergeFlow, MergePhase, MergeStop};
 use rc_git_kit::pull_requests::{
-    PageCursor, PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestSummary,
-    ReadError, ServerLink,
+    Decision, MergeMethod, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService,
+    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ServerLink,
 };
 
 use crate::{
-    EXIT_AUTH, EXIT_ERROR, EXIT_HOSTKEY, EXIT_INTERRUPTED, Records, Transport, UsageError,
-    VerbArgs, credentials_for, split_args, write_path,
+    EXIT_AUTH, EXIT_ERROR, EXIT_HOSTKEY, EXIT_INTERRUPTED, EXIT_MERGE_REFUSED, EXIT_MERGE_UNKNOWN,
+    EXIT_NOT_CONFIRMED, Records, Transport, UsageError, VerbArgs, credentials_for, split_args,
+    write_path,
 };
 
 /// A failed read, with the exit code it ends with.
@@ -77,7 +86,7 @@ fn failure(error: &ReadError) -> anyhow::Error {
 /// Runs `rc-git pr <args>`, timing it when `time` is set.
 pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<ExitCode> {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(UsageError("pr needs list, view, checks or diff".to_owned()).into());
+        return Err(UsageError("pr needs list, view, checks, diff or merge".to_owned()).into());
     };
     let started = Instant::now();
     let result = match verb.as_str() {
@@ -85,8 +94,9 @@ pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<Exit
         "view" => view(rest, out),
         "checks" => checks(rest, out),
         "diff" => diff(rest, out),
+        "merge" => merge(rest, out),
         other => Err(UsageError(format!(
-            "pr has no '{other}'; use list, view, checks or diff"
+            "pr has no '{other}'; use list, view, checks, diff or merge"
         ))
         .into()),
     };
@@ -392,6 +402,135 @@ fn git_secrets(
         }
     }
     Ok((Arc::new(store), Arc::new(host_keys)))
+}
+
+/// `pr merge`'s valued flags.
+const MERGE_VALUED: [&str; 4] = ["--login", "--ssh-dir", "--method", "--head"];
+
+/// The method `--method` names.
+fn merge_method(args: &VerbArgs<'_>) -> Result<MergeMethod> {
+    match args.value(&["--method"]) {
+        Some("merge") => Ok(MergeMethod::Merge),
+        Some("squash") => Ok(MergeMethod::Squash),
+        Some("rebase") => Ok(MergeMethod::Rebase),
+        Some(other) => {
+            Err(UsageError(format!("--method '{other}' is not merge, squash or rebase")).into())
+        }
+        None => Err(UsageError("pr merge needs --method merge|squash|rebase".to_owned()).into()),
+    }
+}
+
+/// The head `--head` names: the full commit id the caller saw.
+fn merge_head(args: &VerbArgs<'_>) -> Result<rc_git_core::Oid> {
+    let Some(text) = args.value(&["--head"]) else {
+        return Err(UsageError(
+            "pr merge needs --head <oid>, the full head commit id `pr view` printed: the head \
+             you looked at, which the merge refuses to go past"
+                .to_owned(),
+        )
+        .into());
+    };
+    rc_git_core::Oid::from_hex(text)
+        .map_err(|_| UsageError(format!("--head '{text}' is not a full commit id")).into())
+}
+
+/// A merge that sent nothing, with the exit code it ends with.
+fn merge_stopped(stop: &MergeStop) -> anyhow::Error {
+    let code = match stop {
+        MergeStop::Cancelled => EXIT_INTERRUPTED,
+        MergeStop::SignedOut { .. } => EXIT_AUTH,
+        MergeStop::Refused(MergeRefusal::NotConfirmed { .. }) => EXIT_NOT_CONFIRMED,
+        MergeStop::Refused(_) => EXIT_MERGE_REFUSED,
+        MergeStop::Failed(_) => EXIT_ERROR,
+    };
+    ReadFailure {
+        message: merge_stop_message(stop),
+        code,
+    }
+    .into()
+}
+
+/// Merges pull request `<n>` as `--head` and `--method` say, once `--yes` confirms it. The
+/// head the caller saw and the base and state read now are the stamp the guard compares a
+/// fresh read with; the guard's plan words what is merged, and its decision is the answer.
+fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let args = split_args("pr merge", raw, &MERGE_VALUED, &["--yes"])?;
+    args.expect(1, 2, "<number> [repo]")?;
+    let number = number(&args)?;
+    let method = merge_method(&args)?;
+    let head = merge_head(&args)?;
+    let (service, linked) = linked(&args, 1)?;
+    let cancel = crate::interruptible_cancel()?;
+    let detail = service
+        .detail(&linked, number, &cancel)
+        .map_err(|error| failure(&error))?;
+    let stamp = PullRequestStamp {
+        number,
+        head_oid: head,
+        base_ref: detail.summary.base_ref,
+        state: PullRequestState::Open,
+    };
+    let plan = service
+        .plan_merge(&linked, &stamp, method, &cancel)
+        .map_err(|stop| merge_stopped(&stop))?;
+    let summary = match &plan.decision {
+        Decision::Confirm(challenge) => challenge.summary().to_owned(),
+        Decision::Allow | Decision::Deny { .. } => format!("merge #{number}"),
+    };
+    if !args.has("--yes") {
+        writeln!(out, "would-merge\t{summary}")?;
+        return Err(
+            UsageError("pr merge needs --yes to merge; nothing was sent".to_owned()).into(),
+        );
+    }
+    let (mut flow, load) = MergeFlow::start(1, stamp.clone(), method);
+    flow.planned(load.generation, Ok(plan.clone()));
+    flow.confirm(String::new());
+    let ask = MergeAsk {
+        stamp: &stamp,
+        method,
+        decision: Some(&plan.decision),
+        typed: "",
+        on_send: &|| {},
+    };
+    let answer = service.merge(&linked, ask, &cancel);
+    if let Err(stop) = &answer {
+        return Err(merge_stopped(stop));
+    }
+    flow.finished(load.generation, answer);
+    merge_report(out, &linked, &flow)
+}
+
+/// What `pr merge` prints once its request may have left, and the code it ends with.
+fn merge_report(out: &mut Vec<u8>, linked: &Linked, flow: &MergeFlow) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let note = merge_note(flow).unwrap_or_default();
+    let MergePhase::Done(end) = flow.phase() else {
+        bail!("the merge has no outcome: {note}");
+    };
+    let code = match end {
+        MergeEnd::Merged { merge_commit, .. } => {
+            let commit = merge_commit.map_or_else(|| "-".to_owned(), |oid| oid.to_hex());
+            writeln!(
+                out,
+                "merged\t{}/{}#{}\t{commit}\t{}",
+                linked.target.owner(),
+                linked.target.name(),
+                flow.number(),
+                flow.stamp().head_oid
+            )?;
+            writeln!(out, "note\t{note}")?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        MergeEnd::Refused { .. } | MergeEnd::NotSent(_) => EXIT_MERGE_REFUSED,
+        MergeEnd::Unknown { .. } => EXIT_MERGE_UNKNOWN,
+    };
+    Err(ReadFailure {
+        message: note,
+        code,
+    }
+    .into())
 }
 
 /// What `pr diff` prints for `read`, or why there is nothing to print.

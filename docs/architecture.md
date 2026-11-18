@@ -42,16 +42,24 @@ read against. A pull request's changes come from local objects: `fetch_pull_requ
 guard's one pull request write) fetches `refs/pull/<n>/head` into `refs/rc-git/pr/<n>/head` when
 the user asks and the remote's head is the stamp's, and the core's `merge_base` (a bounded
 paint-down walk) plus `diff_trees` give GitHub's three-dot view from the local copy of the base
-branch (`pull_request_base_ref`). rc-git-kit's `pull_requests` module links a repository to its
+branch (`pull_request_base_ref`). The guard's one GitHub mutation so far, merging a pull request
+(`merge_pull_request`, planned by `plan_merge_pull_request`), reads the pull request again,
+refuses what changed since the stamp or cannot merge (`merge_blocker`), and sends one
+`mergePullRequest` through `Session::mutate`, which takes the `Confirmation` and builds the
+request from the action it carries (`mutation`); the outcome is merged, refused or unknown.
+rc-git-kit's `pull_requests` module links a repository to its
 GitHub repository and account (`link`), holds the list and each open pull request tab as state
 machines with a generation per read and one read queued at most (`state`), a tab's changes as a
 state machine tied to the stamp they were read for (`changes`: reading, needs fetch, fetching,
-moved, no base copy, no merge base, ready, one file diff at a time), runs them for a window
+moved, no base copy, no merge base, ready, one file diff at a time), a tab's merge as a state
+machine tied to its stamp and generation (`merge`: planning, confirming, merging until and after
+the send, done) with the Merge control decided from the guard's blockers, runs them for a window
 (`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard and
 the core, a fake in tests), and decides polling (`polling`), check order and summary (`checks`),
 which description links open (`body`) and the words (`copy`). The app's sidebar section and pull
-request page draw that model, the page's Changes view reusing the shared `DiffView`;
-`rc-git pr` reads and fetches through the same live service. `rc-git-highlight` is a pure
+request page draw that model, the page's Changes view reusing the shared `DiffView`, and the
+window shows a merge's challenge through the shared challenge sheet when the model asks
+(`MergeEvent`); `rc-git pr` reads, fetches and merges through the same live service. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

@@ -16,12 +16,16 @@ use crate::sheets::{Dismissible, SheetButton, body, close};
 /// What a confirmed challenge runs: the typed phrase when the policy asked for one.
 pub type OnConfirm = Box<dyn FnOnce(Option<String>, &mut Window, &mut App)>;
 
+/// What a challenge cancelled or dismissed without an answer runs.
+pub type OnCancel = Box<dyn FnOnce(&mut App)>;
+
 /// The challenge sheet.
 pub struct ChallengeSheet {
     verb: String,
     decision: GuardDecision,
     phrase: Option<Entity<InputState>>,
     on_confirm: Option<OnConfirm>,
+    on_cancel: Option<OnCancel>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -56,7 +60,24 @@ impl ChallengeSheet {
             decision,
             phrase,
             on_confirm: Some(on_confirm),
+            on_cancel: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// The same sheet, running `on_cancel` when it closes without a confirm: its Cancel button,
+    /// Escape, or the window closing it.
+    #[must_use]
+    pub fn on_cancel(mut self, on_cancel: OnCancel) -> Self {
+        self.on_cancel = Some(on_cancel);
+        self
+    }
+
+    /// Runs the cancel hook once, and drops the confirm.
+    fn withdrawn(&mut self, cx: &mut App) {
+        self.on_confirm = None;
+        if let Some(on_cancel) = self.on_cancel.take() {
+            on_cancel(cx);
         }
     }
 
@@ -90,21 +111,22 @@ impl ChallengeSheet {
         let Some(on_confirm) = self.on_confirm.take() else {
             return;
         };
+        self.on_cancel = None;
         let typed = self.typed(cx);
         close(window, cx);
         on_confirm(typed, window, cx);
     }
 
-    /// Cancels: nothing runs.
+    /// Cancels: nothing runs but the cancel hook.
     pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.on_confirm = None;
+        self.withdrawn(cx);
         close(window, cx);
     }
 }
 
 impl Dismissible for ChallengeSheet {
-    fn dismissed(&mut self, _cx: &mut Context<Self>) {
-        self.on_confirm = None;
+    fn dismissed(&mut self, cx: &mut Context<Self>) {
+        self.withdrawn(cx);
     }
 
     fn first_field(&self, cx: &App) -> Option<FocusHandle> {

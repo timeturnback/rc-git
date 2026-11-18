@@ -36,6 +36,13 @@ use crate::style;
 pub enum OpenSheet {
     /// A guard challenge.
     Challenge(WeakEntity<challenge::ChallengeSheet>),
+    /// The challenge of pull request `number`'s merge.
+    Merge {
+        /// The pull request.
+        number: u64,
+        /// The sheet.
+        sheet: WeakEntity<challenge::ChallengeSheet>,
+    },
     /// A credentials prompt.
     Credentials(WeakEntity<credentials::CredentialSheet>),
     /// An unknown host key.

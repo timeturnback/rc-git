@@ -162,20 +162,47 @@ pub(super) fn allowed_url(url: &str, plain: PlainHttp) -> bool {
 /// [`GitHubError::Malformed`] for headers over their cap, [`GitHubError::Redirected`] for a
 /// 3xx; any other status is the caller's to judge.
 pub(super) fn send(request: Request, cancel: &Cancel) -> GitHubResult<Response> {
+    match deliver(request, cancel) {
+        Delivery::Sent(result) => result,
+        Delivery::NotSent(error) => Err(error),
+    }
+}
+
+/// Whether a request may have reached the host, for a mutation, whose failure means one thing
+/// when nothing left the machine and another when the host may have acted on it.
+#[derive(Debug)]
+pub(super) enum Delivery {
+    /// Nothing left the machine: a cancel before the transfer started, a URL the transport
+    /// refuses, or a failure to resolve, connect or finish the TLS handshake, all of which come
+    /// before curl writes a byte of the request.
+    NotSent(GitHubError),
+    /// The request may have reached the host, and this came back: the response, or why none
+    /// arrived (a timeout, a dropped connection, a cancel while it ran, a redirect, a body over
+    /// its cap).
+    Sent(GitHubResult<Response>),
+}
+
+/// [`send`], telling apart a failure before the request left from one after. Every transport
+/// rule is the same, since `send` is this function. A failure it cannot place (the request
+/// thread did not start, or ended without a word) counts as sent: a mutation then reads what
+/// happened instead of assuming nothing did.
+pub(super) fn deliver(request: Request, cancel: &Cancel) -> Delivery {
     let op = request.op;
     if cancel.is_cancelled() {
-        return Err(GitHubError::Cancelled { op });
+        return Delivery::NotSent(GitHubError::Cancelled { op });
     }
     if !allowed_url(request.url.as_str(), PLAIN_HTTP) {
-        return Err(GitHubError::Transport {
+        return Delivery::NotSent(GitHubError::Transport {
             op,
             url: request.url.as_str().to_owned(),
             reason: "rc-git speaks only https:// to GitHub".to_owned(),
         });
     }
     let worker_cancel = cancel.clone();
-    let response = detached(cancel, op, move || perform(&request, &worker_cancel))?;
-    Ok(response)
+    match detached(cancel, op, move || Ok(perform(&request, &worker_cancel))) {
+        Ok(delivery) => delivery,
+        Err(error) => Delivery::Sent(Err(error)),
+    }
 }
 
 /// Runs `work` on a detached thread and waits for it, looking at `cancel` every
@@ -340,8 +367,18 @@ fn configure(request: &Request, cancel: &Cancel) -> Result<Easy2<Collector>, cur
     Ok(easy)
 }
 
+/// Whether curl failed before it wrote a byte of the request: it could not resolve the host or
+/// the proxy, connect, or complete the TLS handshake, which comes before the request.
+fn before_request(error: &curl::Error) -> bool {
+    error.is_couldnt_resolve_host()
+        || error.is_couldnt_resolve_proxy()
+        || error.is_couldnt_connect()
+        || error.is_ssl_connect_error()
+        || error.is_peer_failed_verification()
+}
+
 /// One transfer, on the transfer thread.
-fn perform(request: &Request, cancel: &Cancel) -> GitHubResult<Response> {
+fn perform(request: &Request, cancel: &Cancel) -> Delivery {
     let op = request.op;
     let url = request.url.as_str().to_owned();
     let transport = |error: &curl::Error| GitHubError::Transport {
@@ -349,7 +386,10 @@ fn perform(request: &Request, cancel: &Cancel) -> GitHubResult<Response> {
         url: url.clone(),
         reason: server_text(&describe(error), &secrets(request)),
     };
-    let easy = configure(request, cancel).map_err(|error| transport(&error))?;
+    let easy = match configure(request, cancel) {
+        Ok(easy) => easy,
+        Err(error) => return Delivery::NotSent(transport(&error)),
+    };
     let result = easy.perform();
     let collected = easy.get_ref();
     if collected.over_limit
@@ -357,38 +397,44 @@ fn perform(request: &Request, cancel: &Cancel) -> GitHubResult<Response> {
             .as_ref()
             .is_err_and(curl::Error::is_filesize_exceeded)
     {
-        return Err(GitHubError::TooLarge {
+        return Delivery::Sent(Err(GitHubError::TooLarge {
             op,
             url,
             limit: request.limit,
-        });
+        }));
     }
     if let Err(error) = result {
         let aborted = error.is_aborted_by_callback() && !collected.headers_over_limit;
         if cancel.is_cancelled() || aborted {
-            return Err(GitHubError::Cancelled { op });
+            return Delivery::Sent(Err(GitHubError::Cancelled { op }));
         }
         if collected.headers_over_limit {
-            return Err(GitHubError::Malformed {
+            return Delivery::Sent(Err(GitHubError::Malformed {
                 op,
                 url,
                 reason: format!(
                     "the response headers are over {MAX_HEADER_BYTES} bytes or {MAX_HEADERS} lines"
                 ),
-            });
+            }));
         }
-        return Err(transport(&error));
+        if before_request(&error) {
+            return Delivery::NotSent(transport(&error));
+        }
+        return Delivery::Sent(Err(transport(&error)));
     }
-    let status = easy.response_code().map_err(|error| transport(&error))?;
+    let status = match easy.response_code() {
+        Ok(status) => status,
+        Err(error) => return Delivery::Sent(Err(transport(&error))),
+    };
     if (300..400).contains(&status) {
-        return Err(GitHubError::Redirected { op, url, status });
+        return Delivery::Sent(Err(GitHubError::Redirected { op, url, status }));
     }
     let collected = easy.get_ref();
-    Ok(Response {
+    Delivery::Sent(Ok(Response {
         status,
         headers: collected.headers.clone(),
         body: collected.body.clone(),
-    })
+    }))
 }
 
 /// curl's description of `error` with its detail, e.g. `Couldn't connect to server: Failed to

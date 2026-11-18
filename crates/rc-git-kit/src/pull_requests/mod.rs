@@ -5,9 +5,12 @@
 //! ([`checks`]), when to poll ([`polling`]), which links in a description may open ([`body`]),
 //! and the words ([`copy`]).
 //!
-//! The network reads are the guard's (`rc_git_guard::actions::github`), and so is the one
-//! write, the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`; both are reached
-//! through the [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a
+//! A tab's merge ([`merge`]) is a state machine too: planning, confirming, merging, done.
+//!
+//! The network reads are the guard's (`rc_git_guard::actions::github`), and so are the writes:
+//! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge on GitHub,
+//! whose challenge the guard words from its own fresh read. All are reached through the
+//! [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a
 //! fake in tests. Every text the server sent is attacker-controlled and arrives neutralized by
 //! the guard; nothing here fetches a URL or an image, and fetched commits are only diffed,
 //! never checked out.
@@ -18,21 +21,25 @@ pub mod checks;
 pub mod copy;
 pub mod link;
 pub mod live;
+pub mod merge;
 pub mod model;
 pub mod polling;
 pub mod state;
 
+pub use rc_git_guard::Decision;
 pub use rc_git_guard::actions::Cancel;
 pub use rc_git_guard::actions::github::{
-    ActionsIds, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress, CheckStatus,
-    DetailFields, GitHubError, MergeMethod, MergeMethods, MergeStateStatus, Mergeable, PageCursor,
-    PullRequestDetail, PullRequestPage, PullRequestRemote, PullRequestStamp, PullRequestState,
-    PullRequestSummary, RepositoryTarget, ReviewDecision, ServerLink, StatusState, ViewerAbilities,
-    multi_line, single_line,
+    ActionsIds, AfterLoss, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress,
+    CheckStatus, CheckTally, DetailFields, GitHubError, MergeBlocker, MergeMethod, MergeMethods,
+    MergeOutcome, MergePlan, MergeRefusal, MergeStateStatus, Mergeable, PageCursor,
+    PullRequestDetail, PullRequestId, PullRequestPage, PullRequestRemote, PullRequestStamp,
+    PullRequestState, PullRequestSummary, RepositoryTarget, ReviewDecision, ServerLink, Settled,
+    StatusState, ViewerAbilities, merge_blocker, multi_line, single_line,
 };
 
 use changes::{ChangesRead, FetchProblem, HeadFetched};
 use link::{Linked, RepositoryLink};
+use merge::{MergeAsk, MergeStop};
 use rc_git_core::{BlobDiff, TreeChange};
 
 use crate::platform::api_tokens::AccountKey;
@@ -157,4 +164,32 @@ pub trait PullRequestService: Send + Sync {
         stamp: &PullRequestStamp,
         cancel: &Cancel,
     ) -> Result<HeadFetched, FetchProblem>;
+
+    /// What merging the pull request `stamp` names with `method` needs the user to answer:
+    /// the guard reads it again, refuses what changed since the stamp or cannot merge, and the
+    /// policy words the challenge from that read. Sends no mutation.
+    ///
+    /// # Errors
+    /// [`MergeStop`] for a cancel and every refusal.
+    fn plan_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        method: MergeMethod,
+        cancel: &Cancel,
+    ) -> Result<MergePlan, MergeStop>;
+
+    /// Merges the pull request `ask` names through the guard, which reads it again, checks the
+    /// answered decision against its own and sends the one mutation. Only when the user
+    /// confirmed: nothing calls it on its own, and nothing calls it twice for one confirm.
+    ///
+    /// # Errors
+    /// [`MergeStop`] whenever nothing was sent; once the request may have left, the answer is
+    /// a [`MergeOutcome`].
+    fn merge(
+        &self,
+        linked: &Linked,
+        ask: MergeAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<MergeOutcome, MergeStop>;
 }

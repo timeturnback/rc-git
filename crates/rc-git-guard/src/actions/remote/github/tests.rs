@@ -523,25 +523,6 @@ fn graphql_sends_the_static_query_with_values_only_in_variables() {
     assert_eq!(sent.header("accept"), Some("application/vnd.github+json"));
 }
 
-#[test]
-fn a_json_post_carries_its_body_and_reports_the_status() {
-    let server = server_with_token();
-    let host = host_of(&server);
-    let token = token();
-    let body = serde_json::json!({ "merge_method": "squash" });
-    let error = Session::new(&host, &token)
-        .post("post", &["nothing-here"], &body, &Cancel::new())
-        .unwrap_err();
-    assert!(
-        matches!(error, GitHubError::Status { status: 404, .. }),
-        "{error}"
-    );
-    let recorded = server.recorded();
-    assert_eq!(recorded[0].method, "POST");
-    assert_eq!(recorded[0].header("content-type"), Some("application/json"));
-    assert_eq!(recorded[0].body, body.to_string().into_bytes());
-}
-
 fn script(polls: Vec<PollAnswer>) -> DeviceScript {
     DeviceScript {
         client_id: CLIENT.to_owned(),

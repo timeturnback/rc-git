@@ -749,6 +749,113 @@ fn the_planners_carry_the_changes_tab_policy() {
     assert!(tag.backup_ref());
 }
 
+/// A pull request on `main` as a fresh read shows it: open, mergeable, clean, two checks.
+#[expect(clippy::unwrap_used, reason = "test helper parses a fixed commit id")]
+fn mergeable_pull_request() -> rc_git_guard::actions::github::PullRequestDetail {
+    use rc_git_guard::actions::github::{
+        Check, CheckList, CheckProgress, DetailFields, MergeMethods, MergeStateStatus, Mergeable,
+        PullRequestDetail, PullRequestId, PullRequestState, PullRequestSummary, StatusState,
+    };
+    let status = |name: &str, state| Check {
+        name: name.to_owned(),
+        progress: CheckProgress::Status(state),
+        description: None,
+        required: None,
+        details: None,
+        actions: None,
+    };
+    PullRequestDetail {
+        summary: PullRequestSummary {
+            number: 12,
+            title: "Add the thing".to_owned(),
+            author: Some("mona".to_owned()),
+            head_ref: "topic".to_owned(),
+            head_oid: rc_git_core::Oid::from_hex(&"cd".repeat(20)).unwrap(),
+            base_ref: "main".to_owned(),
+            head_owner: Some("octo".to_owned()),
+            cross_repository: false,
+            draft: false,
+            state: PullRequestState::Open,
+            updated_at: None,
+            checks: None,
+            review: None,
+        },
+        id: PullRequestId::parse("PR_kwDOtwelve"),
+        body: String::new(),
+        url: None,
+        mergeable: Mergeable::Mergeable,
+        merge_state: Some(MergeStateStatus::Clean),
+        merge_methods: MergeMethods {
+            merge: true,
+            squash: false,
+            rebase: true,
+        },
+        auto_merge_allowed: None,
+        viewer: None,
+        auto_merge: None,
+        checks: CheckList {
+            checks: vec![
+                status("ci", StatusState::Success),
+                status("deploy", StatusState::Pending),
+            ],
+            total: 2,
+        },
+        fields: DetailFields::Full,
+    }
+}
+
+/// The merge row of `docs/safety.md`: a plain confirm, no backup, built only from a read that
+/// nothing stands in the way of, naming what was read.
+#[test]
+fn a_pull_request_merge_is_a_plain_confirm_built_from_its_read() {
+    use rc_git_guard::Action;
+    use rc_git_guard::actions::github::{
+        GitHubHost, MergeBlocker, MergeMethod, MergeStateStatus, Mergeable, PullRequestMerge,
+        RepositoryTarget,
+    };
+    let target =
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap();
+    let detail = mergeable_pull_request();
+    let merge = PullRequestMerge::new(&target, &detail, MergeMethod::Rebase).unwrap();
+    let Decision::Confirm(challenge) =
+        Policy::default().evaluate(&Action::MergePullRequest(Box::new(merge)))
+    else {
+        panic!("a merge is confirmed");
+    };
+    assert_eq!(challenge.typed_phrase(), None, "no phrase to type");
+    assert!(!challenge.backup_ref(), "nothing local to back up");
+    assert_eq!(challenge.risk(), Risk::Recoverable);
+    assert!(
+        challenge.summary().starts_with(
+            "Merge octo/rc-git#12 \u{201c}Add the thing\u{201d} into main with a rebase merge: \
+             topic at cdcdcdc (1 of 2 checks passed, 1 pending)."
+        ),
+        "{}",
+        challenge.summary()
+    );
+
+    let blocked = |change: fn(&mut rc_git_guard::actions::github::PullRequestDetail)| {
+        let mut detail = mergeable_pull_request();
+        change(&mut detail);
+        PullRequestMerge::new(&target, &detail, MergeMethod::Rebase).unwrap_err()
+    };
+    assert_eq!(blocked(|d| d.summary.draft = true), MergeBlocker::Draft);
+    assert_eq!(
+        blocked(|d| d.mergeable = Mergeable::Conflicting),
+        MergeBlocker::Conflicting
+    );
+    assert_eq!(
+        blocked(|d| d.merge_state = Some(MergeStateStatus::Blocked)),
+        MergeBlocker::Blocked
+    );
+    assert_eq!(
+        blocked(|d| d.merge_methods.rebase = false),
+        MergeBlocker::MethodNotAllowed(MergeMethod::Rebase)
+    );
+    assert_eq!(blocked(|d| d.id = None), MergeBlocker::NoId);
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

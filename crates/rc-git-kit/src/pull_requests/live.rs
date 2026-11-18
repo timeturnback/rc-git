@@ -2,6 +2,9 @@
 //! token keeper over the keychain. The app and the CLI both use it, so they share the accounts,
 //! the per-repository choices and the tokens.
 //!
+//! A merge runs through the guard's `plan_merge_pull_request` and `merge_pull_request` with the
+//! account's token and kit's one policy; nothing here retries one.
+//!
 //! A pull request's head is fetched like any fetch: over the remote's own git transport, with
 //! the git credentials and approved ssh host keys saved for the remote's host
 //! ([`LivePullRequests::with_git_credentials`]). The API token is never one of them: it goes
@@ -12,16 +15,21 @@ use std::sync::Arc;
 
 use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, TreeChange};
 use rc_git_guard::actions::github::{
-    ApiToken, PullRequestRemote, list_open_pull_requests, pull_request_base_ref,
-    pull_request_remote, read_pull_request, refresh_user_token, unix_now,
+    ApiToken, MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, list_open_pull_requests,
+    merge_pull_request, plan_merge_pull_request, pull_request_base_ref, pull_request_remote,
+    read_pull_request, refresh_user_token, unix_now,
 };
 use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pull_request_head};
 
 use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
-use super::copy::fetch_problem;
+use super::copy::{fetch_problem, problem};
 use super::link::{Linked, RepositoryLink, link_repository};
+use super::merge::{MergeAsk, MergeStop};
 use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
-use super::{PullRequestService, PullRequestStamp, ReadError};
+use super::{
+    MergeMethod, MergeOutcome, MergePlan, MergeRefusal, PullRequestService, PullRequestStamp,
+    ReadError,
+};
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
 use crate::github::tokens::{TokenError, TokenKeeper};
 use crate::guard_bridge::{Credentials, FailureKind, classify};
@@ -251,6 +259,70 @@ impl PullRequestService for LivePullRequests {
             | FailureKind::Diverged
             | FailureKind::Failed => FetchProblem::Failed(message),
         })
+    }
+
+    fn plan_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        method: MergeMethod,
+        cancel: &Cancel,
+    ) -> Result<MergePlan, MergeStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let merge = MergeTarget {
+            host: linked.account.key.host(),
+            token: &token,
+            target: &linked.target,
+            stamp,
+            method,
+        };
+        plan_merge_pull_request(policy(), &merge, cancel).map_err(stop)
+    }
+
+    fn merge(
+        &self,
+        linked: &Linked,
+        ask: MergeAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<MergeOutcome, MergeStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let request = MergeRequest {
+            merge: MergeTarget {
+                host: linked.account.key.host(),
+                token: &token,
+                target: &linked.target,
+                stamp: ask.stamp,
+                method: ask.method,
+            },
+            answer: ask.decision.map(|decision| MergeAnswer {
+                decision,
+                typed: ask.typed,
+            }),
+            on_send: ask.on_send,
+        };
+        merge_pull_request(policy(), request, cancel).map_err(stop)
+    }
+}
+
+impl LivePullRequests {
+    /// The account's token for a merge, its failure in a merge's terms.
+    fn merge_token(&self, linked: &Linked, cancel: &Cancel) -> Result<ApiToken, MergeStop> {
+        self.token(&linked.account, cancel)
+            .map_err(|error| match error {
+                ReadError::SignedOut { account } => MergeStop::SignedOut { account },
+                ReadError::Cancelled => MergeStop::Cancelled,
+                error @ (ReadError::RateLimited { .. } | ReadError::Failed(_)) => {
+                    MergeStop::Failed(problem(&error, unix_now()))
+                }
+            })
+    }
+}
+
+/// A guard refusal in a merge's terms.
+fn stop(refusal: MergeRefusal) -> MergeStop {
+    match refusal {
+        MergeRefusal::Cancelled { .. } => MergeStop::Cancelled,
+        refusal => MergeStop::Refused(refusal),
     }
 }
 

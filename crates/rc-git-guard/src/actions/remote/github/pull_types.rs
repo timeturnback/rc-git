@@ -190,6 +190,87 @@ pub enum CheckProgress {
     Status(StatusState),
 }
 
+/// How one check, or a pull request's checks together, stand: the one reading of a check's
+/// progress that the tab, the CLI and a merge's challenge share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CheckState {
+    /// Failed, errored, timed out, cancelled, or needs someone to act.
+    Failing,
+    /// Not finished.
+    Pending,
+    /// Passed.
+    Passing,
+    /// Finished without passing or failing: neutral, skipped, stale.
+    Neutral,
+}
+
+impl CheckProgress {
+    /// How this check stands. A conclusion this build does not know reads as failing.
+    #[must_use]
+    pub fn state(&self) -> CheckState {
+        match self {
+            Self::Run {
+                status: CheckStatus::Completed,
+                conclusion,
+            } => match conclusion {
+                Some(CheckConclusion::Success) => CheckState::Passing,
+                Some(
+                    CheckConclusion::Neutral | CheckConclusion::Skipped | CheckConclusion::Stale,
+                ) => CheckState::Neutral,
+                Some(
+                    CheckConclusion::Failure
+                    | CheckConclusion::TimedOut
+                    | CheckConclusion::Cancelled
+                    | CheckConclusion::ActionRequired
+                    | CheckConclusion::StartupFailure
+                    | CheckConclusion::Unknown,
+                )
+                | None => CheckState::Failing,
+            },
+            Self::Run {
+                status:
+                    CheckStatus::Queued
+                    | CheckStatus::InProgress
+                    | CheckStatus::Pending
+                    | CheckStatus::Requested
+                    | CheckStatus::Waiting
+                    | CheckStatus::Unknown,
+                ..
+            } => CheckState::Pending,
+            Self::Status(state) => state.check_state(),
+        }
+    }
+}
+
+impl StatusState {
+    /// How a commit status, or a rollup, stands. A state this build does not know reads as
+    /// failing.
+    #[must_use]
+    pub fn check_state(self) -> CheckState {
+        match self {
+            Self::Success => CheckState::Passing,
+            Self::Pending | Self::Expected => CheckState::Pending,
+            Self::Failure | Self::Error | Self::Unknown => CheckState::Failing,
+        }
+    }
+}
+
+/// A head commit's checks counted by how they stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CheckTally {
+    /// Passed.
+    pub passing: usize,
+    /// Failed.
+    pub failing: usize,
+    /// Not finished.
+    pub pending: usize,
+    /// Neutral, skipped or stale.
+    pub neutral: usize,
+    /// How many the commit has, counted or not: more than the four above together when the
+    /// read did not hold them all.
+    pub total: usize,
+}
+
 /// The GitHub Actions ids of a check run, for the job logs and the re-run of later slices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ActionsIds {
@@ -224,6 +305,26 @@ pub struct CheckList {
     pub checks: Vec<Check>,
     /// How many the commit has; more than `checks.len()` when the page did not hold them all.
     pub total: usize,
+}
+
+impl CheckList {
+    /// The checks read, counted by how they stand.
+    #[must_use]
+    pub fn tally(&self) -> CheckTally {
+        let mut tally = CheckTally {
+            total: self.total.max(self.checks.len()),
+            ..CheckTally::default()
+        };
+        for check in &self.checks {
+            match check.progress.state() {
+                CheckState::Passing => tally.passing += 1,
+                CheckState::Failing => tally.failing += 1,
+                CheckState::Pending => tally.pending += 1,
+                CheckState::Neutral => tally.neutral += 1,
+            }
+        }
+        tally
+    }
 }
 
 /// One open pull request as the list shows it.
@@ -282,6 +383,34 @@ impl PageCursor {
     }
 }
 
+/// A pull request's GraphQL node id (`PR_kwDO…`), as the host handed it out: opaque text that
+/// only ever travels back in a mutation's `variables`, never shown and never part of a URL.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PullRequestId(String);
+
+/// The longest node id rc-git keeps.
+const MAX_NODE_ID_BYTES: usize = 256;
+
+impl PullRequestId {
+    /// `text` as a node id: 1 to 256 ASCII letters, digits, `_`, `-`, `=`, `+` or `/` (the
+    /// alphabets of GitHub's current and legacy ids), else `None`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let fits = !text.is_empty()
+            && text.len() <= MAX_NODE_ID_BYTES
+            && text.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'=' | b'+' | b'/')
+            });
+        fits.then(|| Self(text.to_owned()))
+    }
+
+    /// The id's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One page of open pull requests, most recently updated first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PullRequestPage {
@@ -307,6 +436,9 @@ pub enum DetailFields {
 pub struct PullRequestDetail {
     /// What the list shows.
     pub summary: PullRequestSummary,
+    /// The node id a mutation names it by; `None` when the host sent none rc-git accepts,
+    /// which leaves it unmergeable from rc-git.
+    pub id: Option<PullRequestId>,
     /// The description, neutralized multi-line text; empty when there is none.
     pub body: String,
     /// The pull request's page on the host.

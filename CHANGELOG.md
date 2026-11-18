@@ -6,6 +6,19 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Added
 
+- A pull request's tab can merge it on GitHub: pick Squash and Merge, Create a Merge Commit or
+  Rebase and Merge (only the ones the repository allows), then Merge. RCGit reads the pull
+  request again first and asks you to confirm what it is about to merge: the repository and
+  number, the title, both branches, the head commit, the method and how the checks stand. If
+  anything moved since you looked, nothing is sent and the tab reads it again. Merge stays
+  greyed out, with the reason, for a draft, a conflict, a closed pull request, branch
+  protection that blocks it, or a signed-out account. Cancel works until the request is sent;
+  after that the tab says it cannot be stopped. When GitHub's answer never arrives, RCGit
+  never sends the merge again: it reads the pull request once more and tells you whether it
+  merged, or that it cannot tell and you should look on GitHub. Your local repository is
+  unchanged until you fetch. In Terminal, `rc-git pr merge <n> --method squash --head <oid>
+  --yes` does the same, with `--head` set to the head `rc-git pr view` printed.
+
 - A pull request's tab has a Changes view: the files the pull request changes since it left
   its base branch, as GitHub counts them, and the diff of the file you pick, read from your own
   repository. When its commits are not in your repository yet, Fetch Changes downloads them

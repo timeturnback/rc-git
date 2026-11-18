@@ -112,9 +112,10 @@ and tag creation and deletion from the sidebar; from the Changes tab, committing
 files or hunks, the stash lifecycle, and discarding uncommitted changes; switching `HEAD` to
 another local branch, which the Back-to-default control composes with a fetch and a
 fast-forward; the remote operations — fetch, fast-forward pull, plain push, and their sync
-composition; and the fetch of a pull request's head from its page or `rc-git pr diff --fetch`
-— all driven through `rc_git_guard::actions` from rc-git-kit. Every other row of the table is
-settled policy waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
+composition; the fetch of a pull request's head from its page or `rc-git pr diff --fetch`;
+and merging a pull request on GitHub from its page or `rc-git pr merge` — all driven through
+`rc_git_guard::actions` from rc-git-kit. Every other row of the table is settled policy
+waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
 | Action | Protected branch | Elsewhere |
 |---|---|---|
@@ -138,6 +139,7 @@ settled policy waiting for its feature. `Policy::evaluate` maps an `Action` to a
 | stash apply | allow (the write path refuses dirty files) | same |
 | stash pop | confirm, backup ref | same |
 | stash drop | type `drop`, backup ref | same |
+| merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge names `owner/name#N`, the title, both branches, the short head, the method and the checks, all from a read made just before | same: GitHub's branch protection guards the base, not rc-git's protected names |
 
 Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
 a case-insensitive volume stores `MAIN` and `main` as one file, and the policy has no
@@ -424,9 +426,68 @@ libcurl directly.
   every blob is, and `refs/rc-git/pr/*` is never checked out, merged or applied to the working
   tree; it lists as "other" beside the backup refs, never as a branch or a tag.
 
+- **Mutations take the proof.** A GitHub mutation leaves rc-git only through
+  `Session::mutate` (`github/api.rs`), which takes a `Confirmation` and builds the request from
+  the action that proof was issued for (`github/mutation.rs`): a closed set of static
+  documents, every value in `variables`, sent to the session's host only after the action's
+  repository is checked to be on it. A `Confirmation` carries its action, so a proof for any
+  other action yields no mutation, and nothing but the policy builds one. The read primitive
+  (`Session::graphql`) sends a `query` document only and refuses a mutation before any request.
+  The client has no REST `POST` of its own; a later REST mutation joins the closed set.
+
 Sign-in, the token check, the refresh and the pull request reads change no repository, so they
-have no `Action`; fetching a pull request's head has the row above, and the pull request
-mutations of later slices will each get one too.
+have no `Action`; fetching a pull request's head and merging a pull request have their rows
+above, and the pull request mutations of later slices will each get one too.
+
+### Merging a pull request
+
+A merge changes a branch everyone shares, and rc-git cannot take it back, so the guard refuses
+whenever it cannot be sure and sends one request at most (`github/merge.rs`). The app (Merge on
+the pull request's page) and the CLI (`rc-git pr merge`) both call `merge_pull_request`:
+
+1. **Read it again, compare it with what the user saw.** The guard reads the pull request now
+   and compares it with the `PullRequestStamp` the front end passes (the tab's current read; the
+   CLI's `--head` with the base read just before): a head, base or state that differs refuses
+   with "changed since you looked", naming what changed.
+2. **Refuse what cannot merge as asked** (`merge_blocker`, which the Merge control uses too):
+   not open, a draft, a method the repository does not allow, conflicts, mergeability not yet
+   computed, and every merge state but clean, unstable and has-hooks. A blocked, behind or
+   unknown state refuses, and so does a host that reports none (an older GitHub Enterprise
+   Server): GitHub may let an account that can bypass branch protection merge such a pull
+   request through the same mutation (`viewerCanMergeAsAdmin`), and the plain merge is not that
+   action. So is a read that names no node id.
+3. **Authorize the action built from that read.** The decision the user answered must equal
+   the one the policy gives now: an answer to another action's challenge, or to this merge
+   before a check, the title, the method or the head changed, refuses. No answer at all refuses
+   (`MergeAnswer` is `None` until the confirm step: the GUI's sheet, the CLI's `--yes`).
+4. **Send exactly one mutation.** `mergePullRequest` with `pullRequestId`, `expectedHeadOid`
+   (the confirmed head, so GitHub refuses a head that moved after the read) and `mergeMethod`,
+   checked against GitHub's GraphQL reference. Nothing sends it again: not the guard, not the
+   kit, not the app, not the CLI; a 401 or a spent rate limit is an answer to show.
+5. **Three outcomes, never two.** *Merged*: GitHub's answer says merged at the confirmed head
+   (with the merge commit when named). *Refused*: GitHub answered no — a 4xx, a 401, a spent
+   rate limit, or GraphQL errors all of a refusing kind (`UNPROCESSABLE`, `FORBIDDEN`,
+   `NOT_FOUND`, `UNAUTHORIZED`, or a schema error) — passed through `server_text`. *Unknown*: the
+   request may have left and no usable answer came back — a timeout, a dropped connection, a
+   cancel after the send, a redirect, a body over its cap, a 5xx, an answer that is not JSON, or
+   GraphQL errors of any other kind (GitHub answers its own timeouts that way). Only then does
+   the guard read the pull request once more: merged at the confirmed head is *Merged*; merged
+   at another head is not this request's doing; closed means this request merged nothing;
+   still open says plainly that rc-git cannot tell, since the merge may still land, and tells
+   the user to look on GitHub before trying again. That read watches a fresh cancel flag with
+   the caller's budgets: a cancel after the send cannot stop the merge, and this read is what
+   says where it stands.
+
+A cancel before the request leaves sends nothing: the guard checks the flag after the
+authorization and the transport checks it again before the transfer starts; a failure to
+resolve, connect or complete the TLS handshake also counts as not sent, since curl writes the
+request only after those. Any other failure counts as sent. The front end is told just before
+the request leaves (`MergeRequest::on_send`) and stops offering Cancel then. After a merge the
+page reads the pull request and the list again; nothing local is fetched, moved or written, and
+the note says the local repository is unchanged until the user fetches. Every attempt and
+outcome is a line in the app's log (repository, number, head, method, outcome; never a token).
+Unverified against GitHub: which GraphQL error `type` each refusal carries (an unexpected one
+reads as unknown, never as refused).
 
 ## Updater
 

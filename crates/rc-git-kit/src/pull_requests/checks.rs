@@ -1,66 +1,22 @@
-//! How a pull request's checks read: each check's state, the list in the order the tab shows
-//! it (required checks first, then by state, failing first), the summary line, and the state
-//! icon of a row in the list.
+//! How a pull request's checks read: each check's state (the guard's [`CheckState`], so the tab
+//! and a merge's challenge count alike), the list in the order the tab shows it (required checks
+//! first, then by state, failing first), the summary line, and the state icon of a row in the
+//! list.
 
-use super::{Check, CheckConclusion, CheckList, CheckProgress, CheckStatus, StatusState};
+pub use rc_git_guard::actions::github::CheckState;
 
-/// How one check, or a pull request's checks together, stand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum CheckState {
-    /// Failed, errored, timed out, cancelled, or needs someone to act.
-    Failing,
-    /// Not finished.
-    Pending,
-    /// Passed.
-    Passing,
-    /// Finished without passing or failing: neutral, skipped, stale.
-    Neutral,
-}
+use super::{Check, CheckList, CheckProgress, StatusState};
 
-/// How `progress` stands.
+/// How `progress` stands: the guard's reading, which a merge's challenge counts by too.
 #[must_use]
 pub fn check_state(progress: &CheckProgress) -> CheckState {
-    match progress {
-        CheckProgress::Run {
-            status: CheckStatus::Completed,
-            conclusion,
-        } => match conclusion {
-            Some(CheckConclusion::Success) => CheckState::Passing,
-            Some(CheckConclusion::Neutral | CheckConclusion::Skipped | CheckConclusion::Stale) => {
-                CheckState::Neutral
-            }
-            Some(
-                CheckConclusion::Failure
-                | CheckConclusion::TimedOut
-                | CheckConclusion::Cancelled
-                | CheckConclusion::ActionRequired
-                | CheckConclusion::StartupFailure
-                | CheckConclusion::Unknown,
-            )
-            | None => CheckState::Failing,
-        },
-        CheckProgress::Run {
-            status:
-                CheckStatus::Queued
-                | CheckStatus::InProgress
-                | CheckStatus::Pending
-                | CheckStatus::Requested
-                | CheckStatus::Waiting
-                | CheckStatus::Unknown,
-            ..
-        } => CheckState::Pending,
-        CheckProgress::Status(state) => status_check_state(*state),
-    }
+    progress.state()
 }
 
 /// How a commit status, or a rollup, stands.
 #[must_use]
 pub fn status_check_state(state: StatusState) -> CheckState {
-    match state {
-        StatusState::Success => CheckState::Passing,
-        StatusState::Pending | StatusState::Expected => CheckState::Pending,
-        StatusState::Failure | StatusState::Error | StatusState::Unknown => CheckState::Failing,
-    }
+    state.check_state()
 }
 
 /// Whether any of `checks` has not finished, so the tab keeps polling.

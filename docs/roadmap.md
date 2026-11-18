@@ -197,11 +197,19 @@ constraints are clear.
   on screen while it runs. `rc-git pr diff <n> [--fetch]` and `rc-git merge-base` do the same
   from Terminal. The third slice.
 
+- **Pull request merge.** A pull request tab's Merge control (the repository's allowed
+  methods, squash first) and `rc-git pr merge <n> --method m --head <oid> --yes` merge through
+  the guard: a fresh read compared with the stamp and the answered challenge, the blockers
+  (draft, conflicts, a blocked, behind or unknown merge state, a disallowed method), one
+  `mergePullRequest` carrying `expectedHeadOid`, never resent, and a three-valued outcome a lost
+  answer settles with one read. The fourth slice.
+
 ## Planned
 
-- **Pull requests.** The rest of the pull request slices on the GitHub client: merge and admin
-  bypass merge, auto-merge, re-running failed jobs, job logs and deleting the head branch, each mutation a new `Action` with its policy row (rc-git-guard,
-  rc-git-kit, rc-git-app, `rc-git pr`), each comparing a fresh read against the
+- **Pull requests.** The rest of the pull request slices on the GitHub client: admin bypass
+  merge, auto-merge, re-running failed jobs, job logs and deleting the head branch, each
+  mutation a new `Action` with its policy row (rc-git-guard, rc-git-kit, rc-git-app,
+  `rc-git pr`) and an arm of `Mutation::of`, each comparing a fresh read against the
   `PullRequestStamp` of what the user saw.
 
 - **Prune old pull request heads.** Every fetched pull request head stays under

@@ -10,7 +10,13 @@
 //! It is strict: every endpoint answers only for the exact method, headers and parameters a
 //! correct client sends, and a GraphQL query only for the exact request body scripted for it;
 //! anything else gets an error, so a client that sends the wrong thing fails its test instead
-//! of passing against a lenient fake. Every request is recorded, headers included.
+//! of passing against a lenient fake. Every request is recorded, headers included, and the
+//! ones that could change something are counted apart from the reads.
+//!
+//! One pull request can be scripted to merge ([`MergeScript`]): its read answers from its state
+//! (open, moved, merged), and its one merge mutation succeeds, is refused, meets a head that
+//! moved after a given read, or merges and then stalls or drops the connection, or drops it
+//! without merging.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -125,6 +131,71 @@ pub enum EchoForm {
     Body,
 }
 
+/// One pull request the fake can merge: the read that shows it, what that read answers before
+/// and after, the one merge mutation it takes, and how that mutation behaves. The read answers
+/// from the pull request's state, so a test sees what a merge changed exactly as a client
+/// reading it again would.
+#[derive(Debug, Clone)]
+pub struct MergeScript {
+    /// The exact body of the read that shows the pull request.
+    pub read: String,
+    /// The read's answer while it is open at its first head.
+    pub open: String,
+    /// The read's answer once its head moved ([`MergeBehaviour::MoveHeadAfter`]).
+    pub moved: String,
+    /// The read's answer once it merged.
+    pub merged: String,
+    /// The exact body of the merge mutation; any other mutation is refused with a 400.
+    pub mutation: String,
+    /// The mutation's answer when it merges.
+    pub reply: String,
+    /// What the mutation does.
+    pub behaviour: MergeBehaviour,
+}
+
+/// What the fake does with the merge mutation.
+#[derive(Debug, Clone)]
+pub enum MergeBehaviour {
+    /// Merges and answers [`MergeScript::reply`].
+    Merge,
+    /// Answers `status` with `body` and merges nothing.
+    Refuse {
+        /// The status line, e.g. `200 OK` or `422 Unprocessable Entity`.
+        status: &'static str,
+        /// The body.
+        body: String,
+    },
+    /// The head moves once the read has answered `reads` times: later reads answer
+    /// [`MergeScript::moved`], and the mutation is refused with `refusal` (a `200 OK` body), as
+    /// GitHub refuses a merge whose expected head is no longer the head.
+    MoveHeadAfter {
+        /// Reads answered before the head moves.
+        reads: usize,
+        /// The mutation's answer once it moved.
+        refusal: String,
+    },
+    /// Merges, then holds the connection open without answering until the client gives up.
+    MergeThenStall,
+    /// Merges, then closes the connection without answering.
+    MergeThenDrop,
+    /// Closes the connection without answering and merges nothing.
+    Drop,
+}
+
+/// Where the scripted pull request is.
+#[derive(Debug)]
+struct MergeState {
+    script: MergeScript,
+    reads: usize,
+    merged: bool,
+}
+
+impl MergeState {
+    fn moved(&self) -> bool {
+        matches!(self.script.behaviour, MergeBehaviour::MoveHeadAfter { reads, .. } if self.reads >= reads)
+    }
+}
+
 #[derive(Debug, Default)]
 struct State {
     device: Option<DeviceScript>,
@@ -139,6 +210,8 @@ struct State {
     graphql: Vec<(String, Scripted)>,
     /// Whether an unscripted GraphQL request is echoed back instead of refused.
     graphql_echo: bool,
+    /// The pull request a merge acts on, when scripted.
+    merge: Option<MergeState>,
     requests: Vec<RecordedRequest>,
 }
 
@@ -271,6 +344,47 @@ impl GitHubServer {
         self.state().graphql_echo = true;
     }
 
+    /// Serves the pull request `script` describes from now on: its read ahead of any
+    /// [`GitHubServer::script_graphql`] answer for the same body, and its merge mutation.
+    pub fn script_merge(&self, script: MergeScript) {
+        self.state().merge = Some(MergeState {
+            script,
+            reads: 0,
+            merged: false,
+        });
+    }
+
+    /// Whether the scripted pull request merged.
+    #[must_use]
+    pub fn merged(&self) -> bool {
+        self.state()
+            .merge
+            .as_ref()
+            .is_some_and(|merge| merge.merged)
+    }
+
+    /// How many requests that could change something arrived so far, counted apart from the
+    /// reads: every GraphQL request whose body names a `mutation`, scripted or not, and every
+    /// REST API request but a `GET`.
+    #[must_use]
+    pub fn mutation_requests(&self) -> usize {
+        self.state()
+            .requests
+            .iter()
+            .filter(|request| is_mutation(request))
+            .count()
+    }
+
+    /// How many requests that change nothing arrived at the GraphQL endpoint so far.
+    #[must_use]
+    pub fn graphql_reads(&self) -> usize {
+        self.state()
+            .requests
+            .iter()
+            .filter(|request| request.target == "/api/graphql" && !is_mutation(request))
+            .count()
+    }
+
     /// Every request so far, in arrival order.
     #[must_use]
     pub fn recorded(&self) -> Vec<RecordedRequest> {
@@ -379,12 +493,17 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>, stop: &AtomicBool) 
         ("GET", "/api/v3/echo-error") => echo_error(&request),
         ("GET", "/api/v3/rate-limited") => rate_limited(),
         ("GET", "/api/v3/stall") => {
-            while !stop.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
+            stall(stop);
             return;
         }
-        ("POST", "/api/graphql") => graphql(&request, state),
+        ("POST", "/api/graphql") => match graphql(&request, state) {
+            Served::Answer(answer) => answer,
+            Served::Stall => {
+                stall(stop);
+                return;
+            }
+            Served::Drop => return,
+        },
         ("GET", target) if target.ends_with(".git/info/refs") => git_challenge(),
         (method, target) if method == "GET" && target.starts_with("/api/v3/repos/") => {
             repository(&request, target, state)
@@ -718,26 +837,111 @@ fn rate_limited() -> Answer {
     answer
 }
 
-fn graphql(request: &RecordedRequest, state: &Mutex<State>) -> Answer {
-    let state = lock(state);
+/// Holds a connection open without answering until the server stops.
+fn stall(stop: &AtomicBool) {
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Whether `request` could change something: a GraphQL request naming a `mutation` anywhere in
+/// its body, or a REST API request other than a `GET`.
+fn is_mutation(request: &RecordedRequest) -> bool {
+    let target = request.target.split('?').next().unwrap_or_default();
+    if target == "/api/graphql" {
+        return String::from_utf8_lossy(&request.body).contains("mutation");
+    }
+    target.starts_with("/api/v3/") && request.method != "GET"
+}
+
+/// What the GraphQL endpoint does with one request.
+enum Served {
+    Answer(Answer),
+    /// Hold the connection without answering.
+    Stall,
+    /// Close the connection without answering.
+    Drop,
+}
+
+fn graphql(request: &RecordedRequest, state: &Mutex<State>) -> Served {
+    let mut state = lock(state);
     if authorized(request, &state, "application/vnd.github+json").is_none() {
-        return unauthorized();
+        return Served::Answer(unauthorized());
     }
     if request.header("content-type") != Some("application/json") {
-        return bad_request("GraphQL takes a JSON body");
+        return Served::Answer(bad_request("GraphQL takes a JSON body"));
     }
     let Ok(body) = String::from_utf8(request.body.clone()) else {
-        return bad_request("the body is not UTF-8");
+        return Served::Answer(bad_request("the body is not UTF-8"));
     };
+    if let Some(merge) = state.merge.as_mut()
+        && let Some(served) = merge_request(merge, &body)
+    {
+        return served;
+    }
+    if body.starts_with(r#"{"query":"mutation"#) {
+        return Served::Answer(bad_request(
+            "the fake takes no mutation but the one scripted",
+        ));
+    }
     if let Some((_, scripted)) = state.graphql.iter().find(|(expected, _)| *expected == body) {
         let mut answer = json("200 OK", scripted.body.clone());
         answer.headers.clone_from(&scripted.headers);
-        return answer;
+        return Served::Answer(answer);
     }
     if state.graphql_echo {
-        return json("200 OK", format!(r#"{{"data":{{"echo":{body}}}}}"#));
+        return Served::Answer(json("200 OK", format!(r#"{{"data":{{"echo":{body}}}}}"#)));
     }
-    bad_request("the fake has no answer for this GraphQL request")
+    Served::Answer(bad_request(
+        "the fake has no answer for this GraphQL request",
+    ))
+}
+
+/// The scripted pull request's answer to `body`: its read, or its merge mutation; `None` for
+/// anything else.
+fn merge_request(merge: &mut MergeState, body: &str) -> Option<Served> {
+    if body == merge.script.read {
+        let answer = if merge.merged {
+            &merge.script.merged
+        } else if merge.moved() {
+            &merge.script.moved
+        } else {
+            &merge.script.open
+        };
+        let answer = json("200 OK", answer.clone());
+        merge.reads += 1;
+        return Some(Served::Answer(answer));
+    }
+    if body != merge.script.mutation {
+        return None;
+    }
+    if merge.merged {
+        return Some(Served::Answer(json(
+            "200 OK",
+            r#"{"data":{"mergePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"Pull Request is not mergeable"}]}"#.to_owned(),
+        )));
+    }
+    if merge.moved()
+        && let MergeBehaviour::MoveHeadAfter { refusal, .. } = &merge.script.behaviour
+    {
+        return Some(Served::Answer(json("200 OK", refusal.clone())));
+    }
+    Some(match &merge.script.behaviour {
+        MergeBehaviour::Merge | MergeBehaviour::MoveHeadAfter { .. } => {
+            merge.merged = true;
+            Served::Answer(json("200 OK", merge.script.reply.clone()))
+        }
+        MergeBehaviour::Refuse { status, body } => Served::Answer(json(status, body.clone())),
+        MergeBehaviour::MergeThenStall => {
+            merge.merged = true;
+            Served::Stall
+        }
+        MergeBehaviour::MergeThenDrop => {
+            merge.merged = true;
+            Served::Drop
+        }
+        MergeBehaviour::Drop => Served::Drop,
+    })
 }
 
 fn repository(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Answer {

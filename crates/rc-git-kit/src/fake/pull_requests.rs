@@ -14,10 +14,12 @@ use crate::github::accounts::{GitHubAccount, SignInMethod};
 use crate::platform::api_tokens::AccountKey;
 use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use crate::pull_requests::link::{Linked, RepositoryLink};
+use crate::pull_requests::merge::{MergeAsk, MergeStop};
 use crate::pull_requests::{
-    Cancel, CheckList, DetailFields, MergeMethods, Mergeable, PageCursor, PullRequestDetail,
-    PullRequestPage, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
-    ReadError, RepositoryTarget,
+    Cancel, CheckList, Decision, DetailFields, MergeMethod, MergeMethods, MergeOutcome, MergePlan,
+    MergeStateStatus, Mergeable, PageCursor, PullRequestDetail, PullRequestId, PullRequestPage,
+    PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary, ReadError,
+    RepositoryTarget,
 };
 
 /// What the fake answers and what it was asked.
@@ -59,6 +61,36 @@ pub struct FakePullRequestsState {
     pub fetch_calls: Vec<PullRequestStamp>,
     /// The path of every file diff, in arrival order.
     pub file_diff_calls: Vec<String>,
+    /// What [`PullRequestService::plan_merge`] answers.
+    pub plan: Result<MergePlan, MergeStop>,
+    /// What [`PullRequestService::merge`] answers once its request is sent.
+    pub merge: Result<MergeOutcome, MergeStop>,
+    /// Holds each plan read at the gate, when set.
+    pub plan_gate: Option<Arc<CallGate>>,
+    /// Holds each merge at the gate before its request is sent, when set; a cancel raised
+    /// meanwhile sends nothing.
+    pub unsent_gate: Option<Arc<CallGate>>,
+    /// Holds each merge at the gate after its request is sent, when set.
+    pub sent_gate: Option<Arc<CallGate>>,
+    /// The stamp and method of every plan read, in arrival order.
+    pub plan_calls: Vec<(PullRequestStamp, MergeMethod)>,
+    /// Every merge asked for, in arrival order.
+    pub merge_calls: Vec<MergeCall>,
+    /// How many merge requests were sent: a merge's `on_send` and the sending itself.
+    pub merges_sent: usize,
+}
+
+/// One merge the fake was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeCall {
+    /// What the user saw.
+    pub stamp: PullRequestStamp,
+    /// The method.
+    pub method: MergeMethod,
+    /// The decision the user answered.
+    pub decision: Option<Decision>,
+    /// What the user typed.
+    pub typed: String,
 }
 
 /// The fake service; clones share one state.
@@ -96,6 +128,18 @@ impl FakePullRequests {
                 changes_calls: Vec::new(),
                 fetch_calls: Vec::new(),
                 file_diff_calls: Vec::new(),
+                plan: Err(MergeStop::Failed(
+                    "the fake has no plan scripted".to_owned(),
+                )),
+                merge: Err(MergeStop::Failed(
+                    "the fake has no merge scripted".to_owned(),
+                )),
+                plan_gate: None,
+                unsent_gate: None,
+                sent_gate: None,
+                plan_calls: Vec::new(),
+                merge_calls: Vec::new(),
+                merges_sent: 0,
             })),
         }
     }
@@ -256,6 +300,68 @@ impl PullRequestService for FakePullRequests {
                 )))
             })
     }
+
+    fn plan_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        method: MergeMethod,
+        cancel: &Cancel,
+    ) -> Result<MergePlan, MergeStop> {
+        let gate = {
+            let mut state = self.state();
+            state.plan_calls.push((stamp.clone(), method));
+            state.plan_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(MergeStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| MergeStop::Failed(format!("{error:?}")))?;
+        self.state().plan.clone()
+    }
+
+    fn merge(
+        &self,
+        linked: &Linked,
+        ask: MergeAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<MergeOutcome, MergeStop> {
+        let gate = {
+            let mut state = self.state();
+            state.merge_calls.push(MergeCall {
+                stamp: ask.stamp.clone(),
+                method: ask.method,
+                decision: ask.decision.cloned(),
+                typed: ask.typed.to_owned(),
+            });
+            state.unsent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(MergeStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| MergeStop::Failed(format!("{error:?}")))?;
+        if ask.decision.is_none() {
+            return Err(MergeStop::Failed("the fake got no confirmation".to_owned()));
+        }
+        (ask.on_send)();
+        let gate = {
+            let mut state = self.state();
+            state.merges_sent += 1;
+            state.sent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        self.state().merge.clone()
+    }
 }
 
 /// `octocat` on github.com reading `octo/rc-git` from `origin`.
@@ -312,10 +418,11 @@ pub fn pull_request_detail(
 ) -> PullRequestDetail {
     PullRequestDetail {
         summary,
+        id: PullRequestId::parse("PR_kwDOfake"),
         body: body.to_owned(),
         url: None,
         mergeable: Mergeable::Mergeable,
-        merge_state: None,
+        merge_state: Some(MergeStateStatus::Clean),
         merge_methods: MergeMethods {
             merge: true,
             squash: true,
@@ -326,6 +433,25 @@ pub fn pull_request_detail(
         auto_merge: None,
         checks,
         fields: DetailFields::Full,
+    }
+}
+
+/// The plan the guard would hand out for merging `detail` (as read from [`linked`]'s
+/// repository) with `method`: the policy's own decision for it.
+///
+/// # Panics
+/// When something stands in the way of merging `detail` with `method`.
+#[must_use]
+pub fn merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> MergePlan {
+    #[expect(clippy::expect_used, reason = "a test helper given a mergeable detail")]
+    let merge =
+        rc_git_guard::actions::github::PullRequestMerge::new(&linked().target, detail, method)
+            .expect("a mergeable pull request");
+    let decision = crate::repository_actions::policy()
+        .evaluate(&rc_git_guard::Action::MergePullRequest(Box::new(merge)));
+    MergePlan {
+        decision,
+        detail: detail.clone(),
     }
 }
 

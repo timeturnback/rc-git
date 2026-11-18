@@ -6,6 +6,11 @@
 //! loads a URL: a details link and the host's page open in the browser when clicked, their
 //! host named on the button.
 //!
+//! Under the header sits the Merge control, as kit decides it ([`MergeButton`]): hidden while
+//! nothing current is on screen, disabled with kit's reason, or the repository's methods and
+//! Merge. A click asks the model to start; the challenge, the only way to send, comes up
+//! through the window ([`crate::window::RepoWindow`]), and the note under the control is kit's.
+//!
 //! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
 
 use std::sync::Arc;
@@ -15,7 +20,7 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::{ActiveTheme, Icon, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Icon, h_flex, v_flex};
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
@@ -23,10 +28,14 @@ use rc_git_kit::pull_requests::copy::{
     details_label, fields_note, freshness_problem, mergeable_label, review_label, row_detail,
     state_label, tab_title,
 };
+use rc_git_kit::pull_requests::copy::{
+    MERGE, MERGE_CANCEL, MERGE_DISMISS, merge_method_label, merge_note,
+};
 use rc_git_kit::pull_requests::link::RepositoryLink;
+use rc_git_kit::pull_requests::merge::{MergeButton, MergeEnd, MergePhase};
 use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::pull_requests::state::DetailState;
-use rc_git_kit::pull_requests::{Check, PullRequestDetail, ServerLink};
+use rc_git_kit::pull_requests::{Check, MergeMethod, PullRequestDetail, ServerLink};
 
 use super::changes::{self, ChangesView};
 use super::check_icon;
@@ -51,6 +60,8 @@ pub struct PullRequestPage {
     view: PageView,
     changes: ChangesView,
     now: fn() -> u64,
+    /// The merge method picked for a tab, until another is.
+    merge_method: Option<(u64, MergeMethod)>,
 }
 
 impl PullRequestPage {
@@ -73,7 +84,107 @@ impl PullRequestPage {
             preview: None,
             view: PageView::Overview,
             now,
+            merge_method: None,
         }
+    }
+
+    /// The method Merge uses for tab `number`: the one picked, while the repository still
+    /// allows it, else kit's first.
+    fn chosen_method(&self, number: u64, methods: &[MergeMethod]) -> Option<MergeMethod> {
+        match self.merge_method {
+            Some((tab, method)) if tab == number && methods.contains(&method) => Some(method),
+            Some(_) | None => methods.first().copied(),
+        }
+    }
+
+    /// The Merge control and its note for tab `number`.
+    fn merge_controls(&self, number: u64, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let model = self.model.read(cx);
+        let button = model.merge_button(number);
+        let flow = model.merge_flow(number).cloned();
+        let running = flow
+            .as_ref()
+            .is_some_and(|flow| !matches!(flow.phase(), MergePhase::Done(_)));
+        let theme = cx.theme();
+        let (muted, red) = (theme.muted_foreground, theme.red);
+        let mut column = v_flex().gap(style::DETAIL_LINE_GAP);
+        match button {
+            MergeButton::Hidden => {}
+            MergeButton::Disabled { reason } => column = column.child(Self::line(reason, muted)),
+            MergeButton::Enabled { methods } => {
+                let chosen = self.chosen_method(number, &methods);
+                let mut row = h_flex().gap(style::ROW_GAP);
+                for (index, method) in methods.into_iter().enumerate() {
+                    let pick = Button::new(("pull-request-merge-method", index))
+                        .label(merge_method_label(method))
+                        .disabled(running)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.merge_method = Some((number, method));
+                            cx.notify();
+                        }));
+                    row = row.child(if chosen == Some(method) {
+                        pick.primary()
+                    } else {
+                        pick.ghost()
+                    });
+                }
+                let merge = Button::new("pull-request-merge")
+                    .label(MERGE)
+                    .danger()
+                    .disabled(running || chosen.is_none())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(method) = chosen {
+                            this.model
+                                .update(cx, |model, cx| model.start_merge(method, cx));
+                        }
+                    }));
+                column = column.child(row.child(merge));
+            }
+        }
+        let Some(flow) = flow else {
+            return column;
+        };
+        let Some(note) = merge_note(&flow) else {
+            return column;
+        };
+        let failed = matches!(
+            flow.phase(),
+            MergePhase::Done(MergeEnd::Refused { .. } | MergeEnd::Unknown { .. })
+        );
+        let mut row = h_flex()
+            .gap(style::ROW_GAP)
+            .child(Self::line(note, if failed { red } else { muted }));
+        let cancellable = matches!(
+            flow.phase(),
+            MergePhase::Planning
+                | MergePhase::Merging {
+                    sent: false,
+                    cancelling: false
+                }
+        );
+        if cancellable {
+            row = row.child(
+                Button::new("pull-request-merge-cancel")
+                    .ghost()
+                    .label(MERGE_CANCEL)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model
+                            .update(cx, |model, cx| model.cancel_merge(number, cx));
+                    })),
+            );
+        }
+        if matches!(flow.phase(), MergePhase::Done(_)) {
+            row = row.child(
+                Button::new("pull-request-merge-dismiss")
+                    .ghost()
+                    .label(MERGE_DISMISS)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model
+                            .update(cx, |model, cx| model.dismiss_merge(number, cx));
+                    })),
+            );
+        }
+        column.child(row)
     }
 
     /// The view on show.
@@ -235,7 +346,8 @@ impl PullRequestPage {
             .on_click(move |_, _, cx| cx.open_url(&url))
     }
 
-    fn header(&self, tab: &DetailState, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn header(&self, tab: &DetailState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let merge = self.merge_controls(tab.number(), cx);
         let theme = cx.theme();
         let (muted, red) = (theme.muted_foreground, theme.red);
         let detail = tab.detail();
@@ -284,7 +396,7 @@ impl PullRequestPage {
                 column = column.child(Self::line(STALE_NOTE.to_owned(), muted));
             }
         }
-        column
+        column.child(merge)
     }
 
     fn check_row(index: usize, check: &Check, cx: &Context<Self>) -> impl IntoElement + use<> {

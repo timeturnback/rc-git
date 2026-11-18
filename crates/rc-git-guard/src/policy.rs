@@ -8,6 +8,8 @@ use crate::{Action, Decision, Risk};
 /// one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Challenge {
+    /// The action it was issued for, carried into the proof it verifies to.
+    action: Action,
     risk: Risk,
     summary: String,
     typed_phrase: Option<String>,
@@ -46,6 +48,7 @@ impl Challenge {
         match &self.typed_phrase {
             Some(phrase) if input.trim() != phrase => None,
             Some(_) | None => Some(Confirmation {
+                action: self.action.clone(),
                 backup_ref: self.backup_ref,
             }),
         }
@@ -54,9 +57,12 @@ impl Challenge {
 
 /// Proof that the policy allowed an action, or that its [`Challenge`] was answered. Only
 /// [`Challenge::verify`] and the crate's own authorization build one, and every write in
-/// `actions` needs one, so nothing writes without a policy decision.
+/// `actions` needs one, so nothing writes without a policy decision. It carries the action it
+/// was issued for, so a write that reads its arguments from the proof (a GitHub mutation) can
+/// only perform that action.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Confirmation {
+    action: Action,
     backup_ref: bool,
 }
 
@@ -65,6 +71,11 @@ impl Confirmation {
     #[must_use]
     pub fn backup_ref(&self) -> bool {
         self.backup_ref
+    }
+
+    /// The action this proof was issued for.
+    pub(crate) fn action(&self) -> &Action {
+        &self.action
     }
 }
 
@@ -129,7 +140,7 @@ impl Policy {
     /// Decides what `action` needs. See `docs/safety.md` for the table this encodes.
     #[must_use]
     pub fn evaluate(&self, action: &Action) -> Decision {
-        let risk = action.risk();
+        let risk = (action, action.risk());
         match action {
             Action::Fetch
             | Action::FetchPullRequest { .. }
@@ -199,11 +210,12 @@ impl Policy {
                 Some("drop"),
                 true,
             ),
+            Action::MergePullRequest(merge) => confirm(risk, merge.summary(), None, false),
         }
     }
 
     /// Force-pushing `branch`: denied when protected, otherwise confirmed by typing its name.
-    fn force_push(&self, risk: Risk, branch: &str) -> Decision {
+    fn force_push(&self, risk: Assessed<'_>, branch: &str) -> Decision {
         if self.is_protected(branch) {
             return deny(&format!("force-pushing to protected branch '{branch}'"));
         }
@@ -213,7 +225,7 @@ impl Policy {
 
     /// Deleting local branch `name`: denied when protected; a merged branch needs a plain
     /// confirm, an unmerged one its typed name and a backup ref.
-    fn delete_local_branch(&self, risk: Risk, name: &str, merged: bool) -> Decision {
+    fn delete_local_branch(&self, risk: Assessed<'_>, name: &str, merged: bool) -> Decision {
         if self.is_protected(name) {
             return deny(&format!("deleting protected branch '{name}'"));
         }
@@ -227,7 +239,7 @@ impl Policy {
 
     /// Deleting remote branch `name`: denied when protected, otherwise confirmed by typing its
     /// name, with a backup ref.
-    fn delete_remote(&self, risk: Risk, name: &str) -> Decision {
+    fn delete_remote(&self, risk: Assessed<'_>, name: &str) -> Decision {
         if self.is_protected(name) {
             return deny(&format!("deleting protected remote branch '{name}'"));
         }
@@ -237,7 +249,7 @@ impl Policy {
 
     /// Rewriting commits on `branch`: published history is denied on a protected branch and
     /// needs the typed name elsewhere; local-only history needs a plain confirm.
-    fn rewrite(&self, risk: Risk, branch: &str, published: bool) -> Decision {
+    fn rewrite(&self, risk: Assessed<'_>, branch: &str, published: bool) -> Decision {
         if !published {
             let summary =
                 format!("Rewrite local commits on '{branch}'. The reflog keeps the old ones.");
@@ -262,7 +274,10 @@ impl Policy {
         input: Option<&str>,
     ) -> Result<Confirmation, Refusal> {
         match self.evaluate(action) {
-            Decision::Allow => Ok(Confirmation { backup_ref: false }),
+            Decision::Allow => Ok(Confirmation {
+                action: action.clone(),
+                backup_ref: false,
+            }),
             Decision::Confirm(challenge) => {
                 challenge
                     .verify(input.unwrap_or(""))
@@ -280,8 +295,17 @@ fn strip_heads(name: &str) -> &str {
     name.strip_prefix("refs/heads/").unwrap_or(name)
 }
 
-fn confirm(risk: Risk, summary: String, typed_phrase: Option<&str>, backup_ref: bool) -> Decision {
+/// The action being decided and its risk, which every challenge carries.
+type Assessed<'a> = (&'a Action, Risk);
+
+fn confirm(
+    (action, risk): Assessed<'_>,
+    summary: String,
+    typed_phrase: Option<&str>,
+    backup_ref: bool,
+) -> Decision {
     Decision::Confirm(Challenge {
+        action: action.clone(),
         risk,
         summary,
         typed_phrase: typed_phrase.map(str::to_owned),

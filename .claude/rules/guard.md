@@ -108,6 +108,13 @@ here; so does everything that comes later.
   server URL through `links::server_link` before it leaves the guard: no raw server text out.
 - Resolve an ssh alias only through `ssh::dialed_host` (the transport's resolver), and compare its
   `HostName` with an account host exactly; never write a second ssh-config reader.
+- Send a GitHub mutation only through `Session::mutate`, which takes the `Confirmation` and
+  builds the request from its action (`github/mutation.rs`); reads stay on `Session::graphql`.
+- Before a mutation, re-read the pull request and compare it with the stamp and the answered
+  decision (`github/merge.rs`); any difference refuses before a byte is sent.
+- Never resend a mutation at any layer: send it once, and settle a lost answer with one read.
+- A mutation's outcome is three-valued (merged, refused, unknown); never report a lost answer as
+  "not merged" unless a read proves it.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):
   its refspec comes from `pull_head::refspec(number)` alone, never from server text, it fetches
   no tags, and `run_fetch` refuses before `receive` when the advertised head is not the stamp's.

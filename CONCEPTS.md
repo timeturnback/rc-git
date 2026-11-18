@@ -174,7 +174,20 @@ What the user saw of a pull request: its number, head commit, base branch and st
 read that is current makes one; a screen left by a failed refresh is stale and stands for
 nothing. It is what an action on the pull request is to compare a fresh read against, refusing
 with "changed since you looked" when they differ. The fetch of a pull request head is the first
-to use it: it writes nothing unless the remote's head is the stamp's.
+to use it: it writes nothing unless the remote's head is the stamp's. A merge is the second: it
+sends nothing unless a read made just before it shows the stamp's head, base and state.
+
+## Pull request merge
+
+Merging a pull request on GitHub from rc-git: the one action so far that changes something
+outside the machine, and one rc-git cannot take back. It is only ever a plain merge with a
+method the repository allows, of a pull request that is open, not a draft, free of conflicts and
+in a merge state GitHub calls mergeable; anything that would need branch protection bypassed is
+not this action. Its challenge is worded from a read made just before, and the merge itself
+reads again and refuses unless that read still matches both the stamp the user saw and the
+challenge the user answered. It sends one request, never a second, and ends in one of three
+ways: merged (GitHub said so), refused (GitHub said no), or unknown (no usable answer came
+back), the last settled only as far as one more read of the pull request can.
 
 ## Pull request head
 

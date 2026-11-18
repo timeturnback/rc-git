@@ -14,10 +14,15 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rc_git_guard::actions::github::testing::{detail_request_body, list_request_body};
-use rc_git_guard::actions::github::{GitHubHost, RepositoryTarget};
+use rc_git_guard::actions::github::testing::{
+    detail_request_body, list_request_body, merge_request_body,
+};
+use rc_git_guard::actions::github::{GitHubHost, MergeMethod, RepositoryTarget};
 use rc_git_testkit::Fixture;
-use rc_git_testkit::github::{DeviceScript, FakeToken, GitHubServer, Grant, PollAnswer, USER_CODE};
+use rc_git_testkit::github::{
+    DeviceScript, FakeToken, GitHubServer, Grant, MergeBehaviour, MergeScript, PollAnswer,
+    USER_CODE,
+};
 
 const TOKEN: &str = "ghp_cli_token_never_printed_0123";
 const CLIENT: &str = "Iv23li.cli-client";
@@ -559,4 +564,135 @@ fn pr_diff_fetches_only_with_fetch_and_never_offers_the_api_token_to_git() {
         "",
         "nothing written"
     );
+}
+
+const NODE: &str = "PR_kwDOcli7";
+const MOVED: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+/// Pull request 7 at `head` on `main` in `state`, mergeable with a squash.
+fn mergeable(head: &str, state: &str) -> String {
+    format!(
+        r#"{{"data": {{"repository": {{
+            "mergeCommitAllowed": false, "squashMergeAllowed": true,
+            "rebaseMergeAllowed": false, "autoMergeAllowed": false,
+            "pullRequest": {{
+                "id": "{NODE}", "number": 7, "title": "Ship", "body": "", "url": null,
+                "isDraft": false, "state": "{state}", "updatedAt": "2026-11-18T09:00:00Z",
+                "author": {{"login": "mona"}}, "headRefName": "topic", "headRefOid": "{head}",
+                "baseRefName": "main", "isCrossRepository": false,
+                "headRepositoryOwner": {{"login": "octo"}}, "reviewDecision": null,
+                "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+                "viewerCanMergeAsAdmin": false, "viewerCanEnableAutoMerge": false,
+                "viewerCanDisableAutoMerge": false, "viewerCanDeleteHeadRef": false,
+                "autoMergeRequest": null,
+                "commits": {{"nodes": [{{"commit": {{"statusCheckRollup": null}}}}]}}
+            }}
+        }}}}}}"#
+    )
+}
+
+/// Pull request 7 on `server`, open at [`HEAD`], merging with a squash as `behaviour` says.
+fn script_merge(server: &GitHubServer, behaviour: MergeBehaviour) {
+    let reply = format!(
+        r#"{{"data": {{"mergePullRequest": {{"pullRequest": {{"number": 7, "state": "MERGED",
+            "merged": true, "headRefOid": "{HEAD}", "mergeCommit": {{"oid": "{MOVED}"}}}}}}}}}}"#
+    );
+    server.script_merge(MergeScript {
+        read: detail_request_body(&pr_target(server), 7, false),
+        open: mergeable(HEAD, "OPEN"),
+        moved: mergeable(MOVED, "OPEN"),
+        merged: mergeable(HEAD, "MERGED"),
+        mutation: merge_request_body(NODE, HEAD, MergeMethod::Squash),
+        reply,
+        behaviour,
+    });
+}
+
+#[test]
+fn pr_merge_without_its_head_or_yes_merges_nothing() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let signed_in = server.requests();
+    for args in [
+        vec!["merge", "7", "--method", "squash", "--yes"],
+        vec!["merge", "7", "--head", HEAD, "--yes"],
+        vec![
+            "merge", "7", "--method", "squash", "--head", "0123", "--yes",
+        ],
+    ] {
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(
+            server.requests(),
+            signed_in,
+            "{args:?}: a usage error reads nothing"
+        );
+    }
+    let unconfirmed = ["merge", "7", "--method", "squash", "--head", HEAD];
+    let out = run_pr(&scratch, &repo, &ssh, &unconfirmed);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with(
+            "would-merge\tMerge octo/rc-git#7 \u{201c}Ship\u{201d} into main with a squash merge: \
+             topic at 0123456"
+        ),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(text(&out.stderr).contains("needs --yes"));
+    assert_eq!(server.mutation_requests(), 0);
+    assert!(!server.merged());
+}
+
+#[test]
+fn pr_merge_with_yes_merges_once_and_prints_the_merge_commit() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let args = ["merge", "7", "--method", "squash", "--head", HEAD, "--yes"];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    let merged = format!("merged\tocto/rc-git#7\t{MOVED}\t{HEAD}\nnote\tMerged #7 into main");
+    assert!(printed.starts_with(&merged), "{printed}");
+    assert!(printed.contains("unchanged until you fetch"), "{printed}");
+    assert_eq!(server.mutation_requests(), 1);
+    assert!(server.merged());
+    assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
+}
+
+#[test]
+fn pr_merge_of_a_head_that_moved_refuses_before_any_mutation() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Merge);
+    let args = ["merge", "7", "--method", "squash", "--head", MOVED, "--yes"];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("changed since you looked"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(server.mutation_requests(), 0);
+}
+
+#[test]
+fn pr_merge_whose_answer_is_lost_exits_12_and_sends_once() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_merge(&server, MergeBehaviour::Drop);
+    let args = ["merge", "7", "--method", "squash", "--head", HEAD, "--yes"];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(12), "{}", text(&out.stderr));
+    let said = text(&out.stderr);
+    assert!(said.contains("could not tell whether #7 merged"), "{said}");
+    assert!(said.contains("on GitHub before trying again"), "{said}");
+    assert_eq!(server.mutation_requests(), 1);
 }

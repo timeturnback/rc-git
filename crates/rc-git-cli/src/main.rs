@@ -27,7 +27,7 @@ use rc_git_guard::actions::{ActionError, Cancel};
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
        rc-git auth login|status|logout [args]
-       rc-git [--time] pr list|view|checks|diff [args]
+       rc-git [--time] pr list|view|checks|diff|merge [args]
 
   head    <repo>                          branch and commit HEAD points to
   refs    <repo>                          every branch, remote branch, and tag
@@ -154,6 +154,17 @@ usage: rc-git [--time] <command> <repo> [args]
                                           only when it is the head just read, and checks out
                                           nothing. The remote options (below) are the git
                                           transport's; the GitHub token is never sent with them
+  pr merge <n> [repo] --method merge|squash|rebase --head <oid> --yes
+                                          merge it on GitHub, once: --head is the full head
+                                          commit `pr view` printed, and a pull request that
+                                          moved, changed base, closed, or cannot merge as
+                                          asked (a draft, conflicts, branch protection, a
+                                          method the repository refuses) sends nothing.
+                                          Without --yes prints would-merge<TAB>what and exits
+                                          2; merged prints merged<TAB>owner/name#n<TAB>merge
+                                          commit ('-' when unnamed)<TAB>head, then
+                                          note<TAB>text. The local repository is unchanged
+                                          until you fetch
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control and bidi characters as \\u{..} escapes.
@@ -174,6 +185,10 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
   9 no author identity (rerun with --author \"Name <email>\"),
   10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
+  11 pr merge did not merge: GitHub refused it, or rc-git refused before sending anything
+  (it changed since --head, or cannot merge as asked),
+  12 pr merge sent its request and no usable answer came back: look at the pull request on
+  GitHub before trying again (rc-git never sends a merge twice),
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push, sync or auth between steps
   (a second one exits at once, even mid-step)
 ";
@@ -188,6 +203,8 @@ const EXIT_DIVERGED: u8 = 7;
 const EXIT_STALE_HUNK: u8 = 8;
 const EXIT_IDENTITY: u8 = 9;
 const EXIT_NOT_CONFIRMED: u8 = 10;
+const EXIT_MERGE_REFUSED: u8 = 11;
+const EXIT_MERGE_UNKNOWN: u8 = 12;
 const EXIT_INTERRUPTED: u8 = 130;
 
 /// A command line the verb cannot act on; exits with [`EXIT_USAGE`] instead of [`EXIT_ERROR`].
