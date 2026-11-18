@@ -21,6 +21,10 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   the toolbar, tabs and sidebar on one shared background and no lines between them.
 - The sidebar is open whenever a repository opens, even if you hid it earlier with View ▸
   Toggle Sidebar (⌃⌘S). A window too narrow for it opens the sidebar once it is wide enough.
+- In the sidebar's ref list, a long branch or tag name ends in "…" instead of running under the
+  scrollbar, and rows are taller and inset like the filter field above them, so the selected
+  row no longer touches the sidebar's edges. Branches show a green icon, remote branches a blue
+  one and tags a yellow one, here, in the branch picker (⌘B) and on the banner.
 
 ## 2026-11-17
 

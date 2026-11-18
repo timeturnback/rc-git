@@ -388,6 +388,18 @@ pub fn file_tint(tint: FileTint, theme: &Theme) -> Hsla {
     }
 }
 
+/// The color a ref's glyph draws in, so a branch, a remote branch and a tag tell apart at a
+/// glance: green, blue and yellow; any other ref takes the secondary text tone.
+#[must_use]
+pub fn ref_tint(kind: RefKind, theme: &Theme) -> Hsla {
+    match kind {
+        RefKind::LocalBranch => theme.green,
+        RefKind::RemoteBranch => theme.blue,
+        RefKind::Tag => theme.yellow,
+        RefKind::Other => theme.muted_foreground,
+    }
+}
+
 /// Whether `glyph` takes the secondary text tone rather than the tertiary one: folders and
 /// refs do, files and controls do not.
 #[must_use]

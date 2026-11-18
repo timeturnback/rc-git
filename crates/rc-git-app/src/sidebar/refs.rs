@@ -22,7 +22,7 @@ use rc_git_kit::picker;
 use rc_git_kit::ref_filter::{RefList, UNREADABLE_TITLE, query, working_tree_matches};
 use rc_git_kit::ref_menu::{RefMenu, RefMenuAction, ref_menu};
 
-use crate::icons::{Glyph, icon, is_accented};
+use crate::icons::{Glyph, icon, is_accented, ref_tint};
 use crate::search::{PanelKey, keys};
 use crate::style;
 
@@ -292,15 +292,16 @@ impl RefListView {
         };
         let mut element = div()
             .id(index)
+            .w_full()
+            .min_w_0()
             .flex()
             .items_center()
             .gap(style::ROW_GAP)
-            .px(style::MARGIN)
             .rounded(style::RADIUS);
         element = if self.picker {
-            element.h(style::PANEL_ROW_HEIGHT)
+            element.h(style::PANEL_ROW_HEIGHT).px(style::MARGIN)
         } else {
-            element.py(style::HAIRLINE)
+            element.h(style::SIDEBAR_ROW_HEIGHT).px(style::ROW_GAP)
         };
         if heading {
             element = element
@@ -327,7 +328,9 @@ impl RefListView {
             element = element.bg(theme.list_active);
         }
         if let Some(glyph) = glyph {
-            let tint = if is_accented(glyph) {
+            let tint = if let Glyph::Ref(kind) = glyph {
+                ref_tint(kind, theme)
+            } else if is_accented(glyph) {
                 theme.muted_foreground
             } else {
                 theme.warning
@@ -335,10 +338,23 @@ impl RefListView {
             element = element.child(
                 Icon::new(icon(glyph))
                     .size(style::ICON_SIZE)
+                    .flex_none()
                     .text_color(tint),
             );
         }
-        element.child(SharedString::from(label))
+        let element = element.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(SharedString::from(label)),
+        );
+        div()
+            .w_full()
+            .when(!self.picker, |row| row.px(style::MARGIN))
+            .child(element)
     }
 }
 

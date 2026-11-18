@@ -125,6 +125,8 @@ pub const BLAME_LINES_WIDTH: Pixels = px(80.);
 pub const BLAME_AUTHOR_WIDTH: Pixels = px(130.);
 /// See [`BLAME_LINES_WIDTH`].
 pub const BLAME_DATE_WIDTH: Pixels = px(130.);
+/// The height of a row in the sidebar's ref list.
+pub const SIDEBAR_ROW_HEIGHT: Pixels = px(26.);
 /// The height of a History commit row and a changed-file row.
 pub const LIST_ROW_HEIGHT: Pixels = px(28.);
 

@@ -15,7 +15,7 @@ use rc_git_kit::browser::BrowserModel;
 
 use crate::changes::list::ChangeListView;
 use crate::files::tree::FileTreeView;
-use crate::icons::{Glyph, banner_glyph, icon};
+use crate::icons::{Glyph, banner_glyph, icon, ref_tint};
 use crate::sidebar::refs::RefListView;
 use crate::style;
 
@@ -109,11 +109,13 @@ impl Sidebar {
             .py(style::BAR_PADDING)
             .rounded(style::RADIUS)
             .when_some(glyph, |row, glyph| {
-                row.child(
-                    Icon::new(icon(glyph))
-                        .size(style::ICON_SIZE)
-                        .text_color(theme.muted_foreground),
-                )
+                row.child(Icon::new(icon(glyph)).size(style::ICON_SIZE).text_color(
+                    if let Glyph::Ref(kind) = glyph {
+                        ref_tint(kind, theme)
+                    } else {
+                        theme.muted_foreground
+                    },
+                ))
             })
             .child(
                 div()

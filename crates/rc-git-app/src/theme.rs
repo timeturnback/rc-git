@@ -280,6 +280,42 @@ mod tests {
         }
     }
 
+    /// A ref glyph is a graphic too, so the branch, remote and tag tints each need 3:1 on every
+    /// ground a ref row takes, and must differ from one another to tell the namespaces apart.
+    #[test]
+    fn every_ref_tint_reads_at_three_to_one_and_tells_namespaces_apart() {
+        use rc_git_core::RefKind;
+        let themes = parse().unwrap();
+        for config in [&themes.light, &themes.dark] {
+            let theme = applied(config);
+            let mode = config.name.as_ref();
+            let kinds = [
+                RefKind::LocalBranch,
+                RefKind::RemoteBranch,
+                RefKind::Tag,
+                RefKind::Other,
+            ];
+            let tints: Vec<Hsla> = kinds
+                .iter()
+                .map(|kind| crate::icons::ref_tint(*kind, &theme))
+                .collect();
+            for (kind, color) in kinds.iter().zip(&tints) {
+                for (ground, under) in row_grounds(&theme) {
+                    let ratio = contrast(over(*color, under), under);
+                    assert!(
+                        ratio >= 3.,
+                        "{mode}: {kind:?} on {ground} {under:?} is {ratio:.2}:1, under 3:1"
+                    );
+                }
+            }
+            for (at, color) in tints.iter().enumerate() {
+                for other in tints.iter().skip(at + 1) {
+                    assert_ne!(color, other, "{mode}: two ref tints match");
+                }
+            }
+        }
+    }
+
     #[test]
     fn rows_have_no_zebra() {
         let themes = parse().unwrap();
