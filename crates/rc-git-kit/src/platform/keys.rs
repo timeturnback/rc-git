@@ -27,6 +27,12 @@ pub const COMMIT_CHANGES_GROUPING: &str = "rc-git.commitChangesGrouping";
 /// app never had.
 pub const WRAP_DIFF_LINES: &str = "rc-git.wrapDiffLines";
 
+/// The GitHub accounts signed into: host, login, method, client id; never a token (those live
+/// in the keychain). rc-git's own key.
+pub const GITHUB_ACCOUNTS: &str = "rc-git.githubAccounts";
+/// Repository path to the GitHub account chosen for it, as `host/login`; rc-git's own key.
+pub const GITHUB_REPOSITORY_ACCOUNTS: &str = "rc-git.githubRepositoryAccounts";
+
 /// The main window's frame autosave name (`MainWindowController.swift`).
 pub const MAIN_WINDOW_FRAME: &str = "rc-git.window";
 /// The update window's frame autosave name (`UpdateWindowController.swift`).
@@ -57,7 +63,7 @@ pub fn split_view_key(name: &str) -> String {
 }
 
 /// Every plain key, for a test or a migration that walks them all.
-pub const ALL: [&str; 12] = [
+pub const ALL: [&str; 14] = [
     OPEN_TABS,
     OPEN_TABS_SELECTED,
     RECENT_REPOSITORIES,
@@ -70,6 +76,8 @@ pub const ALL: [&str; 12] = [
     WRAP_DIFF_LINES,
     HISTORY_AUTHOR_COLUMN,
     HISTORY_DATE_COLUMN,
+    GITHUB_ACCOUNTS,
+    GITHUB_REPOSITORY_ACCOUNTS,
 ];
 
 #[cfg(test)]
@@ -93,6 +101,8 @@ mod tests {
                 "rc-git.wrapDiffLines",
                 "rc-git.history-author-width.v1",
                 "rc-git.history-date-width.v1",
+                "rc-git.githubAccounts",
+                "rc-git.githubRepositoryAccounts",
             ]
         );
     }

@@ -17,6 +17,15 @@ russh-config.workspace = true
 hmac.workspace = true
 sha1.workspace = true
 tokio.workspace = true
+curl.workspace = true
+serde_json.workspace = true
+
+[features]
+# Plain http to a loopback GitHub host, so the CLI's tests can sign in against the fake server.
+# Dev-only: enabled from [dev-dependencies] alone, and scripts/check.sh fails when a normal build
+# of the app or the CLI carries it. The guard's own unit tests get the same allowance from
+# cfg(test).
+dev-loopback-http = []
 
 [dev-dependencies]
 rc-git-testkit.workspace = true

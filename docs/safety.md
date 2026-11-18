@@ -27,7 +27,8 @@ Four layers enforce it, and each catches what the others miss.
    (`blocking-http-transport-curl`, system libcurl) and SSH (russh, in-process; no `ssh`
    child) — and clippy bans the network entry points it lists — gix's `remote_at`,
    `find_remote`, `connect`, `handshake`, plus `russh::client::connect` and the std and
-   tokio `TcpStream::connect` — outside the guard's `actions/remote` module. The ssh-agent
+   tokio `TcpStream::connect` — outside the guard's `actions/remote` module, and `curl`'s
+   `Easy`, `Easy2` and `Multi` constructors outside its GitHub client. The ssh-agent
    socket (`AgentClient::connect_uds`, `connect_env`) is banned the same way: the agent signs
    on the user's behalf, so only the guard's `connect_agent` opens it. The curl
    feature also compiles gix's credential-helper and prompt machinery into the binary;
@@ -99,8 +100,8 @@ Opening a repository someone else produced must be harmless.
   fatal. A key that contradicts an approval made in the app is fatal too; the only way past
   it is for the user to remove that host's approval in Settings, after which the next fetch
   treats the key as unknown and asks again. The app never drops an approval on its own.
-  Nothing else in a repository operation leaves the machine; the updater below is the one
-  exception.
+  Nothing else in a repository operation leaves the machine; the GitHub API client and the
+  updater below are the exceptions.
 
 ## Guarding mutations
 
@@ -272,6 +273,77 @@ The remote operations add their own guarantees:
   message. The last cancel check before gix moves the tracking refs is just before the pack
   receive; past it, only the pack writer's per-object check can still stop the fetch.
 
+## GitHub API
+
+Pull request features talk to GitHub's REST and GraphQL APIs with a token that can merge and
+delete branches, so a leaked or misdirected token is the worst outcome here. The threat: a
+repository someone else produced controls its own remote URL and config, a host can answer
+with a redirect, an oversized body or a page to open, and every title, branch name and log line
+is written by whoever opened the pull request. The client is
+`crates/rc-git-guard/src/actions/remote/github/`; it is the only code in rc-git that calls
+libcurl directly.
+
+- **The token never follows the repository.** Every URL comes from a `GitHubHost` the user
+  typed in Settings (a lowercase DNS name and a port other than 443): `https://api.github.com`
+  for github.com, `https://<host>/api/v3` and `https://<host>/api/graphql` for an Enterprise
+  host. A remote URL only selects an owner and a name, and only when its host is the account's
+  exactly after parsing (`RepositoryTarget::on_host`): no suffix, substring or path match, so
+  `github.com.evil.example` and `evil.example/github.com` get nothing. An `https://` remote
+  carrying userinfo, an ssh remote with a user other than `git` or a port other than 22, and
+  `git://`, `file://` and plain `http://` remotes are refused before any request. Owner and name
+  must be `[A-Za-z0-9._-]+` and not `.` or `..`.
+- **No account fallthrough.** Accounts and the per-repository choice live in app settings
+  (`rc-git.githubAccounts`, `rc-git.githubRepositoryAccounts`, keyed by repository path), never
+  in the repository's config. One account on the host is used; several with no choice ask; a
+  second account's token is never tried (`account_for`, rc-git-kit).
+- **Tokens.** Only in the login keychain: a generic-password item per host and account, service
+  `rc-git`, account `github-api/<host>/<login>`, holding the access token, a GitHub App's
+  refresh token and their expiries. Generic passwords never match the HTTPS push and ssh items,
+  which are internet passwords queried by host and protocol alone. Never in settings, logs,
+  error messages, argv or the environment: `ApiToken` and `RefreshToken` print `<redacted>`
+  under `Debug` and have no `Display`, and every message built from server or curl text is
+  scrubbed of the secrets the request carried. A token must be visible ASCII, so it cannot
+  split a header. `rc-git auth login --method token` reads it from standard input and refuses a
+  terminal. The keychain key decides where a token goes: a settings record naming another host
+  for a login reads no token.
+- **Transport.** `https://` only: the request URL is checked in the one send function, and
+  plain `http://` reaches a loopback host only under `cfg(test)` or the dev-only
+  `dev-loopback-http` feature, which `scripts/check.sh` proves the app and CLI builds lack. The
+  `curl` crate has no safe setter for curl's protocol list and `unsafe` is forbidden outside
+  rc-git-mac, so that URL check, with redirects off, is the restriction: curl connects to that
+  URL alone. Redirects are never followed and a 3xx is an error, so a redirect target receives
+  nothing. Peer and host verification stay on; `clippy.toml` bans the setters that would turn
+  them off, add a CA or send credentials across a redirect, and the curl constructors outside
+  the client. `.netrc` is ignored. Nothing is read from the repository; libcurl still honors the
+  process environment's proxy variables, as fetch and push do, and a loopback host bypasses
+  them.
+- **Bounded.** Every call takes a `Cancel`: the connect budget, the idle budget and a total of
+  both, a wait that returns within 200 ms of a cancel while curl's progress callback aborts the
+  transfer at its next tick, and caps on the body (4 MiB for the API, 64 KiB for sign-in) and
+  the headers (64 KiB). Over the cap is an error, never a truncated parse.
+- **Least privilege, said before sign-in.** Settings names what each method may do: a GitHub
+  App needs Pull requests, Contents and Actions read and write, Checks, Commit statuses and
+  Metadata read; an OAuth App asks for `repo`; a fine-grained token should carry the GitHub
+  App's permissions. After sign-in the sheet and `rc-git auth` show the login, `X-OAuth-Scopes`
+  and `GitHub-Authentication-Token-Expiration` when the host sends them.
+- **Device flow.** rc-git opens only `https://<host>/login/device`; an answer naming another
+  `verification_uri` stops the flow before any poll. Polls wait `interval` and slow down by what
+  `slow_down` says, stop at `expires_in` without another request, end on `access_denied` and
+  `expired_token`, and every wait looks at the cancel flag. One flow runs per process. No client
+  secret exists anywhere: GitHub refreshes a device-flow token with the client id alone. The
+  device code is never shown or logged.
+- **Refresh.** A GitHub App refresh token is single-use. `TokenKeeper` (rc-git-kit) serializes
+  refreshes per account in one process, reads the keychain again before refreshing, and after a
+  refused refresh reads it once more: only when the item still holds the refused refresh token
+  is the account signed out, since the CLI may have renewed it. A refresh that cannot reach the
+  host signs nobody out.
+- **Untrusted text.** `single_line` shows control characters and bidirectional controls as
+  visible `\u{..}` escapes and drops ANSI escape sequences; every server message in an error
+  passes through it. GraphQL queries are static strings and every value travels in `variables`.
+
+Sign-in, the token check and the refresh change no repository, so they have no `Action`; the
+pull request mutations of later slices will each get a policy row in the table above.
+
 ## Updater
 
 **Rebuild and Relaunch** in the app menu rebuilds rc-git from its own checkout, and it sits
@@ -284,6 +356,11 @@ crates when the lockfile moved. A rebuild therefore executes whatever the checko
 trust in the rebuild is trust in that checkout.
 
 ## Supply chain
+
+The GitHub client adds `curl` and `serde_json` as direct dependencies of `rc-git-guard`, at the
+versions `Cargo.lock` already held (gix-transport links `curl`; GPUI's tree has `serde_json`),
+so they added no crate to the lockfile; `curl` keeps gix-transport's features (none: the
+system libcurl and its TLS).
 
 Rust dependencies are pinned to exact versions in `Cargo.toml` and checked by `cargo deny` for
 advisories, licenses, and sources on every run of `scripts/check.sh` and in CI. GitHub Actions are

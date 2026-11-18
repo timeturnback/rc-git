@@ -52,6 +52,11 @@ gpui_apple = { package = "gpui-pre-apple", version = "=0.3.11", features = ["fon
 gpui-component = "=0.9.0"
 # Lucide icons; gpui-component already depends on it at this version, so it adds no crate.
 gpui-kit-assets = "=0.9.0"
+# GitHub API client (rc-git-guard actions/remote/github): the libcurl binding gix-transport
+# already links, with the same features (none: the system libcurl and its TLS), and JSON for
+# request and response bodies. Both are the versions Cargo.lock already holds.
+curl = { version = "=0.4.50", default-features = false }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 [workspace.lints.rust]

@@ -5,6 +5,8 @@
 //! repository open and the command took, which is how the CLI rows of the budget table in
 //! `docs/performance.md` are checked without the GUI; the rows that run in Swift are not.
 
+mod auth;
+
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -18,10 +20,12 @@ use rc_git_core::{
     LineEnd, Oid, RefKind, Repository, SearchLimits, TreeEntry, UnreadableEntry, WorktreeFileList,
     WorktreeStatus,
 };
+use rc_git_guard::actions::github::GitHubError;
 use rc_git_guard::actions::{ActionError, Cancel};
 
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
+       rc-git auth login|status|logout [args]
 
   head    <repo>                          branch and commit HEAD points to
   refs    <repo>                          every branch, remote branch, and tag
@@ -109,6 +113,21 @@ usage: rc-git [--time] <command> <repo> [args]
   fingerprint), --ssh-dir DIR (default ~/.ssh). Over ssh, an encrypted key's
   passphrase comes from RC_GIT_KEY_PASSPHRASE, which no other transport reads.
 
+  auth login [--host H] [--method github-app|oauth-app|token] [--client-id ID]
+                                          sign in to GitHub (default github.com, github-app);
+                                          a device flow prints code<TAB>C, open<TAB>URL and
+                                          expires<TAB>N minutes, then waits for approval;
+                                          --method token reads the token from stdin only;
+                                          prints signed-in<TAB>host<TAB>login<TAB>method<TAB>
+                                          scopes<TAB>expires ('-' when the host said none)
+  auth status [--host H]                  each account, checked with its host:
+                                          account<TAB>host<TAB>login<TAB>method<TAB>scopes<TAB>
+                                          expires<TAB>ok or the problem; exits 5 unless all ok
+  auth logout --host H --login L          forget the account and delete its token
+  The accounts are the app's (Settings > GitHub Accounts) and the tokens live in the login
+  keychain. RC_GIT_SETTINGS (an absolute plist path) and RC_GIT_KEYCHAIN_SERVICE
+  (rc-git-...) point both elsewhere, for tests and scripts.
+
   Paths are quoted the way git quotes them: a name holding a control character, '\"', '\\'
   or bytes that are not UTF-8 is wrapped in double quotes with C escapes (\\n, \\t, \\\\, \\\",
   octal \\ooo), so \"a\\nb\" is one file. -z (files, changes, status) ends each record with
@@ -125,7 +144,7 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
   9 no author identity (rerun with --author \"Name <email>\"),
   10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
-  130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push or sync between steps
+  130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push, sync or auth between steps
   (a second one exits at once, even mid-step)
 ";
 
@@ -426,11 +445,28 @@ struct Invocation {
 enum Command {
     Help,
     Run(Invocation),
+    /// `rc-git auth …`, which takes no repository.
+    Auth(Vec<String>),
+}
+
+/// Runs `auth` and writes what it printed, then reports a failure the way every verb does.
+fn run_auth(args: &[String]) -> ExitCode {
+    let mut out = Vec::new();
+    let result = auth::run(args, &mut out);
+    let written = write_stdout(&out);
+    match result.and_then(|code| written.map(|()| code)) {
+        Ok(code) => code,
+        Err(err) => {
+            let _ = writeln!(io::stderr().lock(), "error: {}", error_line(&err));
+            ExitCode::from(exit_code_for(&err))
+        }
+    }
 }
 
 fn main() -> ExitCode {
     let invocation = match parse(std::env::args_os().skip(1).collect()) {
         Ok(Command::Run(invocation)) => invocation,
+        Ok(Command::Auth(args)) => return run_auth(&args),
         Ok(Command::Help) => {
             if let Err(err) = io::stdout().lock().write_all(USAGE.as_bytes()) {
                 let _ = writeln!(io::stderr().lock(), "error: write usage to stdout: {err}");
@@ -463,6 +499,9 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
     if err.downcast_ref::<UsageError>().is_some() {
         return EXIT_USAGE;
     }
+    if let Some(github) = err.downcast_ref::<GitHubError>() {
+        return github_exit_code(github);
+    }
     match err.downcast_ref::<ActionError>() {
         Some(
             ActionError::AuthRequired { .. }
@@ -476,6 +515,31 @@ fn exit_code_for(err: &anyhow::Error) -> u8 {
         Some(ActionError::NotConfirmed { .. }) => EXIT_NOT_CONFIRMED,
         Some(ActionError::Cancelled { .. }) => EXIT_INTERRUPTED,
         Some(_) | None => EXIT_ERROR,
+    }
+}
+
+/// The exit code a failed GitHub call ends with: 5 when the host refused the sign-in or the
+/// token, 130 when interrupted, 1 otherwise.
+fn github_exit_code(err: &GitHubError) -> u8 {
+    match err {
+        GitHubError::Unauthorized { .. }
+        | GitHubError::RefreshRejected { .. }
+        | GitHubError::AccessDenied { .. }
+        | GitHubError::DeviceCodeExpired { .. }
+        | GitHubError::InvalidSecret { .. } => EXIT_AUTH,
+        GitHubError::Cancelled { .. } => EXIT_INTERRUPTED,
+        GitHubError::InvalidHost { .. }
+        | GitHubError::ForeignRemote { .. }
+        | GitHubError::InvalidValue { .. }
+        | GitHubError::Transport { .. }
+        | GitHubError::TooLarge { .. }
+        | GitHubError::Redirected { .. }
+        | GitHubError::RateLimited { .. }
+        | GitHubError::Status { .. }
+        | GitHubError::Malformed { .. }
+        | GitHubError::ForeignVerificationUri { .. }
+        | GitHubError::FlowInProgress { .. }
+        | GitHubError::OAuth { .. } => EXIT_ERROR,
     }
 }
 
@@ -561,6 +625,14 @@ fn parse(mut args: Vec<OsString>) -> std::result::Result<Command, String> {
     let time = args.first().is_some_and(|a| a == "--time");
     if time {
         args.remove(0);
+    }
+    if args.first().is_some_and(|a| a == "auth") {
+        let words = args
+            .into_iter()
+            .skip(1)
+            .map(utf8_arg)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        return Ok(Command::Auth(words));
     }
     if args.len() < 2 {
         return Err("expected <command> <repo>".to_owned());

@@ -6,6 +6,7 @@
 //! binding crates. This is the one crate allowed `unsafe`: every block says why it holds, and
 //! every `CoreFoundation` object it creates is owned by [`cf::Owned`], which releases it once.
 
+pub mod api_tokens;
 pub mod bundle;
 pub mod cf;
 pub mod fsevents;
@@ -17,6 +18,7 @@ pub mod time_zone;
 pub mod update;
 pub mod window_tabs;
 
+pub use api_tokens::KeychainApiTokenStore;
 pub use fsevents::{FsEventsWatcher, FsEventsWatchers};
 pub use keychain::KeychainCredentialStore;
 pub use process::ShellRunner;

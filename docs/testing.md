@@ -13,6 +13,8 @@
 | `crates/rc-git-core/tests/read_only.rs` | `cargo test` | `.git` unchanged after every operation |
 | `crates/rc-git-guard/tests/actions.rs` | `cargo test` | every write path with its policy and backup refs, against fixtures |
 | `crates/rc-git-guard/tests/remote.rs` | `cargo test` | fetch, pull and push end to end over `HttpGitServer`/`SshGitServer` on loopback, serving a bare clone in a sibling temp dir |
+| `crates/rc-git-guard/src/actions/remote/github/tests.rs` | `cargo test` | the GitHub client against testkit's fake `GitHubServer` on loopback: hostile remotes, redirects, oversized bodies, secrets in errors, the device flow, refresh, cancel and idle budgets |
+| `crates/rc-git-cli/tests/auth.rs` | `cargo test` | `rc-git auth` against the fake GitHub host, with a scratch settings plist and keychain service |
 | `crates/rc-git-testkit/tests/fixture.rs`, `http.rs`, `ssh.rs` | `cargo test` | the fixture builder and the test servers, proved against the git CLI and OpenSSH |
 | `crates/rc-git-cli/tests/cli.rs` | `cargo test` | output shape and exit codes of the binary |
 | `crates/rc-git-kit/tests` | `cargo test` | models, layout policy, markdown and search units against `FakeRepository` or per-model stubs, plus `repository_live.rs`, `repository_actions.rs` and `guard_bridge.rs` against the real core and guard |

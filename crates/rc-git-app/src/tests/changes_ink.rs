@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, AppContext, HeadlessAppContext};
 use rc_git_kit::back_forward::ContentMode;
 use rc_git_kit::changes::{ChangesState, WorktreeDiffState};
+use rc_git_kit::platform::api_tokens::MemoryApiTokenStore;
 use rc_git_kit::platform::credentials::MemoryCredentialStore;
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::platform::settings::MemorySettings;
@@ -51,6 +52,7 @@ fn the_changes_pane_puts_ink_on_the_page() {
         watchers: Arc::new(ManualWatchers::new()),
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
+        api_tokens: Arc::new(MemoryApiTokenStore::new()),
         home: String::new(),
         app_name: "rc-git".to_owned(),
     };

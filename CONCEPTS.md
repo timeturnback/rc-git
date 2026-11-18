@@ -139,6 +139,25 @@ an idle budget — the gap it tolerates between bytes, not the length of the tra
 a slow link is never punished and a dead one does not wait forever. A cancelled
 operation stops between steps and leaves nothing half-applied.
 
+## GitHub account
+
+A host and a login the user signed into from Settings or `rc-git auth`, with how they signed
+in (a GitHub App or an OAuth App through a device flow, or a pasted token). The record lives in
+app settings and its token in the login keychain under the same host and login, and that
+host alone decides where the token is sent: a repository's remote URL never does. A remote
+picks an account only by naming a repository on exactly the account's host, compared whole
+after parsing; with several accounts on one host the repository uses the one the user chose for
+it, else rc-git asks, and a second account's token is never tried.
+
+## Device flow
+
+How a GitHub App or an OAuth App signs in without a client secret: rc-git asks the host for a
+short user code, the user enters it on the host's own `/login/device` page (the only page rc-git
+opens; a server naming another is refused), and rc-git polls until the user approves, declines,
+or the code expires. A GitHub App's token then lasts eight hours and renews with a single-use
+refresh token; renewals of one account never run two at once, and a refused renewal signs the
+account out only when no other writer (the CLI, the app) renewed it first.
+
 ## Host-key trust
 
 How an SSH server proves its identity to rc-git. The `known_hosts` files OpenSSH would

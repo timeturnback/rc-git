@@ -78,6 +78,32 @@ if grep -rln 'clippy::disallowed_methods' crates/rc-git-guard/src |
     'make the write a Writer method (see .claude/rules/guard.md)' >&2
   exit 1
 fi
+step "curl confined to the GitHub client"
+# libcurl is called directly only by the GitHub API client, which fixes https-only, no
+# redirects, the caps and the timeouts in one place (docs/safety.md, "GitHub API"). clippy.toml
+# bans the constructors; this also catches a type or an opt-out naming curl anywhere else.
+curl_users="$(git grep -lF 'curl::' -- 'crates/*.rs' |
+  grep -v '^crates/rc-git-guard/src/actions/remote/github/' || true)"
+if [[ -n $curl_users ]]; then
+  printf '%s\n' "$curl_users"
+  echo 'error: curl is used outside crates/rc-git-guard/src/actions/remote/github/;' \
+    'route the request through the GitHub client' >&2
+  exit 1
+fi
+curl_crates="$(git grep -lE '^curl(\.workspace)? *=' -- 'crates/*/Cargo.toml' |
+  grep -v '^crates/rc-git-guard/Cargo.toml$' || true)"
+if [[ -n $curl_crates ]]; then
+  printf '%s\n' "$curl_crates"
+  echo 'error: only rc-git-guard may depend on curl' >&2
+  exit 1
+fi
+# The plain-http allowance for a loopback GitHub host is decided in one place.
+loopback_users="$(git grep -l 'dev-loopback-http' -- 'crates/*.rs' || true)"
+if [[ $loopback_users != 'crates/rc-git-guard/src/actions/remote/github/host.rs' ]]; then
+  printf '%s\n' "$loopback_users"
+  echo 'error: the dev-loopback-http feature may be read only by the GitHub client host.rs' >&2
+  exit 1
+fi
 step "rust doc comment width"
 # rustfmt never wraps comments, so a doc line over max_width passes cargo fmt --check.
 # perl -CSD counts characters; macOS awk counts bytes, so a line holding ⌘ read as too long.
@@ -120,6 +146,13 @@ for pkg in rc-git-app rc-git-cli; do
       "build; keep it in [dev-dependencies]" >&2
     exit 1
   fi
+  # Plain http to a loopback GitHub host: tests only. A shipped build speaks https everywhere.
+  guard_features="$(cargo tree --locked -e features,normal -i rc-git-guard -p "$pkg")"
+  if [[ $guard_features == *dev-loopback-http* ]]; then
+    echo "error: dev-only rc-git-guard/dev-loopback-http reached the $pkg build;" \
+      "keep it in [dev-dependencies]" >&2
+    exit 1
+  fi
 done
 step "bundle stamp"
 # AppBuild relaunches BUNDLE_NAME after a rebuild and reads the keys build-app.sh stamps.
@@ -130,6 +163,14 @@ script_app="$(sed -n 's|^APP="\$ROOT/\([^"]*\)"$|\1|p' scripts/build-app.sh)"
 if [[ -z $bundle_name || $bundle_name != "$script_app" ]]; then
   echo "error: $app_build BUNDLE_NAME '$bundle_name' differs from" \
     "scripts/build-app.sh APP '$script_app'; set them alike" >&2
+  exit 1
+fi
+# The CLI shares the app's GitHub accounts through the defaults domain the bundle id names.
+kit_bundle_id="$(sed -n 's/^pub const BUNDLE_IDENTIFIER: &str = "\([^"]*\)";$/\1/p' "$app_build")"
+script_bundle_id="$(sed -n 's/^BUNDLE_ID="\([^"]*\)"$/\1/p' scripts/build-app.sh)"
+if [[ -z $kit_bundle_id || $kit_bundle_id != "$script_bundle_id" ]]; then
+  echo "error: $app_build BUNDLE_IDENTIFIER '$kit_bundle_id' differs from" \
+    "scripts/build-app.sh BUNDLE_ID '$script_bundle_id'; set them alike" >&2
   exit 1
 fi
 plist_keys="$(sed -n 's/.*string("\(RCGit[A-Za-z]*\)").*/\1/p' "$app_build")"

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext, Entity, HeadlessAppContext, TestAppContext};
 use rc_git_core::{EntryKind, Head, RefKind, RefListing, TreeEntry};
 use rc_git_kit::fake::{FakeRepository, branch, oid, text_blob};
+use rc_git_kit::platform::api_tokens::MemoryApiTokenStore;
 use rc_git_kit::platform::credentials::MemoryCredentialStore;
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::platform::settings::MemorySettings;
@@ -214,6 +215,7 @@ pub fn harness_with(
         watchers: watchers.clone(),
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
+        api_tokens: Arc::new(MemoryApiTokenStore::new()),
         home: "/Users/me".to_owned(),
         app_name: "rc-git".to_owned(),
     };

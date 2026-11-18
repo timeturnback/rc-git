@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 
 mod agent;
+pub mod github;
 mod http;
 mod ssh;
 

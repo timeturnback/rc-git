@@ -6950,6 +6950,8 @@ dependencies = [
  "rc-git-core",
  "rc-git-guard",
  "rc-git-highlight",
+ "rc-git-kit",
+ "rc-git-mac",
  "rc-git-testkit",
  "signal-hook",
 ]
@@ -6968,6 +6970,7 @@ dependencies = [
 name = "rc-git-guard"
 version = "0.1.0"
 dependencies = [
+ "curl",
  "gix",
  "gix-pack",
  "gix-transport",
@@ -6976,6 +6979,7 @@ dependencies = [
  "rc-git-testkit",
  "russh",
  "russh-config",
+ "serde_json",
  "sha1 0.11.0",
  "thiserror 2.0.20",
  "tokio",

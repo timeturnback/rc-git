@@ -15,6 +15,7 @@ use gix::remote::Direction;
 use super::{ActionError, ActionResult, git_err, open};
 
 mod fetch;
+pub mod github;
 mod pack;
 mod pull;
 mod push;

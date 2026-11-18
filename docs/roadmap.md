@@ -175,7 +175,20 @@ constraints are clear.
   survive because the identifier does not change. The icon is drawn by
   `scripts/make-icon.swift` and cached in `build/icons/`.
 
+- **GitHub sign-in.** Settings ▸ GitHub Accounts and `rc-git auth login|status|logout` sign
+  in to github.com or a GitHub Enterprise host through a GitHub App or OAuth App device flow, or
+  a pasted token, and keep the token in the login keychain. The client
+  (`rc-git-guard` `actions::remote::github`) sends a token only to the account's own host,
+  https only, no redirects, bounded and cancellable; `docs/safety.md`, "GitHub API". The first
+  of eight pull request slices: the reads, the PR diff, merge, admin merge, auto-merge and
+  re-runs, job logs and branch deletion follow.
+
 ## Planned
+
+- **Pull requests.** A Pull Requests sidebar section and PR tabs on the GitHub client: list,
+  detail and checks; the PR diff from local objects; merge and admin bypass merge, auto-merge,
+  re-running failed jobs, job logs and deleting the head branch, each mutation a new `Action`
+  with its policy row (rc-git-guard, rc-git-kit, rc-git-app, `rc-git pr`).
 
 - **Reveal in tree from path search.** Jump-to-file opens the file; expanding the tree to
   show it selected is still missing.

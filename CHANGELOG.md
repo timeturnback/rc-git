@@ -6,6 +6,14 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Added
 
+- Settings has a GitHub Accounts list: Add Account… signs in to github.com or a GitHub
+  Enterprise host through a GitHub App or an OAuth App (you get a code to enter on the host's
+  own login/device page, and Cancel stays on screen while RCGit waits), or with a pasted
+  personal access token. Before you sign in it says what each method may do, and after it shows
+  the account, its scopes and when the token expires. Sign Out forgets the account and its
+  token. Tokens stay in your login keychain and go only to the host you signed into. In
+  Terminal, `rc-git auth login`, `status` and `logout` do the same with the same accounts.
+
 - Files show an icon for their type, as VS Code draws them: TypeScript, Swift, Python,
   Markdown, JSON, Dockerfiles, Rust and a few hundred more, most in a color of their own, in the
   file tree, Go to File and Find in Files, drawn at the size VS Code draws them. A file deleted

@@ -3,6 +3,11 @@
 
 use std::collections::HashMap;
 
+/// The bundle identifier `scripts/build-app.sh` stamps, which names the app's defaults domain.
+/// The CLI reads and writes the GitHub accounts there, so the app and the CLI share them;
+/// `scripts/check.sh` fails when this and the script's `BUNDLE_ID` differ.
+pub const BUNDLE_IDENTIFIER: &str = "com.timeturnback.rcgit";
+
 /// A UTC instant stamped as `RCGitBuildDate`, kept as its RFC 3339 text and the fields read
 /// from it. Only the `YYYY-MM-DDTHH:MM:SSZ` form `scripts/build-app.sh` writes parses.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

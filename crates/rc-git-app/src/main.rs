@@ -8,6 +8,7 @@ mod changelog;
 mod changes;
 mod diff;
 mod files;
+mod github_accounts;
 mod history;
 mod icons;
 mod inbox;
@@ -35,7 +36,7 @@ use rc_git_kit::file_url;
 use rc_git_kit::platform::credentials::CachingCredentialStore;
 use rc_git_kit::platform::host_keys::SettingsHostKeyStore;
 use rc_git_kit::platform::stores::SharedSettings;
-use rc_git_mac::{FsEventsWatchers, KeychainCredentialStore, Preferences};
+use rc_git_mac::{FsEventsWatchers, KeychainApiTokenStore, KeychainCredentialStore, Preferences};
 
 use crate::app::{Services, Shell, ShellGlobal, live_opener};
 use crate::inbox::Inbox;
@@ -53,6 +54,7 @@ fn live_services() -> Services {
         watchers: Arc::new(FsEventsWatchers),
         credentials: Arc::new(CachingCredentialStore::new(KeychainCredentialStore::new())),
         host_keys: Arc::new(SettingsHostKeyStore::new(settings)),
+        api_tokens: Arc::new(KeychainApiTokenStore::new()),
         home: std::env::var("HOME").unwrap_or_default(),
         app_name: "rc-git".to_owned(),
     }

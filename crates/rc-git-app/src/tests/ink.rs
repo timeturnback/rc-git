@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext, HeadlessAppContext};
 use rc_git_kit::browser::FileState;
+use rc_git_kit::platform::api_tokens::MemoryApiTokenStore;
 use rc_git_kit::platform::credentials::MemoryCredentialStore;
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::platform::settings::MemorySettings;
@@ -47,6 +48,7 @@ fn a_repository_window_puts_ink_on_the_page() {
         watchers: Arc::new(ManualWatchers::new()),
         credentials: Arc::new(MemoryCredentialStore::new()),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
+        api_tokens: Arc::new(MemoryApiTokenStore::new()),
         home: String::new(),
         app_name: "rc-git".to_owned(),
     };

@@ -19,6 +19,7 @@ use rc_git_kit::guard_actions::{
     ActionError, Committed, Deleted, FetchOutcome, Identity, UpstreamStatus,
 };
 use rc_git_kit::guard_bridge::{CommitSelection, Credentials, HunkStamp};
+use rc_git_kit::platform::api_tokens::MemoryApiTokenStore;
 use rc_git_kit::platform::credentials::{CredentialStore, MemoryCredentialStore};
 use rc_git_kit::platform::host_keys::MemoryHostKeyStore;
 use rc_git_kit::platform::process::{Outcome, ScriptedRunner, Termination};
@@ -213,6 +214,7 @@ fn open_changes(cx: &mut TestAppContext) -> Opened1 {
         watchers: watchers.clone(),
         credentials: credentials.clone(),
         host_keys: Arc::new(MemoryHostKeyStore::new()),
+        api_tokens: Arc::new(MemoryApiTokenStore::new()),
         home: "/Users/me".to_owned(),
         app_name: "rc-git".to_owned(),
     };

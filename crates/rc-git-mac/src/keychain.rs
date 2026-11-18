@@ -118,6 +118,24 @@ impl KeychainCredentialStore {
         })
     }
 
+    /// A store under its own security domain, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn with_security_domain(domain: &str) -> Self {
+        Self {
+            security_domain: domain.to_owned(),
+        }
+    }
+
+    /// Deletes the item for `host` and `kind`, for other modules' tests to clean up.
+    #[cfg(test)]
+    pub(crate) fn delete_item(
+        &self,
+        host: &str,
+        kind: CredentialKind,
+    ) -> Result<(), CredentialError> {
+        self.delete(host, kind)
+    }
+
     /// Deletes rc-git's item for `host` and `kind`; deleting what is not there succeeds.
     fn delete(&self, host: &str, kind: CredentialKind) -> Result<(), CredentialError> {
         let query = self.query(host, kind, "write")?;

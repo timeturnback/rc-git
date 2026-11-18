@@ -1,20 +1,24 @@
-//! The Settings window (`SettingsWindowController`): the ssh hosts whose keys the user approved
-//! in the app, with Remove. Removing a host is how a legitimately rotated key is recovered
-//! from: the next fetch from that host offers the trust sheet again. Kit's
-//! [`ApprovedHostsModel`] owns the list and the removal; this view only shows it.
+//! The Settings window (`SettingsWindowController`): the GitHub accounts
+//! ([`GitHubAccountsPane`]), then the ssh hosts whose keys the user approved in the app, with
+//! Remove. Removing a host is how a legitimately rotated key is recovered from: the next fetch
+//! from that host offers the trust sheet again. Kit's [`ApprovedHostsModel`] owns the list and
+//! the removal; this view only shows it.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::button::Button;
 use gpui_component::{Disableable, h_flex, v_flex};
+use rc_git_kit::github::accounts::GitHubAccounts;
+use rc_git_kit::platform::api_tokens::ApiTokenStore;
 use rc_git_kit::platform::host_keys::{ApprovedHostsModel, HostKeyStore};
 
+use crate::github_accounts::GitHubAccountsPane;
 use crate::style;
 
 /// What Settings says when no host is approved.
@@ -27,18 +31,30 @@ pub const HOSTS_NOTE: &str = "Keys you trusted in RCGit, per host. Remove a host
 
 /// The Settings window's content.
 pub struct SettingsView {
+    github: Entity<GitHubAccountsPane>,
     hosts: ApprovedHostsModel<Arc<dyn HostKeyStore>>,
     selected: BTreeSet<usize>,
 }
 
 impl SettingsView {
-    /// Settings over the app's host-key store.
-    #[must_use]
-    pub fn new(store: Arc<dyn HostKeyStore>) -> Self {
+    /// Settings over the app's host-key store, GitHub account records and token store.
+    pub fn new(
+        store: Arc<dyn HostKeyStore>,
+        accounts: GitHubAccounts,
+        tokens: Arc<dyn ApiTokenStore>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
+            github: cx.new(|_| GitHubAccountsPane::new(accounts, tokens)),
             hosts: ApprovedHostsModel::new(store),
             selected: BTreeSet::new(),
         }
+    }
+
+    /// The GitHub accounts pane.
+    #[cfg(test)]
+    pub(crate) fn github(&self) -> &Entity<GitHubAccountsPane> {
+        &self.github
     }
 
     /// The hosts on screen, sorted.
@@ -56,6 +72,7 @@ impl SettingsView {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.hosts.reload();
         self.selected.clear();
+        self.github.update(cx, GitHubAccountsPane::reload);
         cx.notify();
     }
 
@@ -163,8 +180,10 @@ impl Render for SettingsView {
             .pt(style::TOOLBAR_HEIGHT)
             .bg(background)
             .text_color(foreground)
+            .child(self.github.clone())
             .child(
                 div()
+                    .pt(style::MARGIN)
                     .text_size(style::TEXT_BODY)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Approved SSH Host Keys"),

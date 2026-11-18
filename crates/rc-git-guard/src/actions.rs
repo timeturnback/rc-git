@@ -30,6 +30,7 @@ use write::Writer;
 pub use checkout::{CheckoutOutcome, checkout_branch};
 pub use commit::{CommitRequest, Committed, commit, configured_identity};
 pub use discard::{DiscardKind, DiscardOutcome, discard_files, discard_hunks};
+pub use remote::github;
 pub use remote::{
     Cancel, Credentials, FetchOutcome, FetchRemote, PullOutcome, PushOutcome, RefUpdate,
     RemoteAuth, UpstreamStatus, fetch_remote, fetch_upstream, pull_fast_forward, push_upstream,

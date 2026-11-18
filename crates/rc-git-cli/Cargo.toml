@@ -15,11 +15,18 @@ path = "src/main.rs"
 rc-git-core.workspace = true
 rc-git-guard.workspace = true
 rc-git-highlight.workspace = true
+# `auth`: the app's account settings and token keeper (kit) and its keychain (mac), so the CLI
+# and the app share one set of GitHub accounts.
+rc-git-kit.workspace = true
+rc-git-mac.workspace = true
 anyhow.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
 rc-git-testkit.workspace = true
+# `auth` tests sign in against the testkit's fake GitHub host over plain http on loopback;
+# dev-only, so a normal build speaks https to every host (scripts/check.sh checks).
+rc-git-guard = { workspace = true, features = ["dev-loopback-http"] }
 # Tests talk Basic auth to the loopback HTTP server; release builds keep the
 # clear-text refusal because this feature is dev-only.
 gix-transport = { workspace = true, features = ["http-client-insecure-credentials"] }

@@ -10,6 +10,7 @@
 
 pub mod challenge;
 pub mod credentials;
+pub mod github_sign_in;
 pub mod host_key;
 pub mod identity;
 pub mod ref_name;

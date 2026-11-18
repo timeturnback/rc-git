@@ -8,22 +8,33 @@ rc-git-app        GPUI views. Forward clicks to the models, render their events.
 rc-git-kit        BrowserModel (state, generations, cache), layout policy, value types,
                   and the platform traits the app needs from macOS. No widgets.
 rc-git-mac        Live macOS implementations of those traits. The only `unsafe`.
-  rc-git-guard      Mutation policy and the one write and network path. Reads through core.
+  rc-git-guard      Mutation policy and the one write and network path (git remotes and the
+                    GitHub API). Reads through core.
   rc-git-highlight  tree-sitter highlight spans and import links. Pure.
   rc-git-core       gix wrapper. Repository pool, refs, trees, blobs, log, revision parsing,
                     diff, blame, worktree status, stash listing.
-rc-git-cli        Beside the app crates, on core, guard and highlight.
+rc-git-cli        Beside the app crates, on core, guard and highlight; on kit and mac for
+                  `auth`, which shares the app's GitHub accounts and keychain items.
 ```
 
 `rc-git-cli` sits beside the app crates on top of the core, the guard and the highlighter, and gives
 scripts and agents the app's reads, its guarded mutations and its highlight and import-link passes.
+Its `auth` verbs also use rc-git-kit's account settings and token keeper and rc-git-mac's keychain,
+so the CLI and the app sign in to GitHub once between them.
 `rc-git-guard` holds the mutation policy and, in its `actions` module, the one write and network
 path: every mutation — refs, objects, the index, working-tree files, the stash, checkout, and fetch,
 pull and push — goes through it; `safety.md` has the rules. Its actions are branch and tag create
 and delete, commit, the stash lifecycle (push, apply, pop, drop), discard of files or hunks, the
 branch switch, fetch, fast-forward pull, and push; sync is those last three run in sequence by the
 app, not an action of its own. Network I/O exists only in the `actions::remote` module; `safety.md`,
-"Guarding mutations", says what each action checks before it writes. `rc-git-highlight` is a pure
+"Guarding mutations", says what each action checks before it writes. The GitHub API client lives
+there too, in `actions::remote::github`: sign-in (GitHub App and OAuth App device flow, a pasted
+token), the token check, GitHub App token refresh, and the authenticated REST and GraphQL calls
+the pull request features build on, every URL built from the account's host; `safety.md`,
+"GitHub API", has its rules. rc-git-kit's `github` module holds the account records and the
+per-repository choice (`accounts`), the sign-in state machine (`sign_in`) and the token keeper
+that serializes refreshes (`tokens`); rc-git-mac keeps the tokens in the login keychain
+(`KeychainApiTokenStore`), and Settings and `rc-git auth` drive them. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

@@ -19,6 +19,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste (gpui-component)
     "RUSTSEC-2026-0206", # rustybuzz (usvg, SVG icons)
     "RUSTSEC-2026-0192", # ttf-parser (fontdb, usvg)
+    "RUSTSEC-2026-0543", # chrono (gpui-pre, gpui-base, gpui-component, gpui-pre-scheduler)
 ]
 
 [licenses]

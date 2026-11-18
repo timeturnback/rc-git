@@ -83,6 +83,18 @@ here; so does everything that comes later.
   `docs/solutions/architecture-patterns/hand-rolled-git-push-over-gix-https.md` has the
   push recipe and its traps (`prevent_pack_unload`, `MissingCommitter`, dev-only
   `http-client-insecure-credentials`).
+- GitHub API calls go through `actions/remote/github/http.rs`'s `send` only: it fixes https-only,
+  no redirects, body and header caps and timeouts. Never build a curl handle elsewhere (clippy bans it).
+- Build every GitHub URL from the account's `GitHubHost`; a remote URL only yields owner and name
+  through `RepositoryTarget::on_host`. Never let repository config or a remote URL pick a host.
+- Hold tokens as `ApiToken`/`RefreshToken` (redacted `Debug`, no `Display`); put a secret in a
+  header or form body, never a URL, and pass server text through `server_text` before an error.
+- Send a GitHub App's refresh only through kit's `TokenKeeper`: refresh tokens are single-use, and
+  it serializes them and re-reads the keychain before signing out.
+- Read `dev-loopback-http` only in `github/host.rs`'s `PLAIN_HTTP`, and enable it only from
+  `[dev-dependencies]`; `scripts/check.sh` fails a normal app or CLI build that carries it.
+- GraphQL queries are `&'static str`; every value goes in `variables`. Test each GitHub call
+  against testkit's `GitHubServer`, which answers only the exact arguments a call must send.
 - Resolve a branch's remote and tracking ref only through `configured_remote_name` and
   `tracking_ref_name` in `actions/remote.rs`, never gix's `branch_remote*` helpers directly
   (clippy-banned in `clippy.toml`; those two wrappers carry the only `#[expect]`):

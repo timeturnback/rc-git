@@ -9,7 +9,11 @@ use rc_git_kit::back_forward::ContentMode;
 use rc_git_kit::browser::FileState;
 use rc_git_kit::content_search::ContentSearchStatus;
 use rc_git_kit::fake::{FakeRepository, oid};
+use rc_git_kit::github::accounts::{GitHubAccount, GitHubAccounts, SignInMethod};
+use rc_git_kit::github::{ApiToken, GitHubHost, TokenSet, save_sign_in};
+use rc_git_kit::platform::api_tokens::{AccountKey, MemoryApiTokenStore};
 use rc_git_kit::platform::host_keys::{HostKeyStore, MemoryHostKeyStore};
+use rc_git_kit::platform::settings::MemorySettings;
 use rc_git_kit::text_document::FileReveal;
 
 use crate::app::Tab;
@@ -233,7 +237,9 @@ fn settings_lists_approved_hosts_and_removes_the_selection(cx: &mut TestAppConte
         assert!(stored.is_ok());
     }
     let shared: Arc<dyn HostKeyStore> = store.clone();
-    let view = cx.new(|_| SettingsView::new(shared));
+    let accounts = GitHubAccounts::new(Arc::new(MemorySettings::new()));
+    let tokens = Arc::new(MemoryApiTokenStore::new());
+    let view = cx.new(|cx| SettingsView::new(shared, accounts, tokens, cx));
     assert_eq!(
         cx.read(|cx| view.read(cx).hosts()),
         ["a.example", "github.com", "gitlab.com"]
@@ -256,6 +262,44 @@ fn settings_lists_approved_hosts_and_removes_the_selection(cx: &mut TestAppConte
         cx.read(|cx| view.read(cx).hosts()),
         ["github.com", "new.example"],
         "a host approved since shows on reload"
+    );
+}
+
+#[gpui::test]
+fn settings_lists_github_accounts_and_signs_the_selected_one_out(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.executor().allow_parking();
+    let accounts = GitHubAccounts::new(Arc::new(MemorySettings::new()));
+    let tokens = Arc::new(MemoryApiTokenStore::new());
+    let set = TokenSet::lasting(ApiToken::new("ghp_settings_test".to_owned()).unwrap());
+    for (host, login) in [("github.com", "octocat"), ("ghe.example.com", "work")] {
+        let account = GitHubAccount {
+            key: AccountKey::new(GitHubHost::parse(host).unwrap(), login).unwrap(),
+            method: SignInMethod::Token,
+            client_id: None,
+            scopes: None,
+            token_expires: None,
+        };
+        save_sign_in(tokens.as_ref(), &accounts, &account, &set).unwrap();
+    }
+    let host_keys: Arc<dyn HostKeyStore> = Arc::new(MemoryHostKeyStore::new());
+    let store = Arc::clone(&tokens);
+    let view = cx.new(|cx| SettingsView::new(host_keys, accounts, store, cx));
+    let pane = cx.read(|cx| view.read(cx).github().clone());
+    assert_eq!(
+        cx.read(|cx| pane.read(cx).rows()),
+        ["work@ghe.example.com", "octocat@github.com"]
+    );
+    pane.update(cx, |pane, cx| {
+        pane.select(1, cx);
+        pane.sign_out_selected(cx);
+    });
+    wait_until(cx, |cx| cx.read(|cx| pane.read(cx).rows().len() == 1));
+    assert_eq!(cx.read(|cx| pane.read(cx).rows()), ["work@ghe.example.com"]);
+    assert_eq!(
+        tokens.accounts(),
+        vec![AccountKey::new(GitHubHost::parse("ghe.example.com").unwrap(), "work").unwrap()],
+        "the signed-out account's token is gone"
     );
 }
 

@@ -95,6 +95,8 @@ pub struct Services {
     pub credentials: Arc<dyn CredentialStore>,
     /// Approved ssh host keys for sync.
     pub host_keys: Arc<dyn HostKeyStore>,
+    /// GitHub API tokens, per host and account.
+    pub api_tokens: Arc<dyn rc_git_kit::platform::api_tokens::ApiTokenStore>,
     /// The home directory Open Recent abbreviates.
     pub home: String,
     /// The app's name in the menus.
@@ -705,6 +707,9 @@ impl Shell {
             }
         }
         let store = Arc::clone(&self.services.host_keys);
+        let accounts =
+            rc_git_kit::github::accounts::GitHubAccounts::new(Arc::clone(&self.services.settings));
+        let tokens = Arc::clone(&self.services.api_tokens);
         let made: Rc<Cell<Option<Entity<crate::settings::SettingsView>>>> = Rc::default();
         let slot = Rc::clone(&made);
         let options = WindowOptions {
@@ -721,7 +726,7 @@ impl Shell {
             ..WindowOptions::default()
         };
         let opened = cx.open_window(options, move |window, cx| {
-            let view = cx.new(|_| crate::settings::SettingsView::new(store));
+            let view = cx.new(|cx| crate::settings::SettingsView::new(store, accounts, tokens, cx));
             slot.set(Some(view.clone()));
             cx.new(|cx| Root::new(view, window, cx))
         });

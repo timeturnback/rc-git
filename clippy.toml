@@ -82,6 +82,36 @@ disallowed-methods = [
     { path = "gix::Repository::branch_remote_tracking_ref_name", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
     { path = "gix::Repository::branch_remote_name", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
     { path = "gix::Repository::branch_remote", reason = "skips the origin fallback; use configured_remote_name / tracking_ref_name in rc-git-guard actions/remote.rs" },
+    # libcurl, called directly: only the GitHub API client may, in one function that fixes
+    # https-only, no redirects, the body cap and the timeouts (see docs/safety.md, "GitHub API").
+    { path = "curl::easy::Easy::new", reason = "network entry point; only rc-git-guard actions/remote/github/http.rs talks curl" },
+    { path = "curl::easy::Easy2::new", reason = "network entry point; only rc-git-guard actions/remote/github/http.rs talks curl" },
+    { path = "curl::multi::Multi::new", reason = "network entry point; only rc-git-guard actions/remote/github/http.rs talks curl" },
+    # The transport rules themselves. Nothing anywhere may call these: certificate and host
+    # checks stay at curl's default (on), no CA can be added, and credentials never follow a
+    # redirect.
+    { path = "curl::easy::Easy::ssl_verify_peer", reason = "TLS peer verification is never switched off" },
+    { path = "curl::easy::Easy2::ssl_verify_peer", reason = "TLS peer verification is never switched off" },
+    { path = "curl::easy::Easy::ssl_verify_host", reason = "TLS host verification is never switched off" },
+    { path = "curl::easy::Easy2::ssl_verify_host", reason = "TLS host verification is never switched off" },
+    { path = "curl::easy::Easy::proxy_ssl_verify_peer", reason = "TLS peer verification is never switched off" },
+    { path = "curl::easy::Easy2::proxy_ssl_verify_peer", reason = "TLS peer verification is never switched off" },
+    { path = "curl::easy::Easy::proxy_ssl_verify_host", reason = "TLS host verification is never switched off" },
+    { path = "curl::easy::Easy2::proxy_ssl_verify_host", reason = "TLS host verification is never switched off" },
+    { path = "curl::easy::Easy::ssl_options", reason = "TLS options (revocation checks, ...) stay at curl's defaults" },
+    { path = "curl::easy::Easy2::ssl_options", reason = "TLS options (revocation checks, ...) stay at curl's defaults" },
+    { path = "curl::easy::Easy::proxy_ssl_options", reason = "TLS options (revocation checks, ...) stay at curl's defaults" },
+    { path = "curl::easy::Easy2::proxy_ssl_options", reason = "TLS options (revocation checks, ...) stay at curl's defaults" },
+    { path = "curl::easy::Easy::cainfo", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy2::cainfo", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy::capath", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy2::capath", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy::ssl_cainfo_blob", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy2::ssl_cainfo_blob", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy::proxy_cainfo", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy2::proxy_cainfo", reason = "no CA beyond the system's is ever trusted" },
+    { path = "curl::easy::Easy::unrestricted_auth", reason = "credentials never follow a redirect to another host" },
+    { path = "curl::easy::Easy2::unrestricted_auth", reason = "credentials never follow a redirect to another host" },
 ]
 
 # Unit tests may unwrap/panic; library code may not.
