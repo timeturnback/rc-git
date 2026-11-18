@@ -899,7 +899,7 @@ fn pr_merge_admin_without_its_number_prints_what_it_skips_and_sends_nothing() {
             "{printed}"
         );
         let plan = printed_plan(&out);
-        assert_eq!(plan.len(), 16, "{printed}");
+        assert_eq!(plan.len(), 32, "{printed}");
         assert!(
             printed.ends_with(&format!(
                 "bypass\tunreported-rules\tany the API does not report\nplan\t{plan}\n"
@@ -1042,7 +1042,7 @@ fn pr_merge_admin_merges_only_the_plan_its_fingerprint_names() {
         "{}",
         text(&without.stderr)
     );
-    let other = if plan.starts_with('0') { "1" } else { "0" }.repeat(16);
+    let other = if plan.starts_with('0') { "1" } else { "0" }.repeat(32);
     let out = run_pr(
         &scratch,
         &repo,
@@ -1057,4 +1057,332 @@ fn pr_merge_admin_merges_only_the_plan_its_fingerprint_names() {
     );
     assert_eq!(server.mutation_requests(), 0);
     assert!(!server.merged());
+}
+
+/// [`mergeable`] blocked by branch protection in a repository that allows auto-merge, read by
+/// an account GitHub says may turn it on and off; with squash auto-merge on when `on`.
+fn auto_mergeable(head: &str, on: bool) -> String {
+    let read = mergeable(head, "OPEN")
+        .replace(
+            r#""autoMergeAllowed": false"#,
+            r#""autoMergeAllowed": true"#,
+        )
+        .replace(
+            r#""mergeStateStatus": "CLEAN""#,
+            r#""mergeStateStatus": "BLOCKED""#,
+        )
+        .replace(
+            r#""viewerCanEnableAutoMerge": false"#,
+            r#""viewerCanEnableAutoMerge": true"#,
+        )
+        .replace(
+            r#""viewerCanDisableAutoMerge": false"#,
+            r#""viewerCanDisableAutoMerge": true"#,
+        );
+    if on {
+        read.replace(
+            r#""autoMergeRequest": null"#,
+            r#""autoMergeRequest": {"mergeMethod": "SQUASH", "enabledBy": {"login": "mona"}}"#,
+        )
+    } else {
+        read
+    }
+}
+
+/// Pull request 7 on `server` with auto-merge `on` or off, changing as `behaviour` says.
+fn script_auto_merge(server: &GitHubServer, on: bool, behaviour: MergeBehaviour) {
+    use rc_git_guard::actions::github::testing::{
+        disable_auto_merge_request_body, enable_auto_merge_request_body,
+    };
+    let (mutation, reply) = if on {
+        (
+            disable_auto_merge_request_body(NODE),
+            format!(
+                r#"{{"data": {{"disablePullRequestAutoMerge": {{"pullRequest": {{"number": 7,
+                "state": "OPEN", "headRefOid": "{HEAD}", "autoMergeRequest": null}}}}}}}}"#
+            ),
+        )
+    } else {
+        (
+            enable_auto_merge_request_body(NODE, HEAD, MergeMethod::Squash),
+            format!(
+                r#"{{"data": {{"enablePullRequestAutoMerge": {{"pullRequest": {{"number": 7,
+                "state": "OPEN", "headRefOid": "{HEAD}", "baseRefName": "main",
+                "autoMergeRequest": {{"mergeMethod": "SQUASH"}}}}}}}}}}"#
+            ),
+        )
+    };
+    server.script_merge(MergeScript {
+        read: detail_request_body(&pr_target(server), 7, false),
+        open: auto_mergeable(HEAD, on),
+        moved: auto_mergeable(MOVED, on),
+        merged: auto_mergeable(HEAD, !on),
+        mutation,
+        reply,
+        behaviour,
+    });
+}
+
+#[test]
+fn pr_auto_merge_without_its_head_base_switch_or_yes_changes_nothing() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_auto_merge(&server, false, MergeBehaviour::Merge);
+    let signed_in = server.requests();
+    for line in [
+        "--enable --method squash --base main --yes".to_owned(),
+        format!("--enable --method squash --head {HEAD} --yes"),
+        format!("--enable --head {HEAD} --base main --yes"),
+        format!("--method squash --head {HEAD} --base main --yes"),
+        format!("--enable --disable --method squash --head {HEAD} --base main --yes"),
+        format!("--disable --method squash --head {HEAD} --base main --yes"),
+    ] {
+        let mut args = vec!["auto-merge", "7"];
+        args.extend(line.split(' '));
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(out.status.code(), Some(2), "{line}: {}", text(&out.stderr));
+        assert_eq!(
+            server.requests(),
+            signed_in,
+            "{line}: a usage error reads nothing"
+        );
+    }
+    let unconfirmed = [
+        "auto-merge",
+        "7",
+        "--enable",
+        "--method",
+        "squash",
+        "--head",
+        HEAD,
+        "--base",
+        "main",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &unconfirmed);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert!(
+        printed.starts_with("would-enable-auto-merge\tTurn on auto-merge for this pull request"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "\nwould-enable-auto-merge\tMerges by itself: GitHub will merge this pull request by \
+             itself when its requirements are met, including commits pushed to its head branch \
+             after this confirmation; rc-git will not ask again\n"
+        ),
+        "{printed}"
+    );
+    assert!(text(&out.stderr).contains("needs --yes"));
+    assert_eq!(server.mutation_requests(), 0);
+}
+
+#[test]
+fn pr_auto_merge_with_yes_turns_it_on_or_off_once() {
+    for (on, args, printed) in [
+        (
+            false,
+            vec![
+                "auto-merge",
+                "7",
+                "--enable",
+                "--method",
+                "squash",
+                "--head",
+                HEAD,
+                "--base",
+                "main",
+                "--yes",
+            ],
+            format!("auto-merge\ton\tocto/rc-git#7\tsquash\t{HEAD}\nnote\tAuto-merge is on for #7"),
+        ),
+        (
+            true,
+            vec![
+                "auto-merge",
+                "7",
+                "--disable",
+                "--head",
+                HEAD,
+                "--base",
+                "main",
+                "--yes",
+            ],
+            "auto-merge\toff\tocto/rc-git#7\nnote\tAuto-merge is off for #7".to_owned(),
+        ),
+    ] {
+        let server = server_knowing(TOKEN, "octocat");
+        let (scratch, repo, ssh) = pr_setup(&server, None);
+        script_auto_merge(&server, on, MergeBehaviour::Merge);
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert!(
+            text(&out.stdout).starts_with(&printed),
+            "{}",
+            text(&out.stdout)
+        );
+        assert!(
+            text(&out.stderr).contains("\nsending\tBase: \u{201c}main\u{201d}\n"),
+            "the challenge goes to stderr before the request: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(server.mutation_requests(), 1);
+        let name = if on {
+            "RcGitDisableAutoMerge"
+        } else {
+            "RcGitEnableAutoMerge"
+        };
+        assert_eq!(server.mutations_named(name), 1);
+        assert!(!format!("{}{}", text(&out.stdout), text(&out.stderr)).contains(TOKEN));
+    }
+}
+
+#[test]
+fn pr_auto_merge_of_a_head_that_moved_exits_11_and_a_lost_answer_exits_12() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    script_auto_merge(&server, false, MergeBehaviour::Merge);
+    let moved = [
+        "auto-merge",
+        "7",
+        "--enable",
+        "--method",
+        "squash",
+        "--head",
+        MOVED,
+        "--base",
+        "main",
+        "--yes",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &moved);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("changed since you looked"));
+    assert_eq!(server.mutation_requests(), 0);
+    script_auto_merge(&server, false, MergeBehaviour::Drop);
+    let args = [
+        "auto-merge",
+        "7",
+        "--enable",
+        "--method",
+        "squash",
+        "--head",
+        HEAD,
+        "--base",
+        "main",
+        "--yes",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(12), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("could not tell whether auto-merge is on"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(server.mutation_requests(), 1, "never sent again");
+}
+
+/// [`mergeable`] with a failed GitHub Actions job of runs 41 and 42.
+fn failing() -> String {
+    let job = |name: &str, run: u64| {
+        format!(
+            r#"{{"__typename": "CheckRun", "name": "{name}", "status": "COMPLETED",
+            "conclusion": "FAILURE", "detailsUrl": null, "databaseId": 9, "isRequired": false,
+            "checkSuite": {{"workflowRun": {{"databaseId": {run}}}}}}}"#
+        )
+    };
+    let rollup = format!(
+        r#""statusCheckRollup": {{"state": "FAILURE", "contexts": {{"totalCount": 2,
+        "nodes": [{}, {}]}}}}"#,
+        job("test", 42),
+        job("lint", 41)
+    );
+    mergeable(HEAD, "OPEN").replace(r#""statusCheckRollup": null"#, &rollup)
+}
+
+#[test]
+fn pr_rerun_without_its_head_base_or_yes_reruns_nothing() {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    server.script_graphql(
+        &detail_request_body(&pr_target(&server), 7, false),
+        &failing(),
+    );
+    let signed_in = server.requests();
+    for args in [
+        vec!["rerun", "7", "--base", "main", "--yes"],
+        vec!["rerun", "7", "--head", HEAD, "--yes"],
+        vec![
+            "rerun", "7", "--head", HEAD, "--base", "main", "--method", "squash", "--yes",
+        ],
+    ] {
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(server.requests(), signed_in, "{args:?}");
+    }
+    let out = run_pr(
+        &scratch,
+        &repo,
+        &ssh,
+        &["rerun", "7", "--head", HEAD, "--base", "main"],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert!(
+        printed.contains(
+            "\nwould-rerun\tRuns: 2 runs: run 41 (\u{201c}lint\u{201d}); run 42 \
+             (\u{201c}test\u{201d})\n"
+        ),
+        "{printed}"
+    );
+    assert_eq!(server.mutation_requests(), 0);
+}
+
+#[test]
+fn pr_rerun_with_yes_asks_once_per_run_and_says_how_each_ended() {
+    use rc_git_testkit::github::RerunBehaviour;
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    server.script_graphql(
+        &detail_request_body(&pr_target(&server), 7, false),
+        &failing(),
+    );
+    server.script_rerun("octo/rc-git", 41, RerunBehaviour::Rerun);
+    server.script_rerun("octo/rc-git", 42, RerunBehaviour::Rerun);
+    let args = ["rerun", "7", "--head", HEAD, "--base", "main", "--yes"];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with("rerun\t41\trequested\t-\nrerun\t42\trequested\t-\nnote\t"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert_eq!(
+        (
+            server.rerun_requests("octo/rc-git", 41),
+            server.rerun_requests("octo/rc-git", 42)
+        ),
+        (1, 1)
+    );
+    server.script_rerun(
+        "octo/rc-git",
+        41,
+        RerunBehaviour::Answer {
+            status: "403 Forbidden",
+            body: format!(r#"{{"message": "no {TOKEN}"}}"#),
+            headers: Vec::new(),
+        },
+    );
+    server.script_rerun("octo/rc-git", 42, RerunBehaviour::Drop);
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(12), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert!(printed.starts_with("rerun\t41\trefused\t"), "{printed}");
+    assert!(printed.contains("\nrerun\t42\tunknown\t"), "{printed}");
+    assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
+    assert_eq!(server.mutation_requests(), 4, "two runs, twice, each once");
 }

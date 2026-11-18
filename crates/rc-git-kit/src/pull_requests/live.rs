@@ -2,8 +2,10 @@
 //! token keeper over the keychain. The app and the CLI both use it, so they share the accounts,
 //! the per-repository choices and the tokens.
 //!
-//! A merge runs through the guard's `plan_merge_pull_request` and `merge_pull_request` with the
-//! account's token and kit's one policy; nothing here retries one.
+//! A merge runs through the guard's `plan_merge_pull_request` and `merge_pull_request`, an
+//! auto-merge change through `plan_auto_merge` and `set_auto_merge`, and a re-run through
+//! `plan_rerun_failed_jobs` and `rerun_failed_jobs`, each with the account's token and kit's one
+//! policy; nothing here retries one.
 //!
 //! A pull request's head is fetched like any fetch: over the remote's own git transport, with
 //! the git credentials and approved ssh host keys saved for the remote's host
@@ -15,20 +17,23 @@ use std::sync::Arc;
 
 use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, TreeChange};
 use rc_git_guard::actions::github::{
-    ApiToken, MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, list_open_pull_requests,
-    merge_pull_request, plan_merge_pull_request, pull_request_base_ref, pull_request_remote,
-    read_pull_request, refresh_user_token, unix_now,
+    self as guard, ActionTarget, ApiToken, AutoMergeRequest, MergeAnswer, MergeRequest,
+    MergeTarget, PullRequestRemote, RerunRequest, list_open_pull_requests, merge_pull_request,
+    plan_merge_pull_request, pull_request_base_ref, pull_request_remote, read_pull_request,
+    refresh_user_token, unix_now,
 };
 use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pull_request_head};
 
 use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
 use super::copy::{fetch_problem, problem};
+use super::flow::{ActionAsk, ActionStop, Stop};
 use super::link::{Linked, RepositoryLink, link_repository};
 use super::merge::{MergeAsk, MergeStop, PlanAsk};
-use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
 use super::{
-    MergeOutcome, MergePlan, MergeRefusal, PullRequestService, PullRequestStamp, ReadError,
+    ActionPlan, ActionRefusal, AutoMergeChange, AutoMergeOutcome, MergeOutcome, MergePlan,
+    MergeRefusal, PullRequestService, PullRequestStamp, ReadError, RerunReport,
 };
+use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
 use crate::github::tokens::{TokenError, TokenKeeper};
 use crate::guard_bridge::{Credentials, FailureKind, classify};
@@ -305,19 +310,89 @@ impl PullRequestService for LivePullRequests {
         };
         merge_pull_request(policy(), request, cancel).map_err(stop)
     }
+
+    fn plan_auto_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        change: AutoMergeChange,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let who = action_target(linked, &token, stamp);
+        guard::plan_auto_merge(policy(), &who, change, cancel).map_err(action_stop)
+    }
+
+    fn set_auto_merge(
+        &self,
+        linked: &Linked,
+        change: AutoMergeChange,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<AutoMergeOutcome, ActionStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let request = AutoMergeRequest {
+            who: action_target(linked, &token, ask.stamp),
+            change,
+            answer: ask.decision,
+            on_send: ask.on_send,
+        };
+        guard::set_auto_merge(policy(), request, cancel).map_err(action_stop)
+    }
+
+    fn plan_rerun(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let who = action_target(linked, &token, stamp);
+        guard::plan_rerun_failed_jobs(policy(), &who, cancel).map_err(action_stop)
+    }
+
+    fn rerun(
+        &self,
+        linked: &Linked,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<RerunReport, ActionStop> {
+        let token = self.merge_token(linked, cancel)?;
+        let request = RerunRequest {
+            who: action_target(linked, &token, ask.stamp),
+            answer: ask.decision,
+            on_send: ask.on_send,
+        };
+        guard::rerun_failed_jobs(policy(), request, cancel).map_err(action_stop)
+    }
 }
 
 impl LivePullRequests {
-    /// The account's token for a merge, its failure in a merge's terms.
-    fn merge_token(&self, linked: &Linked, cancel: &Cancel) -> Result<ApiToken, MergeStop> {
+    /// The account's token for a guarded action, its failure in that action's terms.
+    fn merge_token<R>(&self, linked: &Linked, cancel: &Cancel) -> Result<ApiToken, Stop<R>> {
         self.token(&linked.account, cancel)
             .map_err(|error| match error {
-                ReadError::SignedOut { account } => MergeStop::SignedOut { account },
-                ReadError::Cancelled => MergeStop::Cancelled,
+                ReadError::SignedOut { account } => Stop::SignedOut { account },
+                ReadError::Cancelled => Stop::Cancelled,
                 error @ (ReadError::RateLimited { .. } | ReadError::Failed(_)) => {
-                    MergeStop::Failed(problem(&error, unix_now()))
+                    Stop::Failed(problem(&error, unix_now()))
                 }
             })
+    }
+}
+
+/// The pull request `stamp` names in `linked`'s repository, by `linked`'s account with `token`.
+fn action_target<'a>(
+    linked: &'a Linked,
+    token: &'a ApiToken,
+    stamp: &'a PullRequestStamp,
+) -> ActionTarget<'a> {
+    ActionTarget {
+        host: linked.account.key.host(),
+        token,
+        login: linked.account.key.login(),
+        target: &linked.target,
+        stamp,
     }
 }
 
@@ -326,6 +401,14 @@ fn stop(refusal: MergeRefusal) -> MergeStop {
     match refusal {
         MergeRefusal::Cancelled { .. } => MergeStop::Cancelled,
         refusal => MergeStop::Refused(refusal),
+    }
+}
+
+/// A guard refusal in an auto-merge change's or a re-run's terms.
+fn action_stop(refusal: ActionRefusal) -> ActionStop {
+    match refusal {
+        ActionRefusal::Cancelled { .. } => ActionStop::Cancelled,
+        refusal => ActionStop::Refused(refusal),
     }
 }
 

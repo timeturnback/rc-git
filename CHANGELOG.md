@@ -4,6 +4,22 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ## 2026-11-19
 
+### Added
+
+- A pull request's tab can turn on GitHub's auto-merge when branch protection still blocks it:
+  pick a method and click Enable Auto-Merge. The confirmation says in its own line that GitHub
+  will then merge the pull request by itself once its requirements are met, including commits
+  pushed to its head branch after you confirm, without asking you again; when the head branch
+  lives in someone else's repository, it names that owner, who can push more commits. While
+  auto-merge is on, the tab says so, with the method and who turned it on, and Disable Auto-Merge
+  turns it off. From Terminal: `rc-git pr auto-merge <n> --enable --method squash --head <oid>
+  --base <branch> --yes`, or `--disable` in place of `--enable --method …`.
+- Re-run Failed Jobs on a pull request's tab asks GitHub to re-run the failed jobs of the head's
+  GitHub Actions runs (up to ten runs at a time). The confirmation lists each run with its failed
+  checks and what it leaves out, and the note afterwards says how each run's request ended.
+  From Terminal: `rc-git pr rerun <n> --head <oid> --base <branch> --yes`. rc-git never approves
+  workflow runs from forks or first-time contributors.
+
 ### Changed
 
 - The Merge confirmation lists what it is about to merge one fact per line, always in the same
@@ -19,8 +35,8 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   them; a pull request moved to another base since you looked sends nothing. Without `--yes` it
   prints the confirmation one `would-merge` line per fact, and with it the same lines go to
   stderr before the request is sent. `merged` lines end with the base GitHub merged into.
-- `rc-git pr merge --admin` prints the plan's fingerprint (`plan<TAB>…`) when run without
-  `--confirm`, and the real run needs it: `--confirm <n> --plan <fingerprint>`. If anything in
+- `rc-git pr merge --admin` prints the plan's fingerprint (`plan<TAB>…`, 32 hex digits) when
+  run without `--confirm`, and the real run needs it: `--confirm <n> --plan <fingerprint>`. If anything in
   the plan changed since (a check, the title, what would be skipped), nothing is sent and it
   exits 11.
 - A pull request's Changes view, and `rc-git pr diff`, compare its head with the commit GitHub

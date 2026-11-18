@@ -1,48 +1,188 @@
 //! Merging a pull request from its tab: whether the Merge control shows and why it may not take
 //! a click ([`merge_button`], decided here from the guard's own [`merge_blocker`], never in the
 //! app), whether the separate admin merge control exists at all ([`admin_merge_button`], from the
-//! guard's [`admin_merge_blocker`]), and one merge's flow as a state machine free of GPUI
-//! ([`MergeFlow`]): planning (the guard reads the pull request again and the policy words the
-//! challenge), confirming (the challenge is up), merging (Cancel works until the request is sent,
-//! never after), and done. A flow is a plain merge or an admin merge from its start
+//! guard's [`admin_merge_blocker`]), and the merge as one kind of the tab's guarded flow
+//! ([`MergeFlow`], [`super::flow`]). A flow is a plain merge or an admin merge from its start
 //! ([`MergeKind`]) and stays one; the admin merge's challenge asks for the pull request's number,
-//! which the flow hands to the guard as typed.
-//!
-//! Every step's answer is taken only under the generation it was asked for, and a flow is tied
-//! to the stamp it started from: a read of the tab that shows another head, base or state while
-//! the flow plans or confirms ends it before anything is sent. Nothing here retries a merge.
+//! which the flow hands to the guard as typed. Nothing here retries a merge.
 
 use rc_git_core::Oid;
 
+use super::copy::{merge_attempt_log, merge_outcome_log};
+use super::flow::{Flow, Phase, PlanLoad, SendLoad, Stop, TabAction, TabFlow};
+use super::link::Linked;
 use super::state::DetailState;
 use super::{
-    AfterLoss, Bypassed, Decision, MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan,
-    MergeRefusal, PullRequestStamp, Settled, admin_merge_blocker, merge_blocker,
+    AfterLoss, Bypassed, Cancel, Decision, MergeKind, MergeMethod, MergeMethods, MergeOutcome,
+    MergePlan, MergeRefusal, PullRequestService, PullRequestStamp, Settled, admin_merge_blocker,
+    merge_blocker,
 };
 
 /// Why a merge sent nothing, in the terms the tab shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MergeStop {
-    /// The user cancelled before the request left.
-    Cancelled,
-    /// The guard refused before sending: changed since the stamp, blocked, not confirmed, a
-    /// failed read, the policy.
-    Refused(MergeRefusal),
-    /// The account has no usable token.
-    SignedOut {
-        /// The account (`login@host`), or the host that refused the token.
-        account: String,
-    },
-    /// Anything else before the request: the token could not be read or renewed.
-    Failed(String),
+pub type MergeStop = Stop<MergeRefusal>;
+
+/// A merge as the user asked for it: the method, and the plain merge or the admin merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MergeIntent {
+    /// The method the user chose.
+    pub method: MergeMethod,
+    /// The plain merge or the admin merge.
+    pub kind: MergeKind,
 }
 
-impl MergeStop {
-    /// Whether the refusal says the pull request changed since the stamp, so the tab should
-    /// read it again.
+/// One merge of one tab.
+pub type MergeFlow = Flow<MergeIntent>;
+
+/// Where one merge stands.
+pub type MergePhase = Phase<MergeIntent>;
+
+/// The merge to run for a flow, with the user's answer.
+pub type MergeLoad = SendLoad<MergeIntent>;
+
+impl Flow<MergeIntent> {
+    /// A merge of `kind` of the pull request `stamp` names in `repository` with `method`; see
+    /// [`Flow::begin`].
     #[must_use]
-    pub fn is_changed(&self) -> bool {
-        matches!(self, Self::Refused(MergeRefusal::Changed { .. }))
+    pub fn start(
+        generation: u64,
+        repository: String,
+        stamp: PullRequestStamp,
+        method: MergeMethod,
+        kind: MergeKind,
+    ) -> (Self, PlanLoad<MergeIntent>) {
+        Self::begin(generation, repository, stamp, MergeIntent { method, kind })
+    }
+
+    /// The method chosen.
+    #[must_use]
+    pub fn method(&self) -> MergeMethod {
+        self.ask().method
+    }
+
+    /// The plain merge or the admin merge.
+    #[must_use]
+    pub fn kind(&self) -> MergeKind {
+        self.ask().kind
+    }
+
+    /// What an admin merge skips, as its plan's read reported it; `None` before the plan
+    /// landed, and always for the plain merge.
+    #[must_use]
+    pub fn bypassed(&self) -> Option<&Bypassed> {
+        self.planned_as()?.bypassed.as_ref()
+    }
+}
+
+impl TabAction for MergeIntent {
+    type Plan = MergePlan;
+    type Outcome = MergeOutcome;
+    type Refusal = MergeRefusal;
+    type End = MergeEnd;
+
+    fn decision(plan: &MergePlan) -> &Decision {
+        &plan.decision
+    }
+
+    fn end(answer: Result<MergeOutcome, MergeStop>) -> MergeEnd {
+        match answer {
+            Ok(MergeOutcome::Merged {
+                merge_commit,
+                base,
+                settled,
+            }) => MergeEnd::Merged {
+                merge_commit,
+                base,
+                settled,
+            },
+            Ok(MergeOutcome::MergedIntoOtherBase {
+                confirmed,
+                actual,
+                merge_commit,
+                settled,
+            }) => MergeEnd::MergedIntoOtherBase {
+                confirmed,
+                actual,
+                merge_commit,
+                settled,
+            },
+            Ok(MergeOutcome::Refused { reason }) => MergeEnd::Refused { reason },
+            Ok(MergeOutcome::Unknown { problem, after }) => MergeEnd::Unknown { problem, after },
+            Err(stop) => MergeEnd::NotSent(stop),
+        }
+    }
+
+    fn was_sent(end: &MergeEnd) -> bool {
+        end.was_sent()
+    }
+
+    fn ended_changed(end: &MergeEnd) -> bool {
+        matches!(end, MergeEnd::NotSent(stop) if stop.is_changed())
+    }
+
+    fn changed(&self, number: u64, what: &str) -> MergeRefusal {
+        MergeRefusal::Changed {
+            pull_request: format!("#{number}"),
+            what: what.to_owned(),
+        }
+    }
+
+    fn plan(
+        &self,
+        service: &dyn PullRequestService,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<MergePlan, MergeStop> {
+        let ask = PlanAsk {
+            stamp,
+            method: self.method,
+            kind: self.kind,
+        };
+        service.plan_merge(linked, ask, cancel)
+    }
+
+    fn send(
+        service: &dyn PullRequestService,
+        linked: &Linked,
+        load: &MergeLoad,
+        on_send: &(dyn Fn() + Sync),
+        cancel: &Cancel,
+    ) -> Result<MergeOutcome, MergeStop> {
+        let ask = MergeAsk {
+            stamp: &load.stamp,
+            method: load.ask.method,
+            kind: load.ask.kind,
+            decision: Some(&load.decision),
+            typed: &load.typed,
+            on_send,
+        };
+        service.merge(linked, ask, cancel)
+    }
+
+    fn attempt_log(flow: &MergeFlow) -> String {
+        merge_attempt_log(flow)
+    }
+
+    fn outcome_log(flow: &MergeFlow, end: &MergeEnd) -> String {
+        merge_outcome_log(flow, end)
+    }
+
+    fn wrap(flow: MergeFlow) -> TabFlow {
+        TabFlow::Merge(flow)
+    }
+
+    fn of(tab: &TabFlow) -> Option<&MergeFlow> {
+        match tab {
+            TabFlow::Merge(flow) => Some(flow),
+            TabFlow::AutoMerge(_) | TabFlow::Rerun(_) => None,
+        }
+    }
+
+    fn of_mut(tab: &mut TabFlow) -> Option<&mut MergeFlow> {
+        match tab {
+            TabFlow::Merge(flow) => Some(flow),
+            TabFlow::AutoMerge(_) | TabFlow::Rerun(_) => None,
+        }
     }
 }
 
@@ -221,289 +361,5 @@ impl MergeEnd {
     #[must_use]
     pub fn was_sent(&self) -> bool {
         !matches!(self, Self::NotSent(_))
-    }
-}
-
-/// Where one merge stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MergePhase {
-    /// The guard reads the pull request again and the policy words the challenge.
-    Planning,
-    /// The challenge is up.
-    Confirming(Box<MergePlan>),
-    /// The merge runs. Until `sent`, Cancel stops it; after, nothing can.
-    Merging {
-        /// Whether the request left.
-        sent: bool,
-        /// Whether a cancel was asked for and the answer is awaited.
-        cancelling: bool,
-    },
-    /// Finished.
-    Done(MergeEnd),
-}
-
-/// The plan read to run for a flow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanLoad {
-    /// Answer [`MergeFlow::planned`] with it.
-    pub generation: u64,
-    /// What the user saw.
-    pub stamp: PullRequestStamp,
-    /// The method chosen.
-    pub method: MergeMethod,
-    /// The plain merge or the admin merge.
-    pub kind: MergeKind,
-}
-
-/// The merge to run for a flow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeLoad {
-    /// Answer [`MergeFlow::sent`] and [`MergeFlow::finished`] with it.
-    pub generation: u64,
-    /// What the user saw.
-    pub stamp: PullRequestStamp,
-    /// The method chosen.
-    pub method: MergeMethod,
-    /// The plain merge or the admin merge.
-    pub kind: MergeKind,
-    /// The decision the user answered.
-    pub decision: Decision,
-    /// What the user typed, untouched.
-    pub typed: String,
-}
-
-/// What a cancel did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelAnswer {
-    /// The flow ended before anything was sent: drop it.
-    Ended,
-    /// The merge runs and its request has not left: raise its cancel flag.
-    Signal,
-    /// The request left: nothing can stop it.
-    TooLate,
-    /// The flow is done: nothing to cancel.
-    Nothing,
-}
-
-/// One merge of one tab.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeFlow {
-    repository: String,
-    number: u64,
-    generation: u64,
-    stamp: PullRequestStamp,
-    method: MergeMethod,
-    kind: MergeKind,
-    bypassed: Option<Bypassed>,
-    phase: MergePhase,
-}
-
-impl MergeFlow {
-    /// A merge of `kind` of the pull request `stamp` names in `repository` (`owner/name@host`,
-    /// as the log and the notes name it for as long as the flow lives, whatever the window
-    /// links to later) with `method`, under `generation` (unique among the window's merges),
-    /// and the plan read to run.
-    #[must_use]
-    pub fn start(
-        generation: u64,
-        repository: String,
-        stamp: PullRequestStamp,
-        method: MergeMethod,
-        kind: MergeKind,
-    ) -> (Self, PlanLoad) {
-        let load = PlanLoad {
-            generation,
-            stamp: stamp.clone(),
-            method,
-            kind,
-        };
-        let flow = Self {
-            repository,
-            number: stamp.number,
-            generation,
-            stamp,
-            method,
-            kind,
-            bypassed: None,
-            phase: MergePhase::Planning,
-        };
-        (flow, load)
-    }
-
-    /// The repository it merges in, `owner/name@host`, as it was when the flow started.
-    #[must_use]
-    pub fn repository(&self) -> &str {
-        &self.repository
-    }
-
-    /// The pull request's number.
-    #[must_use]
-    pub fn number(&self) -> u64 {
-        self.number
-    }
-
-    /// The generation every answer must carry.
-    #[must_use]
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// The stamp it started from.
-    #[must_use]
-    pub fn stamp(&self) -> &PullRequestStamp {
-        &self.stamp
-    }
-
-    /// The method chosen.
-    #[must_use]
-    pub fn method(&self) -> MergeMethod {
-        self.method
-    }
-
-    /// The plain merge or the admin merge.
-    #[must_use]
-    pub fn kind(&self) -> MergeKind {
-        self.kind
-    }
-
-    /// What an admin merge skips, as its plan's read reported it; `None` before the plan
-    /// landed, and always for the plain merge.
-    #[must_use]
-    pub fn bypassed(&self) -> Option<&Bypassed> {
-        self.bypassed.as_ref()
-    }
-
-    /// Where it stands.
-    #[must_use]
-    pub fn phase(&self) -> &MergePhase {
-        &self.phase
-    }
-
-    /// The challenge's plan, while it is up.
-    #[must_use]
-    pub fn plan(&self) -> Option<&MergePlan> {
-        match &self.phase {
-            MergePhase::Confirming(plan) => Some(plan),
-            MergePhase::Planning | MergePhase::Merging { .. } | MergePhase::Done(_) => None,
-        }
-    }
-
-    /// Takes the plan read of `generation`; any other is dropped. Answers whether it landed.
-    pub fn planned(&mut self, generation: u64, answer: Result<MergePlan, MergeStop>) -> bool {
-        if generation != self.generation || self.phase != MergePhase::Planning {
-            return false;
-        }
-        self.phase = match answer {
-            Ok(plan) => {
-                self.bypassed.clone_from(&plan.bypassed);
-                MergePhase::Confirming(Box::new(plan))
-            }
-            Err(stop) => MergePhase::Done(MergeEnd::NotSent(stop)),
-        };
-        true
-    }
-
-    /// The user confirmed with `typed`: the merge to run, only while the challenge is up. The
-    /// text goes to the guard as typed; the guard alone verifies it.
-    pub fn confirm(&mut self, typed: String) -> Option<MergeLoad> {
-        let MergePhase::Confirming(plan) = &self.phase else {
-            return None;
-        };
-        let load = MergeLoad {
-            generation: self.generation,
-            stamp: self.stamp.clone(),
-            method: self.method,
-            kind: self.kind,
-            decision: plan.decision.clone(),
-            typed,
-        };
-        self.phase = MergePhase::Merging {
-            sent: false,
-            cancelling: false,
-        };
-        Some(load)
-    }
-
-    /// The request of `generation` left.
-    pub fn sent(&mut self, generation: u64) {
-        if generation != self.generation {
-            return;
-        }
-        if let MergePhase::Merging { sent, .. } = &mut self.phase {
-            *sent = true;
-        }
-    }
-
-    /// Takes the merge's answer of `generation`; any other is dropped. Answers whether it
-    /// landed.
-    pub fn finished(&mut self, generation: u64, answer: Result<MergeOutcome, MergeStop>) -> bool {
-        if generation != self.generation || !matches!(self.phase, MergePhase::Merging { .. }) {
-            return false;
-        }
-        self.phase = MergePhase::Done(match answer {
-            Ok(MergeOutcome::Merged {
-                merge_commit,
-                base,
-                settled,
-            }) => MergeEnd::Merged {
-                merge_commit,
-                base,
-                settled,
-            },
-            Ok(MergeOutcome::MergedIntoOtherBase {
-                confirmed,
-                actual,
-                merge_commit,
-                settled,
-            }) => MergeEnd::MergedIntoOtherBase {
-                confirmed,
-                actual,
-                merge_commit,
-                settled,
-            },
-            Ok(MergeOutcome::Refused { reason }) => MergeEnd::Refused { reason },
-            Ok(MergeOutcome::Unknown { problem, after }) => MergeEnd::Unknown { problem, after },
-            Err(stop) => MergeEnd::NotSent(stop),
-        });
-        true
-    }
-
-    /// The user asked to cancel.
-    pub fn cancel(&mut self) -> CancelAnswer {
-        match &mut self.phase {
-            MergePhase::Planning | MergePhase::Confirming(_) => {
-                self.phase = MergePhase::Done(MergeEnd::NotSent(MergeStop::Cancelled));
-                CancelAnswer::Ended
-            }
-            MergePhase::Merging { sent: true, .. } => CancelAnswer::TooLate,
-            MergePhase::Merging { cancelling, .. } => {
-                *cancelling = true;
-                CancelAnswer::Signal
-            }
-            MergePhase::Done(_) => CancelAnswer::Nothing,
-        }
-    }
-
-    /// The tab read `now` (its stamp, or `None` when the read failed): a flow that plans or
-    /// confirms ends when it no longer matches, since the challenge would stand for something
-    /// the user did not see. A running merge is the guard's to judge. Answers whether it ended.
-    pub fn follow(&mut self, now: Option<&PullRequestStamp>) -> bool {
-        if !matches!(self.phase, MergePhase::Planning | MergePhase::Confirming(_)) {
-            return false;
-        }
-        if now == Some(&self.stamp) {
-            return false;
-        }
-        let what = match now {
-            Some(_) => "the tab read it again and it is not what the challenge was for",
-            None => "the tab's read of it failed, so the screen no longer shows it as it is",
-        };
-        self.phase = MergePhase::Done(MergeEnd::NotSent(MergeStop::Refused(
-            MergeRefusal::Changed {
-                pull_request: format!("#{}", self.number),
-                what: what.to_owned(),
-            },
-        )));
-        true
     }
 }

@@ -33,7 +33,7 @@ mod admin;
 use rc_git_core::Oid;
 use serde_json::Value;
 
-use super::api::{GraphqlError, GraphqlReply, Mutated, Session};
+use super::api::{Answer, GraphqlError, GraphqlReply, Mutated, Session};
 use super::pull_types::{
     CheckTally, MergeMethod, MergeStateStatus, Mergeable, PullRequestDetail, PullRequestId,
     PullRequestStamp, PullRequestState,
@@ -48,13 +48,13 @@ use crate::{Action, Confirmation, Decision, Policy, Refusal};
 pub use admin::{Bypassed, PullRequestAdminMerge, admin_merge_blocker};
 
 /// The longest title a challenge quotes, in characters.
-const TITLE_CHARS: usize = 120;
+pub(super) const TITLE_CHARS: usize = 120;
 
 /// The longest branch name a challenge quotes, in characters.
-const BRANCH_CHARS: usize = 255;
+pub(super) const BRANCH_CHARS: usize = 255;
 
 /// The longest login a challenge names, in characters.
-const LOGIN_CHARS: usize = 100;
+pub(super) const LOGIN_CHARS: usize = 100;
 
 /// A pull request merge as the user confirms it: every fact its challenge names, read from the
 /// host just before, and the node id the mutation names it by. Built only by
@@ -203,7 +203,7 @@ impl PullRequestMerge {
 }
 
 /// What every merge challenge says it does.
-const UNDO: &str = "GitHub merges it for everyone and rc-git cannot undo it; the local \
+pub(super) const UNDO: &str = "GitHub merges it for everyone and rc-git cannot undo it; the local \
                     repository is unchanged until you fetch.";
 
 /// The line a plain merge's challenge adds for an account that may merge past branch
@@ -215,19 +215,19 @@ const BYPASS_RIGHT: &str = "your account can merge past branch protection, so a 
                             will not stop it";
 
 /// `label: value`, one line of a challenge.
-fn fact_line(label: &str, value: &str) -> String {
+pub(super) fn fact_line(label: &str, value: &str) -> String {
     format!("{label}: {value}")
 }
 
 /// `text`, already a [`fact`], in curly quotes.
-fn quoted(text: &str) -> String {
+pub(super) fn quoted(text: &str) -> String {
     format!("\u{201c}{text}\u{201d}")
 }
 
 /// `text` as a challenge's value: [`single_line`] (so no line break, control, invisible
 /// character or space but U+0020), cut to `max_chars`, with every double quote character shown
 /// as an escape too, so a title cannot close the quotes it is shown in.
-fn fact(text: &str, max_chars: usize) -> String {
+pub(super) fn fact(text: &str, max_chars: usize) -> String {
     let mut shown = String::new();
     for c in single_line(text, max_chars).chars() {
         if is_quote(c) {
@@ -259,11 +259,11 @@ fn is_quote(c: char) -> bool {
 }
 
 /// `owner/name#number`.
-fn label(target: &RepositoryTarget, number: u64) -> String {
+pub(super) fn label(target: &RepositoryTarget, number: u64) -> String {
     format!("{}/{}#{number}", target.owner(), target.name())
 }
 
-fn method_phrase(method: MergeMethod) -> &'static str {
+pub(super) fn method_phrase(method: MergeMethod) -> &'static str {
     match method {
         MergeMethod::Merge => "a merge commit",
         MergeMethod::Squash => "a squash merge",
@@ -272,7 +272,7 @@ fn method_phrase(method: MergeMethod) -> &'static str {
 }
 
 /// `3 of 5 checks passed, 1 failed, 1 pending`.
-fn checks_phrase(tally: &CheckTally) -> String {
+pub(super) fn checks_phrase(tally: &CheckTally) -> String {
     if tally.total == 0 {
         return "no checks".to_owned();
     }
@@ -338,7 +338,7 @@ pub enum MergeBlocker {
     NoAdminRight,
 }
 
-fn state_word(state: PullRequestState) -> &'static str {
+pub(super) fn state_word(state: PullRequestState) -> &'static str {
     match state {
         PullRequestState::Open => "open",
         PullRequestState::Closed => "closed",
@@ -653,21 +653,40 @@ pub fn merge_pull_request(
         return Err(MergeRefusal::Cancelled { pull_request });
     }
     (request.on_send)();
-    let lost = match Session::new(merge.host, merge.token).mutate(&proof, cancel) {
-        Mutated::NotSent(GitHubError::Cancelled { .. }) => {
-            return Err(MergeRefusal::Cancelled { pull_request });
-        }
-        Mutated::NotSent(source) => {
+    let mut outbox = match Session::new(merge.host, merge.token).mutate(proof) {
+        Ok(outbox) => outbox,
+        Err(source) => {
             return Err(MergeRefusal::NotSent {
                 pull_request,
                 source,
             });
         }
-        Mutated::Answered(answer) => match answered(answer, merge.stamp) {
+    };
+    let lost = match outbox.send_next(cancel) {
+        Some(Mutated::NotSent(GitHubError::Cancelled { .. })) => {
+            return Err(MergeRefusal::Cancelled { pull_request });
+        }
+        Some(Mutated::NotSent(source)) => {
+            return Err(MergeRefusal::NotSent {
+                pull_request,
+                source,
+            });
+        }
+        None => {
+            return Err(MergeRefusal::NotSent {
+                pull_request,
+                source: GitHubError::InvalidValue {
+                    field: "GitHub mutation",
+                    value: "the confirmed merge".to_owned(),
+                    reason: "it names no request to send",
+                },
+            });
+        }
+        Some(Mutated::Answered(answer)) => match answered(answer, merge.stamp) {
             Ok(outcome) => return Ok(outcome),
             Err(problem) => problem,
         },
-        Mutated::Lost(error) => error.to_string(),
+        Some(Mutated::Lost(error)) => error.to_string(),
     };
     Ok(settle(merge, lost, cancel))
 }
@@ -732,7 +751,7 @@ fn fresh(merge: &MergeTarget<'_>, cancel: &Cancel) -> Result<Fresh, MergeRefusal
 
 /// What differs between what the user saw and what was just read, as a phrase; `None` when
 /// nothing the stamp holds does.
-fn changed(seen: &PullRequestStamp, now: &PullRequestStamp) -> Option<String> {
+pub(super) fn changed(seen: &PullRequestStamp, now: &PullRequestStamp) -> Option<String> {
     let mut changes = Vec::new();
     if now.number != seen.number {
         changes.push(format!(
@@ -807,7 +826,7 @@ fn confirmed(
 /// The lines of the challenge text `now` that the challenge the user answered (`answered`) did
 /// not hold, joined with `; ` so a refusal stays one line; every line of `now` when the user
 /// answered no challenge, or nothing differs line by line.
-fn changed_lines(answered: &Decision, now: &str) -> String {
+pub(super) fn changed_lines(answered: &Decision, now: &str) -> String {
     let before: Vec<&str> = match answered {
         Decision::Confirm(challenge) => challenge.summary().lines().collect(),
         Decision::Allow | Decision::Deny { .. } => Vec::new(),
@@ -850,7 +869,7 @@ pub(super) const VALIDATION_CODES: [&str; 4] = [
 ];
 
 /// Whether `error` alone shows the mutation did not merge.
-fn refuses(error: &GraphqlError) -> bool {
+pub(super) fn refuses(error: &GraphqlError) -> bool {
     let kind = error
         .kind
         .as_deref()
@@ -862,29 +881,80 @@ fn refuses(error: &GraphqlError) -> bool {
     kind || invalid
 }
 
+/// A mutation's answer before its payload is read: the reply, or a status that already settles
+/// it (refused: a 401, a spent rate limit, another 4xx), or one that leaves it unknown (a 5xx, a
+/// 2xx that is not JSON, an answer that is not a GraphQL reply).
+pub(super) enum FirstLook {
+    /// A GraphQL reply, its `data` and `errors` still to read.
+    Reply(GraphqlReply),
+    /// GitHub refused it, for this reason.
+    Refused(String),
+    /// GitHub may have acted on it; this went wrong with the answer.
+    Unknown(String),
+}
+
+/// The first look at a GraphQL mutation's `answer`.
+pub(super) fn first_look(answer: Result<Answer, GitHubError>) -> FirstLook {
+    let error = match answer {
+        Ok(Answer::Graphql(reply)) => return FirstLook::Reply(reply),
+        Ok(Answer::Rest { status }) => {
+            return FirstLook::Unknown(format!(
+                "GitHub answered HTTP {status} without a GraphQL reply"
+            ));
+        }
+        Err(error) => error,
+    };
+    match error {
+        error @ (GitHubError::Unauthorized { .. } | GitHubError::RateLimited { .. }) => {
+            FirstLook::Refused(error.to_string())
+        }
+        error @ GitHubError::Status { status, .. } if (400..500).contains(&status) => {
+            FirstLook::Refused(error.to_string())
+        }
+        // A 5xx, or a 2xx that is not JSON: the host may have acted before it failed.
+        error => FirstLook::Unknown(error.to_string()),
+    }
+}
+
+/// What the errors of a mutation's `reply` say once its payload proved nothing: refused, with
+/// GitHub's reason, only when the payload is empty (`payload_present` false) and every error
+/// shows the mutation did not run or was refused ([`refuses`]); otherwise the problem to report
+/// beside the read that follows. `whether` and `said` finish its sentences ("it merged", "the
+/// pull request merged").
+pub(super) fn errors_verdict(
+    reply: &GraphqlReply,
+    payload_present: bool,
+    (whether, said): (&str, &str),
+) -> Result<String, String> {
+    match reply.errors.first() {
+        Some(first) if !payload_present && reply.errors.iter().all(refuses) => {
+            if reply.errors.iter().any(GraphqlError::is_rate_limited) {
+                Ok(reply.rate_limited().to_string())
+            } else {
+                Ok(first.message.clone())
+            }
+        }
+        Some(first) => Err(format!(
+            "GitHub answered with an error that does not say whether {whether}: {}",
+            first.message
+        )),
+        None => Err(format!("GitHub's answer did not say {said}")),
+    }
+}
+
 /// What the host's answer to the mutation says: a final outcome, or, when it settles nothing,
 /// the problem to report beside the read that follows. The answer's `data` is read first: a
 /// pull request it reports merged at the confirmed head is merged, whatever errors or rate-limit
 /// headers came with it. Only an answer whose `mergePullRequest` is empty, with errors that each
 /// show the mutation did not run or was refused ([`refuses`]), is a refusal.
 fn answered(
-    answer: Result<GraphqlReply, GitHubError>,
+    answer: Result<Answer, GitHubError>,
     stamp: &PullRequestStamp,
 ) -> Result<MergeOutcome, String> {
-    let reply = match answer {
-        Ok(reply) => reply,
-        Err(error @ (GitHubError::Unauthorized { .. } | GitHubError::RateLimited { .. })) => {
-            return Ok(MergeOutcome::Refused {
-                reason: error.to_string(),
-            });
-        }
-        Err(error @ GitHubError::Status { status, .. }) if (400..500).contains(&status) => {
-            return Ok(MergeOutcome::Refused {
-                reason: error.to_string(),
-            });
-        }
-        // A 5xx, or a 2xx that is not JSON: the host may have merged before it failed.
-        Err(error) => return Err(error.to_string()),
+    let reply = match first_look(answer) {
+        FirstLook::Reply(reply) => reply,
+        FirstLook::Refused(reason) => return Ok(MergeOutcome::Refused { reason }),
+        FirstLook::Unknown(problem) => return Err(problem),
     };
     let payload = reply
         .data
@@ -905,21 +975,12 @@ fn answered(
         let merge_commit = oid_at(pull_request, &["mergeCommit", "oid"]);
         return Ok(merged_into(stamp, base, merge_commit, Settled::Answer));
     }
-    match reply.errors.first() {
-        Some(first) if payload.is_none() && reply.errors.iter().all(refuses) => {
-            let reason = if reply.errors.iter().any(GraphqlError::is_rate_limited) {
-                reply.rate_limited().to_string()
-            } else {
-                first.message.clone()
-            };
-            Ok(MergeOutcome::Refused { reason })
-        }
-        Some(first) => Err(format!(
-            "GitHub answered with an error that does not say whether it merged: {}",
-            first.message
-        )),
-        None => Err("GitHub's answer did not say the pull request merged".to_owned()),
-    }
+    errors_verdict(
+        &reply,
+        payload.is_some(),
+        ("it merged", "the pull request merged"),
+    )
+    .map(|reason| MergeOutcome::Refused { reason })
 }
 
 /// A merge at the confirmed head that GitHub says landed on `base` (`None`: GitHub did not
@@ -947,7 +1008,7 @@ fn merged_into(
 }
 
 /// The object id at `path` inside `value`.
-fn oid_at(value: &Value, path: &[&str]) -> Option<Oid> {
+pub(super) fn oid_at(value: &Value, path: &[&str]) -> Option<Oid> {
     let mut node = value;
     for key in path {
         node = node.get(key)?;

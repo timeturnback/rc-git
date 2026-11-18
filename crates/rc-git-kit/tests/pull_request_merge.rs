@@ -21,13 +21,14 @@ use rc_git_kit::platform::settings::{MemorySettings, SettingsStore};
 use rc_git_kit::pull_requests::copy::{
     merge_note, merge_note_alarms, merge_outcome_log, merge_stop_message,
 };
+use rc_git_kit::pull_requests::flow::CancelAnswer;
 use rc_git_kit::pull_requests::link::RepositoryLink;
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::merge::{
-    AdminMergeButton, CancelAnswer, MergeAsk, MergeButton, MergeEnd, MergeFlow, MergePhase,
-    MergeStop, PlanAsk, admin_merge_button, allowed_methods, merge_button,
+    AdminMergeButton, MergeAsk, MergeButton, MergeEnd, MergeFlow, MergePhase, MergeStop, PlanAsk,
+    admin_merge_button, allowed_methods, merge_button,
 };
-use rc_git_kit::pull_requests::model::{MergeEvent, PullRequestsModel};
+use rc_git_kit::pull_requests::model::{FlowEvent, PullRequestsModel};
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{
     AfterLoss, Cancel, CheckList, MergeBlocker, MergeKind, MergeMethod, MergeMethods, MergeOutcome,
@@ -153,7 +154,7 @@ fn a_flow_drops_answers_of_another_generation_and_stops_only_before_the_send() {
     flow.sent(3);
     assert!(matches!(
         flow.phase(),
-        MergePhase::Merging { sent: false, .. }
+        MergePhase::Sending { sent: false, .. }
     ));
     flow.sent(4);
     assert_eq!(flow.cancel(), CancelAnswer::TooLate);
@@ -316,7 +317,7 @@ fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
         MergeMethod::Squash,
         MergeKind::Admin,
     );
-    assert_eq!(load.kind, MergeKind::Admin);
+    assert_eq!(load.ask.kind, MergeKind::Admin);
     let plan = admin_merge_plan(&blocked(7), MergeMethod::Squash);
     assert!(!flow.planned(2, Ok(plan.clone())), "another generation");
     assert_eq!(flow.phase(), &MergePhase::Planning);
@@ -326,7 +327,7 @@ fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
     let typed = "  #07 x\t".to_owned();
     let load = flow.confirm(typed.clone()).unwrap();
     assert_eq!(load.typed, typed, "the guard alone judges what was typed");
-    assert_eq!(load.kind, MergeKind::Admin);
+    assert_eq!(load.ask.kind, MergeKind::Admin);
     assert_eq!(load.decision, plan.decision);
     assert!(!flow.finished(
         4,
@@ -365,7 +366,7 @@ fn an_admin_flow_keeps_its_kind_and_hands_the_typed_text_on_untouched() {
 struct Harness {
     fake: FakePullRequests,
     model: Entity<PullRequestsModel>,
-    events: Arc<Mutex<Vec<MergeEvent>>>,
+    events: Arc<Mutex<Vec<FlowEvent>>>,
     log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -384,7 +385,7 @@ fn harness(cx: &mut TestAppContext) -> Harness {
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
     cx.update(|cx| {
-        cx.subscribe(&model, move |_, event: &MergeEvent, _| {
+        cx.subscribe(&model, move |_, event: &FlowEvent, _| {
             seen.lock().unwrap().push(*event);
         })
         .detach();
@@ -426,7 +427,7 @@ impl Harness {
                     || m.merge_flow(7).is_some_and(|flow| {
                         matches!(
                             flow.phase(),
-                            MergePhase::Planning | MergePhase::Merging { .. }
+                            MergePhase::Planning | MergePhase::Sending { .. }
                         )
                     })
             });
@@ -450,7 +451,7 @@ impl Harness {
 
     fn confirm(&self, cx: &mut TestAppContext) {
         self.model
-            .update(cx, |m, cx| m.confirm_merge(7, String::new(), cx));
+            .update(cx, |m, cx| m.confirm_flow(7, String::new(), cx));
     }
 
     fn merges(&self) -> (usize, usize) {
@@ -467,8 +468,8 @@ async fn a_confirmed_merge_sends_once_then_reads_the_tab_and_the_list_again(
     h.open(cx).await;
     h.start(cx);
     h.settle(cx);
-    assert!(matches!(h.phase(cx), MergePhase::Confirming(_)));
-    assert_eq!(*h.events.lock().unwrap(), [MergeEvent::Confirm(7)]);
+    assert!(matches!(h.phase(cx), MergePhase::Confirming));
+    assert_eq!(*h.events.lock().unwrap(), [FlowEvent::Confirm(7)]);
     let (details, lists) = {
         let state = h.fake.state();
         (state.detail_calls.len(), state.list_calls.len())
@@ -538,13 +539,13 @@ async fn a_read_that_moves_the_head_while_the_challenge_is_up_withdraws_it(
     h.open(cx).await;
     h.start(cx);
     h.settle(cx);
-    assert!(matches!(h.phase(cx), MergePhase::Confirming(_)));
+    assert!(matches!(h.phase(cx), MergePhase::Confirming));
     h.fake.state().details.insert(7, Ok(detail(8)));
     h.model.update(cx, PullRequestsModel::refresh_detail);
     h.settle(cx);
     assert_eq!(
         *h.events.lock().unwrap(),
-        [MergeEvent::Confirm(7), MergeEvent::Withdrawn(7)]
+        [FlowEvent::Confirm(7), FlowEvent::Withdrawn(7)]
     );
     h.confirm(cx);
     h.settle(cx);
@@ -563,14 +564,14 @@ async fn a_plan_answer_after_a_cancel_is_dropped(cx: &mut TestAppContext) {
     h.fake.state().plan_gate = Some(Arc::clone(&gate));
     h.start(cx);
     assert!(gate.wait_until_arrived());
-    h.model.update(cx, |m, cx| m.cancel_merge(7, cx));
+    h.model.update(cx, |m, cx| m.cancel_flow(7, cx));
     gate.open();
     h.settle(cx);
     assert_eq!(
         h.phase(cx),
         MergePhase::Done(MergeEnd::NotSent(MergeStop::Cancelled))
     );
-    assert_eq!(*h.events.lock().unwrap(), [MergeEvent::Withdrawn(7)]);
+    assert_eq!(*h.events.lock().unwrap(), [FlowEvent::Withdrawn(7)]);
     h.confirm(cx);
     h.settle(cx);
     assert_eq!(h.merges(), (0, 0));
@@ -586,7 +587,7 @@ async fn cancel_stops_a_merge_only_until_its_request_is_sent(cx: &mut TestAppCon
     h.settle(cx);
     h.confirm(cx);
     assert!(unsent.wait_until_arrived());
-    h.model.update(cx, |m, cx| m.cancel_merge(7, cx));
+    h.model.update(cx, |m, cx| m.cancel_flow(7, cx));
     unsent.open();
     h.settle(cx);
     assert_eq!(h.merges(), (1, 0), "asked, never sent");
@@ -598,13 +599,13 @@ async fn cancel_stops_a_merge_only_until_its_request_is_sent(cx: &mut TestAppCon
     h.fake.state().unsent_gate = None;
     let sent = Arc::new(CallGate::new());
     h.fake.state().sent_gate = Some(Arc::clone(&sent));
-    h.model.update(cx, |m, cx| m.dismiss_merge(7, cx));
+    h.model.update(cx, |m, cx| m.dismiss_flow(7, cx));
     h.start(cx);
     h.settle(cx);
     h.confirm(cx);
     assert!(sent.wait_until_arrived());
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !matches!(h.phase(cx), MergePhase::Merging { sent: true, .. }) {
+    while !matches!(h.phase(cx), MergePhase::Sending { sent: true, .. }) {
         assert!(Instant::now() < deadline, "the send was never seen");
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(1));
@@ -617,7 +618,7 @@ async fn cancel_stops_a_merge_only_until_its_request_is_sent(cx: &mut TestAppCon
         .unwrap()
         .contains("cannot be stopped")
     );
-    h.model.update(cx, |m, cx| m.cancel_merge(7, cx));
+    h.model.update(cx, |m, cx| m.cancel_flow(7, cx));
     sent.open();
     h.settle(cx);
     assert!(matches!(
@@ -780,11 +781,11 @@ async fn an_admin_merge_starts_only_from_its_control_and_sends_the_typed_text_as
         h.fake.state().plan_calls,
         [(planned.stamp(), MergeMethod::Squash, MergeKind::Admin)]
     );
-    assert!(matches!(h.phase(cx), MergePhase::Confirming(_)));
-    assert_eq!(*h.events.lock().unwrap(), [MergeEvent::Confirm(7)]);
+    assert!(matches!(h.phase(cx), MergePhase::Confirming));
+    assert_eq!(*h.events.lock().unwrap(), [FlowEvent::Confirm(7)]);
     let typed = " 7 \u{202e}".to_owned();
     h.model
-        .update(cx, |m, cx| m.confirm_merge(7, typed.clone(), cx));
+        .update(cx, |m, cx| m.confirm_flow(7, typed.clone(), cx));
     h.settle(cx);
     let state = h.fake.state();
     assert_eq!((state.merge_calls.len(), state.merges_sent), (1, 1));
@@ -826,7 +827,7 @@ async fn no_admin_merge_starts_without_its_control(cx: &mut TestAppContext) {
         h.model
             .update(cx, |m, cx| m.start_admin_merge(MergeMethod::Squash, cx));
         h.model
-            .update(cx, |m, cx| m.confirm_merge(7, "7".to_owned(), cx));
+            .update(cx, |m, cx| m.confirm_flow(7, "7".to_owned(), cx));
         h.settle(cx);
         assert!(h.model.read_with(cx, |m, _| m.merge_flow(7).is_none()));
         assert!(h.fake.state().plan_calls.is_empty());
@@ -853,7 +854,7 @@ async fn an_admin_plan_answer_after_a_cancel_is_dropped(cx: &mut TestAppContext)
     h.model
         .update(cx, |m, cx| m.start_admin_merge(MergeMethod::Squash, cx));
     assert!(gate.wait_until_arrived());
-    h.model.update(cx, |m, cx| m.cancel_merge(7, cx));
+    h.model.update(cx, |m, cx| m.cancel_flow(7, cx));
     gate.open();
     h.settle(cx);
     assert_eq!(
@@ -861,7 +862,7 @@ async fn an_admin_plan_answer_after_a_cancel_is_dropped(cx: &mut TestAppContext)
         MergePhase::Done(MergeEnd::NotSent(MergeStop::Cancelled))
     );
     h.model
-        .update(cx, |m, cx| m.confirm_merge(7, "7".to_owned(), cx));
+        .update(cx, |m, cx| m.confirm_flow(7, "7".to_owned(), cx));
     h.settle(cx);
     assert_eq!(h.merges(), (0, 0));
 }
@@ -1078,7 +1079,7 @@ async fn a_merge_sent_before_a_relink_is_logged_as_its_own_and_shown_by_no_new_t
     h.confirm(cx);
     assert!(sent.wait_until_arrived());
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !matches!(h.phase(cx), MergePhase::Merging { sent: true, .. }) {
+    while !matches!(h.phase(cx), MergePhase::Sending { sent: true, .. }) {
         assert!(Instant::now() < deadline, "the send was never seen");
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(1));

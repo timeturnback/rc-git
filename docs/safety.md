@@ -113,8 +113,10 @@ files or hunks, the stash lifecycle, and discarding uncommitted changes; switchi
 another local branch, which the Back-to-default control composes with a fetch and a
 fast-forward; the remote operations — fetch, fast-forward pull, plain push, and their sync
 composition; the fetch of a pull request's head from its page or `rc-git pr diff --fetch`;
-and merging a pull request on GitHub from its page or `rc-git pr merge`, plainly or as an admin
-merge past branch protection — all driven through
+merging a pull request on GitHub from its page or `rc-git pr merge`, plainly or as an admin
+merge past branch protection; turning a pull request's auto-merge on or off (`rc-git pr
+auto-merge`); and re-running the failed jobs of its GitHub Actions runs (`rc-git pr rerun`) —
+all driven through
 `rc_git_guard::actions` from rc-git-kit. Every other row of the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
@@ -142,6 +144,9 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | stash drop | type `drop`, backup ref | same |
 | merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge is one labelled line per fact, in a fixed order, from a read made just before: the repository and its host, the pull request's number, the account that merges (`login@host`), the base, the short head and its branch, the method and the checks; for an account the read says may merge past branch protection, a line saying GitHub will not stop this merge if a requirement starts blocking before it runs; the title last ("Merging a pull request" below) | same: GitHub's branch protection guards the base, not rc-git's protected names |
 | admin merge a pull request on GitHub past the branch protection that blocks it (`Destructive`: it skips rules a team set for the base on purpose, and no revert puts those back) | type the pull request's number; offered only for a read GitHub reports blocked or behind that the account may merge past (`viewerCanMergeAsAdmin`); the challenge has the plain merge's lines, says it goes past branch protection, lists what the read shows it skips, and says the list may not be complete, with the title last ("Admin merge" below) | same |
+| turn on a pull request's auto-merge on GitHub (`Recoverable`, as a merge: GitHub merges it later, by itself) | confirm; offered only for a read branch protection blocks (blocked or behind) in a repository that allows auto-merge, by an account GitHub says may (`viewerCanEnableAutoMerge`), with auto-merge off; the challenge has the merge's lines from the repository to the checks, a line of its own saying GitHub will merge it by itself once its requirements are met, including commits pushed to its head branch after the confirmation, and rc-git will not ask again; for a head in another owner's repository, a line naming that owner, who can push more commits; the title last ("Auto-merge" below) | same |
+| turn off a pull request's auto-merge on GitHub (`Recoverable`: turning it on again undoes it) | confirm; offered only while the read shows it on and GitHub says the account may (`viewerCanDisableAutoMerge`); the challenge names the method and who turned it on | same |
+| re-run the failed jobs of a pull request head's GitHub Actions runs (`Recoverable`: nothing is lost, but the jobs run) | confirm; offered only for an open pull request with at least one failed run; the challenge lists each run (at most 10) with its failed checks' names, what it leaves out, and, for a head in another owner's repository, that GitHub decides how those runs run; never the endpoint that approves runs ("Re-running failed jobs" below) | same |
 
 Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
 a case-insensitive volume stores `MAIN` and `main` as one file, and the policy has no
@@ -446,17 +451,22 @@ libcurl directly.
   as "other" beside the backup refs, never as a branch or a tag.
 
 - **Mutations take the proof.** A GitHub mutation leaves rc-git only through
-  `Session::mutate` (`github/api.rs`), which takes a `Confirmation` and builds the request from
-  the action that proof was issued for (`github/mutation.rs`): a closed set of static
-  documents, every value in `variables`, sent to the session's host only after the action's
-  repository is checked to be on it. A `Confirmation` carries its action, so a proof for any
-  other action yields no mutation, and nothing but the policy builds one. The read primitive
-  (`Session::graphql`) sends a `query` document only and refuses a mutation before any request.
-  The client has no REST `POST` of its own; a later REST mutation joins the closed set.
+  `Session::mutate` (`github/api.rs`), which takes the `Confirmation` itself, by value, and
+  hands back an outbox of the requests built from the action that proof was issued for
+  (`github/mutation.rs`): a closed set of static GraphQL documents, every value in `variables`,
+  and one REST path, the re-run of failed jobs, built from plain segments and an integer run id
+  through `GitHubHost::rest_url`. Everything goes to the session's host only, after the action's
+  repository is checked to be on it. The outbox sends each request at most once, in order, and
+  the caller decides only whether to send the next one; since it owns the proof, no second
+  outbox can be made from it, so nothing can send a request again. A `Confirmation` carries its
+  action, so a proof for any other action yields no mutation or that action's own, and nothing
+  but the policy builds one. The read primitive (`Session::graphql`) sends a `query` document
+  only and refuses a mutation before any request. The client has no free-standing REST `POST`.
 
 Sign-in, the token check, the refresh and the pull request reads change no repository, so they
-have no `Action`; fetching a pull request's head and merging a pull request have their rows
-above, and the pull request mutations of later slices will each get one too.
+have no `Action`; fetching a pull request's head, merging it, changing its auto-merge and
+re-running its failed jobs have their rows above, and the pull request mutations of later
+slices will each get one too.
 
 ### Merging a pull request
 
@@ -566,7 +576,7 @@ without the pull request's number typed (`github/merge/admin.rs`).
   guard alone verifies it.
 - **The CLI's plan.** A script that knows the number could otherwise confirm an admin merge it
   never saw. `pr merge --admin` without `--confirm` prints the challenge, the skipped list and
-  `plan<TAB>fingerprint`: 16 hex digits of a SHA-1 over the guard's whole decision
+  `plan<TAB>fingerprint`: 32 hex digits of a SHA-1 over the guard's whole decision
   (`Decision::fingerprint`, stable within one build). The real run needs `--plan` with that
   fingerprint beside `--confirm`; it computes the fingerprint of the decision its own fresh
   read gives, and any difference (a check, the title, what is skipped, another build) refuses
@@ -595,6 +605,111 @@ without the pull request's number typed (`github/merge/admin.rs`).
   nothing about bypass). When GitHub refuses an admin merge, the note passes its reason through
   and says that rc-git has not verified the second point, so signing in through an OAuth App or
   with a personal access token may be needed.
+
+### Auto-merge
+
+Turning on auto-merge lets GitHub merge a pull request by itself once its requirements are met,
+with whatever was pushed to its head branch by then, and nobody is asked again; so rc-git
+confirms it like a merge and says so (`github/auto_merge.rs`). The app (Enable Auto-Merge and
+Disable Auto-Merge on the pull request's page) and the CLI (`rc-git pr auto-merge --enable
+--method m` or `--disable`, with `--head`, `--base` and `--yes`) both call `set_auto_merge`:
+
+1. **Read it again, compare it with the stamp**, as the merge does.
+2. **Refuse what the change cannot do.** Turning it on (`enable_auto_merge_blocker`, which the
+   control uses too) needs what the plain merge needs except the merge state: open, not a draft,
+   a method the repository allows, no conflicts, mergeability computed, a node id; then a merge
+   state of blocked or behind. A pull request the plain merge can take now (clean, unstable,
+   has hooks) is refused with "use Merge instead": GitHub's documentation says the option to
+   enable auto-merge "is shown only on pull requests that cannot be merged immediately". Then
+   auto-merge must be off, the repository must allow it (`autoMergeAllowed`; a host that does
+   not report it refuses), and GitHub must say the account may (`viewerCanEnableAutoMerge`).
+   Turning it off (`disable_auto_merge_blocker`) needs an open pull request with auto-merge on
+   and `viewerCanDisableAutoMerge`.
+3. **Authorize the action built from that read**; the answered decision must equal the decision
+   now. The challenge to turn it on has the merge's lines from the repository to the checks, then
+   "Merges by itself: GitHub will merge this pull request by itself when its requirements are
+   met, including commits pushed to its head branch after this confirmation; rc-git will not ask
+   again". For a head in a repository another owner owns (`isCrossRepository`, with
+   `headRepositoryOwner` other than the base's owner, compared without ASCII case), a "Fork" line
+   names that owner, who can push more commits to it. Both lines are part of the decision, so a
+   pull request that became a fork's, a check that moved, or auto-merge turned on by someone else
+   between the challenge and the confirm refuses. The challenge to turn it off names the method
+   and who turned it on, and a change of either refuses too.
+4. **Send exactly one mutation**, checked against GitHub's GraphQL reference:
+   `enablePullRequestAutoMerge` with `pullRequestId`, `expectedHeadOid` (the confirmed head) and
+   `mergeMethod` (always sent: "if omitted, defaults to MERGE"), or `disablePullRequestAutoMerge`
+   with `pullRequestId`; neither the commit message fields nor `includeStack`. Each answer selects
+   the pull request's `state`, `headRefOid` and `autoMergeRequest { mergeMethod }`, and the
+   enable answer its `baseRefName`.
+5. **Three outcomes.** *Done*: the answer shows the pull request open with an auto-merge request
+   of the confirmed method at the confirmed head (on), or open with `autoMergeRequest` present and
+   null (off). On for a pull request GitHub names on another base than the confirmed one is its
+   own outcome (*on for another base*: the page warns, the log marks it, the CLI prints
+   `auto-merge-other-base` and exits 13), since it will merge there. *Refused*: as for the merge
+   (a 4xx; a 200 with an empty payload and errors that each show the mutation did not run).
+   *Unknown*: anything else; then one read with a fresh cancel flag settles it: on means open at
+   the confirmed head with an auto-merge request of the confirmed method, off means open with
+   none (whatever the head), and any other state (another method, another head, merged, closed,
+   unread) stays unknown and is named. Nothing sends it again.
+
+GitHub's documentation says auto-merge is disabled when someone without write permissions to
+the repository pushes new changes to the head branch or switches its base branch
+("Automatically merging a pull request"); rc-git does not restate that in the challenge, and
+says nothing about pushes by anyone else. With a merge queue, GitHub ignores the merge method
+the mutation names; rc-git does not read whether the base requires a merge queue, and a settle
+read that finds another method reads as unknown. Every attempt and outcome is a line in the
+app's log, as for the merge.
+
+### Re-running failed jobs
+
+Re-run Failed Jobs on the pull request's page and `rc-git pr rerun` (`--head`, `--base`,
+`--yes`) both call `rerun_failed_jobs` (`github/rerun.rs`). It asks GitHub to re-run the
+failed jobs of the head's GitHub Actions runs through the REST endpoint "Re-run failed jobs
+from a workflow run": `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs`, body
+`{"enable_debug_logging":false}`, success `201 Created` (GitHub's REST reference; the body of
+the answer is not documented and not read). GitHub's permission table puts it under the
+"Actions" repository permission, write; OAuth and classic tokens need `repo`. rc-git never calls
+`POST .../actions/runs/{run_id}/approve` or anything else that approves a run from a fork or a
+first-time contributor, and offers nothing that does.
+
+- **Which runs** (`failed_runs`, which the control uses too): the checks of the head the read
+  holds that are GitHub Actions jobs (a check run whose `checkSuite.workflowRun.databaseId` is
+  set) and finished as `FAILURE`, `TIMED_OUT` or `STARTUP_FAILURE` (GitHub's
+  `CheckConclusionState` values). `CANCELLED` (someone stopped it), `ACTION_REQUIRED` (waiting on
+  someone) and every other conclusion are not counted, nor are other apps' checks and commit
+  statuses; the challenge counts them apart ("Not included"), with the checks the read did not
+  hold. A run id is a server integer: only one from 1 to 2^63 − 1 becomes a `RunId`, which only
+  ever becomes a path segment; zero, a negative number, a fraction, a string or a larger number
+  never becomes a request. Runs are sent in ascending id order, at most 10 per confirmation; the
+  challenge says how many more there are and that this confirmation leaves them out.
+- **The sequence** is the merge's: read again and compare the stamp; refuse a pull request that
+  is not open or has no failed run (`rerun_blocker`); authorize, with the run list and each run's
+  failed check names (neutralized, five named per run and the rest counted) part of the decision,
+  so a job that passed or failed since the challenge refuses; then one request per run, each at
+  most once, in order.
+- **Outcomes per run.** *Requested*: `201 Created`. *Refused*: a 4xx (a run GitHub does not know
+  is a 404; one it will not re-run, or an account that may not, another 4xx), a refused token, a
+  spent rate limit. *Unknown*: a 5xx, any other 2xx, a dropped connection, a timeout, a cancel
+  while the request ran. *Not sent*: a request that never left. After a plain 4xx the next run is
+  still sent; after a refused token, a spent rate limit, an unknown answer or a cancel, no further
+  run is sent and each is reported not sent. No read settles a run, since no read shows that a
+  re-run was asked for, and nothing is ever sent again. The CLI exits 0 only when every run was
+  requested, 12 when one is unknown, else 11. After a re-run the page reads the pull request and
+  its checks again.
+- **What GitHub documents about a re-run**, which the challenge says: it re-runs the failed jobs
+  and the jobs that depend on them, with the same commit and ref as the original run, and with
+  the privileges of the actor who first triggered the workflow, not of the one who re-runs it
+  ("Re-running workflows and jobs"). For a head in another owner's repository the challenge adds
+  that GitHub decides which workflow files, secrets and permissions those runs use, and that
+  rc-git approves no run that waits for approval; it asserts nothing more.
+- **Unverified against GitHub:** that a check run's `checkSuite.workflowRun.databaseId` (GraphQL:
+  "Identifies the primary key from the database") is the REST `run_id`; GitHub's references
+  describe both only as ids and do not say they are the same. If they differ, a request names a
+  run id GitHub does not know in this repository and is answered 404, refused and shown as such;
+  rc-git cannot rule out that such an id names another run of the same repository, whose failed
+  jobs would then re-run. The same is true of a check run's own `databaseId` and the Actions job
+  id the job-logs endpoint takes. Also unverified: which jobs GitHub counts as failed in a run
+  with cancelled jobs, and the body of the `201` answer.
 
 ## Updater
 

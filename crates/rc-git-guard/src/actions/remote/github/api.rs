@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::host::GitHubHost;
 use super::http::{Body, Delivery, Method, Request, Response, deliver, send};
-use super::mutation::Mutation;
+use super::mutation::{Mutation, MutationRequest};
 use super::secret::ApiToken;
 use super::text::server_text;
 use super::{GitHubError, GitHubResult, RepositoryTarget};
@@ -144,27 +144,60 @@ impl<'a> Session<'a> {
         Ok(answer)
     }
 
-    /// Sends the one GitHub mutation `proof` confirms, once: its static document and the
-    /// variables derived from the confirmed action alone, to this session's host only. This is
-    /// the only way a mutation leaves rc-git, and nothing builds a [`Confirmation`] but the
-    /// policy, so no code path sends a mutation without a verified challenge. It never retries:
-    /// what came back, or why nothing did, is the caller's to read. A `200` answer is handed back
-    /// whole, its `data` and `errors` apart, whatever its rate-limit headers say: a spent limit
-    /// does not undo a merge the answer's `data` reports, so only the caller, reading `data`
-    /// first, may call an answer a refusal.
-    pub(super) fn mutate(&self, proof: &Confirmation, cancel: &Cancel) -> Mutated {
-        let Some(mutation) = Mutation::of(proof) else {
-            return Mutated::NotSent(GitHubError::InvalidValue {
+    /// The requests the GitHub action `proof` confirms, ready to leave one at a time in their
+    /// fixed order ([`Outbox::send_next`]): each a static GraphQL document or a REST path built
+    /// from the confirmed action alone, to this session's host only. This is the only way a
+    /// mutation leaves rc-git, and nothing builds a [`Confirmation`] but the policy, so no code
+    /// path sends a mutation without a verified challenge. The outbox takes the proof, and each
+    /// request leaves at most once: nothing can send it again, at any layer.
+    ///
+    /// # Errors
+    /// [`GitHubError::InvalidValue`] for a proof of an action rc-git performs on no GitHub host,
+    /// and [`GitHubError::ForeignRemote`] for one whose repository is on another host; nothing
+    /// is sent for either.
+    pub(super) fn mutate(&self, proof: Confirmation) -> GitHubResult<Outbox<'a>> {
+        let Some(mutation) = Mutation::of(&proof) else {
+            return Err(GitHubError::InvalidValue {
                 field: "GitHub mutation",
                 value: "the confirmed action".to_owned(),
                 reason: "it is not an action rc-git performs on GitHub",
             });
         };
-        if let Err(error) = self.check_target(mutation.target()) {
-            return Mutated::NotSent(error);
-        }
-        let op = mutation.op();
-        let request = self.graphql_request(op, mutation.document(), &mutation.variables());
+        self.check_target(mutation.target())?;
+        Ok(Outbox {
+            session: *self,
+            proof,
+            next: 0,
+        })
+    }
+
+    /// Sends one request of a confirmed mutation, once, and hands back what came of it. It never
+    /// retries. A `2xx` GraphQL answer is handed back whole, its `data` and `errors` apart,
+    /// whatever its rate-limit headers say: a spent limit does not undo a merge the answer's
+    /// `data` reports, so only the caller, reading `data` first, may call an answer a refusal. A
+    /// REST answer is its status alone; a `2xx` body is never parsed.
+    fn send_mutation(
+        &self,
+        op: &'static str,
+        request: MutationRequest,
+        cancel: &Cancel,
+    ) -> Mutated {
+        let (request, rest) = match request {
+            MutationRequest::Graphql {
+                document,
+                variables,
+            } => (self.graphql_request(op, document, &variables), false),
+            MutationRequest::Rest { segments, body } => {
+                let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
+                let url = match self.host.rest_url(&segments, "") {
+                    Ok(url) => url,
+                    Err(error) => return Mutated::NotSent(error),
+                };
+                let mut request = self.request(op, Method::Post, url);
+                request.body = Some(Body::Json(body.to_string().into_bytes()));
+                (request, true)
+            }
+        };
         let shown_url = request.url.as_str().to_owned();
         let response = match deliver(request, cancel) {
             Delivery::NotSent(error) => return Mutated::NotSent(error),
@@ -172,8 +205,17 @@ impl<'a> Session<'a> {
             Delivery::Sent(Ok(response)) => response,
         };
         let secrets = [self.token.expose_secret()];
+        if rest {
+            let status = response.status;
+            if (200..300).contains(&status) {
+                return Mutated::Answered(Ok(Answer::Rest { status }));
+            }
+            let judged = judge(response, op, &shown_url, self.host, &secrets)
+                .map(|_| Answer::Rest { status });
+            return Mutated::Answered(judged);
+        }
         let judged = judge(response, op, &shown_url, self.host, &secrets)
-            .map(|reply| self.read_graphql(op, shown_url, &reply));
+            .map(|reply| Answer::Graphql(self.read_graphql(op, shown_url, &reply)));
         Mutated::Answered(judged)
     }
 
@@ -235,13 +277,45 @@ impl<'a> Session<'a> {
     }
 }
 
+/// The requests of one confirmed action, each sent at most once, in order. It owns the proof, so
+/// no second outbox can be made from it, and the next request to send only ever moves forward.
+#[derive(Debug)]
+pub(super) struct Outbox<'a> {
+    session: Session<'a>,
+    proof: Confirmation,
+    next: usize,
+}
+
+impl Outbox<'_> {
+    /// Sends the next request, once; `None` when every request already went. The caller stops
+    /// whenever it wants: a request not sent yet is simply never sent.
+    pub(super) fn send_next(&mut self, cancel: &Cancel) -> Option<Mutated> {
+        let mutation = Mutation::of(&self.proof)?;
+        let request = mutation.request(self.next)?;
+        self.next += 1;
+        Some(self.session.send_mutation(mutation.op(), request, cancel))
+    }
+}
+
+/// A mutation's answer: a GraphQL reply, or a REST status in `2xx`.
+#[derive(Debug)]
+pub(super) enum Answer {
+    /// A GraphQL answer, its `data` and `errors` apart.
+    Graphql(GraphqlReply),
+    /// A REST answer in `2xx`, with its status; the body is not read.
+    Rest {
+        /// The status.
+        status: u32,
+    },
+}
+
 /// What a mutation came to: refused before it left, answered, or lost on the way back.
 #[derive(Debug)]
 pub(super) enum Mutated {
     /// Nothing left the machine.
     NotSent(GitHubError),
-    /// The host answered: its reply as a GraphQL answer, or the status it refused with.
-    Answered(GitHubResult<GraphqlReply>),
+    /// The host answered: its reply, or the status it refused with.
+    Answered(GitHubResult<Answer>),
     /// The request may have reached the host and no usable answer came back.
     Lost(GitHubError),
 }

@@ -23,6 +23,11 @@
 //! nothing. The real run needs `--confirm` with the number and `--plan` with that fingerprint,
 //! which the guard's fresh decision must still have; the `--confirm` text goes to the guard as
 //! typed, and the guard alone checks it against the number.
+//!
+//! `pr auto-merge` (`--enable --method m`, or `--disable`) and `pr rerun` follow the plain
+//! merge: `--head` and `--base` are the stamp, `--yes` the confirm, the challenge goes to stderr
+//! before anything leaves, and once a request has left a second Ctrl+C no longer ends the
+//! command. A re-run sends one request per failed run and prints how each ended.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -37,21 +42,24 @@ use rc_git_kit::canonical_path;
 use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore};
 use rc_git_kit::platform::credentials::{CredentialKind, CredentialStore, MemoryCredentialStore};
 use rc_git_kit::platform::host_keys::{HostKeyStore, MemoryHostKeyStore};
+use rc_git_kit::pull_requests::auto_merge::{AutoMergeFlow, AutoMergeIntent};
 use rc_git_kit::pull_requests::changes::{ChangesRead, ComparedWith, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
-    check_label, merge_note, merge_stop_message, mergeable_label, problem, review_label,
-    state_label,
+    auto_merge_note, check_label, merge_method_word, merge_note, merge_stop_message,
+    mergeable_label, problem, rerun_note, review_label, state_label, stop_message,
 };
+use rc_git_kit::pull_requests::flow::{ActionAsk, ActionStop, Ended, Phase};
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::merge::{
     MergeAsk, MergeEnd, MergeFlow, MergePhase, MergeStop, PlanAsk,
 };
+use rc_git_kit::pull_requests::rerun::{RerunFlow, RerunIntent};
 use rc_git_kit::pull_requests::{
-    Bypassed, Decision, MergeKind, MergeMethod, MergePlan, MergeRefusal, PageCursor,
-    PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
-    ReadError, ReviewDecision, ServerLink,
+    ActionRefusal, AutoMergeChange, AutoMergeOutcome, Bypassed, Decision, MergeKind, MergeMethod,
+    MergePlan, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService, PullRequestStamp,
+    PullRequestState, PullRequestSummary, ReadError, ReviewDecision, RunOutcome, ServerLink,
 };
 
 use crate::{
@@ -98,7 +106,10 @@ fn failure(error: &ReadError) -> anyhow::Error {
 /// Runs `rc-git pr <args>`, timing it when `time` is set.
 pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<ExitCode> {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(UsageError("pr needs list, view, checks, diff or merge".to_owned()).into());
+        return Err(UsageError(
+            "pr needs list, view, checks, diff, merge, auto-merge or rerun".to_owned(),
+        )
+        .into());
     };
     let started = Instant::now();
     let result = match verb.as_str() {
@@ -107,8 +118,10 @@ pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<Exit
         "checks" => checks(rest, out),
         "diff" => diff(rest, out),
         "merge" => merge(rest, out),
+        "auto-merge" => auto_merge(rest, out),
+        "rerun" => rerun(rest, out),
         other => Err(UsageError(format!(
-            "pr has no '{other}'; use list, view, checks, diff or merge"
+            "pr has no '{other}'; use list, view, checks, diff, merge, auto-merge or rerun"
         ))
         .into()),
     };
@@ -443,8 +456,8 @@ fn merge_kind(args: &VerbArgs<'_>) -> Result<MergeKind> {
     Ok(MergeKind::Plain)
 }
 
-/// The method `--method` names.
-fn merge_method(args: &VerbArgs<'_>) -> Result<MergeMethod> {
+/// The method `--method` names for `verb`.
+fn merge_method(args: &VerbArgs<'_>, verb: &str) -> Result<MergeMethod> {
     match args.value(&["--method"]) {
         Some("merge") => Ok(MergeMethod::Merge),
         Some("squash") => Ok(MergeMethod::Squash),
@@ -452,38 +465,46 @@ fn merge_method(args: &VerbArgs<'_>) -> Result<MergeMethod> {
         Some(other) => {
             Err(UsageError(format!("--method '{other}' is not merge, squash or rebase")).into())
         }
-        None => Err(UsageError("pr merge needs --method merge|squash|rebase".to_owned()).into()),
+        None => Err(UsageError(format!("{verb} needs --method merge|squash|rebase")).into()),
     }
 }
 
-/// The head `--head` names: the full commit id the caller saw.
-fn merge_head(args: &VerbArgs<'_>) -> Result<rc_git_core::Oid> {
+/// The head `--head` names for `verb`: the full commit id the caller saw.
+fn stamp_head(args: &VerbArgs<'_>, verb: &str) -> Result<rc_git_core::Oid> {
     let Some(text) = args.value(&["--head"]) else {
-        return Err(UsageError(
-            "pr merge needs --head <oid>, the full head commit id `pr view` printed: the head \
-             you looked at, which the merge refuses to go past"
-                .to_owned(),
-        )
+        return Err(UsageError(format!(
+            "{verb} needs --head <oid>, the full head commit id `pr view` printed: the head you \
+             looked at; a pull request at any other head refuses before anything is sent"
+        ))
         .into());
     };
     rc_git_core::Oid::from_hex(text)
         .map_err(|_| UsageError(format!("--head '{text}' is not a full commit id")).into())
 }
 
-/// The base `--base` names: the base branch the caller saw, as `pr view` printed it.
-fn merge_base(args: &VerbArgs<'_>) -> Result<String> {
+/// The base `--base` names for `verb`: the base branch the caller saw, as `pr view` printed it.
+fn stamp_base(args: &VerbArgs<'_>, verb: &str) -> Result<String> {
     let Some(text) = args.value(&["--base"]) else {
-        return Err(UsageError(
-            "pr merge needs --base <branch>, the base `pr view` printed: the branch you looked \
-             at, which the merge refuses to merge into any other"
-                .to_owned(),
-        )
+        return Err(UsageError(format!(
+            "{verb} needs --base <branch>, the base `pr view` printed: the branch you looked at; \
+             a pull request on any other base refuses before anything is sent"
+        ))
         .into());
     };
     if text.is_empty() {
         return Err(UsageError("--base needs a branch name".to_owned()).into());
     }
     Ok(text.to_owned())
+}
+
+/// The stamp of what the caller saw of pull request `number`: `--head`, `--base`, open.
+fn stamp(args: &VerbArgs<'_>, number: u64, verb: &str) -> Result<PullRequestStamp> {
+    Ok(PullRequestStamp {
+        number,
+        head_oid: stamp_head(args, verb)?,
+        base_ref: stamp_base(args, verb)?,
+        state: PullRequestState::Open,
+    })
 }
 
 /// A merge that sent nothing, with the exit code it ends with.
@@ -511,13 +532,8 @@ fn merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     let args = split_args("pr merge", raw, &MERGE_VALUED, &["--yes", "--admin"])?;
     args.expect(1, 2, "<number> [repo]")?;
     let number = number(&args)?;
-    let method = merge_method(&args)?;
-    let stamp = PullRequestStamp {
-        number,
-        head_oid: merge_head(&args)?,
-        base_ref: merge_base(&args)?,
-        state: PullRequestState::Open,
-    };
+    let method = merge_method(&args, "pr merge")?;
+    let stamp = stamp(&args, number, "pr merge")?;
     let kind = merge_kind(&args)?;
     let (service, linked) = linked(&args, 1)?;
     let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
@@ -726,6 +742,257 @@ fn merge_report(out: &mut Vec<u8>, linked: &Linked, flow: &MergeFlow) -> Result<
         }
         MergeEnd::Refused { .. } | MergeEnd::NotSent(_) => EXIT_MERGE_REFUSED,
         MergeEnd::Unknown { .. } => EXIT_MERGE_UNKNOWN,
+    };
+    Err(ReadFailure {
+        message: note,
+        code,
+    }
+    .into())
+}
+
+/// `pr auto-merge`'s and `pr rerun`'s valued flags.
+const ACTION_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--method", "--head", "--base"];
+
+/// An auto-merge change or a re-run that sent nothing, with the exit code it ends with.
+fn action_stopped(stop: &ActionStop) -> anyhow::Error {
+    let code = match stop {
+        ActionStop::Cancelled => EXIT_INTERRUPTED,
+        ActionStop::SignedOut { .. } => EXIT_AUTH,
+        ActionStop::Refused(ActionRefusal::NotConfirmed { .. }) => EXIT_NOT_CONFIRMED,
+        ActionStop::Refused(_) => EXIT_MERGE_REFUSED,
+        ActionStop::Failed(_) => EXIT_ERROR,
+    };
+    ReadFailure {
+        message: stop_message(stop),
+        code,
+    }
+    .into()
+}
+
+/// The change `--enable` (with `--method`) or `--disable` asks for: exactly one of them.
+fn auto_merge_change(args: &VerbArgs<'_>) -> Result<AutoMergeChange> {
+    match (args.has("--enable"), args.has("--disable")) {
+        (true, false) => Ok(AutoMergeChange::Enable(merge_method(
+            args,
+            "pr auto-merge --enable",
+        )?)),
+        (false, true) if args.value(&["--method"]).is_some() => Err(UsageError(
+            "--method goes with --enable; pr auto-merge --disable turns off whatever is on"
+                .to_owned(),
+        )
+        .into()),
+        (false, true) => Ok(AutoMergeChange::Disable),
+        (true, true) | (false, false) => Err(UsageError(
+            "pr auto-merge needs exactly one of --enable or --disable".to_owned(),
+        )
+        .into()),
+    }
+}
+
+/// One `label<TAB>line` record per line of `decision`'s challenge text.
+fn write_decision(out: &mut Vec<u8>, label: &str, decision: &Decision) -> Result<()> {
+    use std::io::Write as _;
+    let Decision::Confirm(challenge) = decision else {
+        bail!("the guard asked for no confirmation, which a GitHub change always has");
+    };
+    for line in challenge.summary().lines() {
+        writeln!(out, "{label}\t{line}")?;
+    }
+    Ok(())
+}
+
+/// `decision`'s challenge to stderr as `sending<TAB>line` records, just before the request may
+/// leave.
+fn write_sending_decision(decision: &Decision) -> Result<()> {
+    use std::io::Write as _;
+    let mut text = Vec::new();
+    write_decision(&mut text, "sending", decision)?;
+    std::io::stderr().lock().write_all(&text)?;
+    Ok(())
+}
+
+/// `owner/name@host` of `linked`'s repository.
+fn repository_label(linked: &Linked) -> String {
+    format!(
+        "{}/{}@{}",
+        linked.target.owner(),
+        linked.target.name(),
+        linked.target.host()
+    )
+}
+
+/// Turns auto-merge of pull request `<n>` on (`--enable --method m`) or off (`--disable`) once
+/// `--yes` confirms it, for the head and base the caller saw (`--head`, `--base`). Without
+/// `--yes` it prints the challenge and sends nothing; with it, the challenge goes to stderr
+/// before the one request leaves.
+fn auto_merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let args = split_args(
+        "pr auto-merge",
+        raw,
+        &ACTION_VALUED,
+        &["--yes", "--enable", "--disable"],
+    )?;
+    args.expect(1, 2, "<number> [repo]")?;
+    let number = number(&args)?;
+    let change = auto_merge_change(&args)?;
+    let stamp = stamp(&args, number, "pr auto-merge")?;
+    let (service, linked) = linked(&args, 1)?;
+    let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
+    let plan = service
+        .plan_auto_merge(&linked, &stamp, change, &cancel)
+        .map_err(|stop| action_stopped(&stop))?;
+    if !args.has("--yes") {
+        let label = match change {
+            AutoMergeChange::Enable(_) => "would-enable-auto-merge",
+            AutoMergeChange::Disable => "would-disable-auto-merge",
+        };
+        write_decision(out, label, &plan.decision)?;
+        return Err(UsageError(
+            "pr auto-merge needs --yes to change auto-merge; nothing was sent".to_owned(),
+        )
+        .into());
+    }
+    let intent = AutoMergeIntent(change);
+    let (mut flow, load) =
+        AutoMergeFlow::begin(1, repository_label(&linked), stamp.clone(), intent);
+    flow.planned(load.generation, Ok(plan.clone()));
+    flow.confirm(String::new());
+    write_sending_decision(&plan.decision)?;
+    let ask = ActionAsk {
+        stamp: &stamp,
+        decision: Some(&plan.decision),
+        on_send: &|| exits.disarm(),
+    };
+    let answer = service.set_auto_merge(&linked, change, ask, &cancel);
+    if let Err(stop) = &answer {
+        return Err(action_stopped(stop));
+    }
+    flow.finished(load.generation, answer);
+    auto_merge_report(out, &linked, &flow)
+}
+
+/// What `pr auto-merge` prints once its request may have left, and the code it ends with.
+fn auto_merge_report(out: &mut Vec<u8>, linked: &Linked, flow: &AutoMergeFlow) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let note = auto_merge_note(flow).unwrap_or_default();
+    let Phase::Done(Ended::Sent(outcome)) = flow.phase() else {
+        bail!("the auto-merge change has no outcome: {note}");
+    };
+    let label = format!(
+        "{}/{}#{}",
+        linked.target.owner(),
+        linked.target.name(),
+        flow.number()
+    );
+    let head = flow.stamp().head_oid;
+    let code = match outcome {
+        AutoMergeOutcome::Done { .. } => {
+            match flow.ask().0 {
+                AutoMergeChange::Enable(method) => writeln!(
+                    out,
+                    "auto-merge\ton\t{label}\t{}\t{head}",
+                    merge_method_word(method)
+                )?,
+                AutoMergeChange::Disable => writeln!(out, "auto-merge\toff\t{label}")?,
+            }
+            writeln!(out, "note\t{note}")?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        AutoMergeOutcome::OnOtherBase {
+            confirmed, actual, ..
+        } => {
+            writeln!(
+                out,
+                "auto-merge-other-base\t{label}\t{head}\t{actual}\t{confirmed}"
+            )?;
+            EXIT_MERGE_OTHER_BASE
+        }
+        AutoMergeOutcome::Refused { .. } => EXIT_MERGE_REFUSED,
+        AutoMergeOutcome::Unknown { .. } => EXIT_MERGE_UNKNOWN,
+    };
+    Err(ReadFailure {
+        message: note,
+        code,
+    }
+    .into())
+}
+
+/// Re-runs the failed jobs of the GitHub Actions runs of pull request `<n>`'s head once `--yes`
+/// confirms it, for the head and base the caller saw. Without `--yes` it prints the challenge
+/// and sends nothing; with it, the challenge goes to stderr before the first request leaves.
+fn rerun(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let args = split_args("pr rerun", raw, &ACTION_VALUED, &["--yes"])?;
+    args.expect(1, 2, "<number> [repo]")?;
+    if args.value(&["--method"]).is_some() {
+        return Err(UsageError("pr rerun takes no --method".to_owned()).into());
+    }
+    let number = number(&args)?;
+    let stamp = stamp(&args, number, "pr rerun")?;
+    let (service, linked) = linked(&args, 1)?;
+    let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
+    let plan = service
+        .plan_rerun(&linked, &stamp, &cancel)
+        .map_err(|stop| action_stopped(&stop))?;
+    if !args.has("--yes") {
+        write_decision(out, "would-rerun", &plan.decision)?;
+        return Err(UsageError(
+            "pr rerun needs --yes to re-run failed jobs; nothing was sent".to_owned(),
+        )
+        .into());
+    }
+    let (mut flow, load) =
+        RerunFlow::begin(1, repository_label(&linked), stamp.clone(), RerunIntent);
+    flow.planned(load.generation, Ok(plan.clone()));
+    flow.confirm(String::new());
+    write_sending_decision(&plan.decision)?;
+    let ask = ActionAsk {
+        stamp: &stamp,
+        decision: Some(&plan.decision),
+        on_send: &|| exits.disarm(),
+    };
+    let answer = service.rerun(&linked, ask, &cancel);
+    if let Err(stop) = &answer {
+        return Err(action_stopped(stop));
+    }
+    flow.finished(load.generation, answer);
+    rerun_report(out, &flow)
+}
+
+/// What `pr rerun` prints once a request may have left: one `rerun` record per run, the note,
+/// and the code it ends with (0 only when GitHub took every run).
+fn rerun_report(out: &mut Vec<u8>, flow: &RerunFlow) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let note = rerun_note(flow).unwrap_or_default();
+    let Phase::Done(Ended::Sent(report)) = flow.phase() else {
+        bail!("the re-run has no outcome: {note}");
+    };
+    let mut unknown = false;
+    let mut refused = false;
+    for run in &report.runs {
+        let (word, why) = match &run.outcome {
+            RunOutcome::Requested => ("requested", "-"),
+            RunOutcome::Refused { reason } => {
+                refused = true;
+                ("refused", reason.as_str())
+            }
+            RunOutcome::Unknown { problem } => {
+                unknown = true;
+                ("unknown", problem.as_str())
+            }
+            RunOutcome::NotSent { reason } => {
+                refused = true;
+                ("not-sent", reason.as_str())
+            }
+        };
+        writeln!(out, "rerun\t{}\t{word}\t{why}", run.run)?;
+    }
+    let code = match (unknown, refused) {
+        (true, _) => EXIT_MERGE_UNKNOWN,
+        (false, true) => EXIT_MERGE_REFUSED,
+        (false, false) => {
+            writeln!(out, "note\t{note}")?;
+            return Ok(ExitCode::SUCCESS);
+        }
     };
     Err(ReadFailure {
         message: note,

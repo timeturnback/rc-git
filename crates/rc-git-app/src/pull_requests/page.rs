@@ -9,9 +9,11 @@
 //! Under the header sits the Merge control, as kit decides it ([`MergeButton`]): hidden while
 //! nothing current is on screen, disabled with kit's reason, or the repository's methods and
 //! Merge. Below it, only when kit shows it ([`AdminMergeButton`]), the separate admin merge
-//! control, worded so it never reads as Merge. A click asks the model to start; the challenge,
+//! control, worded so it never reads as Merge. Then, as kit decides them, the auto-merge control
+//! ([`AutoMergeControl`]: turn it on with a method, or its state and a switch to turn it off)
+//! and the re-run control ([`RerunControl`]). A click asks the model to start; the challenge,
 //! the only way to send, comes up through the window ([`crate::window::RepoWindow`]), and the
-//! note under the control is kit's.
+//! note under the controls is kit's. A tab runs one action at a time.
 //!
 //! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
 
@@ -23,20 +25,24 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{ActiveTheme, Disableable, Icon, h_flex, v_flex};
+use rc_git_kit::pull_requests::auto_merge::AutoMergeControl;
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
-    ADMIN_MERGE, ADMIN_MERGE_NOTE, MERGE, MERGE_CANCEL, MERGE_DISMISS, merge_method_label,
-    merge_note, merge_note_alarms,
+    ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, DISABLE_AUTO_MERGE, ENABLE_AUTO_MERGE, MERGE,
+    MERGE_CANCEL, MERGE_DISMISS, RERUN_FAILED_JOBS, auto_merge_on_line, flow_note,
+    flow_note_alarms, merge_method_label, rerun_line,
 };
 use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
     details_label, fields_note, freshness_problem, mergeable_label, review_label, row_detail,
     state_label, tab_title,
 };
+use rc_git_kit::pull_requests::flow::TabFlow;
 use rc_git_kit::pull_requests::link::RepositoryLink;
-use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton, MergePhase};
+use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton};
 use rc_git_kit::pull_requests::model::PullRequestsModel;
+use rc_git_kit::pull_requests::rerun::RerunControl;
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{Check, MergeMethod, PullRequestDetail, ServerLink};
 
@@ -100,15 +106,15 @@ impl PullRequestPage {
         }
     }
 
-    /// The Merge control and its note for tab `number`.
+    /// The Merge, auto-merge and re-run controls and the note of tab `number`'s action.
     fn merge_controls(&self, number: u64, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let model = self.model.read(cx);
         let button = model.merge_button(number);
         let admin = model.admin_merge_button(number);
-        let flow = model.merge_flow(number).cloned();
-        let running = flow
-            .as_ref()
-            .is_some_and(|flow| !matches!(flow.phase(), MergePhase::Done(_)));
+        let auto = model.auto_merge_control(number);
+        let rerun = model.rerun_control(number);
+        let flow = model.tab_flow(number).cloned();
+        let running = flow.as_ref().is_some_and(TabFlow::is_running);
         let theme = cx.theme();
         let (muted, red) = (theme.muted_foreground, theme.red);
         let mut column = v_flex().gap(style::DETAIL_LINE_GAP);
@@ -134,43 +140,41 @@ impl PullRequestPage {
         if let AdminMergeButton::Shown { methods } = admin {
             column = column.child(self.admin_merge_control(number, methods, running, cx));
         }
+        if let Some(control) = self.auto_merge_control(number, auto, running, cx) {
+            column = column.child(control);
+        }
+        if let RerunControl::Shown { runs, left_out } = rerun {
+            column = column.child(Self::rerun_control(runs, left_out, running, cx));
+        }
         let Some(flow) = flow else {
             return column;
         };
-        let Some(note) = merge_note(&flow) else {
+        let Some(note) = flow_note(&flow) else {
             return column;
         };
-        let failed = merge_note_alarms(&flow);
+        let failed = flow_note_alarms(&flow);
         let mut row = h_flex()
             .gap(style::ROW_GAP)
             .child(Self::line(note, if failed { red } else { muted }));
-        let cancellable = matches!(
-            flow.phase(),
-            MergePhase::Planning
-                | MergePhase::Merging {
-                    sent: false,
-                    cancelling: false
-                }
-        );
-        if cancellable {
+        if flow.is_cancellable() {
             row = row.child(
                 Button::new("pull-request-merge-cancel")
                     .ghost()
                     .label(MERGE_CANCEL)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.model
-                            .update(cx, |model, cx| model.cancel_merge(number, cx));
+                            .update(cx, |model, cx| model.cancel_flow(number, cx));
                     })),
             );
         }
-        if matches!(flow.phase(), MergePhase::Done(_)) {
+        if !flow.is_running() {
             row = row.child(
                 Button::new("pull-request-merge-dismiss")
                     .ghost()
                     .label(MERGE_DISMISS)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.model
-                            .update(cx, |model, cx| model.dismiss_merge(number, cx));
+                            .update(cx, |model, cx| model.dismiss_flow(number, cx));
                     })),
             );
         }
@@ -231,6 +235,86 @@ impl PullRequestPage {
             .gap(style::DETAIL_LINE_GAP)
             .child(Self::line(ADMIN_MERGE_NOTE.to_owned(), muted))
             .child(row.child(admin))
+    }
+
+    /// The auto-merge control of tab `number` as kit decides it: off with the methods it may be
+    /// turned on with, the note saying GitHub merges later commits too and a button; or on, with
+    /// kit's line naming the method and who turned it on, and a button to turn it off when kit
+    /// allows. A click only asks the model to start; the challenge is the only way to send.
+    fn auto_merge_control(
+        &self,
+        number: u64,
+        control: AutoMergeControl,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let muted = cx.theme().muted_foreground;
+        match control {
+            AutoMergeControl::Hidden => None,
+            AutoMergeControl::Offer { methods } => {
+                let chosen = self.chosen_method(number, &methods);
+                let row = Self::method_picks(number, methods, (chosen, running), cx);
+                let enable = Button::new("pull-request-enable-auto-merge")
+                    .label(ENABLE_AUTO_MERGE)
+                    .disabled(running || chosen.is_none())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(method) = chosen {
+                            this.model.update(cx, |model, cx| {
+                                model.start_enable_auto_merge(method, cx);
+                            });
+                        }
+                    }));
+                Some(
+                    v_flex()
+                        .gap(style::DETAIL_LINE_GAP)
+                        .child(Self::line(AUTO_MERGE_NOTE.to_owned(), muted))
+                        .child(row.child(enable)),
+                )
+            }
+            AutoMergeControl::On {
+                method,
+                enabled_by,
+                can_turn_off,
+            } => {
+                let line = auto_merge_on_line(method, enabled_by.as_deref());
+                let mut row = h_flex().gap(style::ROW_GAP).child(Self::line(line, muted));
+                if can_turn_off {
+                    row = row.child(
+                        Button::new("pull-request-disable-auto-merge")
+                            .ghost()
+                            .label(DISABLE_AUTO_MERGE)
+                            .disabled(running)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model
+                                    .update(cx, PullRequestsModel::start_disable_auto_merge);
+                            })),
+                    );
+                }
+                Some(row)
+            }
+        }
+    }
+
+    /// The re-run control kit shows for a pull request with failed GitHub Actions runs: kit's
+    /// line and a button. A click only asks the model to start; the challenge is the only way to
+    /// send.
+    fn rerun_control(
+        runs: usize,
+        left_out: usize,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let muted = cx.theme().muted_foreground;
+        let rerun = Button::new("pull-request-rerun-failed-jobs")
+            .label(RERUN_FAILED_JOBS)
+            .disabled(running)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.model.update(cx, PullRequestsModel::start_rerun);
+            }));
+        h_flex()
+            .gap(style::ROW_GAP)
+            .child(rerun)
+            .child(Self::line(rerun_line(runs, left_out), muted))
     }
 
     /// The view on show.

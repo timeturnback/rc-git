@@ -6,11 +6,11 @@
 //! notice, anything else an alert titled by the action's verb. Nothing here classifies an
 //! action or offers a way around a challenge.
 //!
-//! A pull request merge comes through the same challenge sheet, when its model asks
-//! ([`MergeEvent`]): the guard's decision from its fresh read, a confirm that hands the typed
-//! text back to the model, which sends the merge once, and a cancel that ends it. An admin
-//! merge's sheet is titled apart from Merge and asks for the number the guard's challenge
-//! names; the typed text goes back untouched.
+//! A pull request action (a merge, an auto-merge change, a re-run of failed jobs) comes through
+//! the same challenge sheet, when its model asks ([`FlowEvent`]): the guard's decision from its
+//! fresh read, titled as kit names the action, a confirm that hands the typed text back to the
+//! model, which sends the action once, and a cancel that ends it. An admin merge's sheet asks
+//! for the number the guard's challenge names; the typed text goes back untouched.
 
 use std::sync::Arc;
 
@@ -31,9 +31,8 @@ use rc_git_kit::guard_copy::{
     IDENTITY_ASK_MESSAGE, IDENTITY_ASK_TITLE, IDENTITY_EDIT_TITLE, deny_message,
     identity_edit_message,
 };
-use rc_git_kit::pull_requests::MergeKind;
-use rc_git_kit::pull_requests::copy::{ADMIN_MERGE_TITLE, MERGE};
-use rc_git_kit::pull_requests::model::MergeEvent;
+use rc_git_kit::pull_requests::copy::flow_title;
+use rc_git_kit::pull_requests::model::FlowEvent;
 use rc_git_kit::repository_actions::{
     RepositoryActions, plan_commit, plan_discard, plan_stash_apply, plan_stash_drop,
     plan_stash_pop, plan_stash_push,
@@ -152,19 +151,19 @@ impl RepoWindow {
         sheets::open(verb.into(), &sheet, window, cx);
     }
 
-    /// A pull request merge's turn for the window: show its challenge, the guard's decision
-    /// from the read it just made, or close it when the merge ended before an answer. The
-    /// confirm hands the typed text to the model, which sends the merge once; a cancel or a
-    /// dismissal ends the merge there.
-    pub(super) fn merge_event(
+    /// A pull request action's turn for the window: show its challenge, the guard's decision
+    /// from the read it just made, or close it when the action ended before an answer. The
+    /// confirm hands the typed text to the model, which sends the action once; a cancel or a
+    /// dismissal ends the action there.
+    pub(super) fn flow_event(
         &mut self,
-        event: MergeEvent,
+        event: FlowEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            MergeEvent::Confirm(number) => self.present_merge_challenge(number, window, cx),
-            MergeEvent::Withdrawn(number) => {
+            FlowEvent::Confirm(number) => self.present_flow_challenge(number, window, cx),
+            FlowEvent::Withdrawn(number) => {
                 let open = matches!(
                     &self.sheet,
                     Some(OpenSheet::Merge { number: shown, sheet })
@@ -178,22 +177,13 @@ impl RepoWindow {
         }
     }
 
-    fn present_merge_challenge(
-        &mut self,
-        number: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn present_flow_challenge(&mut self, number: u64, window: &mut Window, cx: &mut Context<Self>) {
         let model = self.pull_requests.clone();
-        let Some((decision, kind)) = model.read(cx).merge_flow(number).and_then(|flow| {
-            let plan = flow.plan()?;
-            Some((GuardDecision::new(&plan.decision, false), flow.kind()))
+        let Some((decision, verb)) = model.read(cx).tab_flow(number).and_then(|flow| {
+            let decision = flow.decision()?;
+            Some((GuardDecision::new(decision, false), flow_title(flow)))
         }) else {
             return;
-        };
-        let verb = match kind {
-            MergeKind::Plain => MERGE,
-            MergeKind::Admin => ADMIN_MERGE_TITLE,
         };
         let (confirm, cancel) = (model.clone(), model);
         let sheet = cx.new(|cx| {
@@ -202,14 +192,14 @@ impl RepoWindow {
                 decision,
                 Box::new(move |typed, _, cx| {
                     confirm.update(cx, |model, cx| {
-                        model.confirm_merge(number, typed.unwrap_or_default(), cx);
+                        model.confirm_flow(number, typed.unwrap_or_default(), cx);
                     });
                 }),
                 window,
                 cx,
             )
             .on_cancel(Box::new(move |cx| {
-                cancel.update(cx, |model, cx| model.cancel_merge(number, cx));
+                cancel.update(cx, |model, cx| model.cancel_flow(number, cx));
             }))
         });
         self.sheet = Some(OpenSheet::Merge {

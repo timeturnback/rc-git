@@ -6,17 +6,21 @@
 //! repository's remote URL only ever selects the owner and name on that host
 //! ([`RepositoryTarget::on_host`]). `docs/safety.md`, "GitHub API", has the rules.
 //!
-//! It also merges a pull request ([`merge_pull_request`]), the one GitHub mutation so far, as a
-//! plain merge or as an admin merge past branch protection ([`MergeKind`]): a fresh read
-//! compared with what the user saw, then one request built from the [`crate::Confirmation`]
-//! alone, whose outcome is merged, refused or unknown, never resent.
+//! It also changes things on GitHub, each the same way: a fresh read compared with what the user
+//! saw, then requests built from the [`crate::Confirmation`] alone, each sent once, whose
+//! outcome is done, refused or unknown, never resent. It merges a pull request
+//! ([`merge_pull_request`]), as a plain merge or as an admin merge past branch protection
+//! ([`MergeKind`]); turns auto-merge on and off ([`set_auto_merge`]); and re-runs the failed jobs
+//! of a pull request's GitHub Actions runs ([`rerun_failed_jobs`]).
 //!
 //! No curl or serde type crosses the public API. Secrets travel as [`ApiToken`] and
 //! [`RefreshToken`], whose `Debug` is redacted and which have no `Display`.
 
 mod api;
+mod auto_merge;
 mod device;
 mod error;
+mod guarded;
 mod host;
 mod http;
 mod links;
@@ -26,6 +30,7 @@ mod oauth;
 mod pull_types;
 mod pulls;
 pub(super) mod repository;
+mod rerun;
 mod secret;
 mod text;
 mod user;
@@ -42,8 +47,20 @@ mod merge_tests;
 #[cfg(test)]
 mod admin_merge_tests;
 
+#[cfg(test)]
+mod auto_merge_tests;
+
+#[cfg(test)]
+mod rerun_tests;
+
+pub use auto_merge::{
+    AutoMergeAfter, AutoMergeChange, AutoMergeDisable, AutoMergeEnable, AutoMergeOutcome,
+    AutoMergeRequest, disable_auto_merge_blocker, enable_auto_merge_blocker, plan_auto_merge,
+    set_auto_merge,
+};
 pub use device::{DeviceFlow, DeviceMethod, DevicePoll, start_device_flow};
 pub use error::GitHubError;
+pub use guarded::{ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, PullRequestAction};
 pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host, ssh_dialed_host};
 pub use links::ServerLink;
 pub use merge::{
@@ -60,6 +77,10 @@ pub use pull_types::{
 };
 pub use pulls::{MAX_CHECKS, PAGE_SIZE, list_open_pull_requests, read_pull_request};
 pub use repository::{PullRequestRemote, pull_request_base_ref, pull_request_remote};
+pub use rerun::{
+    FailedRun, FailedRuns, MAX_RERUN_RUNS, PullRequestRerun, RerunReport, RerunRequest, RunId,
+    RunOutcome, RunReport, failed_runs, plan_rerun_failed_jobs, rerun_blocker, rerun_failed_jobs,
+};
 pub use secret::{ApiToken, ClientId, RefreshToken, TokenSet, unix_now};
 pub use text::{is_escaped_on_one_line, multi_line, single_line};
 pub use user::{TokenIdentity, validate_token};
@@ -69,7 +90,9 @@ pub use user::{TokenIdentity, validate_token};
 /// (the dev-only `test-support` feature), never into the app or the CLI.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
-    use super::{MergeMethod, PageCursor, PullRequestId, RepositoryTarget, api, mutation, pulls};
+    use super::{
+        MergeMethod, PageCursor, PullRequestId, RepositoryTarget, api, mutation, pulls, rerun,
+    };
 
     /// The body of the list read of `target` from `after` on.
     #[must_use]
@@ -101,6 +124,38 @@ pub mod testing {
         #[expect(clippy::expect_used, reason = "a test helper given fixed values")]
         let head = rc_git_core::Oid::from_hex(head).expect("a full commit id");
         body(mutation::MERGE, &mutation::variables_of(&id, head, method))
+    }
+
+    /// The body of turning on auto-merge for the pull request with node id `id`, expecting head
+    /// `head` (40 hex digits), with `method`.
+    ///
+    /// # Panics
+    /// When `id` is not a node id or `head` not a full commit id.
+    #[must_use]
+    pub fn enable_auto_merge_request_body(id: &str, head: &str, method: MergeMethod) -> String {
+        #[expect(clippy::expect_used, reason = "a test helper given fixed values")]
+        let id = PullRequestId::parse(id).expect("a node id");
+        #[expect(clippy::expect_used, reason = "a test helper given fixed values")]
+        let head = rc_git_core::Oid::from_hex(head).expect("a full commit id");
+        body(
+            mutation::ENABLE_AUTO_MERGE,
+            &mutation::variables_of(&id, head, method),
+        )
+    }
+
+    /// The body of turning off auto-merge for the pull request with node id `id`.
+    #[must_use]
+    pub fn disable_auto_merge_request_body(id: &str) -> String {
+        body(
+            mutation::DISABLE_AUTO_MERGE,
+            &serde_json::json!({ "id": id }),
+        )
+    }
+
+    /// The body of every re-run of failed jobs.
+    #[must_use]
+    pub fn rerun_request_body() -> String {
+        rerun::rerun_body().to_string()
     }
 
     /// The cursor the host handed out as `text`.

@@ -215,10 +215,19 @@ constraints are clear.
   pull request's number typed confirms it. The same `mergePullRequest`, sent once. The fifth
   slice.
 
+- **Auto-merge and re-runs.** A pull request tab turns GitHub's auto-merge on (Enable
+  Auto-Merge, with a method) for a pull request branch protection blocks, shows who turned it on
+  and how, and turns it off (Disable Auto-Merge); `rc-git pr auto-merge <n> --enable --method m`
+  or `--disable` does the same. Re-run Failed Jobs and `rc-git pr rerun <n>` ask GitHub to re-run
+  the failed jobs of the head's GitHub Actions runs, one REST request per run (at most ten),
+  each once. Each goes through the guard like the merge: a fresh read against the stamp, a
+  challenge (the auto-merge one says later commits merge too, without asking again), the
+  answered decision checked, and an outcome of done, refused or unknown. The sixth slice.
+
 ## Planned
 
-- **Pull requests.** The rest of the pull request slices on the GitHub client: auto-merge,
-  re-running failed jobs, job logs and deleting the head branch, each
+- **Pull requests.** The rest of the pull request slices on the GitHub client: job logs and
+  deleting the head branch, each
   mutation a new `Action` with its policy row (rc-git-guard, rc-git-kit, rc-git-app,
   `rc-git pr`) and an arm of `Mutation::of`, each comparing a fresh read against the
   `PullRequestStamp` of what the user saw.

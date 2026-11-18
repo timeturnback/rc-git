@@ -214,6 +214,9 @@ impl Policy {
             Action::AdminMergePullRequest(merge) => {
                 confirm(risk, merge.summary(), Some(&merge.phrase()), false)
             }
+            Action::EnableAutoMerge(enable) => confirm(risk, enable.summary(), None, false),
+            Action::DisableAutoMerge(disable) => confirm(risk, disable.summary(), None, false),
+            Action::RerunFailedJobs(rerun) => confirm(risk, rerun.summary(), None, false),
         }
     }
 

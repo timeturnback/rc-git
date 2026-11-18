@@ -20,7 +20,14 @@
 //! state that cleared), or merges and then stalls or drops the connection, or drops it without
 //! merging. The admin merge sends the plain merge's exact
 //! mutation, so the same script serves both: what differs is the read (`mergeStateStatus`,
-//! `viewerCanMergeAsAdmin`).
+//! `viewerCanMergeAsAdmin`). The same script serves turning auto-merge on or off too: its one
+//! mutation is then that change, and `merged` is the read once the change applied.
+//!
+//! The re-run of a workflow run's failed jobs (`POST .../actions/runs/<id>/rerun-failed-jobs`)
+//! answers per run as scripted ([`RerunBehaviour`]): re-run with `201 Created`, an answer that
+//! re-runs nothing, re-run then drop the connection, or drop it without re-running. Each kind of
+//! mutation is counted apart ([`GitHubServer::mutations_named`],
+//! [`GitHubServer::rerun_requests`]).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -246,7 +253,35 @@ struct State {
     graphql_echo: bool,
     /// The pull request a merge acts on, when scripted.
     merge: Option<MergeState>,
+    /// The workflow runs a re-run of failed jobs is scripted for, by `owner/name` and run id.
+    reruns: BTreeMap<(String, u64), RerunBehaviour>,
+    /// How many re-runs each scripted run took, by run id.
+    reruns_applied: BTreeMap<u64, usize>,
     requests: Vec<RecordedRequest>,
+}
+
+/// The exact body a correct re-run of failed jobs sends.
+pub const RERUN_BODY: &str = r#"{"enable_debug_logging":false}"#;
+
+/// What the fake does with a re-run of one workflow run's failed jobs.
+#[derive(Debug, Clone)]
+pub enum RerunBehaviour {
+    /// Re-runs it and answers `201 Created` with `{}`.
+    Rerun,
+    /// Answers `status` with `body` and re-runs nothing (a refusal, or an answer with a status
+    /// GitHub does not document for it).
+    Answer {
+        /// The status line, e.g. `404 Not Found`.
+        status: &'static str,
+        /// The body.
+        body: String,
+        /// Extra response headers, as `(name, value)` (a spent rate limit, say).
+        headers: Vec<(String, String)>,
+    },
+    /// Re-runs it, then closes the connection without answering.
+    RerunThenDrop,
+    /// Closes the connection without answering and re-runs nothing.
+    Drop,
 }
 
 /// A scripted GraphQL answer: a `200 OK` with this body and these extra headers.
@@ -386,6 +421,47 @@ impl GitHubServer {
             reads: 0,
             merged: false,
         });
+    }
+
+    /// Answers a re-run of the failed jobs of workflow run `run` of `repository` (`owner/name`)
+    /// as `behaviour` says from now on. A re-run of any run not scripted is a `404`.
+    pub fn script_rerun(&self, repository: &str, run: u64, behaviour: RerunBehaviour) {
+        self.state()
+            .reruns
+            .insert((repository.to_owned(), run), behaviour);
+    }
+
+    /// How many requests arrived at run `run`'s re-run path of `repository`, whatever came of
+    /// them.
+    #[must_use]
+    pub fn rerun_requests(&self, repository: &str, run: u64) -> usize {
+        self.requests_to(&format!(
+            "/api/v3/repos/{repository}/actions/runs/{run}/rerun-failed-jobs"
+        ))
+    }
+
+    /// How many re-runs of run `run` the fake carried out.
+    #[must_use]
+    pub fn reruns_applied(&self, run: u64) -> usize {
+        self.state()
+            .reruns_applied
+            .get(&run)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// How many GraphQL requests sent the mutation document named `name` (`RcGitMergePullRequest`,
+    /// say), scripted or not: each kind of mutation counted apart.
+    #[must_use]
+    pub fn mutations_named(&self, name: &str) -> usize {
+        let prefix = format!(r#"{{"query":"mutation {name}("#);
+        self.state()
+            .requests
+            .iter()
+            .filter(|request| {
+                request.target == "/api/graphql" && request.body.starts_with(prefix.as_bytes())
+            })
+            .count()
     }
 
     /// Whether the scripted pull request merged.
@@ -541,6 +617,18 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>, stop: &AtomicBool) 
         ("GET", target) if target.ends_with(".git/info/refs") => git_challenge(),
         (method, target) if method == "GET" && target.starts_with("/api/v3/repos/") => {
             repository(&request, target, state)
+        }
+        ("POST", target)
+            if target.starts_with("/api/v3/repos/") && target.ends_with("/rerun-failed-jobs") =>
+        {
+            match rerun(&request, target, state) {
+                Served::Answer(answer) => answer,
+                Served::Stall => {
+                    stall(stop);
+                    return;
+                }
+                Served::Drop => return,
+            }
         }
         (_, _) => not_found(),
     };
@@ -988,6 +1076,65 @@ fn merge_request(merge: &mut MergeState, body: &str) -> Option<Served> {
         }
         MergeBehaviour::Drop => Served::Drop,
     })
+}
+
+/// `owner/name` and the run id of a re-run path `/api/v3/repos/<owner>/<name>/actions/runs/<id>/
+/// rerun-failed-jobs`, when it is exactly that shape with a decimal id.
+fn rerun_path(target: &str) -> Option<(String, u64)> {
+    let rest = target
+        .strip_prefix("/api/v3/repos/")?
+        .strip_suffix("/rerun-failed-jobs")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let [owner, name, "actions", "runs", id] = parts.as_slice() else {
+        return None;
+    };
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{owner}/{name}"), id.parse().ok()?))
+}
+
+/// The answer to a re-run of failed jobs: only for a correct request (the API headers, the
+/// token, a JSON body that is exactly [`RERUN_BODY`]) to a scripted run.
+fn rerun(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Served {
+    let mut state = lock(state);
+    if authorized(request, &state, "application/vnd.github+json").is_none() {
+        return Served::Answer(unauthorized());
+    }
+    if request.header("content-type") != Some("application/json")
+        || request.body != RERUN_BODY.as_bytes()
+    {
+        return Served::Answer(bad_request(
+            "a re-run sends exactly {\"enable_debug_logging\":false}",
+        ));
+    }
+    let Some((repository, run)) = rerun_path(target) else {
+        return Served::Answer(not_found());
+    };
+    let Some(behaviour) = state.reruns.get(&(repository, run)).cloned() else {
+        return Served::Answer(not_found());
+    };
+    let mut apply = || *state.reruns_applied.entry(run).or_default() += 1;
+    match behaviour {
+        RerunBehaviour::Rerun => {
+            apply();
+            Served::Answer(json("201 Created", "{}".to_owned()))
+        }
+        RerunBehaviour::Answer {
+            status,
+            body,
+            headers,
+        } => {
+            let mut answer = json(status, body);
+            answer.headers = headers;
+            Served::Answer(answer)
+        }
+        RerunBehaviour::RerunThenDrop => {
+            apply();
+            Served::Drop
+        }
+        RerunBehaviour::Drop => Served::Drop,
+    }
 }
 
 fn repository(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Answer {

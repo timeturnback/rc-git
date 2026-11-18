@@ -13,13 +13,16 @@ use super::CallGate;
 use crate::github::accounts::{GitHubAccount, SignInMethod};
 use crate::platform::api_tokens::AccountKey;
 use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
+use crate::pull_requests::flow::{ActionAsk, ActionStop};
 use crate::pull_requests::link::{Linked, RepositoryLink};
 use crate::pull_requests::merge::{MergeAsk, MergeStop, PlanAsk};
 use crate::pull_requests::{
-    Cancel, CheckList, Decision, DetailFields, MergeKind, MergeMethod, MergeMethods, MergeOutcome,
-    MergePlan, MergeStateStatus, Mergeable, PageCursor, PullRequestDetail, PullRequestId,
-    PullRequestPage, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
-    ReadError, RepositoryTarget, ViewerAbilities,
+    ActionPlan, ActionsIds, AutoMerge, AutoMergeChange, AutoMergeOutcome, Cancel, Check,
+    CheckConclusion, CheckList, CheckProgress, CheckStatus, Decision, DetailFields, MergeKind,
+    MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeStateStatus, Mergeable, PageCursor,
+    PullRequestDetail, PullRequestId, PullRequestPage, PullRequestService, PullRequestStamp,
+    PullRequestState, PullRequestSummary, ReadError, RepositoryTarget, RerunReport,
+    ViewerAbilities,
 };
 
 /// What the fake answers and what it was asked.
@@ -82,6 +85,31 @@ pub struct FakePullRequestsState {
     pub merge_calls: Vec<MergeCall>,
     /// How many merge requests were sent: a merge's `on_send` and the sending itself.
     pub merges_sent: usize,
+    /// What [`PullRequestService::plan_auto_merge`] and [`PullRequestService::plan_rerun`]
+    /// answer.
+    pub action_plan: Result<ActionPlan, ActionStop>,
+    /// What [`PullRequestService::set_auto_merge`] answers once its request is sent.
+    pub auto_merge: Result<AutoMergeOutcome, ActionStop>,
+    /// What [`PullRequestService::rerun`] answers once its requests are sent.
+    pub rerun: Result<RerunReport, ActionStop>,
+    /// The stamp and the change of every auto-merge or re-run plan read (`None`: a re-run), in
+    /// arrival order.
+    pub action_plan_calls: Vec<(PullRequestStamp, Option<AutoMergeChange>)>,
+    /// Every auto-merge change or re-run asked for, in arrival order.
+    pub action_calls: Vec<FlowCall>,
+    /// How many auto-merge changes or re-runs were sent.
+    pub actions_sent: usize,
+}
+
+/// One auto-merge change or re-run the fake was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowCall {
+    /// What the user saw.
+    pub stamp: PullRequestStamp,
+    /// The auto-merge change; `None` for a re-run.
+    pub change: Option<AutoMergeChange>,
+    /// The decision the user answered.
+    pub decision: Option<Decision>,
 }
 
 /// One merge the fake was asked for.
@@ -148,6 +176,18 @@ impl FakePullRequests {
                 plan_calls: Vec::new(),
                 merge_calls: Vec::new(),
                 merges_sent: 0,
+                action_plan: Err(ActionStop::Failed(
+                    "the fake has no plan scripted".to_owned(),
+                )),
+                auto_merge: Err(ActionStop::Failed(
+                    "the fake has no auto-merge scripted".to_owned(),
+                )),
+                rerun: Err(ActionStop::Failed(
+                    "the fake has no re-run scripted".to_owned(),
+                )),
+                action_plan_calls: Vec::new(),
+                action_calls: Vec::new(),
+                actions_sent: 0,
             })),
         }
     }
@@ -377,6 +417,115 @@ impl PullRequestService for FakePullRequests {
         }
         self.state().merge.clone()
     }
+
+    fn plan_auto_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        change: AutoMergeChange,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop> {
+        self.action_plan(linked, stamp, Some(change), cancel)
+    }
+
+    fn set_auto_merge(
+        &self,
+        linked: &Linked,
+        change: AutoMergeChange,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<AutoMergeOutcome, ActionStop> {
+        self.send_action(linked, Some(change), ask, cancel)?;
+        self.state().auto_merge.clone()
+    }
+
+    fn plan_rerun(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop> {
+        self.action_plan(linked, stamp, None, cancel)
+    }
+
+    fn rerun(
+        &self,
+        linked: &Linked,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<RerunReport, ActionStop> {
+        self.send_action(linked, None, ask, cancel)?;
+        self.state().rerun.clone()
+    }
+}
+
+impl FakePullRequests {
+    /// An auto-merge or re-run plan read: recorded, held at the plan gate, then answered.
+    fn action_plan(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        change: Option<AutoMergeChange>,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop> {
+        let gate = {
+            let mut state = self.state();
+            state.action_plan_calls.push((stamp.clone(), change));
+            state.plan_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(ActionStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| ActionStop::Failed(format!("{error:?}")))?;
+        self.state().action_plan.clone()
+    }
+
+    /// An auto-merge change or a re-run: recorded, held at the gates around its send, which is
+    /// counted; the caller answers.
+    fn send_action(
+        &self,
+        linked: &Linked,
+        change: Option<AutoMergeChange>,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<(), ActionStop> {
+        let gate = {
+            let mut state = self.state();
+            state.action_calls.push(FlowCall {
+                stamp: ask.stamp.clone(),
+                change,
+                decision: ask.decision.cloned(),
+            });
+            state.unsent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(ActionStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| ActionStop::Failed(format!("{error:?}")))?;
+        if ask.decision.is_none() {
+            return Err(ActionStop::Failed(
+                "the fake got no confirmation".to_owned(),
+            ));
+        }
+        (ask.on_send)();
+        let gate = {
+            let mut state = self.state();
+            state.actions_sent += 1;
+            state.sent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        Ok(())
+    }
 }
 
 /// `octocat` on github.com reading `octo/rc-git` from `origin`.
@@ -513,6 +662,109 @@ pub fn admin_merge_plan(detail: &PullRequestDetail, method: MergeMethod) -> Merg
         decision,
         detail: detail.clone(),
         bypassed: Some(bypassed),
+    }
+}
+
+/// `detail` blocked by branch protection in a repository that allows auto-merge, read by an
+/// account GitHub says may turn it on and off: what the auto-merge control offers.
+#[must_use]
+pub fn auto_mergeable_detail(mut detail: PullRequestDetail) -> PullRequestDetail {
+    detail.merge_state = Some(MergeStateStatus::Blocked);
+    detail.auto_merge_allowed = Some(true);
+    detail.viewer = Some(ViewerAbilities {
+        can_enable_auto_merge: true,
+        can_disable_auto_merge: true,
+        ..ViewerAbilities::default()
+    });
+    detail
+}
+
+/// [`auto_mergeable_detail`] with squash auto-merge on, turned on by `mona`.
+#[must_use]
+pub fn auto_merge_on_detail(detail: PullRequestDetail) -> PullRequestDetail {
+    let mut detail = auto_mergeable_detail(detail);
+    detail.auto_merge = Some(AutoMerge {
+        method: Some(MergeMethod::Squash),
+        enabled_by: Some("mona".to_owned()),
+    });
+    detail
+}
+
+/// The plan the guard would hand out for changing auto-merge of `detail` (as read from
+/// [`linked`]'s repository) as `change` says: the policy's own decision for it.
+///
+/// # Panics
+/// When something stands in the way of that change.
+#[must_use]
+pub fn auto_merge_plan(detail: &PullRequestDetail, change: AutoMergeChange) -> ActionPlan {
+    use rc_git_guard::actions::github::{AutoMergeDisable, AutoMergeEnable};
+    let linked = linked();
+    let login = linked.account.key.login();
+    #[expect(
+        clippy::expect_used,
+        reason = "a test helper given a detail the change fits"
+    )]
+    let action = match change {
+        AutoMergeChange::Enable(method) => rc_git_guard::Action::EnableAutoMerge(Box::new(
+            AutoMergeEnable::new(&linked.target, login, detail, method)
+                .expect("a pull request auto-merge can be turned on for"),
+        )),
+        AutoMergeChange::Disable => rc_git_guard::Action::DisableAutoMerge(Box::new(
+            AutoMergeDisable::new(&linked.target, login, detail)
+                .expect("a pull request with auto-merge on"),
+        )),
+    };
+    ActionPlan {
+        decision: crate::repository_actions::policy().evaluate(&action),
+        detail: detail.clone(),
+    }
+}
+
+/// `detail` with a failed GitHub Actions job of each of `runs`.
+#[must_use]
+pub fn failing_detail(mut detail: PullRequestDetail, runs: &[u64]) -> PullRequestDetail {
+    for (index, run) in runs.iter().enumerate() {
+        detail.checks.checks.push(Check {
+            name: format!("job {index}"),
+            progress: CheckProgress::Run {
+                status: CheckStatus::Completed,
+                conclusion: Some(CheckConclusion::Failure),
+            },
+            description: None,
+            required: None,
+            details: None,
+            actions: Some(ActionsIds {
+                workflow_run: *run,
+                job: 1000 + *run,
+            }),
+        });
+    }
+    detail.checks.total = detail.checks.checks.len();
+    detail
+}
+
+/// The plan the guard would hand out for re-running the failed jobs of `detail` (as read from
+/// [`linked`]'s repository): the policy's own decision for it.
+///
+/// # Panics
+/// When `detail` has no failed run to re-run.
+#[must_use]
+pub fn rerun_plan(detail: &PullRequestDetail) -> ActionPlan {
+    let linked = linked();
+    #[expect(
+        clippy::expect_used,
+        reason = "a test helper given a detail with failed runs"
+    )]
+    let rerun = rc_git_guard::actions::github::PullRequestRerun::new(
+        &linked.target,
+        linked.account.key.login(),
+        detail,
+    )
+    .expect("a pull request with failed runs");
+    ActionPlan {
+        decision: crate::repository_actions::policy()
+            .evaluate(&rc_git_guard::Action::RerunFailedJobs(Box::new(rerun))),
+        detail: detail.clone(),
     }
 }
 

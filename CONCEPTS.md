@@ -185,7 +185,8 @@ read that is current makes one; a screen left by a failed refresh is stale and s
 nothing. It is what an action on the pull request is to compare a fresh read against, refusing
 with "changed since you looked" when they differ. The fetch of a pull request head is the first
 to use it: it writes nothing unless the remote's head is the stamp's. A merge is the second: it
-sends nothing unless a read made just before it shows the stamp's head, base and state.
+sends nothing unless a read made just before it shows the stamp's head, base and state; so do
+an auto-merge change and a re-run of failed jobs.
 
 ## Pull request merge
 
@@ -201,6 +202,25 @@ back), the last settled only as far as one more read of the pull request can. A 
 says landed on another base than the stamp's is merged, but never reported as a plain success:
 GitHub's merge cannot be told which base to expect, so a retarget after the last read can only
 be seen afterwards, and is shown as a warning naming both branches.
+
+## Auto-merge
+
+GitHub merging a pull request by itself once its requirements are met, with whatever was pushed
+to its head branch by then, without asking anyone again. Turning it on is a guarded action of
+its own, confirmed like a merge: rc-git offers it only for a pull request branch protection
+blocks (one that can merge now is told to use Merge), its challenge says in a line of its own
+that later commits merge too and rc-git will not ask again, and names the owner of a head
+branch in someone else's repository. Turning it off is a guarded action too. Each sends one
+request, settled like a merge: done, refused, or unknown.
+
+## Failed run
+
+A GitHub Actions workflow run of a pull request's head commit with at least one job that
+finished as failed, timed out or failed to start, as the read names it by its run id. Re-run
+Failed Jobs asks GitHub to re-run each one's failed jobs, one request per run (at most ten per
+confirmation, lowest ids first), each sent once; every run ends requested, refused, unknown or
+not sent. A cancelled job, a check of another app, a commit status and a run id rc-git does not
+accept make no failed run.
 
 ## Pull request head
 

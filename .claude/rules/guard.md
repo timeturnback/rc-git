@@ -125,6 +125,14 @@ here; so does everything that comes later.
   reaching the plain merge's `read`; its phrase is the number, and its skipped list is part of it.
 - Never word what GitHub's bypass covers beyond what the read reports: say the list may not be
   complete, and keep the two unverified API behaviours in `docs/safety.md` unasserted.
+- Build a later pull request action on `github/guarded.rs` (`plan_action`, `proof_for`): the
+  merge's re-read, stamp check and answered-decision check; give it an `ActionBlocker` rule.
+- Send a REST mutation only as a `MutationRequest::Rest` of `Mutation::of` (plain segments and
+  integer ids through `rest_url`); the outbox sends each request once, never a free-standing POST.
+- Re-run only runs `failed_runs` names (positive ids, at most `MAX_RERUN_RUNS`); never call the
+  endpoint that approves fork or first-time contributor runs, and never offer one.
+- Say in an auto-merge challenge that later commits merge without asking; assert nothing about
+  when GitHub cancels auto-merge beyond what `docs/safety.md`, "Auto-merge", cites.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):
   its refspec comes from `pull_head::refspec(number)` alone, never from server text, it fetches
   no tags, and `run_fetch` refuses before `receive` when the advertised head is not the stamp's.

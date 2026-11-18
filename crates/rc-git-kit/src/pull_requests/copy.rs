@@ -4,14 +4,18 @@
 
 use rc_git_core::{Oid, TreeChange};
 
+use super::auto_merge::{AutoMergeEnd, AutoMergeFlow};
 use super::changes::{ChangesPhase, ComparedWith};
 use super::checks::CheckState;
+use super::flow::{Ended, Phase, Stop, TabFlow};
 use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
+use super::rerun::{RerunEnd, RerunFlow};
 use super::state::Freshness;
 use super::{
-    AfterLoss, Bypassed, DetailFields, MergeBlocker, MergeKind, MergeMethod, Mergeable,
-    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ReviewDecision, ServerLink,
-    Settled, single_line,
+    AfterLoss, AutoMergeAfter, AutoMergeChange, AutoMergeOutcome, Bypassed, DetailFields,
+    MAX_RERUN_RUNS, MergeBlocker, MergeKind, MergeMethod, Mergeable, PullRequestStamp,
+    PullRequestState, PullRequestSummary, ReadError, RerunReport, ReviewDecision, RunOutcome,
+    ServerLink, Settled, failed_runs, single_line,
 };
 use crate::guard_bridge::{FailureKind, classify};
 use crate::history_text::{change_path_label, short_hash};
@@ -403,14 +407,20 @@ pub fn merge_method_word(method: MergeMethod) -> &'static str {
 /// What the tab says about a merge that sent nothing.
 #[must_use]
 pub fn merge_stop_message(stop: &MergeStop) -> String {
+    stop_message(stop)
+}
+
+/// What the tab says about a guarded action that sent nothing.
+#[must_use]
+pub fn stop_message<R: std::fmt::Display>(stop: &Stop<R>) -> String {
     match stop {
-        MergeStop::Cancelled => "Cancelled; nothing was sent.".to_owned(),
-        MergeStop::Refused(refusal) => format!("{refusal}."),
-        MergeStop::SignedOut { account } => format!(
+        Stop::Cancelled => "Cancelled; nothing was sent.".to_owned(),
+        Stop::Refused(refusal) => format!("{refusal}."),
+        Stop::SignedOut { account } => format!(
             "Nothing was sent: {account} is signed out, or refused its token. Sign in again in \
              Settings > GitHub Accounts."
         ),
-        MergeStop::Failed(cause) => format!("Nothing was sent: {cause}"),
+        Stop::Failed(cause) => format!("Nothing was sent: {cause}"),
     }
 }
 
@@ -430,16 +440,16 @@ pub fn merge_note(flow: &MergeFlow) -> Option<String> {
     let word = merge_word(flow.kind());
     let note = match flow.phase() {
         MergePhase::Planning => format!("Reading #{number} again before the {word}…"),
-        MergePhase::Confirming(_) => return None,
-        MergePhase::Merging {
+        MergePhase::Confirming => return None,
+        MergePhase::Sending {
             sent: false,
             cancelling: false,
         } => format!("Merging #{number}… Cancel stops it until the request is sent."),
-        MergePhase::Merging {
+        MergePhase::Sending {
             sent: false,
             cancelling: true,
         } => format!("Stopping the {word} of #{number}…"),
-        MergePhase::Merging { sent: true, .. } => format!(
+        MergePhase::Sending { sent: true, .. } => format!(
             "The {word} request for #{number} was sent; it cannot be stopped now. Waiting for \
              GitHub's answer…"
         ),
@@ -462,8 +472,8 @@ pub fn merge_note_alarms(flow: &MergeFlow) -> bool {
             | MergeEnd::MergedIntoOtherBase { .. },
         ) => true,
         MergePhase::Planning
-        | MergePhase::Confirming(_)
-        | MergePhase::Merging { .. }
+        | MergePhase::Confirming
+        | MergePhase::Sending { .. }
         | MergePhase::Done(MergeEnd::Merged { .. } | MergeEnd::NotSent(_)) => false,
     }
 }
@@ -635,6 +645,378 @@ pub fn merge_outcome_log(flow: &MergeFlow, end: &MergeEnd) -> String {
         MergeEnd::Unknown { problem, after } => format!("unknown: {problem}; after: {after:?}"),
     };
     format!("{}: {outcome}", log_subject(flow))
+}
+
+/// The button that turns auto-merge on, and the title and confirm button of its challenge.
+pub const ENABLE_AUTO_MERGE: &str = "Enable Auto-Merge";
+
+/// The button that turns auto-merge off, and the title and confirm button of its challenge.
+pub const DISABLE_AUTO_MERGE: &str = "Disable Auto-Merge";
+
+/// The line beside the button that turns auto-merge on.
+pub const AUTO_MERGE_NOTE: &str = "Auto-merge lets GitHub merge this pull request by itself once \
+     its requirements are met, with any commits pushed to its head branch by then, without asking \
+     again. The next step shows what you are turning on.";
+
+/// The button that re-runs failed jobs, and the title and confirm button of its challenge.
+pub const RERUN_FAILED_JOBS: &str = "Re-run Failed Jobs";
+
+/// The line under the auto-merge control while auto-merge is on, with the `method` it merges
+/// with and who turned it on, as the read reported them.
+#[must_use]
+pub fn auto_merge_on_line(method: Option<MergeMethod>, enabled_by: Option<&str>) -> String {
+    let how = method.map_or("a method rc-git does not know", merge_method_phrase);
+    let by = enabled_by.map_or_else(String::new, |login| format!(" Turned on by {login}."));
+    format!(
+        "Auto-merge is on: GitHub merges this pull request by itself as {how} once its \
+         requirements are met, with any commits pushed to its head branch by then.{by}"
+    )
+}
+
+/// The line beside the re-run control: how many runs one confirmation re-runs, and how many it
+/// leaves for another.
+#[must_use]
+pub fn rerun_line(runs: usize, left_out: usize) -> String {
+    let runs = match runs {
+        1 => "1 GitHub Actions run".to_owned(),
+        runs => format!("{runs} GitHub Actions runs"),
+    };
+    let left = if left_out > 0 {
+        format!(
+            " {left_out} more wait for another confirmation (at most {MAX_RERUN_RUNS} at once)."
+        )
+    } else {
+        String::new()
+    };
+    format!("Re-runs the failed jobs of {runs} of this head.{left}")
+}
+
+/// `method` as the challenge words it.
+fn merge_method_phrase(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Merge => "a merge commit",
+        MergeMethod::Squash => "a squash merge",
+        MergeMethod::Rebase => "a rebase merge",
+    }
+}
+
+/// The title and confirm button of `flow`'s challenge.
+#[must_use]
+pub fn flow_title(flow: &TabFlow) -> &'static str {
+    match flow {
+        TabFlow::Merge(merge) => match merge.kind() {
+            MergeKind::Plain => MERGE,
+            MergeKind::Admin => ADMIN_MERGE_TITLE,
+        },
+        TabFlow::AutoMerge(auto) => match auto.ask().0 {
+            AutoMergeChange::Enable(_) => ENABLE_AUTO_MERGE,
+            AutoMergeChange::Disable => DISABLE_AUTO_MERGE,
+        },
+        TabFlow::Rerun(_) => RERUN_FAILED_JOBS,
+    }
+}
+
+/// What the tab says under its controls for `flow`; `None` while the challenge is up.
+#[must_use]
+pub fn flow_note(flow: &TabFlow) -> Option<String> {
+    match flow {
+        TabFlow::Merge(merge) => merge_note(merge),
+        TabFlow::AutoMerge(auto) => auto_merge_note(auto),
+        TabFlow::Rerun(rerun) => rerun_note(rerun),
+    }
+}
+
+/// Whether `flow`'s note is an alarm the tab shows in red.
+#[must_use]
+pub fn flow_note_alarms(flow: &TabFlow) -> bool {
+    match flow {
+        TabFlow::Merge(merge) => merge_note_alarms(merge),
+        TabFlow::AutoMerge(auto) => matches!(
+            auto.phase(),
+            Phase::Done(Ended::Sent(
+                AutoMergeOutcome::Refused { .. }
+                    | AutoMergeOutcome::Unknown { .. }
+                    | AutoMergeOutcome::OnOtherBase { .. }
+            ))
+        ),
+        TabFlow::Rerun(rerun) => matches!(
+            rerun.phase(),
+            Phase::Done(Ended::Sent(report)) if report.runs.iter().any(|run| run.outcome != RunOutcome::Requested)
+        ),
+    }
+}
+
+/// `on` or `off`, as `change` turns auto-merge.
+fn turns(change: AutoMergeChange) -> &'static str {
+    match change {
+        AutoMergeChange::Enable(_) => "on",
+        AutoMergeChange::Disable => "off",
+    }
+}
+
+/// What the tab says for an auto-merge change; `None` while the challenge is up.
+#[must_use]
+pub fn auto_merge_note(flow: &AutoMergeFlow) -> Option<String> {
+    let number = flow.number();
+    let way = turns(flow.ask().0);
+    let note = match flow.phase() {
+        Phase::Planning => format!("Reading #{number} again before turning auto-merge {way}…"),
+        Phase::Confirming => return None,
+        Phase::Sending {
+            sent: false,
+            cancelling: false,
+        } => format!(
+            "Turning auto-merge {way} for #{number}… Cancel stops it until the request is sent."
+        ),
+        Phase::Sending {
+            sent: false,
+            cancelling: true,
+        } => format!("Stopping the auto-merge change of #{number}…"),
+        Phase::Sending { sent: true, .. } => format!(
+            "The request to turn auto-merge {way} for #{number} was sent; it cannot be stopped \
+             now. Waiting for GitHub's answer…"
+        ),
+        Phase::Done(end) => auto_merge_end_note(number, flow.ask().0, end),
+    };
+    Some(note)
+}
+
+/// What a finished auto-merge change says.
+fn auto_merge_end_note(number: u64, change: AutoMergeChange, end: &AutoMergeEnd) -> String {
+    const LOOK: &str = "Look at the pull request on GitHub before trying again.";
+    let way = turns(change);
+    let how = |settled: &Settled| match settled {
+        Settled::Answer => String::new(),
+        Settled::Reread => {
+            format!(" GitHub's answer was lost; reading #{number} again shows auto-merge {way}.")
+        }
+    };
+    let outcome = match end {
+        Ended::NotSent(stop) => return stop_message(stop),
+        Ended::Sent(outcome) => outcome,
+    };
+    match outcome {
+        AutoMergeOutcome::Done { settled } => match change {
+            AutoMergeChange::Enable(_) => format!(
+                "Auto-merge is on for #{number}: GitHub merges it by itself once its \
+                 requirements are met, with any commits pushed to its head branch by then.{}",
+                how(settled)
+            ),
+            AutoMergeChange::Disable => format!(
+                "Auto-merge is off for #{number}: GitHub no longer merges it by itself.{}",
+                how(settled)
+            ),
+        },
+        AutoMergeOutcome::OnOtherBase {
+            confirmed,
+            actual,
+            settled,
+        } => format!(
+            "Warning: auto-merge is on for #{number}, but its base is now {actual}, not \
+             {confirmed}, the base you confirmed: it will merge into {actual}. Its base was \
+             changed on GitHub after rc-git last read it. Turn auto-merge off if that is not what \
+             you want.{}",
+            how(settled)
+        ),
+        AutoMergeOutcome::Refused { reason } => format!(
+            "GitHub refused to turn auto-merge {way} for #{number}: {reason} Nothing changed."
+        ),
+        AutoMergeOutcome::Unknown { problem, after } => format!(
+            "rc-git could not tell whether auto-merge is {way} for #{number}: GitHub did not \
+             answer ({problem}), and reading it again shows {}. {LOOK}",
+            after_phrase(after)
+        ),
+    }
+}
+
+/// What the read after a lost auto-merge answer showed.
+fn after_phrase(after: &AutoMergeAfter) -> String {
+    match after {
+        AutoMergeAfter::On { method } => format!(
+            "auto-merge on, as {}",
+            method.map_or("a method rc-git does not know", merge_method_phrase)
+        ),
+        AutoMergeAfter::Off => "auto-merge off".to_owned(),
+        AutoMergeAfter::OtherHead { head } => {
+            format!("it open at another head, {}", short_hash(head))
+        }
+        AutoMergeAfter::Merged => "it merged".to_owned(),
+        AutoMergeAfter::Closed => "it closed".to_owned(),
+        AutoMergeAfter::Unread { reason } => format!("nothing: that read failed too ({reason})"),
+    }
+}
+
+/// What the tab says for a re-run; `None` while the challenge is up.
+#[must_use]
+pub fn rerun_note(flow: &RerunFlow) -> Option<String> {
+    let number = flow.number();
+    let note = match flow.phase() {
+        Phase::Planning => format!("Reading #{number} again before re-running its failed jobs…"),
+        Phase::Confirming => return None,
+        Phase::Sending {
+            sent: false,
+            cancelling: false,
+        } => format!(
+            "Asking GitHub to re-run the failed jobs of #{number}… Cancel stops it until the \
+             first request is sent."
+        ),
+        Phase::Sending {
+            sent: false,
+            cancelling: true,
+        } => format!("Stopping the re-run of #{number}…"),
+        Phase::Sending { sent: true, .. } => format!(
+            "The re-run requests for #{number} are being sent; they cannot be stopped now. \
+             Waiting for GitHub's answers…"
+        ),
+        Phase::Done(Ended::NotSent(stop)) => stop_message(stop),
+        Phase::Done(Ended::Sent(report)) => rerun_report_note(number, report),
+    };
+    Some(note)
+}
+
+/// What a re-run whose requests went says: every run and how its request ended.
+fn rerun_report_note(number: u64, report: &RerunReport) -> String {
+    if report
+        .runs
+        .iter()
+        .all(|run| run.outcome == RunOutcome::Requested)
+    {
+        let ids: Vec<String> = report.runs.iter().map(|run| run.run.to_string()).collect();
+        return format!(
+            "GitHub re-runs the failed jobs of #{number}'s runs {}. The checks show their \
+             progress as they run.",
+            ids.join(", ")
+        );
+    }
+    let mut lines = Vec::new();
+    for run in &report.runs {
+        lines.push(format!(
+            "Run {}: {}",
+            run.run,
+            run_outcome_phrase(&run.outcome)
+        ));
+    }
+    format!(
+        "Re-running the failed jobs of #{number}: {} Look at the runs on GitHub before asking \
+         again; rc-git never sends a re-run twice.",
+        lines.join(" ")
+    )
+}
+
+/// How one run's request ended, as a sentence.
+fn run_outcome_phrase(outcome: &RunOutcome) -> String {
+    match outcome {
+        RunOutcome::Requested => "re-run asked for.".to_owned(),
+        RunOutcome::Refused { reason } => format!("GitHub refused: {reason}."),
+        RunOutcome::Unknown { problem } => {
+            format!("rc-git could not tell whether GitHub re-runs it ({problem}).")
+        }
+        RunOutcome::NotSent { reason } => format!("not sent ({reason})."),
+    }
+}
+
+/// `turn on auto-merge #7 of owner/name@host head <oid> method squash`.
+fn auto_merge_subject(flow: &AutoMergeFlow) -> String {
+    let what = match flow.ask().0 {
+        AutoMergeChange::Enable(method) => {
+            format!(
+                "turn on auto-merge with method {}",
+                merge_method_word(method)
+            )
+        }
+        AutoMergeChange::Disable => "turn off auto-merge".to_owned(),
+    };
+    format!(
+        "{what} #{} of {} head {}",
+        flow.number(),
+        flow.repository(),
+        flow.stamp().head_oid
+    )
+}
+
+/// The app log's line for `flow`'s auto-merge change, about to be sent. No token, no server
+/// text but the guard's scrubbed messages.
+#[must_use]
+pub fn auto_merge_attempt_log(flow: &AutoMergeFlow) -> String {
+    format!("{}: sending", auto_merge_subject(flow))
+}
+
+/// The app log's line for how `flow`'s auto-merge change ended.
+#[must_use]
+pub fn auto_merge_outcome_log(flow: &AutoMergeFlow, end: &AutoMergeEnd) -> String {
+    let how = |settled: &Settled| match settled {
+        Settled::Answer => "answer",
+        Settled::Reread => "read after a lost answer",
+    };
+    let way = turns(flow.ask().0);
+    let outcome = match end {
+        Ended::NotSent(stop) => format!("not sent: {}", stop_message(stop)),
+        Ended::Sent(AutoMergeOutcome::Done { settled }) => format!("{way} ({})", how(settled)),
+        Ended::Sent(AutoMergeOutcome::OnOtherBase {
+            confirmed,
+            actual,
+            settled,
+        }) => format!(
+            "ON FOR ANOTHER BASE: on for {actual}, not the confirmed {confirmed} ({})",
+            how(settled)
+        ),
+        Ended::Sent(AutoMergeOutcome::Refused { reason }) => format!("refused: {reason}"),
+        Ended::Sent(AutoMergeOutcome::Unknown { problem, after }) => {
+            format!("unknown: {problem}; after: {after:?}")
+        }
+    };
+    format!("{}: {outcome}", auto_merge_subject(flow))
+}
+
+/// `re-run failed jobs #7 of owner/name@host head <oid> runs [41, 42]`: the runs the plan's
+/// read names, in the order the guard sends them.
+fn rerun_subject(flow: &RerunFlow) -> String {
+    let runs = flow.planned_as().map_or_else(
+        || "[not read]".to_owned(),
+        |plan| {
+            let ids: Vec<String> = failed_runs(&plan.detail)
+                .runs
+                .iter()
+                .take(MAX_RERUN_RUNS)
+                .map(|run| run.id.to_string())
+                .collect();
+            format!("[{}]", ids.join(", "))
+        },
+    );
+    format!(
+        "re-run failed jobs #{} of {} head {} runs {runs}",
+        flow.number(),
+        flow.repository(),
+        flow.stamp().head_oid
+    )
+}
+
+/// The app log's line for `flow`'s re-run, about to be sent.
+#[must_use]
+pub fn rerun_attempt_log(flow: &RerunFlow) -> String {
+    format!("{}: sending", rerun_subject(flow))
+}
+
+/// The app log's line for how `flow`'s re-run ended: every run and its outcome.
+#[must_use]
+pub fn rerun_outcome_log(flow: &RerunFlow, end: &RerunEnd) -> String {
+    let outcome = match end {
+        Ended::NotSent(stop) => format!("not sent: {}", stop_message(stop)),
+        Ended::Sent(report) => {
+            let mut runs = Vec::new();
+            for run in &report.runs {
+                let what = match &run.outcome {
+                    RunOutcome::Requested => "requested".to_owned(),
+                    RunOutcome::Refused { reason } => format!("refused: {reason}"),
+                    RunOutcome::Unknown { problem } => format!("unknown: {problem}"),
+                    RunOutcome::NotSent { reason } => format!("not sent: {reason}"),
+                };
+                runs.push(format!("run {} {what}", run.run));
+            }
+            runs.join("; ")
+        }
+    };
+    format!("{}: {outcome}", rerun_subject(flow))
 }
 
 /// What a failed head fetch says, with what to do when a secret or an approval saved for

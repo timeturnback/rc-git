@@ -52,15 +52,18 @@ rc-git-kit's `pull_requests` module links a repository to its
 GitHub repository and account (`link`), holds the list and each open pull request tab as state
 machines with a generation per read and one read queued at most (`state`), a tab's changes as a
 state machine tied to the stamp they were read for (`changes`: reading, needs fetch, fetching,
-moved, no base copy, no merge base, ready, one file diff at a time), a tab's merge as a state
-machine tied to its stamp and generation (`merge`: planning, confirming, merging until and after
-the send, done) with the Merge control decided from the guard's blockers, runs them for a window
+moved, no base copy, no merge base, ready, one file diff at a time), a tab's guarded GitHub action
+as a state machine tied to its stamp and generation (`flow`: planning, confirming, sending until
+and after the first request, done), one at a time per tab, of three kinds (a merge, an auto-merge
+change, a re-run of failed jobs: `merge`, `auto_merge`, `rerun`) with each control decided from
+the guard's blockers, runs them for a window
 (`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard and
 the core, a fake in tests), and decides polling (`polling`), check order and summary (`checks`),
 which description links open (`body`) and the words (`copy`). The app's sidebar section and pull
 request page draw that model, the page's Changes view reusing the shared `DiffView`, and the
-window shows a merge's challenge through the shared challenge sheet when the model asks
-(`MergeEvent`); `rc-git pr` reads, fetches and merges through the same live service. `rc-git-highlight` is a pure
+window shows an action's challenge through the shared challenge sheet when the model asks
+(`FlowEvent`); `rc-git pr` reads, fetches, merges, changes auto-merge and re-runs through the
+same live service. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

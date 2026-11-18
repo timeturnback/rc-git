@@ -192,6 +192,37 @@ usage: rc-git [--time] <command> <repo> [args]
                                           A pull request nothing blocks (use plain merge), one
                                           that moved, or an account GitHub does not allow,
                                           exits 11
+  pr auto-merge <n> [repo] --enable --method m --head <oid> --base <branch> --yes
+  pr auto-merge <n> [repo] --disable --head <oid> --base <branch> --yes
+                                          turn GitHub's auto-merge on or off, once. Turned on,
+                                          GitHub merges the pull request by itself when its
+                                          requirements are met, with any commits pushed to its
+                                          head branch by then, and nobody is asked again; it
+                                          needs a pull request branch protection blocks (one
+                                          that can merge now: use pr merge), a repository that
+                                          allows auto-merge and an account GitHub says may.
+                                          Without --yes prints one would-enable-auto-merge<TAB>
+                                          line (would-disable-auto-merge for --disable) per
+                                          line of the challenge and exits 2; with it, the same
+                                          lines go to stderr as sending<TAB>line first. Prints
+                                          auto-merge<TAB>on<TAB>owner/name#n<TAB>method<TAB>
+                                          head or auto-merge<TAB>off<TAB>owner/name#n, then
+                                          note<TAB>text. Turned on for a pull request GitHub
+                                          now names on another base prints
+                                          auto-merge-other-base<TAB>owner/name#n<TAB>head<TAB>
+                                          that base<TAB>--base and exits 13
+  pr rerun <n> [repo] --head <oid> --base <branch> --yes
+                                          re-run the failed jobs of the head's GitHub Actions
+                                          runs (failed, timed out or failed to start; at most 10
+                                          runs, lowest ids first), one request per run, each
+                                          once. Without --yes prints one would-rerun<TAB>line
+                                          per line of the challenge and exits 2. Prints
+                                          rerun<TAB>run id<TAB>requested|refused|unknown|
+                                          not-sent<TAB>reason ('-' when none) per run, then
+                                          note<TAB>text when every run was taken; exits 11 when
+                                          GitHub refused one or one was not sent, 12 when one
+                                          had no usable answer. It never approves a run waiting
+                                          for approval
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control, bidi and invisible characters and every
@@ -214,15 +245,16 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
   9 no author identity (rerun with --author \"Name <email>\"),
   10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
-  11 pr merge did not merge: GitHub refused it, or rc-git refused before sending anything
-  (it changed since --head, or cannot merge as asked),
-  12 pr merge sent its request and no usable answer came back: look at the pull request on
-  GitHub before trying again (rc-git never sends a merge twice),
-  13 pr merge merged, but GitHub says into another base than --base: its base changed after
-  the last read, which GitHub's merge cannot refuse; look at that branch now,
+  11 pr merge, auto-merge or rerun did not do it: GitHub refused it, or rc-git refused before
+  sending anything (it changed since --head, or cannot be done as asked),
+  12 pr merge, auto-merge or rerun sent its request and no usable answer came back: look at
+  the pull request on GitHub before trying again (rc-git never sends one twice),
+  13 pr merge merged, or pr auto-merge turned auto-merge on, but GitHub names another base
+  than --base: its base changed after the last read, which GitHub cannot refuse; look at that
+  branch now,
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push, sync or auth between steps
-  (a second one exits at once, even mid-step, except once pr merge has sent its request:
-  then further ones are ignored until its outcome is read and printed)
+  (a second one exits at once, even mid-step, except once pr merge, auto-merge or rerun has
+  sent its request: then further ones are ignored until its outcome is read and printed)
 ";
 
 const EXIT_ERROR: u8 = 1;

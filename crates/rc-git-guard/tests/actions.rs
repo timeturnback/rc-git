@@ -930,6 +930,122 @@ fn an_admin_merge_needs_the_number_typed_and_a_blocked_read_the_account_may_merg
     assert_eq!(refused(|d| d.summary.draft = true), MergeBlocker::Draft);
 }
 
+/// The auto-merge rows of `docs/safety.md`: a plain confirm each, no backup, built only from a
+/// read that allows the change. Turning it on says GitHub merges later commits without asking.
+#[test]
+fn turning_auto_merge_on_or_off_is_a_plain_confirm_built_from_its_read() {
+    use rc_git_guard::Action;
+    use rc_git_guard::actions::github::{
+        ActionBlocker, AutoMerge, AutoMergeDisable, AutoMergeEnable, GitHubHost, MergeMethod,
+        MergeStateStatus, RepositoryTarget, ViewerAbilities,
+    };
+    let target =
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap();
+    let mut detail = mergeable_pull_request();
+    detail.merge_state = Some(MergeStateStatus::Blocked);
+    detail.auto_merge_allowed = Some(true);
+    detail.viewer = Some(ViewerAbilities {
+        can_enable_auto_merge: true,
+        can_disable_auto_merge: true,
+        ..ViewerAbilities::default()
+    });
+    let enable = AutoMergeEnable::new(&target, "octocat", &detail, MergeMethod::Rebase).unwrap();
+    let mut on = detail.clone();
+    on.auto_merge = Some(AutoMerge {
+        method: Some(MergeMethod::Rebase),
+        enabled_by: Some("mona".to_owned()),
+    });
+    let disable = AutoMergeDisable::new(&target, "octocat", &on).unwrap();
+    for (action, says) in [
+        (
+            Action::EnableAutoMerge(Box::new(enable)),
+            "\nMerges by itself: GitHub will merge this pull request by itself when its \
+             requirements are met, including commits pushed to its head branch after this \
+             confirmation; rc-git will not ask again\n",
+        ),
+        (
+            Action::DisableAutoMerge(Box::new(disable)),
+            "\nAuto-merge: on, as a rebase merge, turned on by \u{201c}mona\u{201d}\n",
+        ),
+    ] {
+        let Decision::Confirm(challenge) = Policy::default().evaluate(&action) else {
+            panic!("{action:?} is confirmed");
+        };
+        assert_eq!(challenge.typed_phrase(), None);
+        assert!(!challenge.backup_ref());
+        assert_eq!(challenge.risk(), Risk::Recoverable);
+        assert!(
+            challenge.summary().contains(says),
+            "{}",
+            challenge.summary()
+        );
+    }
+    let mut clean = detail.clone();
+    clean.merge_state = Some(MergeStateStatus::Clean);
+    assert_eq!(
+        AutoMergeEnable::new(&target, "octocat", &clean, MergeMethod::Rebase).unwrap_err(),
+        ActionBlocker::CanMergeNow
+    );
+    assert_eq!(
+        AutoMergeEnable::new(&target, "octocat", &on, MergeMethod::Rebase).unwrap_err(),
+        ActionBlocker::AutoMergeOn
+    );
+    assert_eq!(
+        AutoMergeDisable::new(&target, "octocat", &detail).unwrap_err(),
+        ActionBlocker::AutoMergeOff
+    );
+}
+
+/// The re-run row of `docs/safety.md`: a plain confirm, no backup, built only from a read with a
+/// failed GitHub Actions run, naming each run it asks for.
+#[test]
+fn a_rerun_of_failed_jobs_is_a_plain_confirm_naming_its_runs() {
+    use rc_git_guard::Action;
+    use rc_git_guard::actions::github::{
+        ActionBlocker, ActionsIds, Check, CheckConclusion, CheckProgress, CheckStatus, GitHubHost,
+        PullRequestRerun, RepositoryTarget,
+    };
+    let target =
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap();
+    let mut detail = mergeable_pull_request();
+    assert_eq!(
+        PullRequestRerun::new(&target, "octocat", &detail).unwrap_err(),
+        ActionBlocker::NoFailedRuns
+    );
+    detail.checks.checks.push(Check {
+        name: "test".to_owned(),
+        progress: CheckProgress::Run {
+            status: CheckStatus::Completed,
+            conclusion: Some(CheckConclusion::Failure),
+        },
+        description: None,
+        required: None,
+        details: None,
+        actions: Some(ActionsIds {
+            workflow_run: 31,
+            job: 5,
+        }),
+    });
+    let rerun = PullRequestRerun::new(&target, "octocat", &detail).unwrap();
+    let Decision::Confirm(challenge) =
+        Policy::default().evaluate(&Action::RerunFailedJobs(Box::new(rerun)))
+    else {
+        panic!("a re-run is confirmed");
+    };
+    assert_eq!(challenge.typed_phrase(), None);
+    assert!(!challenge.backup_ref());
+    assert_eq!(challenge.risk(), Risk::Recoverable);
+    assert!(
+        challenge
+            .summary()
+            .contains("\nRuns: 1 run: run 31 (\u{201c}test\u{201d})\n"),
+        "{}",
+        challenge.summary()
+    );
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

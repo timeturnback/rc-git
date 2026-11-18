@@ -5,40 +5,50 @@
 //! ([`checks`]), when to poll ([`polling`]), which links in a description may open ([`body`]),
 //! and the words ([`copy`]).
 //!
-//! A tab's merge ([`merge`]) is a state machine too: planning, confirming, merging, done. It is
-//! a plain merge, or an admin merge past branch protection where GitHub says the account may.
+//! A tab's guarded GitHub action is a state machine too ([`flow`]): planning, confirming,
+//! sending, done. It is a merge ([`merge`]: plain, or an admin merge past branch protection where
+//! GitHub says the account may), turning auto-merge on or off ([`auto_merge`]), or re-running the
+//! failed jobs of the head's GitHub Actions runs ([`rerun`]); a tab runs one at a time.
 //!
 //! The network reads are the guard's (`rc_git_guard::actions::github`), and so are the writes:
-//! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge on GitHub,
-//! whose challenge the guard words from its own fresh read. All are reached through the
+//! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge, the
+//! auto-merge change and the re-run on GitHub, whose challenges the guard words from its own
+//! fresh read. All are reached through the
 //! [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a
 //! fake in tests. Every text the server sent is attacker-controlled and arrives neutralized by
 //! the guard; nothing here fetches a URL or an image, and fetched commits are only diffed,
 //! never checked out.
 
+pub mod auto_merge;
 pub mod body;
 pub mod changes;
 pub mod checks;
 pub mod copy;
+pub mod flow;
 pub mod link;
 pub mod live;
 pub mod merge;
 pub mod model;
 pub mod polling;
+pub mod rerun;
 pub mod state;
 
 pub use rc_git_guard::Decision;
 pub use rc_git_guard::actions::Cancel;
 pub use rc_git_guard::actions::github::{
-    ActionsIds, AfterLoss, AutoMerge, Bypassed, Check, CheckConclusion, CheckList, CheckProgress,
-    CheckStatus, CheckTally, DetailFields, GitHubError, MergeBlocker, MergeKind, MergeMethod,
-    MergeMethods, MergeOutcome, MergePlan, MergeRefusal, MergeStateStatus, Mergeable, PageCursor,
-    PullRequestDetail, PullRequestId, PullRequestPage, PullRequestRemote, PullRequestStamp,
-    PullRequestState, PullRequestSummary, RepositoryTarget, ReviewDecision, ServerLink, Settled,
-    StatusState, ViewerAbilities, admin_merge_blocker, merge_blocker, multi_line, single_line,
+    ActionBlocker, ActionPlan, ActionRefusal, ActionsIds, AfterLoss, AutoMerge, AutoMergeAfter,
+    AutoMergeChange, AutoMergeOutcome, Bypassed, Check, CheckConclusion, CheckList, CheckProgress,
+    CheckStatus, CheckTally, DetailFields, FailedRun, FailedRuns, GitHubError, MAX_RERUN_RUNS,
+    MergeBlocker, MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeRefusal,
+    MergeStateStatus, Mergeable, PageCursor, PullRequestAction, PullRequestDetail, PullRequestId,
+    PullRequestPage, PullRequestRemote, PullRequestStamp, PullRequestState, PullRequestSummary,
+    RepositoryTarget, RerunReport, ReviewDecision, RunId, RunOutcome, RunReport, ServerLink,
+    Settled, StatusState, ViewerAbilities, admin_merge_blocker, disable_auto_merge_blocker,
+    enable_auto_merge_blocker, failed_runs, merge_blocker, multi_line, rerun_blocker, single_line,
 };
 
 use changes::{ChangesRead, FetchProblem, HeadFetched};
+use flow::{ActionAsk, ActionStop};
 use link::{Linked, RepositoryLink};
 use merge::{MergeAsk, MergeStop, PlanAsk};
 use rc_git_core::{BlobDiff, Oid, TreeChange};
@@ -195,4 +205,58 @@ pub trait PullRequestService: Send + Sync {
         ask: MergeAsk<'_>,
         cancel: &Cancel,
     ) -> Result<MergeOutcome, MergeStop>;
+
+    /// What changing auto-merge of the pull request `stamp` names as `change` says needs the user
+    /// to answer: the guard reads it again, refuses what changed since the stamp or cannot be
+    /// changed so, and the policy words the challenge from that read. Sends no mutation.
+    ///
+    /// # Errors
+    /// [`ActionStop`] for a cancel and every refusal.
+    fn plan_auto_merge(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        change: AutoMergeChange,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop>;
+
+    /// Changes auto-merge as `change` says through the guard, which reads the pull request
+    /// again, checks the answered decision against its own and sends the one mutation. Only when
+    /// the user confirmed, never twice for one confirm.
+    ///
+    /// # Errors
+    /// [`ActionStop`] whenever nothing was sent; once the request may have left, the answer is
+    /// an [`AutoMergeOutcome`].
+    fn set_auto_merge(
+        &self,
+        linked: &Linked,
+        change: AutoMergeChange,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<AutoMergeOutcome, ActionStop>;
+
+    /// What re-running the failed jobs of the head of the pull request `stamp` names needs the
+    /// user to answer, from the guard's fresh read. Sends no request but the read.
+    ///
+    /// # Errors
+    /// [`ActionStop`] for a cancel and every refusal.
+    fn plan_rerun(
+        &self,
+        linked: &Linked,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<ActionPlan, ActionStop>;
+
+    /// Re-runs the failed jobs through the guard: one request per confirmed run, each once.
+    /// Only when the user confirmed, never twice for one confirm.
+    ///
+    /// # Errors
+    /// [`ActionStop`] whenever nothing was sent; once a request may have left, the answer is a
+    /// [`RerunReport`].
+    fn rerun(
+        &self,
+        linked: &Linked,
+        ask: ActionAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<RerunReport, ActionStop>;
 }

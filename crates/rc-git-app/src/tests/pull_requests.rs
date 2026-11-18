@@ -383,7 +383,7 @@ fn a_merge_runs_only_from_its_challenge_and_once(cx: &mut TestAppContext) {
     assert!(fake.state().merge_calls.is_empty());
 
     model.update(cx, |model, cx| {
-        model.dismiss_merge(7, cx);
+        model.dismiss_flow(7, cx);
         model.start_merge(MergeMethod::Squash, cx);
     });
     let sheet = merge_sheet(cx, &window);
@@ -480,6 +480,102 @@ fn an_admin_merge_runs_only_from_its_own_challenge_with_the_number_typed(cx: &mu
     assert_eq!((state.merge_calls.len(), state.merges_sent), (1, 1));
     assert_eq!(state.merge_calls[0].kind, MergeKind::Admin);
     assert_eq!(state.merge_calls[0].typed, " 7 ", "handed on as typed");
+}
+
+#[gpui::test]
+fn auto_merge_and_a_rerun_run_only_from_their_challenges_and_once(cx: &mut TestAppContext) {
+    use rc_git_kit::fake::{auto_merge_plan, auto_mergeable_detail, failing_detail, rerun_plan};
+    use rc_git_kit::pull_requests::auto_merge::AutoMergeControl;
+    use rc_git_kit::pull_requests::flow::TabFlow;
+    use rc_git_kit::pull_requests::rerun::RerunControl;
+    use rc_git_kit::pull_requests::{
+        AutoMergeChange, AutoMergeOutcome, MergeMethod, RerunReport, RunId, RunOutcome, RunReport,
+        Settled,
+    };
+
+    let fake = FakePullRequests::new();
+    fake.state()
+        .pages
+        .insert(None, Ok(page(vec![pull_request(7, "Ship", oid(7))], None)));
+    let detail = failing_detail(
+        auto_mergeable_detail(pull_request_detail(
+            pull_request(7, "Ship", oid(7)),
+            "",
+            CheckList::default(),
+        )),
+        &[41],
+    );
+    let change = AutoMergeChange::Enable(MergeMethod::Squash);
+    fake.state().details.insert(7, Ok(detail.clone()));
+    fake.state().action_plan = Ok(auto_merge_plan(&detail, change));
+    fake.state().auto_merge = Ok(AutoMergeOutcome::Done {
+        settled: Settled::Answer,
+    });
+    fake.state().rerun = Ok(RerunReport {
+        runs: vec![RunReport {
+            run: RunId::new(41).unwrap(),
+            outcome: RunOutcome::Requested,
+        }],
+    });
+    let (harness, window) = shell(cx, &fake);
+    listed(cx, &window);
+    window.update(cx, |window, cx| window.open_pull_request(7, cx));
+    let model = cx.read(|cx| window.read(cx).pull_requests().clone());
+    wait_until(cx, |cx| {
+        model.read_with(cx, |model, _| {
+            matches!(model.auto_merge_control(7), AutoMergeControl::Offer { .. })
+                && matches!(model.rerun_control(7), RerunControl::Shown { runs: 1, .. })
+        })
+    });
+    let handle = harness.shell.read_with(cx, |shell, _| {
+        shell
+            .windows()
+            .first()
+            .map_or_else(|| panic!("a window"), |tab| tab.handle)
+    });
+    let done = |cx: &mut TestAppContext| {
+        model.read_with(cx, |model, _| {
+            model.tab_flow(7).is_some_and(|flow| !flow.is_running())
+        })
+    };
+
+    model.update(cx, |model, cx| {
+        model.start_enable_auto_merge(MergeMethod::Squash, cx);
+    });
+    let sheet = merge_sheet(cx, &window);
+    assert!(
+        fake.state().action_calls.is_empty(),
+        "nothing before the confirm"
+    );
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    sheet.update_in(&mut visual, |sheet, window, cx| {
+        sheet.confirm(window, cx);
+        sheet.confirm(window, cx);
+    });
+    wait_until(cx, done);
+    assert_eq!(fake.state().actions_sent, 1);
+    assert_eq!(fake.state().action_calls[0].change, Some(change));
+
+    fake.state().action_plan = Ok(rerun_plan(&detail));
+    model.update(cx, |model, cx| {
+        model.dismiss_flow(7, cx);
+        model.start_rerun(cx);
+    });
+    let sheet = merge_sheet(cx, &window);
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    sheet.update_in(
+        &mut visual,
+        crate::sheets::challenge::ChallengeSheet::confirm,
+    );
+    wait_until(cx, done);
+    let state = fake.state();
+    assert_eq!((state.action_calls.len(), state.actions_sent), (2, 2));
+    assert_eq!(state.action_calls[1].change, None);
+    drop(state);
+    assert!(model.read_with(cx, |model, _| matches!(
+        model.tab_flow(7),
+        Some(TabFlow::Rerun(_))
+    )));
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::time::Duration;
 use rc_git_testkit::github::{FakeToken, GitHubServer, MergeBehaviour, MergeScript};
 use serde_json::{Value, json};
 
-use super::api::{Mutated, Session};
+use super::api::Session;
 use super::testing::{detail_request_body, merge_request_body};
 use super::*;
 use crate::actions::remote::Cancel;
@@ -441,9 +441,9 @@ fn the_mutation_primitive_sends_nothing_for_another_action_s_proof() {
     let host = host_of(&server);
     let token = token();
     let fetch = Policy::default().authorize(&Action::Fetch, None).unwrap();
-    let sent = Session::new(&host, &token).mutate(&fetch, &Cancel::new());
+    let sent = Session::new(&host, &token).mutate(fetch);
     assert!(
-        matches!(sent, Mutated::NotSent(GitHubError::InvalidValue { .. })),
+        matches!(sent, Err(GitHubError::InvalidValue { .. })),
         "{sent:?}"
     );
     assert_eq!(server.requests(), 0);
@@ -465,9 +465,9 @@ fn the_mutation_primitive_sends_nothing_to_a_repository_on_another_host() {
         panic!("a merge is confirmed");
     };
     let proof = challenge.verify("").unwrap();
-    let sent = Session::new(&host, &token).mutate(&proof, &Cancel::new());
+    let sent = Session::new(&host, &token).mutate(proof);
     assert!(
-        matches!(sent, Mutated::NotSent(GitHubError::ForeignRemote { .. })),
+        matches!(sent, Err(GitHubError::ForeignRemote { .. })),
         "{sent:?}"
     );
     assert_eq!(

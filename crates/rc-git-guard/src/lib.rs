@@ -133,6 +133,21 @@ pub enum Action {
     /// Built only from a read GitHub reports as blocked or behind and that the account may merge
     /// as an administrator ([`actions::github::PullRequestAdminMerge::new`]).
     AdminMergePullRequest(Box<actions::github::PullRequestAdminMerge>),
+    /// Turn on GitHub's auto-merge for a pull request with the method the user chose, expecting
+    /// the head the user saw: GitHub then merges it by itself once its requirements are met,
+    /// with whatever is pushed to its head branch by then, and rc-git asks nothing more. Like the
+    /// merge it loses nothing a revert cannot bring back. Built only from a read made just before
+    /// that branch protection blocks ([`actions::github::AutoMergeEnable::new`]).
+    EnableAutoMerge(Box<actions::github::AutoMergeEnable>),
+    /// Turn off GitHub's auto-merge for a pull request: GitHub then no longer merges it by itself.
+    /// Turning it on again undoes it. Built only from a read made just before that shows it on
+    /// ([`actions::github::AutoMergeDisable::new`]).
+    DisableAutoMerge(Box<actions::github::AutoMergeDisable>),
+    /// Re-run the failed jobs of the GitHub Actions runs of a pull request's head commit, one
+    /// request per run. GitHub runs them again with the privileges of whoever first triggered each
+    /// run; nothing is lost, but the jobs run (and spend Actions minutes) once asked. Built only
+    /// from a read made just before ([`actions::github::PullRequestRerun::new`]).
+    RerunFailedJobs(Box<actions::github::PullRequestRerun>),
 }
 
 /// How much an action can lose.
@@ -167,7 +182,10 @@ impl Action {
             }
             | Action::StashPush { .. }
             | Action::StashPop { .. }
-            | Action::MergePullRequest(_) => Risk::Recoverable,
+            | Action::MergePullRequest(_)
+            | Action::EnableAutoMerge(_)
+            | Action::DisableAutoMerge(_)
+            | Action::RerunFailedJobs(_) => Risk::Recoverable,
             Action::Push { force: true, .. }
             | Action::DeleteLocalBranch { merged: false, .. }
             | Action::DeleteRemoteBranch { .. }
@@ -198,13 +216,13 @@ pub enum Decision {
     },
 }
 
-/// How many bytes of the SHA-1 a [`Decision::fingerprint`] keeps: 64 bits, so finding another
-/// decision with the same fingerprint takes about 2^64 tries.
-const FINGERPRINT_BYTES: usize = 8;
+/// How many bytes of the SHA-1 a [`Decision::fingerprint`] keeps: 128 bits, so no one finds
+/// another decision with the same fingerprint by trying.
+const FINGERPRINT_BYTES: usize = 16;
 
 impl Decision {
     /// A short fingerprint of everything this decision holds (the action with every fact it was
-    /// built from, the challenge's words, its phrase): 16 lowercase hex digits of a SHA-1 over
+    /// built from, the challenge's words, its phrase): 32 lowercase hex digits of a SHA-1 over
     /// the decision as this build prints it for debugging. Two decisions that differ in
     /// anything get different fingerprints, so a caller that saw one decision can make sure the
     /// one it confirms later is the same. It is stable only within one build of rc-git: a
@@ -364,6 +382,11 @@ mod tests {
                 let number = merge.number().to_string();
                 Expected::confirm(Risk::Destructive, Some(&number), false)
             }
+            // Auto-merge and re-runs act on GitHub, not on a branch rc-git protects: a plain
+            // confirm whatever the base is called, nothing local to back up.
+            Action::EnableAutoMerge(_)
+            | Action::DisableAutoMerge(_)
+            | Action::RerunFailedJobs(_) => Expected::confirm(Risk::Recoverable, None, false),
         }
     }
 
@@ -468,6 +491,200 @@ mod tests {
         Action::AdminMergePullRequest(Box::new(
             PullRequestAdminMerge::new(&octo(), "octocat", &detail, MergeMethod::Squash).unwrap(),
         ))
+    }
+
+    /// [`blocked_into`] in a repository that allows auto-merge, read by an account GitHub says
+    /// may turn it on and off.
+    fn auto_mergeable_into(base: &str) -> actions::github::PullRequestDetail {
+        use actions::github::ViewerAbilities;
+        let mut detail = blocked_into(base);
+        detail.auto_merge_allowed = Some(true);
+        detail.viewer = Some(ViewerAbilities {
+            can_enable_auto_merge: true,
+            can_disable_auto_merge: true,
+            ..ViewerAbilities::default()
+        });
+        detail
+    }
+
+    /// Turning on auto-merge for [`auto_mergeable_into`] with a squash.
+    fn enable_auto_merge_into(base: &str) -> Action {
+        use actions::github::{AutoMergeEnable, MergeMethod};
+        let detail = auto_mergeable_into(base);
+        Action::EnableAutoMerge(Box::new(
+            AutoMergeEnable::new(&octo(), "octocat", &detail, MergeMethod::Squash).unwrap(),
+        ))
+    }
+
+    /// Turning off the squash auto-merge `mona` turned on for [`auto_mergeable_into`].
+    fn disable_auto_merge_into(base: &str) -> Action {
+        use actions::github::{AutoMerge, AutoMergeDisable, MergeMethod};
+        let mut detail = auto_mergeable_into(base);
+        detail.auto_merge = Some(AutoMerge {
+            method: Some(MergeMethod::Squash),
+            enabled_by: Some("mona".to_owned()),
+        });
+        Action::DisableAutoMerge(Box::new(
+            AutoMergeDisable::new(&octo(), "octocat", &detail).unwrap(),
+        ))
+    }
+
+    /// [`pull_request_into`] with two failed GitHub Actions jobs of run 42 and one of run 41.
+    fn failing_into(base: &str) -> actions::github::PullRequestDetail {
+        use actions::github::{ActionsIds, Check, CheckConclusion, CheckProgress, CheckStatus};
+        let job = |name: &str, run: u64, job: u64| Check {
+            name: name.to_owned(),
+            progress: CheckProgress::Run {
+                status: CheckStatus::Completed,
+                conclusion: Some(CheckConclusion::Failure),
+            },
+            description: None,
+            required: Some(true),
+            details: None,
+            actions: Some(ActionsIds {
+                workflow_run: run,
+                job,
+            }),
+        };
+        let mut detail = pull_request_into(base);
+        detail.checks.checks = vec![job("test", 42, 3), job("lint", 41, 2), job("build", 42, 1)];
+        detail.checks.total = 3;
+        detail
+    }
+
+    /// Re-running the failed jobs of [`failing_into`].
+    fn rerun_into(base: &str) -> Action {
+        use actions::github::PullRequestRerun;
+        Action::RerunFailedJobs(Box::new(
+            PullRequestRerun::new(&octo(), "octocat", &failing_into(base)).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn turning_on_auto_merge_says_github_merges_later_commits_without_asking_again() {
+        let c = challenge(Policy::default().evaluate(&enable_auto_merge_into("main")));
+        assert_eq!(c.typed_phrase(), None);
+        assert!(!c.backup_ref());
+        assert_eq!(c.risk(), Risk::Recoverable);
+        assert_eq!(
+            c.summary(),
+            "Turn on auto-merge for this pull request on GitHub. GitHub merges it for everyone \
+             and rc-git cannot undo it; the local repository is unchanged until you fetch.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: abababa on \u{201c}feature\u{201d}\n\
+             Method: a squash merge\n\
+             Checks: 1 of 4 checks passed, 1 failed, 1 pending, 1 not read\n\
+             Merges by itself: GitHub will merge this pull request by itself when its \
+             requirements are met, including commits pushed to its head branch after this \
+             confirmation; rc-git will not ask again\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
+        );
+    }
+
+    #[test]
+    fn turning_on_auto_merge_for_a_fork_names_who_can_push_and_that_is_part_of_the_decision() {
+        use actions::github::{AutoMergeEnable, MergeMethod};
+        let enable = |detail: &actions::github::PullRequestDetail| {
+            Policy::default().evaluate(&Action::EnableAutoMerge(Box::new(
+                AutoMergeEnable::new(&octo(), "octocat", detail, MergeMethod::Squash).unwrap(),
+            )))
+        };
+        let mut fork = auto_mergeable_into("main");
+        fork.summary.cross_repository = true;
+        fork.summary.head_owner = Some("mal\u{202e}lory\nBase: x".to_owned());
+        let c = challenge(enable(&fork));
+        let lines: Vec<&str> = c.summary().lines().collect();
+        assert_eq!(
+            lines[lines.len() - 2],
+            "Fork: its head branch is in a repository owned by \u{201c}mal\\u{202e}lory\\u{a}\
+             Base: x\u{201d}, who can push more commits to it"
+        );
+        assert_ne!(enable(&fork), enable(&auto_mergeable_into("main")));
+        let mut same_owner = auto_mergeable_into("main");
+        same_owner.summary.cross_repository = true;
+        same_owner.summary.head_owner = Some("OCTO".to_owned());
+        assert!(!challenge(enable(&same_owner)).summary().contains("Fork:"));
+        let mut gone = auto_mergeable_into("main");
+        gone.summary.cross_repository = true;
+        gone.summary.head_owner = None;
+        let summary = challenge(enable(&gone)).summary().to_owned();
+        assert!(
+            summary.contains(
+                "\nFork: its head branch is in another repository, whose owner GitHub did not \
+                 name, who can push more commits to it\n"
+            ),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn turning_off_auto_merge_names_the_request_it_ends() {
+        let c = challenge(Policy::default().evaluate(&disable_auto_merge_into("main")));
+        assert_eq!(c.typed_phrase(), None);
+        assert_eq!(c.risk(), Risk::Recoverable);
+        assert_eq!(
+            c.summary(),
+            "Turn off auto-merge for this pull request on GitHub. GitHub then no longer merges it \
+             by itself; nothing else changes.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: abababa on \u{201c}feature\u{201d}\n\
+             Auto-merge: on, as a squash merge, turned on by \u{201c}mona\u{201d}\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
+        );
+    }
+
+    #[test]
+    fn a_rerun_challenge_lists_each_run_in_id_order_with_its_failed_checks() {
+        let c = challenge(Policy::default().evaluate(&rerun_into("main")));
+        assert_eq!(c.typed_phrase(), None);
+        assert_eq!(c.risk(), Risk::Recoverable);
+        assert_eq!(
+            c.summary(),
+            "Re-run the failed jobs of these GitHub Actions runs. GitHub re-runs each run's \
+             failed jobs, as it counts them, and the jobs that depend on them, at the commit and \
+             ref of the original run and with the privileges of whoever first triggered it; \
+             rc-git cannot stop them once they start.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Base: \u{201c}main\u{201d}\n\
+             Head: abababa on \u{201c}feature\u{201d}\n\
+             Runs: 2 runs: run 41 (\u{201c}lint\u{201d}); run 42 (\u{201c}build\u{201d}, \
+             \u{201c}test\u{201d})\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
+        );
+    }
+
+    #[test]
+    fn a_proof_for_one_github_action_is_never_another_s() {
+        let policy = Policy::default();
+        let actions = [
+            merge_into("main"),
+            admin_merge_into("main"),
+            enable_auto_merge_into("main"),
+            disable_auto_merge_into("main"),
+            rerun_into("main"),
+        ];
+        for (index, action) in actions.iter().enumerate() {
+            let typed = if let Action::AdminMergePullRequest(merge) = action {
+                merge.number().to_string()
+            } else {
+                String::new()
+            };
+            let proof = policy.authorize(action, Some(&typed)).unwrap();
+            assert_eq!(proof.action(), action);
+            for (other, different) in actions.iter().enumerate() {
+                if other != index {
+                    assert_ne!(proof.action(), different, "{index} vs {other}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -797,7 +1014,7 @@ mod tests {
         let policy = Policy::default();
         let shown = policy.evaluate(&admin_merge_into("main"));
         let print = shown.fingerprint();
-        assert_eq!(print.len(), 16);
+        assert_eq!(print.len(), 32);
         assert!(
             print
                 .bytes()
@@ -888,6 +1105,9 @@ mod tests {
             Action::StashDrop { name: stash() },
             merge_into(&name()),
             admin_merge_into(&name()),
+            enable_auto_merge_into(&name()),
+            disable_auto_merge_into(&name()),
+            rerun_into(&name()),
         ]
     }
 
