@@ -1,5 +1,5 @@
 ---
-description: GPUI app rules for window tabs, the tab strip, wrapping text rows and rounded containers
+description: GPUI app rules for window tabs, the tab strip, wrapping text rows, rounded containers and resizable splits
 paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
 ---
 
@@ -21,3 +21,10 @@ paths: crates/rc-git-app/**, crates/rc-git-mac/src/window_tabs.rs
   `overflow_hidden` to a rectangle, so a child fill at its edge squares off the corners. Hide a
   split's divider with a handle renderer that returns an empty `Some`, never `None`.
   (docs/solutions/ui-bugs/gpui-rounded-card-clips-children-square.md)
+- Never read a split's drawn size from `ResizableState::sizes()`: an entry follows layout only
+  until its panel is first measured, so it goes stale when a sibling appears. Measure with
+  `container_size()`, and read `sizes()` only for a panel you gave `.size(..)` or inside a
+  `Resized` handler. (docs/solutions/ui-bugs/gpui-resizable-sizes-stale-after-first-measure.md)
+- Bump a split's `SubviewFrame` key in `platform/keys.rs` when its panes change or its default
+  share changes: a drag saves the size, and `LayoutPolicy` keeps any saved size whose floors
+  fit, so the new default never shows to anyone who has dragged the split before.
