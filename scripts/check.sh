@@ -115,7 +115,7 @@ if [[ $loopback_users != 'crates/rc-git-guard/src/actions/remote/github/host.rs'
   echo 'error: the dev-loopback-http feature may be read only by the GitHub client host.rs' >&2
   exit 1
 fi
-step "one token header writer, one redirect reader"
+step "one token header writer, one redirect reader, two storage requests at most"
 # The token reaches a request only through api_headers in github/http.rs. The job log's download
 # goes to a host GitHub names, so its request type (DownloadRequest) has no token field and its
 # header builder reads none; a second Authorization writer, or a token in either, fails here.
@@ -132,6 +132,19 @@ if [[ -z $download_request || -z $download_headers ||
   $download_request$download_headers == *[Tt]oken* ||
   $download_headers == *Authorization* ]]; then
   echo "error: $http_rs DownloadRequest and download_headers must carry no token" >&2
+  exit 1
+fi
+# The storage host gets at most two requests per log read: the ranged GET, and one GET without a
+# range only after a 416 refusing it. http's download is called by logs.rs's download_log alone,
+# from exactly those two lines; a third call, or one anywhere else, fails here.
+logs_rs=crates/rc-git-guard/src/actions/remote/github/logs.rs
+download_calls="$(git grep -c -E '(^|[^_[:alnum:]])download\(' -- 'crates/*.rs' |
+  grep -v -F "$http_rs:" | paste -sd ' ' - || true)"
+download_log="$(awk '/^fn download_log/,/^}/' "$logs_rs")"
+log_calls="$(grep -c -E '(^|[^_[:alnum:]])download\(' <<<"$download_log" || true)"
+if [[ $download_calls != "$logs_rs:2" || $log_calls != 2 ]]; then
+  printf '%s\n' "$download_calls"
+  echo "error: only $logs_rs download_log may call download, twice at most" >&2
   exit 1
 fi
 # Only the job log's call reads a redirect's Location; every other call refuses a 3xx.

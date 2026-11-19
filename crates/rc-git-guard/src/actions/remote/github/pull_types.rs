@@ -411,6 +411,25 @@ impl PullRequestId {
     }
 }
 
+/// A ref's GraphQL node id (`REF_kwDO…`), as the host handed it out: opaque text that only ever
+/// travels back in a mutation's `variables`, never shown and never part of a URL.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RefId(String);
+
+impl RefId {
+    /// `text` as a node id, by [`PullRequestId::parse`]'s rule, else `None`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        PullRequestId::parse(text).map(|id| Self(id.0))
+    }
+
+    /// The id's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One page of open pull requests, most recently updated first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PullRequestPage {

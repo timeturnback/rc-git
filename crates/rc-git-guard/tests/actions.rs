@@ -1046,6 +1046,107 @@ fn a_rerun_of_failed_jobs_is_a_plain_confirm_naming_its_runs() {
     );
 }
 
+/// The read of merged pull request 12's head branch `name`, which nothing stands in the way of
+/// deleting.
+#[expect(clippy::unwrap_used, reason = "test helper parses a fixed commit id")]
+fn merged_head_branch(name: &str) -> rc_git_guard::actions::github::HeadBranch {
+    use rc_git_guard::actions::github::{
+        BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestStamp, PullRequestState,
+        RefId,
+    };
+    let head = rc_git_core::Oid::from_hex(&"cd".repeat(20)).unwrap();
+    HeadBranch {
+        stamp: PullRequestStamp {
+            number: 12,
+            head_oid: head,
+            base_ref: "main".to_owned(),
+            state: PullRequestState::Merged,
+        },
+        merged: true,
+        title: "Add the thing".to_owned(),
+        branch: BranchName::from_server(name),
+        in_repository: true,
+        viewer_can_delete: true,
+        head_ref: Some(HeadRef {
+            id: RefId::parse("REF_kwDOtopic"),
+            target: Some(head),
+            is_head_branch: true,
+            open_heads: Some(OpenPullRequests::default()),
+        }),
+        default_branch: Some(false),
+        open_bases: Some(OpenPullRequests::default()),
+    }
+}
+
+/// The delete remote branch row of `docs/safety.md`, for a merged pull request's head branch:
+/// the same decision as `Action::DeleteRemoteBranch` for the same name (denied when protected,
+/// the typed name and a backup ref elsewhere), built only from a read nothing stands in the way
+/// of.
+#[test]
+fn deleting_a_head_branch_is_the_remote_branch_delete_row_built_from_its_read() {
+    use rc_git_guard::Action;
+    use rc_git_guard::actions::github::{
+        ActionBlocker, GitHubHost, PullRequestBranchDelete, PullRequestState, RepositoryTarget,
+    };
+    let target =
+        RepositoryTarget::on_host(&GitHubHost::github_com(), "https://github.com/octo/rc-git")
+            .unwrap();
+    let policy = Policy::default();
+    for name in ["topic", "feature/x", "main", "master", "release/1.0"] {
+        let delete =
+            PullRequestBranchDelete::new(&target, "octocat", &merged_head_branch(name)).unwrap();
+        let ours = policy.evaluate(&Action::DeletePullRequestBranch(Box::new(delete)));
+        let theirs = policy.evaluate(&Action::DeleteRemoteBranch {
+            name: name.to_owned(),
+        });
+        match (ours, theirs) {
+            (Decision::Deny { reason: ours }, Decision::Deny { reason: theirs }) => {
+                assert_eq!(ours, theirs);
+                assert!(["main", "master", "release/1.0"].contains(&name));
+            }
+            (Decision::Confirm(ours), Decision::Confirm(theirs)) => {
+                assert_eq!(ours.typed_phrase(), Some(name));
+                assert_eq!(ours.typed_phrase(), theirs.typed_phrase());
+                assert!(ours.backup_ref() && theirs.backup_ref());
+                assert_eq!(
+                    (ours.risk(), theirs.risk()),
+                    (Risk::Destructive, Risk::Destructive)
+                );
+                assert!(
+                    ours.summary().contains(&format!(
+                        "\nBranch: \u{201c}{name}\u{201d}\nCommit: cdcdcdc\n"
+                    )),
+                    "{}",
+                    ours.summary()
+                );
+            }
+            (ours, theirs) => panic!("{name}: {ours:?} is not {theirs:?}"),
+        }
+    }
+    let refused = |change: fn(&mut rc_git_guard::actions::github::HeadBranch)| {
+        let mut read = merged_head_branch("topic");
+        change(&mut read);
+        PullRequestBranchDelete::new(&target, "octocat", &read).unwrap_err()
+    };
+    assert_eq!(
+        refused(|r| r.stamp.state = PullRequestState::Open),
+        ActionBlocker::NotMerged(PullRequestState::Open)
+    );
+    assert_eq!(
+        refused(|r| r.in_repository = false),
+        ActionBlocker::HeadNotInRepository
+    );
+    assert_eq!(
+        refused(|r| r.viewer_can_delete = false),
+        ActionBlocker::NoDeleteRight
+    );
+    assert_eq!(refused(|r| r.head_ref = None), ActionBlocker::BranchGone);
+    assert_eq!(
+        refused(|r| r.default_branch = Some(true)),
+        ActionBlocker::DefaultBranch
+    );
+}
+
 #[test]
 fn tag_deletion_demands_the_name_and_backs_up_the_tag_object() {
     let fx = Fixture::standard();

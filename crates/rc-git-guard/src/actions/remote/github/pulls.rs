@@ -181,7 +181,7 @@ pub fn read_pull_request(
 }
 
 /// `data.repository` of `reply`, or the reply's failure.
-fn repository(reply: &GraphqlReply) -> GitHubResult<&Value> {
+pub(super) fn repository(reply: &GraphqlReply) -> GitHubResult<&Value> {
     reply
         .data
         .as_ref()
@@ -191,7 +191,7 @@ fn repository(reply: &GraphqlReply) -> GitHubResult<&Value> {
 }
 
 /// The non-null `nodes` of a connection.
-fn nodes(connection: &Value) -> impl Iterator<Item = &Value> {
+pub(super) fn nodes(connection: &Value) -> impl Iterator<Item = &Value> {
     connection
         .get("nodes")
         .and_then(Value::as_array)
@@ -200,11 +200,11 @@ fn nodes(connection: &Value) -> impl Iterator<Item = &Value> {
         .filter(|node| !node.is_null())
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+pub(super) fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
-fn flag(value: &Value, key: &str) -> Option<bool> {
+pub(super) fn flag(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
 
@@ -359,7 +359,7 @@ fn check(item: &Value, host: &GitHubHost) -> Option<Check> {
     }
 }
 
-fn pull_request_state(word: Option<&str>) -> PullRequestState {
+pub(super) fn pull_request_state(word: Option<&str>) -> PullRequestState {
     match word {
         Some("OPEN") => PullRequestState::Open,
         Some("CLOSED") => PullRequestState::Closed,

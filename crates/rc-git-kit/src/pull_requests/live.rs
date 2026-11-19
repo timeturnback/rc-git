@@ -3,9 +3,11 @@
 //! the per-repository choices and the tokens.
 //!
 //! A merge runs through the guard's `plan_merge_pull_request` and `merge_pull_request`, an
-//! auto-merge change through `plan_auto_merge` and `set_auto_merge`, and a re-run through
-//! `plan_rerun_failed_jobs` and `rerun_failed_jobs`, each with the account's token and kit's one
-//! policy; nothing here retries one. A job log is read through the guard's `read_job_log`, which
+//! auto-merge change through `plan_auto_merge` and `set_auto_merge`, a re-run through
+//! `plan_rerun_failed_jobs` and `rerun_failed_jobs`, and a head branch delete through
+//! `plan_delete_head_branch` and `delete_head_branch` (for the repository the pull requests are
+//! still read through), each with the account's token and kit's one policy; nothing here retries
+//! one. A job log is read through the guard's `read_job_log`, which
 //! matches the job to the head on screen before it downloads anything.
 //!
 //! A pull request's head is fetched like any fetch: over the remote's own git transport, with
@@ -18,8 +20,8 @@ use std::sync::Arc;
 
 use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, TreeChange};
 use rc_git_guard::actions::github::{
-    self as guard, ActionTarget, ApiToken, AutoMergeRequest, JobLogError, JobLogRequest,
-    MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, RerunRequest,
+    self as guard, ActionTarget, ApiToken, AutoMergeRequest, BranchDeleteRequest, JobLogError,
+    JobLogRequest, MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, RerunRequest,
     list_open_pull_requests, merge_pull_request, plan_merge_pull_request, pull_request_base_ref,
     pull_request_remote, read_job_log, read_pull_request, refresh_user_token, unix_now,
 };
@@ -27,13 +29,15 @@ use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pu
 
 use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
 use super::copy::{fetch_problem, problem};
+use super::delete_branch::BranchAsk;
 use super::flow::{ActionAsk, ActionStop, Stop};
 use super::link::{Linked, RepositoryLink, link_repository};
 use super::logs::{LogAsk, LogStop};
 use super::merge::{MergeAsk, MergeStop, PlanAsk};
 use super::{
-    ActionPlan, ActionRefusal, AutoMergeChange, AutoMergeOutcome, JobLog, MergeOutcome, MergePlan,
-    MergeRefusal, PullRequestService, PullRequestStamp, ReadError, RerunReport,
+    ActionPlan, ActionRefusal, AutoMergeChange, AutoMergeOutcome, BranchDeletePlan,
+    BranchDeleteReport, JobLog, MergeOutcome, MergePlan, MergeRefusal, PullRequestService,
+    PullRequestStamp, ReadError, RerunReport,
 };
 use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
@@ -366,6 +370,38 @@ impl PullRequestService for LivePullRequests {
             on_send: ask.on_send,
         };
         guard::rerun_failed_jobs(policy(), request, cancel).map_err(action_stop)
+    }
+
+    fn plan_delete_branch(
+        &self,
+        linked: &Linked,
+        repo_path: &str,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<BranchDeletePlan, ActionStop> {
+        same_remote(repo_path, linked).map_err(Stop::Failed)?;
+        let token = self.merge_token(linked, cancel)?;
+        let who = action_target(linked, &token, stamp);
+        guard::plan_delete_head_branch(policy(), &who, Path::new(repo_path), cancel)
+            .map_err(action_stop)
+    }
+
+    fn delete_branch(
+        &self,
+        linked: &Linked,
+        ask: BranchAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<BranchDeleteReport, ActionStop> {
+        same_remote(ask.repo_path, linked).map_err(Stop::Failed)?;
+        let token = self.merge_token(linked, cancel)?;
+        let request = BranchDeleteRequest {
+            who: action_target(linked, &token, ask.stamp),
+            repo_path: Path::new(ask.repo_path),
+            answer: ask.decision,
+            typed: ask.typed,
+            on_send: ask.on_send,
+        };
+        guard::delete_head_branch(policy(), request, cancel).map_err(action_stop)
     }
 
     fn read_log(

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use super::RepositoryTarget;
 use super::auto_merge::{AutoMergeDisable, AutoMergeEnable};
+use super::delete_branch::PullRequestBranchDelete;
 use super::merge::{PullRequestAdminMerge, PullRequestMerge};
 use super::pull_types::{MergeMethod, PullRequestId};
 use super::rerun::{PullRequestRerun, rerun_body};
@@ -51,6 +52,14 @@ pub(super) const DISABLE_AUTO_MERGE: &str = "mutation RcGitDisableAutoMerge($id:
 disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { number state \
 headRefOid autoMergeRequest { mergeMethod } } } }";
 
+/// Deletes the ref whose node id is `$id`: the head branch of a merged pull request. Checked
+/// against GitHub's GraphQL reference: `deleteRef` ("Delete a Git Ref.") takes `DeleteRefInput`
+/// (`refId: ID!`, "The Node ID of the Ref to be deleted"; `clientMutationId: String`, not sent)
+/// and returns `clientMutationId` alone, so a non-null payload is the only success it reports.
+/// The branch name never travels: the id names the ref, read from the pull request's `headRef`.
+pub(super) const DELETE_REF: &str =
+    "mutation RcGitDeleteRef($id: ID!) { deleteRef(input: {refId: $id}) { clientMutationId } }";
+
 /// One request of a confirmed mutation, built from the action alone.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum MutationRequest {
@@ -85,6 +94,8 @@ pub(super) enum Mutation<'a> {
     DisableAutoMerge(&'a AutoMergeDisable),
     /// One REST re-run of failed jobs per confirmed workflow run, in the confirmed order.
     RerunFailedJobs(&'a PullRequestRerun),
+    /// [`DELETE_REF`] of a merged pull request's head branch.
+    DeleteHeadBranch(&'a PullRequestBranchDelete),
 }
 
 impl<'a> Mutation<'a> {
@@ -97,6 +108,7 @@ impl<'a> Mutation<'a> {
             Action::EnableAutoMerge(enable) => Some(Self::EnableAutoMerge(enable)),
             Action::DisableAutoMerge(disable) => Some(Self::DisableAutoMerge(disable)),
             Action::RerunFailedJobs(rerun) => Some(Self::RerunFailedJobs(rerun)),
+            Action::DeletePullRequestBranch(delete) => Some(Self::DeleteHeadBranch(delete)),
             Action::Fetch
             | Action::FetchPullRequest { .. }
             | Action::CreateLocalBranch { .. }
@@ -127,6 +139,7 @@ impl<'a> Mutation<'a> {
             Self::EnableAutoMerge(_) => "turn on auto-merge",
             Self::DisableAutoMerge(_) => "turn off auto-merge",
             Self::RerunFailedJobs(_) => "re-run failed jobs",
+            Self::DeleteHeadBranch(_) => "delete the head branch",
         }
     }
 
@@ -138,6 +151,7 @@ impl<'a> Mutation<'a> {
             Self::EnableAutoMerge(enable) => enable.target(),
             Self::DisableAutoMerge(disable) => disable.target(),
             Self::RerunFailedJobs(rerun) => rerun.target(),
+            Self::DeleteHeadBranch(delete) => delete.target(),
         }
     }
 
@@ -172,10 +186,15 @@ impl<'a> Mutation<'a> {
             | Self::AdminMerge(_)
             | Self::EnableAutoMerge(_)
             | Self::DisableAutoMerge(_)
+            | Self::DeleteHeadBranch(_)
                 if index > 0 =>
             {
                 None
             }
+            Self::DeleteHeadBranch(delete) => Some(graphql(
+                DELETE_REF,
+                json!({ "id": delete.ref_id().as_str() }),
+            )),
             Self::Merge(merge) => Some(graphql(
                 MERGE,
                 variables_of(merge.id(), merge.head_oid(), merge.method()),

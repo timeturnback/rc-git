@@ -12,7 +12,8 @@
 //! A tab's guarded action ([`super::flow`]) starts only from its control's click while kit shows
 //! it: [`PullRequestsModel::start_merge`], [`PullRequestsModel::start_admin_merge`],
 //! [`PullRequestsModel::start_enable_auto_merge`],
-//! [`PullRequestsModel::start_disable_auto_merge`], [`PullRequestsModel::start_rerun`]. A tab
+//! [`PullRequestsModel::start_disable_auto_merge`], [`PullRequestsModel::start_rerun`],
+//! [`PullRequestsModel::start_delete_branch`]. A tab
 //! runs one at a time, and it sends only from [`PullRequestsModel::confirm_flow`], the
 //! challenge's confirm, once per confirm. A tab read that no longer matches the stamp an action
 //! started from ends it while it plans or confirms. After an action whose request may have left,
@@ -37,6 +38,9 @@ use gpui::{Context, EventEmitter, Task};
 
 use super::auto_merge::{AutoMergeControl, AutoMergeFlow, AutoMergeIntent, auto_merge_control};
 use super::changes::{ChangesLoad, ChangesState, FileLoad};
+use super::delete_branch::{
+    DeleteBranchControl, DeleteBranchFlow, DeleteBranchIntent, delete_branch_control,
+};
 use super::flow::{CancelAnswer, Flow, Phase, PlanLoad, SendLoad, Stop, TabAction, TabFlow};
 use super::link::{Linked, RepositoryLink};
 use super::logs::{LogAsk, LogCheck, LogState, ShownLog, log_check};
@@ -895,6 +899,18 @@ impl PullRequestsModel {
         rerun_control(tab, self.linked().is_some())
     }
 
+    /// The delete branch control for tab `number`.
+    #[must_use]
+    pub fn delete_branch_control(&self, number: u64) -> DeleteBranchControl {
+        let Some(tab) = self.tab(number) else {
+            return DeleteBranchControl::Hidden;
+        };
+        if self.repo_path.is_none() {
+            return DeleteBranchControl::Hidden;
+        }
+        delete_branch_control(tab, self.linked().is_some())
+    }
+
     /// Tab `number`'s guarded action, once started under the current link.
     #[must_use]
     pub fn tab_flow(&self, number: u64) -> Option<&TabFlow> {
@@ -928,6 +944,12 @@ impl PullRequestsModel {
     #[must_use]
     pub fn rerun_flow(&self, number: u64) -> Option<&RerunFlow> {
         self.tab_flow(number).and_then(RerunIntent::of)
+    }
+
+    /// Tab `number`'s head branch delete, once started under the current link.
+    #[must_use]
+    pub fn delete_branch_flow(&self, number: u64) -> Option<&DeleteBranchFlow> {
+        self.tab_flow(number).and_then(DeleteBranchIntent::of)
     }
 
     /// The flow of `generation`, under whichever link it started.
@@ -1017,6 +1039,24 @@ impl PullRequestsModel {
         if let RerunControl::Shown { .. } = self.rerun_control(number) {
             self.begin(number, RerunIntent, cx);
         }
+    }
+
+    /// Starts deleting the selected tab's head branch on GitHub: the guard reads it and its branch
+    /// again and the policy words the challenge, which asks for the branch's name typed; the
+    /// backup ref is written in this window's repository, the one the delete was started for.
+    /// Nothing unless the delete branch control is shown, and never beside a running action.
+    pub fn start_delete_branch(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.selected else {
+            return;
+        };
+        let DeleteBranchControl::Shown { .. } = self.delete_branch_control(number) else {
+            return;
+        };
+        let (Some(repo_path), Some(linked)) = (self.repo_path.clone(), self.linked()) else {
+            return;
+        };
+        let remote = linked.remote;
+        self.begin(number, DeleteBranchIntent { repo_path, remote }, cx);
     }
 
     /// Starts `ask` on tab `number` when the tab shows a current read and no action of it runs.
@@ -1113,6 +1153,9 @@ impl PullRequestsModel {
                 self.confirm::<AutoMergeIntent>(number, typed, linked, cx);
             }
             Some(TabFlow::Rerun(_)) => self.confirm::<RerunIntent>(number, typed, linked, cx),
+            Some(TabFlow::DeleteBranch(_)) => {
+                self.confirm::<DeleteBranchIntent>(number, typed, linked, cx);
+            }
             None => {}
         }
     }

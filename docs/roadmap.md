@@ -228,15 +228,20 @@ constraints are clear.
   `rc-git pr logs <n> --check <name> | --job <id>`, show that job's log: matched first to the
   head on screen (job read: `head_sha`, `run_id`), then downloaded from the address GitHub's
   redirect names, one hop, `https://` to a public DNS name only, without the token, at most its
-  last 2 MiB, neutralized, held in memory. A re-run now reads each workflow run first and sends
-  only those that ran on the confirmed head. The seventh slice.
+  last 2 MiB (its first 2 MiB from one more request when the storage host refuses the range),
+  neutralized, held in memory. A re-run now reads each workflow run first and sends only those
+  that ran on the confirmed head. The seventh slice.
+
+- **Delete a merged pull request's branch.** Delete Branch on a merged pull request's tab, and
+  `rc-git pr delete-branch <n> --head <oid> --base <branch> --confirm <name>`, delete its head
+  branch on GitHub with one `deleteRef`, decided by the delete remote branch row's rule (denied
+  on a protected branch, the typed name and a backup ref elsewhere). Only a branch of the base
+  repository, at the commit the pull request merged, not the default branch, used by no other
+  open pull request, and whose commit is in the local repository: the backup ref
+  `refs/rc-git/backup/remote-branch/<name>` is written and read back before the request, and the
+  note says how to push it back. The eighth and last pull request slice.
 
 ## Planned
-
-- **Pull requests.** The last pull request slice on the GitHub client: deleting the head branch
-  after a merge, through the existing `DeleteRemoteBranch` policy row (rc-git-guard, rc-git-kit,
-  rc-git-app, `rc-git pr`), comparing a fresh read against the `PullRequestStamp` of what the
-  user saw.
 
 - **Prune old pull request heads.** Every fetched pull request head stays under
   `refs/rc-git/pr/<n>/head`, keeping its objects alive, until the user deletes it with git. A
@@ -252,7 +257,10 @@ constraints are clear.
   a protected branch, the typed branch name elsewhere); the hand-rolled send-pack still
   refuses a non-fast-forward, so no write path exists yet.
 - **Delete a remote branch.** `Action::DeleteRemoteBranch` is settled (denied on a protected
-  branch, the typed branch name and a backup ref elsewhere); push has no delete command yet.
+  branch, the typed branch name and a backup ref elsewhere); push has no delete command yet. A
+  merged pull request's head branch can already be deleted through GitHub's API under the same
+  rule (`Action::DeletePullRequestBranch`, "Delete a merged pull request's branch" above); a
+  branch on any other remote, or one no merged pull request names, still cannot.
 - **Reset --hard.** `Action::ResetHard` is settled (the typed branch name and a backup ref);
   the move would reuse `actions/treeapply.rs`.
 - **Rewrite history (rebase, amend).** `Action::RewriteHistory` is settled (confirm and a

@@ -25,7 +25,7 @@ mod treebuild;
 mod workfile;
 mod write;
 
-use write::Writer;
+use write::{Writer, backup_base};
 
 pub use checkout::{CheckoutOutcome, checkout_branch};
 pub use commit::{CommitRequest, Committed, commit, configured_identity};

@@ -33,9 +33,17 @@
 //! endpoint (`GET .../actions/jobs/<id>/logs`) answering a scripted redirect ([`LogsAnswer`]), and
 //! a [`StorageServer`], a second loopback listener standing in for the host the redirect names,
 //! which records every request's headers and answers as scripted ([`StorageBehaviour`]): the log
-//! with or without honouring a suffix `Range`, a body without a length, any status (a redirect of
-//! its own included), or a stall. A workflow run's read (`GET .../actions/runs/<id>`) answers as
-//! scripted too. An unscripted job, log or run read is a `404`.
+//! with or without honouring a suffix `Range`, refusing a range with a `416` and serving the
+//! whole log without one, a body without a length, any status (a redirect of its own included),
+//! or a stall. A workflow run's read (`GET .../actions/runs/<id>`) answers as scripted too. An
+//! unscripted job, log or run read is a `404`.
+//!
+//! One pull request's head branch can be scripted to be deleted ([`BranchScript`]): its read
+//! answers from the branch's state (there, changed, deleted), the read of the pull requests based
+//! on it answers as scripted, and its one delete mutation deletes, is refused, meets a branch that
+//! changed after a given read, deletes then drops the connection, or drops it without deleting.
+//! Its requests are counted ([`GitHubServer::delete_requests`]), and a test can run its own check
+//! the moment one arrives ([`GitHubServer::on_delete`]).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -270,6 +278,10 @@ struct State {
     actions: BTreeMap<String, (&'static str, String)>,
     /// The logs endpoints' answers, by their exact path under `/api/v3`.
     logs: BTreeMap<String, LogsAnswer>,
+    /// The head branch a delete acts on, when scripted.
+    branch: Option<BranchState>,
+    /// Run when the delete mutation arrives.
+    on_delete: Option<Hook>,
     requests: Vec<RecordedRequest>,
 }
 
@@ -290,6 +302,92 @@ pub enum LogsAnswer {
         /// The body.
         body: String,
     },
+}
+
+/// One pull request's head branch the fake can delete: the read that shows the branch and what it
+/// answers before and after, the read of the open pull requests based on it, the one delete
+/// mutation it takes, and how that mutation behaves. The read answers from the branch's state, so
+/// a test sees what a delete changed exactly as a client reading it again would.
+#[derive(Debug, Clone)]
+pub struct BranchScript {
+    /// The exact body of the read that shows the pull request and its head branch.
+    pub read: String,
+    /// The read's answer while the branch is there.
+    pub present: String,
+    /// The read's answer once it changed ([`DeleteBehaviour::ChangeAfter`]).
+    pub changed: String,
+    /// The read's answer once the branch is deleted.
+    pub deleted: String,
+    /// The exact body of the read of the open pull requests based on the branch.
+    pub based_on: String,
+    /// That read's answer.
+    pub based_on_answer: String,
+    /// The exact body of the delete mutation; any other mutation is refused with a 400.
+    pub mutation: String,
+    /// What the mutation does.
+    pub behaviour: DeleteBehaviour,
+}
+
+/// What the fake does with the delete mutation.
+#[derive(Debug, Clone)]
+pub enum DeleteBehaviour {
+    /// Deletes the branch and answers `{"data":{"deleteRef":{"clientMutationId":null}}}`.
+    Delete,
+    /// Answers `status` with `body` and deletes nothing.
+    Refuse {
+        /// The status line, e.g. `200 OK` or `422 Unprocessable Entity`.
+        status: &'static str,
+        /// The body.
+        body: String,
+    },
+    /// The branch changes once the read has answered `reads` times (someone pushed to it, or
+    /// the pull request changed): later reads answer [`BranchScript::changed`], and a delete that
+    /// still arrives deletes, so a client that sends it anyway is seen.
+    ChangeAfter {
+        /// Reads answered before it changes.
+        reads: usize,
+    },
+    /// Deletes, then closes the connection without answering.
+    DeleteThenDrop,
+    /// Closes the connection without answering and deletes nothing.
+    Drop,
+    /// Closes the connection without answering and deletes nothing, and the branch changes
+    /// meanwhile: later reads answer [`BranchScript::changed`].
+    DropThenChange,
+}
+
+/// Where the scripted head branch is.
+#[derive(Debug)]
+struct BranchState {
+    script: BranchScript,
+    reads: usize,
+    deleted: bool,
+    /// Set by [`DeleteBehaviour::DropThenChange`] once the delete arrived.
+    dropped: bool,
+    deletes: usize,
+}
+
+impl BranchState {
+    fn changed(&self) -> bool {
+        match self.script.behaviour {
+            DeleteBehaviour::ChangeAfter { reads } => self.reads >= reads,
+            DeleteBehaviour::DropThenChange => self.dropped,
+            DeleteBehaviour::Delete
+            | DeleteBehaviour::Refuse { .. }
+            | DeleteBehaviour::DeleteThenDrop
+            | DeleteBehaviour::Drop => false,
+        }
+    }
+}
+
+/// A test's code run when the delete mutation arrives, before the fake acts on it.
+#[derive(Clone)]
+struct Hook(Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hook")
+    }
 }
 
 /// The exact body a correct re-run of failed jobs sends.
@@ -453,6 +551,44 @@ impl GitHubServer {
             reads: 0,
             merged: false,
         });
+    }
+
+    /// Serves the head branch `script` describes from now on: its read and the read of the pull
+    /// requests based on it, ahead of any [`GitHubServer::script_graphql`] answer for the same
+    /// bodies, and its delete mutation.
+    pub fn script_branch(&self, script: BranchScript) {
+        self.state().branch = Some(BranchState {
+            script,
+            reads: 0,
+            deleted: false,
+            dropped: false,
+            deletes: 0,
+        });
+    }
+
+    /// Runs `hook` each time the scripted delete mutation arrives, before the fake acts on it or
+    /// answers: a test sees what the client had done by the time its request was received. It runs
+    /// while the fake holds its state, so it must not call the server.
+    pub fn on_delete(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.state().on_delete = Some(Hook(Arc::new(hook)));
+    }
+
+    /// Whether the scripted head branch was deleted.
+    #[must_use]
+    pub fn branch_deleted(&self) -> bool {
+        self.state()
+            .branch
+            .as_ref()
+            .is_some_and(|branch| branch.deleted)
+    }
+
+    /// How many delete mutations of the scripted head branch arrived, whatever came of them.
+    #[must_use]
+    pub fn delete_requests(&self) -> usize {
+        self.state()
+            .branch
+            .as_ref()
+            .map_or(0, |branch| branch.deletes)
     }
 
     /// Answers a re-run of the failed jobs of workflow run `run` of `repository` (`owner/name`)
@@ -1086,6 +1222,12 @@ fn graphql(request: &RecordedRequest, state: &Mutex<State>) -> Served {
     {
         return served;
     }
+    let hook = state.on_delete.clone();
+    if let Some(branch) = state.branch.as_mut()
+        && let Some(served) = branch_request(branch, &body, hook.as_ref())
+    {
+        return served;
+    }
     if body.starts_with(r#"{"query":"mutation"#) {
         return Served::Answer(bad_request(
             "the fake takes no mutation but the one scripted",
@@ -1160,6 +1302,59 @@ fn merge_request(merge: &mut MergeState, body: &str) -> Option<Served> {
             Served::Drop
         }
         MergeBehaviour::Drop => Served::Drop,
+    })
+}
+
+/// The scripted head branch's answer to `body`: its read, the read of the pull requests based on
+/// it, or its delete mutation, which runs `hook` first; `None` for anything else.
+fn branch_request(branch: &mut BranchState, body: &str, hook: Option<&Hook>) -> Option<Served> {
+    if body == branch.script.read {
+        let answer = if branch.deleted {
+            &branch.script.deleted
+        } else if branch.changed() {
+            &branch.script.changed
+        } else {
+            &branch.script.present
+        };
+        let answer = json("200 OK", answer.clone());
+        branch.reads += 1;
+        return Some(Served::Answer(answer));
+    }
+    if body == branch.script.based_on {
+        return Some(Served::Answer(json(
+            "200 OK",
+            branch.script.based_on_answer.clone(),
+        )));
+    }
+    if body != branch.script.mutation {
+        return None;
+    }
+    branch.deletes += 1;
+    if let Some(Hook(hook)) = hook {
+        hook();
+    }
+    if branch.deleted {
+        return Some(Served::Answer(json(
+            "200 OK",
+            r#"{"data":{"deleteRef":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node with the global id"}]}"#.to_owned(),
+        )));
+    }
+    let deleted = r#"{"data":{"deleteRef":{"clientMutationId":null}}}"#;
+    Some(match &branch.script.behaviour {
+        DeleteBehaviour::Delete | DeleteBehaviour::ChangeAfter { .. } => {
+            branch.deleted = true;
+            Served::Answer(json("200 OK", deleted.to_owned()))
+        }
+        DeleteBehaviour::Refuse { status, body } => Served::Answer(json(status, body.clone())),
+        DeleteBehaviour::DeleteThenDrop => {
+            branch.deleted = true;
+            Served::Drop
+        }
+        DeleteBehaviour::Drop => Served::Drop,
+        DeleteBehaviour::DropThenChange => {
+            branch.dropped = true;
+            Served::Drop
+        }
     })
 }
 
@@ -1286,6 +1481,13 @@ pub enum StorageBehaviour {
         /// Whether a suffix range is honoured.
         ranges: bool,
     },
+    /// The log `body` for a request without a `Range` header, as a `200 OK`; a request with one
+    /// gets `416 Range Not Satisfiable` naming the log's length (`Content-Range: bytes */<len>`),
+    /// as a host that refuses suffix ranges answers.
+    RangeRefused {
+        /// The log.
+        body: Vec<u8>,
+    },
     /// `200 OK` with `bytes` bytes of log lines and no `Content-Length`, ending at close.
     Streamed {
         /// How many bytes.
@@ -1408,6 +1610,21 @@ fn serve_storage(stream: TcpStream, state: &Mutex<StorageState>, stop: &AtomicBo
     };
     let answer = match behaviour {
         StorageBehaviour::Log { body, ranges } => log_answer(&request, body, ranges),
+        StorageBehaviour::RangeRefused { body } if request.header("range").is_some() => Answer {
+            status: "416 Range Not Satisfiable",
+            headers: vec![(
+                "Content-Range".to_owned(),
+                format!("bytes */{}", body.len()),
+            )],
+            body: Vec::new(),
+            streamed: false,
+        },
+        StorageBehaviour::RangeRefused { body } => Answer {
+            status: "200 OK",
+            headers: Vec::new(),
+            body,
+            streamed: false,
+        },
         StorageBehaviour::Streamed { bytes } => Answer {
             status: "200 OK",
             headers: Vec::new(),

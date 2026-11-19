@@ -13,17 +13,18 @@ use super::CallGate;
 use crate::github::accounts::{GitHubAccount, SignInMethod};
 use crate::platform::api_tokens::AccountKey;
 use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
+use crate::pull_requests::delete_branch::BranchAsk;
 use crate::pull_requests::flow::{ActionAsk, ActionStop};
 use crate::pull_requests::link::{Linked, RepositoryLink};
 use crate::pull_requests::logs::{LogAsk, LogCheck, LogStop};
 use crate::pull_requests::merge::{MergeAsk, MergeStop, PlanAsk};
 use crate::pull_requests::{
-    ActionPlan, ActionsIds, AutoMerge, AutoMergeChange, AutoMergeOutcome, Cancel, Check,
-    CheckConclusion, CheckList, CheckProgress, CheckStatus, Decision, DetailFields, JobLog,
-    MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeStateStatus, Mergeable,
-    PageCursor, PullRequestDetail, PullRequestId, PullRequestPage, PullRequestService,
-    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, RepositoryTarget,
-    RerunReport, ViewerAbilities,
+    ActionPlan, ActionsIds, AutoMerge, AutoMergeChange, AutoMergeOutcome, BranchDeletePlan,
+    BranchDeleteReport, Cancel, Check, CheckConclusion, CheckList, CheckProgress, CheckStatus,
+    Decision, DetailFields, JobLog, MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan,
+    MergeStateStatus, Mergeable, PageCursor, PullRequestDetail, PullRequestId, PullRequestPage,
+    PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary, ReadError,
+    RepositoryTarget, RerunReport, ViewerAbilities,
 };
 
 /// What the fake answers and what it was asked.
@@ -100,6 +101,16 @@ pub struct FakePullRequestsState {
     pub action_calls: Vec<FlowCall>,
     /// How many auto-merge changes or re-runs were sent.
     pub actions_sent: usize,
+    /// What [`PullRequestService::plan_delete_branch`] answers.
+    pub branch_plan: Result<BranchDeletePlan, ActionStop>,
+    /// What [`PullRequestService::delete_branch`] answers once its request is sent.
+    pub branch_delete: Result<BranchDeleteReport, ActionStop>,
+    /// The repository path and stamp of every head branch delete plan read, in arrival order.
+    pub branch_plan_calls: Vec<(String, PullRequestStamp)>,
+    /// Every head branch delete asked for, in arrival order.
+    pub branch_calls: Vec<BranchCall>,
+    /// How many head branch deletes were sent.
+    pub branches_sent: usize,
     /// What [`PullRequestService::read_log`] answers once the job matched.
     pub log: Result<JobLog, LogStop>,
     /// Holds each log read at the gate before its job matches, when set; a cancel raised
@@ -118,6 +129,19 @@ pub struct FlowCall {
     pub change: Option<AutoMergeChange>,
     /// The decision the user answered.
     pub decision: Option<Decision>,
+}
+
+/// One head branch delete the fake was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchCall {
+    /// The repository the backup ref was to be written in.
+    pub repo_path: String,
+    /// What the user saw.
+    pub stamp: PullRequestStamp,
+    /// The decision the user answered.
+    pub decision: Option<Decision>,
+    /// What the user typed, as it arrived.
+    pub typed: String,
 }
 
 /// One merge the fake was asked for.
@@ -196,6 +220,15 @@ impl FakePullRequests {
                 action_plan_calls: Vec::new(),
                 action_calls: Vec::new(),
                 actions_sent: 0,
+                branch_plan: Err(ActionStop::Failed(
+                    "the fake has no branch delete plan scripted".to_owned(),
+                )),
+                branch_delete: Err(ActionStop::Failed(
+                    "the fake has no branch delete scripted".to_owned(),
+                )),
+                branch_plan_calls: Vec::new(),
+                branch_calls: Vec::new(),
+                branches_sent: 0,
                 log: Err(LogStop::Read(ReadError::Failed(
                     "the fake has no log scripted".to_owned(),
                 ))),
@@ -469,6 +502,72 @@ impl PullRequestService for FakePullRequests {
     ) -> Result<RerunReport, ActionStop> {
         self.send_action(linked, None, ask, cancel)?;
         self.state().rerun.clone()
+    }
+
+    fn plan_delete_branch(
+        &self,
+        linked: &Linked,
+        repo_path: &str,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<BranchDeletePlan, ActionStop> {
+        let gate = {
+            let mut state = self.state();
+            state
+                .branch_plan_calls
+                .push((repo_path.to_owned(), stamp.clone()));
+            state.plan_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(ActionStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| ActionStop::Failed(format!("{error:?}")))?;
+        self.state().branch_plan.clone()
+    }
+
+    fn delete_branch(
+        &self,
+        linked: &Linked,
+        ask: BranchAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<BranchDeleteReport, ActionStop> {
+        let gate = {
+            let mut state = self.state();
+            state.branch_calls.push(BranchCall {
+                repo_path: ask.repo_path.to_owned(),
+                stamp: ask.stamp.clone(),
+                decision: ask.decision.cloned(),
+                typed: ask.typed.to_owned(),
+            });
+            state.unsent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(ActionStop::Cancelled);
+        }
+        self.expected(linked)
+            .map_err(|error| ActionStop::Failed(format!("{error:?}")))?;
+        if ask.decision.is_none() {
+            return Err(ActionStop::Failed(
+                "the fake got no confirmation".to_owned(),
+            ));
+        }
+        (ask.on_send)();
+        let gate = {
+            let mut state = self.state();
+            state.branches_sent += 1;
+            state.sent_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        self.state().branch_delete.clone()
     }
 
     fn read_log(
@@ -800,6 +899,66 @@ pub fn rerun_plan(detail: &PullRequestDetail) -> ActionPlan {
         decision: crate::repository_actions::policy()
             .evaluate(&rc_git_guard::Action::RerunFailedJobs(Box::new(rerun))),
         detail: detail.clone(),
+    }
+}
+
+/// `detail` merged, read by an account GitHub says may delete its head branch: what the delete
+/// branch control offers.
+#[must_use]
+pub fn merged_detail(mut detail: PullRequestDetail) -> PullRequestDetail {
+    detail.summary.state = PullRequestState::Merged;
+    detail.viewer = Some(ViewerAbilities {
+        can_delete_head_ref: true,
+        ..ViewerAbilities::default()
+    });
+    detail
+}
+
+/// The plan the guard would hand out for deleting the head branch of `detail` (as read from
+/// [`linked`]'s repository, merged, the branch at its head commit): the policy's own decision.
+///
+/// # Panics
+/// When something stands in the way of deleting it.
+#[must_use]
+pub fn delete_branch_plan(detail: &PullRequestDetail) -> BranchDeletePlan {
+    use rc_git_guard::actions::github::{
+        BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestBranchDelete, RefId,
+    };
+    let linked = linked();
+    let summary = &detail.summary;
+    let read = HeadBranch {
+        stamp: detail.stamp(),
+        merged: summary.state == PullRequestState::Merged,
+        title: summary.title.clone(),
+        branch: BranchName::from_server(&summary.head_ref),
+        in_repository: !summary.cross_repository,
+        viewer_can_delete: detail
+            .viewer
+            .is_some_and(|viewer| viewer.can_delete_head_ref),
+        head_ref: Some(HeadRef {
+            id: RefId::parse("REF_kwDOfake"),
+            target: Some(summary.head_oid),
+            is_head_branch: true,
+            open_heads: Some(OpenPullRequests::default()),
+        }),
+        default_branch: Some(false),
+        open_bases: Some(OpenPullRequests::default()),
+    };
+    #[expect(clippy::expect_used, reason = "a test helper given a deletable branch")]
+    let delete = PullRequestBranchDelete::new(&linked.target, linked.account.key.login(), &read)
+        .expect("a merged pull request's deletable head branch");
+    let (branch, head_oid, backup_ref) = (
+        delete.branch().to_owned(),
+        delete.head_oid(),
+        delete.backup_ref(),
+    );
+    BranchDeletePlan {
+        decision: crate::repository_actions::policy().evaluate(
+            &rc_git_guard::Action::DeletePullRequestBranch(Box::new(delete)),
+        ),
+        branch,
+        head_oid,
+        backup_ref,
     }
 }
 

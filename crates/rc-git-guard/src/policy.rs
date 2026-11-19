@@ -159,7 +159,14 @@ impl Policy {
             Action::DeleteLocalBranch { name, merged } => {
                 self.delete_local_branch(risk, name, *merged)
             }
-            Action::DeleteRemoteBranch { name } => self.delete_remote(risk, name),
+            Action::DeleteRemoteBranch { name } => {
+                let summary = format!("Delete '{name}' on the remote for everyone.");
+                self.delete_remote(risk, name, summary)
+            }
+            // The same rule as any remote branch delete, with the facts of the read it came from.
+            Action::DeletePullRequestBranch(delete) => {
+                self.delete_remote(risk, delete.branch(), delete.summary())
+            }
             Action::DeleteTag { name } => {
                 confirm(risk, format!("Delete tag '{name}'."), Some(name), true)
             }
@@ -244,12 +251,12 @@ impl Policy {
     }
 
     /// Deleting remote branch `name`: denied when protected, otherwise confirmed by typing its
-    /// name, with a backup ref.
-    fn delete_remote(&self, risk: Assessed<'_>, name: &str) -> Decision {
+    /// name, with a backup ref. The one rule for every remote branch delete; `summary` is the
+    /// challenge's words.
+    fn delete_remote(&self, risk: Assessed<'_>, name: &str, summary: String) -> Decision {
         if self.is_protected(name) {
             return deny(&format!("deleting protected remote branch '{name}'"));
         }
-        let summary = format!("Delete '{name}' on the remote for everyone.");
         confirm(risk, summary, Some(name), true)
     }
 

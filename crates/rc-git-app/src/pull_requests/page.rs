@@ -10,8 +10,10 @@
 //! nothing current is on screen, disabled with kit's reason, or the repository's methods and
 //! Merge. Below it, only when kit shows it ([`AdminMergeButton`]), the separate admin merge
 //! control, worded so it never reads as Merge. Then, as kit decides them, the auto-merge control
-//! ([`AutoMergeControl`]: turn it on with a method, or its state and a switch to turn it off)
-//! and the re-run control ([`RerunControl`]). A click asks the model to start; the challenge,
+//! ([`AutoMergeControl`]: turn it on with a method, or its state and a switch to turn it off),
+//! the re-run control ([`RerunControl`]), and for a merged pull request the delete branch control
+//! ([`DeleteBranchControl`]: the button, or kit's reason there is none). A click asks the model to
+//! start; the challenge,
 //! the only way to send, comes up through the window ([`crate::window::RepoWindow`]), and the
 //! note under the controls is kit's. A tab runs one action at a time.
 //!
@@ -34,16 +36,17 @@ use rc_git_kit::pull_requests::auto_merge::AutoMergeControl;
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
-    ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, CLOSE_LOG, DISABLE_AUTO_MERGE,
+    ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, CLOSE_LOG, DELETE_BRANCH, DISABLE_AUTO_MERGE,
     ENABLE_AUTO_MERGE, MERGE, MERGE_CANCEL, MERGE_DISMISS, RERUN_FAILED_JOBS, STOP_LOG, VIEW_LOG,
-    auto_merge_on_line, flow_note, flow_note_alarms, log_cut_notes, log_note, log_title,
-    merge_method_label, rerun_line,
+    auto_merge_on_line, delete_branch_line, flow_note, flow_note_alarms, log_cut_notes, log_note,
+    log_title, merge_method_label, rerun_line,
 };
 use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
     details_label, fields_note, freshness_problem, mergeable_label, review_label, row_detail,
     state_label, tab_title,
 };
+use rc_git_kit::pull_requests::delete_branch::DeleteBranchControl;
 use rc_git_kit::pull_requests::flow::TabFlow;
 use rc_git_kit::pull_requests::link::RepositoryLink;
 use rc_git_kit::pull_requests::logs::{LogPhase, LogState, ShownLog};
@@ -219,6 +222,7 @@ impl PullRequestPage {
         let admin = model.admin_merge_button(number);
         let auto = model.auto_merge_control(number);
         let rerun = model.rerun_control(number);
+        let delete = model.delete_branch_control(number);
         let flow = model.tab_flow(number).cloned();
         let running = flow.as_ref().is_some_and(TabFlow::is_running);
         let theme = cx.theme();
@@ -251,6 +255,15 @@ impl PullRequestPage {
         }
         if let RerunControl::Shown { runs, left_out } = rerun {
             column = column.child(Self::rerun_control(runs, left_out, running, cx));
+        }
+        match delete {
+            DeleteBranchControl::Hidden => {}
+            DeleteBranchControl::Unavailable { reason } => {
+                column = column.child(Self::line(reason, muted));
+            }
+            DeleteBranchControl::Shown { branch } => {
+                column = column.child(Self::delete_branch_control(&branch, running, cx));
+            }
         }
         let Some(flow) = flow else {
             return column;
@@ -421,6 +434,26 @@ impl PullRequestPage {
             .gap(style::ROW_GAP)
             .child(rerun)
             .child(Self::line(rerun_line(runs, left_out), muted))
+    }
+
+    /// The delete branch control kit shows for a merged pull request's own head branch: a
+    /// destructive button and kit's line saying it deletes `branch` for everyone after a backup
+    /// ref. A click only asks the model to start; the challenge that asks for the branch's name
+    /// typed is the only way to send.
+    fn delete_branch_control(branch: &str, running: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let muted = cx.theme().muted_foreground;
+        let delete = Button::new("pull-request-delete-branch")
+            .label(DELETE_BRANCH)
+            .danger()
+            .disabled(running)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.model
+                    .update(cx, PullRequestsModel::start_delete_branch);
+            }));
+        h_flex()
+            .gap(style::ROW_GAP)
+            .child(delete)
+            .child(Self::line(delete_branch_line(branch), muted))
     }
 
     /// The view on show.

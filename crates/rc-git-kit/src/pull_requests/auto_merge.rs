@@ -153,14 +153,14 @@ impl TabAction for AutoMergeIntent {
     fn of(tab: &TabFlow) -> Option<&AutoMergeFlow> {
         match tab {
             TabFlow::AutoMerge(flow) => Some(flow),
-            TabFlow::Merge(_) | TabFlow::Rerun(_) => None,
+            TabFlow::Merge(_) | TabFlow::Rerun(_) | TabFlow::DeleteBranch(_) => None,
         }
     }
 
     fn of_mut(tab: &mut TabFlow) -> Option<&mut AutoMergeFlow> {
         match tab {
             TabFlow::AutoMerge(flow) => Some(flow),
-            TabFlow::Merge(_) | TabFlow::Rerun(_) => None,
+            TabFlow::Merge(_) | TabFlow::Rerun(_) | TabFlow::DeleteBranch(_) => None,
         }
     }
 }

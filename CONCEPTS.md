@@ -41,6 +41,12 @@ at whatever is about to be deleted, so the previous state can be restored by han
 Backups are numbered rather than overwritten, so repeating an action never destroys an
 earlier backup.
 
+A backup can also stand for something that is not local. Deleting a merged pull request's head
+branch on GitHub writes `refs/rc-git/backup/remote-branch/<name>` at the branch's commit, and
+reads it back, before the request leaves; the branch is restored by pushing that ref to GitHub
+under its name. rc-git refuses the delete when the commit is not in the local object database,
+since then no backup could hold it.
+
 ## Dirty overlap
 
 The paths an action is about to write that the working tree or the index has already

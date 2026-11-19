@@ -1,9 +1,9 @@
 //! One guarded GitHub action of a tab as a state machine free of GPUI ([`Flow`]): planning (the
 //! guard reads the pull request again and the policy words the challenge), confirming (the
 //! challenge is up), sending (Cancel works until the first request leaves, never after), and
-//! done. The merge ([`super::merge`]), the auto-merge change ([`super::auto_merge`]) and the
-//! re-run of failed jobs ([`super::rerun`]) are each one kind of it ([`TabAction`]); a tab runs
-//! one at a time ([`TabFlow`]).
+//! done. The merge ([`super::merge`]), the auto-merge change ([`super::auto_merge`]), the re-run
+//! of failed jobs ([`super::rerun`]) and the head branch delete ([`super::delete_branch`]) are each
+//! one kind of it ([`TabAction`]); a tab runs one at a time ([`TabFlow`]).
 //!
 //! Every step's answer is taken only under the generation it was asked for, and a flow is tied
 //! to the stamp it started from: a read of the tab that shows another head, base or state while
@@ -423,6 +423,8 @@ pub enum TabFlow {
     AutoMerge(super::auto_merge::AutoMergeFlow),
     /// Re-running failed jobs.
     Rerun(super::rerun::RerunFlow),
+    /// Deleting a merged pull request's head branch.
+    DeleteBranch(super::delete_branch::DeleteBranchFlow),
 }
 
 impl TabFlow {
@@ -433,6 +435,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.number(),
             Self::AutoMerge(flow) => flow.number(),
             Self::Rerun(flow) => flow.number(),
+            Self::DeleteBranch(flow) => flow.number(),
         }
     }
 
@@ -443,6 +446,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.generation(),
             Self::AutoMerge(flow) => flow.generation(),
             Self::Rerun(flow) => flow.generation(),
+            Self::DeleteBranch(flow) => flow.generation(),
         }
     }
 
@@ -453,6 +457,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.is_running(),
             Self::AutoMerge(flow) => flow.is_running(),
             Self::Rerun(flow) => flow.is_running(),
+            Self::DeleteBranch(flow) => flow.is_running(),
         }
     }
 
@@ -473,6 +478,7 @@ impl TabFlow {
             Self::Merge(flow) => of(flow.phase()),
             Self::AutoMerge(flow) => of(flow.phase()),
             Self::Rerun(flow) => of(flow.phase()),
+            Self::DeleteBranch(flow) => of(flow.phase()),
         }
     }
 
@@ -483,6 +489,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.plan().map(|plan| &plan.decision),
             Self::AutoMerge(flow) => flow.plan().map(|plan| &plan.decision),
             Self::Rerun(flow) => flow.plan().map(|plan| &plan.decision),
+            Self::DeleteBranch(flow) => flow.plan().map(|plan| &plan.decision),
         }
     }
 
@@ -492,6 +499,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.cancel(),
             Self::AutoMerge(flow) => flow.cancel(),
             Self::Rerun(flow) => flow.cancel(),
+            Self::DeleteBranch(flow) => flow.cancel(),
         }
     }
 
@@ -501,6 +509,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.follow(now),
             Self::AutoMerge(flow) => flow.follow(now),
             Self::Rerun(flow) => flow.follow(now),
+            Self::DeleteBranch(flow) => flow.follow(now),
         }
     }
 
@@ -510,6 +519,7 @@ impl TabFlow {
             Self::Merge(flow) => flow.sent(generation),
             Self::AutoMerge(flow) => flow.sent(generation),
             Self::Rerun(flow) => flow.sent(generation),
+            Self::DeleteBranch(flow) => flow.sent(generation),
         }
     }
 }

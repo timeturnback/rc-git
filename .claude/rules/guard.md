@@ -136,6 +136,12 @@ here; so does everything that comes later.
 - Follow a redirect only in `read_job_log`: `Session::job_log_location` alone calls
   `send_reading_redirect`, and the hop goes as a token-less `DownloadRequest` to a `LogDownloadUrl`.
 - Never put the download address in a message: name `LogDownloadUrl::shown`, scrub its `secrets`.
+- Send the job log's second storage request only after a `416` refusing the range, from
+  `download_log`; never a third (`check.sh` counts the `download` calls).
+- Delete a pull request's head branch only through `delete_head_branch`: `delete_remote`'s rule,
+  the backup ref written and read back before the one `deleteRef`, by ref id, never by name.
+- Refuse a branch name `typeable` rejects (a challenge would show it changed); never accept an
+  escape-form phrase.
 - Say in an auto-merge challenge that later commits merge without asking; assert nothing about
   when GitHub cancels auto-merge beyond what `docs/safety.md`, "Auto-merge", cites.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):

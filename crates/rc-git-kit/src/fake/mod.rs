@@ -19,9 +19,10 @@ use rc_git_core::{Oid, RefEntry, RefKind};
 
 pub use actions::{ActionCall, ActionKind, FakeActions, FakeActionsState};
 pub use pull_requests::{
-    FakePullRequests, FakePullRequestsState, FlowCall, MergeCall, admin_merge_plan,
-    auto_merge_on_detail, auto_merge_plan, auto_mergeable_detail, blocked_detail, failing_detail,
-    linked, merge_plan, page, pull_request, pull_request_detail, rerun_plan,
+    BranchCall, FakePullRequests, FakePullRequestsState, FlowCall, MergeCall, admin_merge_plan,
+    auto_merge_on_detail, auto_merge_plan, auto_mergeable_detail, blocked_detail,
+    delete_branch_plan, failing_detail, linked, merge_plan, merged_detail, page, pull_request,
+    pull_request_detail, rerun_plan,
 };
 pub use repository::{FakeRepository, FakeState, commit_summary, text_blob};
 

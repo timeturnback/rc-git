@@ -29,6 +29,13 @@
 //! before anything leaves, and once a request has left a second Ctrl+C no longer ends the
 //! command. A re-run sends one request per failed run and prints how each ended.
 //!
+//! `pr delete-branch` deletes a merged pull request's head branch on GitHub through the guard as
+//! the app does: `--head` and `--base` are the stamp (the state the caller saw is merged), and the
+//! confirmation is the branch's exact name after `--confirm`, which the guard alone checks;
+//! `--yes` counts for nothing. Without `--confirm` it prints the challenge and exits 10, having
+//! sent and written nothing. With it, the challenge goes to stderr, the guard writes the backup
+//! ref in the repository, and only then does the one request leave.
+//!
 //! `pr logs` prints one GitHub Actions job's log (`--check <name>` or `--job <id>`): the guard
 //! matches the job to the head just read (or to `--head`, which must still be the head) before
 //! anything is downloaded, and stdout carries the neutralized log alone, with what was left out
@@ -51,10 +58,11 @@ use rc_git_kit::pull_requests::auto_merge::{AutoMergeFlow, AutoMergeIntent};
 use rc_git_kit::pull_requests::changes::{ChangesRead, ComparedWith, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
-    auto_merge_note, check_label, log_cut_notes, log_stop_note, merge_method_word, merge_note,
-    merge_stop_message, mergeable_label, problem, rerun_note, review_label, state_label,
-    stop_message,
+    auto_merge_note, check_label, delete_branch_note, log_cut_notes, log_stop_note,
+    merge_method_word, merge_note, merge_stop_message, mergeable_label, problem, rerun_note,
+    review_label, state_label, stop_message,
 };
+use rc_git_kit::pull_requests::delete_branch::{BranchAsk, DeleteBranchFlow, DeleteBranchIntent};
 use rc_git_kit::pull_requests::flow::{ActionAsk, ActionStop, Ended, Phase};
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
@@ -64,10 +72,10 @@ use rc_git_kit::pull_requests::merge::{
 };
 use rc_git_kit::pull_requests::rerun::{RerunFlow, RerunIntent};
 use rc_git_kit::pull_requests::{
-    ActionRefusal, AutoMergeChange, AutoMergeOutcome, Bypassed, Check, Decision, JobId, MergeKind,
-    MergeMethod, MergePlan, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService,
-    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ReviewDecision, RunOutcome,
-    ServerLink,
+    ActionRefusal, AutoMergeChange, AutoMergeOutcome, BranchDeleteOutcome, Bypassed, Check,
+    Decision, JobId, MergeKind, MergeMethod, MergePlan, MergeRefusal, PageCursor,
+    PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
+    ReadError, ReviewDecision, RunOutcome, ServerLink,
 };
 
 use crate::{
@@ -115,7 +123,8 @@ fn failure(error: &ReadError) -> anyhow::Error {
 pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<ExitCode> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(UsageError(
-            "pr needs list, view, checks, logs, diff, merge, auto-merge or rerun".to_owned(),
+            "pr needs list, view, checks, logs, diff, merge, auto-merge, rerun or delete-branch"
+                .to_owned(),
         )
         .into());
     };
@@ -129,9 +138,10 @@ pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<Exit
         "merge" => merge(rest, out),
         "auto-merge" => auto_merge(rest, out),
         "rerun" => rerun(rest, out),
+        "delete-branch" => delete_branch(rest, out),
         other => Err(UsageError(format!(
-            "pr has no '{other}'; use list, view, checks, logs, diff, merge, auto-merge or \
-             rerun"
+            "pr has no '{other}'; use list, view, checks, logs, diff, merge, auto-merge, rerun \
+             or delete-branch"
         ))
         .into()),
     };
@@ -901,7 +911,9 @@ fn action_stopped(stop: &ActionStop) -> anyhow::Error {
     let code = match stop {
         ActionStop::Cancelled => EXIT_INTERRUPTED,
         ActionStop::SignedOut { .. } => EXIT_AUTH,
-        ActionStop::Refused(ActionRefusal::NotConfirmed { .. }) => EXIT_NOT_CONFIRMED,
+        ActionStop::Refused(
+            ActionRefusal::NotConfirmed { .. } | ActionRefusal::NotTyped { .. },
+        ) => EXIT_NOT_CONFIRMED,
         ActionStop::Refused(_) => EXIT_MERGE_REFUSED,
         ActionStop::Failed(_) => EXIT_ERROR,
     };
@@ -1140,6 +1152,111 @@ fn rerun_report(out: &mut Vec<u8>, flow: &RerunFlow) -> Result<ExitCode> {
             writeln!(out, "note\t{note}")?;
             return Ok(ExitCode::SUCCESS);
         }
+    };
+    Err(ReadFailure {
+        message: note,
+        code,
+    }
+    .into())
+}
+
+/// `pr delete-branch`'s valued flags.
+const DELETE_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--head", "--base", "--confirm"];
+
+/// Deletes the head branch of merged pull request `<n>` on GitHub once `--confirm` carries the
+/// branch's name, for the head and base the caller saw (`--head`, `--base`), after the guard
+/// writes a backup ref in the repository. Without `--confirm` it prints the challenge and sends
+/// and writes nothing; with it, the challenge goes to stderr before the backup ref is written and
+/// the one request leaves. The `--confirm` text goes to the guard as typed.
+fn delete_branch(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    let args = split_args("pr delete-branch", raw, &DELETE_VALUED, &[])?;
+    args.expect(1, 2, "<number> [repo]")?;
+    let number = number(&args)?;
+    let verb = "pr delete-branch";
+    let stamp = PullRequestStamp {
+        state: PullRequestState::Merged,
+        ..stamp(&args, number, verb)?
+    };
+    let repo_path = repo_path(&args, 1)?;
+    let (service, linked) = linked(&args, 1)?;
+    let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
+    let plan = service
+        .plan_delete_branch(&linked, &repo_path, &stamp, &cancel)
+        .map_err(|stop| action_stopped(&stop))?;
+    let Some(typed) = args.value(&["--confirm"]) else {
+        write_decision(out, "would-delete-branch", &plan.decision)?;
+        return Err(ReadFailure {
+            message: format!(
+                "pr delete-branch needs the branch's name typed: --confirm {} (--yes is not \
+                 enough); nothing was sent or written",
+                crate::shell_word(&plan.branch)
+            ),
+            code: EXIT_NOT_CONFIRMED,
+        }
+        .into());
+    };
+    let intent = DeleteBranchIntent {
+        repo_path: repo_path.clone(),
+        remote: linked.remote.clone(),
+    };
+    let (mut flow, load) =
+        DeleteBranchFlow::begin(1, repository_label(&linked), stamp.clone(), intent);
+    flow.planned(load.generation, Ok(plan.clone()));
+    flow.confirm(typed.to_owned());
+    write_sending_decision(&plan.decision)?;
+    let ask = BranchAsk {
+        repo_path: &repo_path,
+        stamp: &stamp,
+        decision: Some(&plan.decision),
+        typed,
+        on_send: &|| exits.disarm(),
+    };
+    let answer = service.delete_branch(&linked, ask, &cancel);
+    if let Err(stop) = &answer {
+        return Err(action_stopped(stop));
+    }
+    flow.finished(load.generation, answer);
+    delete_branch_report(out, &linked, &flow)
+}
+
+/// What `pr delete-branch` prints once its request may have left, and the code it ends with: 0
+/// only when GitHub deleted the branch.
+fn delete_branch_report(
+    out: &mut Vec<u8>,
+    linked: &Linked,
+    flow: &DeleteBranchFlow,
+) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let note = delete_branch_note(flow).unwrap_or_default();
+    let Phase::Done(Ended::Sent(report)) = flow.phase() else {
+        bail!("the delete has no outcome: {note}");
+    };
+    let label = format!(
+        "{}/{}#{}",
+        linked.target.owner(),
+        linked.target.name(),
+        flow.number()
+    );
+    let word = match &report.outcome {
+        BranchDeleteOutcome::Deleted { .. } => "deleted",
+        BranchDeleteOutcome::Refused { .. } => "refused",
+        BranchDeleteOutcome::NotDeleted { .. } => "not-deleted",
+        BranchDeleteOutcome::Unknown { .. } => "unknown",
+    };
+    writeln!(
+        out,
+        "{word}\t{label}\t{}\t{}\t{}",
+        report.branch, report.head_oid, report.backup_ref
+    )?;
+    let code = match &report.outcome {
+        BranchDeleteOutcome::Deleted { .. } => {
+            writeln!(out, "note\t{note}")?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        BranchDeleteOutcome::Refused { .. } | BranchDeleteOutcome::NotDeleted { .. } => {
+            EXIT_MERGE_REFUSED
+        }
+        BranchDeleteOutcome::Unknown { .. } => EXIT_MERGE_UNKNOWN,
     };
     Err(ReadFailure {
         message: note,

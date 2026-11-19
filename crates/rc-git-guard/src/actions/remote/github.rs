@@ -10,8 +10,10 @@
 //! saw, then requests built from the [`crate::Confirmation`] alone, each sent once, whose
 //! outcome is done, refused or unknown, never resent. It merges a pull request
 //! ([`merge_pull_request`]), as a plain merge or as an admin merge past branch protection
-//! ([`MergeKind`]); turns auto-merge on and off ([`set_auto_merge`]); and re-runs the failed jobs
-//! of a pull request's GitHub Actions runs ([`rerun_failed_jobs`]).
+//! ([`MergeKind`]); turns auto-merge on and off ([`set_auto_merge`]); re-runs the failed jobs of a
+//! pull request's GitHub Actions runs ([`rerun_failed_jobs`]); and deletes a merged pull request's
+//! head branch ([`delete_head_branch`]) once a backup ref in the local repository holds its
+//! commit.
 //!
 //! It reads a GitHub Actions job's log ([`read_job_log`]): the one request rc-git sends to a host
 //! other than the account's, to the address GitHub's redirect names, followed by hand once,
@@ -22,6 +24,7 @@
 
 mod api;
 mod auto_merge;
+mod delete_branch;
 mod device;
 mod download;
 mod error;
@@ -62,14 +65,25 @@ mod rerun_tests;
 #[cfg(test)]
 mod logs_tests;
 
+#[cfg(test)]
+mod delete_branch_tests;
+
 pub use auto_merge::{
     AutoMergeAfter, AutoMergeChange, AutoMergeDisable, AutoMergeEnable, AutoMergeOutcome,
     AutoMergeRequest, disable_auto_merge_blocker, enable_auto_merge_blocker, plan_auto_merge,
     set_auto_merge,
 };
+pub use delete_branch::{
+    BACKUP_KIND, BranchAfter, BranchDeleteOutcome, BranchDeletePlan, BranchDeleteReport,
+    BranchDeleteRequest, BranchName, HeadBranch, HeadRef, OpenPullRequests,
+    PullRequestBranchDelete, delete_branch_blocker, delete_head_branch, head_branch_blocker,
+    plan_delete_head_branch, typeable,
+};
 pub use device::{DeviceFlow, DeviceMethod, DevicePoll, start_device_flow};
 pub use error::GitHubError;
-pub use guarded::{ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, PullRequestAction};
+pub use guarded::{
+    ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, BranchUse, PullRequestAction,
+};
 pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host, ssh_dialed_host};
 pub use links::ServerLink;
 pub use logs::{
@@ -86,7 +100,7 @@ pub use pull_types::{
     ActionsIds, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress, CheckState,
     CheckStatus, CheckTally, DetailFields, MergeMethod, MergeMethods, MergeStateStatus, Mergeable,
     PageCursor, PullRequestDetail, PullRequestId, PullRequestPage, PullRequestStamp,
-    PullRequestState, PullRequestSummary, ReviewDecision, StatusState, ViewerAbilities,
+    PullRequestState, PullRequestSummary, RefId, ReviewDecision, StatusState, ViewerAbilities,
 };
 pub use pulls::{MAX_CHECKS, PAGE_SIZE, list_open_pull_requests, read_pull_request};
 pub use repository::{PullRequestRemote, pull_request_base_ref, pull_request_remote};
@@ -104,8 +118,35 @@ pub use user::{TokenIdentity, validate_token};
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
     use super::{
-        MergeMethod, PageCursor, PullRequestId, RepositoryTarget, api, mutation, pulls, rerun,
+        MergeMethod, PageCursor, PullRequestId, RepositoryTarget, api, delete_branch, mutation,
+        pulls, rerun,
     };
+
+    /// The body of the read of pull request `number`'s head branch, which a head branch delete
+    /// sends to plan, again to delete, and once more to settle a lost answer.
+    #[must_use]
+    pub fn head_branch_request_body(target: &RepositoryTarget, number: u64) -> String {
+        body(
+            delete_branch::HEAD_BRANCH,
+            &delete_branch::head_branch_variables(target, number),
+        )
+    }
+
+    /// The body of the read of the open pull requests based on `branch`.
+    #[must_use]
+    pub fn based_on_request_body(target: &RepositoryTarget, branch: &str) -> String {
+        body(
+            delete_branch::BASED_ON,
+            &delete_branch::based_on_variables(target, branch),
+        )
+    }
+
+    /// The body of the delete of the ref with node id `id`: the one mutation request rc-git
+    /// sends for a head branch delete.
+    #[must_use]
+    pub fn delete_ref_request_body(id: &str) -> String {
+        body(mutation::DELETE_REF, &serde_json::json!({ "id": id }))
+    }
 
     /// The body of the list read of `target` from `after` on.
     #[must_use]

@@ -7,16 +7,19 @@
 //!
 //! A tab's guarded GitHub action is a state machine too ([`flow`]): planning, confirming,
 //! sending, done. It is a merge ([`merge`]: plain, or an admin merge past branch protection where
-//! GitHub says the account may), turning auto-merge on or off ([`auto_merge`]), or re-running the
-//! failed jobs of the head's GitHub Actions runs ([`rerun`]); a tab runs one at a time.
+//! GitHub says the account may), turning auto-merge on or off ([`auto_merge`]), re-running the
+//! failed jobs of the head's GitHub Actions runs ([`rerun`]), or deleting a merged pull request's
+//! head branch on GitHub after a backup ref keeps its commit locally ([`delete_branch`]); a tab
+//! runs one at a time.
 //!
 //! A tab also reads a GitHub Actions check's job log on the user's click ([`logs`]): one read at a
 //! time per tab, matched by the guard to the head on screen first, held in memory only.
 //!
 //! The network reads are the guard's (`rc_git_guard::actions::github`), and so are the writes:
-//! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge, the
-//! auto-merge change and the re-run on GitHub, whose challenges the guard words from its own
-//! fresh read. All are reached through the
+//! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, the backup ref a head
+//! branch delete writes first, and the merge, the auto-merge change, the re-run and the branch
+//! delete on GitHub, whose challenges the guard words from its own fresh read. All are reached
+//! through the
 //! [`PullRequestService`] seam: [`live::LivePullRequests`] in the app and the CLI, a
 //! fake in tests. Every text the server sent is attacker-controlled and arrives neutralized by
 //! the guard; nothing here fetches a URL or an image, and fetched commits are only diffed,
@@ -27,6 +30,7 @@ pub mod body;
 pub mod changes;
 pub mod checks;
 pub mod copy;
+pub mod delete_branch;
 pub mod flow;
 pub mod link;
 pub mod live;
@@ -51,10 +55,15 @@ pub use rc_git_guard::actions::github::{
     enable_auto_merge_blocker, failed_runs, merge_blocker, multi_line, rerun_blocker, single_line,
 };
 pub use rc_git_guard::actions::github::{
+    BranchAfter, BranchDeleteOutcome, BranchDeletePlan, BranchDeleteReport, BranchUse,
+    head_branch_blocker, typeable,
+};
+pub use rc_git_guard::actions::github::{
     JobId, JobLog, LOG_BYTES, LOG_LINE_CHARS, LOG_LINES, LogCut,
 };
 
 use changes::{ChangesRead, FetchProblem, HeadFetched};
+use delete_branch::BranchAsk;
 use flow::{ActionAsk, ActionStop};
 use link::{Linked, RepositoryLink};
 use logs::{LogAsk, LogStop};
@@ -269,6 +278,36 @@ pub trait PullRequestService: Send + Sync {
         ask: ActionAsk<'_>,
         cancel: &Cancel,
     ) -> Result<RerunReport, ActionStop>;
+
+    /// What deleting the head branch of the pull request `stamp` names needs the user to answer:
+    /// the guard reads it and its branch again, refuses what changed since the stamp or cannot be
+    /// deleted (the head commit missing from the repository at `repo_path` included), and the
+    /// policy words the challenge. Sends no mutation and writes nothing.
+    ///
+    /// # Errors
+    /// [`ActionStop`] for a cancel and every refusal.
+    fn plan_delete_branch(
+        &self,
+        linked: &Linked,
+        repo_path: &str,
+        stamp: &PullRequestStamp,
+        cancel: &Cancel,
+    ) -> Result<BranchDeletePlan, ActionStop>;
+
+    /// Deletes the head branch through the guard, which reads it again, checks the answered
+    /// decision and the typed name, writes the backup ref in the repository at `ask.repo_path`,
+    /// and only then sends the one mutation. Only when the user confirmed, never twice for one
+    /// confirm.
+    ///
+    /// # Errors
+    /// [`ActionStop`] whenever nothing was sent; once the request may have left, the answer is a
+    /// [`BranchDeleteReport`].
+    fn delete_branch(
+        &self,
+        linked: &Linked,
+        ask: BranchAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<BranchDeleteReport, ActionStop>;
 
     /// The log of the GitHub Actions job `ask` names, through the guard: matched to `ask.head`
     /// first, then downloaded once, capped and neutralized. A read: only when the user asked,

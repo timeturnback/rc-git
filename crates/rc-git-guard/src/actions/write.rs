@@ -170,7 +170,7 @@ impl<'a> Writer<'a> {
         name: &str,
         target: ObjectId,
     ) -> ActionResult<String> {
-        let base = format!("refs/rc-git/backup/{kind}/{}", backup_leaf(name));
+        let base = backup_base(kind, name);
         let legacy = format!("refs/rc-git/backup/{kind}/{}", legacy_backup_leaf(name));
         if legacy != base
             && let Some(existing) = scan_backups(self.repo, &legacy, target)?.holding_target
@@ -659,6 +659,13 @@ fn prune_empty_parents(work_dir: &Path, relative: &str) {
             break;
         }
     }
+}
+
+/// The first slot [`Writer::write_backup_ref`] writes for `name` of `kind`:
+/// `refs/rc-git/backup/<kind>/<leaf>`. A challenge names it before the write; the write takes the
+/// next numbered slot after it (`-2`, `-3`, …) when it already holds another object.
+pub(super) fn backup_base(kind: &str, name: &str) -> String {
+    format!("refs/rc-git/backup/{kind}/{}", backup_leaf(name))
 }
 
 /// `name` as one ref path component: `%` becomes `%25`, `/` becomes `%2F` and `-` becomes

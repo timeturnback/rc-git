@@ -2,7 +2,7 @@
 //! GitHub changes, so it has no `Action` and no challenge, and it runs only when the user asks,
 //! one job at a time. Nothing here writes it anywhere: it is held in memory and shown.
 //!
-//! [`read_job_log`] runs three requests, in order, and stops at the first that fails:
+//! [`read_job_log`] runs three steps, in order, and stops at the first that fails:
 //!
 //! 1. **Match the job to what is on screen.** The check carries ids the server reported, and
 //!    GitHub does not say that a check run's `databaseId` is the Actions job id. So the job is
@@ -20,12 +20,15 @@
 //!    (`Session::job_log_location`); curl follows none.
 //! 3. **The one hop.** The address must pass [`LogDownloadUrl::parse`] (`super::download`):
 //!    `https://`, a public DNS name, no userinfo, no IP literal, nothing that is not printable
-//!    ASCII, at most 4096 bytes. Then exactly one `GET` goes there ([`download`]), with no token
-//!    and no GitHub API header (the request type has no token field), following no redirect,
-//!    asking for the last [`LOG_BYTES`] bytes (`Range: bytes=-<n>`). A `206` is the end of the
-//!    log; a `200` (a host that ignores the range) is kept up to [`LOG_BYTES`] and the transfer
-//!    stops there. Either way what was left out is a value ([`LogCut`]), never an error, and
-//!    the API's own over-the-cap rule (an error) is untouched.
+//!    ASCII, at most 4096 bytes. Then one `GET` goes there ([`download`]), with no token and no
+//!    GitHub API header (the request type has no token field), following no redirect, asking for
+//!    the last [`LOG_BYTES`] bytes (`Range: bytes=-<n>`). A `206` is the end of the log; a `200`
+//!    (a host that ignores the range) is kept up to [`LOG_BYTES`] and the transfer stops there. A
+//!    `416` that does not name an empty log (a host that refuses suffix ranges) is followed by one
+//!    more `GET` to the same address without a range, kept up to [`LOG_BYTES`] from its start
+//!    ([`download_log`]); no other answer sends a second request, and nothing a third. Either way
+//!    what was left out is a value ([`LogCut`]), never an error, and the API's own over-the-cap
+//!    rule (an error) is untouched.
 //!
 //! The log is whatever the workflow printed, so it is attacker-controlled: it is decoded as UTF-8
 //! with bad bytes replaced, split into lines at `\n`, `\r\n` and a lone `\r`, and each line passes
@@ -46,7 +49,7 @@ use super::http::{DownloadRequest, Downloaded, download};
 use super::rerun::RunId;
 use super::secret::ApiToken;
 use super::text::{log_line, single_line};
-use super::{GitHubError, RepositoryTarget};
+use super::{GitHubError, GitHubResult, RepositoryTarget};
 use crate::actions::remote::Cancel;
 
 /// The most bytes of a log rc-git downloads and holds: the last ones, where a failure is.
@@ -227,15 +230,7 @@ pub fn read_job_log(request: JobLogRequest<'_>, cancel: &Cancel) -> Result<JobLo
         })
     })?;
     let host = single_line(url.host(), 300);
-    let downloaded = download(
-        DownloadRequest {
-            op: OP,
-            url,
-            limit: LOG_BYTES,
-        },
-        cancel,
-    )
-    .map_err(JobLogError::Failed)?;
+    let downloaded = download_log(OP, &url, cancel).map_err(JobLogError::Failed)?;
     let (bytes, cut) = body_of(downloaded).map_err(|reason| {
         JobLogError::Failed(GitHubError::LogDownload {
             host: host.clone(),
@@ -254,6 +249,38 @@ pub fn read_job_log(request: JobLogRequest<'_>, cancel: &Cancel) -> Result<JobLo
         lines_left_out: shown.left_out,
         lines_shortened: shown.shortened,
     })
+}
+
+/// The log at `url`, in two requests at most: one `GET` asking for its last [`LOG_BYTES`] bytes,
+/// and, only when the storage host answers that one `416` without saying the log is empty, one
+/// more `GET` to the same address without a range, kept to its first [`LOG_BYTES`] bytes. Suffix
+/// ranges are not documented for the storage GitHub uses, so a host that refuses one still gives
+/// the log. No other answer sends a second request, and nothing sends a third.
+///
+/// # Errors
+/// What [`download`] returns for either request.
+fn download_log(
+    op: &'static str,
+    url: &LogDownloadUrl,
+    cancel: &Cancel,
+) -> GitHubResult<Downloaded> {
+    let request = |tail| DownloadRequest {
+        op,
+        url: url.clone(),
+        limit: LOG_BYTES,
+        tail,
+    };
+    let tail = download(request(true), cancel)?;
+    if !range_refused(&tail) {
+        return Ok(tail);
+    }
+    download(request(false), cancel)
+}
+
+/// Whether `downloaded` is a `416` refusing the range itself, rather than one naming an empty log
+/// (`Content-Range: bytes */0`), which [`body_of`] reads as the log.
+fn range_refused(downloaded: &Downloaded) -> bool {
+    downloaded.status == 416 && downloaded.content_range.as_deref() != Some("bytes */0")
 }
 
 /// The job's name, once GitHub's job read matches `request`: its id, its run, its head commit

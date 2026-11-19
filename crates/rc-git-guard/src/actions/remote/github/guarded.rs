@@ -1,5 +1,7 @@
 //! What the pull request actions after the merge share: turning auto-merge on and off
-//! ([`super::auto_merge`]) and re-running failed jobs ([`super::rerun`]). They follow the merge's
+//! ([`super::auto_merge`]), re-running failed jobs ([`super::rerun`]) and deleting a merged pull
+//! request's head branch ([`super::delete_branch`], which reads the branch with its own query but
+//! checks the stamp, the answered decision and the typed name here). They follow the merge's
 //! sequence ([`super::merge`]) and reuse its pieces: the read made just now and compared with
 //! the [`PullRequestStamp`] of what the user saw, a challenge of labelled lines whose values are
 //! neutralized, the policy's decision now checked against the answered one, and requests sent
@@ -11,7 +13,7 @@ use super::merge::{
     BRANCH_CHARS, LOGIN_CHARS, MergeBlocker, TITLE_CHARS, changed, changed_lines, fact, fact_line,
     label, quoted,
 };
-use super::pull_types::{PullRequestDetail, PullRequestStamp};
+use super::pull_types::{PullRequestDetail, PullRequestStamp, PullRequestState};
 use super::pulls::read_pull_request;
 use super::secret::ApiToken;
 use super::{GitHubError, GitHubHost, RepositoryTarget};
@@ -27,6 +29,8 @@ pub enum PullRequestAction {
     DisableAutoMerge,
     /// Re-running the failed jobs of the head's GitHub Actions runs.
     RerunFailedJobs,
+    /// Deleting the head branch of a merged pull request.
+    DeleteHeadBranch,
 }
 
 impl std::fmt::Display for PullRequestAction {
@@ -35,8 +39,62 @@ impl std::fmt::Display for PullRequestAction {
             Self::EnableAutoMerge => "turn on auto-merge for",
             Self::DisableAutoMerge => "turn off auto-merge for",
             Self::RerunFailedJobs => "re-run the failed jobs of",
+            Self::DeleteHeadBranch => "delete the head branch of",
         })
     }
+}
+
+/// Which way an open pull request uses a branch about to be deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BranchUse {
+    /// As its head branch: GitHub closes it once the branch is gone.
+    Head,
+    /// As its base branch: GitHub closes or retargets it once the branch is gone.
+    Base,
+}
+
+/// `head` or `base`.
+fn branch_use_word(branch_use: BranchUse) -> &'static str {
+    match branch_use {
+        BranchUse::Head => "head",
+        BranchUse::Base => "base",
+    }
+}
+
+/// `#9` and how many more, for a blocker that names open pull requests.
+fn open_pull_requests(total: u64, first: Option<u64>, branch_use: BranchUse) -> String {
+    let role = branch_use_word(branch_use);
+    let then = match branch_use {
+        BranchUse::Head => "GitHub would close",
+        BranchUse::Base => "GitHub would close or retarget",
+    };
+    match first {
+        Some(first) if total > 1 => format!(
+            "open pull request #{first} and {} more also use it as their {role} branch, which \
+             {then}",
+            total - 1
+        ),
+        Some(first) => {
+            format!("open pull request #{first} also uses it as its {role} branch, which {then}")
+        }
+        None => format!(
+            "{total} open pull request(s) GitHub did not number also use it as their {role} \
+             branch, which {then}"
+        ),
+    }
+}
+
+/// The first seven hex digits of `oid`, or `nothing` when there is none.
+fn short_or_nothing(oid: Option<Oid>) -> String {
+    oid.map_or_else(
+        || "no commit".to_owned(),
+        |oid| oid.to_hex().chars().take(7).collect(),
+    )
+}
+
+/// The first seven hex digits of `oid`.
+fn short(oid: Oid) -> String {
+    oid.to_hex().chars().take(7).collect()
 }
 
 /// What stands between a pull request and an auto-merge change or a re-run, as rc-git reads it.
@@ -71,6 +129,83 @@ pub enum ActionBlocker {
     /// No GitHub Actions run of the head commit has a failed job rc-git can name.
     #[error("no GitHub Actions run of its head commit has a failed job")]
     NoFailedRuns,
+    /// The pull request is not merged: rc-git deletes only a merged pull request's head branch.
+    #[error("{}", not_merged(*.0))]
+    NotMerged(PullRequestState),
+    /// The head branch is in another repository than the base (a fork), or GitHub does not name
+    /// it as this repository's: rc-git deletes only a branch of the base repository.
+    #[error("its head branch is not a branch of this repository; rc-git deletes no fork's branch")]
+    HeadNotInRepository,
+    /// GitHub does not say the account may delete the head branch (`viewerCanDeleteHeadRef`).
+    #[error("GitHub does not report that your account may delete its head branch")]
+    NoDeleteRight,
+    /// The head branch no longer exists on GitHub.
+    #[error("its head branch no longer exists on GitHub")]
+    BranchGone,
+    /// The head branch points at another commit than the head the pull request merged: someone
+    /// pushed to it, or made it again, after the merge.
+    #[error(
+        "its head branch is at {}, not at {}, the head the pull request merged: it holds commits \
+         the pull request did not merge",
+        short_or_nothing(*.now),
+        short(*.merged)
+    )]
+    BranchMoved {
+        /// Where the branch is now, when GitHub named a commit.
+        now: Option<Oid>,
+        /// The head the pull request merged.
+        merged: Oid,
+    },
+    /// The name holds a character a challenge shows as an escape (a control, bidi or invisible
+    /// character, a double quote character, whitespace) or is too long to show whole, so it
+    /// cannot be typed exactly as its challenge shows it.
+    #[error(
+        "its name holds characters a confirmation shows as escapes, or is too long to show, so it \
+         cannot be typed exactly; delete it on GitHub's own page or with git"
+    )]
+    NameNotTypeable,
+    /// It is the repository's default branch.
+    #[error("it is the repository's default branch")]
+    DefaultBranch,
+    /// GitHub did not name the repository's default branch, so rc-git cannot tell this is not it.
+    #[error("GitHub did not name the repository's default branch, so rc-git cannot rule it out")]
+    DefaultBranchUnreported,
+    /// Other open pull requests use the branch, which deleting it would close or retarget.
+    #[error("{}", open_pull_requests(*.total, *.first, *.branch_use))]
+    OpenPullRequests {
+        /// How they use it.
+        branch_use: BranchUse,
+        /// How many GitHub counts.
+        total: u64,
+        /// The first one's number, when GitHub named one.
+        first: Option<u64>,
+    },
+    /// GitHub's answer did not count the open pull requests that use the branch this way.
+    #[error(
+        "GitHub did not say which open pull requests use it as their {} branch",
+        branch_use_word(*.0)
+    )]
+    OpenPullRequestsUnread(BranchUse),
+    /// The host sent no node id for the head branch, so no mutation can name it.
+    #[error("the host sent no id for its head branch, so rc-git cannot name it in a delete")]
+    NoRefId,
+    /// The head commit is not in the local repository, so no backup ref can keep it.
+    #[error(
+        "its head commit {} is not in this repository, so no backup ref can keep it; fetch the \
+         pull request's changes first (Fetch Changes on its page, or rc-git pr diff --fetch)",
+        short(*.0)
+    )]
+    NotFetched(Oid),
+}
+
+/// Why a pull request in `state` has no head branch to delete.
+fn not_merged(state: PullRequestState) -> &'static str {
+    match state {
+        PullRequestState::Open => "it is open, not merged",
+        PullRequestState::Closed => "it was closed without merging",
+        PullRequestState::Merged => "GitHub does not report it merged",
+        PullRequestState::Unknown => "it is in a state rc-git does not know, not merged",
+    }
 }
 
 /// Why a pull request action sent nothing.
@@ -106,6 +241,16 @@ pub enum ActionRefusal {
         /// What.
         blocker: ActionBlocker,
     },
+    /// Something stands in the way of deleting the head branch, which the refusal names.
+    #[error("delete branch {branch} of {pull_request}: {blocker}; nothing was sent or written")]
+    BranchBlocked {
+        /// `owner/name#number`.
+        pull_request: String,
+        /// The branch, neutralized and in curly quotes.
+        branch: String,
+        /// What.
+        blocker: ActionBlocker,
+    },
     /// The user did not confirm.
     #[error("{action} {pull_request}: not confirmed; nothing was sent")]
     NotConfirmed {
@@ -113,6 +258,30 @@ pub enum ActionRefusal {
         action: PullRequestAction,
         /// `owner/name#number`.
         pull_request: String,
+    },
+    /// The challenge names a phrase and the user typed something else, or nothing.
+    #[error(
+        "{action} {pull_request}: not confirmed; type \u{201c}{phrase}\u{201d} exactly to confirm; \
+         nothing was sent"
+    )]
+    NotTyped {
+        /// Which action.
+        action: PullRequestAction,
+        /// `owner/name#number`.
+        pull_request: String,
+        /// The phrase the challenge asks for: text a challenge shows unchanged.
+        phrase: String,
+    },
+    /// The local repository could not be read, or the backup ref could not be written or read
+    /// back, before anything was sent.
+    #[error("{action} {pull_request}: {reason}; nothing was sent")]
+    Local {
+        /// Which action.
+        action: PullRequestAction,
+        /// `owner/name#number`.
+        pull_request: String,
+        /// What failed, naming the repository or the ref.
+        reason: String,
     },
     /// The policy refuses the action outright.
     #[error("{reason}")]
@@ -314,12 +483,13 @@ pub(super) fn fresh_read(
 }
 
 /// The proof for `built`, the action rc-git built from the read made just now: the policy's
-/// decision for it now must be the one the user `answered`, and the answer must verify it. No
-/// answer, or an answer to another decision, gives none.
+/// decision for it now must be the one the user `answered`, and `typed`, what the user typed
+/// untouched (empty for a plain confirm), must verify it. No answer, an answer to another
+/// decision, or a phrase typed wrong gives none.
 pub(super) fn confirmed(
     policy: &Policy,
     built: &Action,
-    answered: Option<&Decision>,
+    (answered, typed): (Option<&Decision>, &str),
     (action, pull_request): (PullRequestAction, &str),
 ) -> Result<Confirmation, ActionRefusal> {
     let pull_request = pull_request.to_owned();
@@ -347,9 +517,14 @@ pub(super) fn confirmed(
         });
     }
     policy
-        .authorize(built, Some(""))
+        .authorize(built, Some(typed))
         .map_err(|refusal| match refusal {
             Refusal::Denied(reason) => ActionRefusal::Denied { reason },
+            Refusal::NotConfirmed { phrase } if !phrase.is_empty() => ActionRefusal::NotTyped {
+                action,
+                pull_request,
+                phrase,
+            },
             Refusal::NotConfirmed { .. } => ActionRefusal::NotConfirmed {
                 action,
                 pull_request,
@@ -396,7 +571,7 @@ pub(super) fn proof_for(
         pull_request: pull_request.clone(),
         blocker,
     })?;
-    let proof = confirmed(policy, &built, answered, (action, &pull_request))?;
+    let proof = confirmed(policy, &built, (answered, ""), (action, &pull_request))?;
     if cancel.is_cancelled() {
         return Err(ActionRefusal::Cancelled {
             action,

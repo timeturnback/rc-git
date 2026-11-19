@@ -1553,3 +1553,231 @@ fn pr_logs_reads_no_log_for_a_check_it_cannot_name_or_match() {
     assert_eq!(server.log_requests("octo/rc-git", 5), 0);
     assert_eq!(server.mutation_requests(), 0);
 }
+
+const REF_ID: &str = "REF_kwDOcli7";
+
+/// The head branch read's answer: pull request 7 merged at `head`, its head branch `shipped` at
+/// `at` (gone when `None`).
+fn head_branch(head: &str, at: Option<&str>) -> String {
+    let head_ref = at.map_or_else(
+        || "null".to_owned(),
+        |at| {
+            format!(
+                r#"{{"id": "{REF_ID}", "name": "shipped", "prefix": "refs/heads/",
+                "target": {{"oid": "{at}"}},
+                "repository": {{"name": "rc-git", "owner": {{"login": "octo"}}}},
+                "associatedPullRequests": {{"totalCount": 0, "nodes": []}}}}"#
+            )
+        },
+    );
+    format!(
+        r#"{{"data": {{"repository": {{"defaultBranchRef": {{"name": "main"}},
+        "pullRequest": {{"number": 7, "title": "Ship \u202e it", "state": "MERGED",
+        "merged": true, "headRefName": "shipped", "headRefOid": "{head}", "baseRefName": "main",
+        "isCrossRepository": false, "viewerCanDeleteHeadRef": true,
+        "headRepository": {{"name": "rc-git", "owner": {{"login": "octo"}}}},
+        "headRef": {head_ref}}}}}}}}}"#
+    )
+}
+
+/// Pull request 7's head branch `shipped` on `server`, at `head`, deleted as `behaviour` says;
+/// later reads after a change show it at [`MOVED`].
+fn script_branch(
+    server: &GitHubServer,
+    head: &str,
+    behaviour: rc_git_testkit::github::DeleteBehaviour,
+) {
+    use rc_git_guard::actions::github::testing::{
+        based_on_request_body, delete_ref_request_body, head_branch_request_body,
+    };
+    let target = pr_target(server);
+    server.script_branch(rc_git_testkit::github::BranchScript {
+        read: head_branch_request_body(&target, 7),
+        present: head_branch(head, Some(head)),
+        changed: head_branch(head, Some(MOVED)),
+        deleted: head_branch(head, None),
+        based_on: based_on_request_body(&target, "shipped"),
+        based_on_answer: r#"{"data": {"repository": {"pullRequests": {"totalCount": 0,
+            "nodes": []}}}}"#
+            .to_owned(),
+        mutation: delete_ref_request_body(REF_ID),
+        behaviour,
+    });
+}
+
+fn backups(repo: &Fixture) -> String {
+    repo.git_output(&[
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        "refs/rc-git/",
+    ])
+}
+
+#[test]
+fn pr_delete_branch_without_its_head_base_or_name_sends_and_writes_nothing() {
+    use rc_git_testkit::github::DeleteBehaviour;
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    let head = repo.rev_parse("HEAD");
+    script_branch(&server, &head, DeleteBehaviour::Delete);
+    let signed_in = server.requests();
+    for args in [
+        vec![
+            "delete-branch",
+            "7",
+            "--base",
+            "main",
+            "--confirm",
+            "shipped",
+        ],
+        vec![
+            "delete-branch",
+            "7",
+            "--head",
+            head.as_str(),
+            "--confirm",
+            "shipped",
+        ],
+        vec![
+            "delete-branch",
+            "7",
+            "--head",
+            head.as_str(),
+            "--base",
+            "main",
+            "--yes",
+        ],
+    ] {
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(server.requests(), signed_in, "{args:?}");
+    }
+    let args = [
+        "delete-branch",
+        "7",
+        "--head",
+        head.as_str(),
+        "--base",
+        "main",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert_eq!(out.status.code(), Some(10), "{}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert!(
+        printed.contains("\nwould-delete-branch\tBranch: \u{201c}shipped\u{201d}\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("would-delete-branch\tTitle: \u{201c}Ship \\u{202e} it\u{201d}"),
+        "{printed}"
+    );
+    assert!(
+        text(&out.stderr).contains("--confirm shipped"),
+        "{}",
+        text(&out.stderr)
+    );
+    for typed in ["Shipped", "shipped/", "refs/heads/shipped", "7"] {
+        let mut wrong = args.to_vec();
+        wrong.extend_from_slice(&["--confirm", typed]);
+        let out = run_pr(&scratch, &repo, &ssh, &wrong);
+        assert_eq!(
+            out.status.code(),
+            Some(10),
+            "{typed}: {}",
+            text(&out.stderr)
+        );
+    }
+    assert_eq!(server.mutation_requests(), 0);
+    assert_eq!(server.delete_requests(), 0);
+    assert_eq!(backups(&repo), "", "nothing written");
+}
+
+#[test]
+fn pr_delete_branch_with_its_name_backs_up_then_deletes_once() {
+    use rc_git_testkit::github::DeleteBehaviour;
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    let head = repo.rev_parse("HEAD");
+    script_branch(&server, &head, DeleteBehaviour::Delete);
+    let args = [
+        "delete-branch",
+        "7",
+        "--head",
+        &head,
+        "--base",
+        "main",
+        "--confirm",
+        "shipped",
+    ];
+    let out = run_pr(&scratch, &repo, &ssh, &args);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let backup = "refs/rc-git/backup/remote-branch/shipped";
+    let printed = text(&out.stdout);
+    assert!(
+        printed.starts_with(&format!(
+            "deleted\tocto/rc-git#7\tshipped\t{head}\t{backup}\nnote\tDeleted"
+        )),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(&format!("git push origin {backup}:refs/heads/shipped")),
+        "{printed}"
+    );
+    assert!(
+        text(&out.stderr).contains("sending\tBranch: \u{201c}shipped\u{201d}"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
+    assert_eq!(backups(&repo), format!("{backup} {head}"));
+    assert_eq!(server.delete_requests(), 1);
+    assert_eq!(server.mutation_requests(), 1);
+    assert!(server.branch_deleted());
+}
+
+#[test]
+fn pr_delete_branch_refused_exits_11_and_a_lost_answer_exits_12_each_sent_once() {
+    use rc_git_testkit::github::DeleteBehaviour;
+    for (behaviour, code) in [
+        (
+            DeleteBehaviour::Refuse {
+                status: "200 OK",
+                body: format!(
+                    r#"{{"data": {{"deleteRef": null}}, "errors": [{{"type": "FORBIDDEN",
+                    "message": "no {TOKEN}"}}]}}"#
+                ),
+            },
+            11,
+        ),
+        (DeleteBehaviour::DropThenChange, 12),
+    ] {
+        let server = server_knowing(TOKEN, "octocat");
+        let (scratch, repo, ssh) = pr_setup(&server, None);
+        let head = repo.rev_parse("HEAD");
+        script_branch(&server, &head, behaviour);
+        let args = [
+            "delete-branch",
+            "7",
+            "--head",
+            &head,
+            "--base",
+            "main",
+            "--confirm",
+            "shipped",
+        ];
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(out.status.code(), Some(code), "{}", text(&out.stderr));
+        assert!(!format!("{}{}", text(&out.stdout), text(&out.stderr)).contains(TOKEN));
+        assert_eq!(server.delete_requests(), 1, "never sent again");
+        assert_eq!(
+            backups(&repo),
+            format!("refs/rc-git/backup/remote-branch/shipped {head}"),
+            "the backup stays"
+        );
+    }
+}

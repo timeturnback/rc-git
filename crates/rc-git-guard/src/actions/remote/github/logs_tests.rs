@@ -532,3 +532,102 @@ fn a_repository_on_another_host_gets_nothing() {
         0
     );
 }
+
+/// A storage host that refuses suffix ranges (`416`) still gives the log: one more `GET` to the
+/// same address without a range, kept to the cap from its start, and nothing else.
+#[test]
+fn a_storage_host_refusing_the_range_gets_one_more_request_without_one() {
+    let server = server();
+    let body = numbered(LOG_BYTES + 4096);
+    let storage = StorageServer::start(StorageBehaviour::RangeRefused { body });
+    script(&server, &storage);
+    let (result, matched) = read_log(&server, HEAD, &Cancel::new());
+    let log = result.unwrap();
+    assert_eq!(log.cut, LogCut::Head { kept: LOG_BYTES });
+    assert!(
+        log.text.starts_with("line 0000000\nline 0000001\n"),
+        "the log's start"
+    );
+    assert_eq!(matched, 1);
+    let downloads = storage.recorded();
+    assert_eq!(
+        downloads.len(),
+        2,
+        "the ranged request, then one without a range"
+    );
+    assert_eq!(
+        downloads[0].header("range"),
+        Some(format!("bytes=-{LOG_BYTES}").as_str())
+    );
+    assert_eq!(downloads[1].header("range"), None);
+    for download in &downloads {
+        assert_eq!(download.method, "GET");
+        assert_eq!(
+            download.target,
+            format!("/logs/job-{JOB}.txt?sv=2025&sig={SIGNATURE}"),
+            "the same address"
+        );
+        assert_eq!(download.header("authorization"), None);
+        assert_eq!(download.header("x-github-api-version"), None);
+        for (name, value) in &download.headers {
+            assert!(
+                !value.contains(TOKEN) && !value.contains("Bearer") && !name.contains("auth"),
+                "{name}: {value}"
+            );
+        }
+    }
+    assert_eq!(
+        server.log_requests(REPOSITORY, JOB),
+        1,
+        "GitHub is asked once"
+    );
+}
+
+#[test]
+fn a_storage_host_answering_416_twice_ends_in_an_error_after_exactly_two_requests() {
+    let server = server();
+    let storage = StorageServer::start(StorageBehaviour::Answer {
+        status: "416 Range Not Satisfiable",
+        headers: vec![("Content-Range".to_owned(), "bytes */99".to_owned())],
+        body: b"<Error>InvalidRange</Error>".to_vec(),
+    });
+    script(&server, &storage);
+    let (result, _) = read_log(&server, HEAD, &Cancel::new());
+    let Err(JobLogError::Failed(error @ GitHubError::LogDownload { .. })) = &result else {
+        panic!("{result:?}");
+    };
+    assert!(error.to_string().contains("HTTP 416"), "{error}");
+    assert!(!error.to_string().contains("InvalidRange"), "{error}");
+    assert_eq!(storage.requests(), 2, "never a third");
+}
+
+#[test]
+fn no_other_answer_to_the_ranged_request_sends_a_second() {
+    for (status, range, ok) in [
+        ("403 Forbidden", None, false),
+        ("404 Not Found", None, false),
+        ("500 Internal Server Error", None, false),
+        ("503 Service Unavailable", Some("bytes */99"), false),
+        ("416 Range Not Satisfiable", Some("bytes */0"), true),
+        ("200 OK", None, true),
+    ] {
+        let server = server();
+        let headers = range
+            .map(|range| vec![("Content-Range".to_owned(), range.to_owned())])
+            .unwrap_or_default();
+        let storage = StorageServer::start(StorageBehaviour::Answer {
+            status,
+            headers,
+            body: Vec::new(),
+        });
+        script(&server, &storage);
+        let (result, _) = read_log(&server, HEAD, &Cancel::new());
+        assert_eq!(result.is_ok(), ok, "{status}: {result:?}");
+        assert_eq!(storage.requests(), 1, "{status}: one request only");
+        assert_eq!(
+            storage.recorded()[0].header("range"),
+            Some(format!("bytes=-{LOG_BYTES}").as_str()),
+            "{status}"
+        );
+    }
+}

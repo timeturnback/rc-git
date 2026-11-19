@@ -7,16 +7,18 @@ use rc_git_core::{Oid, TreeChange};
 use super::auto_merge::{AutoMergeEnd, AutoMergeFlow};
 use super::changes::{ChangesPhase, ComparedWith};
 use super::checks::CheckState;
+use super::delete_branch::{DeleteBranchEnd, DeleteBranchFlow};
 use super::flow::{Ended, Phase, Stop, TabFlow};
 use super::logs::{LogPhase, LogState, LogStop};
 use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
 use super::rerun::{RerunEnd, RerunFlow};
 use super::state::Freshness;
 use super::{
-    AfterLoss, AutoMergeAfter, AutoMergeChange, AutoMergeOutcome, Bypassed, DetailFields,
-    LOG_LINE_CHARS, LogCut, MAX_RERUN_RUNS, MergeBlocker, MergeKind, MergeMethod, Mergeable,
-    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, RerunReport, ReviewDecision,
-    RunOutcome, ServerLink, Settled, failed_runs, single_line,
+    AfterLoss, AutoMergeAfter, AutoMergeChange, AutoMergeOutcome, BranchAfter, BranchDeleteOutcome,
+    BranchDeleteReport, Bypassed, DetailFields, LOG_LINE_CHARS, LogCut, MAX_RERUN_RUNS,
+    MergeBlocker, MergeKind, MergeMethod, Mergeable, PullRequestStamp, PullRequestState,
+    PullRequestSummary, ReadError, RerunReport, ReviewDecision, RunOutcome, ServerLink, Settled,
+    failed_runs, single_line,
 };
 use crate::guard_bridge::{FailureKind, classify};
 use crate::history_text::{change_path_label, short_hash};
@@ -715,6 +717,7 @@ pub fn flow_title(flow: &TabFlow) -> &'static str {
             AutoMergeChange::Disable => DISABLE_AUTO_MERGE,
         },
         TabFlow::Rerun(_) => RERUN_FAILED_JOBS,
+        TabFlow::DeleteBranch(_) => DELETE_BRANCH,
     }
 }
 
@@ -725,6 +728,7 @@ pub fn flow_note(flow: &TabFlow) -> Option<String> {
         TabFlow::Merge(merge) => merge_note(merge),
         TabFlow::AutoMerge(auto) => auto_merge_note(auto),
         TabFlow::Rerun(rerun) => rerun_note(rerun),
+        TabFlow::DeleteBranch(delete) => delete_branch_note(delete),
     }
 }
 
@@ -744,6 +748,10 @@ pub fn flow_note_alarms(flow: &TabFlow) -> bool {
         TabFlow::Rerun(rerun) => matches!(
             rerun.phase(),
             Phase::Done(Ended::Sent(report)) if report.runs.iter().any(|run| run.outcome != RunOutcome::Requested)
+        ),
+        TabFlow::DeleteBranch(delete) => matches!(
+            delete.phase(),
+            Phase::Done(Ended::Sent(report)) if !matches!(report.outcome, BranchDeleteOutcome::Deleted { .. })
         ),
     }
 }
@@ -1024,6 +1032,224 @@ pub fn rerun_outcome_log(flow: &RerunFlow, end: &RerunEnd) -> String {
         }
     };
     format!("{}: {outcome}", rerun_subject(flow))
+}
+
+/// The button that deletes a merged pull request's head branch, and the title and confirm button
+/// of its challenge.
+pub const DELETE_BRANCH: &str = "Delete Branch";
+
+/// The line beside the delete branch button.
+#[must_use]
+pub fn delete_branch_line(branch: &str) -> String {
+    format!(
+        "Deletes \u{201c}{branch}\u{201d} on GitHub for everyone. rc-git first writes a backup \
+         ref in this repository that keeps its commit, and you type the branch's name to confirm."
+    )
+}
+
+/// Why a merged pull request's head branch `branch` (as the read shows it) has no delete button:
+/// it is in another repository.
+#[must_use]
+pub fn branch_in_fork(branch: &str) -> String {
+    format!(
+        "\u{201c}{branch}\u{201d} is in another repository than this one, so rc-git does not \
+         delete it."
+    )
+}
+
+/// Why: GitHub does not report that the account may delete it.
+#[must_use]
+pub fn branch_no_right(branch: &str) -> String {
+    format!("GitHub does not report that your account may delete \u{201c}{branch}\u{201d}.")
+}
+
+/// Why: it is a protected branch.
+#[must_use]
+pub fn branch_protected(branch: &str) -> String {
+    format!(
+        "\u{201c}{branch}\u{201d} is a protected branch; rc-git never deletes it. Use git directly \
+         if you are sure."
+    )
+}
+
+/// Why: its name holds characters a confirmation shows as escapes, so it cannot be typed.
+#[must_use]
+pub fn branch_untypeable(branch: &str) -> String {
+    format!(
+        "\u{201c}{branch}\u{201d} holds characters rc-git shows as escapes, or is too long to \
+         show, so its name cannot be typed to confirm. Delete it on GitHub's page or with git."
+    )
+}
+
+/// The branch a delete acts on, as its plan named it; `None` before the plan landed.
+fn planned_branch(flow: &DeleteBranchFlow) -> Option<&str> {
+    flow.planned_as().map(|plan| plan.branch.as_str())
+}
+
+/// What the tab says for a head branch delete; `None` while the challenge is up.
+#[must_use]
+pub fn delete_branch_note(flow: &DeleteBranchFlow) -> Option<String> {
+    let number = flow.number();
+    let branch = planned_branch(flow).map_or_else(
+        || "its head branch".to_owned(),
+        |branch| format!("\u{201c}{branch}\u{201d}"),
+    );
+    let note = match flow.phase() {
+        Phase::Planning => {
+            format!("Reading #{number} and its head branch again before deleting it…")
+        }
+        Phase::Confirming => return None,
+        Phase::Sending {
+            sent: false,
+            cancelling: false,
+        } => format!(
+            "Writing the backup ref, then deleting {branch} on GitHub… Cancel stops it until the \
+             request is sent."
+        ),
+        Phase::Sending {
+            sent: false,
+            cancelling: true,
+        } => format!("Stopping the delete of {branch}…"),
+        Phase::Sending { sent: true, .. } => format!(
+            "The request to delete {branch} was sent; it cannot be stopped now. Waiting for \
+             GitHub's answer…"
+        ),
+        Phase::Done(Ended::NotSent(stop)) => stop_message(stop),
+        Phase::Done(Ended::Sent(report)) => branch_report_note(&flow.ask().remote, report),
+    };
+    Some(note)
+}
+
+/// How to bring the branch of `report` back from its backup ref, through `remote`: a command the
+/// user can paste, every word quoted for the shell.
+#[must_use]
+pub fn branch_restore(remote: &str, report: &BranchDeleteReport) -> String {
+    let refspec = format!("{}:refs/heads/{}", report.backup_ref, report.branch);
+    format!(
+        "To bring the branch back, push the backup ref to GitHub under its name: git push {} {}",
+        crate::shell_word::quote(remote),
+        crate::shell_word::quote(&refspec)
+    )
+}
+
+/// What a delete whose request left says: what GitHub did, the backup ref that keeps the commit,
+/// how to restore the branch from it, and a local branch of the same name left alone.
+fn branch_report_note(remote: &str, report: &BranchDeleteReport) -> String {
+    const LOOK: &str = "Look at the branch on GitHub before trying again.";
+    let branch = format!("\u{201c}{}\u{201d}", report.branch);
+    let commit = short_hash(&report.head_oid);
+    let kept = format!(
+        "Its commit {commit} stays in this repository under the backup ref {}.",
+        report.backup_ref
+    );
+    let restore = branch_restore(remote, report);
+    let main = match &report.outcome {
+        BranchDeleteOutcome::Deleted { settled } => {
+            let how = match settled {
+                Settled::Answer => "",
+                Settled::Reread => {
+                    " GitHub's answer was lost; reading it again shows the branch gone."
+                }
+            };
+            format!("Deleted {branch} on GitHub.{how} {kept} {restore}")
+        }
+        BranchDeleteOutcome::Refused { reason } => format!(
+            "GitHub refused to delete {branch}: {reason} Nothing was deleted. The backup ref {} \
+             written first stays; delete it with git when you no longer need it.",
+            report.backup_ref
+        ),
+        BranchDeleteOutcome::NotDeleted { problem } => format!(
+            "{branch} was not deleted: GitHub did not answer ({problem}), and reading it again \
+             shows it still on GitHub at {commit}. {LOOK} The backup ref {} written first stays.",
+            report.backup_ref
+        ),
+        BranchDeleteOutcome::Unknown { problem, after } => format!(
+            "rc-git could not tell whether {branch} was deleted: GitHub did not answer \
+             ({problem}), and reading it again shows {}. {LOOK} {kept} If the branch is gone and \
+             you need it: {restore}",
+            branch_after_phrase(after)
+        ),
+    };
+    if !report.local_branch {
+        return main;
+    }
+    format!(
+        "{main} This repository still has a local branch named {branch}; rc-git left it alone. \
+         Delete it from the sidebar if you no longer need it."
+    )
+}
+
+/// What the read after a lost delete answer showed.
+fn branch_after_phrase(after: &BranchAfter) -> String {
+    match after {
+        BranchAfter::Changed { now: Some(now) } => format!(
+            "a branch of that name at another commit, {}, or not the one you confirmed",
+            short_hash(now)
+        ),
+        BranchAfter::Changed { now: None } => {
+            "a branch of that name that is not the one you confirmed".to_owned()
+        }
+        BranchAfter::Unread { reason } => format!("nothing: that read failed too ({reason})"),
+    }
+}
+
+/// `delete head branch “x” #7 of owner/name@host head <oid> backup <ref>`: the branch and the
+/// backup slot the plan's read names.
+fn branch_subject(flow: &DeleteBranchFlow) -> String {
+    let (branch, backup) = flow.planned_as().map_or_else(
+        || ("[not read]".to_owned(), "[not read]".to_owned()),
+        |plan| {
+            (
+                format!("\u{201c}{}\u{201d}", plan.branch),
+                plan.backup_ref.clone(),
+            )
+        },
+    );
+    format!(
+        "delete head branch {branch} #{} of {} head {} backup {backup}",
+        flow.number(),
+        flow.repository(),
+        flow.stamp().head_oid
+    )
+}
+
+/// The app log's line for `flow`'s head branch delete, about to be sent. No token, no server
+/// text but the guard's scrubbed messages and a branch name a challenge shows unchanged.
+#[must_use]
+pub fn branch_attempt_log(flow: &DeleteBranchFlow) -> String {
+    format!("{}: sending", branch_subject(flow))
+}
+
+/// The app log's line for how `flow`'s head branch delete ended, naming the backup ref written.
+#[must_use]
+pub fn branch_outcome_log(flow: &DeleteBranchFlow, end: &DeleteBranchEnd) -> String {
+    let outcome = match end {
+        Ended::NotSent(stop) => format!("not sent: {}", stop_message(stop)),
+        Ended::Sent(report) => {
+            let what = match &report.outcome {
+                BranchDeleteOutcome::Deleted {
+                    settled: Settled::Answer,
+                } => "deleted (answer)".to_owned(),
+                BranchDeleteOutcome::Deleted {
+                    settled: Settled::Reread,
+                } => "deleted (read after a lost answer)".to_owned(),
+                BranchDeleteOutcome::Refused { reason } => format!("refused: {reason}"),
+                BranchDeleteOutcome::NotDeleted { problem } => {
+                    format!("not deleted (read after a lost answer): {problem}")
+                }
+                BranchDeleteOutcome::Unknown { problem, after } => {
+                    format!("unknown: {problem}; after: {after:?}")
+                }
+            };
+            let local = if report.local_branch {
+                "; local branch kept"
+            } else {
+                ""
+            };
+            format!("{what}; backup ref {} kept{local}", report.backup_ref)
+        }
+    };
+    format!("{}: {outcome}", branch_subject(flow))
 }
 
 /// The check row's button that reads its job's log.

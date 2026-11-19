@@ -115,8 +115,9 @@ fast-forward; the remote operations — fetch, fast-forward pull, plain push, an
 composition; the fetch of a pull request's head from its page or `rc-git pr diff --fetch`;
 merging a pull request on GitHub from its page or `rc-git pr merge`, plainly or as an admin
 merge past branch protection; turning a pull request's auto-merge on or off (`rc-git pr
-auto-merge`); and re-running the failed jobs of its GitHub Actions runs (`rc-git pr rerun`) —
-all driven through
+auto-merge`); re-running the failed jobs of its GitHub Actions runs (`rc-git pr rerun`); and
+deleting a merged pull request's head branch on GitHub after a backup ref keeps its commit
+(`rc-git pr delete-branch`) — all driven through
 `rc_git_guard::actions` from rc-git-kit. Every other row of the table is settled policy
 waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 
@@ -131,6 +132,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | delete local branch, merged | **deny** | confirm |
 | delete local branch, unmerged | **deny** | type the branch name, backup ref |
 | delete remote branch | **deny** | type the branch name, backup ref |
+| delete a merged pull request's head branch on GitHub (`Action::DeletePullRequestBranch`, `Destructive`: a remote branch delete, decided by the delete remote branch row's own rule, `delete_remote`) | **deny** | type the branch name exactly as GitHub reports it, backup ref `refs/rc-git/backup/remote-branch/<name>` written and read back before the request; offered only for a merged pull request whose head is a branch of the base repository, at the commit the pull request merged, not the default branch, used by no other open pull request, the account may delete, whose name a challenge shows unchanged, and whose commit is in the local repository; the challenge has the repository, the pull request, the account, the branch, its commit, the backup ref, a line saying GitHub deletes it for everyone, and the title last ("Deleting a merged pull request's branch" below) |
 | delete tag | type the tag name, backup ref | same |
 | reset --hard | type the branch name, backup ref | same |
 | rewrite unpublished history | confirm, backup ref | same |
@@ -470,9 +472,8 @@ libcurl directly.
   only and refuses a mutation before any request. The client has no free-standing REST `POST`.
 
 Sign-in, the token check, the refresh and the pull request reads change no repository, so they
-have no `Action`; fetching a pull request's head, merging it, changing its auto-merge and
-re-running its failed jobs have their rows above, and the pull request mutations of later
-slices will each get one too.
+have no `Action`; fetching a pull request's head, merging it, changing its auto-merge,
+re-running its failed jobs and deleting its head branch have their rows above.
 
 ### Merging a pull request
 
@@ -731,6 +732,98 @@ first-time contributor, and offers nothing that does.
   below). Also unverified: which jobs GitHub counts as failed in a run with cancelled jobs, and
   the body of the `201` answer.
 
+### Deleting a merged pull request's branch
+
+Delete Branch on a merged pull request's page and `rc-git pr delete-branch <n> --head <oid>
+--base <branch> --confirm <branch name>` both call `delete_head_branch`
+(`github/delete_branch.rs`). It deletes a branch everyone who uses the repository shares, and
+GitHub keeps no reflog anyone can reach, so it is a remote branch delete: the policy decides it
+with the delete remote branch row's own rule (`Policy::delete_remote`: denied on `main`,
+`master` and `release/*` compared without ASCII case, else the branch's name typed and a backup
+ref), and a test asserts that `Action::DeletePullRequestBranch` gets exactly the decision kind,
+the phrase, the backup request and the denial `Action::DeleteRemoteBranch` gets for the same
+name. The generic remote branch delete through push still has no write path.
+
+- **The API.** GraphQL's `deleteRef` ("Delete a Git Ref."), whose `DeleteRefInput` takes
+  `refId: ID!` ("The Node ID of the Ref to be deleted") and whose payload is `clientMutationId`
+  alone (GitHub's GraphQL reference). The ref's node id comes from the pull request's `headRef`
+  in the read made just before; the branch name never travels in the request, so no text a pull
+  request's author chose reaches a URL or the mutation. It is one more static document through
+  `Session::mutate`; the transport is unchanged. The REST `DELETE /repos/{owner}/{repo}/git/refs/
+  heads/{branch}` would have needed a new HTTP method and put the branch name in a URL path.
+- **The reads.** One query (`RcGitHeadBranch`) reads the pull request's number, title, state,
+  `merged`, head and base, `isCrossRepository`, `headRepository`, `viewerCanDeleteHeadRef`, its
+  `headRef` (`id`, `name`, `prefix`, `target { oid }`, `repository`, and
+  `associatedPullRequests(states: [OPEN])`, "pull requests with this ref as the head ref") and
+  the repository's `defaultBranchRef`. A second (`RcGitBranchBase`) counts the open pull requests
+  whose `baseRefName` is the branch. Both are bounded (five numbers named, the rest counted) and
+  go to the account's host only. The same first query settles a lost answer.
+- **What refuses**, before anything is written or sent, each naming the pull request, the
+  branch (neutralized) and the reason: a read that differs from the stamp (number, head, base,
+  state; the state the user saw is merged); a pull request that is not merged (open, closed
+  without merging, or `merged` false); a head branch in a fork or any repository but the base
+  (`isCrossRepository`, or a head repository or ref repository other than the target, compared
+  without ASCII case); an account GitHub does not say may delete it; a branch that is gone; a
+  `headRef` that is not `refs/heads/<headRefName>`; a branch whose commit is not the head the
+  pull request merged (someone pushed to it, or made it again, after the merge: it holds commits
+  the pull request did not merge); a name a challenge would show changed; the repository's
+  default branch (compared without ASCII case), or a host that names none; any other open pull
+  request with the branch as its head (GitHub closes those once the branch is gone; refused
+  rather than judged, whoever's pull request it is) or as its base (GitHub closes or retargets
+  those), or an answer that does not count them; a ref without a node id; and a head commit that
+  is not a commit in the local object database. That last refusal says to fetch the pull
+  request's changes first (Fetch Changes, `rc-git pr diff --fetch`); nothing here fetches.
+- **The name is typed exactly.** The phrase is the branch's name as GitHub reports it. A name
+  holding any character a challenge shows as an escape (a control, bidi or invisible character,
+  any space, a double quote character), a backslash, or more than 255 characters is refused
+  outright: it cannot be typed as shown, and an escape-form phrase is never accepted. Surrounding
+  whitespace is trimmed, as for every phrase; case, a trailing slash, `refs/heads/` or any other
+  text around it refuses. The app's sheet takes it in its field, the CLI after `--confirm`
+  (`--yes` counts for nothing), and the guard alone checks it.
+- **The challenge** is labelled lines in the merge's order, every value neutralized: rc-git's own
+  first line; Repository; Pull request; Account; Branch; Commit (short); Backup (the slot it
+  writes, or the next numbered one after it when that holds another commit); For everyone
+  (GitHub deletes the branch for everyone who uses the repository; rc-git cannot put it back by
+  itself, the backup ref can); and Title last. The answered decision must equal the decision the
+  policy gives on the read made at confirm time, so a branch pushed to, a title changed or
+  another fact moved between the challenge and the confirm refuses.
+- **The way back first.** After the confirmation and before the request, `Writer::write_backup_ref`
+  writes `refs/rc-git/backup/remote-branch/<name>` (escaped as every backup ref is, a numbered
+  slot when the first holds another commit, reused when it holds this one) at the head commit,
+  and the ref is read back at that commit. A failure to write it or read it back sends nothing.
+  The front end is told just before the request leaves (`on_send`). The fake GitHub host checks
+  in a test that the backup ref exists at the head commit when the delete arrives.
+- **One request, three outcomes.** `deleteRef` is sent once and never again. *Deleted*: a
+  non-null `deleteRef` payload. *Refused*: a 4xx, or an empty payload whose errors each show it
+  did not run (as for the merge); the reason passes through `server_text`. Otherwise one read
+  with a fresh cancel flag settles it: the head branch gone is *Deleted*; the same ref still at
+  the same commit is *Not deleted* (when rc-git looked; the note says to look on GitHub before
+  trying again); anything else stays *Unknown* and names what the read found. The backup ref is
+  kept in every outcome, a cancel at the send included, and every note names it.
+- **Bringing it back.** The note names the backup ref and how to restore the branch from it:
+  push the ref to GitHub under the branch's name, `git push <remote> '<backup
+  ref>:refs/heads/<branch>'`, with each word quoted for the shell (`shell_word`). rc-git does not
+  push it back itself. A backup ref is never deleted by rc-git; `git update-ref -d` removes one
+  that is no longer needed.
+- **A local branch of the same name** is left alone: the note says it exists and points to the
+  sidebar's own guarded branch delete. Nothing else local changes.
+- **The control.** Delete Branch shows only for a merged pull request read now (the first read
+  or a failed refresh shows none), by a signed-in account, in the window whose repository the
+  backup goes to. It names why it is not offered for a fork's branch, a protected branch, an
+  account GitHub does not say may delete it, or a name that cannot be typed. The default branch,
+  a moved branch, other open pull requests and a missing commit are known only from the delete's
+  own read, which refuses them before the challenge.
+- **The log.** Every attempt and outcome is a line in the app's log: repository and host,
+  number, branch, head, backup ref, outcome, and whether a local branch was kept; never a token.
+- **Unverified against GitHub, so not asserted in rc-git's words:** that `viewerCanDeleteHeadRef`
+  means the account may delete the head branch (GitHub's reference describes it as "Check if the
+  viewer can restore the deleted head ref"; a false or missing value refuses, so a wrong reading
+  can only refuse more); whether `pullRequests(baseRefName:)` and `associatedPullRequests` match
+  names exactly (a broader match only refuses more); and that a `deleteRef` of a branch that
+  protection or a ruleset guards is refused by GitHub (rc-git refuses its own protected names
+  first). An open pull request in another repository whose head is this branch is not seen by
+  either read; GitHub closes such a pull request when the branch goes.
+
 ### Job logs
 
 View Log on a check of the pull request's page and `rc-git pr logs <n> (--check <name> | --job
@@ -739,7 +832,7 @@ a read: nothing on GitHub changes, so it has no `Action` and no challenge. It ru
 user's click or command, for one job at a time per tab (a second click cancels the read in
 flight), and the log is held in memory only: never written to disk or to the app's log. It is
 the one request rc-git sends to a host other than the signed-in account's, and the one redirect
-it follows; so it is three requests, and it stops at the first that fails.
+it follows; so it is three steps (four requests at most), and it stops at the first that fails.
 
 1. **Match the job to what is on screen.** A check carries ids the server reported, and GitHub
    does not say that a check run's `databaseId` is the Actions job id. The job is read first, by
@@ -769,19 +862,25 @@ it follows; so it is three requests, and it stops at the first that fails.
    whose last label starts with a letter, so no IP literal in any form a resolver reads
    (`10.0.0.1`, `2130706433`, `0x7f.1`, `127.1`), not `localhost` and not a name under
    `.localhost`, `.local`, `.internal`, `.intranet`, `.private`, `.corp`, `.home`, `.lan` or
-   `.home.arpa`. A refused address gets no request; the error names its host only. Then exactly
-   one `GET` goes there (`http::download`) as a `DownloadRequest`, which has no token field: its
-   headers are built from its byte limit alone (`download_headers`), so it carries no
-   `Authorization` and no GitHub API header (the fake storage host records every header, and a
-   test asserts none). Redirects stay off, so a 3xx from the storage host is an error and no
-   second hop happens. The connect and idle budgets and the cancel are every call's.
+   `.home.arpa`. A refused address gets no request; the error names its host only. Then one
+   `GET` goes there (`http::download`) as a `DownloadRequest`, which has no token field: its
+   headers are built from its byte limit and whether it asks for the tail alone
+   (`download_headers`), so it carries no `Authorization` and no GitHub API header (the fake
+   storage host records every header, and a test asserts none). Redirects stay off, so a 3xx
+   from the storage host is an error and no second hop happens. The connect and idle budgets
+   and the cancel are every call's.
 4. **Size.** The request asks for the last 2 MiB (`Range: bytes=-2097152`), since a failure is
    at the end. A `206 Partial Content` whose `Content-Range` ends where the log ends and matches
    the bytes sent is shown from its first line break on; a `200` (a host that ignores the
    range) is kept up to 2 MiB and the transfer stops there; a `416` naming an empty log is an
-   empty log; any other status names itself and nothing of its body. What was left out is a
-   value, never an error and never silent: the page and the CLI say "showing the last N" or
-   "showing the first N; the rest was not downloaded".
+   empty log. Any other `416` is a host that refuses suffix ranges: then exactly one more `GET`
+   goes to the same validated address, without a range, as a `DownloadRequest` too (no token,
+   no redirects, the same budgets and cancel), kept up to 2 MiB from the log's start
+   (`download_log`). No other answer sends a second request, and nothing sends a third, so the
+   storage host gets at most two requests per log read (`scripts/check.sh` fails a third call
+   of `download`, or one outside `download_log`). Any other status names itself and nothing of
+   its body. What was left out is a value, never an error and never silent: the page and the
+   CLI say "showing the last N" or "showing the first N; the rest was not downloaded".
 5. **The text is the workflow's**, so it is attacker-controlled: decoded as UTF-8 with bad bytes
    replaced, split at `\n`, `\r\n` and a lone `\r`, and each line passed through the same
    neutralizer as a description (ANSI escape sequences dropped; control, bidi and invisible
@@ -799,8 +898,8 @@ the address it gets. The request then reaches that address only after a TLS hand
 certificate valid for the name, which the peer and host verification every call keeps on
 require, so a GET can reach such an address only if it holds a valid certificate for the public
 name. Unverified against GitHub: that a check run's `databaseId` is the Actions job id (the match
-is what makes that safe), whether the storage host honors a suffix `Range` (both answers are
-handled), and the address's length (GitHub's are far under 4096 bytes in its documentation's
+is what makes that safe), whether the storage host honors a suffix `Range` (a `206`, a whole
+`200` and a `416` refusing the range are all handled), and the address's length (GitHub's are far under 4096 bytes in its documentation's
 examples).
 
 ## Updater

@@ -23,9 +23,19 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   place of the description, as plain text: colours dropped, invisible and direction-changing
   characters shown as escapes, and nothing in it clickable. RCGit first checks with GitHub that
   the job ran on the head commit the tab shows, and shows nothing for a job it cannot match.
-  Only the end of a long log is downloaded (about its last 2 MB), and the tab says when part of
-  it is left out. Stop cancels a download; Close Log puts the description back. From Terminal:
+  Only the end of a long log is downloaded (about its last 2 MB), or, when GitHub's storage will
+  not send just the end, its first 2 MB, and the tab says when part of it is left out. Stop
+  cancels a download; Close Log puts the description back. From Terminal:
   `rc-git pr logs <n> --check <name>` or `--job <id>`.
+- Delete Branch on a merged pull request's tab deletes its head branch on GitHub. Before
+  anything is sent, RCGit writes a backup ref in your repository that keeps the branch's commit
+  (`refs/rc-git/backup/remote-branch/<name>`), and you type the branch's name to confirm. The
+  note afterwards names that ref and the `git push` that brings the branch back. RCGit refuses
+  a protected branch (`main`, `master`, `release/*`), the repository's default branch, a branch
+  in someone else's fork, a branch someone pushed to after the merge, one another open pull
+  request still uses, and a branch whose commit is not in your repository yet (click Fetch
+  Changes first). A local branch of the same name is left alone; the note says so. From
+  Terminal: `rc-git pr delete-branch <n> --head <oid> --base <branch> --confirm <branch name>`.
 
 ### Changed
 

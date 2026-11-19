@@ -127,14 +127,14 @@ impl TabAction for RerunIntent {
     fn of(tab: &TabFlow) -> Option<&RerunFlow> {
         match tab {
             TabFlow::Rerun(flow) => Some(flow),
-            TabFlow::Merge(_) | TabFlow::AutoMerge(_) => None,
+            TabFlow::Merge(_) | TabFlow::AutoMerge(_) | TabFlow::DeleteBranch(_) => None,
         }
     }
 
     fn of_mut(tab: &mut TabFlow) -> Option<&mut RerunFlow> {
         match tab {
             TabFlow::Rerun(flow) => Some(flow),
-            TabFlow::Merge(_) | TabFlow::AutoMerge(_) => None,
+            TabFlow::Merge(_) | TabFlow::AutoMerge(_) | TabFlow::DeleteBranch(_) => None,
         }
     }
 }

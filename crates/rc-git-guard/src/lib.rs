@@ -148,6 +148,12 @@ pub enum Action {
     /// run; nothing is lost, but the jobs run (and spend Actions minutes) once asked. Built only
     /// from a read made just before ([`actions::github::PullRequestRerun::new`]).
     RerunFailedJobs(Box<actions::github::PullRequestRerun>),
+    /// Delete a merged pull request's head branch on GitHub, for everyone: a remote branch
+    /// delete, decided by the same rule as [`Action::DeleteRemoteBranch`] (denied on a protected
+    /// branch, the typed name and a backup ref elsewhere), carrying the facts its challenge names
+    /// and the ref id the mutation names it by. Built only from a read made just before
+    /// ([`actions::github::PullRequestBranchDelete::new`]).
+    DeletePullRequestBranch(Box<actions::github::PullRequestBranchDelete>),
 }
 
 /// How much an action can lose.
@@ -189,6 +195,7 @@ impl Action {
             Action::Push { force: true, .. }
             | Action::DeleteLocalBranch { merged: false, .. }
             | Action::DeleteRemoteBranch { .. }
+            | Action::DeletePullRequestBranch(_)
             | Action::DeleteTag { .. }
             | Action::ResetHard { .. }
             | Action::RewriteHistory {
@@ -354,6 +361,13 @@ mod tests {
             | Action::DeleteRemoteBranch { name } => {
                 unless_protected(Expected::confirm(Risk::Destructive, Some(name), true))
             }
+            // The remote branch delete's row, unchanged: the pull request's head branch is a
+            // remote branch.
+            Action::DeletePullRequestBranch(delete) => unless_protected(Expected::confirm(
+                Risk::Destructive,
+                Some(delete.branch()),
+                true,
+            )),
             Action::DeleteTag { name } => Expected::confirm(Risk::Destructive, Some(name), true),
             Action::ResetHard { branch, .. } => {
                 Expected::confirm(Risk::Destructive, Some(branch), true)
@@ -560,6 +574,208 @@ mod tests {
         ))
     }
 
+    /// The read of merged pull request `number` of `octo/rc-git` whose head branch is `name`, at
+    /// `ababab…`, which nothing stands in the way of deleting.
+    fn head_branch_of(number: u64, name: &str) -> actions::github::HeadBranch {
+        use actions::github::{
+            BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestStamp, PullRequestState,
+            RefId,
+        };
+        let head = rc_git_core::Oid::from_hex(&"ab".repeat(20)).unwrap();
+        HeadBranch {
+            stamp: PullRequestStamp {
+                number,
+                head_oid: head,
+                base_ref: "main".to_owned(),
+                state: PullRequestState::Merged,
+            },
+            merged: true,
+            title: "Ship \\u{202e}it".to_owned(),
+            branch: BranchName::from_server(name),
+            in_repository: true,
+            viewer_can_delete: true,
+            head_ref: Some(HeadRef {
+                id: RefId::parse("REF_kwDOfeature"),
+                target: Some(head),
+                is_head_branch: true,
+                open_heads: Some(OpenPullRequests::default()),
+            }),
+            default_branch: Some(false),
+            open_bases: Some(OpenPullRequests::default()),
+        }
+    }
+
+    /// Deleting the head branch `name` of merged pull request `number` of `octo/rc-git`.
+    fn delete_branch_of(number: u64, name: &str) -> Action {
+        use actions::github::PullRequestBranchDelete;
+        Action::DeletePullRequestBranch(Box::new(
+            PullRequestBranchDelete::new(&octo(), "octocat", &head_branch_of(number, name))
+                .unwrap(),
+        ))
+    }
+
+    /// [`delete_branch_of`] pull request 7.
+    fn delete_branch_named(name: &str) -> Action {
+        delete_branch_of(7, name)
+    }
+
+    #[test]
+    fn a_head_branch_delete_gets_exactly_the_remote_branch_delete_decision() {
+        let policy = Policy::default();
+        for name in [
+            "topic",
+            "feature/x",
+            "feature/main",
+            "main",
+            "MAIN",
+            "master",
+            "Master",
+            "release/1.0",
+            "Release/2.0/hotfix",
+            "release",
+            "releases/1.0",
+        ] {
+            let remote = policy.evaluate(&Action::DeleteRemoteBranch {
+                name: name.to_owned(),
+            });
+            let head = policy.evaluate(&delete_branch_named(name));
+            assert_eq!(
+                Expected::of(head.clone()),
+                Expected::of(remote.clone()),
+                "{name}"
+            );
+            match (&head, &remote) {
+                (Decision::Deny { reason: ours }, Decision::Deny { reason: theirs }) => {
+                    assert_eq!(ours, theirs, "{name}: one rule, one reason");
+                }
+                (Decision::Confirm(ours), Decision::Confirm(theirs)) => {
+                    assert_eq!(ours.typed_phrase(), Some(name));
+                    assert_eq!(ours.typed_phrase(), theirs.typed_phrase());
+                    assert!(ours.backup_ref() && theirs.backup_ref(), "{name}");
+                    assert_eq!(ours.risk(), theirs.risk());
+                }
+                (ours, theirs) => panic!("{name}: {ours:?} is not {theirs:?}"),
+            }
+        }
+        for name in ["main", "master", "release/1.0"] {
+            assert!(
+                matches!(
+                    policy.authorize(&delete_branch_named(name), Some(name)),
+                    Err(Refusal::Denied(_))
+                ),
+                "{name} is denied whatever is typed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_head_branch_delete_verifies_only_the_exact_branch_name() {
+        let policy = Policy::default();
+        let delete = delete_branch_named("feature/x");
+        for typed in ["feature/x", " feature/x\n"] {
+            assert_eq!(
+                policy.authorize(&delete, Some(typed)).unwrap().action(),
+                &delete,
+                "{typed:?}"
+            );
+        }
+        for typed in [
+            "",
+            "Feature/x",
+            "FEATURE/X",
+            "feature/x/",
+            "feature/",
+            "feature",
+            "refs/heads/feature/x",
+            "origin/feature/x",
+            "feature/x please",
+            "delete feature/x",
+            "\u{201c}feature/x\u{201d}",
+            "feature\u{2215}x",
+            "feature/x\u{200b}",
+        ] {
+            assert_eq!(
+                policy.authorize(&delete, Some(typed)),
+                Err(Refusal::NotConfirmed {
+                    phrase: "feature/x".to_owned()
+                }),
+                "{typed:?}"
+            );
+        }
+        assert!(
+            policy.authorize(&delete, None).is_err(),
+            "no input is no proof"
+        );
+    }
+
+    #[test]
+    fn a_head_branch_delete_challenge_names_the_branch_its_commit_and_its_backup() {
+        let c = challenge(Policy::default().evaluate(&delete_branch_named("feature/x-1")));
+        assert_eq!(c.typed_phrase(), Some("feature/x-1"));
+        assert!(c.backup_ref());
+        assert_eq!(c.risk(), Risk::Destructive);
+        assert_eq!(
+            c.summary(),
+            "Delete this pull request's head branch on GitHub. A backup ref in this repository \
+             keeps its commit first.\n\
+             Repository: octo/rc-git on github.com\n\
+             Pull request: #7\n\
+             Account: octocat@github.com\n\
+             Branch: \u{201c}feature/x-1\u{201d}\n\
+             Commit: abababa\n\
+             Backup: refs/rc-git/backup/remote-branch/feature%2Fx%2D1 (or the next numbered slot \
+             after it), at abababa, written before anything is sent\n\
+             For everyone: GitHub deletes the branch for everyone who uses the repository; rc-git \
+             cannot put it back by itself, but the backup ref can\n\
+             Title: \u{201c}Ship \\u{202e}it\u{201d}"
+        );
+    }
+
+    #[test]
+    fn a_head_branch_a_challenge_would_show_changed_can_never_be_deleted() {
+        use actions::github::{ActionBlocker, BranchName, PullRequestBranchDelete};
+        let long = "a".repeat(256);
+        for hostile in [
+            "fea\u{202e}ture",
+            "feature\u{200b}",
+            "feat\u{a0}ure",
+            "feat ure",
+            "feature\n",
+            "fe\"ature",
+            "fe\u{201c}ature",
+            "fe\\u{202e}ature",
+            "\u{1b}[31mfeature",
+            "",
+            long.as_str(),
+        ] {
+            let read = head_branch_of(7, hostile);
+            assert!(
+                matches!(read.branch, BranchName::Shown(_)),
+                "{hostile:?} is no exact name"
+            );
+            assert!(
+                !read
+                    .branch
+                    .shown()
+                    .contains(['\u{202e}', '\u{200b}', '\n', '\u{1b}'])
+            );
+            assert_eq!(
+                PullRequestBranchDelete::new(&octo(), "octocat", &read),
+                Err(ActionBlocker::NameNotTypeable),
+                "{hostile:?}"
+            );
+        }
+        let mut forged = head_branch_of(7, "feature");
+        forged.branch = BranchName::Exact("fea\u{202e}ture".to_owned());
+        assert_eq!(
+            PullRequestBranchDelete::new(&octo(), "octocat", &forged),
+            Err(ActionBlocker::NameNotTypeable),
+            "an exact name that is not typeable is refused all the same"
+        );
+        let wide = head_branch_of(7, "ﬁx/日本-é");
+        assert!(PullRequestBranchDelete::new(&octo(), "octocat", &wide).is_ok());
+    }
+
     #[test]
     fn turning_on_auto_merge_says_github_merges_later_commits_without_asking_again() {
         let c = challenge(Policy::default().evaluate(&enable_auto_merge_into("main")));
@@ -670,12 +886,15 @@ mod tests {
             enable_auto_merge_into("main"),
             disable_auto_merge_into("main"),
             rerun_into("main"),
+            delete_branch_named("feature"),
+            delete_branch_named("feature-2"),
+            delete_branch_of(8, "feature"),
         ];
         for (index, action) in actions.iter().enumerate() {
-            let typed = if let Action::AdminMergePullRequest(merge) = action {
-                merge.number().to_string()
-            } else {
-                String::new()
+            let typed = match action {
+                Action::AdminMergePullRequest(merge) => merge.number().to_string(),
+                Action::DeletePullRequestBranch(delete) => delete.branch().to_owned(),
+                _ => String::new(),
             };
             let proof = policy.authorize(action, Some(&typed)).unwrap();
             assert_eq!(proof.action(), action);
@@ -1108,6 +1327,7 @@ mod tests {
             enable_auto_merge_into(&name()),
             disable_auto_merge_into(&name()),
             rerun_into(&name()),
+            delete_branch_named(&name()),
         ]
     }
 

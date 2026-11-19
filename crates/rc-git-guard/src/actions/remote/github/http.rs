@@ -147,17 +147,19 @@ impl Response {
 }
 
 /// The job log's download: one `GET` to the address GitHub's redirect named, with no token. The
-/// type has no token field and its headers are built from `limit` alone ([`download_headers`]),
-/// so no `Authorization` header and no GitHub API header can reach the storage host. Its `Debug`
-/// names the host only.
+/// type has no token field and its headers are built from `limit` and `tail` alone
+/// ([`download_headers`]), so no `Authorization` header and no GitHub API header can reach the
+/// storage host. Its `Debug` names the host only.
 #[derive(Debug, Clone)]
 pub(super) struct DownloadRequest {
     /// What is being done, for messages.
     pub op: &'static str,
     pub url: LogDownloadUrl,
-    /// The most body bytes kept: the request asks for the last `limit` bytes, and a host that
-    /// sends the whole body has it cut there.
+    /// The most body bytes kept: a host that sends more has the body cut there.
     pub limit: usize,
+    /// Whether to ask for the last `limit` bytes (`Range: bytes=-<limit>`); otherwise the request
+    /// asks for the body from its start, and it is cut at `limit`.
+    pub tail: bool,
 }
 
 /// A redirect's `Location`, as the host sent it: a secret (a job log's signed address) until
@@ -274,9 +276,10 @@ pub(super) fn send_reading_redirect(request: Request, cancel: &Cancel) -> GitHub
 }
 
 /// Downloads what `request` names: one `GET`, asking for the last `limit` bytes
-/// (`Range: bytes=-<limit>`), with no token and no GitHub API header, following no redirect. A
-/// body longer than `limit` stops the transfer there and comes back [`Downloaded::cut`], not as an
-/// error. Every message names the address as [`LogDownloadUrl::shown`] does, never whole.
+/// (`Range: bytes=-<limit>`) when `request.tail` says so, with no token and no GitHub API header,
+/// following no redirect. A body longer than `limit` stops the transfer there and comes back
+/// [`Downloaded::cut`], not as an error. Every message names the address as
+/// [`LogDownloadUrl::shown`] does, never whole. Only `logs.rs`'s `download_log` calls it.
 ///
 /// # Errors
 /// [`GitHubError::Cancelled`], [`GitHubError::Transport`], [`GitHubError::Malformed`] for headers
@@ -586,11 +589,14 @@ fn api_headers(request: &Request) -> Result<List, curl::Error> {
     Ok(list)
 }
 
-/// The header list for a download: the byte range asked for, and nothing else. It reads
-/// `request.limit` alone; a [`DownloadRequest`] holds no token to read.
+/// The header list for a download: the byte range asked for, when it asks for the tail, and
+/// nothing else. It reads `request.limit` and `request.tail` alone; a [`DownloadRequest`] holds no
+/// token to read.
 fn download_headers(request: &DownloadRequest) -> Result<List, curl::Error> {
     let mut list = List::new();
-    list.append(&format!("Range: bytes=-{}", request.limit))?;
+    if request.tail {
+        list.append(&format!("Range: bytes=-{}", request.limit))?;
+    }
     Ok(list)
 }
 
@@ -782,16 +788,25 @@ mod tests {
             PlainHttp::Refused,
         )
         .unwrap();
-        let request = DownloadRequest {
+        let mut request = DownloadRequest {
             op: "download the job log",
             url,
             limit: 2048,
+            tail: false,
         };
-        let mut lines = Vec::new();
-        for line in &download_headers(&request).unwrap() {
-            lines.push(String::from_utf8_lossy(line).into_owned());
-        }
-        assert_eq!(lines, ["Range: bytes=-2048"]);
+        let headers = |request: &DownloadRequest| {
+            let mut lines = Vec::new();
+            for line in &download_headers(request).unwrap() {
+                lines.push(String::from_utf8_lossy(line).into_owned());
+            }
+            lines
+        };
+        assert!(
+            headers(&request).is_empty(),
+            "the whole log asks for no range"
+        );
+        request.tail = true;
+        assert_eq!(headers(&request), ["Range: bytes=-2048"]);
         let transfer = Transfer::Download(request.clone());
         assert_eq!(transfer.shown(), "https://logs.example.com/…");
         let scrubbed = server_text(

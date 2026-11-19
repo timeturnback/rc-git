@@ -43,25 +43,30 @@ guard's one pull request write) fetches `refs/pull/<n>/head` into `refs/rc-git/p
 the user asks and the remote's head is the stamp's, and the core's `merge_base` (a bounded
 paint-down walk) plus `diff_trees` give GitHub's three-dot view from the commit GitHub reports
 the base branch at (`baseRefOid`), or, for a host that reports none, from the local copy of the
-base branch (`pull_request_base_ref`). The guard's one GitHub mutation so far, merging a pull
+base branch (`pull_request_base_ref`). The guard's first GitHub mutation, merging a pull
 request (`merge_pull_request`, planned by `plan_merge_pull_request`), reads the pull request again,
 refuses what changed since the stamp or cannot merge (`merge_blocker`), and sends one
 `mergePullRequest` through `Session::mutate`, which takes the `Confirmation` and builds the
 request from the action it carries (`mutation`); the outcome is merged, refused or unknown.
-A job's log (`read_job_log`, `logs`) is a read with three requests: the job read on the
+A job's log (`read_job_log`, `logs`) is a read in three steps: the job read on the
 account's host, matched to the stamp's head; the logs endpoint, the one call whose redirect is
-read (`Session::job_log_location`); and one download to the address it names, validated into a
+read (`Session::job_log_location`); and the download from the address it names, validated into a
 `LogDownloadUrl` (`download`) and sent as a `DownloadRequest`, which has no token field, kept to
-its last 2 MiB and neutralized.
+its last 2 MiB (or, only when the storage host answers `416` to that range, one more request
+without it, kept to its first 2 MiB) and neutralized. Deleting a merged pull request's head
+branch (`delete_head_branch`, `delete_branch`) reads the pull request and its head branch again,
+refuses what changed since the stamp or is not the pull request's own merged branch, checks the
+head commit is in the local object database, writes the backup ref through the `Writer` its
+`Confirmation` builds, and only then sends one `deleteRef`.
 rc-git-kit's `pull_requests` module links a repository to its
 GitHub repository and account (`link`), holds the list and each open pull request tab as state
 machines with a generation per read and one read queued at most (`state`), a tab's changes as a
 state machine tied to the stamp they were read for (`changes`: reading, needs fetch, fetching,
 moved, no base copy, no merge base, ready, one file diff at a time), a tab's guarded GitHub action
 as a state machine tied to its stamp and generation (`flow`: planning, confirming, sending until
-and after the first request, done), one at a time per tab, of three kinds (a merge, an auto-merge
-change, a re-run of failed jobs: `merge`, `auto_merge`, `rerun`) with each control decided from
-the guard's blockers, a tab's job log as a state machine (`logs`: matching, downloading, shown,
+and after the first request, done), one at a time per tab, of four kinds (a merge, an auto-merge
+change, a re-run of failed jobs, a head branch delete: `merge`, `auto_merge`, `rerun`,
+`delete_branch`) with each control decided from the guard's blockers, a tab's job log as a state machine (`logs`: matching, downloading, shown,
 not matched, not finished, failed; one read per tab, dropped when the head moves), runs them for
 a window
 (`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard and

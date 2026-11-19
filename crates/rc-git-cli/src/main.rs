@@ -27,7 +27,7 @@ use rc_git_guard::actions::{ActionError, Cancel};
 const USAGE: &str = "\
 usage: rc-git [--time] <command> <repo> [args]
        rc-git auth login|status|logout [args]
-       rc-git [--time] pr list|view|checks|diff|merge [args]
+       rc-git [--time] pr list|view|checks|logs|diff|merge|auto-merge|rerun|delete-branch [args]
 
   head    <repo>                          branch and commit HEAD points to
   refs    <repo>                          every branch, remote branch, and tag
@@ -238,6 +238,28 @@ usage: rc-git [--time] <command> <repo> [args]
                                           GitHub refused one or one was not sent, 12 when one
                                           had no usable answer. It never approves a run waiting
                                           for approval
+  pr delete-branch <n> [repo] --head <oid> --base <branch> --confirm <branch name>
+                                          delete a merged pull request's head branch on GitHub,
+                                          once, for everyone, after writing a backup ref in this
+                                          repository that keeps its commit
+                                          (refs/rc-git/backup/remote-branch/<name>). It needs
+                                          the branch's exact name typed after --confirm; --yes
+                                          is never enough. It refuses a pull request that is
+                                          not merged, a fork's branch, a protected or default
+                                          branch, one pushed to since the merge, one another
+                                          open pull request uses, and a head commit not in this
+                                          repository (fetch it first with pr diff --fetch).
+                                          Without --confirm prints one
+                                          would-delete-branch<TAB>line per line of the
+                                          challenge and exits 10, sending and writing nothing;
+                                          with it, the same lines go to stderr as
+                                          sending<TAB>line first. Prints deleted|refused|
+                                          not-deleted|unknown<TAB>owner/name#n<TAB>branch<TAB>
+                                          commit<TAB>backup ref, then note<TAB>text when
+                                          deleted; exits 11 when GitHub refused it or it is
+                                          still there, 12 when no usable answer came back.
+                                          Restore with git push <remote>
+                                          '<backup ref>:refs/heads/<branch>'
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control, bidi and invisible characters and every
@@ -260,17 +282,19 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   8 a --hunk no longer matches the file (rerun diff --worktree and pick again),
   9 no author identity (rerun with --author \"Name <email>\"),
   10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
-  11 pr merge, auto-merge or rerun did not do it: GitHub refused it, or rc-git refused before
-  sending anything (it changed since --head, or cannot be done as asked); pr logs read no log
-  (the job ran on another commit or in another run, has not finished, or the head moved),
-  12 pr merge, auto-merge or rerun sent its request and no usable answer came back: look at
-  the pull request on GitHub before trying again (rc-git never sends one twice),
+  11 pr merge, auto-merge, rerun or delete-branch did not do it: GitHub refused it, or rc-git
+  refused before sending anything (it changed since --head, or cannot be done as asked); pr
+  logs read no log (the job ran on another commit or in another run, has not finished, or the
+  head moved),
+  12 pr merge, auto-merge, rerun or delete-branch sent its request and no usable answer came
+  back: look at the pull request on GitHub before trying again (rc-git never sends one twice),
   13 pr merge merged, or pr auto-merge turned auto-merge on, but GitHub names another base
   than --base: its base changed after the last read, which GitHub cannot refuse; look at that
   branch now,
   130 interrupted: Ctrl+C or SIGTERM stopped fetch, pull, push, sync or auth between steps
-  (a second one exits at once, even mid-step, except once pr merge, auto-merge or rerun has
-  sent its request: then further ones are ignored until its outcome is read and printed)
+  (a second one exits at once, even mid-step, except once pr merge, auto-merge, rerun or
+  delete-branch has sent its request: then further ones are ignored until its outcome is read
+  and printed)
 ";
 
 const EXIT_ERROR: u8 = 1;
