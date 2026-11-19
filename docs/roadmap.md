@@ -224,13 +224,19 @@ constraints are clear.
   challenge (the auto-merge one says later commits merge too, without asking again), the
   answered decision checked, and an outcome of done, refused or unknown. The sixth slice.
 
+- **Job logs.** View Log on a finished GitHub Actions check of a pull request tab, and
+  `rc-git pr logs <n> --check <name> | --job <id>`, show that job's log: matched first to the
+  head on screen (job read: `head_sha`, `run_id`), then downloaded from the address GitHub's
+  redirect names, one hop, `https://` to a public DNS name only, without the token, at most its
+  last 2 MiB, neutralized, held in memory. A re-run now reads each workflow run first and sends
+  only those that ran on the confirmed head. The seventh slice.
+
 ## Planned
 
-- **Pull requests.** The rest of the pull request slices on the GitHub client: job logs and
-  deleting the head branch, each
-  mutation a new `Action` with its policy row (rc-git-guard, rc-git-kit, rc-git-app,
-  `rc-git pr`) and an arm of `Mutation::of`, each comparing a fresh read against the
-  `PullRequestStamp` of what the user saw.
+- **Pull requests.** The last pull request slice on the GitHub client: deleting the head branch
+  after a merge, through the existing `DeleteRemoteBranch` policy row (rc-git-guard, rc-git-kit,
+  rc-git-app, `rc-git pr`), comparing a fresh read against the `PullRequestStamp` of what the
+  user saw.
 
 - **Prune old pull request heads.** Every fetched pull request head stays under
   `refs/rc-git/pr/<n>/head`, keeping its objects alive, until the user deletes it with git. A

@@ -115,6 +115,35 @@ if [[ $loopback_users != 'crates/rc-git-guard/src/actions/remote/github/host.rs'
   echo 'error: the dev-loopback-http feature may be read only by the GitHub client host.rs' >&2
   exit 1
 fi
+step "one token header writer, one redirect reader"
+# The token reaches a request only through api_headers in github/http.rs. The job log's download
+# goes to a host GitHub names, so its request type (DownloadRequest) has no token field and its
+# header builder reads none; a second Authorization writer, or a token in either, fails here.
+http_rs=crates/rc-git-guard/src/actions/remote/github/http.rs
+auth_writers="$(git grep -c 'Authorization: Bearer {' -- 'crates/*.rs' || true)"
+if [[ $auth_writers != "$http_rs:1" ]]; then
+  printf '%s\n' "$auth_writers"
+  echo "error: the Authorization header must be written once, in $http_rs api_headers" >&2
+  exit 1
+fi
+download_request="$(awk '/^pub\(super\) struct DownloadRequest/,/^}/' "$http_rs")"
+download_headers="$(awk '/^fn download_headers/,/^}/' "$http_rs")"
+if [[ -z $download_request || -z $download_headers ||
+  $download_request$download_headers == *[Tt]oken* ||
+  $download_headers == *Authorization* ]]; then
+  echo "error: $http_rs DownloadRequest and download_headers must carry no token" >&2
+  exit 1
+fi
+# Only the job log's call reads a redirect's Location; every other call refuses a 3xx.
+redirect_callers="$(git grep -c 'send_reading_redirect(' -- 'crates/*.rs' | paste -sd ' ' - || true)"
+location_readers="$(git grep -c 'header("location")' -- 'crates/rc-git-guard/*.rs' || true)"
+api_rs=crates/rc-git-guard/src/actions/remote/github/api.rs
+if [[ $redirect_callers != "$api_rs:1 $http_rs:1" || $location_readers != "$http_rs:1" ]]; then
+  printf '%s\n%s\n' "$redirect_callers" "$location_readers"
+  echo "error: only Session::job_log_location may call send_reading_redirect, and only it may" \
+    "read a Location header" >&2
+  exit 1
+fi
 step "rust doc comment width"
 # rustfmt never wraps comments, so a doc line over max_width passes cargo fmt --check.
 # perl -CSD counts characters; macOS awk counts bytes, so a line holding ⌘ read as too long.

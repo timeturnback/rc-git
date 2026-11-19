@@ -11,7 +11,7 @@ pub(super) const MESSAGE_CHARS: usize = 300;
 /// rather than interpreted. Longer than `max_chars` characters, it is cut there and ends in `…`.
 #[must_use]
 pub fn single_line(text: &str, max_chars: usize) -> String {
-    neutralize(text, max_chars, Breaks::Escaped)
+    neutralize(text, max_chars, Breaks::Escaped).0
 }
 
 /// `text` made safe to show as several lines, as a pull request's description: line breaks
@@ -21,7 +21,15 @@ pub fn single_line(text: &str, max_chars: usize) -> String {
 /// it is cut there and ends in `…`.
 #[must_use]
 pub fn multi_line(text: &str, max_chars: usize) -> String {
-    neutralize(text, max_chars, Breaks::Kept)
+    neutralize(text, max_chars, Breaks::Kept).0
+}
+
+/// One line of a job log made safe to show, as [`multi_line`] does (tabs and the spaces other
+/// than U+0020 kept, ANSI escape sequences dropped, every other character [`single_line`] escapes
+/// shown as its visible escape), and whether it was cut at `max_chars` characters (it then ends
+/// in `…`). `line` holds no line break: the caller splits the log first.
+pub(super) fn log_line(line: &str, max_chars: usize) -> (String, bool) {
+    neutralize(line, max_chars, Breaks::Kept)
 }
 
 /// Whether [`single_line`] shows `c` as an escape: a control character (C0, DEL and C1), a
@@ -40,7 +48,8 @@ enum Breaks {
     Kept,
 }
 
-fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> String {
+/// `text` neutralized as `breaks` says, and whether it was cut at `max_chars` characters.
+fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> (String, bool) {
     let mut shown = String::new();
     let mut count = 0;
     let mut chars = text.chars().peekable();
@@ -51,7 +60,7 @@ fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> String {
         }
         if count == max_chars {
             shown.push('…');
-            break;
+            return (shown, true);
         }
         count += 1;
         if breaks == Breaks::Kept && c == '\r' {
@@ -69,7 +78,7 @@ fn neutralize(text: &str, max_chars: usize, breaks: Breaks) -> String {
             shown.push(c);
         }
     }
-    shown
+    (shown, false)
 }
 
 /// `value` in lowercase hexadecimal, without leading zeros.

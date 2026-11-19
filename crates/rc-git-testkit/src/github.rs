@@ -28,6 +28,14 @@
 //! re-runs nothing, re-run then drop the connection, or drop it without re-running. Each kind of
 //! mutation is counted apart ([`GitHubServer::mutations_named`],
 //! [`GitHubServer::rerun_requests`]).
+//!
+//! A job log is served as GitHub serves it: the job's read (`GET .../actions/jobs/<id>`), the logs
+//! endpoint (`GET .../actions/jobs/<id>/logs`) answering a scripted redirect ([`LogsAnswer`]), and
+//! a [`StorageServer`], a second loopback listener standing in for the host the redirect names,
+//! which records every request's headers and answers as scripted ([`StorageBehaviour`]): the log
+//! with or without honouring a suffix `Range`, a body without a length, any status (a redirect of
+//! its own included), or a stall. A workflow run's read (`GET .../actions/runs/<id>`) answers as
+//! scripted too. An unscripted job, log or run read is a `404`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -257,7 +265,31 @@ struct State {
     reruns: BTreeMap<(String, u64), RerunBehaviour>,
     /// How many re-runs each scripted run took, by run id.
     reruns_applied: BTreeMap<u64, usize>,
+    /// The REST reads of jobs and workflow runs, by their exact path under `/api/v3`: the status
+    /// line and the body.
+    actions: BTreeMap<String, (&'static str, String)>,
+    /// The logs endpoints' answers, by their exact path under `/api/v3`.
+    logs: BTreeMap<String, LogsAnswer>,
     requests: Vec<RecordedRequest>,
+}
+
+/// What the fake's logs endpoint (`GET .../actions/jobs/<id>/logs`) answers.
+#[derive(Debug, Clone)]
+pub enum LogsAnswer {
+    /// A redirect: `status` (e.g. `302 Found`) with `Location: location` and no body.
+    Redirect {
+        /// The status line.
+        status: &'static str,
+        /// The `Location` header, sent exactly as given.
+        location: String,
+    },
+    /// `status` with `body`, no `Location`.
+    Answer {
+        /// The status line.
+        status: &'static str,
+        /// The body.
+        body: String,
+    },
 }
 
 /// The exact body a correct re-run of failed jobs sends.
@@ -440,6 +472,58 @@ impl GitHubServer {
         ))
     }
 
+    /// Answers the read of job `job` of `repository` (`owner/name`) with `status` and `body`
+    /// (a JSON document) from now on.
+    pub fn script_job(&self, repository: &str, job: u64, status: &'static str, body: &str) {
+        self.state().actions.insert(
+            format!("/repos/{repository}/actions/jobs/{job}"),
+            (status, body.to_owned()),
+        );
+    }
+
+    /// Answers the logs endpoint of job `job` of `repository` as `answer` says from now on.
+    pub fn script_job_logs(&self, repository: &str, job: u64, answer: LogsAnswer) {
+        self.state().logs.insert(
+            format!("/repos/{repository}/actions/jobs/{job}/logs"),
+            answer,
+        );
+    }
+
+    /// Answers the read of workflow run `run` of `repository` with `status` and `body` from now
+    /// on.
+    pub fn script_workflow_run(
+        &self,
+        repository: &str,
+        run: u64,
+        status: &'static str,
+        body: &str,
+    ) {
+        self.state().actions.insert(
+            format!("/repos/{repository}/actions/runs/{run}"),
+            (status, body.to_owned()),
+        );
+    }
+
+    /// How many requests arrived at job `job`'s read of `repository`.
+    #[must_use]
+    pub fn job_reads(&self, repository: &str, job: u64) -> usize {
+        self.requests_to(&format!("/api/v3/repos/{repository}/actions/jobs/{job}"))
+    }
+
+    /// How many requests arrived at job `job`'s logs endpoint of `repository`.
+    #[must_use]
+    pub fn log_requests(&self, repository: &str, job: u64) -> usize {
+        self.requests_to(&format!(
+            "/api/v3/repos/{repository}/actions/jobs/{job}/logs"
+        ))
+    }
+
+    /// How many requests arrived at workflow run `run`'s read of `repository`.
+    #[must_use]
+    pub fn run_reads(&self, repository: &str, run: u64) -> usize {
+        self.requests_to(&format!("/api/v3/repos/{repository}/actions/runs/{run}"))
+    }
+
     /// How many re-runs of run `run` the fake carried out.
     #[must_use]
     pub fn reruns_applied(&self, run: u64) -> usize {
@@ -615,6 +699,7 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>, stop: &AtomicBool) 
             Served::Drop => return,
         },
         ("GET", target) if target.ends_with(".git/info/refs") => git_challenge(),
+        ("GET", target) if is_actions_read(target) => actions_read(&request, target, state),
         (method, target) if method == "GET" && target.starts_with("/api/v3/repos/") => {
             repository(&request, target, state)
         }
@@ -1137,6 +1222,46 @@ fn rerun(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Serve
     }
 }
 
+/// Whether `target` is a job's read, a job's logs or a workflow run's read:
+/// `/api/v3/repos/<owner>/<name>/actions/jobs/<id>`, `.../jobs/<id>/logs` or `.../runs/<id>`.
+fn is_actions_read(target: &str) -> bool {
+    let Some(rest) = target.strip_prefix("/api/v3/repos/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    match parts.as_slice() {
+        [_, _, "actions", "jobs" | "runs", id] | [_, _, "actions", "jobs", id, "logs"] => {
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// The answer to a job's read, its logs or a workflow run's read: only with the API headers and a
+/// known token, and only as scripted for exactly that path; anything else is a `404`.
+fn actions_read(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Answer {
+    let state = lock(state);
+    if authorized(request, &state, "application/vnd.github+json").is_none() {
+        return unauthorized();
+    }
+    let path = target.trim_start_matches("/api/v3");
+    if let Some(answer) = state.logs.get(path) {
+        return match answer {
+            LogsAnswer::Redirect { status, location } => Answer {
+                status,
+                headers: vec![("Location".to_owned(), location.clone())],
+                body: Vec::new(),
+                streamed: false,
+            },
+            LogsAnswer::Answer { status, body } => json(status, body.clone()),
+        };
+    }
+    match state.actions.get(path) {
+        Some((status, body)) => json(status, body.clone()),
+        None => not_found(),
+    }
+}
+
 fn repository(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> Answer {
     let state = lock(state);
     if authorized(request, &state, "application/vnd.github+json").is_none() {
@@ -1147,4 +1272,192 @@ fn repository(request: &RecordedRequest, target: &str, state: &Mutex<State>) -> 
         "200 OK",
         format!(r#"{{"full_name":"{}"}}"#, escape(full_name)),
     )
+}
+
+/// What the [`StorageServer`] answers every request with.
+#[derive(Debug, Clone)]
+pub enum StorageBehaviour {
+    /// The log `body`. With `ranges`, a `Range: bytes=-<n>` request gets `206 Partial Content`
+    /// with its last `n` bytes and a `Content-Range`; otherwise, and for any other request, `200
+    /// OK` with the whole body.
+    Log {
+        /// The log.
+        body: Vec<u8>,
+        /// Whether a suffix range is honoured.
+        ranges: bool,
+    },
+    /// `200 OK` with `bytes` bytes of log lines and no `Content-Length`, ending at close.
+    Streamed {
+        /// How many bytes.
+        bytes: usize,
+    },
+    /// Any status, headers and body, exactly as given.
+    Answer {
+        /// The status line.
+        status: &'static str,
+        /// Extra response headers, as `(name, value)`.
+        headers: Vec<(String, String)>,
+        /// The body.
+        body: Vec<u8>,
+    },
+    /// Holds the connection open without answering until the server stops.
+    Stall,
+}
+
+#[derive(Debug)]
+struct StorageState {
+    behaviour: StorageBehaviour,
+    requests: Vec<RecordedRequest>,
+}
+
+/// A second loopback host standing in for where GitHub keeps a job's log: it answers every
+/// request as its [`StorageBehaviour`] says and records each one, headers included, so a test
+/// sees exactly what the download sent.
+#[derive(Debug)]
+pub struct StorageServer {
+    port: u16,
+    shutdown: Arc<AtomicBool>,
+    state: Arc<Mutex<StorageState>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl StorageServer {
+    /// A server answering `behaviour`.
+    ///
+    /// # Panics
+    /// When the listener cannot bind.
+    #[must_use]
+    pub fn start(behaviour: StorageBehaviour) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(StorageState {
+            behaviour,
+            requests: Vec::new(),
+        }));
+        let (stop, shared) = (Arc::clone(&shutdown), Arc::clone(&state));
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(stream) = stream else { continue };
+                let (shared, stop) = (Arc::clone(&shared), Arc::clone(&stop));
+                std::thread::spawn(move || serve_storage(stream, &shared, &stop));
+            }
+        });
+        Self {
+            port,
+            shutdown,
+            state,
+            handle: Some(handle),
+        }
+    }
+
+    /// `http://127.0.0.1:<port>`.
+    #[must_use]
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// From now on answers as `behaviour` says.
+    pub fn set(&self, behaviour: StorageBehaviour) {
+        self.storage().behaviour = behaviour;
+    }
+
+    /// Every request so far, in arrival order.
+    #[must_use]
+    pub fn recorded(&self) -> Vec<RecordedRequest> {
+        self.storage().requests.clone()
+    }
+
+    /// How many requests arrived so far.
+    #[must_use]
+    pub fn requests(&self) -> usize {
+        self.storage().requests.len()
+    }
+
+    fn storage(&self) -> MutexGuard<'_, StorageState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Drop for StorageServer {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test kit opens a loopback connection to stop its own server"
+    )]
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        drop(TcpStream::connect(("127.0.0.1", self.port)));
+        if let Some(handle) = self.handle.take() {
+            drop(handle.join());
+        }
+    }
+}
+
+fn serve_storage(stream: TcpStream, state: &Mutex<StorageState>, stop: &AtomicBool) {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+    let Some(request) = read_request(&mut reader) else {
+        return;
+    };
+    let behaviour = {
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.requests.push(request.clone());
+        state.behaviour.clone()
+    };
+    let answer = match behaviour {
+        StorageBehaviour::Log { body, ranges } => log_answer(&request, body, ranges),
+        StorageBehaviour::Streamed { bytes } => Answer {
+            status: "200 OK",
+            headers: Vec::new(),
+            body: b"line\n".iter().copied().cycle().take(bytes).collect(),
+            streamed: true,
+        },
+        StorageBehaviour::Answer {
+            status,
+            headers,
+            body,
+        } => Answer {
+            status,
+            headers,
+            body,
+            streamed: false,
+        },
+        StorageBehaviour::Stall => {
+            stall(stop);
+            return;
+        }
+    };
+    let mut writer = stream;
+    write_answer(&mut writer, &answer);
+}
+
+/// The log `body` for `request`: its last `n` bytes as a `206` when `ranges` and the request asks
+/// for `bytes=-<n>`, else the whole of it as a `200`.
+fn log_answer(request: &RecordedRequest, body: Vec<u8>, ranges: bool) -> Answer {
+    let suffix = request
+        .header("range")
+        .and_then(|range| range.strip_prefix("bytes=-"))
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|_| ranges);
+    let Some(n) = suffix.filter(|n| *n > 0 && !body.is_empty()) else {
+        return Answer {
+            status: "200 OK",
+            headers: Vec::new(),
+            body,
+            streamed: false,
+        };
+    };
+    let total = body.len();
+    let first = total.saturating_sub(n);
+    Answer {
+        status: "206 Partial Content",
+        headers: vec![(
+            "Content-Range".to_owned(),
+            format!("bytes {first}-{}/{total}", total - 1),
+        )],
+        body: body[first..].to_vec(),
+        streamed: false,
+    }
 }

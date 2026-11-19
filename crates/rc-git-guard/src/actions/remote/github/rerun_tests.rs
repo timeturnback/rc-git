@@ -50,7 +50,8 @@ fn standard_checks() -> Vec<Value> {
 }
 
 /// The read of pull request 7 on `server`: `open`, then `moved` once `behaviour` says. No
-/// mutation is scripted on it.
+/// mutation is scripted on it. Every workflow run `open`'s checks name reads as a run of [`HEAD`],
+/// so it matches the stamp unless a test scripts its read otherwise.
 fn script_read(server: &GitHubServer, open: &Value, moved: &Value, behaviour: MergeBehaviour) {
     let target = target(&host_of(server));
     server.script_merge(MergeScript {
@@ -62,6 +63,18 @@ fn script_read(server: &GitHubServer, open: &Value, moved: &Value, behaviour: Me
         reply: String::new(),
         behaviour,
     });
+    let contexts = &open["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+        ["contexts"]["nodes"];
+    for check in contexts.as_array().into_iter().flatten() {
+        if let Some(run) = check["checkSuite"]["workflowRun"]["databaseId"].as_u64() {
+            script_run(server, run, &json!({ "id": run, "head_sha": HEAD }));
+        }
+    }
+}
+
+/// GitHub's read of workflow run `run` answers `body`.
+fn script_run(server: &GitHubServer, run: u64, body: &Value) {
+    server.script_workflow_run(REPOSITORY, run, "200 OK", &body.to_string());
 }
 
 /// The standard pull request on `server`, with runs 41 and 42 re-run as asked.
@@ -539,6 +552,90 @@ fn a_run_github_does_not_know_is_refused_as_not_found() {
         "{report:?}"
     );
     assert_eq!(report.runs[1].outcome, RunOutcome::Requested);
+}
+
+/// GitHub's own read of each run decides whether it is sent: a run of another commit, one GitHub
+/// names with another id, one whose read lacks the fields or fails, gets no request at all; a run
+/// that matches gets exactly one.
+#[test]
+fn an_unmatched_run_gets_no_rerun_request_and_a_matched_run_exactly_one() {
+    for (unmatched, why) in [
+        (
+            Some(json!({ "id": 41, "head_sha": MOVED })),
+            "ran on commit 89abcde",
+        ),
+        (
+            Some(json!({ "id": 7, "head_sha": HEAD })),
+            "answered for run 7",
+        ),
+        (Some(json!({ "id": 41 })), "lacks its id or head commit"),
+        (
+            Some(json!({ "id": 41, "head_sha": "0123" })),
+            "lacks its id or head commit",
+        ),
+        (None, "HTTP 404"),
+    ] {
+        let server = server();
+        standard(&server);
+        match &unmatched {
+            Some(body) => script_run(&server, 41, body),
+            None => server.script_workflow_run(REPOSITORY, 41, "404 Not Found", "{}"),
+        }
+        let report = Rerun::on(&server).confirmed().unwrap();
+        assert!(
+            matches!(&report.runs[0].outcome, RunOutcome::NotMatched { reason } if reason.contains(why)),
+            "{why}: {report:?}"
+        );
+        assert_eq!(report.runs[1].outcome, RunOutcome::Requested, "{why}");
+        assert_eq!(server.rerun_requests(REPOSITORY, 41), 0, "{why}");
+        assert_eq!(server.rerun_requests(REPOSITORY, 42), 1, "{why}");
+        assert_eq!(
+            (
+                server.run_reads(REPOSITORY, 41),
+                server.run_reads(REPOSITORY, 42)
+            ),
+            (1, 1),
+            "{why}"
+        );
+        for request in server.recorded() {
+            if request.target.contains("/actions/runs/") && request.method == "GET" {
+                assert_eq!(
+                    request.header("authorization"),
+                    Some(format!("Bearer {TOKEN}").as_str())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn when_no_run_matches_nothing_is_sent() {
+    let server = server();
+    standard(&server);
+    for run in [41, 42] {
+        script_run(&server, run, &json!({ "id": run, "head_sha": MOVED }));
+    }
+    let rerun = Rerun::on(&server);
+    let plan = rerun.plan().unwrap();
+    let sends = std::sync::atomic::AtomicUsize::new(0);
+    let on_send = || {
+        sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    };
+    let request = RerunRequest {
+        who: rerun.who(),
+        answer: Some(&plan.decision),
+        on_send: &on_send,
+    };
+    let report = rerun_failed_jobs(&Policy::default(), request, &Cancel::new()).unwrap();
+    assert!(
+        report
+            .runs
+            .iter()
+            .all(|run| matches!(run.outcome, RunOutcome::NotMatched { .. })),
+        "{report:?}"
+    );
+    assert_eq!(server.mutation_requests(), 0);
+    assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[test]

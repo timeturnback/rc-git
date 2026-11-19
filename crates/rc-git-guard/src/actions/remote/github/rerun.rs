@@ -15,12 +15,22 @@
 //! The sequence, inside [`rerun_failed_jobs`]: a fresh read compared with the stamp, the
 //! blocker ([`rerun_blocker`]: an open pull request with at least one failed run), the policy's
 //! decision checked against the answered one (the run list and its check names are part of it,
-//! so a check that moved since the challenge refuses), then one request per run in order. Each
-//! is sent at most once; the outcome is per run ([`RunOutcome`]). After a run GitHub refused
-//! with a plain `4xx`, the next run is still sent; after a cancel, a lost answer, a server
-//! error, a refused token or a spent rate limit, no further run is sent and each left is
-//! reported as not sent. An answer of `201 Created` is the only one read as requested; no read
-//! settles anything, since nothing a read shows proves a re-run was asked for.
+//! so a check that moved since the challenge refuses), then each run matched, then one request
+//! per matched run in order. Each is sent at most once; the outcome is per run ([`RunOutcome`]).
+//!
+//! **Matching.** GitHub does not say that a check run's `checkSuite.workflowRun.databaseId` is
+//! the REST `run_id`, and a wrong id could name another run of the same repository. So after the
+//! confirmation and before the first re-run leaves, each run is read from the REST API (`GET
+//! /repos/{owner}/{repo}/actions/runs/{run_id}`, "Get a workflow run") and re-run only when its
+//! `id` is the run's and its `head_sha` the confirmed head commit. A run that does not match, or
+//! whose read fails, is skipped, never sent, and reported [`RunOutcome::NotMatched`]; the matched
+//! runs still go, each once (the outbox only moves forward, so a skipped run can never leave
+//! later). A cancel during the reads sends nothing.
+//!
+//! After a run GitHub refused with a plain `4xx`, the next run is still sent; after a cancel, a
+//! lost answer, a server error, a refused token or a spent rate limit, no further run is sent and
+//! each left is reported as not sent. An answer of `201 Created` is the only one read as
+//! requested; no read settles anything, since nothing a read shows proves a re-run was asked for.
 
 use std::collections::BTreeMap;
 
@@ -323,8 +333,8 @@ pub struct RerunRequest<'a> {
     /// The decision the challenge showed, as [`plan_rerun_failed_jobs`] handed it out; `None`
     /// when the user did not confirm, which sends nothing.
     pub answer: Option<&'a Decision>,
-    /// Called once, just before the first request leaves, after the last point a cancel stops
-    /// all of them.
+    /// Called once, after the runs are matched and just before the first request leaves, after
+    /// the last point a cancel stops all of them; not at all when no run matched.
     pub on_send: &'a (dyn Fn() + Sync),
 }
 
@@ -358,6 +368,13 @@ pub enum RunOutcome {
     /// stopped the rest.
     NotSent {
         /// Why.
+        reason: String,
+    },
+    /// The run could not be matched to the pull request's head commit, so its request was never
+    /// sent: GitHub's read of it names another commit or another run, lacks those fields, or
+    /// failed.
+    NotMatched {
+        /// What did not match, in rc-git's words, or why the read failed.
         reason: String,
     },
 }
@@ -405,12 +422,14 @@ fn build(who: &ActionTarget<'_>, detail: &PullRequestDetail) -> Result<Action, A
 }
 
 /// Re-runs the failed jobs `request` names, in the module's sequence: a fresh read compared with
-/// the stamp, the blocker, the policy's own decision checked against the answered one, then one
-/// request per run, each once, in order.
+/// the stamp, the blocker, the policy's own decision checked against the answered one, each run
+/// read and matched to the confirmed head, then one request per matched run, each once, in order.
 ///
 /// # Errors
-/// An [`ActionRefusal`] whenever nothing was sent, the first request failing to leave included;
-/// once a request may have left, the answer is a [`RerunReport`], never an error.
+/// An [`ActionRefusal`] whenever nothing was sent, a cancel during the run reads and the first
+/// request failing to leave included; once a request may have left, or once the reads matched
+/// no run (each reported [`RunOutcome::NotMatched`]), the answer is a [`RerunReport`], never an
+/// error.
 pub fn rerun_failed_jobs(
     policy: &Policy,
     request: RerunRequest<'_>,
@@ -433,44 +452,101 @@ pub fn rerun_failed_jobs(
         });
     };
     let runs: Vec<RunId> = rerun.runs().iter().map(|run| run.id).collect();
-    (request.on_send)();
+    let session = Session::new(who.host, who.token);
+    let cancelled = || ActionRefusal::Cancelled {
+        action,
+        pull_request: pull_request.clone(),
+    };
+    let matched =
+        match_runs(&session, who.target, rerun.head_oid(), &runs, cancel).ok_or_else(cancelled)?;
+    if matched.iter().any(Result::is_ok) {
+        (request.on_send)();
+    }
     let not_sent = |source| match source {
-        GitHubError::Cancelled { .. } => ActionRefusal::Cancelled {
-            action,
-            pull_request: pull_request.clone(),
-        },
+        GitHubError::Cancelled { .. } => cancelled(),
         source => ActionRefusal::NotSent {
             action,
             pull_request: pull_request.clone(),
             source,
         },
     };
-    let mut outbox = Session::new(who.host, who.token)
-        .mutate(proof)
-        .map_err(not_sent)?;
+    let mut outbox = session.mutate(proof).map_err(not_sent)?;
     let mut reports = Vec::new();
     let mut stopped: Option<String> = None;
-    for run in runs {
+    let mut sent_any = false;
+    for (run, matched) in runs.into_iter().zip(matched) {
+        if let Err(reason) = matched {
+            outbox.skip_next();
+            let outcome = RunOutcome::NotMatched { reason };
+            reports.push(RunReport { run, outcome });
+            continue;
+        }
         if let Some(why) = &stopped {
-            reports.push(RunReport {
-                run,
-                outcome: RunOutcome::NotSent {
-                    reason: why.clone(),
-                },
-            });
+            let outcome = RunOutcome::NotSent {
+                reason: why.clone(),
+            };
+            reports.push(RunReport { run, outcome });
             continue;
         }
         let sent = outbox.send_next(cancel);
-        if reports.is_empty()
-            && let Some(Mutated::NotSent(source)) = sent
-        {
+        if !sent_any && let Some(Mutated::NotSent(source)) = sent {
             return Err(not_sent(source));
         }
+        sent_any = true;
         let (outcome, stops) = run_outcome(sent);
         stopped = stops.then(|| format!("not sent after run {run}'s answer"));
         reports.push(RunReport { run, outcome });
     }
     Ok(RerunReport { runs: reports })
+}
+
+/// Each of `runs` read from GitHub now, in order: `Ok` when GitHub names it with its own id and
+/// `head` as its `head_sha`, else why not (another commit, another run, missing fields, a failed
+/// read). `None` when the caller's cancel stopped a read: nothing may be sent then.
+fn match_runs(
+    session: &Session<'_>,
+    target: &RepositoryTarget,
+    head: rc_git_core::Oid,
+    runs: &[RunId],
+    cancel: &Cancel,
+) -> Option<Vec<Result<(), String>>> {
+    const OP: &str = "read the workflow run";
+    let mut matched = Vec::new();
+    for run in runs {
+        let id = run.to_string();
+        let reply = match session.get_repo(OP, target, &["actions", "runs", &id], cancel) {
+            Ok(reply) => reply,
+            Err(GitHubError::Cancelled { .. }) => return None,
+            Err(error) => {
+                matched.push(Err(format!("reading it failed: {error}")));
+                continue;
+            }
+        };
+        let value = &reply.value;
+        let named = value.get("id").and_then(Value::as_u64);
+        let sha = value.get("head_sha").and_then(Value::as_str);
+        let commit = sha.and_then(|hex| rc_git_core::Oid::from_hex(hex).ok());
+        matched.push(match (named, commit) {
+            (Some(named), Some(commit)) if named == run.get() && commit == head => Ok(()),
+            (Some(named), Some(_)) if named != run.get() => {
+                Err(format!("GitHub answered for run {named}, not run {run}"))
+            }
+            (Some(_), Some(commit)) => Err(format!(
+                "run {run} ran on commit {}, not the head commit {}",
+                short(commit),
+                short(head)
+            )),
+            (None, _) | (_, None) => Err(format!(
+                "GitHub's answer for run {run} lacks its id or head commit"
+            )),
+        });
+    }
+    Some(matched)
+}
+
+/// The first seven hex digits of `oid`.
+fn short(oid: rc_git_core::Oid) -> String {
+    oid.to_hex().chars().take(7).collect()
 }
 
 /// How one run's request ended, and whether the runs after it must not be sent.

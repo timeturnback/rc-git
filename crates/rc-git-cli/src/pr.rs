@@ -28,6 +28,11 @@
 //! merge: `--head` and `--base` are the stamp, `--yes` the confirm, the challenge goes to stderr
 //! before anything leaves, and once a request has left a second Ctrl+C no longer ends the
 //! command. A re-run sends one request per failed run and prints how each ended.
+//!
+//! `pr logs` prints one GitHub Actions job's log (`--check <name>` or `--job <id>`): the guard
+//! matches the job to the head just read (or to `--head`, which must still be the head) before
+//! anything is downloaded, and stdout carries the neutralized log alone, with what was left out
+//! on stderr. Neither the token nor the download address is ever printed.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -46,20 +51,23 @@ use rc_git_kit::pull_requests::auto_merge::{AutoMergeFlow, AutoMergeIntent};
 use rc_git_kit::pull_requests::changes::{ChangesRead, ComparedWith, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
-    auto_merge_note, check_label, merge_method_word, merge_note, merge_stop_message,
-    mergeable_label, problem, rerun_note, review_label, state_label, stop_message,
+    auto_merge_note, check_label, log_cut_notes, log_stop_note, merge_method_word, merge_note,
+    merge_stop_message, mergeable_label, problem, rerun_note, review_label, state_label,
+    stop_message,
 };
 use rc_git_kit::pull_requests::flow::{ActionAsk, ActionStop, Ended, Phase};
 use rc_git_kit::pull_requests::link::{Linked, RepositoryLink};
 use rc_git_kit::pull_requests::live::LivePullRequests;
+use rc_git_kit::pull_requests::logs::{LogAsk, LogCheck, LogStop, log_check_of};
 use rc_git_kit::pull_requests::merge::{
     MergeAsk, MergeEnd, MergeFlow, MergePhase, MergeStop, PlanAsk,
 };
 use rc_git_kit::pull_requests::rerun::{RerunFlow, RerunIntent};
 use rc_git_kit::pull_requests::{
-    ActionRefusal, AutoMergeChange, AutoMergeOutcome, Bypassed, Decision, MergeKind, MergeMethod,
-    MergePlan, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService, PullRequestStamp,
-    PullRequestState, PullRequestSummary, ReadError, ReviewDecision, RunOutcome, ServerLink,
+    ActionRefusal, AutoMergeChange, AutoMergeOutcome, Bypassed, Check, Decision, JobId, MergeKind,
+    MergeMethod, MergePlan, MergeRefusal, PageCursor, PullRequestDetail, PullRequestService,
+    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, ReviewDecision, RunOutcome,
+    ServerLink,
 };
 
 use crate::{
@@ -107,7 +115,7 @@ fn failure(error: &ReadError) -> anyhow::Error {
 pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<ExitCode> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(UsageError(
-            "pr needs list, view, checks, diff, merge, auto-merge or rerun".to_owned(),
+            "pr needs list, view, checks, logs, diff, merge, auto-merge or rerun".to_owned(),
         )
         .into());
     };
@@ -116,12 +124,14 @@ pub(crate) fn run(args: &[String], time: bool, out: &mut Vec<u8>) -> Result<Exit
         "list" => list(rest, out),
         "view" => view(rest, out),
         "checks" => checks(rest, out),
+        "logs" => logs(rest, out),
         "diff" => diff(rest, out),
         "merge" => merge(rest, out),
         "auto-merge" => auto_merge(rest, out),
         "rerun" => rerun(rest, out),
         other => Err(UsageError(format!(
-            "pr has no '{other}'; use list, view, checks, diff, merge, auto-merge or rerun"
+            "pr has no '{other}'; use list, view, checks, logs, diff, merge, auto-merge or \
+             rerun"
         ))
         .into()),
     };
@@ -314,6 +324,139 @@ fn checks(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     if unread > 0 {
         writeln!(out, "unread\t{unread}")?;
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `pr logs`'s valued flags.
+const LOGS_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--check", "--job", "--head"];
+
+/// Which check `pr logs` reads: by name, or by job id.
+enum LogPick<'a> {
+    Name(&'a str),
+    Job(JobId),
+}
+
+/// The check `--check` or `--job` names: exactly one of them.
+fn log_pick<'a>(args: &'a VerbArgs<'_>) -> Result<LogPick<'a>> {
+    match (args.value(&["--check"]), args.value(&["--job"])) {
+        (Some(name), None) => Ok(LogPick::Name(name)),
+        (None, Some(id)) => id
+            .parse::<u64>()
+            .ok()
+            .and_then(JobId::new)
+            .map(LogPick::Job)
+            .ok_or_else(|| UsageError(format!("--job '{id}' is not a job id")).into()),
+        (Some(_), Some(_)) | (None, None) => Err(UsageError(
+            "pr logs needs exactly one of --check <name> or --job <id>".to_owned(),
+        )
+        .into()),
+    }
+}
+
+/// The check of `detail` that `pick` names, when kit offers its log: one GitHub Actions job of
+/// the head, completed.
+fn log_target(detail: &PullRequestDetail, pick: &LogPick<'_>) -> Result<LogCheck> {
+    let number = detail.summary.number;
+    let named: Vec<&Check> = detail
+        .checks
+        .checks
+        .iter()
+        .filter(|check| match pick {
+            LogPick::Name(name) => check.name == *name && check.actions.is_some(),
+            LogPick::Job(job) => check.actions.is_some_and(|ids| ids.job == job.get()),
+        })
+        .collect();
+    let [check] = named.as_slice() else {
+        let jobs: Vec<String> = named
+            .iter()
+            .filter_map(|check| check.actions.map(|ids| ids.job.to_string()))
+            .collect();
+        let what = match pick {
+            LogPick::Name(name) => format!("named '{name}'"),
+            LogPick::Job(job) => format!("with job id {job}"),
+        };
+        if jobs.is_empty() {
+            bail!("#{number}'s head has no GitHub Actions check {what}; pr checks lists them");
+        }
+        bail!(
+            "#{number}'s head has {} GitHub Actions checks {what} (jobs {}); pass --job",
+            jobs.len(),
+            jobs.join(", ")
+        );
+    };
+    log_check_of(detail, check).ok_or_else(|| {
+        anyhow!(
+            "check '{}' of #{number} has not finished, or GitHub named it with ids rc-git does not \
+             read; its log is not offered",
+            check.name
+        )
+    })
+}
+
+/// A log read that showed no log, with the exit code it ends with: 11 for a job rc-git would not
+/// read, as the other verbs' refusals.
+fn log_stopped(stop: &LogStop, check: &LogCheck) -> anyhow::Error {
+    let code = match stop {
+        LogStop::NotMatched(_) | LogStop::NotFinished => EXIT_MERGE_REFUSED,
+        LogStop::Read(ReadError::SignedOut { .. }) => EXIT_AUTH,
+        LogStop::Read(ReadError::Cancelled) => EXIT_INTERRUPTED,
+        LogStop::Read(ReadError::RateLimited { .. } | ReadError::Failed(_)) => EXIT_ERROR,
+    };
+    ReadFailure {
+        message: log_stop_note(stop, &check.name, rc_git_kit::github::unix_now()),
+        code,
+    }
+    .into()
+}
+
+/// Prints the log of one GitHub Actions job of pull request `<n>`'s head, read through the guard
+/// as the app reads it: stdout carries the neutralized log alone, one line per line, and stderr
+/// one `truncated<TAB>sentence` record per thing left out.
+fn logs(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
+    use std::io::Write as _;
+    let args = split_args("pr logs", raw, &LOGS_VALUED, &[])?;
+    args.expect(1, 2, "<number> [repo]")?;
+    let number = number(&args)?;
+    let pick = log_pick(&args)?;
+    let pinned = match args.value(&["--head"]) {
+        Some(text) => Some(
+            rc_git_core::Oid::from_hex(text)
+                .map_err(|_| UsageError(format!("--head '{text}' is not a full commit id")))?,
+        ),
+        None => None,
+    };
+    let (service, linked) = linked(&args, 1)?;
+    let cancel = crate::interruptible_cancel()?;
+    let detail = service
+        .detail(&linked, number, &cancel)
+        .map_err(|error| failure(&error))?;
+    let head = detail.summary.head_oid;
+    if let Some(pinned) = pinned.filter(|pinned| *pinned != head) {
+        return Err(ReadFailure {
+            message: format!(
+                "#{number}'s head is now {head}, not --head {pinned}; no log was read"
+            ),
+            code: EXIT_MERGE_REFUSED,
+        }
+        .into());
+    }
+    let check = log_target(&detail, &pick)?;
+    let ask = LogAsk {
+        head,
+        check: &check,
+        on_matched: &|| {},
+    };
+    let log = service
+        .read_log(&linked, ask, &cancel)
+        .map_err(|stop| log_stopped(&stop, &check))?;
+    if !log.text.is_empty() {
+        writeln!(out, "{}", log.text)?;
+    }
+    let mut notes = Vec::new();
+    for note in log_cut_notes(log.cut, log.lines_left_out, log.lines_shortened) {
+        writeln!(notes, "truncated\t{note}")?;
+    }
+    std::io::stderr().lock().write_all(&notes)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -982,6 +1125,10 @@ fn rerun_report(out: &mut Vec<u8>, flow: &RerunFlow) -> Result<ExitCode> {
             RunOutcome::NotSent { reason } => {
                 refused = true;
                 ("not-sent", reason.as_str())
+            }
+            RunOutcome::NotMatched { reason } => {
+                refused = true;
+                ("not-matched", reason.as_str())
             }
         };
         writeln!(out, "rerun\t{}\t{word}\t{why}", run.run)?;

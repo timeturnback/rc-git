@@ -15,6 +15,11 @@
 //! the only way to send, comes up through the window ([`crate::window::RepoWindow`]), and the
 //! note under the controls is kit's. A tab runs one action at a time.
 //!
+//! A check kit offers it for ([`PullRequestsModel::log_check`]) has a View Log button. Its log
+//! shows in place of the description, in the file viewer as plain text with no link (nothing
+//! subscribes to the viewer's link events), under kit's note while it reads and kit's words for
+//! what was left out; Stop and Close Log drop it.
+//!
 //! [`LinkPolicy::WebOnly`]: crate::files::markdown::LinkPolicy::WebOnly
 
 use std::sync::Arc;
@@ -29,9 +34,10 @@ use rc_git_kit::pull_requests::auto_merge::AutoMergeControl;
 use rc_git_kit::pull_requests::body::body_document;
 use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
-    ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, DISABLE_AUTO_MERGE, ENABLE_AUTO_MERGE, MERGE,
-    MERGE_CANCEL, MERGE_DISMISS, RERUN_FAILED_JOBS, auto_merge_on_line, flow_note,
-    flow_note_alarms, merge_method_label, rerun_line,
+    ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, CLOSE_LOG, DISABLE_AUTO_MERGE,
+    ENABLE_AUTO_MERGE, MERGE, MERGE_CANCEL, MERGE_DISMISS, RERUN_FAILED_JOBS, STOP_LOG, VIEW_LOG,
+    auto_merge_on_line, flow_note, flow_note_alarms, log_cut_notes, log_note, log_title,
+    merge_method_label, rerun_line,
 };
 use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
@@ -40,15 +46,17 @@ use rc_git_kit::pull_requests::copy::{
 };
 use rc_git_kit::pull_requests::flow::TabFlow;
 use rc_git_kit::pull_requests::link::RepositoryLink;
+use rc_git_kit::pull_requests::logs::{LogPhase, LogState, ShownLog};
 use rc_git_kit::pull_requests::merge::{AdminMergeButton, MergeButton};
 use rc_git_kit::pull_requests::model::PullRequestsModel;
 use rc_git_kit::pull_requests::rerun::RerunControl;
 use rc_git_kit::pull_requests::state::DetailState;
-use rc_git_kit::pull_requests::{Check, MergeMethod, PullRequestDetail, ServerLink};
+use rc_git_kit::pull_requests::{Check, JobId, MergeMethod, PullRequestDetail, ServerLink};
 
 use super::changes::{self, ChangesView};
 use super::check_icon;
 use crate::files::markdown::MarkdownPreview;
+use crate::files::viewer::FileViewer;
 use crate::icons::{Glyph, icon};
 use crate::style;
 
@@ -71,6 +79,8 @@ pub struct PullRequestPage {
     now: fn() -> u64,
     /// The merge method picked for a tab, until another is.
     merge_method: Option<(u64, MergeMethod)>,
+    /// The log on show and its viewer, rebuilt only when kit hands another log.
+    log_viewer: Option<(Arc<ShownLog>, Entity<FileViewer>)>,
 }
 
 impl PullRequestPage {
@@ -83,6 +93,7 @@ impl PullRequestPage {
                 .and_then(DetailState::detail)
                 .cloned();
             this.sync_preview(detail.as_ref(), cx);
+            this.sync_log(cx);
             this.follow_changes(cx);
             cx.notify();
         })
@@ -94,7 +105,102 @@ impl PullRequestPage {
             view: PageView::Overview,
             now,
             merge_method: None,
+            log_viewer: None,
         }
+    }
+
+    /// The viewer of the selected tab's log, kept while kit hands the same log.
+    fn sync_log(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let shown = model
+            .selected_tab()
+            .and_then(|tab| model.tab_log(tab.number()))
+            .and_then(|log| match log.phase() {
+                LogPhase::Shown(shown) => Some(Arc::clone(shown)),
+                LogPhase::Matching
+                | LogPhase::Downloading
+                | LogPhase::NotMatched(_)
+                | LogPhase::NotFinished
+                | LogPhase::Failed(_) => None,
+            });
+        let Some(shown) = shown else {
+            self.log_viewer = None;
+            return;
+        };
+        if self
+            .log_viewer
+            .as_ref()
+            .is_some_and(|(on_show, _)| Arc::ptr_eq(on_show, &shown))
+        {
+            return;
+        }
+        let document = Arc::clone(&shown.document);
+        let viewer = cx.new(|cx| FileViewer::new(document, cx));
+        self.log_viewer = Some((shown, viewer));
+    }
+
+    /// The log viewer on show, for tests.
+    #[cfg(test)]
+    pub(crate) fn log_viewer(&self) -> Option<&Entity<FileViewer>> {
+        self.log_viewer.as_ref().map(|(_, viewer)| viewer)
+    }
+
+    /// Tab `number`'s log panel: kit's title, note and words for what was left out, Stop while
+    /// it reads or Close Log after, and the log in the viewer once it shows.
+    fn log_panel(&self, number: u64, log: &LogState, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = cx.theme();
+        let (muted, red, border) = (theme.muted_foreground, theme.red, theme.border);
+        let label = if log.is_running() {
+            STOP_LOG
+        } else {
+            CLOSE_LOG
+        };
+        let close = Button::new("pull-request-log-close")
+            .ghost()
+            .label(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.model
+                    .update(cx, |model, cx| model.close_log(number, cx));
+            }));
+        let heading = h_flex()
+            .gap(style::ROW_GAP)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(style::TEXT_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(SharedString::from(log_title(log))),
+            )
+            .child(close);
+        let mut words = v_flex()
+            .gap(style::DETAIL_LINE_GAP)
+            .px(style::MARGIN)
+            .py(style::BAR_PADDING)
+            .child(heading);
+        if let Some(note) = log_note(log, (self.now)()) {
+            let alarm = match log.phase() {
+                LogPhase::NotMatched(_) | LogPhase::Failed(_) => true,
+                LogPhase::Matching
+                | LogPhase::Downloading
+                | LogPhase::Shown(_)
+                | LogPhase::NotFinished => false,
+            };
+            words = words.child(Self::line(note, if alarm { red } else { muted }));
+        }
+        let mut panel = v_flex()
+            .flex_1()
+            .min_h_0()
+            .border_t(style::HAIRLINE)
+            .border_color(border);
+        let Some((shown, viewer)) = &self.log_viewer else {
+            return panel.child(words);
+        };
+        for note in log_cut_notes(shown.cut, shown.lines_left_out, shown.lines_shortened) {
+            words = words.child(Self::line(note, muted));
+        }
+        panel = panel.child(words);
+        panel.child(div().flex_1().min_h_0().child(viewer.clone()))
     }
 
     /// The method Merge uses for tab `number`: the one picked, while the repository still
@@ -529,7 +635,20 @@ impl PullRequestPage {
         column.child(merge)
     }
 
-    fn check_row(index: usize, check: &Check, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn check_row(
+        index: usize,
+        check: &Check,
+        log: Option<JobId>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let view_log = log.map(|job| {
+            Button::new(("pull-request-check-log", index))
+                .ghost()
+                .label(VIEW_LOG)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.model.update(cx, |model, cx| model.view_log(job, cx));
+                }))
+        });
         let theme = cx.theme();
         let state = check_state(&check.progress);
         let mut name = check.name.clone();
@@ -561,6 +680,7 @@ impl PullRequestPage {
                     )
                     .child(Self::line(detail, theme.muted_foreground)),
             )
+            .when_some(view_log, ParentElement::child)
             .when_some(details, |row, (label, url)| {
                 row.child(
                     Button::new(("pull-request-check-details", index))
@@ -572,15 +692,25 @@ impl PullRequestPage {
             })
     }
 
-    fn checks(detail: &PullRequestDetail, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme();
+    fn checks(
+        &self,
+        detail: &PullRequestDetail,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let number = detail.summary.number;
         let mut rows = v_flex()
             .id("pull-request-checks")
             .max_h(style::PULL_REQUEST_CHECKS_MAX_HEIGHT)
             .overflow_y_scroll();
         for (index, check) in ordered(&detail.checks.checks).into_iter().enumerate() {
-            rows = rows.child(Self::check_row(index, check, cx));
+            let log = self
+                .model
+                .read(cx)
+                .log_check(number, check)
+                .map(|offered| offered.job);
+            rows = rows.child(Self::check_row(index, check, log, cx));
         }
+        let theme = cx.theme();
         v_flex()
             .px(style::MARGIN)
             .py(style::BAR_PADDING)
@@ -625,7 +755,11 @@ impl Render for PullRequestPage {
             );
         }
         if let Some(detail) = tab.detail() {
-            page = page.child(Self::checks(detail, cx));
+            page = page.child(self.checks(detail, cx));
+        }
+        let log = self.model.read(cx).tab_log(tab.number()).cloned();
+        if let Some(log) = log {
+            return page.child(self.log_panel(tab.number(), &log, cx));
         }
         let description = v_flex()
             .flex_1()

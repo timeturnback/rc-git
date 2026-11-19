@@ -710,6 +710,12 @@ fn the_live_service_reruns_once_through_the_guard() {
         panic!("linked");
     };
     server.script_graphql(&detail_request_body(&linked.target, 7, false), &pull());
+    server.script_workflow_run(
+        "octo/rc-git",
+        41,
+        "200 OK",
+        &format!(r#"{{"id":41,"head_sha":"{HEAD}"}}"#),
+    );
     server.script_rerun("octo/rc-git", 41, RerunBehaviour::Rerun);
     let stamp = stamp();
     let plan = service.plan_rerun(&linked, &stamp, &Cancel::new()).unwrap();

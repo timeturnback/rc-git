@@ -10,6 +10,9 @@
 //! GitHub says the account may), turning auto-merge on or off ([`auto_merge`]), or re-running the
 //! failed jobs of the head's GitHub Actions runs ([`rerun`]); a tab runs one at a time.
 //!
+//! A tab also reads a GitHub Actions check's job log on the user's click ([`logs`]): one read at a
+//! time per tab, matched by the guard to the head on screen first, held in memory only.
+//!
 //! The network reads are the guard's (`rc_git_guard::actions::github`), and so are the writes:
 //! the fetch of a pull request's head into `refs/rc-git/pr/<n>/head`, and the merge, the
 //! auto-merge change and the re-run on GitHub, whose challenges the guard words from its own
@@ -27,6 +30,7 @@ pub mod copy;
 pub mod flow;
 pub mod link;
 pub mod live;
+pub mod logs;
 pub mod merge;
 pub mod model;
 pub mod polling;
@@ -46,10 +50,14 @@ pub use rc_git_guard::actions::github::{
     Settled, StatusState, ViewerAbilities, admin_merge_blocker, disable_auto_merge_blocker,
     enable_auto_merge_blocker, failed_runs, merge_blocker, multi_line, rerun_blocker, single_line,
 };
+pub use rc_git_guard::actions::github::{
+    JobId, JobLog, LOG_BYTES, LOG_LINE_CHARS, LOG_LINES, LogCut,
+};
 
 use changes::{ChangesRead, FetchProblem, HeadFetched};
 use flow::{ActionAsk, ActionStop};
 use link::{Linked, RepositoryLink};
+use logs::{LogAsk, LogStop};
 use merge::{MergeAsk, MergeStop, PlanAsk};
 use rc_git_core::{BlobDiff, Oid, TreeChange};
 
@@ -102,7 +110,9 @@ impl ReadError {
             | GitHubError::DeviceCodeExpired { .. }
             | GitHubError::AccessDenied { .. }
             | GitHubError::OAuth { .. }
-            | GitHubError::RefreshRejected { .. } => Self::Failed(error.to_string()),
+            | GitHubError::RefreshRejected { .. }
+            | GitHubError::LogDownloadRefused { .. }
+            | GitHubError::LogDownload { .. } => Self::Failed(error.to_string()),
         }
     }
 }
@@ -259,4 +269,17 @@ pub trait PullRequestService: Send + Sync {
         ask: ActionAsk<'_>,
         cancel: &Cancel,
     ) -> Result<RerunReport, ActionStop>;
+
+    /// The log of the GitHub Actions job `ask` names, through the guard: matched to `ask.head`
+    /// first, then downloaded once, capped and neutralized. A read: only when the user asked,
+    /// one at a time per tab.
+    ///
+    /// # Errors
+    /// [`LogStop`] for a job that does not match or has not finished, and every failure.
+    fn read_log(
+        &self,
+        linked: &Linked,
+        ask: LogAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<JobLog, LogStop>;
 }

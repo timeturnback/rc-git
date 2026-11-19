@@ -613,3 +613,75 @@ fn a_changed_file_s_name_reaches_the_diff_pane_only_neutralized() {
         );
     }
 }
+
+#[gpui::test]
+fn a_check_s_log_shows_in_the_text_view_only_from_its_click(cx: &mut TestAppContext) {
+    use rc_git_kit::fake::failing_detail;
+    use rc_git_kit::pull_requests::{JobId, JobLog, LogCut, RunId};
+
+    let detail = failing_detail(
+        pull_request_detail(pull_request(7, "Ship", oid(7)), "", CheckList::default()),
+        &[41],
+    );
+    let fake = FakePullRequests::new();
+    fake.state()
+        .pages
+        .insert(None, Ok(page(vec![detail.summary.clone()], None)));
+    fake.state().details.insert(7, Ok(detail.clone()));
+    let job = JobId::new(1041).unwrap();
+    fake.state().log = Ok(JobLog {
+        job,
+        run: RunId::new(41).unwrap(),
+        head: oid(7),
+        name: "job 0".to_owned(),
+        text: "error: https://evil.example/x \\u{202e}\nexit 1".to_owned(),
+        lines: 2,
+        cut: LogCut::Whole,
+        lines_left_out: 0,
+        lines_shortened: 0,
+    });
+    let (_harness, window) = shell(cx, &fake);
+    listed(cx, &window);
+    window.update(cx, |window, cx| window.open_pull_request(7, cx));
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            let model = window.read(cx).pull_requests().read(cx);
+            model.log_check(7, &detail.checks.checks[0]).is_some()
+        })
+    });
+    assert!(
+        fake.state().log_calls.is_empty(),
+        "showing the page reads no log"
+    );
+    let model = cx.read(|cx| window.read(cx).pull_requests().clone());
+    model.update(cx, |model, cx| model.view_log(job, cx));
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            window
+                .read(cx)
+                .pull_request_page()
+                .read(cx)
+                .log_viewer()
+                .is_some()
+        })
+    });
+    let text = cx.read(|cx| {
+        let page = window.read(cx).pull_request_page().read(cx);
+        let viewer = page.log_viewer().cloned().unwrap();
+        viewer.read(cx).document().text.clone()
+    });
+    assert_eq!(text, "error: https://evil.example/x \\u{202e}\nexit 1");
+    assert_eq!(fake.state().log_calls.len(), 1);
+    assert_eq!(cx.opened_url(), None, "a log opens nothing");
+    model.update(cx, |model, cx| model.close_log(7, cx));
+    wait_until(cx, |cx| {
+        cx.read(|cx| {
+            window
+                .read(cx)
+                .pull_request_page()
+                .read(cx)
+                .log_viewer()
+                .is_none()
+        })
+    });
+}

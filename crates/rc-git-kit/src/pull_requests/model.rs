@@ -24,6 +24,12 @@
 //! shows it, however the numbers match. A tab is one opening of one pull request too
 //! ([`DetailState::opened`]): a read asked for a tab that has since closed, or for the old
 //! link's tab of the same number, is dropped.
+//!
+//! A tab's job log ([`super::logs`]) is read only from [`PullRequestsModel::view_log`], the View
+//! Log click on a check kit offers it for, one at a time per tab: a second click cancels the read
+//! in flight and starts the new one. Its answer is taken only under the generation it was asked
+//! with, so a cancelled or replaced read, one of a tab that closed, or one of an old link is
+//! dropped; a tab read that shows another head drops the log.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -33,6 +39,7 @@ use super::auto_merge::{AutoMergeControl, AutoMergeFlow, AutoMergeIntent, auto_m
 use super::changes::{ChangesLoad, ChangesState, FileLoad};
 use super::flow::{CancelAnswer, Flow, Phase, PlanLoad, SendLoad, Stop, TabAction, TabFlow};
 use super::link::{Linked, RepositoryLink};
+use super::logs::{LogAsk, LogCheck, LogState, ShownLog, log_check};
 use super::merge::{
     AdminMergeButton, MergeButton, MergeFlow, MergeIntent, admin_merge_button, merge_button,
 };
@@ -41,7 +48,7 @@ use super::polling::{
 };
 use super::rerun::{RerunControl, RerunFlow, RerunIntent, rerun_control};
 use super::state::{DetailLoad, DetailState, ListLoad, ListState};
-use super::{AutoMergeChange, Cancel, MergeKind, MergeMethod, PullRequestService};
+use super::{AutoMergeChange, Cancel, Check, JobId, MergeKind, MergeMethod, PullRequestService};
 use crate::blocking::blocking;
 use crate::platform::api_tokens::AccountKey;
 use rc_git_core::Oid;
@@ -83,6 +90,18 @@ impl TabChanges {
     }
 }
 
+/// One tab's job log read and its cancel flag.
+struct TabLog {
+    state: LogState,
+    cancel: Cancel,
+}
+
+impl TabLog {
+    fn stop(&self) {
+        self.cancel.signal();
+    }
+}
+
 /// One guarded action and the link it started under.
 struct LinkedFlow {
     /// The model's link epoch when it started.
@@ -118,6 +137,10 @@ pub struct PullRequestsModel {
     flow_cancels: Vec<(u64, Cancel)>,
     flow_generation: u64,
     merge_log: MergeLog,
+    /// Each tab's job log, at most one per tab.
+    logs: Vec<TabLog>,
+    /// The last generation a log read was given.
+    log_generation: u64,
 }
 
 impl EventEmitter<FlowEvent> for PullRequestsModel {}
@@ -161,6 +184,8 @@ impl PullRequestsModel {
             flow_cancels: Vec::new(),
             flow_generation: 0,
             merge_log: Arc::new(|_| {}),
+            logs: Vec::new(),
+            log_generation: 0,
         }
     }
 
@@ -240,6 +265,9 @@ impl PullRequestsModel {
             changes.stop_fetch();
         }
         self.changes.clear();
+        for log in self.logs.drain(..) {
+            log.stop();
+        }
         let numbers: Vec<u64> = self
             .flows
             .iter()
@@ -397,6 +425,7 @@ impl PullRequestsModel {
             *tab != number
         });
         self.stop_flow(number, cx);
+        self.drop_log(number);
         if self.selected == Some(number) {
             let neighbour = self.tabs.get(index).or_else(|| self.tabs.last());
             self.selected = neighbour.map(DetailState::number);
@@ -474,6 +503,7 @@ impl PullRequestsModel {
         }
         self.follow_flow(load.number, read.as_ref().map(|(stamp, _)| stamp), cx);
         if let Some(read) = read {
+            self.follow_log(load.number, read.0.head_oid);
             self.follow_stamp(load.number, read, cx);
         }
         if self.selected == Some(load.number) {
@@ -1272,6 +1302,144 @@ impl PullRequestsModel {
                 cancel.signal();
             }
             cx.emit(FlowEvent::Withdrawn(number));
+        }
+    }
+
+    /// The log action of `check` on tab `number`, when kit offers it: a current read, a signed-in
+    /// link, and a completed GitHub Actions job ([`log_check`]).
+    #[must_use]
+    pub fn log_check(&self, number: u64, check: &Check) -> Option<LogCheck> {
+        self.linked()?;
+        log_check(self.tab(number)?, check)
+    }
+
+    /// Tab `number`'s job log, once asked for.
+    #[must_use]
+    pub fn tab_log(&self, number: u64) -> Option<&LogState> {
+        self.logs
+            .iter()
+            .find(|log| log.state.number() == number)
+            .map(|log| &log.state)
+    }
+
+    /// Reads the log of job `job` of the selected tab: the user's click on View Log, and the only
+    /// way a log read starts. Nothing unless kit offers the action for that check of the tab's
+    /// current read; a read already running for the tab is cancelled and replaced.
+    pub fn view_log(&mut self, job: JobId, cx: &mut Context<Self>) {
+        let (Some(number), Some(linked)) = (self.selected, self.linked()) else {
+            return;
+        };
+        let Some(tab) = self.tab(number) else {
+            return;
+        };
+        let (Some(stamp), Some(detail)) = (tab.stamp(), tab.detail()) else {
+            return;
+        };
+        let check = detail
+            .checks
+            .checks
+            .iter()
+            .filter_map(|check| log_check(tab, check))
+            .find(|check| check.job == job);
+        let Some(check) = check else {
+            return;
+        };
+        self.drop_log(number);
+        self.log_generation += 1;
+        let state = LogState::begin(self.log_generation, number, stamp.head_oid, check);
+        let cancel = Cancel::new();
+        self.logs.push(TabLog {
+            state: state.clone(),
+            cancel: cancel.clone(),
+        });
+        self.run_log(&state, linked, cancel, cx);
+        cx.notify();
+    }
+
+    fn run_log(
+        &mut self,
+        state: &LogState,
+        linked: Linked,
+        cancel: Cancel,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = state.generation();
+        let (head, check) = (state.head(), state.check().clone());
+        let (matched, on_matched) = crate::oneshot::channel::<()>();
+        let matched = Mutex::new(Some(matched));
+        let service = Arc::clone(&self.service);
+        let read = blocking(cx.background_executor(), move || {
+            let on_matched = move || {
+                let sender = matched
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(sender) = sender {
+                    sender.send(());
+                }
+            };
+            let ask = LogAsk {
+                head,
+                check: &check,
+                on_matched: &on_matched,
+            };
+            service
+                .read_log(&linked, ask, &cancel)
+                .map(|log| Arc::new(ShownLog::new(log)))
+        });
+        cx.spawn(async move |this, cx| {
+            if on_matched.await.is_some() {
+                this.update(cx, |this, cx| {
+                    if let Some(log) = this.log_of_mut(generation) {
+                        log.state.matched(generation);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let answer = read.await;
+            this.update(cx, |this, cx| {
+                if let Some(log) = this.log_of_mut(generation) {
+                    log.state.finish(generation, answer);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The log read of `generation`, while it is still a tab's.
+    fn log_of_mut(&mut self, generation: u64) -> Option<&mut TabLog> {
+        self.logs
+            .iter_mut()
+            .find(|log| log.state.generation() == generation)
+    }
+
+    /// Stops tab `number`'s log read, or closes its log: the Cancel and Close buttons.
+    pub fn close_log(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.drop_log(number);
+        cx.notify();
+    }
+
+    /// Drops tab `number`'s log, stopping its read: a later answer finds no read to land in.
+    fn drop_log(&mut self, number: u64) {
+        self.logs.retain(|log| {
+            if log.state.number() == number {
+                log.stop();
+            }
+            log.state.number() != number
+        });
+    }
+
+    /// Tab `number` read `head`: a log read for another head is dropped.
+    fn follow_log(&mut self, number: u64, head: Oid) {
+        let moved = self.tab_log(number).is_some_and(|log| !log.follows(head));
+        if moved {
+            self.drop_log(number);
         }
     }
 

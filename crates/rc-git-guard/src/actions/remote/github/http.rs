@@ -5,7 +5,13 @@
 //!   `http://` to a loopback host under the dev allowance; curl's protocol list cannot be set
 //!   through the safe `curl` API, so this check is the restriction, and with redirects off the
 //!   request URL is the only one curl ever connects to;
-//! - redirects are never followed, and a 3xx answer is an error;
+//! - redirects are never followed, and a 3xx answer is an error. One call site, the job log's
+//!   ([`send_reading_redirect`], called only by `Session::job_log_location`), receives a 3xx's
+//!   `Location` instead, and follows it by hand at most once, through [`download`];
+//! - [`download`] is the one request to a host other than the account's: a
+//!   [`DownloadRequest`] to a [`LogDownloadUrl`], which has no token field, so it carries no
+//!   `Authorization` header and no GitHub API header, follows no redirect either, and keeps at
+//!   most its cap of the body instead of failing over it;
 //! - peer and host verification stay at curl's defaults (on); `clippy.toml` bans the setters
 //!   that turn them off, so there is no switch;
 //! - `.netrc` is ignored, and nothing is read from the repository: no proxy, header, CA or
@@ -21,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use curl::easy::{Easy2, Handler, List, NetRc, WriteError};
 
+use super::download::LogDownloadUrl;
 use super::host::{ApiUrl, PLAIN_HTTP, PlainHttp};
 use super::secret::ApiToken;
 use super::text::server_text;
@@ -139,6 +146,75 @@ impl Response {
     }
 }
 
+/// The job log's download: one `GET` to the address GitHub's redirect named, with no token. The
+/// type has no token field and its headers are built from `limit` alone ([`download_headers`]),
+/// so no `Authorization` header and no GitHub API header can reach the storage host. Its `Debug`
+/// names the host only.
+#[derive(Debug, Clone)]
+pub(super) struct DownloadRequest {
+    /// What is being done, for messages.
+    pub op: &'static str,
+    pub url: LogDownloadUrl,
+    /// The most body bytes kept: the request asks for the last `limit` bytes, and a host that
+    /// sends the whole body has it cut there.
+    pub limit: usize,
+}
+
+/// A redirect's `Location`, as the host sent it: a secret (a job log's signed address) until
+/// [`LogDownloadUrl::parse`] judges it. Its `Debug` shows its length only.
+#[derive(Clone)]
+pub(super) struct Location(String);
+
+impl fmt::Debug for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Location(<{} bytes redacted>)", self.0.len())
+    }
+}
+
+impl Location {
+    /// The text, for [`LogDownloadUrl::parse`].
+    pub(super) fn text(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What [`send_reading_redirect`] got back: a response outside 3xx, or a redirect and its
+/// `Location`, which nothing follows.
+#[derive(Debug)]
+pub(super) enum Answered {
+    /// A status outside 3xx.
+    Response(Response),
+    /// A 3xx, with its `Location` when it sent one.
+    Redirect {
+        /// The status.
+        status: u32,
+        /// The `Location` header.
+        location: Option<Location>,
+    },
+}
+
+/// What a download got back. `cut` says the body stopped at the request's limit and the rest was
+/// never received.
+#[derive(Clone)]
+pub(super) struct Downloaded {
+    pub status: u32,
+    /// `Content-Range`, when the host sent one.
+    pub content_range: Option<String>,
+    pub body: Vec<u8>,
+    pub cut: bool,
+}
+
+impl fmt::Debug for Downloaded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Downloaded")
+            .field("status", &self.status)
+            .field("content_range", &self.content_range)
+            .field("body", &format_args!("<{} bytes>", self.body.len()))
+            .field("cut", &self.cut)
+            .finish()
+    }
+}
+
 /// Whether `url` may be sent to under `plain`: `https://`, or `http://` to a loopback host when
 /// the dev allowance is on.
 pub(super) fn allowed_url(url: &str, plain: PlainHttp) -> bool {
@@ -168,10 +244,61 @@ pub(super) fn send(request: Request, cancel: &Cancel) -> GitHubResult<Response> 
     }
 }
 
+/// [`send`] for the one call whose redirect is read instead of refused: GitHub answers a job log's
+/// download with a `302` naming where the log is. Nothing here follows it; the caller judges the
+/// `Location` ([`LogDownloadUrl::parse`]) and downloads from it once, without the token
+/// ([`download`]). Only `Session::job_log_location` calls this (`scripts/check.sh` fails another
+/// caller), and this is the only place a response's `Location` is read.
+///
+/// # Errors
+/// As [`send`], except that a 3xx is [`Answered::Redirect`].
+pub(super) fn send_reading_redirect(request: Request, cancel: &Cancel) -> GitHubResult<Answered> {
+    let transfer = Transfer::Api {
+        request,
+        redirect: OnRedirect::Read,
+    };
+    let received = match run(transfer, cancel) {
+        Delivery::Sent(result) => result?,
+        Delivery::NotSent(error) => return Err(error),
+    };
+    if (300..400).contains(&received.status) {
+        let location = received
+            .header("location")
+            .map(|value| Location(value.to_owned()));
+        return Ok(Answered::Redirect {
+            status: received.status,
+            location,
+        });
+    }
+    Ok(Answered::Response(received.into_response()))
+}
+
+/// Downloads what `request` names: one `GET`, asking for the last `limit` bytes
+/// (`Range: bytes=-<limit>`), with no token and no GitHub API header, following no redirect. A
+/// body longer than `limit` stops the transfer there and comes back [`Downloaded::cut`], not as an
+/// error. Every message names the address as [`LogDownloadUrl::shown`] does, never whole.
+///
+/// # Errors
+/// [`GitHubError::Cancelled`], [`GitHubError::Transport`], [`GitHubError::Malformed`] for headers
+/// over their cap, [`GitHubError::Redirected`] for a 3xx (nothing follows it); any other status is
+/// the caller's to judge.
+pub(super) fn download(request: DownloadRequest, cancel: &Cancel) -> GitHubResult<Downloaded> {
+    let received = match run(Transfer::Download(request), cancel) {
+        Delivery::Sent(result) => result?,
+        Delivery::NotSent(error) => return Err(error),
+    };
+    Ok(Downloaded {
+        status: received.status,
+        content_range: received.header("content-range").map(str::to_owned),
+        body: received.body,
+        cut: received.cut,
+    })
+}
+
 /// Whether a request may have reached the host, for a mutation, whose failure means one thing
 /// when nothing left the machine and another when the host may have acted on it.
 #[derive(Debug)]
-pub(super) enum Delivery {
+pub(super) enum Delivery<T = Response> {
     /// Nothing left the machine: a cancel before the transfer started, a URL the transport
     /// refuses, or a failure to resolve, connect or finish the TLS handshake, all of which come
     /// before curl writes a byte of the request.
@@ -179,7 +306,7 @@ pub(super) enum Delivery {
     /// The request may have reached the host, and this came back: the response, or why none
     /// arrived (a timeout, a dropped connection, a cancel while it ran, a redirect, a body over
     /// its cap).
-    Sent(GitHubResult<Response>),
+    Sent(GitHubResult<T>),
 }
 
 /// [`send`], telling apart a failure before the request left from one after. Every transport
@@ -187,19 +314,132 @@ pub(super) enum Delivery {
 /// thread did not start, or ended without a word) counts as sent: a mutation then reads what
 /// happened instead of assuming nothing did.
 pub(super) fn deliver(request: Request, cancel: &Cancel) -> Delivery {
-    let op = request.op;
+    let transfer = Transfer::Api {
+        request,
+        redirect: OnRedirect::Refuse,
+    };
+    match run(transfer, cancel) {
+        Delivery::NotSent(error) => Delivery::NotSent(error),
+        Delivery::Sent(result) => Delivery::Sent(result.map(Received::into_response)),
+    }
+}
+
+/// What a transfer does with a 3xx answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnRedirect {
+    /// It is [`GitHubError::Redirected`].
+    Refuse,
+    /// It is handed back with its headers, for [`send_reading_redirect`].
+    Read,
+}
+
+/// One transfer: an API request, or the job log's download.
+#[derive(Debug)]
+enum Transfer {
+    Api {
+        request: Request,
+        redirect: OnRedirect,
+    },
+    Download(DownloadRequest),
+}
+
+impl Transfer {
+    fn op(&self) -> &'static str {
+        match self {
+            Self::Api { request, .. } => request.op,
+            Self::Download(request) => request.op,
+        }
+    }
+
+    /// The URL curl connects to.
+    fn url(&self) -> &str {
+        match self {
+            Self::Api { request, .. } => request.url.as_str(),
+            Self::Download(request) => request.url.as_str(),
+        }
+    }
+
+    /// The URL as messages name it: an API URL whole (it holds no secret), a download address as
+    /// its host alone.
+    fn shown(&self) -> String {
+        match self {
+            Self::Api { request, .. } => request.url.as_str().to_owned(),
+            Self::Download(request) => request.url.shown(),
+        }
+    }
+
+    fn limit(&self) -> usize {
+        match self {
+            Self::Api { request, .. } => request.limit,
+            Self::Download(request) => request.limit,
+        }
+    }
+
+    /// Whether a body over the limit is kept up to it ([`Downloaded::cut`]) rather than refused.
+    fn keeps_partial(&self) -> bool {
+        match self {
+            Self::Api { .. } => false,
+            Self::Download(_) => true,
+        }
+    }
+
+    fn reads_redirect(&self) -> bool {
+        match self {
+            Self::Api { redirect, .. } => *redirect == OnRedirect::Read,
+            Self::Download(_) => false,
+        }
+    }
+
+    /// The secrets the transfer carries, for `server_text` to scrub.
+    fn secrets(&self) -> Vec<&str> {
+        match self {
+            Self::Api { request, .. } => secrets(request),
+            Self::Download(request) => request.url.secrets(),
+        }
+    }
+}
+
+/// What came back from a transfer: the status, the final response's headers, the body (cut at the
+/// limit when the transfer keeps a partial body), and whether it was cut.
+struct Received {
+    status: u32,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    cut: bool,
+}
+
+impl Received {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn into_response(self) -> Response {
+        Response {
+            status: self.status,
+            headers: self.headers,
+            body: self.body,
+        }
+    }
+}
+
+/// Runs `transfer` on a transfer thread under every transport rule.
+fn run(transfer: Transfer, cancel: &Cancel) -> Delivery<Received> {
+    let op = transfer.op();
     if cancel.is_cancelled() {
         return Delivery::NotSent(GitHubError::Cancelled { op });
     }
-    if !allowed_url(request.url.as_str(), PLAIN_HTTP) {
+    if !allowed_url(transfer.url(), PLAIN_HTTP) {
         return Delivery::NotSent(GitHubError::Transport {
             op,
-            url: request.url.as_str().to_owned(),
+            url: transfer.shown(),
             reason: "rc-git speaks only https:// to GitHub".to_owned(),
         });
     }
     let worker_cancel = cancel.clone();
-    match detached(cancel, op, move || Ok(perform(&request, &worker_cancel))) {
+    match detached(cancel, op, move || Ok(perform(&transfer, &worker_cancel))) {
         Ok(delivery) => delivery,
         Err(error) => Delivery::Sent(Err(error)),
     }
@@ -251,6 +491,9 @@ where
 struct Collector {
     body: Vec<u8>,
     limit: usize,
+    /// Keep the body up to `limit` when more arrives (a download), instead of none of the write
+    /// that crosses it (an API answer, which is then an error).
+    keep_partial: bool,
     over_limit: bool,
     headers: Vec<(String, String)>,
     header_bytes: usize,
@@ -258,12 +501,33 @@ struct Collector {
     cancel: Arc<AtomicBool>,
 }
 
+impl Collector {
+    fn new(limit: usize, keep_partial: bool, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            body: Vec::new(),
+            limit,
+            keep_partial,
+            over_limit: false,
+            headers: Vec::new(),
+            header_bytes: 0,
+            headers_over_limit: false,
+            cancel,
+        }
+    }
+}
+
 impl Handler for Collector {
     fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
         if self.body.len().saturating_add(data.len()) > self.limit {
             self.over_limit = true;
-            // Taking fewer bytes than offered makes curl abort the transfer.
-            return Ok(0);
+            if !self.keep_partial {
+                // Taking fewer bytes than offered makes curl abort the transfer.
+                return Ok(0);
+            }
+            let room = self.limit.saturating_sub(self.body.len()).min(data.len());
+            self.body.extend_from_slice(&data[..room]);
+            // Fewer than offered: curl stops the transfer, and nothing past the limit arrives.
+            return Ok(room);
         }
         self.body.extend_from_slice(data);
         Ok(data.len())
@@ -302,8 +566,8 @@ fn secrets(request: &Request) -> Vec<&str> {
     secrets
 }
 
-/// The header list for `request`.
-fn headers(request: &Request) -> Result<List, curl::Error> {
+/// The header list for an API `request`: the only place an `Authorization` header is written.
+fn api_headers(request: &Request) -> Result<List, curl::Error> {
     let mut list = List::new();
     list.append(&format!("Accept: {}", request.accept))?;
     if request.api_version {
@@ -322,23 +586,27 @@ fn headers(request: &Request) -> Result<List, curl::Error> {
     Ok(list)
 }
 
-/// Builds the handle for `request`. Every option that bounds or restricts the transfer is set
+/// The header list for a download: the byte range asked for, and nothing else. It reads
+/// `request.limit` alone; a [`DownloadRequest`] holds no token to read.
+fn download_headers(request: &DownloadRequest) -> Result<List, curl::Error> {
+    let mut list = List::new();
+    list.append(&format!("Range: bytes=-{}", request.limit))?;
+    Ok(list)
+}
+
+/// Builds the handle for `transfer`. Every option that bounds or restricts the transfer is set
 /// here, so no request can leave without them.
-fn configure(request: &Request, cancel: &Cancel) -> Result<Easy2<Collector>, curl::Error> {
+fn configure(transfer: &Transfer, cancel: &Cancel) -> Result<Easy2<Collector>, curl::Error> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the GitHub client is the one sanctioned curl user; see docs/safety.md"
     )]
-    let mut easy = Easy2::new(Collector {
-        body: Vec::new(),
-        limit: request.limit,
-        over_limit: false,
-        headers: Vec::new(),
-        header_bytes: 0,
-        headers_over_limit: false,
-        cancel: cancel.share(),
-    });
-    easy.url(request.url.as_str())?;
+    let mut easy = Easy2::new(Collector::new(
+        transfer.limit(),
+        transfer.keeps_partial(),
+        cancel.share(),
+    ));
+    easy.url(transfer.url())?;
     easy.follow_location(false)?;
     easy.netrc(NetRc::Ignored)?;
     easy.useragent(USER_AGENT)?;
@@ -346,23 +614,33 @@ fn configure(request: &Request, cancel: &Cancel) -> Result<Easy2<Collector>, cur
     easy.low_speed_limit(1)?;
     easy.low_speed_time(cancel.idle().max(std::time::Duration::from_secs(1)))?;
     easy.timeout(cancel.connect() + cancel.idle())?;
-    easy.max_filesize(u64::try_from(request.limit).unwrap_or(u64::MAX))?;
+    if !transfer.keeps_partial() {
+        easy.max_filesize(u64::try_from(transfer.limit()).unwrap_or(u64::MAX))?;
+    }
     easy.progress(true)?;
-    if request.url.as_str().starts_with("http://") {
+    if transfer.url().starts_with("http://") {
         // A loopback test server: no environment proxy may stand in between.
         easy.proxy("")?;
     }
-    easy.http_headers(headers(request)?)?;
-    match (&request.method, &request.body) {
-        (Method::Post, Some(Body::Form(bytes) | Body::Json(bytes))) => {
-            easy.post(true)?;
-            easy.post_fields_copy(bytes)?;
+    match transfer {
+        Transfer::Api { request, .. } => {
+            easy.http_headers(api_headers(request)?)?;
+            match (&request.method, &request.body) {
+                (Method::Post, Some(Body::Form(bytes) | Body::Json(bytes))) => {
+                    easy.post(true)?;
+                    easy.post_fields_copy(bytes)?;
+                }
+                (Method::Post, None) => {
+                    easy.post(true)?;
+                    easy.post_fields_copy(&[])?;
+                }
+                (Method::Get, _) => easy.get(true)?,
+            }
         }
-        (Method::Post, None) => {
-            easy.post(true)?;
-            easy.post_fields_copy(&[])?;
+        Transfer::Download(request) => {
+            easy.http_headers(download_headers(request)?)?;
+            easy.get(true)?;
         }
-        (Method::Get, _) => easy.get(true)?,
     }
     Ok(easy)
 }
@@ -378,21 +656,23 @@ fn before_request(error: &curl::Error) -> bool {
 }
 
 /// One transfer, on the transfer thread.
-fn perform(request: &Request, cancel: &Cancel) -> Delivery {
-    let op = request.op;
-    let url = request.url.as_str().to_owned();
+fn perform(transfer: &Transfer, cancel: &Cancel) -> Delivery<Received> {
+    let op = transfer.op();
+    let url = transfer.shown();
+    let secrets = transfer.secrets();
     let transport = |error: &curl::Error| GitHubError::Transport {
         op,
         url: url.clone(),
-        reason: server_text(&describe(error), &secrets(request)),
+        reason: server_text(&describe(error), &secrets),
     };
-    let easy = match configure(request, cancel) {
+    let easy = match configure(transfer, cancel) {
         Ok(easy) => easy,
         Err(error) => return Delivery::NotSent(transport(&error)),
     };
     let result = easy.perform();
     let collected = easy.get_ref();
-    if collected.over_limit
+    let cut = collected.over_limit && transfer.keeps_partial();
+    if (collected.over_limit && !cut)
         || result
             .as_ref()
             .is_err_and(curl::Error::is_filesize_exceeded)
@@ -400,10 +680,12 @@ fn perform(request: &Request, cancel: &Cancel) -> Delivery {
         return Delivery::Sent(Err(GitHubError::TooLarge {
             op,
             url,
-            limit: request.limit,
+            limit: transfer.limit(),
         }));
     }
-    if let Err(error) = result {
+    if let Err(error) = &result
+        && !cut
+    {
         let aborted = error.is_aborted_by_callback() && !collected.headers_over_limit;
         if cancel.is_cancelled() || aborted {
             return Delivery::Sent(Err(GitHubError::Cancelled { op }));
@@ -417,23 +699,24 @@ fn perform(request: &Request, cancel: &Cancel) -> Delivery {
                 ),
             }));
         }
-        if before_request(&error) {
-            return Delivery::NotSent(transport(&error));
+        if before_request(error) {
+            return Delivery::NotSent(transport(error));
         }
-        return Delivery::Sent(Err(transport(&error)));
+        return Delivery::Sent(Err(transport(error)));
     }
     let status = match easy.response_code() {
         Ok(status) => status,
         Err(error) => return Delivery::Sent(Err(transport(&error))),
     };
-    if (300..400).contains(&status) {
+    if (300..400).contains(&status) && !transfer.reads_redirect() {
         return Delivery::Sent(Err(GitHubError::Redirected { op, url, status }));
     }
     let collected = easy.get_ref();
-    Delivery::Sent(Ok(Response {
+    Delivery::Sent(Ok(Received {
         status,
         headers: collected.headers.clone(),
         body: collected.body.clone(),
+        cut,
     }))
 }
 
@@ -465,15 +748,7 @@ mod tests {
     }
 
     fn collector(limit: usize) -> Collector {
-        Collector {
-            body: Vec::new(),
-            limit,
-            over_limit: false,
-            headers: Vec::new(),
-            header_bytes: 0,
-            headers_over_limit: false,
-            cancel: Arc::new(AtomicBool::new(false)),
-        }
+        Collector::new(limit, false, Arc::new(AtomicBool::new(false)))
     }
 
     /// curl 8.4 and later stop at `max_filesize` even without a `Content-Length`; an older
@@ -485,6 +760,54 @@ mod tests {
         assert!(matches!(collected.write(b"de"), Ok(0)));
         assert!(collected.over_limit);
         assert_eq!(collected.body, b"abc");
+    }
+
+    /// A download keeps up to its cap and stops the transfer there: memory stays bounded however
+    /// much the host sends.
+    #[test]
+    fn a_download_collector_keeps_its_cap_and_stops_there() {
+        let mut collected = Collector::new(4, true, Arc::new(AtomicBool::new(false)));
+        assert!(matches!(collected.write(b"abc"), Ok(3)));
+        assert!(matches!(collected.write(b"defgh"), Ok(1)));
+        assert!(collected.over_limit);
+        assert!(matches!(collected.write(b"ij"), Ok(0)));
+        assert_eq!(collected.body, b"abcd");
+    }
+
+    #[test]
+    fn a_download_request_carries_no_token_header_and_prints_no_address() {
+        use super::super::download::LogDownloadUrl;
+        let url = LogDownloadUrl::parse(
+            "https://logs.example.com/job.txt?sig=c2lnbmF0dXJlMTIz",
+            PlainHttp::Refused,
+        )
+        .unwrap();
+        let request = DownloadRequest {
+            op: "download the job log",
+            url,
+            limit: 2048,
+        };
+        let mut lines = Vec::new();
+        for line in &download_headers(&request).unwrap() {
+            lines.push(String::from_utf8_lossy(line).into_owned());
+        }
+        assert_eq!(lines, ["Range: bytes=-2048"]);
+        let transfer = Transfer::Download(request.clone());
+        assert_eq!(transfer.shown(), "https://logs.example.com/…");
+        let scrubbed = server_text(
+            &format!("failed on {} at {}", transfer.url(), transfer.shown()),
+            &transfer.secrets(),
+        );
+        assert_eq!(
+            scrubbed, "failed on <redacted> at https://logs.example.com/…",
+            "curl's words lose the address"
+        );
+        let printed = format!("{request:?} {transfer:?}");
+        assert!(printed.contains("logs.example.com"), "{printed}");
+        assert!(!printed.contains("c2lnbmF0dXJlMTIz"), "{printed}");
+        assert!(!printed.contains("job.txt"), "{printed}");
+        let location = Location("https://x.example/?sig=c2lnbmF0dXJlMTIz".to_owned());
+        assert!(!format!("{location:?}").contains("c2lnbmF0dXJlMTIz"));
     }
 
     #[test]

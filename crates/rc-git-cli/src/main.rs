@@ -144,6 +144,21 @@ usage: rc-git [--time] <command> <repo> [args]
   pr checks <n> [repo]                    its head commit's checks, required first:
                                           check<TAB>state<TAB>required|optional|-<TAB>name<TAB>
                                           details url<TAB>description ('-' when none)
+  pr logs <n> [repo] --check <name> | --job <id> [--head <oid>]
+                                          the log of one GitHub Actions job of its head
+                                          commit (one that has finished): the check named
+                                          exactly as pr checks prints it, or its job id. The
+                                          job is first matched to the head just read (to --head
+                                          when given, which must still be the head); one that
+                                          ran on another commit or in another run downloads
+                                          nothing and exits 11. Prints the log alone, at most
+                                          its last 2 MiB and 20,000 lines, each line cut at
+                                          1,000 characters, with control, bidi and invisible
+                                          characters as \\u{..} escapes and ANSI colours
+                                          dropped; what was left out goes to stderr as
+                                          truncated<TAB>sentence. The log is downloaded from
+                                          where GitHub sends it without the token, and that
+                                          address is never printed
   pr diff <n> [repo] [--fetch] [remote options]
                                           the files it changes since it left its base (the
                                           merge base with the commit GitHub reports its base
@@ -246,7 +261,8 @@ exit codes: 0 ok, 1 error, 2 usage, 3 binary file, 4 file over limit,
   9 no author identity (rerun with --author \"Name <email>\"),
   10 typed confirmation missing or wrong (rerun with the --confirm phrase stderr names),
   11 pr merge, auto-merge or rerun did not do it: GitHub refused it, or rc-git refused before
-  sending anything (it changed since --head, or cannot be done as asked),
+  sending anything (it changed since --head, or cannot be done as asked); pr logs read no log
+  (the job ran on another commit or in another run, has not finished, or the head moved),
   12 pr merge, auto-merge or rerun sent its request and no usable answer came back: look at
   the pull request on GitHub before trying again (rc-git never sends one twice),
   13 pr merge merged, or pr auto-merge turned auto-merge on, but GitHub names another base
@@ -674,7 +690,9 @@ fn github_exit_code(err: &GitHubError) -> u8 {
         | GitHubError::Malformed { .. }
         | GitHubError::ForeignVerificationUri { .. }
         | GitHubError::FlowInProgress { .. }
-        | GitHubError::OAuth { .. } => EXIT_ERROR,
+        | GitHubError::OAuth { .. }
+        | GitHubError::LogDownloadRefused { .. }
+        | GitHubError::LogDownload { .. } => EXIT_ERROR,
     }
 }
 

@@ -20,8 +20,8 @@ use rc_git_guard::actions::github::testing::{
 use rc_git_guard::actions::github::{GitHubHost, MergeMethod, RepositoryTarget};
 use rc_git_testkit::Fixture;
 use rc_git_testkit::github::{
-    DeviceScript, FakeToken, GitHubServer, Grant, MergeBehaviour, MergeScript, PollAnswer,
-    USER_CODE,
+    DeviceScript, FakeToken, GitHubServer, Grant, LogsAnswer, MergeBehaviour, MergeScript,
+    PollAnswer, StorageBehaviour, StorageServer, USER_CODE,
 };
 
 const TOKEN: &str = "ghp_cli_token_never_printed_0123";
@@ -1351,6 +1351,10 @@ fn pr_rerun_with_yes_asks_once_per_run_and_says_how_each_ended() {
         &detail_request_body(&pr_target(&server), 7, false),
         &failing(),
     );
+    for run in [41, 42] {
+        let read = format!(r#"{{"id": {run}, "head_sha": "{HEAD}"}}"#);
+        server.script_workflow_run("octo/rc-git", run, "200 OK", &read);
+    }
     server.script_rerun("octo/rc-git", 41, RerunBehaviour::Rerun);
     server.script_rerun("octo/rc-git", 42, RerunBehaviour::Rerun);
     let args = ["rerun", "7", "--head", HEAD, "--base", "main", "--yes"];
@@ -1385,4 +1389,167 @@ fn pr_rerun_with_yes_asks_once_per_run_and_says_how_each_ended() {
     assert!(printed.contains("\nrerun\t42\tunknown\t"), "{printed}");
     assert!(!format!("{printed}{}", text(&out.stderr)).contains(TOKEN));
     assert_eq!(server.mutation_requests(), 4, "two runs, twice, each once");
+}
+
+/// [`mergeable`] with a failed GitHub Actions job `test` (job 5 of run 41), two failed checks
+/// named `twin` (jobs 6 and 7) and a running job `slow` (job 8 of run 42).
+fn with_jobs() -> String {
+    let job = |name: &str, id: u64, run: u64, status: &str| {
+        format!(
+            r#"{{"__typename": "CheckRun", "name": "{name}", "status": "{status}",
+            "conclusion": null, "detailsUrl": null, "databaseId": {id}, "isRequired": false,
+            "checkSuite": {{"workflowRun": {{"databaseId": {run}}}}}}}"#
+        )
+    };
+    let rollup = format!(
+        r#""statusCheckRollup": {{"state": "FAILURE", "contexts": {{"totalCount": 4,
+        "nodes": [{}, {}, {}, {}]}}}}"#,
+        job("test", 5, 41, "COMPLETED"),
+        job("twin", 6, 41, "COMPLETED"),
+        job("twin", 7, 41, "COMPLETED"),
+        job("slow", 8, 42, "IN_PROGRESS")
+    );
+    mergeable(HEAD, "OPEN").replace(r#""statusCheckRollup": null"#, &rollup)
+}
+
+const SIGNATURE: &str = "Y2xpLXNpZ25hdHVyZS0wMTIzNDU2Nzg5";
+
+/// A signed-in repository whose pull request 7 has the checks of [`with_jobs`], job 5 matching
+/// [`HEAD`], and its logs redirecting to a fake storage host that serves `log`.
+fn logs_setup(log: &str) -> (GitHubServer, StorageServer, Scratch, Fixture, Fixture) {
+    let server = server_knowing(TOKEN, "octocat");
+    let (scratch, repo, ssh) = pr_setup(&server, None);
+    server.script_graphql(
+        &detail_request_body(&pr_target(&server), 7, false),
+        &with_jobs(),
+    );
+    let storage = StorageServer::start(StorageBehaviour::Log {
+        body: log.into(),
+        ranges: true,
+    });
+    server.script_job("octo/rc-git", 5, "200 OK", &job_read(HEAD));
+    server.script_job_logs(
+        "octo/rc-git",
+        5,
+        LogsAnswer::Redirect {
+            status: "302 Found",
+            location: format!("{}/logs/5.txt?sig={SIGNATURE}", storage.origin()),
+        },
+    );
+    (server, storage, scratch, repo, ssh)
+}
+
+/// GitHub's read of job 5 of run 41 at `head`.
+fn job_read(head: &str) -> String {
+    format!(
+        r#"{{"id": 5, "run_id": 41, "head_sha": "{head}", "name": "test",
+        "status": "completed", "conclusion": "failure"}}"#
+    )
+}
+
+/// Neither the token nor any part of the download address reached stdout or stderr.
+fn printed_nothing_secret(out: &Output) {
+    let both = format!("{}{}", text(&out.stdout), text(&out.stderr));
+    for secret in [TOKEN, SIGNATURE, "/logs/5.txt", "sig="] {
+        assert!(!both.contains(secret), "{secret}: {both}");
+    }
+}
+
+#[test]
+fn pr_logs_prints_only_the_neutralized_log_and_never_the_token_or_its_address() {
+    let (_server, storage, scratch, repo, ssh) =
+        logs_setup("\u{1b}[31merror\u{1b}[0m: boom \u{202e}x\r\ndone\n");
+    for args in [
+        vec!["logs", "7", "--check", "test"],
+        vec!["logs", "7", "--job", "5", "--head", HEAD],
+    ] {
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "error: boom \\u{202e}x\ndone\n");
+        assert_eq!(text(&out.stderr), "", "a whole log leaves nothing out");
+        printed_nothing_secret(&out);
+    }
+    let downloads = storage.recorded();
+    assert_eq!(downloads.len(), 2);
+    assert!(downloads.iter().all(|request| {
+        request.header("authorization").is_none()
+            && request
+                .headers
+                .iter()
+                .all(|(_, value)| !value.contains(TOKEN))
+    }));
+    let big: Vec<u8> = (0..300_000)
+        .flat_map(|line| format!("line {line:07}\n").into_bytes())
+        .collect();
+    storage.set(StorageBehaviour::Log {
+        body: big,
+        ranges: false,
+    });
+    let out = run_pr(&scratch, &repo, &ssh, &["logs", "7", "--check", "test"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).starts_with("line 0000000\nline 0000001\n"));
+    assert!(
+        text(&out.stderr).starts_with(
+            "truncated\tShowing the first 2.1 MB of the log; the rest was not downloaded.\n"
+        ),
+        "{}",
+        text(&out.stderr)
+    );
+    printed_nothing_secret(&out);
+}
+
+#[test]
+fn pr_logs_reads_no_log_for_a_check_it_cannot_name_or_match() {
+    let (server, storage, scratch, repo, ssh) = logs_setup("log\n");
+    for (args, code, words) in [
+        (vec!["logs", "7"], 2, "exactly one of --check"),
+        (
+            vec!["logs", "7", "--check", "test", "--job", "5"],
+            2,
+            "exactly one of",
+        ),
+        (vec!["logs", "7", "--job", "0"], 2, "not a job id"),
+        (
+            vec!["logs", "7", "--check", "twin"],
+            1,
+            "(jobs 6, 7); pass --job",
+        ),
+        (
+            vec!["logs", "7", "--check", "nope"],
+            1,
+            "no GitHub Actions check named",
+        ),
+        (vec!["logs", "7", "--check", "slow"], 1, "has not finished"),
+        (
+            vec!["logs", "7", "--job", "5", "--head", MOVED],
+            11,
+            "no log was read",
+        ),
+    ] {
+        let out = run_pr(&scratch, &repo, &ssh, &args);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains(words),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(text(&out.stdout), "", "{args:?}");
+    }
+    server.script_job("octo/rc-git", 5, "200 OK", &job_read(MOVED));
+    let out = run_pr(&scratch, &repo, &ssh, &["logs", "7", "--job", "5"]);
+    assert_eq!(out.status.code(), Some(11), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("could not be matched to the pull request's head commit"),
+        "{}",
+        text(&out.stderr)
+    );
+    printed_nothing_secret(&out);
+    assert_eq!(storage.requests(), 0, "no refused read downloads anything");
+    assert_eq!(server.log_requests("octo/rc-git", 5), 0);
+    assert_eq!(server.mutation_requests(), 0);
 }

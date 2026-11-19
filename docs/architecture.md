@@ -48,6 +48,11 @@ request (`merge_pull_request`, planned by `plan_merge_pull_request`), reads the 
 refuses what changed since the stamp or cannot merge (`merge_blocker`), and sends one
 `mergePullRequest` through `Session::mutate`, which takes the `Confirmation` and builds the
 request from the action it carries (`mutation`); the outcome is merged, refused or unknown.
+A job's log (`read_job_log`, `logs`) is a read with three requests: the job read on the
+account's host, matched to the stamp's head; the logs endpoint, the one call whose redirect is
+read (`Session::job_log_location`); and one download to the address it names, validated into a
+`LogDownloadUrl` (`download`) and sent as a `DownloadRequest`, which has no token field, kept to
+its last 2 MiB and neutralized.
 rc-git-kit's `pull_requests` module links a repository to its
 GitHub repository and account (`link`), holds the list and each open pull request tab as state
 machines with a generation per read and one read queued at most (`state`), a tab's changes as a
@@ -56,14 +61,17 @@ moved, no base copy, no merge base, ready, one file diff at a time), a tab's gua
 as a state machine tied to its stamp and generation (`flow`: planning, confirming, sending until
 and after the first request, done), one at a time per tab, of three kinds (a merge, an auto-merge
 change, a re-run of failed jobs: `merge`, `auto_merge`, `rerun`) with each control decided from
-the guard's blockers, runs them for a window
+the guard's blockers, a tab's job log as a state machine (`logs`: matching, downloading, shown,
+not matched, not finished, failed; one read per tab, dropped when the head moves), runs them for
+a window
 (`PullRequestsModel`, `model`) through the `PullRequestService` seam (`live` over the guard and
 the core, a fake in tests), and decides polling (`polling`), check order and summary (`checks`),
 which description links open (`body`) and the words (`copy`). The app's sidebar section and pull
 request page draw that model, the page's Changes view reusing the shared `DiffView`, and the
 window shows an action's challenge through the shared challenge sheet when the model asks
-(`FlowEvent`); `rc-git pr` reads, fetches, merges, changes auto-merge and re-runs through the
-same live service. `rc-git-highlight` is a pure
+(`FlowEvent`); a log shows in the shared file viewer in place of the description. `rc-git pr`
+reads, fetches, merges, changes auto-merge, re-runs and reads job logs through the same live
+service. `rc-git-highlight` is a pure
 tree-sitter wrapper the file pane calls through rc-git-kit's `HighlightStore`: highlight spans, and
 the import links of a JavaScript or TypeScript file.
 

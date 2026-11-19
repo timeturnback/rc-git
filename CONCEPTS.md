@@ -218,9 +218,26 @@ request, settled like a merge: done, refused, or unknown.
 A GitHub Actions workflow run of a pull request's head commit with at least one job that
 finished as failed, timed out or failed to start, as the read names it by its run id. Re-run
 Failed Jobs asks GitHub to re-run each one's failed jobs, one request per run (at most ten per
-confirmation, lowest ids first), each sent once; every run ends requested, refused, unknown or
-not sent. A cancelled job, a check of another app, a commit status and a run id rc-git does not
-accept make no failed run.
+confirmation, lowest ids first), each sent once; every run ends requested, refused, unknown, not
+sent, or not matched. A cancelled job, a check of another app, a commit status and a run id rc-git
+does not accept make no failed run.
+
+## Matched to the head commit
+
+What rc-git asks of a GitHub Actions id a check carries before it acts on it: GitHub's own REST
+read of that job or workflow run, made just before, names it with that id and the stamp's head
+commit (and, for a job, the check's run). A job's log is read and a run is re-run only once
+matched; one that is not is refused by name and nothing is sent for it, since a check's ids are
+not documented to be the REST ids.
+
+## Job log
+
+A GitHub Actions job's log, read for one finished check of the pull request on screen when the
+user asks, matched to the head commit first. GitHub's logs endpoint answers with a redirect to
+a short-lived signed address on another host: the download address, the one redirect rc-git
+follows, by hand, once, `https://` to a public DNS name only, without the token, and a secret
+never shown. At most the log's last 2 MiB is kept, neutralized like every server text, and held
+in memory only; what was left out is stated, never silent.
 
 ## Pull request head
 

@@ -335,6 +335,10 @@ libcurl directly.
   has no safe setter for curl's protocol list and `unsafe` is forbidden outside rc-git-mac, so
   that URL check, with redirects off, is the restriction: curl connects to that URL alone.
   Redirects are never followed and a 3xx is an error, so a redirect target receives nothing.
+  The one exception is a job log's download, one hop followed by hand without the token ("Job
+  logs" below); `scripts/check.sh` fails a second caller of the function that reads a
+  `Location`, a second writer of the `Authorization` header, and a token in the download's
+  request type or its headers.
   Peer and host verification stay on. `clippy.toml` bans the curl constructors outside the
   client, and everywhere the setters that would turn verification off (DoH's included), add a
   CA, lower the TLS version or ciphers, load a crypto engine or entropy source, print the
@@ -349,7 +353,9 @@ libcurl directly.
 - **Bounded.** Every call takes a `Cancel`: the connect budget, the idle budget and a total of
   both, a wait that returns within 200 ms of a cancel while curl's progress callback aborts the
   transfer at its next tick, and caps on the body (4 MiB for the API, 64 KiB for sign-in) and
-  the headers (64 KiB). Over the cap is an error, never a truncated parse.
+  the headers (64 KiB). Over the cap is an error, never a truncated parse. A job log is the one
+  body kept up to its cap (2 MiB) instead: it is shown, never parsed, and the cut is a value
+  the page and the CLI state.
 - **Least privilege, said before sign-in.** Settings names what each method may do: a GitHub
   App needs Pull requests, Contents and Actions read and write, Checks, Commit statuses and
   Metadata read; an OAuth App asks for `repo`; a fine-grained token should carry the GitHub
@@ -685,8 +691,20 @@ first-time contributor, and offers nothing that does.
 - **The sequence** is the merge's: read again and compare the stamp; refuse a pull request that
   is not open or has no failed run (`rerun_blocker`); authorize, with the run list and each run's
   failed check names (neutralized, five named per run and the rest counted) part of the decision,
-  so a job that passed or failed since the challenge refuses; then one request per run, each at
-  most once, in order.
+  so a job that passed or failed since the challenge refuses; match each run; then one request
+  per matched run, each at most once, in order.
+- **Each run is matched before it is sent.** A run id comes from the GraphQL check run, and
+  GitHub does not say it is the REST `run_id` (below). So after the confirmation and before the
+  first re-run leaves, the guard reads each run from the REST API on the account's host, with the
+  token (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`, "Get a workflow run"; its `id` and
+  `head_sha` are required fields of GitHub's schema), and sends a run's re-run only when GitHub
+  answers with that `id` and the confirmed head commit as `head_sha`. A run of another commit,
+  one GitHub names with another id, one whose answer lacks either field, and one whose read
+  fails (a 404 included) is never sent and is reported *Not matched* ("could not be matched to
+  the pull request's head commit", with what did not match); the matched runs still go, each
+  once. The outbox only moves forward (`Outbox::skip_next`), so a skipped run can never leave
+  later. A cancel during the reads sends nothing. When no run matches, nothing is sent and the
+  report names each run; the CLI prints `not-matched` for such a run and exits 11.
 - **Outcomes per run.** *Requested*: `201 Created`. *Refused*: a 4xx (a run GitHub does not know
   is a 404; one it will not re-run, or an account that may not, another 4xx), a refused token, a
   spent rate limit. *Unknown*: a 5xx, any other 2xx, a dropped connection, a timeout, a cancel
@@ -704,12 +722,86 @@ first-time contributor, and offers nothing that does.
   rc-git approves no run that waits for approval; it asserts nothing more.
 - **Unverified against GitHub:** that a check run's `checkSuite.workflowRun.databaseId` (GraphQL:
   "Identifies the primary key from the database") is the REST `run_id`; GitHub's references
-  describe both only as ids and do not say they are the same. If they differ, a request names a
-  run id GitHub does not know in this repository and is answered 404, refused and shown as such;
-  rc-git cannot rule out that such an id names another run of the same repository, whose failed
-  jobs would then re-run. The same is true of a check run's own `databaseId` and the Actions job
-  id the job-logs endpoint takes. Also unverified: which jobs GitHub counts as failed in a run
-  with cancelled jobs, and the body of the `201` answer.
+  describe both only as ids and do not say they are the same. The match above closes what that
+  left open: an id that names no run of this repository is not sent, and one that names another
+  run of it is sent only when that run ran on the confirmed head commit, so its failed jobs are
+  ones of the head the user confirmed. It does not prove the id is the run whose check names
+  the challenge listed; two runs of the same head commit can still be told apart only by that
+  id. The same is true of a check run's own `databaseId` and the Actions job id ("Job logs"
+  below). Also unverified: which jobs GitHub counts as failed in a run with cancelled jobs, and
+  the body of the `201` answer.
+
+### Job logs
+
+View Log on a check of the pull request's page and `rc-git pr logs <n> (--check <name> | --job
+<id>) [--head <oid>]` show one GitHub Actions job's log (`github/logs.rs`, `read_job_log`). It is
+a read: nothing on GitHub changes, so it has no `Action` and no challenge. It runs only from the
+user's click or command, for one job at a time per tab (a second click cancels the read in
+flight), and the log is held in memory only: never written to disk or to the app's log. It is
+the one request rc-git sends to a host other than the signed-in account's, and the one redirect
+it follows; so it is three requests, and it stops at the first that fails.
+
+1. **Match the job to what is on screen.** A check carries ids the server reported, and GitHub
+   does not say that a check run's `databaseId` is the Actions job id. The job is read first, by
+   id, from the REST API on the account's host with the token (`GET
+   /repos/{owner}/{repo}/actions/jobs/{job_id}`, "Get a job for a workflow run"; `id`,
+   `run_id`, `head_sha`, `name`, `status` and `conclusion` are fields of its schema). The log is
+   asked for only when GitHub names that job with that `id`, its `run_id` is the check's
+   workflow run and its `head_sha` the stamped head commit of the pull request on screen. Any
+   mismatch, a 404, or a missing field refuses with "this check's log could not be matched to
+   the pull request's head commit", and nothing more is sent: no log that might be another
+   commit's or another job's is ever shown. A job whose `status` is not `completed` is refused
+   too: GitHub does not document what the log endpoint answers for a running job, so neither the
+   page nor the CLI offers one. Ids are positive integers that fit 63 bits (`JobId`, `RunId`)
+   and only ever become path segments through `rest_url`.
+2. **Ask where the log is.** `GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs` ("Download
+   job logs for a workflow run"), with the token, to the account's host like every API call.
+   GitHub documents a `302 Found` whose `Location` is the log, a link that "expires after 1
+   minute". curl follows nothing: `Session::job_log_location` is the only caller of
+   `send_reading_redirect`, the only code that reads a `Location`, and it hands the address back
+   unjudged. A 301, 302, 303, 307 or 308 with a `Location` is taken; any other answer is an
+   error.
+3. **The one hop.** The address becomes a `LogDownloadUrl` (`github/download.rs`), a type apart
+   from `ApiUrl` that only its validation builds: `https://` only (plain `http://` to a loopback
+   host only under the dev allowance `PLAIN_HTTP` decides); at most 4096 bytes; printable ASCII
+   only, so no control character, space, CR/LF or backslash; no userinfo, no bracketed address;
+   a path; no fragment; a port of 1 to 65535 or none; and a DNS name of at least two labels
+   whose last label starts with a letter, so no IP literal in any form a resolver reads
+   (`10.0.0.1`, `2130706433`, `0x7f.1`, `127.1`), not `localhost` and not a name under
+   `.localhost`, `.local`, `.internal`, `.intranet`, `.private`, `.corp`, `.home`, `.lan` or
+   `.home.arpa`. A refused address gets no request; the error names its host only. Then exactly
+   one `GET` goes there (`http::download`) as a `DownloadRequest`, which has no token field: its
+   headers are built from its byte limit alone (`download_headers`), so it carries no
+   `Authorization` and no GitHub API header (the fake storage host records every header, and a
+   test asserts none). Redirects stay off, so a 3xx from the storage host is an error and no
+   second hop happens. The connect and idle budgets and the cancel are every call's.
+4. **Size.** The request asks for the last 2 MiB (`Range: bytes=-2097152`), since a failure is
+   at the end. A `206 Partial Content` whose `Content-Range` ends where the log ends and matches
+   the bytes sent is shown from its first line break on; a `200` (a host that ignores the
+   range) is kept up to 2 MiB and the transfer stops there; a `416` naming an empty log is an
+   empty log; any other status names itself and nothing of its body. What was left out is a
+   value, never an error and never silent: the page and the CLI say "showing the last N" or
+   "showing the first N; the rest was not downloaded".
+5. **The text is the workflow's**, so it is attacker-controlled: decoded as UTF-8 with bad bytes
+   replaced, split at `\n`, `\r\n` and a lone `\r`, and each line passed through the same
+   neutralizer as a description (ANSI escape sequences dropped; control, bidi and invisible
+   characters shown as visible `\u{..}` escapes; tabs kept), cut at 1,000 characters with a
+   `…`, at most 20,000 lines (the last ones, unless the log was cut at its start). Nothing in
+   it is a link: the page shows it in the file viewer as plain text, and nothing listens for the
+   viewer's link events, so no URL in a log opens, loads or runs.
+
+The download address is a secret while it is valid: `LogDownloadUrl` and the `Location` print
+their host or length only under `Debug`, every transport error names `https://<host>/…`, curl's
+words are scrubbed of the address, its path and query and each long query value, and the CLI
+prints neither it nor the token (a test checks stdout and stderr). A DNS name can still resolve
+to an address inside the user's network: the system resolver decides, and rc-git does not check
+the address it gets. The request then reaches that address only after a TLS handshake with a
+certificate valid for the name, which the peer and host verification every call keeps on
+require, so a GET can reach such an address only if it holds a valid certificate for the public
+name. Unverified against GitHub: that a check run's `databaseId` is the Actions job id (the match
+is what makes that safe), whether the storage host honors a suffix `Range` (both answers are
+handled), and the address's length (GitHub's are far under 4096 bytes in its documentation's
+examples).
 
 ## Updater
 

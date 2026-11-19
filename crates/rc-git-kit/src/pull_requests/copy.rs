@@ -8,18 +8,20 @@ use super::auto_merge::{AutoMergeEnd, AutoMergeFlow};
 use super::changes::{ChangesPhase, ComparedWith};
 use super::checks::CheckState;
 use super::flow::{Ended, Phase, Stop, TabFlow};
+use super::logs::{LogPhase, LogState, LogStop};
 use super::merge::{MergeEnd, MergeFlow, MergePhase, MergeStop};
 use super::rerun::{RerunEnd, RerunFlow};
 use super::state::Freshness;
 use super::{
     AfterLoss, AutoMergeAfter, AutoMergeChange, AutoMergeOutcome, Bypassed, DetailFields,
-    MAX_RERUN_RUNS, MergeBlocker, MergeKind, MergeMethod, Mergeable, PullRequestStamp,
-    PullRequestState, PullRequestSummary, ReadError, RerunReport, ReviewDecision, RunOutcome,
-    ServerLink, Settled, failed_runs, single_line,
+    LOG_LINE_CHARS, LogCut, MAX_RERUN_RUNS, MergeBlocker, MergeKind, MergeMethod, Mergeable,
+    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, RerunReport, ReviewDecision,
+    RunOutcome, ServerLink, Settled, failed_runs, single_line,
 };
 use crate::guard_bridge::{FailureKind, classify};
 use crate::history_text::{change_path_label, short_hash};
 use crate::platform::api_tokens::AccountKey;
+use crate::text_document::{format_bytes, grouped};
 use rc_git_guard::actions::ActionError;
 use rc_git_guard::actions::github::GitHubHost;
 
@@ -912,6 +914,10 @@ fn run_outcome_phrase(outcome: &RunOutcome) -> String {
             format!("rc-git could not tell whether GitHub re-runs it ({problem}).")
         }
         RunOutcome::NotSent { reason } => format!("not sent ({reason})."),
+        RunOutcome::NotMatched { reason } => format!(
+            "could not be matched to the pull request's head commit, so it was not sent \
+             ({reason})."
+        ),
     }
 }
 
@@ -1010,6 +1016,7 @@ pub fn rerun_outcome_log(flow: &RerunFlow, end: &RerunEnd) -> String {
                     RunOutcome::Refused { reason } => format!("refused: {reason}"),
                     RunOutcome::Unknown { problem } => format!("unknown: {problem}"),
                     RunOutcome::NotSent { reason } => format!("not sent: {reason}"),
+                    RunOutcome::NotMatched { reason } => format!("not matched: {reason}"),
                 };
                 runs.push(format!("run {} {what}", run.run));
             }
@@ -1017,6 +1024,119 @@ pub fn rerun_outcome_log(flow: &RerunFlow, end: &RerunEnd) -> String {
         }
     };
     format!("{}: {outcome}", rerun_subject(flow))
+}
+
+/// The check row's button that reads its job's log.
+pub const VIEW_LOG: &str = "View Log";
+
+/// The log panel's button that stops a read.
+pub const STOP_LOG: &str = "Stop";
+
+/// The log panel's button that closes it.
+pub const CLOSE_LOG: &str = "Close Log";
+
+/// The log panel's heading: `Log of “name”`.
+#[must_use]
+pub fn log_title(log: &LogState) -> String {
+    format!("Log of \u{201c}{}\u{201d}", log.check().name)
+}
+
+/// What the log panel says while it reads or when it shows no log; `None` once the log shows.
+#[must_use]
+pub fn log_note(log: &LogState, now: u64) -> Option<String> {
+    let name = &log.check().name;
+    let note = match log.phase() {
+        LogPhase::Matching => format!(
+            "Checking that \u{201c}{name}\u{201d} ran on the head commit {}…",
+            short_hash(&log.head())
+        ),
+        LogPhase::Downloading => format!("Downloading the log of \u{201c}{name}\u{201d}…"),
+        LogPhase::Shown(_) => return None,
+        LogPhase::NotMatched(why) => not_matched_note(why),
+        LogPhase::NotFinished => not_finished_note(name),
+        LogPhase::Failed(error) => log_problem(error, now),
+    };
+    Some(note)
+}
+
+/// What a log read that showed no log says, for the check named `name`, at `now`.
+#[must_use]
+pub fn log_stop_note(stop: &LogStop, name: &str, now: u64) -> String {
+    match stop {
+        LogStop::NotMatched(why) => not_matched_note(why),
+        LogStop::NotFinished => not_finished_note(name),
+        LogStop::Read(error) => log_problem(error, now),
+    }
+}
+
+fn not_matched_note(why: &str) -> String {
+    format!(
+        "This check's log could not be matched to the pull request's head commit, so RCGit shows \
+         none: {why}."
+    )
+}
+
+fn not_finished_note(name: &str) -> String {
+    format!("\u{201c}{name}\u{201d} has not finished; its log can be read once it has.")
+}
+
+/// What a failed log read says, at `now` (seconds since the Unix epoch).
+#[must_use]
+pub fn log_problem(error: &ReadError, now: u64) -> String {
+    match error {
+        ReadError::SignedOut { account } => format!(
+            "Couldn't read the log: {account} is signed out, or refused its token. Sign in again \
+             in Settings > GitHub Accounts."
+        ),
+        ReadError::RateLimited { reset: Some(reset) } if *reset > now => format!(
+            "Couldn't read the log: the host's rate limit is spent for about {} more minutes.",
+            (reset - now).div_ceil(60)
+        ),
+        ReadError::RateLimited { .. } => {
+            "Couldn't read the log: the host's rate limit is spent.".to_owned()
+        }
+        ReadError::Cancelled => "Couldn't read the log: the read was stopped.".to_owned(),
+        ReadError::Failed(cause) => format!("Couldn't read the log: {cause}"),
+    }
+}
+
+/// What a log leaves out, one sentence each: the part not downloaded (`cut`), the lines
+/// downloaded but not shown (`left_out`), the lines cut short (`shortened`). Empty for a whole log
+/// shown whole.
+#[must_use]
+pub fn log_cut_notes(cut: LogCut, left_out: usize, shortened: usize) -> Vec<String> {
+    let mut notes = Vec::new();
+    let bytes = |kept: usize| format_bytes(u64::try_from(kept).unwrap_or(u64::MAX));
+    match cut {
+        LogCut::Whole => {}
+        LogCut::Tail { kept } => notes.push(format!(
+            "Showing the last {} of the log; the earlier part was not downloaded.",
+            bytes(kept)
+        )),
+        LogCut::Head { kept } => notes.push(format!(
+            "Showing the first {} of the log; the rest was not downloaded.",
+            bytes(kept)
+        )),
+    }
+    let count = |n: usize| grouped(u64::try_from(n).unwrap_or(u64::MAX));
+    if left_out > 0 {
+        let which = match cut {
+            LogCut::Head { .. } => "last",
+            LogCut::Whole | LogCut::Tail { .. } => "first",
+        };
+        notes.push(format!(
+            "The {which} {} lines downloaded are not shown.",
+            count(left_out)
+        ));
+    }
+    if shortened > 0 {
+        notes.push(format!(
+            "{} long lines are cut at {} characters, ending in \u{2026}.",
+            count(shortened),
+            count(LOG_LINE_CHARS)
+        ));
+    }
+    notes
 }
 
 /// What a failed head fetch says, with what to do when a secret or an approval saved for

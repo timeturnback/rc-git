@@ -131,6 +131,11 @@ here; so does everything that comes later.
   integer ids through `rest_url`); the outbox sends each request once, never a free-standing POST.
 - Re-run only runs `failed_runs` names (positive ids, at most `MAX_RERUN_RUNS`); never call the
   endpoint that approves fork or first-time contributor runs, and never offer one.
+- Act on a check's Actions id only once GitHub's REST read of it matches the stamp's head
+  (`match_runs` in `rerun.rs`, `matched_job` in `logs.rs`); skip an unmatched run with `skip_next`.
+- Follow a redirect only in `read_job_log`: `Session::job_log_location` alone calls
+  `send_reading_redirect`, and the hop goes as a token-less `DownloadRequest` to a `LogDownloadUrl`.
+- Never put the download address in a message: name `LogDownloadUrl::shown`, scrub its `secrets`.
 - Say in an auto-merge challenge that later commits merge without asking; assert nothing about
   when GitHub cancels auto-merge beyond what `docs/safety.md`, "Auto-merge", cites.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):

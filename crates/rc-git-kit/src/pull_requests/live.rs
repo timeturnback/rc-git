@@ -5,7 +5,8 @@
 //! A merge runs through the guard's `plan_merge_pull_request` and `merge_pull_request`, an
 //! auto-merge change through `plan_auto_merge` and `set_auto_merge`, and a re-run through
 //! `plan_rerun_failed_jobs` and `rerun_failed_jobs`, each with the account's token and kit's one
-//! policy; nothing here retries one.
+//! policy; nothing here retries one. A job log is read through the guard's `read_job_log`, which
+//! matches the job to the head on screen before it downloads anything.
 //!
 //! A pull request's head is fetched like any fetch: over the remote's own git transport, with
 //! the git credentials and approved ssh host keys saved for the remote's host
@@ -17,10 +18,10 @@ use std::sync::Arc;
 
 use rc_git_core::{BlobDiff, DEFAULT_BLOB_LIMIT, DEFAULT_DIFF_CONTEXT, Oid, TreeChange};
 use rc_git_guard::actions::github::{
-    self as guard, ActionTarget, ApiToken, AutoMergeRequest, MergeAnswer, MergeRequest,
-    MergeTarget, PullRequestRemote, RerunRequest, list_open_pull_requests, merge_pull_request,
-    plan_merge_pull_request, pull_request_base_ref, pull_request_remote, read_pull_request,
-    refresh_user_token, unix_now,
+    self as guard, ActionTarget, ApiToken, AutoMergeRequest, JobLogError, JobLogRequest,
+    MergeAnswer, MergeRequest, MergeTarget, PullRequestRemote, RerunRequest,
+    list_open_pull_requests, merge_pull_request, plan_merge_pull_request, pull_request_base_ref,
+    pull_request_remote, read_job_log, read_pull_request, refresh_user_token, unix_now,
 };
 use rc_git_guard::actions::{PullHeadFetch, PullHeadRequest, RemoteAuth, fetch_pull_request_head};
 
@@ -28,9 +29,10 @@ use super::changes::{ChangesRead, FetchProblem, HeadFetched, read_changes};
 use super::copy::{fetch_problem, problem};
 use super::flow::{ActionAsk, ActionStop, Stop};
 use super::link::{Linked, RepositoryLink, link_repository};
+use super::logs::{LogAsk, LogStop};
 use super::merge::{MergeAsk, MergeStop, PlanAsk};
 use super::{
-    ActionPlan, ActionRefusal, AutoMergeChange, AutoMergeOutcome, MergeOutcome, MergePlan,
+    ActionPlan, ActionRefusal, AutoMergeChange, AutoMergeOutcome, JobLog, MergeOutcome, MergePlan,
     MergeRefusal, PullRequestService, PullRequestStamp, ReadError, RerunReport,
 };
 use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
@@ -364,6 +366,29 @@ impl PullRequestService for LivePullRequests {
             on_send: ask.on_send,
         };
         guard::rerun_failed_jobs(policy(), request, cancel).map_err(action_stop)
+    }
+
+    fn read_log(
+        &self,
+        linked: &Linked,
+        ask: LogAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<JobLog, LogStop> {
+        let token = self.token(&linked.account, cancel).map_err(LogStop::Read)?;
+        let request = JobLogRequest {
+            host: linked.account.key.host(),
+            token: &token,
+            target: &linked.target,
+            head: ask.head,
+            run: ask.check.run,
+            job: ask.check.job,
+            on_matched: ask.on_matched,
+        };
+        read_job_log(request, cancel).map_err(|error| match error {
+            JobLogError::NotMatched { why, .. } => LogStop::NotMatched(why),
+            JobLogError::NotFinished { .. } => LogStop::NotFinished,
+            JobLogError::Failed(error) => LogStop::Read(ReadError::from_github(&error)),
+        })
     }
 }
 

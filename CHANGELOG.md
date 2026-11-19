@@ -19,8 +19,19 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   checks and what it leaves out, and the note afterwards says how each run's request ended.
   From Terminal: `rc-git pr rerun <n> --head <oid> --base <branch> --yes`. rc-git never approves
   workflow runs from forks or first-time contributors.
+- View Log on a finished GitHub Actions check of a pull request's tab shows that job's log in
+  place of the description, as plain text: colours dropped, invisible and direction-changing
+  characters shown as escapes, and nothing in it clickable. RCGit first checks with GitHub that
+  the job ran on the head commit the tab shows, and shows nothing for a job it cannot match.
+  Only the end of a long log is downloaded (about its last 2 MB), and the tab says when part of
+  it is left out. Stop cancels a download; Close Log puts the description back. From Terminal:
+  `rc-git pr logs <n> --check <name>` or `--job <id>`.
 
 ### Changed
+
+- Re-run Failed Jobs now asks GitHub about each run first and re-runs only the runs that ran on
+  the head commit you confirmed. A run that does not match is not re-run, and the note (and
+  `rc-git pr rerun`, as `not-matched`) says which.
 
 - The Merge confirmation lists what it is about to merge one fact per line, always in the same
   order: the repository and its host, the pull request's number, the GitHub account that

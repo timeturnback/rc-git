@@ -6,7 +6,11 @@
 use serde_json::Value;
 
 use super::host::GitHubHost;
-use super::http::{Body, Delivery, Method, Request, Response, deliver, send};
+use super::http::{
+    Answered, Body, Delivery, Location, Method, Request, Response, deliver, send,
+    send_reading_redirect,
+};
+use super::logs::JobId;
 use super::mutation::{Mutation, MutationRequest};
 use super::secret::ApiToken;
 use super::text::server_text;
@@ -92,10 +96,6 @@ impl<'a> Session<'a> {
     ///
     /// # Errors
     /// [`GitHubError::ForeignRemote`] for a target on another host, else as [`Session::get`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the pull request reads call it")
-    )]
     pub(super) fn get_repo(
         &self,
         op: &'static str,
@@ -107,6 +107,62 @@ impl<'a> Session<'a> {
         let mut segments = vec!["repos", target.owner(), target.name()];
         segments.extend_from_slice(rest);
         self.get(op, &segments, "", cancel)
+    }
+
+    /// Where GitHub keeps the log of job `job` of `target`: `GET
+    /// repos/<owner>/<name>/actions/jobs/<job>/logs` with the token, to this session's host like
+    /// every API call, whose answer is a redirect to the log. This is the only call whose
+    /// redirect rc-git reads instead of refusing ([`send_reading_redirect`]); nothing here
+    /// follows it, and the `Location` comes back unjudged, a secret, for [`LogDownloadUrl::parse`]
+    /// (`super::download`).
+    ///
+    /// # Errors
+    /// [`GitHubError::ForeignRemote`] before any request for a target on another host; what
+    /// [`send`] and [`judge`] return for an answer that is not a redirect, or
+    /// [`GitHubError::Malformed`] when it is a 2xx; [`GitHubError::Malformed`] for a 3xx other
+    /// than 301, 302, 303, 307 and 308 or one with no `Location`.
+    ///
+    /// [`LogDownloadUrl::parse`]: super::download::LogDownloadUrl::parse
+    pub(super) fn job_log_location(
+        &self,
+        op: &'static str,
+        target: &RepositoryTarget,
+        job: JobId,
+        cancel: &Cancel,
+    ) -> GitHubResult<Location> {
+        self.check_target(target)?;
+        let job = job.to_string();
+        let segments = [
+            "repos",
+            target.owner(),
+            target.name(),
+            "actions",
+            "jobs",
+            &job,
+            "logs",
+        ];
+        let request = self.request(op, Method::Get, self.host.rest_url(&segments, "")?);
+        let url = request.url.as_str().to_owned();
+        let malformed = |reason: String| GitHubError::Malformed {
+            op,
+            url: url.clone(),
+            reason,
+        };
+        match send_reading_redirect(request, cancel)? {
+            Answered::Redirect {
+                status: 301 | 302 | 303 | 307 | 308,
+                location: Some(location),
+            } => Ok(location),
+            Answered::Redirect { status, .. } => Err(malformed(format!(
+                "GitHub answered HTTP {status} without the address of the log"
+            ))),
+            Answered::Response(response) => {
+                judge(response, op, &url, self.host, &[self.token.expose_secret()])?;
+                Err(malformed(
+                    "GitHub answered without redirecting to the log".to_owned(),
+                ))
+            }
+        }
     }
 
     /// Runs the static GraphQL read `query` with `variables`. The answer keeps its `data` and
@@ -294,6 +350,16 @@ impl Outbox<'_> {
         let request = mutation.request(self.next)?;
         self.next += 1;
         Some(self.session.send_mutation(mutation.op(), request, cancel))
+    }
+
+    /// Passes over the next request without sending it, ever: the outbox only moves forward, so
+    /// a skipped request can never leave later. Whether there was one to pass over.
+    pub(super) fn skip_next(&mut self) -> bool {
+        let pending = Mutation::of(&self.proof).and_then(|mutation| mutation.request(self.next));
+        if pending.is_some() {
+            self.next += 1;
+        }
+        pending.is_some()
     }
 }
 

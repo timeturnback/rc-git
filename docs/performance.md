@@ -78,6 +78,15 @@ refs. Everything else is on demand.
   nothing of its own: each search reads the files it lists, a batch at a time.
 - **Decorate after painting.** Syntax highlighting and blame load after the content is on
   screen and never block it; a stale result is dropped by generation, like every other load.
+- **Hold a job log's end, never all of it.** A GitHub Actions log can run to hundreds of
+  megabytes. A job log is read only on the user's click, one per tab, and holds at most
+  `LOG_BYTES` (2 MiB, `github/logs.rs`): the request asks for the last 2 MiB with a suffix
+  `Range`, and a storage host that sends the whole log has the transfer stopped at 2 MiB, so
+  memory stays bounded whatever the log's size. The shown text keeps at most `LOG_LINES`
+  (20,000) lines of at most `LOG_LINE_CHARS` (1,000) characters; escaping can make the text up
+  to about six times the bytes downloaded (an escaped control character is six bytes), so a
+  shown log stays under about 12 MiB. Its line starts are computed off the UI thread with the
+  document, and the file viewer shapes only the rows on screen.
 - **Parse for a feature when the user reaches for it.** Import links need a second parse of
   the file, which costs about as much as highlighting it, so it runs on the first pointer
   move over the text. A file opened from the sidebar and read costs nothing extra.

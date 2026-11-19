@@ -15,14 +15,15 @@ use crate::platform::api_tokens::AccountKey;
 use crate::pull_requests::changes::{ChangesRead, FetchProblem, HeadFetched};
 use crate::pull_requests::flow::{ActionAsk, ActionStop};
 use crate::pull_requests::link::{Linked, RepositoryLink};
+use crate::pull_requests::logs::{LogAsk, LogCheck, LogStop};
 use crate::pull_requests::merge::{MergeAsk, MergeStop, PlanAsk};
 use crate::pull_requests::{
     ActionPlan, ActionsIds, AutoMerge, AutoMergeChange, AutoMergeOutcome, Cancel, Check,
-    CheckConclusion, CheckList, CheckProgress, CheckStatus, Decision, DetailFields, MergeKind,
-    MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeStateStatus, Mergeable, PageCursor,
-    PullRequestDetail, PullRequestId, PullRequestPage, PullRequestService, PullRequestStamp,
-    PullRequestState, PullRequestSummary, ReadError, RepositoryTarget, RerunReport,
-    ViewerAbilities,
+    CheckConclusion, CheckList, CheckProgress, CheckStatus, Decision, DetailFields, JobLog,
+    MergeKind, MergeMethod, MergeMethods, MergeOutcome, MergePlan, MergeStateStatus, Mergeable,
+    PageCursor, PullRequestDetail, PullRequestId, PullRequestPage, PullRequestService,
+    PullRequestStamp, PullRequestState, PullRequestSummary, ReadError, RepositoryTarget,
+    RerunReport, ViewerAbilities,
 };
 
 /// What the fake answers and what it was asked.
@@ -99,6 +100,13 @@ pub struct FakePullRequestsState {
     pub action_calls: Vec<FlowCall>,
     /// How many auto-merge changes or re-runs were sent.
     pub actions_sent: usize,
+    /// What [`PullRequestService::read_log`] answers once the job matched.
+    pub log: Result<JobLog, LogStop>,
+    /// Holds each log read at the gate before its job matches, when set; a cancel raised
+    /// meanwhile ends it cancelled.
+    pub log_gate: Option<Arc<CallGate>>,
+    /// The head and check of every log read, in arrival order.
+    pub log_calls: Vec<(Oid, LogCheck)>,
 }
 
 /// One auto-merge change or re-run the fake was asked for.
@@ -188,6 +196,11 @@ impl FakePullRequests {
                 action_plan_calls: Vec::new(),
                 action_calls: Vec::new(),
                 actions_sent: 0,
+                log: Err(LogStop::Read(ReadError::Failed(
+                    "the fake has no log scripted".to_owned(),
+                ))),
+                log_gate: None,
+                log_calls: Vec::new(),
             })),
         }
     }
@@ -456,6 +469,28 @@ impl PullRequestService for FakePullRequests {
     ) -> Result<RerunReport, ActionStop> {
         self.send_action(linked, None, ask, cancel)?;
         self.state().rerun.clone()
+    }
+
+    fn read_log(
+        &self,
+        linked: &Linked,
+        ask: LogAsk<'_>,
+        cancel: &Cancel,
+    ) -> Result<JobLog, LogStop> {
+        let gate = {
+            let mut state = self.state();
+            state.log_calls.push((ask.head, ask.check.clone()));
+            state.log_gate.clone()
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
+        if cancel.is_cancelled() {
+            return Err(LogStop::Read(ReadError::Cancelled));
+        }
+        self.expected(linked).map_err(LogStop::Read)?;
+        (ask.on_matched)();
+        self.state().log.clone()
     }
 }
 

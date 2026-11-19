@@ -13,17 +13,23 @@
 //! ([`MergeKind`]); turns auto-merge on and off ([`set_auto_merge`]); and re-runs the failed jobs
 //! of a pull request's GitHub Actions runs ([`rerun_failed_jobs`]).
 //!
+//! It reads a GitHub Actions job's log ([`read_job_log`]): the one request rc-git sends to a host
+//! other than the account's, to the address GitHub's redirect names, followed by hand once,
+//! `https://` only, without the token, and size-capped.
+//!
 //! No curl or serde type crosses the public API. Secrets travel as [`ApiToken`] and
 //! [`RefreshToken`], whose `Debug` is redacted and which have no `Display`.
 
 mod api;
 mod auto_merge;
 mod device;
+mod download;
 mod error;
 mod guarded;
 mod host;
 mod http;
 mod links;
+mod logs;
 mod merge;
 mod mutation;
 mod oauth;
@@ -53,6 +59,9 @@ mod auto_merge_tests;
 #[cfg(test)]
 mod rerun_tests;
 
+#[cfg(test)]
+mod logs_tests;
+
 pub use auto_merge::{
     AutoMergeAfter, AutoMergeChange, AutoMergeDisable, AutoMergeEnable, AutoMergeOutcome,
     AutoMergeRequest, disable_auto_merge_blocker, enable_auto_merge_blocker, plan_auto_merge,
@@ -63,6 +72,10 @@ pub use error::GitHubError;
 pub use guarded::{ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, PullRequestAction};
 pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host, ssh_dialed_host};
 pub use links::ServerLink;
+pub use logs::{
+    JobId, JobLog, JobLogError, JobLogRequest, LOG_BYTES, LOG_LINE_CHARS, LOG_LINES, LogCut,
+    read_job_log,
+};
 pub use merge::{
     AfterLoss, Bypassed, MergeAnswer, MergeBlocker, MergeKind, MergeOutcome, MergePlan,
     MergeRefusal, MergeRequest, MergeTarget, PullRequestAdminMerge, PullRequestMerge, Settled,

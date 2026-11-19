@@ -178,6 +178,27 @@ pub enum GitHubError {
         /// The `error` code, shown as for [`GitHubError::OAuth`].
         code: String,
     },
+    /// GitHub's redirect for a job log named an address rc-git does not download from. Nothing
+    /// was sent to it. The address carries a signature, so only its host is named.
+    #[error(
+        "download the job log: GitHub named a download address on {host} that rc-git refuses \
+         ({reason}); nothing was sent there"
+    )]
+    LogDownloadRefused {
+        /// The address's host, single-line, or a phrase saying none could be read.
+        host: String,
+        /// What is wrong with the address.
+        reason: &'static str,
+    },
+    /// The job log's storage host answered something rc-git cannot show as the log. Only its
+    /// host is named, never the signed address, and none of its body.
+    #[error("download the job log from {host}: {reason}")]
+    LogDownload {
+        /// The storage host.
+        host: String,
+        /// What it answered.
+        reason: String,
+    },
 }
 
 fn reset_note(reset: Option<u64>) -> String {
