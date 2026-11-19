@@ -24,10 +24,12 @@
 //! which the guard's fresh decision must still have; the `--confirm` text goes to the guard as
 //! typed, and the guard alone checks it against the number.
 //!
-//! `pr auto-merge` (`--enable --method m`, or `--disable`) and `pr rerun` follow the plain
-//! merge: `--head` and `--base` are the stamp, `--yes` the confirm, the challenge goes to stderr
-//! before anything leaves, and once a request has left a second Ctrl+C no longer ends the
-//! command. A re-run sends one request per failed run and prints how each ended.
+//! `pr auto-merge --enable --method m` and `pr rerun` follow the plain merge: `--head` and
+//! `--base` are the stamp, `--yes` the confirm, the challenge goes to stderr before anything
+//! leaves, and once a request has left a second Ctrl+C no longer ends the command. A re-run sends
+//! one request per failed run and prints how each ended. `pr auto-merge --disable` takes `--yes`
+//! alone: turning auto-merge off goes through whatever the head and base are now, so it reads the
+//! pull request for its stamp and refuses `--head` and `--base` rather than seem to check them.
 //!
 //! `pr delete-branch` deletes a merged pull request's head branch on GitHub through the guard as
 //! the app does: `--head` and `--base` are the stamp (the state the caller saw is merged), and the
@@ -38,8 +40,9 @@
 //!
 //! `pr logs` prints one GitHub Actions job's log (`--check <name>` or `--job <id>`): the guard
 //! matches the job to the head just read (or to `--head`, which must still be the head) before
-//! anything is downloaded, and stdout carries the neutralized log alone, with what was left out
-//! on stderr. Neither the token nor the download address is ever printed.
+//! anything is downloaded, and stdout carries the neutralized log alone, with the job's own name
+//! (and a note when it is not the check's) and what was left out on stderr. Neither the token
+//! nor the download address is ever printed.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,7 +61,7 @@ use rc_git_kit::pull_requests::auto_merge::{AutoMergeFlow, AutoMergeIntent};
 use rc_git_kit::pull_requests::changes::{ChangesRead, ComparedWith, FetchProblem, HeadFetched};
 use rc_git_kit::pull_requests::checks::{self, check_state, ordered, row_state};
 use rc_git_kit::pull_requests::copy::{
-    auto_merge_note, check_label, delete_branch_note, log_cut_notes, log_stop_note,
+    auto_merge_note, check_label, delete_branch_note, job_name_note, log_cut_notes, log_stop_note,
     merge_method_word, merge_note, merge_stop_message, mergeable_label, problem, rerun_note,
     review_label, state_label, stop_message,
 };
@@ -72,8 +75,8 @@ use rc_git_kit::pull_requests::merge::{
 };
 use rc_git_kit::pull_requests::rerun::{RerunFlow, RerunIntent};
 use rc_git_kit::pull_requests::{
-    ActionRefusal, AutoMergeChange, AutoMergeOutcome, BranchDeleteOutcome, Bypassed, Check,
-    Decision, JobId, MergeKind, MergeMethod, MergePlan, MergeRefusal, PageCursor,
+    ActionRefusal, AutoMergeChange, AutoMergeOutcome, BackupKeptStop, BranchDeleteOutcome,
+    Bypassed, Check, Decision, JobId, MergeKind, MergeMethod, MergePlan, MergeRefusal, PageCursor,
     PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState, PullRequestSummary,
     ReadError, ReviewDecision, RunOutcome, ServerLink,
 };
@@ -463,6 +466,10 @@ fn logs(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
         writeln!(out, "{}", log.text)?;
     }
     let mut notes = Vec::new();
+    writeln!(notes, "job\t{}\t{}", log.job, log.name)?;
+    if let Some(note) = job_name_note(&log.name, &check.name) {
+        writeln!(notes, "note\t{note}")?;
+    }
     for note in log_cut_notes(log.cut, log.lines_left_out, log.lines_shortened) {
         writeln!(notes, "truncated\t{note}")?;
     }
@@ -909,7 +916,11 @@ const ACTION_VALUED: [&str; 5] = ["--login", "--ssh-dir", "--method", "--head", 
 /// An auto-merge change or a re-run that sent nothing, with the exit code it ends with.
 fn action_stopped(stop: &ActionStop) -> anyhow::Error {
     let code = match stop {
-        ActionStop::Cancelled => EXIT_INTERRUPTED,
+        ActionStop::Cancelled
+        | ActionStop::Refused(ActionRefusal::BackupKept {
+            stop: BackupKeptStop::Cancelled,
+            ..
+        }) => EXIT_INTERRUPTED,
         ActionStop::SignedOut { .. } => EXIT_AUTH,
         ActionStop::Refused(
             ActionRefusal::NotConfirmed { .. } | ActionRefusal::NotTyped { .. },
@@ -941,6 +952,30 @@ fn auto_merge_change(args: &VerbArgs<'_>) -> Result<AutoMergeChange> {
             "pr auto-merge needs exactly one of --enable or --disable".to_owned(),
         )
         .into()),
+    }
+}
+
+/// The stamp `pr auto-merge` compares the guard's read with: `--head` and `--base` to turn it on;
+/// none to turn it off, which the guard allows whatever the head and base are now, so the command
+/// reads the pull request itself and refuses `--head` and `--base` rather than seem to check them.
+fn pinned_stamp(
+    args: &VerbArgs<'_>,
+    number: u64,
+    change: AutoMergeChange,
+) -> Result<Option<PullRequestStamp>> {
+    match change {
+        AutoMergeChange::Enable(_) => Ok(Some(stamp(args, number, "pr auto-merge --enable")?)),
+        AutoMergeChange::Disable
+            if args.value(&["--head"]).is_some() || args.value(&["--base"]).is_some() =>
+        {
+            Err(UsageError(
+                "pr auto-merge --disable takes no --head or --base: it turns auto-merge off \
+                 whatever the head and base are now"
+                    .to_owned(),
+            )
+            .into())
+        }
+        AutoMergeChange::Disable => Ok(None),
     }
 }
 
@@ -976,8 +1011,8 @@ fn repository_label(linked: &Linked) -> String {
     )
 }
 
-/// Turns auto-merge of pull request `<n>` on (`--enable --method m`) or off (`--disable`) once
-/// `--yes` confirms it, for the head and base the caller saw (`--head`, `--base`). Without
+/// Turns auto-merge of pull request `<n>` on (`--enable --method m`, for the head and base the
+/// caller saw: `--head`, `--base`) or off (`--disable`) once `--yes` confirms it. Without
 /// `--yes` it prints the challenge and sends nothing; with it, the challenge goes to stderr
 /// before the one request leaves.
 fn auto_merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
@@ -990,9 +1025,19 @@ fn auto_merge(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
     args.expect(1, 2, "<number> [repo]")?;
     let number = number(&args)?;
     let change = auto_merge_change(&args)?;
-    let stamp = stamp(&args, number, "pr auto-merge")?;
+    let pinned = pinned_stamp(&args, number, change)?;
     let (service, linked) = linked(&args, 1)?;
     let (cancel, exits) = crate::interruptible(&crate::STOP_SIGNALS)?;
+    let stamp = match pinned {
+        Some(stamp) => stamp,
+        None => PullRequestStamp {
+            state: PullRequestState::Open,
+            ..service
+                .detail(&linked, number, &cancel)
+                .map_err(|error| failure(&error))?
+                .stamp()
+        },
+    };
     let plan = service
         .plan_auto_merge(&linked, &stamp, change, &cancel)
         .map_err(|stop| action_stopped(&stop))?;
@@ -1195,10 +1240,7 @@ fn delete_branch(raw: &[String], out: &mut Vec<u8>) -> Result<ExitCode> {
         }
         .into());
     };
-    let intent = DeleteBranchIntent {
-        repo_path: repo_path.clone(),
-        remote: linked.remote.clone(),
-    };
+    let intent = DeleteBranchIntent::new(repo_path.clone(), &linked);
     let (mut flow, load) =
         DeleteBranchFlow::begin(1, repository_label(&linked), stamp.clone(), intent);
     flow.planned(load.generation, Ok(plan.clone()));

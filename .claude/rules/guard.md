@@ -28,7 +28,8 @@ here; so does everything that comes later.
   existing slot (`-2`, `-3`, …, read once, not probed), so nothing is overwritten, and a slot
   of the same name already holding the object is reused. `Writer::write_backup_ref`
   is that one implementation, gated on `Writer::backup_required`; new destructive actions
-  reuse it.
+  reuse it. It refuses a slot whose name differs from a ref of its kind only in ASCII case
+  (`refuse_case_twin`): on a case-insensitive volume the new loose ref would hide the old backup.
 - Ref edits go through `Writer::apply_edit` (synthetic `rc-git` committer for the reflog).
   Object, index, working-tree and reflog writes live beside it on the `Writer`, each behind its
   own `#[expect(clippy::disallowed_methods, reason = ...)]`; nothing outside the `actions`
@@ -139,11 +140,18 @@ here; so does everything that comes later.
 - Send the job log's second storage request only after a `416` refusing the range, from
   `download_log`; never a third (`check.sh` counts the `download` calls).
 - Delete a pull request's head branch only through `delete_head_branch`: `delete_remote`'s rule,
-  the backup ref written and read back before the one `deleteRef`, by ref id, never by name.
+  the backup ref written and read back, then one `updateRefs` whose `beforeOid` is the backed-up
+  commit; never a delete that names no expected commit (`deleteRef`, REST `DELETE`).
+- After the backup ref is written, a cancel or an unsent request is `ActionRefusal::BackupKept`
+  (it names the ref), never `Cancelled` or `NotSent`.
 - Refuse a branch name `typeable` rejects (a challenge would show it changed); never accept an
   escape-form phrase.
 - Say in an auto-merge challenge that later commits merge without asking; assert nothing about
   when GitHub cancels auto-merge beyond what `docs/safety.md`, "Auto-merge", cites.
+- Keep turning auto-merge off decided on the number, account and auto-merge request alone
+  (`AutoMergeDisable`, `changed_for`): a title, head or base in it lets an author block it.
+- Never state a merge method as what GitHub will use: a merge queue overrides it, and rc-git does
+  not read whether there is one.
 - Fetch a pull request head only through `fetch_pull_request_head` (`actions/remote/pull_head.rs`):
   its refspec comes from `pull_head::refspec(number)` alone, never from server text, it fetches
   no tags, and `run_fetch` refuses before `receive` when the advertised head is not the stamp's.

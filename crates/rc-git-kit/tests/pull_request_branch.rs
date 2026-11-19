@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext, Entity, TestAppContext};
 use rc_git_kit::fake::{
-    CallGate, FakePullRequests, delete_branch_plan, merged_detail, oid, pull_request,
+    CallGate, FakePullRequests, delete_branch_plan, linked, merged_detail, oid, pull_request,
     pull_request_detail,
 };
 use rc_git_kit::github::accounts::{GitHubAccount, GitHubAccounts, SignInMethod};
@@ -24,6 +24,7 @@ use rc_git_kit::pull_requests::copy::{
 };
 use rc_git_kit::pull_requests::delete_branch::{
     BranchAsk, DeleteBranchControl, DeleteBranchFlow, DeleteBranchIntent, delete_branch_control,
+    restore_destination,
 };
 use rc_git_kit::pull_requests::flow::{ActionStop, Ended, Phase, TabFlow};
 use rc_git_kit::pull_requests::link::RepositoryLink;
@@ -31,9 +32,9 @@ use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::model::{FlowEvent, PullRequestsModel};
 use rc_git_kit::pull_requests::state::DetailState;
 use rc_git_kit::pull_requests::{
-    ActionRefusal, BranchAfter, BranchDeleteOutcome, BranchDeleteReport, CheckList,
-    PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState, ReadError, Settled,
-    ViewerAbilities, single_line,
+    ActionRefusal, BackupKeptStop, BranchAfter, BranchDeleteOutcome, BranchDeleteReport, CheckList,
+    GitHubError, PullRequestDetail, PullRequestService, PullRequestStamp, PullRequestState,
+    ReadError, Settled, ViewerAbilities, single_line,
 };
 use rc_git_testkit::Fixture;
 use rc_git_testkit::github::{BranchScript, DeleteBehaviour, FakeToken, GitHubServer};
@@ -62,10 +63,7 @@ fn tab(answer: Result<PullRequestDetail, ReadError>) -> DetailState {
 }
 
 fn intent() -> DeleteBranchIntent {
-    DeleteBranchIntent {
-        repo_path: REPO.to_owned(),
-        remote: "origin".to_owned(),
-    }
+    DeleteBranchIntent::new(REPO.to_owned(), &linked())
 }
 
 /// The report of a delete of `feature` at `oid(head)` that ended as `outcome`.
@@ -272,7 +270,7 @@ fn the_restore_command_quotes_what_a_shell_would_read() {
             shown.stamp(),
             DeleteBranchIntent {
                 repo_path: REPO.to_owned(),
-                remote: "up stream".to_owned(),
+                push_to: "up stream".to_owned(),
             },
         );
         flow.planned(load.generation, Ok(delete_branch_plan(&shown)));
@@ -297,6 +295,92 @@ fn the_restore_command_quotes_what_a_shell_would_read() {
         ),
         "{note}"
     );
+}
+
+#[test]
+fn a_delete_stopped_after_its_backup_names_the_backup_and_the_untouched_branch() {
+    for stop in [
+        BackupKeptStop::Cancelled,
+        BackupKeptStop::NotSent(Box::new(GitHubError::Transport {
+            op: "delete the head branch",
+            url: "https://github.com/…".to_owned(),
+            reason: "Couldn't connect to server".to_owned(),
+        })),
+    ] {
+        let shown = detail(7);
+        let (mut flow, load) =
+            DeleteBranchFlow::begin(1, REPOSITORY.to_owned(), shown.stamp(), intent());
+        flow.planned(load.generation, Ok(delete_branch_plan(&shown)));
+        flow.confirm("feature".to_owned()).unwrap();
+        let refusal = ActionRefusal::BackupKept {
+            pull_request: "octo/rc-git#7".to_owned(),
+            branch: "\u{201c}feature\u{201d}".to_owned(),
+            backup_ref: BACKUP.to_owned(),
+            stop,
+        };
+        flow.finished(1, Err(ActionStop::Refused(refusal)));
+        let note = delete_branch_note(&flow).unwrap();
+        assert!(
+            note.contains(BACKUP)
+                && note.contains("nothing was sent and the branch on GitHub is untouched"),
+            "{note}"
+        );
+        let Phase::Done(end) = flow.phase() else {
+            panic!("done");
+        };
+        assert!(branch_outcome_log(&flow, end).contains(BACKUP));
+    }
+}
+
+#[test]
+fn the_restore_command_names_a_remote_only_when_its_name_is_a_plain_word() {
+    let target = linked().target;
+    let url = "https://github.com/octo/rc-git.git";
+    for plain in ["origin", "up-stream", "fork_2", "a.b", "U1"] {
+        assert_eq!(restore_destination(plain, &target), plain);
+    }
+    let long = "a".repeat(101);
+    for hostile in [
+        "--receive-pack=x",
+        "-u",
+        "ori\u{1b}[31mgin",
+        "ori\ngin",
+        "up stream",
+        "$(id)",
+        "or\u{ed}gin",
+        "https://evil.example/x.git",
+        ".origin",
+        "",
+        long.as_str(),
+    ] {
+        assert_eq!(restore_destination(hostile, &target), url, "{hostile:?}");
+    }
+    for remote in ["--receive-pack=touch /tmp/pwned", "ori\u{1b}[2Jgin\u{202e}"] {
+        let mut hostile = linked();
+        hostile.remote = remote.to_owned();
+        let shown = detail(7);
+        let (mut flow, load) = DeleteBranchFlow::begin(
+            1,
+            REPOSITORY.to_owned(),
+            shown.stamp(),
+            DeleteBranchIntent::new(REPO.to_owned(), &hostile),
+        );
+        flow.planned(load.generation, Ok(delete_branch_plan(&shown)));
+        flow.confirm("feature".to_owned()).unwrap();
+        let deleted = BranchDeleteOutcome::Deleted {
+            settled: Settled::Answer,
+        };
+        flow.finished(1, Ok(report(7, deleted, false)));
+        let note = delete_branch_note(&flow).unwrap();
+        assert!(
+            note.ends_with(&format!("git push {url} {BACKUP}:refs/heads/feature")),
+            "{remote:?}: {note}"
+        );
+        assert!(
+            !note.contains("receive-pack") && !note.contains(['\u{1b}', '\u{202e}']),
+            "{note}"
+        );
+    }
 }
 
 #[test]
@@ -523,7 +607,7 @@ async fn a_plan_answer_of_an_old_link_is_dropped(cx: &mut TestAppContext) {
 }
 
 const TOKEN: &str = "ghp_live_branch_token_0123";
-const REF_ID: &str = "REF_kwDOlive7";
+const REPO_ID: &str = "R_kgDOlive7";
 
 /// A repository whose `origin` is `octo/rc-git` on `server`, an account for `server` with
 /// [`TOKEN`] stored, and the live service over both.
@@ -562,14 +646,14 @@ fn branch_read(head: &str, at: Option<&str>) -> String {
         || "null".to_owned(),
         |at| {
             format!(
-                r#"{{"id":"{REF_ID}","name":"shipped","prefix":"refs/heads/",
+                r#"{{"name":"shipped","prefix":"refs/heads/",
                 "target":{{"oid":"{at}"}},"repository":{{"name":"rc-git","owner":{{"login":"octo"}}}},
                 "associatedPullRequests":{{"totalCount":0,"nodes":[]}}}}"#
             )
         },
     );
     format!(
-        r#"{{"data":{{"repository":{{"defaultBranchRef":{{"name":"main"}},"pullRequest":{{
+        r#"{{"data":{{"repository":{{"id":"{REPO_ID}","defaultBranchRef":{{"name":"main"}},"pullRequest":{{
         "number":7,"title":"Ship","state":"MERGED","merged":true,"headRefName":"shipped",
         "headRefOid":"{head}","baseRefName":"main","isCrossRepository":false,
         "viewerCanDeleteHeadRef":true,"headRepository":{{"name":"rc-git","owner":{{"login":"octo"}}}},
@@ -577,11 +661,32 @@ fn branch_read(head: &str, at: Option<&str>) -> String {
     )
 }
 
+/// Pull request 7's head branch `shipped` of `target` on `server`, at `head`, deleted once.
+fn script_live_branch(
+    server: &GitHubServer,
+    target: &rc_git_kit::pull_requests::RepositoryTarget,
+    head: &str,
+) {
+    use rc_git_guard::actions::github::testing::{
+        based_on_request_body, delete_branch_request_body, head_branch_request_body,
+    };
+    server.script_branch(BranchScript {
+        read: head_branch_request_body(target, 7),
+        present: branch_read(head, Some(head)),
+        present_at: head.to_owned(),
+        changed: branch_read(head, Some(head)),
+        changed_at: head.to_owned(),
+        deleted: branch_read(head, None),
+        based_on: based_on_request_body(target, "shipped"),
+        based_on_answer: r#"{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]}}}}"#
+            .to_owned(),
+        mutation: delete_branch_request_body(REPO_ID, "shipped", head),
+        behaviour: DeleteBehaviour::Delete,
+    });
+}
+
 #[test]
 fn the_live_service_backs_up_then_deletes_once_through_the_guard() {
-    use rc_git_guard::actions::github::testing::{
-        based_on_request_body, delete_ref_request_body, head_branch_request_body,
-    };
     let server = GitHubServer::start();
     let (fixture, service) = live(&server);
     let repo_path = fixture.path().to_string_lossy().into_owned();
@@ -589,17 +694,7 @@ fn the_live_service_backs_up_then_deletes_once_through_the_guard() {
         panic!("linked");
     };
     let head = fixture.rev_parse("HEAD");
-    server.script_branch(BranchScript {
-        read: head_branch_request_body(&linked.target, 7),
-        present: branch_read(&head, Some(&head)),
-        changed: branch_read(&head, Some(&head)),
-        deleted: branch_read(&head, None),
-        based_on: based_on_request_body(&linked.target, "shipped"),
-        based_on_answer: r#"{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]}}}}"#
-            .to_owned(),
-        mutation: delete_ref_request_body(REF_ID),
-        behaviour: DeleteBehaviour::Delete,
-    });
+    script_live_branch(&server, &linked.target, &head);
     let stamp = PullRequestStamp {
         number: 7,
         head_oid: rc_git_core::Oid::from_hex(&head).unwrap(),

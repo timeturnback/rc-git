@@ -204,6 +204,7 @@ impl<'a> Writer<'a> {
         } else {
             format!("{base}-{slot}")
         };
+        refuse_case_twin(self.repo, &candidate)?;
         let edit = update_edit(
             &candidate,
             PreviousValue::MustNotExist,
@@ -718,6 +719,45 @@ fn scan_backups(repo: &gix::Repository, base: &str, target: ObjectId) -> ActionR
         }
     }
     Ok(scan)
+}
+
+/// Refuses to write the backup ref `candidate` when a ref beside it, under the same backup kind,
+/// differs from its last component only in ASCII letter case (`…/Feature` beside `…/feature`, or
+/// a ref nested below such a name). On a case-insensitive file system, macOS's default, a loose
+/// ref is a file found whatever the case of its name, so writing `candidate` would hide that
+/// backup, a packed one included, and a read of it would answer `candidate`'s commit. Refused
+/// whatever `core.ignorecase` says: a refusal costs nothing, a hidden backup costs the way back.
+///
+/// # Errors
+/// [`ActionError::Git`] naming `candidate` and the ref in the way, or when the refs beside it
+/// cannot be listed.
+fn refuse_case_twin(repo: &gix::Repository, candidate: &str) -> ActionResult<()> {
+    const OP: &str = "write backup ref";
+    let Some(slash) = candidate.rfind('/') else {
+        return Ok(());
+    };
+    let (dir, leaf) = candidate.split_at(slash + 1);
+    let platform = repo.references().map_err(git_err(OP, candidate))?;
+    for reference in platform.prefixed(dir).map_err(git_err(OP, candidate))? {
+        let reference = reference.map_err(|source| ActionError::git(OP, candidate, source))?;
+        let name = reference.name().as_bstr().to_string();
+        let Some(rest) = name.strip_prefix(dir) else {
+            continue;
+        };
+        let first = rest.split('/').next().unwrap_or_default();
+        if first != leaf && first.eq_ignore_ascii_case(leaf) {
+            return Err(ActionError::git(
+                OP,
+                candidate,
+                format!(
+                    "the backup ref {name} differs from it only in letter case, and on a \
+                     case-insensitive file system one would hide the other; nothing was \
+                     changed. Move that backup ref aside with git first"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The slot a ref name occupies given what follows its base: 1 for nothing or `/…`, `n` for

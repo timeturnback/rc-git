@@ -1055,8 +1055,7 @@ impl PullRequestsModel {
         let (Some(repo_path), Some(linked)) = (self.repo_path.clone(), self.linked()) else {
             return;
         };
-        let remote = linked.remote;
-        self.begin(number, DeleteBranchIntent { repo_path, remote }, cx);
+        self.begin(number, DeleteBranchIntent::new(repo_path, &linked), cx);
     }
 
     /// Starts `ask` on tab `number` when the tab shows a current read and no action of it runs.

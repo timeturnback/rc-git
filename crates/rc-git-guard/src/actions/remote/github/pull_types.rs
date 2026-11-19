@@ -411,12 +411,12 @@ impl PullRequestId {
     }
 }
 
-/// A ref's GraphQL node id (`REF_kwDO…`), as the host handed it out: opaque text that only ever
-/// travels back in a mutation's `variables`, never shown and never part of a URL.
+/// A repository's GraphQL node id (`R_kgDO…`), as the host handed it out: opaque text that only
+/// ever travels back in a mutation's `variables`, never shown and never part of a URL.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RefId(String);
+pub struct RepositoryId(String);
 
-impl RefId {
+impl RepositoryId {
     /// `text` as a node id, by [`PullRequestId::parse`]'s rule, else `None`.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {

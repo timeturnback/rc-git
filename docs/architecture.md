@@ -57,7 +57,7 @@ without it, kept to its first 2 MiB) and neutralized. Deleting a merged pull req
 branch (`delete_head_branch`, `delete_branch`) reads the pull request and its head branch again,
 refuses what changed since the stamp or is not the pull request's own merged branch, checks the
 head commit is in the local object database, writes the backup ref through the `Writer` its
-`Confirmation` builds, and only then sends one `deleteRef`.
+`Confirmation` builds, and only then sends one `updateRefs` whose `beforeOid` is that commit.
 rc-git-kit's `pull_requests` module links a repository to its
 GitHub repository and account (`link`), holds the list and each open pull request tab as state
 machines with a generation per read and one read queued at most (`state`), a tab's changes as a

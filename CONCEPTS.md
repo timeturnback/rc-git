@@ -39,13 +39,15 @@ admin merge.
 A ref recorded under rc-git's own namespace before a destructive action runs, pointing
 at whatever is about to be deleted, so the previous state can be restored by hand.
 Backups are numbered rather than overwritten, so repeating an action never destroys an
-earlier backup.
+earlier backup, and a backup whose name differs from an earlier one's only in letter case is
+refused, since on a case-insensitive volume it would hide that one.
 
 A backup can also stand for something that is not local. Deleting a merged pull request's head
 branch on GitHub writes `refs/rc-git/backup/remote-branch/<name>` at the branch's commit, and
-reads it back, before the request leaves; the branch is restored by pushing that ref to GitHub
-under its name. rc-git refuses the delete when the commit is not in the local object database,
-since then no backup could hold it.
+reads it back, before the request leaves, and the request names that commit as the one the
+branch must still be at, so GitHub deletes nothing the backup does not hold; the branch is
+restored by pushing that ref to GitHub under its name. rc-git refuses the delete when the
+commit is not in the local object database, since then no backup could hold it.
 
 ## Dirty overlap
 
@@ -192,7 +194,8 @@ nothing. It is what an action on the pull request is to compare a fresh read aga
 with "changed since you looked" when they differ. The fetch of a pull request head is the first
 to use it: it writes nothing unless the remote's head is the stamp's. A merge is the second: it
 sends nothing unless a read made just before it shows the stamp's head, base and state; so do
-an auto-merge change and a re-run of failed jobs.
+turning auto-merge on and a re-run of failed jobs. Turning auto-merge off, the safe direction,
+compares the number and the state alone.
 
 ## Pull request merge
 
@@ -216,8 +219,9 @@ to its head branch by then, without asking anyone again. Turning it on is a guar
 its own, confirmed like a merge: rc-git offers it only for a pull request branch protection
 blocks (one that can merge now is told to use Merge), its challenge says in a line of its own
 that later commits merge too and rc-git will not ask again, and names the owner of a head
-branch in someone else's repository. Turning it off is a guarded action too. Each sends one
-request, settled like a merge: done, refused, or unknown.
+branch in someone else's repository. Turning it off is a guarded action too, decided on the
+pull request, the account and the auto-merge request alone, so no push or retitle holds it up.
+Each sends one request, settled like a merge: done, refused, or unknown.
 
 ## Failed run
 

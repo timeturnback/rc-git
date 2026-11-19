@@ -229,9 +229,14 @@ pub const CHANGES_READING: &str = "Reading the changes…";
 /// What the diff pane says before a file is picked.
 pub const PICK_A_FILE: &str = "Select a file to see its changes.";
 
-/// What the changes view says for `phase`, the changes of `stamp` read from `remote`.
+/// The longest remote name a note shows, in characters.
+const MAX_REMOTE_SHOWN: usize = 100;
+
+/// What the changes view says for `phase`, the changes of `stamp` read from `remote`, whose name
+/// (the repository's own config chose it) is shown neutralized.
 #[must_use]
 pub fn changes_note(phase: &ChangesPhase, stamp: &PullRequestStamp, remote: &str) -> String {
+    let remote = &single_line(remote, MAX_REMOTE_SHOWN);
     let (number, head) = (stamp.number, short_hash(&stamp.head_oid));
     match phase {
         ChangesPhase::Reading => CHANGES_READING.to_owned(),
@@ -665,15 +670,18 @@ pub const AUTO_MERGE_NOTE: &str = "Auto-merge lets GitHub merge this pull reques
 /// The button that re-runs failed jobs, and the title and confirm button of its challenge.
 pub const RERUN_FAILED_JOBS: &str = "Re-run Failed Jobs";
 
-/// The line under the auto-merge control while auto-merge is on, with the `method` it merges
-/// with and who turned it on, as the read reported them.
+/// The line under the auto-merge control while auto-merge is on, with the `method` its request
+/// names and who turned it on, as the read reported them. GitHub's reference says a merge queue
+/// the base requires sets the method when it merges, and rc-git does not read whether there is
+/// one, so the method is the request's, not a promise.
 #[must_use]
 pub fn auto_merge_on_line(method: Option<MergeMethod>, enabled_by: Option<&str>) -> String {
     let how = method.map_or("a method rc-git does not know", merge_method_phrase);
     let by = enabled_by.map_or_else(String::new, |login| format!(" Turned on by {login}."));
     format!(
-        "Auto-merge is on: GitHub merges this pull request by itself as {how} once its \
-         requirements are met, with any commits pushed to its head branch by then.{by}"
+        "Auto-merge is on: GitHub merges this pull request by itself once its requirements are \
+         met, with any commits pushed to its head branch by then. Its request names {how}; a \
+         merge queue on the base branch, if there is one, applies its own method.{by}"
     )
 }
 
@@ -1115,41 +1123,49 @@ pub fn delete_branch_note(flow: &DeleteBranchFlow) -> Option<String> {
              GitHub's answer…"
         ),
         Phase::Done(Ended::NotSent(stop)) => stop_message(stop),
-        Phase::Done(Ended::Sent(report)) => branch_report_note(&flow.ask().remote, report),
+        Phase::Done(Ended::Sent(report)) => branch_report_note(&flow.ask().push_to, report),
     };
     Some(note)
 }
 
-/// How to bring the branch of `report` back from its backup ref, through `remote`: a command the
-/// user can paste, every word quoted for the shell.
+/// The longest push destination a restore command shows.
+const MAX_PUSH_TO_CHARS: usize = 600;
+
+/// How to bring the branch of `report` back from its backup ref, pushing to `push_to` (a plain
+/// remote name or the repository's URL, [`super::delete_branch::restore_destination`]): a
+/// command the user can paste, every word quoted for the shell.
 #[must_use]
-pub fn branch_restore(remote: &str, report: &BranchDeleteReport) -> String {
+pub fn branch_restore(push_to: &str, report: &BranchDeleteReport) -> String {
     let refspec = format!("{}:refs/heads/{}", report.backup_ref, report.branch);
     format!(
         "To bring the branch back, push the backup ref to GitHub under its name: git push {} {}",
-        crate::shell_word::quote(remote),
+        crate::shell_word::quote(&single_line(push_to, MAX_PUSH_TO_CHARS)),
         crate::shell_word::quote(&refspec)
     )
 }
 
-/// What a delete whose request left says: what GitHub did, the backup ref that keeps the commit,
-/// how to restore the branch from it, and a local branch of the same name left alone.
-fn branch_report_note(remote: &str, report: &BranchDeleteReport) -> String {
+/// What a delete whose request left says: what GitHub did, the backup ref that holds the commit
+/// rc-git read, how to restore the branch from it, and a local branch of the same name left
+/// alone.
+fn branch_report_note(push_to: &str, report: &BranchDeleteReport) -> String {
     const LOOK: &str = "Look at the branch on GitHub before trying again.";
     let branch = format!("\u{201c}{}\u{201d}", report.branch);
     let commit = short_hash(&report.head_oid);
     let kept = format!(
-        "Its commit {commit} stays in this repository under the backup ref {}.",
+        "The backup ref {} in this repository holds {commit}, the commit rc-git read.",
         report.backup_ref
     );
-    let restore = branch_restore(remote, report);
+    let restore = branch_restore(push_to, report);
     let main = match &report.outcome {
         BranchDeleteOutcome::Deleted { settled } => {
             let how = match settled {
-                Settled::Answer => "",
-                Settled::Reread => {
-                    " GitHub's answer was lost; reading it again shows the branch gone."
-                }
+                Settled::Answer => format!(
+                    " The delete named {commit} as the commit the branch had to be at, and \
+                     GitHub deleted it, so the branch was at {commit}."
+                ),
+                Settled::Reread => " GitHub's answer was lost; reading it again shows the branch \
+                                    gone."
+                    .to_owned(),
             };
             format!("Deleted {branch} on GitHub.{how} {kept} {restore}")
         }
@@ -1261,10 +1277,42 @@ pub const STOP_LOG: &str = "Stop";
 /// The log panel's button that closes it.
 pub const CLOSE_LOG: &str = "Close Log";
 
-/// The log panel's heading: `Log of “name”`.
+/// The log panel's heading: `Log of “name”`, the job's own name as GitHub's job read gave it once
+/// the log shows, the check's name before.
 #[must_use]
 pub fn log_title(log: &LogState) -> String {
-    format!("Log of \u{201c}{}\u{201d}", log.check().name)
+    let name = match log.phase() {
+        LogPhase::Shown(shown) => &shown.name,
+        LogPhase::Matching
+        | LogPhase::Downloading
+        | LogPhase::NotMatched(_)
+        | LogPhase::NotFinished
+        | LogPhase::Failed(_) => &log.check().name,
+    };
+    format!("Log of \u{201c}{name}\u{201d}")
+}
+
+/// What the log panel says when GitHub's job read names the job otherwise than the check on the
+/// page: both names, so a log never stands under a name it was not read for. `None` while no log
+/// shows, or when the names match. The job was matched by its id, run and head commit, so a
+/// different name is shown, not refused.
+#[must_use]
+pub fn log_name_note(log: &LogState) -> Option<String> {
+    let LogPhase::Shown(shown) = log.phase() else {
+        return None;
+    };
+    job_name_note(&shown.name, &log.check().name)
+}
+
+/// [`log_name_note`]'s words for a job GitHub names `job` whose check is named `check`.
+#[must_use]
+pub fn job_name_note(job: &str, check: &str) -> Option<String> {
+    (job != check).then(|| {
+        format!(
+            "GitHub names this job \u{201c}{job}\u{201d}; its check on this page is named \
+             \u{201c}{check}\u{201d}."
+        )
+    })
 }
 
 /// What the log panel says while it reads or when it shows no log; `None` once the log shows.
@@ -1340,7 +1388,7 @@ pub fn log_cut_notes(cut: LogCut, left_out: usize, shortened: usize) -> Vec<Stri
             bytes(kept)
         )),
         LogCut::Head { kept } => notes.push(format!(
-            "Showing the first {} of the log; the rest was not downloaded.",
+            "Showing the first {} of the log; anything after that was not downloaded.",
             bytes(kept)
         )),
     }

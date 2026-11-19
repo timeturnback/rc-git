@@ -579,7 +579,7 @@ mod tests {
     fn head_branch_of(number: u64, name: &str) -> actions::github::HeadBranch {
         use actions::github::{
             BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestStamp, PullRequestState,
-            RefId,
+            RepositoryId,
         };
         let head = rc_git_core::Oid::from_hex(&"ab".repeat(20)).unwrap();
         HeadBranch {
@@ -595,11 +595,11 @@ mod tests {
             in_repository: true,
             viewer_can_delete: true,
             head_ref: Some(HeadRef {
-                id: RefId::parse("REF_kwDOfeature"),
                 target: Some(head),
                 is_head_branch: true,
                 open_heads: Some(OpenPullRequests::default()),
             }),
+            repository_id: RepositoryId::parse("R_kgDOfeature"),
             default_branch: Some(false),
             open_bases: Some(OpenPullRequests::default()),
         }
@@ -723,6 +723,8 @@ mod tests {
              Account: octocat@github.com\n\
              Branch: \u{201c}feature/x-1\u{201d}\n\
              Commit: abababa\n\
+             Commit check: the delete names abababa as the commit the branch must still be at, \
+             so GitHub refuses it for a branch pushed to since\n\
              Backup: refs/rc-git/backup/remote-branch/feature%2Fx%2D1 (or the next numbered slot \
              after it), at abababa, written before anything is sent\n\
              For everyone: GitHub deletes the branch for everyone who uses the repository; rc-git \
@@ -792,6 +794,8 @@ mod tests {
              Base: \u{201c}main\u{201d}\n\
              Head: abababa on \u{201c}feature\u{201d}\n\
              Method: a squash merge\n\
+             Merge queue: rc-git does not read whether the base branch uses a merge queue; if it \
+             does, GitHub ignores the method above and the queue's own method applies\n\
              Checks: 1 of 4 checks passed, 1 failed, 1 pending, 1 not read\n\
              Merges by itself: GitHub will merge this pull request by itself when its \
              requirements are met, including commits pushed to its head branch after this \
@@ -837,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn turning_off_auto_merge_names_the_request_it_ends() {
+    fn turning_off_auto_merge_names_the_request_it_ends_and_nothing_a_push_or_retitle_changes() {
         let c = challenge(Policy::default().evaluate(&disable_auto_merge_into("main")));
         assert_eq!(c.typed_phrase(), None);
         assert_eq!(c.risk(), Risk::Recoverable);
@@ -848,10 +852,12 @@ mod tests {
              Repository: octo/rc-git on github.com\n\
              Pull request: #7\n\
              Account: octocat@github.com\n\
-             Base: \u{201c}main\u{201d}\n\
-             Head: abababa on \u{201c}feature\u{201d}\n\
-             Auto-merge: on, as a squash merge, turned on by \u{201c}mona\u{201d}\n\
-             Title: \u{201c}Ship \\u{202e}it\u{201d}"
+             Auto-merge: on, as a squash merge, turned on by \u{201c}mona\u{201d}"
+        );
+        assert_eq!(
+            Policy::default().evaluate(&disable_auto_merge_into("main")),
+            Policy::default().evaluate(&disable_auto_merge_into("develop")),
+            "a retargeted base is the same decision"
         );
     }
 
@@ -951,7 +957,9 @@ mod tests {
              Skipped: required checks that failed: \u{201c}lint\u{201d}; required checks not \
              finished: \u{201c}deploy\u{201d}\n\
              May also skip: The read did not hold 1 of the head's checks; any of them may be \
-             required. Branch protection or rulesets may also require things GitHub's API does \
+             required. rc-git does not read whether a ruleset requires the base branch's merge \
+             queue; such a requirement may be skipped too. Branch protection or rulesets may \
+             also require things GitHub's API does \
              not report here, and those may be skipped too, so this list may not be complete.\n\
              Title: \u{201c}Ship \\u{202e}it\u{201d}"
         );

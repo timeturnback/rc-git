@@ -441,6 +441,49 @@ fn a_backup_that_already_holds_the_tip_is_reused_under_either_name() {
 }
 
 #[test]
+fn a_backup_whose_name_differs_only_in_case_from_an_earlier_one_is_refused() {
+    let fx = Fixture::standard();
+    let policy = Policy::default();
+    let main = fx.rev_parse("main");
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/work", &main]);
+    fx.git(&["update-ref", "refs/rc-git/backup/branch/LATER/old", &main]);
+    fx.git(&["pack-refs", "--all"]);
+    for (branch, twin, date) in [
+        (
+            "Work",
+            "refs/rc-git/backup/branch/work",
+            "2024-01-05T00:00:00+0000",
+        ),
+        (
+            "later",
+            "refs/rc-git/backup/branch/LATER/old",
+            "2024-01-06T00:00:00+0000",
+        ),
+    ] {
+        let tip = unmerged_branch(&fx, branch, date);
+        let err = delete_branch(fx.path(), &policy, branch, Some(branch)).unwrap_err();
+        assert!(matches!(err, ActionError::Git { .. }), "{err}");
+        let message = err.to_string();
+        let candidate = format!("refs/rc-git/backup/branch/{branch}");
+        assert!(
+            message.contains(&candidate) && message.contains(twin),
+            "names both refs: {message}"
+        );
+        assert_eq!(fx.rev_parse(branch), tip, "{branch} is not deleted");
+        assert!(
+            !refs(&fx).lines().any(|name| name == candidate),
+            "no backup of {branch}"
+        );
+    }
+    assert_eq!(
+        fx.rev_parse("refs/rc-git/backup/branch/work"),
+        main,
+        "the packed backup still reads as its own commit"
+    );
+    assert_eq!(fx.rev_parse("refs/rc-git/backup/branch/LATER/old"), main);
+}
+
+#[test]
 fn an_unreadable_head_refuses_a_branch_delete() {
     let fx = Fixture::standard();
     fx.write(".git/HEAD", b"garbage\n");
@@ -966,7 +1009,7 @@ fn turning_auto_merge_on_or_off_is_a_plain_confirm_built_from_its_read() {
         ),
         (
             Action::DisableAutoMerge(Box::new(disable)),
-            "\nAuto-merge: on, as a rebase merge, turned on by \u{201c}mona\u{201d}\n",
+            "\nAuto-merge: on, as a rebase merge, turned on by \u{201c}mona\u{201d}",
         ),
     ] {
         let Decision::Confirm(challenge) = Policy::default().evaluate(&action) else {
@@ -1052,7 +1095,7 @@ fn a_rerun_of_failed_jobs_is_a_plain_confirm_naming_its_runs() {
 fn merged_head_branch(name: &str) -> rc_git_guard::actions::github::HeadBranch {
     use rc_git_guard::actions::github::{
         BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestStamp, PullRequestState,
-        RefId,
+        RepositoryId,
     };
     let head = rc_git_core::Oid::from_hex(&"cd".repeat(20)).unwrap();
     HeadBranch {
@@ -1068,11 +1111,11 @@ fn merged_head_branch(name: &str) -> rc_git_guard::actions::github::HeadBranch {
         in_repository: true,
         viewer_can_delete: true,
         head_ref: Some(HeadRef {
-            id: RefId::parse("REF_kwDOtopic"),
             target: Some(head),
             is_head_branch: true,
             open_heads: Some(OpenPullRequests::default()),
         }),
+        repository_id: RepositoryId::parse("R_kgDOtopic"),
         default_branch: Some(false),
         open_bases: Some(OpenPullRequests::default()),
     }

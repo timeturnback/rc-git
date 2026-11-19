@@ -130,6 +130,11 @@ impl Bypassed {
             ));
         }
         sentences.push(
+            "rc-git does not read whether a ruleset requires the base branch's merge queue; such \
+             a requirement may be skipped too."
+                .to_owned(),
+        );
+        sentences.push(
             "Branch protection or rulesets may also require things GitHub's API does not \
              report here, and those may be skipped too, so this list may not be complete."
                 .to_owned(),

@@ -82,7 +82,8 @@ pub use delete_branch::{
 pub use device::{DeviceFlow, DeviceMethod, DevicePoll, start_device_flow};
 pub use error::GitHubError;
 pub use guarded::{
-    ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, BranchUse, PullRequestAction,
+    ActionBlocker, ActionPlan, ActionRefusal, ActionTarget, BackupKeptStop, BranchUse,
+    PullRequestAction,
 };
 pub use host::{DEV_ALLOWANCE, GitHubHost, RepositoryTarget, remote_host, ssh_dialed_host};
 pub use links::ServerLink;
@@ -100,7 +101,8 @@ pub use pull_types::{
     ActionsIds, AutoMerge, Check, CheckConclusion, CheckList, CheckProgress, CheckState,
     CheckStatus, CheckTally, DetailFields, MergeMethod, MergeMethods, MergeStateStatus, Mergeable,
     PageCursor, PullRequestDetail, PullRequestId, PullRequestPage, PullRequestStamp,
-    PullRequestState, PullRequestSummary, RefId, ReviewDecision, StatusState, ViewerAbilities,
+    PullRequestState, PullRequestSummary, RepositoryId, ReviewDecision, StatusState,
+    ViewerAbilities,
 };
 pub use pulls::{MAX_CHECKS, PAGE_SIZE, list_open_pull_requests, read_pull_request};
 pub use repository::{PullRequestRemote, pull_request_base_ref, pull_request_remote};
@@ -118,8 +120,8 @@ pub use user::{TokenIdentity, validate_token};
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
     use super::{
-        MergeMethod, PageCursor, PullRequestId, RepositoryTarget, api, delete_branch, mutation,
-        pulls, rerun,
+        MergeMethod, PageCursor, PullRequestId, RepositoryId, RepositoryTarget, api, delete_branch,
+        mutation, pulls, rerun,
     };
 
     /// The body of the read of pull request `number`'s head branch, which a head branch delete
@@ -141,11 +143,22 @@ pub mod testing {
         )
     }
 
-    /// The body of the delete of the ref with node id `id`: the one mutation request rc-git
-    /// sends for a head branch delete.
+    /// The body of the delete of branch `branch` of the repository with node id `id`, only
+    /// while it is at `before` (40 hex digits): the one mutation request rc-git sends for a head
+    /// branch delete.
+    ///
+    /// # Panics
+    /// When `id` is not a node id or `before` not a full commit id.
     #[must_use]
-    pub fn delete_ref_request_body(id: &str) -> String {
-        body(mutation::DELETE_REF, &serde_json::json!({ "id": id }))
+    pub fn delete_branch_request_body(id: &str, branch: &str, before: &str) -> String {
+        #[expect(clippy::expect_used, reason = "a test helper given fixed values")]
+        let id = RepositoryId::parse(id).expect("a node id");
+        #[expect(clippy::expect_used, reason = "a test helper given fixed values")]
+        let before = rc_git_core::Oid::from_hex(before).expect("a full commit id");
+        body(
+            mutation::DELETE_BRANCH,
+            &mutation::delete_branch_variables(&id, branch, before),
+        )
     }
 
     /// The body of the list read of `target` from `after` on.

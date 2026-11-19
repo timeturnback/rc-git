@@ -132,7 +132,7 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | delete local branch, merged | **deny** | confirm |
 | delete local branch, unmerged | **deny** | type the branch name, backup ref |
 | delete remote branch | **deny** | type the branch name, backup ref |
-| delete a merged pull request's head branch on GitHub (`Action::DeletePullRequestBranch`, `Destructive`: a remote branch delete, decided by the delete remote branch row's own rule, `delete_remote`) | **deny** | type the branch name exactly as GitHub reports it, backup ref `refs/rc-git/backup/remote-branch/<name>` written and read back before the request; offered only for a merged pull request whose head is a branch of the base repository, at the commit the pull request merged, not the default branch, used by no other open pull request, the account may delete, whose name a challenge shows unchanged, and whose commit is in the local repository; the challenge has the repository, the pull request, the account, the branch, its commit, the backup ref, a line saying GitHub deletes it for everyone, and the title last ("Deleting a merged pull request's branch" below) |
+| delete a merged pull request's head branch on GitHub (`Action::DeletePullRequestBranch`, `Destructive`: a remote branch delete, decided by the delete remote branch row's own rule, `delete_remote`) | **deny** | type the branch name exactly as GitHub reports it, backup ref `refs/rc-git/backup/remote-branch/<name>` written and read back before the request; offered only for a merged pull request whose head is a branch of the base repository, at the commit the pull request merged, not the default branch, used by no other open pull request, the account may delete, whose name a challenge shows unchanged, and whose commit is in the local repository; the challenge has the repository, the pull request, the account, the branch, its commit, a line saying the delete names that commit as the one the branch must still be at, the backup ref, a line saying GitHub deletes it for everyone, and the title last; the one request is `updateRefs` with that commit as `beforeOid` ("Deleting a merged pull request's branch" below) |
 | delete tag | type the tag name, backup ref | same |
 | reset --hard | type the branch name, backup ref | same |
 | rewrite unpublished history | confirm, backup ref | same |
@@ -146,8 +146,8 @@ waiting for its feature. `Policy::evaluate` maps an `Action` to a `Decision`:
 | stash drop | type `drop`, backup ref | same |
 | merge a pull request on GitHub (plain merge; `Recoverable`: it loses nothing, but rc-git cannot undo it) | confirm; the challenge is one labelled line per fact, in a fixed order, from a read made just before: the repository and its host, the pull request's number, the account that merges (`login@host`), the base, the short head and its branch, the method and the checks; for an account the read says may merge past branch protection, a line saying GitHub will not stop this merge if a requirement starts blocking before it runs; the title last ("Merging a pull request" below) | same: GitHub's branch protection guards the base, not rc-git's protected names |
 | admin merge a pull request on GitHub past the branch protection that blocks it (`Destructive`: it skips rules a team set for the base on purpose, and no revert puts those back) | type the pull request's number; offered only for a read GitHub reports blocked or behind that the account may merge past (`viewerCanMergeAsAdmin`); the challenge has the plain merge's lines, says it goes past branch protection, lists what the read shows it skips, and says the list may not be complete, with the title last ("Admin merge" below) | same |
-| turn on a pull request's auto-merge on GitHub (`Recoverable`, as a merge: GitHub merges it later, by itself) | confirm; offered only for a read branch protection blocks (blocked or behind) in a repository that allows auto-merge, by an account GitHub says may (`viewerCanEnableAutoMerge`), with auto-merge off; the challenge has the merge's lines from the repository to the checks, a line of its own saying GitHub will merge it by itself once its requirements are met, including commits pushed to its head branch after the confirmation, and rc-git will not ask again; for a head in another owner's repository, a line naming that owner, who can push more commits; the title last ("Auto-merge" below) | same |
-| turn off a pull request's auto-merge on GitHub (`Recoverable`: turning it on again undoes it) | confirm; offered only while the read shows it on and GitHub says the account may (`viewerCanDisableAutoMerge`); the challenge names the method and who turned it on | same |
+| turn on a pull request's auto-merge on GitHub (`Recoverable`, as a merge: GitHub merges it later, by itself) | confirm; offered only for a read branch protection blocks (blocked or behind) in a repository that allows auto-merge, by an account GitHub says may (`viewerCanEnableAutoMerge`), with auto-merge off; the challenge has the merge's lines from the repository to the checks, with a line after the method saying rc-git does not read whether the base uses a merge queue and that one would apply its own method, a line of its own saying GitHub will merge it by itself once its requirements are met, including commits pushed to its head branch after the confirmation, and rc-git will not ask again; for a head in another owner's repository, a line naming that owner, who can push more commits; the title last ("Auto-merge" below) | same |
+| turn off a pull request's auto-merge on GitHub (`Recoverable`: turning it on again undoes it) | confirm; offered only for an open pull request while the read shows it on and GitHub says the account may (`viewerCanDisableAutoMerge`); the challenge, and the decision a confirm is compared with, names the repository, the pull request, the account, the method and who turned it on, and nothing a push or a retitle changes: the read compares the stamp's number and state alone ("Auto-merge" below) | same |
 | re-run the failed jobs of a pull request head's GitHub Actions runs (`Recoverable`: nothing is lost, but the jobs run) | confirm; offered only for an open pull request with at least one failed run; the challenge lists each run (at most 10) with its failed checks' names, what it leaves out, and, for a head in another owner's repository, that GitHub decides how those runs run; never the endpoint that approves runs ("Re-running failed jobs" below) | same |
 
 Protected patterns default to `main`, `master`, and `release/*`, matched ignoring ASCII case:
@@ -167,6 +167,11 @@ it, and `feature-2` to `feature%2D2` rather than into `feature`'s second slot. A
 the slot one past the highest existing one (`-2`, `-3`, …), so no backup ever overwrites an
 earlier one; a backup of the same name that already holds the object (under this name or the
 unescaped-dash name older versions wrote) is reused, so a retried action adds no second slot.
+A slot is never written beside a ref of the same backup kind whose name differs from it only in
+ASCII letter case, or that lies under such a name (`…/Feature` beside a packed `…/feature`): on a
+case-insensitive volume a loose ref is found whatever its case, so the new backup would hide the
+earlier one and read back as its commit. The write refuses, naming both refs, before anything
+changes, on every volume and whatever `core.ignorecase` says (`refuse_case_twin`).
 Two more rules live in the write path itself:
 a branch checked out in any worktree — the opened one, the main worktree, or any linked one —
 cannot be deleted (compared ignoring case, at every hop of a `HEAD -> alias -> branch` chain;
@@ -461,8 +466,10 @@ libcurl directly.
 - **Mutations take the proof.** A GitHub mutation leaves rc-git only through
   `Session::mutate` (`github/api.rs`), which takes the `Confirmation` itself, by value, and
   hands back an outbox of the requests built from the action that proof was issued for
-  (`github/mutation.rs`): a closed set of static GraphQL documents, every value in `variables`,
-  and one REST path, the re-run of failed jobs, built from plain segments and an integer run id
+  (`github/mutation.rs`): a closed set of static GraphQL documents, every value read from the
+  host or typed by the user in `variables` (the branch delete's all-zero `afterOid` and `force:
+  false` are constants of its document), and one REST path, the re-run of failed jobs, built
+  from plain segments and an integer run id
   through `GitHubHost::rest_url`. Everything goes to the session's host only, after the action's
   repository is checked to be on it. The outbox sends each request at most once, in order, and
   the caller decides only whether to send the next one; since it owns the proof, no second
@@ -524,8 +531,10 @@ the pull request's page) and the CLI (`rc-git pr merge`) both call `merge_pull_r
    the mutation did not run or was refused: a `type` of `UNPROCESSABLE`, `FORBIDDEN`,
    `NOT_FOUND`, `UNAUTHORIZED` or `RATE_LIMITED`, or an `extensions.code` of a schema validation
    failure (`undefinedField`, `argumentNotAccepted`, `missingRequiredArguments`,
-   `variableMismatch`: graphql-ruby's codes for those rules; the GraphQL specification runs only
-   a document that validates). The reason passes through `server_text`. *Unknown*: the request
+   `variableMismatch`, and `variableRequiresValidType` for a variable whose type the schema does
+   not define, read in graphql-ruby's `VariablesAreInputTypesError`: graphql-ruby's codes for
+   those rules; the GraphQL specification runs only a document that validates). The reason
+   passes through `server_text`. *Unknown*: the request
    may have left and no usable answer came back: a timeout, a dropped connection, a cancel after
    the send, a redirect, a body over its cap, a 5xx, an answer that is not JSON, or GraphQL
    errors of any other type or code, or none (GitHub answers its own timeouts that way). Only
@@ -592,10 +601,12 @@ without the pull request's number typed (`github/merge/admin.rs`).
   failed and required checks not finished, by name (neutralized, five named and the rest
   counted); how many checks that have not passed GitHub did not say are required or not; how
   many of the head's checks the read did not hold; a review decision of review required or
-  changes requested; and a head behind its base. It always adds that branch protection or
-  rulesets may require things GitHub's API does not report here (signed commits, resolved
-  conversations, deployments, and more), which may be skipped too, so the list may not be
-  complete. It never claims to be.
+  changes requested; and a head behind its base. It always adds that rc-git does not read
+  whether a ruleset requires the base branch's merge queue (`MERGE_QUEUE`, "Merges must be
+  performed via a merge queue", in GitHub's `RepositoryRuleType`), so such a requirement may be
+  skipped too, and that branch protection or rulesets may require things GitHub's API does not
+  report here (signed commits, resolved conversations, deployments, and more), which may be
+  skipped too, so the list may not be complete. It never claims to be.
 - **The sequence** is the plain merge's (`merge_pull_request` with `MergeKind::Admin`): read again
   and compare the stamp; check the admin conditions on that read (a pull request that has since
   become plainly mergeable refuses and says to use Merge, an ability that is gone refuses);
@@ -619,9 +630,15 @@ Turning on auto-merge lets GitHub merge a pull request by itself once its requir
 with whatever was pushed to its head branch by then, and nobody is asked again; so rc-git
 confirms it like a merge and says so (`github/auto_merge.rs`). The app (Enable Auto-Merge and
 Disable Auto-Merge on the pull request's page) and the CLI (`rc-git pr auto-merge --enable
---method m` or `--disable`, with `--head`, `--base` and `--yes`) both call `set_auto_merge`:
+--method m --head <oid> --base <branch> --yes`, or `--disable --yes`) both call `set_auto_merge`:
 
-1. **Read it again, compare it with the stamp**, as the merge does.
+1. **Read it again, compare it with the stamp**, as the merge does to turn it on. Turning it off
+   is the safe direction, so it compares the stamp's number and state alone: a push, a retarget
+   or a retitle between the challenge and the confirm never keeps auto-merge on (a pull
+   request's author could otherwise hold it on by retitling). The page does not withdraw an
+   open challenge to turn it off for those changes either (`TabAction::still_stands`), and the
+   CLI's `--disable` takes no `--head` or `--base`: it reads the pull request for its stamp and
+   refuses the two flags rather than seem to check them.
 2. **Refuse what the change cannot do.** Turning it on (`enable_auto_merge_blocker`, which the
    control uses too) needs what the plain merge needs except the merge state: open, not a draft,
    a method the repository allows, no conflicts, mergeability computed, a node id; then a merge
@@ -640,8 +657,11 @@ Disable Auto-Merge on the pull request's page) and the CLI (`rc-git pr auto-merg
    `headRepositoryOwner` other than the base's owner, compared without ASCII case), a "Fork" line
    names that owner, who can push more commits to it. Both lines are part of the decision, so a
    pull request that became a fork's, a check that moved, or auto-merge turned on by someone else
-   between the challenge and the confirm refuses. The challenge to turn it off names the method
-   and who turned it on, and a change of either refuses too.
+   between the challenge and the confirm refuses. After the method a "Merge queue" line says
+   rc-git does not read whether the base uses a merge queue and that, if it does, GitHub ignores
+   the method and the queue's own applies. The challenge to turn it off is the repository, the
+   pull request, the account, the method and who turned it on, and nothing else (no title, head
+   or base); a change of the method or of who turned it on refuses.
 4. **Send exactly one mutation**, checked against GitHub's GraphQL reference:
    `enablePullRequestAutoMerge` with `pullRequestId`, `expectedHeadOid` (the confirmed head) and
    `mergeMethod` (always sent: "if omitted, defaults to MERGE"), or `disablePullRequestAutoMerge`
@@ -662,10 +682,16 @@ Disable Auto-Merge on the pull request's page) and the CLI (`rc-git pr auto-merg
 GitHub's documentation says auto-merge is disabled when someone without write permissions to
 the repository pushes new changes to the head branch or switches its base branch
 ("Automatically merging a pull request"); rc-git does not restate that in the challenge, and
-says nothing about pushes by anyone else. With a merge queue, GitHub ignores the merge method
-the mutation names; rc-git does not read whether the base requires a merge queue, and a settle
-read that finds another method reads as unknown. Every attempt and outcome is a line in the
-app's log, as for the merge.
+says nothing about pushes by anyone else. GitHub's GraphQL reference says of
+`EnablePullRequestAutoMergeInput.mergeMethod` "when merging with a merge queue any input value
+for merge method is ignored", and of `AutoMergeRequest.mergeMethod` that a merge queue the base
+requires sets it; so the enable challenge says so on every host, and the page's line while
+auto-merge is on calls the method the request's, not a promise. rc-git does not read whether the
+base has a merge queue: `PullRequest.isMergeQueueEnabled` exists in the reference (and in GitHub
+Enterprise Server 3.16's), but a host whose schema lacks a field of the detail query drops to the
+basic read, which refuses every merge, and the GitHub CLI's issue tracker records the field
+missing for some tokens. A settle read that finds another method reads as unknown. Every attempt
+and outcome is a line in the app's log, as for the merge.
 
 ### Re-running failed jobs
 
@@ -744,18 +770,31 @@ ref), and a test asserts that `Action::DeletePullRequestBranch` gets exactly the
 the phrase, the backup request and the denial `Action::DeleteRemoteBranch` gets for the same
 name. The generic remote branch delete through push still has no write path.
 
-- **The API.** GraphQL's `deleteRef` ("Delete a Git Ref."), whose `DeleteRefInput` takes
-  `refId: ID!` ("The Node ID of the Ref to be deleted") and whose payload is `clientMutationId`
-  alone (GitHub's GraphQL reference). The ref's node id comes from the pull request's `headRef`
-  in the read made just before; the branch name never travels in the request, so no text a pull
-  request's author chose reaches a URL or the mutation. It is one more static document through
-  `Session::mutate`; the transport is unchanged. The REST `DELETE /repos/{owner}/{repo}/git/refs/
-  heads/{branch}` would have needed a new HTTP method and put the branch name in a URL path.
-- **The reads.** One query (`RcGitHeadBranch`) reads the pull request's number, title, state,
-  `merged`, head and base, `isCrossRepository`, `headRepository`, `viewerCanDeleteHeadRef`, its
-  `headRef` (`id`, `name`, `prefix`, `target { oid }`, `repository`, and
-  `associatedPullRequests(states: [OPEN])`, "pull requests with this ref as the head ref") and
-  the repository's `defaultBranchRef`. A second (`RcGitBranchBase`) counts the open pull requests
+- **The API.** GraphQL's `updateRefs` (GitHub's GraphQL reference, Git; no preview notice):
+  "Creates, updates and/or deletes multiple refs in a repository", atomically. Its
+  `UpdateRefsInput` takes `repositoryId: ID!` and `refUpdates: [RefUpdate!]!`; each `RefUpdate`
+  has `name: GitRefname!` ("The fully qualified name of the ref"), `beforeOid: GitObjectID`
+  ("specifies that the given reference needs to point to the given value before performing any
+  updates"), `afterOid: GitObjectID!` ("A value of 0000000000000000000000000000000000000000 can be
+  used to delete a reference") and `force: Boolean` (non-fast-forward updates). rc-git sends one
+  update: the repository's node id from the read made just before, `refs/heads/<branch>` (the
+  exact name the user typed, which a challenge showed unchanged), `beforeOid` the head commit the
+  pull request merged, the all-zero `afterOid` and `force: false`. So GitHub deletes the branch
+  only at the commit the backup ref holds: a push between rc-git's last read and GitHub running
+  the delete makes GitHub refuse it, and the branch stays. The payload is `clientMutationId`
+  alone. Values travel in `variables`, never in a URL. A host whose schema lacks `updateRefs` (an
+  older GitHub Enterprise Server) refuses the document before running it (`undefinedField`, or
+  `variableRequiresValidType` for `GitRefname`); the delete is then *Refused* and the note says
+  this host cannot take a delete that checks the branch's commit, so rc-git cannot delete the
+  branch safely there and it should be deleted on the host's own page or with git. rc-git has no
+  other delete: the older `deleteRef` names a ref by node id with no expected commit, and a push
+  between the read and the delete would have left the branch's last commit outside the backup.
+- **The reads.** One query (`RcGitHeadBranch`) reads the repository's `id` and
+  `defaultBranchRef`, and the pull request's number, title, state, `merged`, head and base,
+  `isCrossRepository`, `headRepository`, `viewerCanDeleteHeadRef` and its `headRef` (`name`,
+  `prefix`, `target { oid }`, `repository`, and `associatedPullRequests(states: [OPEN])`, "pull
+  requests with this ref as the head ref"). A second (`RcGitBranchBase`) counts the open pull
+  requests
   whose `baseRefName` is the branch. Both are bounded (five numbers named, the rest counted) and
   go to the account's host only. The same first query settles a lost answer.
 - **What refuses**, before anything is written or sent, each naming the pull request, the
@@ -770,7 +809,8 @@ name. The generic remote branch delete through push still has no write path.
   default branch (compared without ASCII case), or a host that names none; any other open pull
   request with the branch as its head (GitHub closes those once the branch is gone; refused
   rather than judged, whoever's pull request it is) or as its base (GitHub closes or retargets
-  those), or an answer that does not count them; a ref without a node id; and a head commit that
+  those), or an answer that does not count them; a repository without a node id rc-git accepts;
+  and a head commit that
   is not a commit in the local object database. That last refusal says to fetch the pull
   request's changes first (Fetch Changes, `rc-git pr diff --fetch`); nothing here fetches.
 - **The name is typed exactly.** The phrase is the branch's name as GitHub reports it. A name
@@ -781,7 +821,9 @@ name. The generic remote branch delete through push still has no write path.
   text around it refuses. The app's sheet takes it in its field, the CLI after `--confirm`
   (`--yes` counts for nothing), and the guard alone checks it.
 - **The challenge** is labelled lines in the merge's order, every value neutralized: rc-git's own
-  first line; Repository; Pull request; Account; Branch; Commit (short); Backup (the slot it
+  first line; Repository; Pull request; Account; Branch; Commit (short); Commit check (the
+  delete names that commit as the one the branch must still be at, so GitHub refuses it for a
+  branch pushed to since); Backup (the slot it
   writes, or the next numbered one after it when that holds another commit); For everyone
   (GitHub deletes the branch for everyone who uses the repository; rc-git cannot put it back by
   itself, the backup ref can); and Title last. The answered decision must equal the decision the
@@ -793,16 +835,30 @@ name. The generic remote branch delete through push still has no write path.
   and the ref is read back at that commit. A failure to write it or read it back sends nothing.
   The front end is told just before the request leaves (`on_send`). The fake GitHub host checks
   in a test that the backup ref exists at the head commit when the delete arrives.
-- **One request, three outcomes.** `deleteRef` is sent once and never again. *Deleted*: a
-  non-null `deleteRef` payload. *Refused*: a 4xx, or an empty payload whose errors each show it
-  did not run (as for the merge); the reason passes through `server_text`. Otherwise one read
-  with a fresh cancel flag settles it: the head branch gone is *Deleted*; the same ref still at
-  the same commit is *Not deleted* (when rc-git looked; the note says to look on GitHub before
-  trying again); anything else stays *Unknown* and names what the read found. The backup ref is
-  kept in every outcome, a cancel at the send included, and every note names it.
+- **One request, three outcomes.** `updateRefs` is sent once and never again. *Deleted*: a
+  non-null `updateRefs` payload; the note says the delete named the commit the branch had to be
+  at, and that the backup ref holds that commit, the one rc-git read. *Refused*: a 4xx, or an
+  empty payload whose errors each show it did not run (as for the merge), a refused
+  `beforeOid` included when GitHub types it so; the reason passes through `server_text`.
+  Otherwise one read with a fresh cancel flag settles it: the head branch gone is *Deleted* (the
+  note says the answer was lost and the branch is gone, and that the backup ref holds the commit
+  rc-git read); the head branch still at the confirmed commit is *Not deleted* (when rc-git
+  looked; the note says to look on GitHub before trying again); anything else, a branch at
+  another commit included, stays *Unknown* and names what the read found. The backup ref is kept
+  in every outcome. A cancel after it was written, or a request that could not leave (no
+  connection, no TLS handshake), is `ActionRefusal::BackupKept`: its message names the backup
+  ref and says nothing was sent and the branch on GitHub is untouched, so every note after the
+  write names it; the CLI exits 130 for the cancel and 11 otherwise.
 - **Bringing it back.** The note names the backup ref and how to restore the branch from it:
   push the ref to GitHub under the branch's name, `git push <remote> '<backup
-  ref>:refs/heads/<branch>'`, with each word quoted for the shell (`shell_word`). rc-git does not
+  ref>:refs/heads/<branch>'`, with each word quoted for the shell (`shell_word`). The repository
+  names its own remotes, and quoting keeps a leading `-`, so a remote called
+  `--receive-pack=<program>` would make the pasted push run that program: the command names the
+  remote only when its name is a plain word (`[A-Za-z0-9][A-Za-z0-9._-]*`, at most 100
+  characters), and otherwise the repository's `https://<host>/<owner>/<name>.git`, built from the
+  account's host and the validated owner and name (`restore_destination`, rc-git-kit). Every
+  other place the pull request feature shows the remote's name (the Changes view's fetch hints, a
+  remote that changed under an open pull request) shows it through `single_line`. rc-git does not
   push it back itself. A backup ref is never deleted by rc-git; `git update-ref -d` removes one
   that is no longer needed.
 - **A local branch of the same name** is left alone: the note says it exists and points to the
@@ -819,9 +875,14 @@ name. The generic remote branch delete through push still has no write path.
   means the account may delete the head branch (GitHub's reference describes it as "Check if the
   viewer can restore the deleted head ref"; a false or missing value refuses, so a wrong reading
   can only refuse more); whether `pullRequests(baseRefName:)` and `associatedPullRequests` match
-  names exactly (a broader match only refuses more); and that a `deleteRef` of a branch that
-  protection or a ruleset guards is refused by GitHub (rc-git refuses its own protected names
-  first). An open pull request in another repository whose head is this branch is not seen by
+  names exactly (a broader match only refuses more); that an `updateRefs` delete of a branch
+  that protection or a ruleset guards is refused by GitHub (rc-git refuses its own protected
+  names first); how GitHub words and types its refusal of a stale `beforeOid` (a type that is not
+  a refusing one reads as unknown, then the settling read names the branch at its new commit);
+  whether GitHub takes a deletion with `force: false` (the reference ties `force` to
+  non-fast-forward updates only; a refusal deletes nothing); and the GitHub Enterprise Server
+  release that added `updateRefs` (the reference has it for 3.16 and later). An open pull
+  request in another repository whose head is this branch is not seen by
   either read; GitHub closes such a pull request when the branch goes.
 
 ### Job logs
@@ -843,7 +904,9 @@ it follows; so it is three steps (four requests at most), and it stops at the fi
    workflow run and its `head_sha` the stamped head commit of the pull request on screen. Any
    mismatch, a 404, or a missing field refuses with "this check's log could not be matched to
    the pull request's head commit", and nothing more is sent: no log that might be another
-   commit's or another job's is ever shown. A job whose `status` is not `completed` is refused
+   commit's or another job's is ever shown. The log is titled with the job's own `name` from that
+   read (neutralized), and when it is not the check's name the page and the CLI (`job` and `note`
+   records on stderr) name both; names may differ, so that is shown, not refused. A job whose `status` is not `completed` is refused
    too: GitHub does not document what the log endpoint answers for a running job, so neither the
    page nor the CLI offers one. Ids are positive integers that fit 63 bits (`JobId`, `RunId`)
    and only ever become path segments through `rest_url`.
@@ -871,7 +934,10 @@ it follows; so it is three steps (four requests at most), and it stops at the fi
    and the cancel are every call's.
 4. **Size.** The request asks for the last 2 MiB (`Range: bytes=-2097152`), since a failure is
    at the end. A `206 Partial Content` whose `Content-Range` ends where the log ends and matches
-   the bytes sent is shown from its first line break on; a `200` (a host that ignores the
+   the bytes sent is shown from its first line break on; one whose `Content-Range` names no length
+   (`bytes 0-N/*`) is the log's start, never all of it, and one that starts partway without a
+   length is refused, since neither says where the log ends; every count is checked arithmetic,
+   so a range no `usize` holds (`bytes 0-18446744073709551615/*`) is refused, never wrapped; a `200` (a host that ignores the
    range) is kept up to 2 MiB and the transfer stops there; a `416` naming an empty log is an
    empty log. Any other `416` is a host that refuses suffix ranges: then exactly one more `GET`
    goes to the same validated address, without a range, as a `DownloadRequest` too (no token,
@@ -880,7 +946,8 @@ it follows; so it is three steps (four requests at most), and it stops at the fi
    storage host gets at most two requests per log read (`scripts/check.sh` fails a third call
    of `download`, or one outside `download_log`). Any other status names itself and nothing of
    its body. What was left out is a value, never an error and never silent: the page and the
-   CLI say "showing the last N" or "showing the first N; the rest was not downloaded".
+   CLI say "showing the last N" or "showing the first N; anything after that was not
+   downloaded".
 5. **The text is the workflow's**, so it is attacker-controlled: decoded as UTF-8 with bad bytes
    replaced, split at `\n`, `\r\n` and a lone `\r`, and each line passed through the same
    neutralizer as a description (ANSI escape sequences dropped; control, bidi and invisible

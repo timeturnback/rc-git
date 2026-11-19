@@ -17,7 +17,7 @@ use rc_git_kit::github::accounts::{GitHubAccount, GitHubAccounts, SignInMethod};
 use rc_git_kit::github::{ApiToken, GitHubHost, TokenSet};
 use rc_git_kit::platform::api_tokens::{AccountKey, ApiTokenStore, MemoryApiTokenStore};
 use rc_git_kit::platform::settings::{MemorySettings, SettingsStore};
-use rc_git_kit::pull_requests::copy::{log_cut_notes, log_note, log_title};
+use rc_git_kit::pull_requests::copy::{log_cut_notes, log_name_note, log_note, log_title};
 use rc_git_kit::pull_requests::link::RepositoryLink;
 use rc_git_kit::pull_requests::live::LivePullRequests;
 use rc_git_kit::pull_requests::logs::{
@@ -206,6 +206,32 @@ fn the_log_words_name_what_was_left_out() {
         log_note(&limited, 100).unwrap(),
         "Couldn't read the log: the host's rate limit is spent for about 10 more minutes."
     );
+}
+
+#[test]
+fn a_shown_log_is_titled_with_the_job_s_own_name_and_says_when_the_check_differs() {
+    let mut same = LogState::begin(1, 7, oid(7), check(1041, 41));
+    let log = job_log(&check(1041, 41), 7);
+    same.finish(1, Ok(Arc::new(ShownLog::new(log.clone()))));
+    assert_eq!(log_title(&same), "Log of \u{201c}job 0\u{201d}");
+    assert_eq!(log_name_note(&same), None, "the names match");
+    let mut renamed = LogState::begin(2, 7, oid(7), check(1041, 41));
+    let other = JobLog {
+        name: "deploy \\u{202e}".to_owned(),
+        ..log
+    };
+    renamed.finish(2, Ok(Arc::new(ShownLog::new(other))));
+    assert_eq!(
+        log_title(&renamed),
+        "Log of \u{201c}deploy \\u{202e}\u{201d}"
+    );
+    assert_eq!(
+        log_name_note(&renamed).unwrap(),
+        "GitHub names this job \u{201c}deploy \\u{202e}\u{201d}; its check on this page is named \
+         \u{201c}job 0\u{201d}."
+    );
+    let reading = LogState::begin(3, 7, oid(7), check(1041, 41));
+    assert_eq!(log_name_note(&reading), None, "no log shows yet");
 }
 
 /// A model over the fake, tab 7 reading `shown`, its log answering `log`.

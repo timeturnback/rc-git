@@ -38,8 +38,8 @@ use rc_git_kit::pull_requests::checks::{check_state, ordered, summary};
 use rc_git_kit::pull_requests::copy::{
     ADMIN_MERGE, ADMIN_MERGE_NOTE, AUTO_MERGE_NOTE, CLOSE_LOG, DELETE_BRANCH, DISABLE_AUTO_MERGE,
     ENABLE_AUTO_MERGE, MERGE, MERGE_CANCEL, MERGE_DISMISS, RERUN_FAILED_JOBS, STOP_LOG, VIEW_LOG,
-    auto_merge_on_line, delete_branch_line, flow_note, flow_note_alarms, log_cut_notes, log_note,
-    log_title, merge_method_label, rerun_line,
+    auto_merge_on_line, delete_branch_line, flow_note, flow_note_alarms, log_cut_notes,
+    log_name_note, log_note, log_title, merge_method_label, rerun_line,
 };
 use rc_git_kit::pull_requests::copy::{
     CHANGES_VIEW, DETAIL_LOADING, NO_DESCRIPTION, OVERVIEW_VIEW, STALE_NOTE, check_label,
@@ -190,6 +190,9 @@ impl PullRequestPage {
                 | LogPhase::NotFinished => false,
             };
             words = words.child(Self::line(note, if alarm { red } else { muted }));
+        }
+        if let Some(note) = log_name_note(log) {
+            words = words.child(Self::line(note, muted));
         }
         let mut panel = v_flex()
             .flex_1()

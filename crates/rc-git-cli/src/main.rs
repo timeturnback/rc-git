@@ -155,8 +155,11 @@ usage: rc-git [--time] <command> <repo> [args]
                                           its last 2 MiB and 20,000 lines, each line cut at
                                           1,000 characters, with control, bidi and invisible
                                           characters as \\u{..} escapes and ANSI colours
-                                          dropped; what was left out goes to stderr as
-                                          truncated<TAB>sentence. The log is downloaded from
+                                          dropped. stderr gets job<TAB>id<TAB>the job's own
+                                          name as GitHub's job read gives it, then
+                                          note<TAB>sentence when that is not the check's name,
+                                          then truncated<TAB>sentence per thing left out. The
+                                          log is downloaded from
                                           where GitHub sends it without the token, and that
                                           address is never printed
   pr diff <n> [repo] [--fetch] [remote options]
@@ -208,14 +211,20 @@ usage: rc-git [--time] <command> <repo> [args]
                                           that moved, or an account GitHub does not allow,
                                           exits 11
   pr auto-merge <n> [repo] --enable --method m --head <oid> --base <branch> --yes
-  pr auto-merge <n> [repo] --disable --head <oid> --base <branch> --yes
+  pr auto-merge <n> [repo] --disable --yes
                                           turn GitHub's auto-merge on or off, once. Turned on,
                                           GitHub merges the pull request by itself when its
                                           requirements are met, with any commits pushed to its
                                           head branch by then, and nobody is asked again; it
                                           needs a pull request branch protection blocks (one
                                           that can merge now: use pr merge), a repository that
-                                          allows auto-merge and an account GitHub says may.
+                                          allows auto-merge and an account GitHub says may. A
+                                          merge queue on the base, which rc-git does not read,
+                                          applies its own method instead. Turning it off takes
+                                          no --head or --base: it goes through whatever the
+                                          head, base and title are now, and refuses only a
+                                          pull request no longer open or an auto-merge request
+                                          changed since the challenge.
                                           Without --yes prints one would-enable-auto-merge<TAB>
                                           line (would-disable-auto-merge for --disable) per
                                           line of the challenge and exits 2; with it, the same
@@ -259,7 +268,9 @@ usage: rc-git [--time] <command> <repo> [args]
                                           deleted; exits 11 when GitHub refused it or it is
                                           still there, 12 when no usable answer came back.
                                           Restore with git push <remote>
-                                          '<backup ref>:refs/heads/<branch>'
+                                          '<backup ref>:refs/heads/<branch>' (the note names
+                                          the repository's https URL instead of a remote
+                                          whose name is not a plain word)
   pr options: --login L picks among several accounts on the remote's host (the app's choice
   for the repository is used otherwise); --ssh-dir DIR reads ssh aliases from DIR/config.
   Every text from the server prints with control, bidi and invisible characters and every

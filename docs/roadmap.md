@@ -234,7 +234,8 @@ constraints are clear.
 
 - **Delete a merged pull request's branch.** Delete Branch on a merged pull request's tab, and
   `rc-git pr delete-branch <n> --head <oid> --base <branch> --confirm <name>`, delete its head
-  branch on GitHub with one `deleteRef`, decided by the delete remote branch row's rule (denied
+  branch on GitHub with one `updateRefs` that names the backed-up commit as the one the branch
+  must still be at, decided by the delete remote branch row's rule (denied
   on a protected branch, the typed name and a backup ref elsewhere). Only a branch of the base
   repository, at the commit the pull request merged, not the default branch, used by no other
   open pull request, and whose commit is in the local repository: the backup ref

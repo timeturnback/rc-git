@@ -12,8 +12,11 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   pushed to its head branch after you confirm, without asking you again; when the head branch
   lives in someone else's repository, it names that owner, who can push more commits. While
   auto-merge is on, the tab says so, with the method and who turned it on, and Disable Auto-Merge
-  turns it off. From Terminal: `rc-git pr auto-merge <n> --enable --method squash --head <oid>
-  --base <branch> --yes`, or `--disable` in place of `--enable --method …`.
+  turns it off. The confirmation also says that a merge queue on the base branch, which RCGit
+  does not check for, would use its own method instead of the one you picked. Turning auto-merge
+  off goes through even when the title, the head commit or the base branch changed after you
+  opened its confirmation. From Terminal: `rc-git pr auto-merge <n> --enable --method squash
+  --head <oid> --base <branch> --yes`, or `rc-git pr auto-merge <n> --disable --yes`.
 - Re-run Failed Jobs on a pull request's tab asks GitHub to re-run the failed jobs of the head's
   GitHub Actions runs (up to ten runs at a time). The confirmation lists each run with its failed
   checks and what it leaves out, and the note afterwards says how each run's request ended.
@@ -24,13 +27,21 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
   characters shown as escapes, and nothing in it clickable. RCGit first checks with GitHub that
   the job ran on the head commit the tab shows, and shows nothing for a job it cannot match.
   Only the end of a long log is downloaded (about its last 2 MB), or, when GitHub's storage will
-  not send just the end, its first 2 MB, and the tab says when part of it is left out. Stop
-  cancels a download; Close Log puts the description back. From Terminal:
-  `rc-git pr logs <n> --check <name>` or `--job <id>`.
+  not send just the end, its first 2 MB, and the tab says when part of it is left out. The log
+  is titled with the job's own name as GitHub reports it, and the tab says so when that is not
+  the check's name. Stop cancels a download; Close Log puts the description back. From
+  Terminal: `rc-git pr logs <n> --check <name>` or `--job <id>`, which prints the job's name on
+  stderr.
 - Delete Branch on a merged pull request's tab deletes its head branch on GitHub. Before
   anything is sent, RCGit writes a backup ref in your repository that keeps the branch's commit
   (`refs/rc-git/backup/remote-branch/<name>`), and you type the branch's name to confirm. The
-  note afterwards names that ref and the `git push` that brings the branch back. RCGit refuses
+  delete tells GitHub the commit the branch must still be at, so if someone pushes to it after
+  RCGit's last read, GitHub refuses and the branch stays; a GitHub Enterprise Server that cannot
+  take such a delete refuses it, and the note says to delete the branch on its own page. The
+  note afterwards names the backup ref and the `git push` that brings the branch back, which
+  names your remote only when its name is a plain word and the repository's `https://` address
+  otherwise. If you cancel, or the request cannot be sent, after the backup ref was written, the
+  note names that ref and says the branch on GitHub was not touched. RCGit refuses
   a protected branch (`main`, `master`, `release/*`), the repository's default branch, a branch
   in someone else's fork, a branch someone pushed to after the merge, one another open pull
   request still uses, and a branch whose commit is not in your repository yet (click Fetch
@@ -74,6 +85,10 @@ What changed in rc-git, newest first. Help ▸ Changelog shows this file in the 
 
 ### Fixed
 
+- Deleting a branch or a tag no longer writes a backup ref whose name differs from an earlier
+  backup's only in upper and lower case (`…/Feature` beside `…/feature`). On the Mac's usual
+  file system one would hide the other, so the earlier backup could read as the new one's
+  commit; RCGit now refuses the delete, names both refs and changes nothing.
 - A merge that GitHub says landed on another base branch than the one you confirmed (the pull
   request was moved to another base on GitHub after RCGit last read it) is no longer reported
   as merged into the base you confirmed: the tab shows a warning naming both branches, the log

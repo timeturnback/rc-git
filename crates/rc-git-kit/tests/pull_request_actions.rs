@@ -224,6 +224,44 @@ fn a_flow_drops_answers_of_another_generation_and_follows_its_tab() {
 }
 
 #[test]
+fn a_challenge_to_turn_auto_merge_off_stands_through_a_push_or_a_retarget() {
+    let shown = auto_merge_on_detail(auto_mergeable_detail(detail(7)));
+    let pushed = PullRequestStamp {
+        base_ref: "develop".to_owned(),
+        ..detail(8).stamp()
+    };
+    let (mut off, load) = AutoMergeFlow::begin(
+        1,
+        REPOSITORY.to_owned(),
+        shown.stamp(),
+        AutoMergeIntent(AutoMergeChange::Disable),
+    );
+    off.planned(
+        load.generation,
+        Ok(auto_merge_plan(&shown, AutoMergeChange::Disable)),
+    );
+    assert!(!off.follow(Some(&pushed)), "a push and a retarget keep it");
+    assert_eq!(off.phase(), &Phase::Confirming);
+    let closed = PullRequestStamp {
+        state: PullRequestState::Closed,
+        ..shown.stamp()
+    };
+    assert!(off.follow(Some(&closed)), "a closed pull request ends it");
+    let ready = auto_mergeable_detail(detail(7));
+    let (mut on, load) = AutoMergeFlow::begin(
+        2,
+        REPOSITORY.to_owned(),
+        ready.stamp(),
+        AutoMergeIntent(SQUASH),
+    );
+    on.planned(load.generation, Ok(auto_merge_plan(&ready, SQUASH)));
+    assert!(
+        on.follow(Some(&pushed)),
+        "turning it on stands for one head"
+    );
+}
+
+#[test]
 fn a_rerun_note_and_log_name_every_run_and_never_call_an_unknown_one_done() {
     let shown = failing_detail(detail(7), &[41, 42]);
     let (mut flow, load) = RerunFlow::begin(1, REPOSITORY.to_owned(), shown.stamp(), RerunIntent);

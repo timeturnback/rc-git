@@ -55,8 +55,8 @@ pub use rc_git_guard::actions::github::{
     enable_auto_merge_blocker, failed_runs, merge_blocker, multi_line, rerun_blocker, single_line,
 };
 pub use rc_git_guard::actions::github::{
-    BranchAfter, BranchDeleteOutcome, BranchDeletePlan, BranchDeleteReport, BranchUse,
-    head_branch_blocker, typeable,
+    BackupKeptStop, BranchAfter, BranchDeleteOutcome, BranchDeletePlan, BranchDeleteReport,
+    BranchUse, head_branch_blocker, typeable,
 };
 pub use rc_git_guard::actions::github::{
     JobId, JobLog, LOG_BYTES, LOG_LINE_CHARS, LOG_LINES, LogCut,

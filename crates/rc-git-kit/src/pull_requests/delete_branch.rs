@@ -13,19 +13,56 @@ use super::link::Linked;
 use super::state::DetailState;
 use super::{
     ActionBlocker, ActionRefusal, BranchDeletePlan, BranchDeleteReport, Cancel, Decision,
-    PullRequestAction, PullRequestService, PullRequestStamp, head_branch_blocker,
+    PullRequestAction, PullRequestService, PullRequestStamp, RepositoryTarget, head_branch_blocker,
 };
 use crate::repository_actions::policy;
 
 /// A head branch delete as the user asked for it: in the repository at `repo_path`, whose
-/// backup ref keeps the branch's commit, read through the remote named `remote`, which the
-/// outcome's note names to push the backup back.
+/// backup ref keeps the branch's commit, and where the outcome's note pushes the backup back to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeleteBranchIntent {
     /// The repository's tab path, where the backup ref is written.
     pub repo_path: String,
-    /// The remote the pull requests are read through, e.g. `origin`.
-    pub remote: String,
+    /// What the note's restore command pushes to: [`restore_destination`] of the remote the pull
+    /// requests are read through.
+    pub push_to: String,
+}
+
+impl DeleteBranchIntent {
+    /// The delete of the head branch of a pull request `linked` reads, backed up in `repo_path`.
+    #[must_use]
+    pub fn new(repo_path: String, linked: &Linked) -> Self {
+        Self {
+            repo_path,
+            push_to: restore_destination(&linked.remote, &linked.target),
+        }
+    }
+}
+
+/// The longest remote name a restore command names.
+const MAX_REMOTE_CHARS: usize = 100;
+
+/// Where a restore command pushes to: `remote`, the remote's name, only when it is a plain name
+/// (`[A-Za-z0-9][A-Za-z0-9._-]*`, at most 100 characters), which no shell expands and git never
+/// reads as an option; else `target`'s `https://<host>/<owner>/<name>.git`, built from the
+/// account's host and the owner and name rc-git validated. A repository names its own remotes,
+/// so a pasted `git push --receive-pack=…` must never come from its config.
+#[must_use]
+pub fn restore_destination(remote: &str, target: &RepositoryTarget) -> String {
+    let plain = remote.chars().count() <= MAX_REMOTE_CHARS
+        && remote.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && remote
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if plain {
+        return remote.to_owned();
+    }
+    format!(
+        "https://{}/{}/{}.git",
+        target.host(),
+        target.owner(),
+        target.name()
+    )
 }
 
 /// One head branch delete of one tab.

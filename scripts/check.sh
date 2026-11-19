@@ -126,6 +126,22 @@ if [[ $auth_writers != "$http_rs:1" ]]; then
   echo "error: the Authorization header must be written once, in $http_rs api_headers" >&2
   exit 1
 fi
+# A broader tripwire: the word itself, in any case, anywhere in the GitHub client's code outside
+# its tests and comments, except the one writer above and the OAuth `authorization_pending` code,
+# so a second writer spelled another way is noticed. A header name built from pieces still slips
+# past every grep here; the tests are the real proof: no storage request carries Authorization
+# and a 416 answered twice ends after exactly two requests (logs_tests.rs), and a redirect target
+# receives no token (tests.rs).
+github_dir=crates/rc-git-guard/src/actions/remote/github
+auth_text="$(git grep -n -i 'authorization' -- "$github_dir/" "$github_dir.rs" |
+  grep -v -E '^[^:]*(_tests|/tests)\.rs:' |
+  grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' |
+  grep -v -F 'authorization_pending' || true)"
+if [[ $(wc -l <<<"$auth_text") -ne 1 || $auth_text != "$http_rs:"*'Authorization: Bearer {'* ]]; then
+  printf '%s\n' "$auth_text"
+  echo "error: Authorization appears in the GitHub client outside $http_rs api_headers" >&2
+  exit 1
+fi
 download_request="$(awk '/^pub\(super\) struct DownloadRequest/,/^}/' "$http_rs")"
 download_headers="$(awk '/^fn download_headers/,/^}/' "$http_rs")"
 if [[ -z $download_request || -z $download_headers ||

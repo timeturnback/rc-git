@@ -1136,6 +1136,8 @@ fn pr_auto_merge_without_its_head_base_switch_or_yes_changes_nothing() {
         format!("--method squash --head {HEAD} --base main --yes"),
         format!("--enable --disable --method squash --head {HEAD} --base main --yes"),
         format!("--disable --method squash --head {HEAD} --base main --yes"),
+        format!("--disable --head {HEAD} --yes"),
+        "--disable --base main --yes".to_owned(),
     ] {
         let mut args = vec!["auto-merge", "7"];
         args.extend(line.split(' '));
@@ -1198,16 +1200,7 @@ fn pr_auto_merge_with_yes_turns_it_on_or_off_once() {
         ),
         (
             true,
-            vec![
-                "auto-merge",
-                "7",
-                "--disable",
-                "--head",
-                HEAD,
-                "--base",
-                "main",
-                "--yes",
-            ],
+            vec!["auto-merge", "7", "--disable", "--yes"],
             "auto-merge\toff\tocto/rc-git#7\nnote\tAuto-merge is off for #7".to_owned(),
         ),
     ] {
@@ -1221,8 +1214,13 @@ fn pr_auto_merge_with_yes_turns_it_on_or_off_once() {
             "{}",
             text(&out.stdout)
         );
+        let line = if on {
+            "\nsending\tAuto-merge: on, as a squash merge"
+        } else {
+            "\nsending\tBase: \u{201c}main\u{201d}\n"
+        };
         assert!(
-            text(&out.stderr).contains("\nsending\tBase: \u{201c}main\u{201d}\n"),
+            text(&out.stderr).contains(line),
             "the challenge goes to stderr before the request: {}",
             text(&out.stderr)
         );
@@ -1466,7 +1464,11 @@ fn pr_logs_prints_only_the_neutralized_log_and_never_the_token_or_its_address() 
         let out = run_pr(&scratch, &repo, &ssh, &args);
         assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
         assert_eq!(text(&out.stdout), "error: boom \\u{202e}x\ndone\n");
-        assert_eq!(text(&out.stderr), "", "a whole log leaves nothing out");
+        assert_eq!(
+            text(&out.stderr),
+            "job\t5\ttest\n",
+            "the job's own name, and nothing left out of a whole log"
+        );
         printed_nothing_secret(&out);
     }
     let downloads = storage.recorded();
@@ -1490,10 +1492,31 @@ fn pr_logs_prints_only_the_neutralized_log_and_never_the_token_or_its_address() 
     assert!(text(&out.stdout).starts_with("line 0000000\nline 0000001\n"));
     assert!(
         text(&out.stderr).starts_with(
-            "truncated\tShowing the first 2.1 MB of the log; the rest was not downloaded.\n"
+            "job\t5\ttest\ntruncated\tShowing the first 2.1 MB of the log; anything after \
+             that was not downloaded.\n"
         ),
         "{}",
         text(&out.stderr)
+    );
+    printed_nothing_secret(&out);
+}
+
+#[test]
+fn pr_logs_names_the_job_as_github_does_and_says_when_the_check_differs() {
+    let (server, _storage, scratch, repo, ssh) = logs_setup("boom\n");
+    let renamed = job_read(HEAD).replace(r#""name": "test""#, r#""name": "deploy\u202e""#);
+    server.script_job("octo/rc-git", 5, "200 OK", &renamed);
+    let out = run_pr(&scratch, &repo, &ssh, &["logs", "7", "--check", "test"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "boom\n",
+        "a name that differs is shown, not refused"
+    );
+    assert_eq!(
+        text(&out.stderr),
+        "job\t5\tdeploy\\u{202e}\nnote\tGitHub names this job \u{201c}deploy\\u{202e}\u{201d}; \
+         its check on this page is named \u{201c}test\u{201d}.\n"
     );
     printed_nothing_secret(&out);
 }
@@ -1554,7 +1577,7 @@ fn pr_logs_reads_no_log_for_a_check_it_cannot_name_or_match() {
     assert_eq!(server.mutation_requests(), 0);
 }
 
-const REF_ID: &str = "REF_kwDOcli7";
+const REPO_ID: &str = "R_kgDOcli7";
 
 /// The head branch read's answer: pull request 7 merged at `head`, its head branch `shipped` at
 /// `at` (gone when `None`).
@@ -1563,7 +1586,7 @@ fn head_branch(head: &str, at: Option<&str>) -> String {
         || "null".to_owned(),
         |at| {
             format!(
-                r#"{{"id": "{REF_ID}", "name": "shipped", "prefix": "refs/heads/",
+                r#"{{"name": "shipped", "prefix": "refs/heads/",
                 "target": {{"oid": "{at}"}},
                 "repository": {{"name": "rc-git", "owner": {{"login": "octo"}}}},
                 "associatedPullRequests": {{"totalCount": 0, "nodes": []}}}}"#
@@ -1571,7 +1594,7 @@ fn head_branch(head: &str, at: Option<&str>) -> String {
         },
     );
     format!(
-        r#"{{"data": {{"repository": {{"defaultBranchRef": {{"name": "main"}},
+        r#"{{"data": {{"repository": {{"id": "{REPO_ID}", "defaultBranchRef": {{"name": "main"}},
         "pullRequest": {{"number": 7, "title": "Ship \u202e it", "state": "MERGED",
         "merged": true, "headRefName": "shipped", "headRefOid": "{head}", "baseRefName": "main",
         "isCrossRepository": false, "viewerCanDeleteHeadRef": true,
@@ -1588,19 +1611,21 @@ fn script_branch(
     behaviour: rc_git_testkit::github::DeleteBehaviour,
 ) {
     use rc_git_guard::actions::github::testing::{
-        based_on_request_body, delete_ref_request_body, head_branch_request_body,
+        based_on_request_body, delete_branch_request_body, head_branch_request_body,
     };
     let target = pr_target(server);
     server.script_branch(rc_git_testkit::github::BranchScript {
         read: head_branch_request_body(&target, 7),
         present: head_branch(head, Some(head)),
+        present_at: head.to_owned(),
         changed: head_branch(head, Some(MOVED)),
+        changed_at: MOVED.to_owned(),
         deleted: head_branch(head, None),
         based_on: based_on_request_body(&target, "shipped"),
         based_on_answer: r#"{"data": {"repository": {"pullRequests": {"totalCount": 0,
             "nodes": []}}}}"#
             .to_owned(),
-        mutation: delete_ref_request_body(REF_ID),
+        mutation: delete_branch_request_body(REPO_ID, "shipped", head),
         behaviour,
     });
 }
@@ -1748,7 +1773,7 @@ fn pr_delete_branch_refused_exits_11_and_a_lost_answer_exits_12_each_sent_once()
             DeleteBehaviour::Refuse {
                 status: "200 OK",
                 body: format!(
-                    r#"{{"data": {{"deleteRef": null}}, "errors": [{{"type": "FORBIDDEN",
+                    r#"{{"data": {{"updateRefs": null}}, "errors": [{{"type": "FORBIDDEN",
                     "message": "no {TOKEN}"}}]}}"#
                 ),
             },

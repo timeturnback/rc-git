@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 
 use super::api::Session;
 use super::merge_tests::{TOKEN, host_of, no_token, server, target, token};
-use super::testing::{based_on_request_body, delete_ref_request_body, head_branch_request_body};
+use super::testing::{based_on_request_body, delete_branch_request_body, head_branch_request_body};
 use super::*;
 use crate::actions::remote::Cancel;
 use crate::{Action, Decision, Policy};
 
-const REF_ID: &str = "REF_kwDOhead7";
+const REPO_ID: &str = "R_kgDOrepo7";
 const PUSHED: &str = "89abcdef0123456789abcdef0123456789abcdef";
 const BACKUP: &str = "refs/rc-git/backup/remote-branch/shipped";
 
@@ -40,11 +40,12 @@ fn backups(fx: &Fixture) -> String {
 /// `at` (gone when `None`), the default branch `trunk`, no other open pull request.
 fn read_answer(name: &str, head: &str, at: Option<&str>) -> Value {
     let head_ref = at.map(|at| {
-        json!({ "id": REF_ID, "name": name, "prefix": "refs/heads/", "target": { "oid": at },
+        json!({ "name": name, "prefix": "refs/heads/", "target": { "oid": at },
             "repository": { "name": "rc-git", "owner": { "login": "octo" } },
             "associatedPullRequests": { "totalCount": 0, "nodes": [] } })
     });
     json!({ "data": { "repository": {
+        "id": REPO_ID,
         "defaultBranchRef": { "name": "trunk" },
         "pullRequest": {
             "number": 7, "title": "Ship \u{202e}it", "state": "MERGED", "merged": true,
@@ -101,13 +102,23 @@ fn script_based_on(
     server.script_branch(BranchScript {
         read: head_branch_request_body(&target, 7),
         present: present.to_string(),
+        present_at: branch_at(present),
         changed: changed.to_string(),
+        changed_at: branch_at(changed),
         deleted: read_answer(name, &head, None).to_string(),
         based_on: based_on_request_body(&target, name),
         based_on_answer: based_on.to_string(),
-        mutation: delete_ref_request_body(REF_ID),
+        mutation: delete_branch_request_body(REPO_ID, name, &head),
         behaviour,
     });
+}
+
+/// The commit the head branch `answer` reads is at; empty when it names none.
+fn branch_at(answer: &Value) -> String {
+    answer["data"]["repository"]["pullRequest"]["headRef"]["target"]["oid"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// The standard branch `shipped` at `head`, deleted as `behaviour` says.
@@ -254,7 +265,7 @@ fn a_delete_writes_the_backup_before_its_one_request_naming_the_ref() {
     );
     assert_eq!(server.delete_requests(), 1);
     assert_eq!(server.mutation_requests(), 1);
-    assert_eq!(server.mutations_named("RcGitDeleteRef"), 1);
+    assert_eq!(server.mutations_named("RcGitDeleteBranch"), 1);
     assert_eq!(backups(&delete.fx), format!("{BACKUP} {head}"));
     let sent: Vec<_> = server
         .recorded()
@@ -262,15 +273,21 @@ fn a_delete_writes_the_backup_before_its_one_request_naming_the_ref() {
         .filter(|request| String::from_utf8_lossy(&request.body).contains("mutation"))
         .collect();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].body, delete_ref_request_body(REF_ID).as_bytes());
+    assert_eq!(
+        sent[0].body,
+        delete_branch_request_body(REPO_ID, "shipped", &head).as_bytes()
+    );
     assert_eq!(sent[0].target, "/api/graphql");
     assert_eq!(
         sent[0].header("authorization"),
         Some(format!("Bearer {TOKEN}").as_str())
     );
+    let body = String::from_utf8_lossy(&sent[0].body);
     assert!(
-        !String::from_utf8_lossy(&sent[0].body).contains("shipped"),
-        "the name never travels"
+        body.contains(&format!(r#""before":"{head}""#))
+            && body.contains(r#""name":"refs/heads/shipped""#)
+            && body.contains(&format!(r#""repository":"{REPO_ID}""#)),
+        "the branch's full name and the commit it must still be at travel in variables: {body}"
     );
 }
 
@@ -407,11 +424,11 @@ fn fresh_read(head: &str) -> HeadBranch {
         in_repository: true,
         viewer_can_delete: true,
         head_ref: Some(HeadRef {
-            id: RefId::parse(REF_ID),
             target: Some(oid),
             is_head_branch: true,
             open_heads: Some(OpenPullRequests::default()),
         }),
+        repository_id: RepositoryId::parse(REPO_ID),
         default_branch: Some(false),
         open_bases: Some(OpenPullRequests::default()),
     }
@@ -576,11 +593,8 @@ fn refusing_changes(head: &str) -> Vec<(&'static [&'static str], Value, ActionBl
             Value::Null,
             ActionBlocker::DefaultBranchUnreported,
         ),
-        (
-            &["pullRequest", "headRef", "id"],
-            Value::Null,
-            ActionBlocker::NoRefId,
-        ),
+        (&["id"], Value::Null, ActionBlocker::NoRepositoryId),
+        (&["id"], json!("not an id!"), ActionBlocker::NoRepositoryId),
     ]
 }
 
@@ -818,7 +832,7 @@ fn lost_answers_are_settled_by_one_read_never_a_second_delete() {
 fn a_refusal_passes_the_reason_through_without_the_token_and_keeps_the_backup() {
     let server = server();
     let (fx, head) = repository();
-    let body = json!({ "data": { "deleteRef": null }, "errors": [ { "type": "FORBIDDEN",
+    let body = json!({ "data": { "updateRefs": null }, "errors": [ { "type": "FORBIDDEN",
         "message": format!("Cannot delete this branch with {TOKEN}") } ] })
     .to_string();
     standard(
@@ -888,9 +902,19 @@ fn a_cancel_before_the_request_leaves_sends_nothing() {
             &cancel,
         )
         .unwrap_err();
+    assert_eq!(
+        refused,
+        ActionRefusal::BackupKept {
+            pull_request: "octo/rc-git#7".to_owned(),
+            branch: "\u{201c}shipped\u{201d}".to_owned(),
+            backup_ref: BACKUP.to_owned(),
+            stop: BackupKeptStop::Cancelled,
+        }
+    );
+    let said = refused.to_string();
     assert!(
-        matches!(refused, ActionRefusal::Cancelled { .. }),
-        "{refused}"
+        said.contains(BACKUP) && said.contains("the branch on GitHub is untouched"),
+        "{said}"
     );
     assert_eq!(server.delete_requests(), 0, "cancelled at the send");
     assert_eq!(
@@ -969,4 +993,134 @@ fn hostile_names_are_shown_neutralized_and_never_deletable() {
     let typed = delete.run(Some(&Decision::Allow), name).unwrap_err();
     assert_eq!(blocker(&typed), Some(ActionBlocker::NameNotTypeable));
     nothing_done(&server, &delete, "a hostile name");
+}
+
+#[test]
+fn the_delete_names_the_commit_the_branch_must_still_be_at() {
+    let server = server();
+    let (fx, head) = repository();
+    standard(&server, &head, DeleteBehaviour::Delete);
+    let delete = Delete::on(&server, fx, &head);
+    delete.confirmed().unwrap();
+    let sent = server
+        .recorded()
+        .into_iter()
+        .find(|request| String::from_utf8_lossy(&request.body).contains("mutation"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&sent.body).into_owned();
+    for part in [
+        "updateRefs(input: {repositoryId: $repository",
+        "beforeOid: $before",
+        r#"afterOid: \"0000000000000000000000000000000000000000\""#,
+        "force: false",
+    ] {
+        assert!(body.contains(part), "{part}: {body}");
+    }
+}
+
+#[test]
+fn a_branch_pushed_to_as_the_delete_arrives_is_kept_by_the_commit_check() {
+    let server = server();
+    let (fx, head) = repository();
+    let present = read_answer("shipped", &head, Some(&head));
+    let pushed = with(
+        present.clone(),
+        &["pullRequest", "headRef", "target", "oid"],
+        json!(PUSHED),
+    );
+    script(
+        &server,
+        "shipped",
+        (&present, &pushed),
+        DeleteBehaviour::PushAtDelete,
+    );
+    let delete = Delete::on(&server, fx, &head);
+    let report = delete.confirmed().unwrap();
+    let BranchDeleteOutcome::Refused { reason } = &report.outcome else {
+        panic!("{report:?}");
+    };
+    assert!(
+        reason.contains("not at the commit beforeOid names"),
+        "{reason}"
+    );
+    assert!(!server.branch_deleted(), "the pushed branch stays");
+    assert_eq!(server.delete_requests(), 1, "sent once, never again");
+    assert_eq!(backups(&delete.fx), format!("{BACKUP} {head}"), "kept");
+}
+
+#[test]
+fn a_host_without_the_checked_delete_refuses_it_and_says_so() {
+    for code in ["undefinedField", "variableRequiresValidType"] {
+        let server = server();
+        let (fx, head) = repository();
+        let body = json!({ "errors": [ {
+            "message": "Field 'updateRefs' doesn't exist on type 'Mutation'",
+            "extensions": { "code": code } } ] })
+        .to_string();
+        standard(
+            &server,
+            &head,
+            DeleteBehaviour::Refuse {
+                status: "200 OK",
+                body,
+            },
+        );
+        let delete = Delete::on(&server, fx, &head);
+        let plan = delete.plan().unwrap();
+        let reads = server.graphql_reads();
+        let report = delete.run(Some(&plan.decision), "shipped").unwrap();
+        let BranchDeleteOutcome::Refused { reason } = &report.outcome else {
+            panic!("{code}: {report:?}");
+        };
+        assert!(
+            reason.starts_with("this host does not take the delete rc-git sends")
+                && reason.contains("cannot delete the branch safely here")
+                && reason.contains("doesn't exist on type"),
+            "{code}: {reason}"
+        );
+        assert_eq!(
+            server.graphql_reads() - reads,
+            2,
+            "{code}: no settling read"
+        );
+        assert_eq!(server.delete_requests(), 1);
+        assert!(!server.branch_deleted());
+    }
+}
+
+/// A request that could not leave after the backup ref was written (no connection, no TLS
+/// handshake) is the same refusal as the cancel at the send above, with the transport's reason.
+/// Driven through the mapping the send uses rather than a closed loopback port: a port the fake
+/// gave back is taken again by parallel tests (seen: a reset from another test's listener).
+#[test]
+fn a_request_that_cannot_leave_after_the_backup_names_the_backup() {
+    let transport = GitHubError::Transport {
+        op: "delete the head branch",
+        url: "http://127.0.0.1:9/api/graphql".to_owned(),
+        reason: "Couldn't connect to server".to_owned(),
+    };
+    assert_eq!(
+        delete_branch::backup_stop(transport.clone()),
+        BackupKeptStop::NotSent(Box::new(transport.clone()))
+    );
+    assert_eq!(
+        delete_branch::backup_stop(GitHubError::Cancelled {
+            op: "delete the head branch"
+        }),
+        BackupKeptStop::Cancelled
+    );
+    let refused = ActionRefusal::BackupKept {
+        pull_request: "octo/rc-git#7".to_owned(),
+        branch: "\u{201c}shipped\u{201d}".to_owned(),
+        backup_ref: BACKUP.to_owned(),
+        stop: delete_branch::backup_stop(transport),
+    };
+    assert_eq!(
+        refused.to_string(),
+        "delete branch \u{201c}shipped\u{201d} of octo/rc-git#7: the request could not be sent \
+         (delete the head branch http://127.0.0.1:9/api/graphql: Couldn't connect to server), so \
+         nothing was sent and the branch on GitHub is untouched; the backup ref \
+         refs/rc-git/backup/remote-branch/shipped written first stays, so delete it with git when \
+         you no longer need it"
+    );
 }

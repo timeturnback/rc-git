@@ -247,6 +247,8 @@ fn the_challenge_to_turn_it_on_is_built_from_the_fresh_read() {
              Base: \u{201c}main\u{201d}\n\
              Head: 0123456 on \u{201c}feature\u{201d}\n\
              Method: a squash merge\n\
+             Merge queue: rc-git does not read whether the base branch uses a merge queue; if it \
+             does, GitHub ignores the method above and the queue's own method applies\n\
              Checks: 1 of 1 checks passed\n\
              Merges by itself: GitHub will merge this pull request by itself when its \
              requirements are met, including commits pushed to its head branch after this \
@@ -365,16 +367,25 @@ fn a_stale_head_a_changed_base_or_a_closed_pull_request_sends_nothing() {
         (Script::enable as fn() -> Script, SQUASH),
         (Script::disable, AutoMergeChange::Disable),
     ] {
-        for (seen, what) in [
-            (stamp(MOVED), "its head is now"),
-            (
-                PullRequestStamp {
-                    base_ref: "develop".to_owned(),
-                    ..stamp(HEAD)
-                },
-                "its base is now 'main', not 'develop'",
-            ),
-        ] {
+        let stale = match change {
+            AutoMergeChange::Enable(_) => true,
+            // Turning it off compares the number and the state alone.
+            AutoMergeChange::Disable => false,
+        };
+        for (seen, what) in stale
+            .then_some([
+                (stamp(MOVED), "its head is now"),
+                (
+                    PullRequestStamp {
+                        base_ref: "develop".to_owned(),
+                        ..stamp(HEAD)
+                    },
+                    "its base is now 'main', not 'develop'",
+                ),
+            ])
+            .into_iter()
+            .flatten()
+        {
             let server = server();
             script().serve(&server, change, MergeBehaviour::Merge);
             let mut ours = Setting::on(&server, change);
@@ -792,4 +803,69 @@ fn a_cancel_up_to_the_send_sends_nothing() {
     let error = set_auto_merge(&Policy::default(), request, &at_send).unwrap_err();
     assert!(matches!(error, ActionRefusal::Cancelled { .. }), "{error}");
     assert_eq!(counts(&server).3, 0);
+}
+
+#[test]
+fn turning_it_off_goes_through_a_retitle_a_push_and_a_retarget_since_the_challenge() {
+    let server = server();
+    let changed = with(
+        with(
+            on(blocked(MOVED, "OPEN")),
+            "title",
+            json!("Ship it, really"),
+        ),
+        "baseRefName",
+        json!("develop"),
+    );
+    Script {
+        moved: changed,
+        ..Script::disable()
+    }
+    .serve(
+        &server,
+        AutoMergeChange::Disable,
+        MergeBehaviour::ChangeAfter { reads: 1 },
+    );
+    let off = Setting::on(&server, AutoMergeChange::Disable);
+    let plan = off.plan().unwrap();
+    let outcome = off.run(Some(&plan.decision), &Cancel::new()).unwrap();
+    assert_eq!(
+        outcome,
+        AutoMergeOutcome::Done {
+            settled: Settled::Answer
+        }
+    );
+    assert_eq!(counts(&server), (0, 1, 0, 1), "one request");
+    let Decision::Confirm(challenge) = &plan.decision else {
+        panic!("{:?}", plan.decision);
+    };
+    for absent in ["Title:", "Head:", "Base:"] {
+        assert!(!challenge.summary().contains(absent), "{absent}");
+    }
+}
+
+#[test]
+fn turning_it_on_still_refuses_a_retitle_or_a_push_since_the_challenge() {
+    for (moved, what) in [
+        (
+            with(blocked(HEAD, "OPEN"), "title", json!("Ship it, really")),
+            "Ship it, really",
+        ),
+        (blocked(MOVED, "OPEN"), "its head is now"),
+    ] {
+        let server = server();
+        Script {
+            moved,
+            ..Script::enable()
+        }
+        .serve(&server, SQUASH, MergeBehaviour::ChangeAfter { reads: 1 });
+        let on = Setting::on(&server, SQUASH);
+        let plan = on.plan().unwrap();
+        let refused = on.run(Some(&plan.decision), &Cancel::new()).unwrap_err();
+        assert!(
+            matches!(&refused, ActionRefusal::Changed { what: w, .. } if w.contains(what)),
+            "{refused}"
+        );
+        assert_eq!(counts(&server).3, 0, "nothing sent");
+    }
 }

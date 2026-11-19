@@ -113,6 +113,16 @@ impl TabAction for AutoMergeIntent {
         }
     }
 
+    /// Turning auto-merge on stands only for the stamp it was planned on; turning it off, the
+    /// safe direction, stands while the number and the state hold, as the guard compares it, so
+    /// a push or a retarget never withdraws it.
+    fn still_stands(&self, seen: &PullRequestStamp, now: &PullRequestStamp) -> bool {
+        match self.0 {
+            AutoMergeChange::Enable(_) => seen == now,
+            AutoMergeChange::Disable => seen.number == now.number && seen.state == now.state,
+        }
+    }
+
     fn plan(
         &self,
         service: &dyn PullRequestService,

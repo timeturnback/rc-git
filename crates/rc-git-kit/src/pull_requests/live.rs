@@ -39,7 +39,7 @@ use super::{
     BranchDeleteReport, JobLog, MergeOutcome, MergePlan, MergeRefusal, PullRequestService,
     PullRequestStamp, ReadError, RerunReport,
 };
-use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage};
+use super::{Cancel, GitHubError, PageCursor, PullRequestDetail, PullRequestPage, single_line};
 use crate::github::accounts::{GitHubAccount, GitHubAccounts};
 use crate::github::tokens::{TokenError, TokenKeeper};
 use crate::guard_bridge::{Credentials, FailureKind, classify};
@@ -501,8 +501,8 @@ fn same_remote(repo_path: &str, linked: &Linked) -> Result<PullRequestRemote, St
         return Err(format!(
             "the repository's pull requests now come from '{}', not '{}'; open the pull \
              request again",
-            remote.name(),
-            linked.remote
+            single_line(remote.name(), 100),
+            single_line(&linked.remote, 100)
         ));
     }
     Ok(remote)

@@ -186,9 +186,9 @@ pub enum ActionBlocker {
         branch_use_word(*.0)
     )]
     OpenPullRequestsUnread(BranchUse),
-    /// The host sent no node id for the head branch, so no mutation can name it.
-    #[error("the host sent no id for its head branch, so rc-git cannot name it in a delete")]
-    NoRefId,
+    /// The host sent no node id for the repository, so no delete can name it.
+    #[error("the host sent no id for the repository, so rc-git cannot name it in a delete")]
+    NoRepositoryId,
     /// The head commit is not in the local repository, so no backup ref can keep it.
     #[error(
         "its head commit {} is not in this repository, so no backup ref can keep it; fetch the \
@@ -307,6 +307,34 @@ pub enum ActionRefusal {
         /// Why.
         source: GitHubError,
     },
+    /// A head branch delete wrote its backup ref, then stopped before its request left: the
+    /// branch on GitHub is untouched, and the backup ref stays.
+    #[error(
+        "delete branch {branch} of {pull_request}: {stop}, so nothing was sent and the branch on \
+         GitHub is untouched; the backup ref {backup_ref} written first stays, so delete it with \
+         git when you no longer need it"
+    )]
+    BackupKept {
+        /// `owner/name#number`.
+        pull_request: String,
+        /// The branch, in curly quotes.
+        branch: String,
+        /// The backup ref written.
+        backup_ref: String,
+        /// Why the request did not leave.
+        stop: BackupKeptStop,
+    },
+}
+
+/// Why a head branch delete stopped after its backup ref was written and before its request left.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BackupKeptStop {
+    /// Cancelled before the request left.
+    #[error("cancelled before the request left")]
+    Cancelled,
+    /// The request could not leave the machine.
+    #[error("the request could not be sent ({0})")]
+    NotSent(Box<GitHubError>),
 }
 
 /// Which pull request an action is for, with the account that acts.
@@ -452,8 +480,32 @@ impl PullRequestFacts {
     }
 }
 
+/// What differs between the stamp `seen` and the read `now` that `action` cares about: every
+/// field of the stamp, except that turning auto-merge off, the safe direction, compares the number
+/// and the state alone, so a push or a retarget between the challenge and the confirm never keeps
+/// auto-merge on.
+fn changed_for(
+    action: PullRequestAction,
+    seen: &PullRequestStamp,
+    now: &PullRequestStamp,
+) -> Option<String> {
+    match action {
+        PullRequestAction::DisableAutoMerge => {
+            let compared = PullRequestStamp {
+                head_oid: seen.head_oid,
+                base_ref: seen.base_ref.clone(),
+                ..now.clone()
+            };
+            changed(seen, &compared)
+        }
+        PullRequestAction::EnableAutoMerge
+        | PullRequestAction::RerunFailedJobs
+        | PullRequestAction::DeleteHeadBranch => changed(seen, now),
+    }
+}
+
 /// The pull request `who` names, read now under `cancel`, refused when it changed since the
-/// stamp. Sends nothing but the read.
+/// stamp as far as `action` compares it ([`changed_for`]). Sends nothing but the read.
 pub(super) fn fresh_read(
     who: &ActionTarget<'_>,
     action: PullRequestAction,
@@ -472,7 +524,7 @@ pub(super) fn fresh_read(
                 source,
             },
         })?;
-    if let Some(what) = changed(who.stamp, &detail.stamp()) {
+    if let Some(what) = changed_for(action, who.stamp, &detail.stamp()) {
         return Err(ActionRefusal::Changed {
             action,
             pull_request,

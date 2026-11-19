@@ -922,7 +922,7 @@ pub fn merged_detail(mut detail: PullRequestDetail) -> PullRequestDetail {
 #[must_use]
 pub fn delete_branch_plan(detail: &PullRequestDetail) -> BranchDeletePlan {
     use rc_git_guard::actions::github::{
-        BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestBranchDelete, RefId,
+        BranchName, HeadBranch, HeadRef, OpenPullRequests, PullRequestBranchDelete, RepositoryId,
     };
     let linked = linked();
     let summary = &detail.summary;
@@ -936,11 +936,11 @@ pub fn delete_branch_plan(detail: &PullRequestDetail) -> BranchDeletePlan {
             .viewer
             .is_some_and(|viewer| viewer.can_delete_head_ref),
         head_ref: Some(HeadRef {
-            id: RefId::parse("REF_kwDOfake"),
             target: Some(summary.head_oid),
             is_head_branch: true,
             open_heads: Some(OpenPullRequests::default()),
         }),
+        repository_id: RepositoryId::parse("R_kgDOfake"),
         default_branch: Some(false),
         open_bases: Some(OpenPullRequests::default()),
     };

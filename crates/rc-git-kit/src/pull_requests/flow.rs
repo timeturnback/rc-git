@@ -123,6 +123,12 @@ pub trait TabAction: Clone + PartialEq + Eq + Debug + Send + Sync + 'static {
     /// The refusal of a flow of pull request `number` whose tab read no longer matches its stamp.
     fn changed(&self, number: u64, what: &str) -> Self::Refusal;
 
+    /// Whether a challenge planned on the stamp `seen` still stands for the tab's read `now`, as
+    /// the guard compares them for this kind: the whole stamp unless the kind says otherwise.
+    fn still_stands(&self, seen: &PullRequestStamp, now: &PullRequestStamp) -> bool {
+        seen == now
+    }
+
     /// Asks the guard for the plan of `stamp` through `service`.
     ///
     /// # Errors
@@ -395,13 +401,14 @@ impl<A: TabAction> Flow<A> {
     }
 
     /// The tab read `now` (its stamp, or `None` when the read failed): a flow that plans or
-    /// confirms ends when it no longer matches, since the challenge would stand for something
-    /// the user did not see. A running send is the guard's to judge. Answers whether it ended.
+    /// confirms ends when it no longer matches ([`TabAction::still_stands`]), since the challenge
+    /// would stand for something the user did not see. A running send is the guard's to judge.
+    /// Answers whether it ended.
     pub fn follow(&mut self, now: Option<&PullRequestStamp>) -> bool {
         if !matches!(self.phase, Phase::Planning | Phase::Confirming) {
             return false;
         }
-        if now == Some(&self.stamp) {
+        if now.is_some_and(|now| self.ask.still_stands(&self.stamp, now)) {
             return false;
         }
         let what = match now {

@@ -22,7 +22,9 @@
 //!    `https://`, a public DNS name, no userinfo, no IP literal, nothing that is not printable
 //!    ASCII, at most 4096 bytes. Then one `GET` goes there ([`download`]), with no token and no
 //!    GitHub API header (the request type has no token field), following no redirect, asking for
-//!    the last [`LOG_BYTES`] bytes (`Range: bytes=-<n>`). A `206` is the end of the log; a `200`
+//!    the last [`LOG_BYTES`] bytes (`Range: bytes=-<n>`). A `206` is the end of the log (its
+//!    start, when its `Content-Range` names no length; refused when that range starts mid-log,
+//!    or names a byte count no `usize` holds); a `200`
 //!    (a host that ignores the range) is kept up to [`LOG_BYTES`] and the transfer stops there. A
 //!    `416` that does not name an empty log (a host that refuses suffix ranges) is followed by one
 //!    more `GET` to the same address without a range, kept up to [`LOG_BYTES`] from its start
@@ -132,8 +134,9 @@ pub enum LogCut {
         /// Bytes kept.
         kept: usize,
     },
-    /// Its first `kept` bytes: the storage host sent the whole log and the transfer stopped at
-    /// [`LOG_BYTES`]; the rest was never downloaded.
+    /// Its first `kept` bytes, and nothing after them downloaded: the storage host sent the whole
+    /// log and the transfer stopped at [`LOG_BYTES`], or it sent a range from the log's start
+    /// without saying how long the log is, so rc-git cannot tell that the log ends there.
     Head {
         /// Bytes kept.
         kept: usize,
@@ -350,8 +353,9 @@ fn short(oid: Oid) -> String {
 }
 
 /// The log's bytes and how much of it they are, from the storage host's answer: a `206` is its
-/// end, a `200` the log from its start (cut when it was longer than the cap), a `416` with
-/// `Content-Range: bytes */0` an empty log. Anything else names what came back, never its body.
+/// end (or its start, when the host did not name the log's length), a `200` the log from its
+/// start (cut when it was longer than the cap), a `416` with `Content-Range: bytes */0` an empty
+/// log. Anything else names what came back, never its body.
 fn body_of(downloaded: Downloaded) -> Result<(Vec<u8>, LogCut), String> {
     match downloaded.status {
         200 => {
@@ -371,8 +375,11 @@ fn body_of(downloaded: Downloaded) -> Result<(Vec<u8>, LogCut), String> {
     }
 }
 
-/// The end of the log a `206` carries: it must name a range that ends where the log ends and
-/// holds exactly the bytes sent. A tail that starts mid-log loses its first, partial line.
+/// The end of the log a `206` carries: it must name a range that holds exactly the bytes sent
+/// and, when it names the log's length, ends there. A range from the log's start whose length the
+/// host did not name (`*`) is the log's start, never all of it; one that starts mid-log without
+/// a length says nothing of where the log ends and is refused. A tail that starts mid-log loses
+/// its first, partial line. Every count is checked: a range no `usize` holds is refused.
 fn tail(downloaded: Downloaded) -> Result<(Vec<u8>, LogCut), String> {
     if downloaded.cut {
         return Err("the storage host sent more than the byte range asked for".to_owned());
@@ -381,14 +388,30 @@ fn tail(downloaded: Downloaded) -> Result<(Vec<u8>, LogCut), String> {
     else {
         return Err("the storage host's partial answer names no byte range".to_owned());
     };
-    if last - first + 1 != downloaded.body.len() || total.is_some_and(|total| total != last + 1) {
+    let span = last.checked_sub(first).and_then(|span| span.checked_add(1));
+    let (Some(span), Some(end)) = (span, last.checked_add(1)) else {
+        return Err(
+            "the storage host's partial answer names a byte range too large to count".to_owned(),
+        );
+    };
+    if span != downloaded.body.len() || total.is_some_and(|total| total != end) {
         return Err(
             "the storage host's partial answer is not the end of the log it names".to_owned(),
         );
     }
     let mut body = downloaded.body;
-    if first == 0 {
-        return Ok((body, LogCut::Whole));
+    match (first, total) {
+        (0, Some(_)) => return Ok((body, LogCut::Whole)),
+        (0, None) => {
+            let kept = body.len();
+            return Ok((body, LogCut::Head { kept }));
+        }
+        (_, None) => {
+            return Err(
+                "the storage host's partial answer does not say where the log ends".to_owned(),
+            );
+        }
+        (_, Some(_)) => {}
     }
     if let Some(newline) = body.iter().position(|byte| *byte == b'\n') {
         body.drain(..=newline);
@@ -520,6 +543,42 @@ mod tests {
                 "{range:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_partial_answer_whose_range_no_usize_counts_is_refused_not_wrapped() {
+        let max = usize::MAX;
+        for range in [
+            format!("bytes 0-{max}/*"),
+            format!("bytes 0-{max}/{max}"),
+            format!("bytes 1-{max}/{max}"),
+            format!("bytes 0-{}/{max}", max - 1),
+        ] {
+            let answer = body_of(downloaded(206, Some(&range), b"", false));
+            assert!(answer.is_err(), "{range}: {answer:?}");
+        }
+        for backwards in ["bytes 5-3/10", "bytes 5-3/*"] {
+            let answer = body_of(downloaded(206, Some(backwards), b"abc", false));
+            assert_eq!(
+                answer.unwrap_err(),
+                "the storage host's partial answer names no byte range",
+                "{backwards}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_answer_without_the_log_s_length_is_never_the_whole_log() {
+        let (body, cut) = body_of(downloaded(206, Some("bytes 0-3/*"), b"all\n", false)).unwrap();
+        assert_eq!(
+            (body.as_slice(), cut),
+            (&b"all\n"[..], LogCut::Head { kept: 4 })
+        );
+        let mid = body_of(downloaded(206, Some("bytes 4-7/*"), b"ne\nx", false));
+        assert_eq!(
+            mid.unwrap_err(),
+            "the storage host's partial answer does not say where the log ends"
+        );
     }
 
     #[test]

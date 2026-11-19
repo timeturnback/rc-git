@@ -12,7 +12,7 @@ use super::RepositoryTarget;
 use super::auto_merge::{AutoMergeDisable, AutoMergeEnable};
 use super::delete_branch::PullRequestBranchDelete;
 use super::merge::{PullRequestAdminMerge, PullRequestMerge};
-use super::pull_types::{MergeMethod, PullRequestId};
+use super::pull_types::{MergeMethod, PullRequestId, RepositoryId};
 use super::rerun::{PullRequestRerun, rerun_body};
 use crate::{Action, Confirmation};
 
@@ -52,13 +52,23 @@ pub(super) const DISABLE_AUTO_MERGE: &str = "mutation RcGitDisableAutoMerge($id:
 disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { number state \
 headRefOid autoMergeRequest { mergeMethod } } } }";
 
-/// Deletes the ref whose node id is `$id`: the head branch of a merged pull request. Checked
-/// against GitHub's GraphQL reference: `deleteRef` ("Delete a Git Ref.") takes `DeleteRefInput`
-/// (`refId: ID!`, "The Node ID of the Ref to be deleted"; `clientMutationId: String`, not sent)
-/// and returns `clientMutationId` alone, so a non-null payload is the only success it reports.
-/// The branch name never travels: the id names the ref, read from the pull request's `headRef`.
-pub(super) const DELETE_REF: &str =
-    "mutation RcGitDeleteRef($id: ID!) { deleteRef(input: {refId: $id}) { clientMutationId } }";
+/// Deletes the branch `$name` (`refs/heads/<branch>`) of the repository whose node id is
+/// `$repository`, only while it still points at `$before`: the head branch of a merged pull
+/// request, at the commit the backup ref holds. Checked against GitHub's GraphQL reference (Git),
+/// where it carries no preview notice: `updateRefs` "Creates, updates and/or deletes multiple
+/// refs in a repository", atomically; its `UpdateRefsInput` takes `repositoryId: ID!` and
+/// `refUpdates: [RefUpdate!]!`, each `RefUpdate` a `name: GitRefname!` ("The fully qualified
+/// name of the ref"), a `beforeOid: GitObjectID` ("specifies that the given reference needs to
+/// point to the given value before performing any updates"), an `afterOid: GitObjectID!` ("A
+/// value of 0000000000000000000000000000000000000000 can be used to delete a reference") and
+/// `force: Boolean` (non-fast-forward updates, sent false); it returns `clientMutationId` alone,
+/// so a non-null payload is the only success it reports. The all-zero `afterOid` and `force` are
+/// constants of the document; every value read from the host travels in `variables`. A host whose
+/// schema lacks the mutation refuses the document before running it.
+pub(super) const DELETE_BRANCH: &str = "mutation RcGitDeleteBranch($repository: ID!, \
+$name: GitRefname!, $before: GitObjectID!) { updateRefs(input: {repositoryId: $repository, \
+refUpdates: [{name: $name, beforeOid: $before, \
+afterOid: \"0000000000000000000000000000000000000000\", force: false}]}) { clientMutationId } }";
 
 /// One request of a confirmed mutation, built from the action alone.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +104,7 @@ pub(super) enum Mutation<'a> {
     DisableAutoMerge(&'a AutoMergeDisable),
     /// One REST re-run of failed jobs per confirmed workflow run, in the confirmed order.
     RerunFailedJobs(&'a PullRequestRerun),
-    /// [`DELETE_REF`] of a merged pull request's head branch.
+    /// [`DELETE_BRANCH`] of a merged pull request's head branch, at its confirmed commit.
     DeleteHeadBranch(&'a PullRequestBranchDelete),
 }
 
@@ -192,8 +202,8 @@ impl<'a> Mutation<'a> {
                 None
             }
             Self::DeleteHeadBranch(delete) => Some(graphql(
-                DELETE_REF,
-                json!({ "id": delete.ref_id().as_str() }),
+                DELETE_BRANCH,
+                delete_branch_variables(delete.repository_id(), delete.branch(), delete.head_oid()),
             )),
             Self::Merge(merge) => Some(graphql(
                 MERGE,
@@ -222,6 +232,16 @@ pub(super) fn variables_of(id: &PullRequestId, head: Oid, method: MergeMethod) -
         "id": id.as_str(),
         "head": head.to_hex(),
         "method": method_word(method),
+    })
+}
+
+/// The variables of [`DELETE_BRANCH`]: the repository `id`, the branch `branch` as its full name
+/// `refs/heads/<branch>`, and the commit `before` it must still be at.
+pub(super) fn delete_branch_variables(id: &RepositoryId, branch: &str, before: Oid) -> Value {
+    json!({
+        "repository": id.as_str(),
+        "name": format!("refs/heads/{branch}"),
+        "before": before.to_hex(),
     })
 }
 

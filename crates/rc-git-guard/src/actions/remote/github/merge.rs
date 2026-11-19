@@ -859,13 +859,15 @@ const REFUSING_KINDS: [&str; 5] = [
 /// schema, which the GraphQL specification says comes before execution ("execution should only
 /// occur for valid requests"), so the mutation never ran. Each is the code graphql-ruby's static
 /// validation gives that rule: a field the type lacks, an argument the field takes no such of,
-/// a required argument left out, a variable of the wrong type. Any other code, or none, proves
-/// nothing.
-pub(super) const VALIDATION_CODES: [&str; 4] = [
+/// a required argument left out, a variable of the wrong type, a variable whose type the schema
+/// does not define (`variableRequiresValidType`, from graphql-ruby's
+/// `VariablesAreInputTypesError`). Any other code, or none, proves nothing.
+pub(super) const VALIDATION_CODES: [&str; 5] = [
     "undefinedField",
     "argumentNotAccepted",
     "missingRequiredArguments",
     "variableMismatch",
+    "variableRequiresValidType",
 ];
 
 /// Whether `error` alone shows the mutation did not merge.
@@ -874,11 +876,16 @@ pub(super) fn refuses(error: &GraphqlError) -> bool {
         .kind
         .as_deref()
         .is_some_and(|kind| REFUSING_KINDS.contains(&kind));
-    let invalid = error
+    kind || is_invalid(error)
+}
+
+/// Whether `error` is a schema validation failure ([`VALIDATION_CODES`]): the host never ran the
+/// document, because its schema does not take it.
+pub(super) fn is_invalid(error: &GraphqlError) -> bool {
+    error
         .code
         .as_deref()
-        .is_some_and(|code| VALIDATION_CODES.contains(&code));
-    kind || invalid
+        .is_some_and(|code| VALIDATION_CODES.contains(&code))
 }
 
 /// A mutation's answer before its payload is read: the reply, or a status that already settles

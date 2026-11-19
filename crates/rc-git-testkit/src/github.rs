@@ -307,15 +307,22 @@ pub enum LogsAnswer {
 /// One pull request's head branch the fake can delete: the read that shows the branch and what it
 /// answers before and after, the read of the open pull requests based on it, the one delete
 /// mutation it takes, and how that mutation behaves. The read answers from the branch's state, so
-/// a test sees what a delete changed exactly as a client reading it again would.
+/// a test sees what a delete changed exactly as a client reading it again would. Like GitHub's
+/// `updateRefs` with a `beforeOid`, the delete deletes only when the commit it names is the one
+/// the branch is at now (`present_at`, or `changed_at` once it changed); otherwise it answers
+/// [`STALE_DELETE`] and deletes nothing.
 #[derive(Debug, Clone)]
 pub struct BranchScript {
     /// The exact body of the read that shows the pull request and its head branch.
     pub read: String,
     /// The read's answer while the branch is there.
     pub present: String,
+    /// The commit the branch is at while the read answers `present` (40 hex digits).
+    pub present_at: String,
     /// The read's answer once it changed ([`DeleteBehaviour::ChangeAfter`]).
     pub changed: String,
+    /// The commit the branch is at once it changed.
+    pub changed_at: String,
     /// The read's answer once the branch is deleted.
     pub deleted: String,
     /// The exact body of the read of the open pull requests based on the branch.
@@ -331,7 +338,7 @@ pub struct BranchScript {
 /// What the fake does with the delete mutation.
 #[derive(Debug, Clone)]
 pub enum DeleteBehaviour {
-    /// Deletes the branch and answers `{"data":{"deleteRef":{"clientMutationId":null}}}`.
+    /// Deletes the branch and answers `{"data":{"updateRefs":{"clientMutationId":null}}}`.
     Delete,
     /// Answers `status` with `body` and deletes nothing.
     Refuse {
@@ -342,7 +349,8 @@ pub enum DeleteBehaviour {
     },
     /// The branch changes once the read has answered `reads` times (someone pushed to it, or
     /// the pull request changed): later reads answer [`BranchScript::changed`], and a delete that
-    /// still arrives deletes, so a client that sends it anyway is seen.
+    /// still arrives is counted and deletes when it names [`BranchScript::changed_at`], so a
+    /// client that sends it anyway is seen.
     ChangeAfter {
         /// Reads answered before it changes.
         reads: usize,
@@ -354,7 +362,17 @@ pub enum DeleteBehaviour {
     /// Closes the connection without answering and deletes nothing, and the branch changes
     /// meanwhile: later reads answer [`BranchScript::changed`].
     DropThenChange,
+    /// Someone pushes to the branch just as the delete arrives, before the fake acts on it: from
+    /// then on reads answer [`BranchScript::changed`], and the delete is checked against
+    /// [`BranchScript::changed_at`].
+    PushAtDelete,
 }
+
+/// What the fake answers a delete whose `before` is not the commit the branch is at: GitHub's
+/// GraphQL reference says `updateRefs` needs the ref to point at `beforeOid` before any update,
+/// but not how it words or types the refusal, so this shape (an empty payload and an error of
+/// type `UNPROCESSABLE`) is the fake's own.
+pub const STALE_DELETE: &str = r#"{"data":{"updateRefs":null},"errors":[{"type":"UNPROCESSABLE","message":"The branch is not at the commit beforeOid names"}]}"#;
 
 /// Where the scripted head branch is.
 #[derive(Debug)]
@@ -362,8 +380,9 @@ struct BranchState {
     script: BranchScript,
     reads: usize,
     deleted: bool,
-    /// Set by [`DeleteBehaviour::DropThenChange`] once the delete arrived.
-    dropped: bool,
+    /// Set by [`DeleteBehaviour::DropThenChange`] and [`DeleteBehaviour::PushAtDelete`] once the
+    /// delete arrived.
+    moved: bool,
     deletes: usize,
 }
 
@@ -371,7 +390,7 @@ impl BranchState {
     fn changed(&self) -> bool {
         match self.script.behaviour {
             DeleteBehaviour::ChangeAfter { reads } => self.reads >= reads,
-            DeleteBehaviour::DropThenChange => self.dropped,
+            DeleteBehaviour::DropThenChange | DeleteBehaviour::PushAtDelete => self.moved,
             DeleteBehaviour::Delete
             | DeleteBehaviour::Refuse { .. }
             | DeleteBehaviour::DeleteThenDrop
@@ -561,7 +580,7 @@ impl GitHubServer {
             script,
             reads: 0,
             deleted: false,
-            dropped: false,
+            moved: false,
             deletes: 0,
         });
     }
@@ -1334,12 +1353,20 @@ fn branch_request(branch: &mut BranchState, body: &str, hook: Option<&Hook>) -> 
         hook();
     }
     if branch.deleted {
-        return Some(Served::Answer(json(
-            "200 OK",
-            r#"{"data":{"deleteRef":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node with the global id"}]}"#.to_owned(),
-        )));
+        return Some(Served::Answer(json("200 OK", STALE_DELETE.to_owned())));
     }
-    let deleted = r#"{"data":{"deleteRef":{"clientMutationId":null}}}"#;
+    if matches!(branch.script.behaviour, DeleteBehaviour::PushAtDelete) {
+        branch.moved = true;
+    }
+    let at = if branch.changed() {
+        &branch.script.changed_at
+    } else {
+        &branch.script.present_at
+    };
+    if !body.contains(&format!(r#""before":"{at}""#)) {
+        return Some(Served::Answer(json("200 OK", STALE_DELETE.to_owned())));
+    }
+    let deleted = r#"{"data":{"updateRefs":{"clientMutationId":null}}}"#;
     Some(match &branch.script.behaviour {
         DeleteBehaviour::Delete | DeleteBehaviour::ChangeAfter { .. } => {
             branch.deleted = true;
@@ -1352,9 +1379,10 @@ fn branch_request(branch: &mut BranchState, body: &str, hook: Option<&Hook>) -> 
         }
         DeleteBehaviour::Drop => Served::Drop,
         DeleteBehaviour::DropThenChange => {
-            branch.dropped = true;
+            branch.moved = true;
             Served::Drop
         }
+        DeleteBehaviour::PushAtDelete => Served::Answer(json("200 OK", STALE_DELETE.to_owned())),
     })
 }
 

@@ -5,15 +5,18 @@
 //!
 //! The sequence is the merge's ([`super::merge`]), inside [`set_auto_merge`]:
 //!
-//! 1. Read the pull request again and compare it with the stamp of what the user saw.
+//! 1. Read the pull request again and compare it with the stamp of what the user saw: number,
+//!    head, base and state to turn it on; number and state alone to turn it off, the safe
+//!    direction, which a push or a retarget must not hold up.
 //! 2. Refuse what the change cannot do ([`enable_auto_merge_blocker`],
 //!    [`disable_auto_merge_blocker`]). Turning it on needs an open pull request that branch
 //!    protection blocks (a blocked or behind merge state, as the plain merge reads it: one that
 //!    can merge now is told to use Merge), a method the repository allows, a repository that
 //!    allows auto-merge, an account GitHub says may turn it on, and auto-merge off. Turning it
-//!    off needs it on and an account GitHub says may turn it off.
+//!    off needs it open with auto-merge on and an account GitHub says may turn it off.
 //! 3. Build the action from that read and authorize it: the decision the user answered must be
-//!    the policy's own now.
+//!    the policy's own now. Turning it off decides on the pull request, the account and the
+//!    auto-merge request alone (who turned it on, its method), never on the title or the head.
 //! 4. Send the one mutation, built from the proof alone: `enablePullRequestAutoMerge` with the
 //!    expected head and the method, or `disablePullRequestAutoMerge`. Never sent again.
 //! 5. Read the outcome as done, refused, or unknown; only a lost answer reads the pull request
@@ -30,7 +33,7 @@ use super::guarded::{
 };
 use super::merge::{
     FirstLook, LOGIN_CHARS, MergeBlocker, Settled, UNDO, checks_phrase, errors_verdict, fact,
-    fact_line, first_look, merge_blocker, method_phrase, oid_at, quoted,
+    fact_line, first_look, label, merge_blocker, method_phrase, oid_at, quoted,
 };
 use super::mutation::method_word;
 use super::pull_types::{
@@ -46,6 +49,16 @@ use crate::{Action, Decision, Policy};
 const MERGES_BY_ITSELF: &str = "GitHub will merge this pull request by itself when its \
                                 requirements are met, including commits pushed to its head \
                                 branch after this confirmation; rc-git will not ask again";
+
+/// What a challenge to turn auto-merge on says of a merge queue, on every host: GitHub's GraphQL
+/// reference says of `EnablePullRequestAutoMergeInput.mergeMethod` "when merging with a merge
+/// queue any input value for merge method is ignored", and of `AutoMergeRequest.mergeMethod` that
+/// a merge queue the base requires sets it. rc-git does not read whether the base has one:
+/// `isMergeQueueEnabled` in the detail read would send a host whose schema lacks it to the basic
+/// read, which refuses every merge.
+const MERGE_QUEUE: &str = "rc-git does not read whether the base branch uses a merge queue; if \
+                           it does, GitHub ignores the method above and the queue's own method \
+                           applies";
 
 /// Turning auto-merge on as the user confirms it: every fact its challenge names, read from the
 /// host just before, and the node id the mutation names it by. Built only by
@@ -121,14 +134,16 @@ impl AutoMergeEnable {
     }
 
     /// The challenge's text: rc-git's own first line, the repository to the head, the method
-    /// and the checks, the line that says GitHub merges it by itself with later commits too, the
-    /// owner of a head branch in another owner's repository, and the title last.
+    /// and what a merge queue would do to it, the checks, the line that says GitHub merges it by
+    /// itself with later commits too, the owner of a head branch in another owner's repository,
+    /// and the title last.
     pub(crate) fn summary(&self) -> String {
         let mut lines = vec![format!(
             "Turn on auto-merge for this pull request on GitHub. {UNDO}"
         )];
         lines.extend(self.facts.lines());
         lines.push(fact_line("Method", method_phrase(self.method)));
+        lines.push(fact_line("Merge queue", MERGE_QUEUE));
         lines.push(fact_line("Checks", &checks_phrase(&self.checks)));
         lines.push(fact_line("Merges by itself", MERGES_BY_ITSELF));
         if let Some(fork) = self.facts.fork() {
@@ -145,12 +160,18 @@ impl AutoMergeEnable {
     }
 }
 
-/// Turning auto-merge off as the user confirms it: the facts its challenge names, with the
-/// auto-merge request the read found. Built only by [`AutoMergeDisable::new`], from a read that
-/// nothing in [`disable_auto_merge_blocker`] stands in the way of.
+/// Turning auto-merge off as the user confirms it: which pull request, by which account, and the
+/// auto-merge request being turned off, and nothing else. Turning it off is the safe direction,
+/// so a title, a head or a base that changes between the challenge and the confirm does not
+/// void it: a pull request's author could otherwise keep auto-merge on by retitling or pushing.
+/// Built only by [`AutoMergeDisable::new`], from a read that nothing in
+/// [`disable_auto_merge_blocker`] stands in the way of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoMergeDisable {
-    facts: PullRequestFacts,
+    target: RepositoryTarget,
+    /// `login@host` of the account that turns it off, neutralized.
+    account: String,
+    number: u64,
     id: PullRequestId,
     /// The method the auto-merge request names, when the host named one this build knows.
     method: Option<MergeMethod>,
@@ -176,7 +197,9 @@ impl AutoMergeDisable {
             return Err(ActionBlocker::Merge(MergeBlocker::NoId));
         };
         Ok(Self {
-            facts: PullRequestFacts::read(target, login, detail),
+            target: target.clone(),
+            account: format!("{}@{}", fact(login, LOGIN_CHARS), target.host()),
+            number: detail.summary.number,
             id,
             method: auto.method,
             enabled_by: auto
@@ -189,33 +212,28 @@ impl AutoMergeDisable {
     /// The repository.
     #[must_use]
     pub fn target(&self) -> &RepositoryTarget {
-        self.facts.target()
+        &self.target
     }
 
     /// The pull request's number.
     #[must_use]
     pub fn number(&self) -> u64 {
-        self.facts.number()
+        self.number
     }
 
     pub(super) fn id(&self) -> &PullRequestId {
         &self.id
     }
 
-    /// The head commit the read showed.
-    #[must_use]
-    pub fn head_oid(&self) -> Oid {
-        self.facts.head_oid()
-    }
-
     /// `owner/name#number`.
     #[must_use]
     pub fn label(&self) -> String {
-        self.facts.label()
+        label(&self.target, self.number)
     }
 
-    /// The challenge's text: rc-git's own first line, the repository to the head, the
-    /// auto-merge request as read, and the title last.
+    /// The challenge's text, and the decision a confirm is compared with: rc-git's own first
+    /// line, the repository, the pull request, the account, and the auto-merge request as read.
+    /// No title, head or base: none of them changes what turning auto-merge off does.
     pub(crate) fn summary(&self) -> String {
         let method = self
             .method
@@ -224,18 +242,22 @@ impl AutoMergeDisable {
             .enabled_by
             .as_deref()
             .map_or_else(|| "someone GitHub did not name".to_owned(), quoted);
-        let mut lines = vec![
+        let repository = format!(
+            "{}/{} on {}",
+            self.target.owner(),
+            self.target.name(),
+            self.target.host()
+        );
+        [
             "Turn off auto-merge for this pull request on GitHub. GitHub then no longer merges it \
              by itself; nothing else changes."
                 .to_owned(),
-        ];
-        lines.extend(self.facts.lines());
-        lines.push(fact_line(
-            "Auto-merge",
-            &format!("on, as {method}, turned on by {by}"),
-        ));
-        lines.push(self.facts.title_line());
-        lines.join("\n")
+            fact_line("Repository", &repository),
+            fact_line("Pull request", &format!("#{}", self.number)),
+            fact_line("Account", &self.account),
+            fact_line("Auto-merge", &format!("on, as {method}, turned on by {by}")),
+        ]
+        .join("\n")
     }
 }
 

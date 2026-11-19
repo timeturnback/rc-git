@@ -7,10 +7,10 @@
 //! The sequence, inside [`delete_head_branch`] (the app and the CLI both call it):
 //!
 //! 1. **Read it now.** One GraphQL read ([`HEAD_BRANCH`]) of the pull request and its head
-//!    branch: state, head, base, the head branch's ref (node id, name, prefix, commit,
-//!    repository), the open pull requests that have it as their head, whether the account may
-//!    delete it, and the repository's default branch. It is compared with the
-//!    [`PullRequestStamp`] of what the user saw; any difference refuses.
+//!    branch: state, head, base, the head branch's ref (name, prefix, commit, repository), the
+//!    open pull requests that have it as their head, whether the account may delete it, and the
+//!    repository's node id and default branch. It is compared with the [`PullRequestStamp`] of
+//!    what the user saw; any difference refuses.
 //! 2. **Refuse what is not a merged pull request's own branch** ([`delete_branch_blocker`]): a
 //!    pull request that is not merged; a head in a fork or any repository but the base; an account
 //!    GitHub does not say may delete it; a branch that is gone, is not the head branch, or points
@@ -25,13 +25,18 @@
 //!    answered must be the policy's own now.
 //! 5. **Back up, then send.** [`Writer::write_backup_ref`] writes
 //!    `refs/rc-git/backup/remote-branch/<name>` at the head commit, and the ref is read back at
-//!    that commit; a failure sends nothing. Only then does the one `deleteRef` mutation leave,
-//!    naming the ref by its node id. It is never sent again.
+//!    that commit; a failure sends nothing. Only then does the one `updateRefs` mutation leave
+//!    ([`super::mutation::DELETE_BRANCH`]): it names the repository by its node id, the branch by
+//!    its full name, and the head commit as the one the branch must still be at (`beforeOid`), so
+//!    GitHub refuses to delete a branch someone pushed to after rc-git's last read: whatever it
+//!    deletes, the backup ref holds. It is never sent again.
 //! 6. **Three outcomes.** Deleted, refused, or unknown; only a lost answer reads the head branch
 //!    once more: gone is deleted, still there at the same commit is not deleted, anything else
-//!    stays unknown. The backup ref is kept whatever the outcome.
+//!    stays unknown. The backup ref is kept whatever the outcome, and a cancel or a request that
+//!    could not leave after it was written names it ([`ActionRefusal::BackupKept`]).
 //!
-//! Every refusal before step 5 is an [`ActionRefusal`] and means nothing was sent or written.
+//! Every other refusal before step 5 is an [`ActionRefusal`] and means nothing was sent or
+//! written.
 
 use std::path::Path;
 
@@ -40,13 +45,14 @@ use serde_json::{Value, json};
 
 use super::api::{GraphqlReply, Mutated, Session};
 use super::guarded::{
-    ActionBlocker, ActionRefusal, ActionTarget, BranchUse, PullRequestAction, confirmed, settling,
+    ActionBlocker, ActionRefusal, ActionTarget, BackupKeptStop, BranchUse, PullRequestAction,
+    confirmed, settling,
 };
 use super::merge::{
     BRANCH_CHARS, FirstLook, LOGIN_CHARS, Settled, TITLE_CHARS, changed, errors_verdict, fact,
-    fact_line, first_look, label, quoted,
+    fact_line, first_look, is_invalid, label, quoted,
 };
-use super::pull_types::{PullRequestStamp, PullRequestState, RefId};
+use super::pull_types::{PullRequestStamp, PullRequestState, RepositoryId};
 use super::pulls::{MAX_LINE_CHARS, flag, nodes, pull_request_state, repository, text};
 use super::text::single_line;
 use super::{GitHubError, GitHubResult, RepositoryTarget};
@@ -61,16 +67,17 @@ pub const BACKUP_KIND: &str = "remote-branch";
 const NAMED_PULL_REQUESTS: u32 = 5;
 
 /// The pull request and its head branch, with every fact a delete is judged on. Checked against
-/// GitHub's GraphQL reference: `headRef` (`Ref`, null once the branch is gone), whose `id`,
-/// `name`, `prefix` ("such as refs/heads/"), `target` (`GitObject`, its `oid`), `repository` and
+/// GitHub's GraphQL reference: `headRef` (`Ref`, null once the branch is gone), whose `name`,
+/// `prefix` ("such as refs/heads/"), `target` (`GitObject`, its `oid`), `repository` and
 /// `associatedPullRequests` ("pull requests with this ref as the head ref", filtered by `states`)
 /// are its fields; the pull request's `merged`, `isCrossRepository`, `headRepository` and
-/// `viewerCanDeleteHeadRef`; and the repository's `defaultBranchRef`.
+/// `viewerCanDeleteHeadRef`; and the repository's `id` (the node id the delete names it by) and
+/// `defaultBranchRef`.
 pub(super) const HEAD_BRANCH: &str = "query RcGitHeadBranch($owner: String!, $name: String!, \
-$number: Int!, $first: Int!) { repository(owner: $owner, name: $name) { \
+$number: Int!, $first: Int!) { repository(owner: $owner, name: $name) { id \
 defaultBranchRef { name } pullRequest(number: $number) { number title state merged \
 headRefName headRefOid baseRefName isCrossRepository viewerCanDeleteHeadRef \
-headRepository { name owner { login } } headRef { id name prefix target { oid } \
+headRepository { name owner { login } } headRef { name prefix target { oid } \
 repository { name owner { login } } associatedPullRequests(states: [OPEN], first: $first) { \
 totalCount nodes { number } } } } } }";
 
@@ -166,8 +173,6 @@ pub struct OpenPullRequests {
 /// The pull request's head branch as GitHub's `headRef` reported it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HeadRef {
-    /// Its node id, the one thing the mutation names it by.
-    pub id: Option<RefId>,
     /// The commit it points at.
     pub target: Option<Oid>,
     /// Whether it is `refs/heads/<headRefName>` of the base repository: its prefix, its name and
@@ -196,6 +201,9 @@ pub struct HeadBranch {
     pub viewer_can_delete: bool,
     /// The head branch; `None` when it is gone.
     pub head_ref: Option<HeadRef>,
+    /// The repository's node id, which the delete names it by; `None` when the host sent none
+    /// rc-git accepts.
+    pub repository_id: Option<RepositoryId>,
     /// Whether the head branch is the repository's default branch (compared without ASCII
     /// case); `None` when GitHub named no default branch.
     pub default_branch: Option<bool>,
@@ -250,7 +258,9 @@ fn branch_blocker(read: &HeadBranch) -> Option<ActionBlocker> {
     if let Some(blocker) = open_blocker(head_ref.open_heads, BranchUse::Head) {
         return Some(blocker);
     }
-    head_ref.id.is_none().then_some(ActionBlocker::NoRefId)
+    read.repository_id
+        .is_none()
+        .then_some(ActionBlocker::NoRepositoryId)
 }
 
 /// What open pull requests using the branch as `branch_use` stand for: none is nothing, any is a
@@ -291,8 +301,8 @@ pub fn head_branch_blocker(detail: &super::PullRequestDetail) -> Option<ActionBl
 }
 
 /// Deleting a merged pull request's head branch as the user confirms it: every fact its
-/// challenge names, read from the host just before, and the ref's node id the mutation names it
-/// by. Built only by [`PullRequestBranchDelete::new`], from a read nothing in
+/// challenge names, read from the host just before, and the repository's node id the mutation
+/// names it by. Built only by [`PullRequestBranchDelete::new`], from a read nothing in
 /// [`delete_branch_blocker`] stands in the way of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestBranchDelete {
@@ -303,8 +313,9 @@ pub struct PullRequestBranchDelete {
     title: String,
     /// The exact name, which a challenge shows unchanged ([`typeable`]).
     branch: String,
+    /// The commit the branch is at, which the mutation names as the one it must still be at.
     head_oid: Oid,
-    ref_id: RefId,
+    repository_id: RepositoryId,
 }
 
 impl PullRequestBranchDelete {
@@ -321,11 +332,10 @@ impl PullRequestBranchDelete {
             return Err(blocker);
         }
         let branch = read.branch.exact().ok_or(ActionBlocker::NameNotTypeable)?;
-        let ref_id = read
-            .head_ref
-            .as_ref()
-            .and_then(|head_ref| head_ref.id.clone())
-            .ok_or(ActionBlocker::NoRefId)?;
+        let repository_id = read
+            .repository_id
+            .clone()
+            .ok_or(ActionBlocker::NoRepositoryId)?;
         Ok(Self {
             target: target.clone(),
             account: format!("{}@{}", fact(login, LOGIN_CHARS), target.host()),
@@ -333,7 +343,7 @@ impl PullRequestBranchDelete {
             title: fact(&read.title, TITLE_CHARS),
             branch: branch.to_owned(),
             head_oid: read.stamp.head_oid,
-            ref_id,
+            repository_id,
         })
     }
 
@@ -373,13 +383,14 @@ impl PullRequestBranchDelete {
         label(&self.target, self.number)
     }
 
-    pub(super) fn ref_id(&self) -> &RefId {
-        &self.ref_id
+    pub(super) fn repository_id(&self) -> &RepositoryId {
+        &self.repository_id
     }
 
     /// The challenge's text, one labelled line per fact in the merge's order: rc-git's own first
-    /// line, the repository, the pull request, the account, the branch, its commit, the backup
-    /// ref, what the delete does for everyone, and the title last.
+    /// line, the repository, the pull request, the account, the branch, its commit and that the
+    /// delete is refused once the branch is elsewhere, the backup ref, what the delete does for
+    /// everyone, and the title last.
     pub(crate) fn summary(&self) -> String {
         let short: String = self.head_oid.to_hex().chars().take(7).collect();
         let repository = format!(
@@ -397,6 +408,13 @@ impl PullRequestBranchDelete {
             fact_line("Account", &self.account),
             fact_line("Branch", &quoted(&self.branch)),
             fact_line("Commit", &short),
+            fact_line(
+                "Commit check",
+                &format!(
+                    "the delete names {short} as the commit the branch must still be at, so \
+                     GitHub refuses it for a branch pushed to since"
+                ),
+            ),
             fact_line(
                 "Backup",
                 &format!(
@@ -567,11 +585,7 @@ pub fn delete_head_branch(
     let pull_request = who.pull_request();
     let repo = local(request.repo_path, &pull_request)?;
     let delete = fresh(who, &repo, cancel)?;
-    let (branch, head_oid, ref_id) = (
-        delete.branch().to_owned(),
-        delete.head_oid(),
-        delete.ref_id().clone(),
-    );
+    let (branch, head_oid) = (delete.branch().to_owned(), delete.head_oid());
     let built = Action::DeletePullRequestBranch(Box::new(delete));
     let answer = (request.answer, request.typed);
     let proof = confirmed(policy, &built, answer, (action, &pull_request))?;
@@ -587,8 +601,17 @@ pub fn delete_head_branch(
             pull_request: pull_request.clone(),
             reason,
         })?;
+    let kept = |stop| ActionRefusal::BackupKept {
+        pull_request: pull_request.clone(),
+        branch: quoted(&branch),
+        backup_ref: backup_ref.clone(),
+        stop,
+    };
+    if cancel.is_cancelled() {
+        return Err(kept(BackupKeptStop::Cancelled));
+    }
     (request.on_send)();
-    let outcome = send(who, proof, (&ref_id, head_oid), cancel)?;
+    let outcome = send(who, proof, head_oid, cancel).map_err(kept)?;
     Ok(BranchDeleteReport {
         local_branch: local_branch(&repo, &branch),
         branch,
@@ -723,6 +746,7 @@ fn head_branch(reply: &GraphqlReply, target: &RepositoryTarget) -> GitHubResult<
         in_repository: !cross && names_target(node.get("headRepository"), target),
         viewer_can_delete: flag(node, "viewerCanDeleteHeadRef") == Some(true),
         head_ref: head_ref.map(|head_ref| head_ref_of(head_ref, name, target)),
+        repository_id: text(repository, "id").and_then(RepositoryId::parse),
         default_branch: repository
             .get("defaultBranchRef")
             .and_then(|default| text(default, "name"))
@@ -737,7 +761,6 @@ fn head_ref_of(value: &Value, name: &str, target: &RepositoryTarget) -> HeadRef 
         && text(value, "name") == Some(name)
         && names_target(value.get("repository"), target);
     HeadRef {
-        id: text(value, "id").and_then(RefId::parse),
         target: value
             .get("target")
             .and_then(|object| text(object, "oid"))
@@ -813,50 +836,55 @@ fn local_branch(repo: &gix::Repository, branch: &str) -> bool {
 }
 
 /// Sends the one mutation `proof` confirms and reads what came of it: an answer, or for a lost
-/// one, the one read that settles what it can.
+/// one, the one read that settles what it can, against `head`, the commit the delete named.
 fn send(
     who: &ActionTarget<'_>,
     proof: Confirmation,
-    confirmed: (&RefId, Oid),
+    head: Oid,
     cancel: &Cancel,
-) -> Result<BranchDeleteOutcome, ActionRefusal> {
-    let action = PullRequestAction::DeleteHeadBranch;
-    let pull_request = who.pull_request();
-    let not_sent = |source| match source {
-        GitHubError::Cancelled { .. } => ActionRefusal::Cancelled {
-            action,
-            pull_request: pull_request.clone(),
-        },
-        source => ActionRefusal::NotSent {
-            action,
-            pull_request: pull_request.clone(),
-            source,
-        },
-    };
+) -> Result<BranchDeleteOutcome, BackupKeptStop> {
     let mut outbox = Session::new(who.host, who.token)
         .mutate(proof)
-        .map_err(not_sent)?;
+        .map_err(backup_stop)?;
     let problem = match outbox.send_next(cancel) {
         None => {
-            return Err(not_sent(GitHubError::InvalidValue {
+            return Err(backup_stop(GitHubError::InvalidValue {
                 field: "GitHub mutation",
                 value: "the confirmed delete".to_owned(),
                 reason: "it names no request to send",
             }));
         }
-        Some(Mutated::NotSent(source)) => return Err(not_sent(source)),
+        Some(Mutated::NotSent(source)) => return Err(backup_stop(source)),
         Some(Mutated::Answered(answer)) => match answered(first_look(answer)) {
             Ok(outcome) => return Ok(outcome),
             Err(problem) => problem,
         },
         Some(Mutated::Lost(error)) => error.to_string(),
     };
-    Ok(settle(who, confirmed, problem, cancel))
+    Ok(settle(who, head, problem, cancel))
 }
 
+/// Why the confirmed delete's request did not leave, once the backup ref is written: a cancel, or
+/// `source`, a failure before any byte of it was sent.
+pub(super) fn backup_stop(source: GitHubError) -> BackupKeptStop {
+    match source {
+        GitHubError::Cancelled { .. } => BackupKeptStop::Cancelled,
+        source => BackupKeptStop::NotSent(Box::new(source)),
+    }
+}
+
+/// What a refusal says when the host's schema refused the delete's document: a host without
+/// `updateRefs` (an older GitHub Enterprise Server) never ran it, and rc-git has no other delete
+/// that checks the branch's commit.
+const NO_CHECKED_DELETE: &str = "this host does not take the delete rc-git sends, which names \
+                                 the commit the branch must still be at (GraphQL updateRefs), so \
+                                 rc-git cannot delete the branch safely here; delete it on the \
+                                 host's own page or with git";
+
 /// What the host's answer says: a final outcome, or the problem to report beside the read that
-/// follows. A non-null `deleteRef` payload is the success GitHub reports; only an empty payload
-/// with errors that each show the mutation did not run or was refused is a refusal.
+/// follows. A non-null `updateRefs` payload is the success GitHub reports; only an empty payload
+/// with errors that each show the mutation did not run or was refused is a refusal, and one whose
+/// errors are all schema validation failures says this host cannot delete the branch safely.
 fn answered(look: FirstLook) -> Result<BranchDeleteOutcome, String> {
     let reply = match look {
         FirstLook::Reply(reply) => reply,
@@ -866,7 +894,7 @@ fn answered(look: FirstLook) -> Result<BranchDeleteOutcome, String> {
     let payload = reply
         .data
         .as_ref()
-        .and_then(|data| data.get("deleteRef"))
+        .and_then(|data| data.get("updateRefs"))
         .filter(|payload| !payload.is_null());
     if payload.is_some_and(Value::is_object) {
         return Ok(BranchDeleteOutcome::Deleted {
@@ -874,16 +902,21 @@ fn answered(look: FirstLook) -> Result<BranchDeleteOutcome, String> {
         });
     }
     let words = ("the branch was deleted", "that the branch was deleted");
-    errors_verdict(&reply, payload.is_some(), words)
-        .map(|reason| BranchDeleteOutcome::Refused { reason })
+    let reason = errors_verdict(&reply, payload.is_some(), words)?;
+    if reply.errors.iter().all(is_invalid) {
+        return Ok(BranchDeleteOutcome::Refused {
+            reason: format!("{NO_CHECKED_DELETE} ({reason})"),
+        });
+    }
+    Ok(BranchDeleteOutcome::Refused { reason })
 }
 
 /// The outcome of a request whose answer was lost: one read of the head branch, never a second
-/// mutation. Gone is deleted; the confirmed ref at the confirmed commit is not deleted; anything
-/// else is unknown.
+/// mutation. Gone is deleted; the head branch still at `head`, the commit the delete named, is
+/// not deleted; anything else is unknown.
 fn settle(
     who: &ActionTarget<'_>,
-    (ref_id, head): (&RefId, Oid),
+    head: Oid,
     problem: String,
     cancel: &Cancel,
 ) -> BranchDeleteOutcome {
@@ -903,7 +936,7 @@ fn settle(
         None => BranchDeleteOutcome::Deleted {
             settled: Settled::Reread,
         },
-        Some(now) if now.id.as_ref() == Some(ref_id) && now.target == Some(head) => {
+        Some(now) if now.is_head_branch && now.target == Some(head) => {
             BranchDeleteOutcome::NotDeleted { problem }
         }
         Some(now) => BranchDeleteOutcome::Unknown {
