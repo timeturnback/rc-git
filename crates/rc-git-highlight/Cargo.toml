@@ -4,6 +4,7 @@ description = "Tree-sitter syntax highlighting for the rc-git file pane"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish = false
 

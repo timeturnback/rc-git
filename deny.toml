@@ -45,8 +45,8 @@ allow = [
 ]
 
 [licenses.private]
-# The workspace crates are `publish = false` and carry no license field: the project is not
-# licensed for redistribution. Skip them; every third-party crate is still checked.
+# The workspace crates are `publish = false` (MIT, see LICENSE). Skip them; every third-party
+# crate is still checked.
 ignore = true
 
 [bans]

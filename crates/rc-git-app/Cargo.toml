@@ -4,6 +4,7 @@ description = "The rc-git macOS app on GPUI: windows, views, menus and key bindi
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish = false
 

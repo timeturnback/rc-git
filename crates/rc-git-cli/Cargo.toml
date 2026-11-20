@@ -4,6 +4,7 @@ description = "Command-line front end over rc-git-core reads, rc-git-guard actio
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish = false
 
