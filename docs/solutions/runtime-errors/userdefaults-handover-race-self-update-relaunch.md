@@ -7,7 +7,7 @@ problem_type: runtime_error
 component: frontend
 symptoms:
   - "Rebuild and Relaunch brings the app back with one empty window; the repository tabs that were open are gone"
-  - "Before ea73c00: `defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none (current code: the key holds an empty or older list instead)"
+  - "Before 2e27cac: `defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none (current code: the key holds an empty or older list instead)"
   - "A manual quit and launch restores the same tabs correctly; only the self-update path drops them"
   - "No error is logged and the update window reports success"
 root_cause: async_timing
@@ -29,7 +29,7 @@ relaunched build came up with one empty window even though the tab list was in `
 ## Symptoms
 
 - The relaunched app shows a single empty window; the repository tabs are gone.
-- Before ea73c00: `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still
+- Before 2e27cac: `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still
   holding the repository path. The value is intact; the new process simply did not see it.
   Under the current code the same race leaves the key holding an empty or older list instead
   (see "Why This Works").
@@ -51,7 +51,7 @@ The failure was on the read side, not the write side.
 ## Solution
 
 Flush the write before the replacement process launches, and stop writing once the state has
-been handed over. The bug and its first fix (commit `ea73c00`) were in the Swift app; the GPUI
+been handed over. The bug and its first fix (commit `2e27cac`) were in the Swift app; the GPUI
 app carries the same fix, named below.
 
 `OpenTabs::hand_off` (`crates/rc-git-kit/src/tabs.rs`) records and forces the write out:
@@ -98,7 +98,7 @@ starts fresh reads what was last committed. The new process therefore read a pre
 of the domain, found no tabs, and opened an empty window. Synchronizing forces the commit before
 the launch, which is exactly the cross-process handover case the call still exists for.
 
-Why the value was nonetheless on disk afterwards, at the time of ea73c00: the restore returned
+Why the value was nonetheless on disk afterwards, at the time of 2e27cac: the restore returned
 without saving when it restored nothing, so the new process never clobbered the list; the old
 process then wrote it again as it terminated. The symptom was a lost session, never a lost
 list — which is why the next manual launch looked fine and hid the bug.

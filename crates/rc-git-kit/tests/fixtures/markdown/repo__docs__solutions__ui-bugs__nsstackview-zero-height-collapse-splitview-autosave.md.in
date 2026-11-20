@@ -63,7 +63,7 @@ coordinate clamps implemented, both autosave names bumped. The dev domain had al
 `rc-git.history-detail.v4` as `763 / 0`. The clamps never ran: `constrainMinCoordinate` and
 `constrainMaxCoordinate` are consulted for a user's divider drag, not for `adjustSubviews` and
 not for the autosave restore. The per-pane Auto Layout floors never held either, and the clamps
-are why: instance 2's fix (`dd3c551`) made the controller `detailSplit`'s delegate and
+are why: instance 2's fix (`8bab7a2`) made the controller `detailSplit`'s delegate and
 implemented both clamps in the same commit that added the floors. A split whose delegate
 implements a sizing method places its panes by frame, and a frame beats a pane's floor. Instance
 2's own fix disabled the floors it added; that is instance 3.
@@ -116,7 +116,7 @@ implements a sizing method places its panes by frame, and a frame beats a pane's
 
 ## What Didn't Work
 
-- **Fixing only the constraint (commit `96284d1`).** The zero-height hack was replaced with a
+- **Fixing only the constraint (commit `01aed8e`).** The zero-height hack was replaced with a
   vertical `NSStackView` using `detachesHiddenViews`, and the scope bar switched to plain
   `isHidden`. Correct in isolation, but the user still saw no commits: the pre-fix build had
   already autosaved the crushed divider position under `"rc-git.history"`, and the fixed build
@@ -125,7 +125,7 @@ implements a sizing method places its panes by frame, and a frame beats a pane's
 - **Asking the user to drag the divider back.** Offered as the workaround at the end of the
   first round. It did not resolve the report. (session history)
 - **Applying this doc's own prevention rules — and still shipping the bug.** The `.v3` drawer
-  rewrite (`08d943c`) followed them literally: both autosave names bumped `v2` -> `v3`, and a
+  rewrite (`8960dca`) followed them literally: both autosave names bumped `v2` -> `v3`, and a
   min-height floor added. The floor went on the changed-files scroll view and the diff scroll
   view got none — and that commit had just flipped `detailSplit.isVertical` from `true` to
   `false`, restacking the drawer from side-by-side to changes-above-diff and making the diff a
@@ -158,11 +158,11 @@ implements a sizing method places its panes by frame, and a frame beats a pane's
 ## Solution
 
 All changes are in `mac/Sources/RcGitApp/HistoryViewController.swift`, across commits
-`96284d1`, `9885da1` (instance 1) and `dd3c551` (instance 2), plus instance 3's change, which
+`01aed8e`, `79576c4` (instance 1) and `8bab7a2` (instance 2), plus instance 3's change, which
 also adds the pane arithmetic to `LayoutPolicy` (RcGitKit) with tests. Steps 1 and 4 stand as
 written; steps 2 and 3 are what instance 3 rewrote. The snippets below show the code as it
-reads today: `3d26eb4` replaced the drawer's split with a left column (the commit list over the
-commit's detail) beside the diff, and `020fdf1` gave the outer split the same owned layout.
+reads today: `322bd76` replaced the drawer's split with a left column (the commit list over the
+commit's detail) beside the diff, and `5ea39a5` gave the outer split the same owned layout.
 
 **1. Hide a view by detaching it, never by collapsing its height.** Before — a stored
 zero-height constraint toggled on a bar whose subviews stayed visible:
@@ -283,7 +283,7 @@ out of automatic resizing.
 
 **4. Version the split autosave names, to discard the poison already stored.** The drawer's
 key went through `.v2` after instance 1, `.v3` at the drawer rewrite, `.v4` at instance 2 and
-`.v5` at instance 3. `3d26eb4` retired that split; the keys now are
+`.v5` at instance 3. `322bd76` retired that split; the keys now are
 `rc-git.history-column.v1` (the left column, the commit list over the detail) and
 `rc-git.history.v5` (the column beside the diff), both owned by the controller's layout:
 
@@ -391,7 +391,7 @@ no pixels. The user saw the loading state and never the result.
 - Whether History's left column should move back to Auto Layout mode is a separate code
   decision: measure the autosave restore in that mode before relying on it.
 - **Re-audit whenever a pane is added or a split is restructured.** A restructure flips which
-  axis is at risk, which is the whole story of `08d943c`: it flipped both splits' orientation at
+  axis is at risk, which is the whole story of `8960dca`: it flipped both splits' orientation at
   once, correctly swapping the commits pane's height floor for a width one, and leaving the diff
   pane unprotected on the height axis it had just started bearing. Neither pane was new; the
   geometry was.
