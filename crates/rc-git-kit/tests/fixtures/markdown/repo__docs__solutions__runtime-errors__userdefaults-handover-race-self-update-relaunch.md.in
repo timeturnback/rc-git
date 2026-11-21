@@ -7,7 +7,7 @@ problem_type: runtime_error
 component: frontend
 symptoms:
   - "Rebuild and Relaunch brings the app back with one empty window; the repository tabs that were open are gone"
-  - "Before 2e27cac: `defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none (current code: the key holds an empty or older list instead)"
+  - "Before 974d820: `defaults read com.timeturnback.rcgit.dev` still lists the tabs under `rc-git.openTabs` while the relaunched app shows none (current code: the key holds an empty or older list instead)"
   - "A manual quit and launch restores the same tabs correctly; only the self-update path drops them"
   - "No error is logged and the update window reports success"
 root_cause: async_timing
@@ -30,7 +30,7 @@ write reached disk.
 ## Symptoms
 
 - The relaunched app shows a single empty window; the repository tabs are gone.
-- Before 2e27cac: `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still
+- Before 974d820: `defaults read com.timeturnback.rcgit.dev` shows `rc-git.openTabs` still
   holding the repository path. The value is intact; the new process simply did not see it.
   Under the current code the same race leaves the key holding an empty or older list instead
   (see "Why This Works").
@@ -86,7 +86,7 @@ Both go through `OpenTabs.record`, which merges the live tabs into the saved lis
 closed with ⇧⌘W or at ⌘Q stays in it; `OpenTabs.save` replaces the list and only
 `restoreTabs` calls it (`.claude/rules/swift.md`). Do not swap `record` back to `save` here.
 
-Fixed in commit `2e27cac` on `master`, where the update window's `willRelaunch` closure called
+Fixed in commit `974d820` on `master`, where the update window's `willRelaunch` closure called
 `handOffTabs()` instead of `saveTabs()`. Today `UpdateModel` calls
 `UpdateEnvironment.handOff()`, which `AppDelegate` wires to `handOffTabs()`; when the launch
 fails it calls `UpdateEnvironment.reclaim()`, which runs `AppDelegate.reclaimTabs()` to lift
@@ -110,7 +110,7 @@ therefore read a pre-save snapshot of the domain, found no tabs, and opened an e
 `synchronize()` forces the commit before the launch, which is exactly the cross-process
 handover case the method still exists for.
 
-Why the value was nonetheless on disk afterwards, at the time of 2e27cac: `restoreTabs()`
+Why the value was nonetheless on disk afterwards, at the time of 974d820: `restoreTabs()`
 returned without saving when it restored nothing, so the new process never clobbered the list;
 the old process then wrote it again from `applicationWillTerminate`. The symptom was a lost
 session, never a lost list — which is why the next manual launch looked fine and hid the bug.

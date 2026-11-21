@@ -39,7 +39,7 @@ rc-git's pure-Rust ssh transport resolved OpenSSH host aliases wrong: a multi-ac
 
 ## What Didn't Work
 
-The first fix (commit 7b25734) switched `target.rs` from `Config::host_name`/`Config::user`/`Config::port` to the `host_config` fields — necessary, but the field failure persisted with the identical error. Reason: the user's block was `Host github.com-PersonalGitHub` (mixed case), the URL host arrives lowercased from gix, and russh-config matches `Host` patterns with a case-sensitive glob — so the block never matched and there was no `host_config` to read.
+The first fix (commit 163d6ea) switched `target.rs` from `Config::host_name`/`Config::user`/`Config::port` to the `host_config` fields — necessary, but the field failure persisted with the identical error. Reason: the user's block was `Host github.com-PersonalGitHub` (mixed case), the URL host arrives lowercased from gix, and russh-config matches `Host` patterns with a case-sensitive glob — so the block never matched and there was no `host_config` to read.
 
 ## Solution
 
