@@ -60,10 +60,6 @@ models; a macOS system call goes in `rc-git-mac` behind a kit trait.
   `build/stage/` and deletes the old bundle last. Never delete it before the build: the
   running app is the process running the script.
 - Ask before adding a dependency. Versions are pinned exactly and pass `cargo deny`.
-- rc-note is the sister app: same features, a different stack. Read it with
-  `xref`, never its working tree. The file map, the parity table of what each app has, and how
-  to port live in `~/.claude/docs/native-app.md`, "Sister apps". A port ends its commit with a
-  `Ported-from: rc-note@<sha>` trailer.
 - `.claude/rules/` loads the rule for the area you touch. Read it before editing.
 - `docs/` is the long-form reference: `architecture.md`, `performance.md`, `safety.md`,
   `testing.md`, `development.md`, `roadmap.md`.
