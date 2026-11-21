@@ -58,7 +58,7 @@ gpui-kit-assets = "=0.9.0"
 # request and response bodies. Both are the versions Cargo.lock already holds.
 curl = { version = "=0.4.50", default-features = false }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
-tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
