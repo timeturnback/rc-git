@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all -- --check
       - name: cargo clippy   # same check as check.sh: a ban path resolving to nothing only warns
         run: |
@@ -66,7 +66,7 @@ jobs:
           persist-credentials: false
       - run: sudo xcode-select -s /Applications/Xcode_27.0.app
       - run: rustup toolchain install   # the channel and components in rust-toolchain.toml
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --locked --workspace   # fixtures under macOS git config and APFS
       - name: GPUI crates   # macOS only; excluded from the Linux job
         run: |
@@ -85,7 +85,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0   # changelog-check.sh reads the whole pushed range
-      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: shellcheck@0.11.0,shfmt@3.13.1,zizmor@1.25.0   # the versions check.sh runs locally
       - name: Install actionlint   # install-action has no actionlint manifest
